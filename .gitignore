@@ -5,6 +5,7 @@ __pycache__/
 .env
 .env.config
 .DS_Store
+.gitignore
 
 # Data directories
 data/
