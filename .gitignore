@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+
+# Environment variables
+.env
+.env.config
+
+# Data directories
+data/
+docs/
+memory_export/
+tests/
+*.db
+*.sqlite
+*.sqlite3
+
+# ChromaDB
+chroma_db/
+
+# Logs
+*.log
+logs/
+
+#Docker
+docker-compose.yml
+Dockerfile
