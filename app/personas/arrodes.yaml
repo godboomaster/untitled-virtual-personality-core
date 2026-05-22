@@ -13,7 +13,7 @@ features:
     - арродес
     - mirror
     - зеркало
-  owner: "734961317"
+  owner: ""
   rate_limit: true
   rate_limit_individual:
     "734961317": 0        # без лимита (владелец)
@@ -27,20 +27,18 @@ features:
   file_upload: false
   export_server: false
   restore_memory: false
+  self_memory: false
   allowed_dm_users:
-    - "734961317"
-    - "7235787971"
-    - "1725056798"
-    - "5292570328"
+    - ""    
   blocked_users:
-    - "1413132325"
+    - ""
 
 
 # ─────────────────────────────────────────────
 #  ОСОБЫЕ ПОЛЬЗОВАТЕЛИ
 # ─────────────────────────────────────────────
 special_users:
-  - id: "734961317"          # замените на реальный ID владельца
+  - id: ""          # замените на реальный ID владельца
     aliases:
       - "Клейн Моретти"
       - "Шут"
@@ -209,7 +207,6 @@ system_prompt: |
   Слово «наказание» выделяй курсивом: *наказание*.
 
 settings:
-  model: "claude-sonnet-4-20250514"
   temperature: 0.75
   max_tokens: 2000
   top_p: 0.9

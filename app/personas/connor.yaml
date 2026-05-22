@@ -8,7 +8,7 @@ stm_size: 60
 #  FEATURES
 # ─────────────────────────────────────────────
 features:
-  owner: "734961317"
+  owner: ""
   rate_limit: false
   moderation: false
   punish_block: false
@@ -16,6 +16,7 @@ features:
   file_upload: true
   export_server: true
   restore_memory: true
+  self_memory: true
   trigger_words:
     - "коннор"
     - "connor"
