@@ -1,0 +1,14 @@
+python-dotenv
+pyyaml
+openai
+chromadb
+httpx
+python-telegram-bot
+gradio
+python-docx
+pypdf
+pdfplumber
+python-pptx
+openpyxl
+ddgs
+duckduckgo-search
