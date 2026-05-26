@@ -87,9 +87,16 @@ class BotInstance:
             self._block_user = block_user
             self._is_blocked = is_blocked
             self._rate_limit_status = get_status_text
-            # Парсим individual limits из YAML (ключи-строки)
-            raw = self.features.get("rate_limit_individual", {})
-            self._rate_limit_individual = {str(k): v for k, v in raw.items()}
+            # Парсим individual limits из env (RATE_LIMIT_USER_<ID>=<seconds>)
+            import os
+            self._rate_limit_individual = {}
+            for key, value in os.environ.items():
+                if key.startswith("RATE_LIMIT_USER_"):
+                    uid = key[len("RATE_LIMIT_USER_"):]
+                    try:
+                        self._rate_limit_individual[uid] = int(value)
+                    except ValueError:
+                        pass
             logger.info(f"  [{persona_name}] Rate limiter включён ({len(self._rate_limit_individual)} индивидуальных)")
 
         # Moderation
@@ -174,7 +181,8 @@ class BotInstance:
     # Main processing
 
     def process_message(self, user_input: str, user_id: str = "default",
-                        chat_id: str = None, user_name: str = None) -> str:
+                        chat_id: str = None, user_name: str = None,
+                        reply_context: str = None) -> str:
         # 1. Запускаем веб-поиск в фоне (параллельно с памятью)
         web_future = None
         if self._web_search_enabled and chat_id not in self._web_search_disabled_chats and not self._is_docs_only_request(user_input):
@@ -219,7 +227,8 @@ class BotInstance:
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
                 user_id=user_id, user_name=user_name, web_context=web_context,
-                has_files=has_files, self_memory_block=self_memory_block
+                has_files=has_files, self_memory_block=self_memory_block,
+                reply_context=reply_context
             )
             settings = self.persona.get_settings()
             answer = self.router.get_response(messages, **settings)
@@ -269,9 +278,6 @@ class BotInstance:
         text = re.sub(r'^[*_]{3,}\s*$', '', text, flags=re.MULTILINE)
         # Убираем лишние пустые строки
         text = re.sub(r'\n{3,}', '\n\n', text)
-        # Убираем пустые маркеры в начале/конце
-        text = re.sub(r'^\*+\s*', '', text)
-        text = re.sub(r'\s*\*+$', '', text)
         return text.strip()
 
     def _parse_punishment(self, response: str, user_id: str) -> str:

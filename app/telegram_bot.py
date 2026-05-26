@@ -18,6 +18,7 @@ from telegram.ext import (
 from app.bot_instance import BotInstance
 from app.core.users import register_user, get_user_display, get_user_tag
 from app.features.file_sender import prepare_response, cleanup_files
+from app.features.reply_context import extract_reply_context
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +192,9 @@ def create_handlers(bot: BotInstance) -> dict:
     async def ratelimits_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot._rate_limit_enabled:
             return
-        # Только для владельца
-        if str(update.effective_user.id) != "734961317":
+        import os
+        owner_id = os.getenv("OWNER_USER_ID", "")
+        if str(update.effective_user.id) != owner_id:
             return
         text = bot.get_rate_limit_status()
         await update.message.reply_text(text)
@@ -221,10 +223,13 @@ def create_handlers(bot: BotInstance) -> dict:
 
         # Reply to bot?
         is_reply_to_bot = False
+        reply_ctx = None
         if update.message.reply_to_message:
             replied = update.message.reply_to_message
             if replied.from_user and replied.from_user.id == context.bot.id:
                 is_reply_to_bot = True
+            else:
+                reply_ctx = extract_reply_context(update, context.bot.id)
 
         # Trigger
         if not bot.should_respond(text) and not is_reply_to_bot:
@@ -260,7 +265,8 @@ def create_handlers(bot: BotInstance) -> dict:
             response = await asyncio.to_thread(
                 bot.process_message, clean_text,
                 user_id=user_id, chat_id=chat_id,
-                user_name=user_tag if chat_id != user_id else user_name
+                user_name=user_tag if chat_id != user_id else user_name,
+                reply_context=reply_ctx
             )
             logger.info(f"[{persona_name}] Ответ получен ({len(response)} символов)")
             await _reply_ai(update.message, response)
