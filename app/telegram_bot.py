@@ -23,7 +23,7 @@ from app.features.reply_context import extract_reply_context
 logger = logging.getLogger(__name__)
 
 
-# ─── Markdown → HTML ──────────────────────────────────────
+# ─── Markdown в HTML ──────────────────────────────────────
 
 def _md_to_html(text: str) -> str:
     code_blocks = []
@@ -341,6 +341,17 @@ def create_handlers(bot: BotInstance) -> dict:
             logger.error(f"[{persona_name}] Ошибка файла: {e}", exc_info=True)
             await update.message.reply_text("Произошла ошибка при обработке файла.")
 
+    async def reset_diary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not bot.self_memory:
+            await update.message.reply_text("Личный дневник не активен для этой персоны.")
+            return
+        user_id = str(update.effective_user.id)
+        if bot.allowed_dm_users and user_id not in bot.allowed_dm_users:
+            return
+        bot.self_memory.clear_all()
+        logger.info(f"[{persona_name}] /reset_diary от {user_id}")
+        await update.message.reply_text("Дневник полностью очищен. Эпизоды, архив и наблюдения удалены.")
+
     # Собираем все handlers
     return {
         "start": start,
@@ -349,6 +360,7 @@ def create_handlers(bot: BotInstance) -> dict:
         "clear": clear_cmd,
         "reset": reset_cmd,
         "resetall": resetall_cmd,
+        "reset_diary": reset_diary_cmd if bot.self_memory else None,
         "files": files_cmd if bot.file_db else None,
         "reset_files": reset_files_cmd if bot.file_db else None,
         "ratelimits": ratelimits_cmd if bot._rate_limit_enabled else None,
@@ -369,6 +381,9 @@ def register_handlers(app: Application, bot: BotInstance):
     app.add_handler(CommandHandler("clear", h["clear"]))
     app.add_handler(CommandHandler("reset", h["reset"]))
     app.add_handler(CommandHandler("resetall", h["resetall"]))
+
+    if h.get("reset_diary"):
+        app.add_handler(CommandHandler("reset_diary", h["reset_diary"]))
 
     if h.get("files"):
         app.add_handler(CommandHandler("files", h["files"]))

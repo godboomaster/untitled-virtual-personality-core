@@ -214,6 +214,17 @@ class BotSelfMemory:
 
         return "\n".join(parts)
 
+    def clear_all(self):
+        """Полная очистка: активные, архив, life_summary, заметки, счётчики."""
+        self._episodes = {"active": [], "archive": [], "life_summary": ""}
+        self._notes = {"notes": []}
+        self._msg_since_episode = 0
+        self._msg_since_last_note = 0
+        self._save_json(self._episodes_file, self._episodes)
+        self._save_json(self._notes_file, self._notes)
+        self._save_state()
+        logger.info(f"[{self.persona_name}] BotSelfMemory полностью очищена")
+
     # ─── Приватные методы ────────────────────────────────
 
     def _write_episode(self, messages: List[Dict]):
