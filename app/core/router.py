@@ -10,6 +10,7 @@ class ModelRouter:
     def __init__(self, provider: str = None):
         self.available = get_available_providers()
         self.active_provider = provider or os.getenv("ACTIVE_PROVIDER")
+        self._last_provider = self.active_provider
 
         if not self.available:
             logger.critical(
@@ -50,13 +51,14 @@ class ModelRouter:
                     base_url=cfg["base_url"],
                     timeout=timeout
                 )
-                logger.info(f"[LLM Request] {provider}/{cfg['model']} | max_tokens={max_tokens} | messages={len(messages)} | timeout={timeout}")
+                logger.debug(f"[LLM Request] {provider}/{cfg['model']} | max_tokens={max_tokens} | messages={len(messages)} | timeout={timeout}")
                 response = client.chat.completions.create(
                     model=cfg["model"], messages=messages,
                     temperature=temperature, max_tokens=max_tokens, top_p=top_p
                 )
                 answer = response.choices[0].message.content
-                logger.info(f"[Response] {provider}/{cfg['model']} | len={len(answer) if answer else 0}")
+                self._last_provider = provider
+                logger.debug(f"[Response] {provider}/{cfg['model']} | len={len(answer) if answer else 0}")
                 return answer
             except Exception as e:
                 logger.error(f"{provider.upper()} ({cfg['model']}) не сработал: {e}")
@@ -78,7 +80,9 @@ class ModelRouter:
 
     def get_provider_model_info(self) -> str:
         # Возвращает строку 'provider/model' для логирования.
-        if self.active_provider in self.available:
-            cfg = self.available[self.active_provider]
-            return f"{self.active_provider}/{cfg['model']}"
-        return f"{self.active_provider}/?"
+        # Показывает реального провайдера (last_provider), а не active.
+        provider = self._last_provider or self.active_provider
+        if provider in self.available:
+            cfg = self.available[provider]
+            return f"{provider}/{cfg['model']}"
+        return f"{provider}/?"

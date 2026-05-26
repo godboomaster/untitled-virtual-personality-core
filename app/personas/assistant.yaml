@@ -15,6 +15,7 @@ features:
   file_upload: false
   export_server: false
   restore_memory: false
+  self_memory: false
 
 
 system_prompt: |
