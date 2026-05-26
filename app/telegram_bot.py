@@ -64,27 +64,28 @@ def _md_to_html(text: str) -> str:
 
 
 async def _reply_ai(message, text: str):
-    # Анализируем ответ — нужен ли файл
+    # Анализируем ответ — нужны ли файлы
     try:
-        text_to_send, files = prepare_response(text)
+        msg_parts, files = prepare_response(text)
     except Exception as e:
         logger.error(f"Ошибка в prepare_response: {e}", exc_info=True)
-        # Fallback: отправляем как есть, но обрезаем до лимита
-        text_to_send = text[:3900] + "\n\n[⚠️ Ответ слишком длинный — произошла ошибка при создании файла]"
+        msg_parts = [text[:3900] + "\n\n[⚠️ Ответ слишком длинный — ошибка при обработке]"]
         files = None
 
-    # Отправляем текстовое сообщение (или краткое описание)
-    if text_to_send:
+    # Отправляем текстовые сообщения (может быть несколько частей)
+    for part in msg_parts:
+        if not part or not part.strip():
+            continue
         try:
-            html = _md_to_html(text_to_send)
+            html = _md_to_html(part)
             await message.reply_text(html, parse_mode="HTML")
         except Exception:
             try:
-                await message.reply_text(text_to_send)
+                await message.reply_text(part)
             except Exception:
                 pass
 
-    # Отправляем файлы
+    # Отправляем файлы (код)
     if files:
         for filepath, filename in files:
             try:
@@ -196,6 +197,14 @@ def create_handlers(bot: BotInstance) -> dict:
         text = bot.get_rate_limit_status()
         await update.message.reply_text(text)
 
+    async def web_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = str(update.effective_chat.id)
+        enabled = bot.toggle_web_search(chat_id)
+        if enabled:
+            await update.message.reply_text("Веб-поиск включён.")
+        else:
+            await update.message.reply_text("Веб-поиск выключен.")
+
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         user_id = str(user.id)
@@ -267,7 +276,15 @@ def create_handlers(bot: BotInstance) -> dict:
             return
 
         caption = update.message.caption or ""
-        if not bot.should_respond(caption):
+
+        # Reply на сообщение бота с файлом — тоже обрабатываем
+        is_reply_to_bot = False
+        if update.message.reply_to_message:
+            replied = update.message.reply_to_message
+            if replied.from_user and replied.from_user.id == context.bot.id:
+                is_reply_to_bot = True
+
+        if not bot.should_respond(caption) and not is_reply_to_bot:
             return
 
         user = update.effective_user
@@ -329,6 +346,7 @@ def create_handlers(bot: BotInstance) -> dict:
         "files": files_cmd if bot.file_db else None,
         "reset_files": reset_files_cmd if bot.file_db else None,
         "ratelimits": ratelimits_cmd if bot._rate_limit_enabled else None,
+        "web": web_cmd if bot._web_search_enabled else None,
         "handle_message": handle_message,
         "handle_document": handle_document if bot.file_db else None,
     }
@@ -352,6 +370,8 @@ def register_handlers(app: Application, bot: BotInstance):
         app.add_handler(CommandHandler("reset_files", h["reset_files"]))
     if h.get("ratelimits"):
         app.add_handler(CommandHandler("ratelimits", h["ratelimits"]))
+    if h.get("web"):
+        app.add_handler(CommandHandler("web", h["web"]))
 
     # Debug
     async def debug_all(update: Update, context: ContextTypes.DEFAULT_TYPE):

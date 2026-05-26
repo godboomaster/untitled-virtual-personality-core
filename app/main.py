@@ -31,6 +31,15 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("duckduckgo_search").setLevel(logging.WARNING)
+logging.getLogger("ddgs").setLevel(logging.WARNING)
+logging.getLogger("primp").setLevel(logging.WARNING)
+logging.getLogger("curl_cffi").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3.connection").setLevel(logging.ERROR)
+logging.getLogger("urllib3.util.connection").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 BOT_CHOICES = {

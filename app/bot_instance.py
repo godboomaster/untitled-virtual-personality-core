@@ -69,6 +69,7 @@ class BotInstance:
 
         # Web search
         self._web_search_enabled = self.features.get("web_search", False)
+        self._web_search_disabled_chats: set = set()  # chat_id где /web выключил поиск
         self._web_pool = None
         if self._web_search_enabled:
             from app.features.web_search import search_web, format_web_results
@@ -107,6 +108,16 @@ class BotInstance:
         # Allowed DM users — могут писать в личку, но подлежат наказаниям
         self.allowed_dm_users: set = set(self.features.get("allowed_dm_users", []))
         self.blocked_users: set = set(self.features.get("blocked_users", []))
+
+        # Self memory (эпизодическая память бота)
+        self.self_memory = None
+        if self.features.get("self_memory", False):
+            from app.core.self_memory import BotSelfMemory
+            self.self_memory = BotSelfMemory(
+                context=context,
+                persona_name=persona_name,
+                router=self.router
+            )
 
         logger.info(f"  [{persona_name}] BotInstance создан | stm_size={self.stm_size} | features: {list(self.features.keys())}")
 
@@ -166,7 +177,7 @@ class BotInstance:
                         chat_id: str = None, user_name: str = None) -> str:
         # 1. Запускаем веб-поиск в фоне (параллельно с памятью)
         web_future = None
-        if self._web_search_enabled and not self._is_docs_only_request(user_input):
+        if self._web_search_enabled and chat_id not in self._web_search_disabled_chats and not self._is_docs_only_request(user_input):
             web_future = self._web_pool.submit(self._search_web, user_input, 5)
 
         try:
@@ -199,13 +210,22 @@ class BotInstance:
                 context_parts_out.append(file_context)
             memory_text = "\n\n".join(context_parts_out) if context_parts_out else None
             has_files = file_context is not None
+
+            # Получаем блок личной памяти бота
+            self_memory_block = None
+            if self.self_memory:
+                self_memory_block = self.self_memory.get_context_block()
+
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
                 user_id=user_id, user_name=user_name, web_context=web_context,
-                has_files=has_files
+                has_files=has_files, self_memory_block=self_memory_block
             )
             settings = self.persona.get_settings()
             answer = self.router.get_response(messages, **settings)
+
+            # Очистка мета-пометок из ответа
+            answer = self._clean_response(answer)
 
             # 9. Punish parsing
             if self._punish_enabled:
@@ -214,10 +234,45 @@ class BotInstance:
             # 10. Сохраняем ответ
             self.memory.add_message("assistant", answer, user_id, chat_id)
 
+            # 11. Эпизодическая память (self_memory)
+            if self.self_memory:
+                self.self_memory.tick(stm_messages, user_id, user_input)
+
             return answer
         finally:
             # Ничего не делаем — пул живёт всё время жизни бота
             pass
+
+    def _clean_response(self, response: str) -> str:
+        """Очищает ответ от лишнего Markdown-форматирования."""
+        if not response:
+            return response
+        response = self._strip_markdown(response)
+        return response.strip()
+
+    @staticmethod
+    def _strip_markdown(text: str) -> str:
+        """Удаляет Markdown-разметку, которую Telegram не поддерживает.
+        Жирный (**), курсив (*), код (`) — оставляем, их конвертит _md_to_html."""
+        # Пустые маркеры: **\n\n** или *** без контента → убрать
+        text = re.sub(r'\*{2,}\s*\*{2,}', '', text)
+        # Заголовки: #### Заголовок → Заголовок
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+        # Зачёркнутый: ~~текст~~ → текст (оставляем для _md_to_html если поддерживает)
+        # Изображения: ![alt](url) → alt
+        text = re.sub(r'!\[(.+?)\]\(.+?\)', r'\1', text)
+        # Блоки кода без языка: ```код``` → убираем обёртку (код уходит в файл через file_sender)
+        text = re.sub(r'```\w*\n?', '', text)
+        # Горизонтальная линия: --- → юникод-разделитель
+        text = re.sub(r'^-{3,}\s*$', '───────────', text, flags=re.MULTILINE)
+        # Горизонтальная линия: *** или ___ → пустая строка
+        text = re.sub(r'^[*_]{3,}\s*$', '', text, flags=re.MULTILINE)
+        # Убираем лишние пустые строки
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        # Убираем пустые маркеры в начале/конце
+        text = re.sub(r'^\*+\s*', '', text)
+        text = re.sub(r'\s*\*+$', '', text)
+        return text.strip()
 
     def _parse_punishment(self, response: str, user_id: str) -> str:
         #Парсит маркеры наказания, выполняет действия.
@@ -288,6 +343,17 @@ class BotInstance:
                 self.memory.ltm.collection.delete(ids=results["ids"])
         except Exception:
             pass
+
+    def toggle_web_search(self, chat_id: str) -> bool:
+        """Переключает web_search для чата. Возвращает новое состояние (True=включён)."""
+        if not self._web_search_enabled:
+            return False
+        if chat_id in self._web_search_disabled_chats:
+            self._web_search_disabled_chats.discard(chat_id)
+            return True
+        else:
+            self._web_search_disabled_chats.add(chat_id)
+            return False
 
     def get_rate_limit_status(self) -> str:
         if self._rate_limit_enabled:

@@ -59,7 +59,7 @@ class PersonaLayer:
     def prepare_messages(self, user_message: str, memory_context: Optional[str] = None,
                          history: Optional[List[Dict]] = None, user_id: str = None,
                          user_name: str = None, web_context: Optional[str] = None,
-                         has_files: bool = False) -> List[Dict]:
+                         has_files: bool = False, self_memory_block: Optional[str] = None) -> List[Dict]:
         context_block = ""
         if memory_context:
             if has_files:
@@ -72,6 +72,17 @@ class PersonaLayer:
 """
             else:
                 context_block = f"\nПамять:\n{memory_context}"
+
+        # Личная память бота (эпизоды и наблюдения)
+        if self_memory_block:
+            context_block += (
+                f"\n\n{self_memory_block}\n\n"
+                "СТРОГОЕ ПРАВИЛО: блок выше — твои внутренние воспоминания. "
+                "Используй их как контекст, но КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО явно упоминать их в ответе. "
+                "НЕ пиши: «Внутренний монолог:», «Мои мысли:», «Я думаю про себя:», «Про себя:», "
+                "«Вспоминаю:» или любые подобные пометки. "
+                "Просто отвечай естественно, как если бы эти воспоминания были твоими естественными знаниями."
+            )
 
         # Веб-контекст (результаты поиска DuckDuckGo)
         if web_context:
