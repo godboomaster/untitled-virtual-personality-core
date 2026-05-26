@@ -43,9 +43,14 @@ class PersonaLayer:
     
     def _get_special_user_note(self, user_id: str) -> Optional[str]:
         # Если user_id совпадает со special_user из YAML — вернуть инструкцию.
+        import os
         special_users = self.persona_data.get("special_users", [])
         for su in special_users:
-            if str(su.get("id")) == str(user_id):
+            su_id = str(su.get("id", ""))
+            # Поддержка ${ENV_VAR} в поле id
+            if su_id.startswith("${") and su_id.endswith("}"):
+                su_id = os.getenv(su_id[2:-1], "")
+            if su_id and str(su_id) == str(user_id):
                 aliases = ", ".join(su.get("aliases", []))
                 greeting = su.get("greeting", "")
                 behavior = su.get("behavior", "")
@@ -59,7 +64,8 @@ class PersonaLayer:
     def prepare_messages(self, user_message: str, memory_context: Optional[str] = None,
                          history: Optional[List[Dict]] = None, user_id: str = None,
                          user_name: str = None, web_context: Optional[str] = None,
-                         has_files: bool = False, self_memory_block: Optional[str] = None) -> List[Dict]:
+                         has_files: bool = False, self_memory_block: Optional[str] = None,
+                         reply_context: Optional[str] = None) -> List[Dict]:
         context_block = ""
         if memory_context:
             if has_files:
@@ -124,6 +130,10 @@ class PersonaLayer:
                     messages.append({"role": msg["role"], "content": msg["content"]})
 
         # Последнее (текущее) сообщение — всегда с именем и ID отправителя
+        # Если есть reply_context —.prepend'ем текст оригинального сообщения
+        if reply_context:
+            user_message = f"[Ответ на сообщение: {reply_context}]\n{user_message}"
+
         if current_sender_name and current_sender_id:
             uid_tag = f" (ID:{current_sender_id})"
             formatted = f"[{current_sender_name}{uid_tag}]: {user_message}"
