@@ -171,12 +171,14 @@ def prepare_response(text: str) -> Tuple[List[str], Optional[list]]:
 
         # Дополнительные файлы если несколько блоков
         extra_files = []
-        for i, (l, c) in enumerate(code_blocks):
+        idx = 1
+        for l, c in code_blocks:
             if (l, c) == main_block:
                 continue
             ext2 = _get_extension(l)
-            fn2 = f"code_{i + 1}{ext2}"
-            extra_files.append(_write_temp_file(c, fn2))
+            fn2 = f"code_{idx}{ext2}"
+            extra_files.append((_write_temp_file(c, fn2), fn2))
+            idx += 1
 
         all_files = [(filepath, filename)] + extra_files
         return [description], all_files
@@ -188,7 +190,7 @@ def prepare_response(text: str) -> Tuple[List[str], Optional[list]]:
         for i, (lang, code) in enumerate(code_blocks):
             ext = _get_extension(lang)
             fn = f"code_{i + 1}{ext}"
-            code_files.append(_write_temp_file(code, fn))
+            code_files.append((_write_temp_file(code, fn), fn))
 
         # Текст без кода — несколькими сообщениями
         text_only = _strip_code_blocks(text).strip()

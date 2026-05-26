@@ -233,8 +233,8 @@ class BotInstance:
             settings = self.persona.get_settings()
             answer = self.router.get_response(messages, **settings)
 
-            # Очистка мета-пометок из ответа
-            answer = self._clean_response(answer)
+            # _clean_response убран — форматирование обрабатывает _md_to_html в telegram_bot
+            # (как в virt-p: LLM ответ → _md_to_html → Telegram)
 
             # 9. Punish parsing
             if self._punish_enabled:
@@ -262,22 +262,31 @@ class BotInstance:
     @staticmethod
     def _strip_markdown(text: str) -> str:
         """Удаляет Markdown-разметку, которую Telegram не поддерживает.
-        Жирный (**), курсив (*), код (`) — оставляем, их конвертит _md_to_html."""
+        Жирный (**), курсив (*), код (`) — оставляем, их конвертит _md_to_html.
+        Code-блоки (```...```) НЕ трогаем — их обрабатывает file_sender."""
+        # Сохраняем code-блоки
+        code_blocks = []
+        def _save(m):
+            code_blocks.append(m.group(0))
+            return f'\x00CB{len(code_blocks) - 1}\x00'
+        text = re.sub(r'```.*?```', _save, text, flags=re.DOTALL)
+
         # Пустые маркеры: **\n\n** или *** без контента → убрать
         text = re.sub(r'\*{2,}\s*\*{2,}', '', text)
         # Заголовки: #### Заголовок → Заголовок
         text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-        # Зачёркнутый: ~~текст~~ → текст (оставляем для _md_to_html если поддерживает)
         # Изображения: ![alt](url) → alt
         text = re.sub(r'!\[(.+?)\]\(.+?\)', r'\1', text)
-        # Блоки кода без языка: ```код``` → убираем обёртку (код уходит в файл через file_sender)
-        text = re.sub(r'```\w*\n?', '', text)
         # Горизонтальная линия: --- → юникод-разделитель
         text = re.sub(r'^-{3,}\s*$', '───────────', text, flags=re.MULTILINE)
         # Горизонтальная линия: *** или ___ → пустая строка
         text = re.sub(r'^[*_]{3,}\s*$', '', text, flags=re.MULTILINE)
         # Убираем лишние пустые строки
         text = re.sub(r'\n{3,}', '\n\n', text)
+
+        # Восстанавливаем code-блоки
+        for i, block in enumerate(code_blocks):
+            text = text.replace(f'\x00CB{i}\x00', block)
         return text.strip()
 
     def _parse_punishment(self, response: str, user_id: str) -> str:
