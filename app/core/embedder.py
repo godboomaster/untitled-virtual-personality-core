@@ -15,7 +15,7 @@ class Embedder:
     API_URL = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{MODEL}"
 
     def __init__(self):
-        self._api_key = PROVIDER_CONFIGS["hf"]["api_key"]
+        self._api_key = PROVIDER_CONFIGS["hf"]["api_keys"][0]
 
     def encode(self, text: str | list[str]) -> list[float] | list[list[float]]:
         #Возвращает эмбеддинги для текста. Совместим с SentenceTransformer.encode().

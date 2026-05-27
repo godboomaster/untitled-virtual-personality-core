@@ -1,9 +1,10 @@
 """
-BotInstance — один бот с конкретной персоной и набором фичей.
+BotInstance — один бот с конкретной персоной и набором фич.
 Содержит VirtualPersonality, FileVectorDB и читает features из YAML.
 """
 
 import re
+import os
 import yaml
 import logging
 from pathlib import Path
@@ -21,10 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 class BotInstance:
-    """
-    Единый экземпляр бота.
-    Каждому Telegram-боту (Коннор, Арродес) соответствует свой BotInstance.
-    """
+    
+    # Каждому Telegram-боту (Коннор, Арродес) соответствует свой BotInstance.
+
 
     def __init__(self, persona_name: str, context: str = None):
         self.persona_name = persona_name
@@ -87,8 +87,8 @@ class BotInstance:
             self._block_user = block_user
             self._is_blocked = is_blocked
             self._rate_limit_status = get_status_text
+
             # Парсим individual limits из env (RATE_LIMIT_USER_<ID>=<seconds>)
-            import os
             self._rate_limit_individual = {}
             for key, value in os.environ.items():
                 if key.startswith("RATE_LIMIT_USER_"):
@@ -147,9 +147,9 @@ class BotInstance:
     # Pre-check pipeline
 
     def pre_check(self, user_id: str, text: str, is_private: bool) -> Optional[str]:
-        """
-        Проверки перед обработкой. Возвращает текст ошибки или None если всё ОК.
-        """
+
+        # Проверки перед обработкой. Возвращает текст ошибки или None если всё ОК.
+        
         # 0. Владелец — полная защита
         if user_id == self.owner:
             return None
@@ -233,9 +233,6 @@ class BotInstance:
             settings = self.persona.get_settings()
             answer = self.router.get_response(messages, **settings)
 
-            # _clean_response убран — форматирование обрабатывает _md_to_html в telegram_bot
-            # (как в virt-p: LLM ответ → _md_to_html → Telegram)
-
             # 9. Punish parsing
             if self._punish_enabled:
                 answer = self._parse_punishment(answer, user_id)
@@ -253,7 +250,7 @@ class BotInstance:
             pass
 
     def _clean_response(self, response: str) -> str:
-        """Очищает ответ от лишнего Markdown-форматирования."""
+        # Очищает ответ от лишнего Markdown-форматирования.
         if not response:
             return response
         response = self._strip_markdown(response)
@@ -261,17 +258,19 @@ class BotInstance:
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
-        """Удаляет Markdown-разметку, которую Telegram не поддерживает.
-        Жирный (**), курсив (*), код (`) — оставляем, их конвертит _md_to_html.
-        Code-блоки (```...```) НЕ трогаем — их обрабатывает file_sender."""
-        # Сохраняем code-блоки
+        """ Удаляет Markdown-разметку, которую Telegram не поддерживает.
+        Жирный (**), курсив (*), код (`) — остаётся, их конвертит _md_to_html.
+        Code-блоки (```...```) не трогаются — их обрабатывает file_sender."""
+        
+        # Сохраняем блоки кода, чтобы не повредить их чисткой
+        # Заменяем на специальные редкие символы
         code_blocks = []
         def _save(m):
             code_blocks.append(m.group(0))
             return f'\x00CB{len(code_blocks) - 1}\x00'
         text = re.sub(r'```.*?```', _save, text, flags=re.DOTALL)
 
-        # Пустые маркеры: **\n\n** или *** без контента → убрать
+        # Пустые маркеры: **\n\n** или *** без контента убрать
         text = re.sub(r'\*{2,}\s*\*{2,}', '', text)
         # Заголовки: #### Заголовок → Заголовок
         text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
@@ -331,7 +330,7 @@ class BotInstance:
     ]
 
     def _is_docs_only_request(self, text: str) -> bool:
-        """Пользователь просит ответить только по документам — без веб-поиска."""
+        # Пользователь просит ответить только по документам — без веб-поиска.
         lower = text.lower()
         return any(kw in lower for kw in self._DOCS_ONLY_KEYWORDS)
 
@@ -360,7 +359,7 @@ class BotInstance:
             pass
 
     def toggle_web_search(self, chat_id: str) -> bool:
-        """Переключает web_search для чата. Возвращает новое состояние (True=включён)."""
+        # Переключает web_search для чата. Возвращает новое состояние (True=включён).
         if not self._web_search_enabled:
             return False
         if chat_id in self._web_search_disabled_chats:

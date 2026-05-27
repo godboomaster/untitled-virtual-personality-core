@@ -70,7 +70,7 @@ async def _reply_ai(message, text: str):
         msg_parts, files = prepare_response(text)
     except Exception as e:
         logger.error(f"Ошибка в prepare_response: {e}", exc_info=True)
-        msg_parts = [text[:3900] + "\n\n[⚠️ Ответ слишком длинный — ошибка при обработке]"]
+        msg_parts = [text[:3900] + "\n\n[ Ответ слишком длинный — ошибка при обработке]"]
         files = None
 
     # Отправляем текстовые сообщения (может быть несколько частей)
@@ -93,7 +93,7 @@ async def _reply_ai(message, text: str):
                 with open(filepath, 'rb') as f:
                     await message.reply_document(
                         document=InputFile(f, filename=filename),
-                        caption=f"📄 {filename}"
+                        caption=f"{filename}"
                     )
             except Exception as e:
                 logger.error(f"Ошибка отправки файла {filename}: {e}")
@@ -268,7 +268,7 @@ def create_handlers(bot: BotInstance) -> dict:
                 user_name=user_tag if chat_id != user_id else user_name,
                 reply_context=reply_ctx
             )
-            logger.info(f"[{persona_name}] Ответ получен ({len(response)} символов)")
+            logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
             await _reply_ai(update.message, response)
         except Exception as e:
             logger.error(f"[{persona_name}] Ошибка: {e}", exc_info=True)
@@ -335,7 +335,7 @@ def create_handlers(bot: BotInstance) -> dict:
                 user_id=user_id, chat_id=chat_id,
                 user_name=user_tag
             )
-            logger.info(f"[{persona_name}] Ответ получен ({len(response)} символов)")
+            logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
             await _reply_ai(update.message, response)
         except Exception as e:
             logger.error(f"[{persona_name}] Ошибка файла: {e}", exc_info=True)
@@ -371,7 +371,7 @@ def create_handlers(bot: BotInstance) -> dict:
 
 
 def register_handlers(app: Application, bot: BotInstance):
-    """Регистрирует все handlers для данного Application."""
+    # Регистрирует все handlers для данного Application.
     h = create_handlers(bot)
     persona_name = bot.persona_name
 

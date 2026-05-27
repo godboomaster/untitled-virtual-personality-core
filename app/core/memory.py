@@ -122,7 +122,7 @@ class ShortTermMemory:
     def add_message(self, role: str, content: str, user_id: str = "default",
                     chat_id: str = None, user_name: str = None):
         """
-        Добавить сообщение в буфер чата и сохранить в базу.
+        Добавление сообщения в буфер чата и сохранить в базу.
 
         Args:
             user_id: Реальный ID отправителя (Telegram user_id).
@@ -217,9 +217,11 @@ class LongTermMemory:
     _executor = None
     _executor_lock = threading.Lock()
     
-    # Синглтон с экзекьтором для контролирования потоков
+    # Синглтон с экзекьтором (менеджер рабочих потоков) для контролирования потоков
+    # Благодаря синглтону оба бота пользуются одним пулом из 3 потоков
     @classmethod
     def _get_executor(cls):
+        # Проверка на созданый экзекьютор + замок
         if cls._executor is None:
             with cls._executor_lock:
                 if cls._executor is None:
@@ -470,6 +472,23 @@ class LongTermMemory:
 
     def _merge_append_fact(self, category: str, existing: str, new_value: str) -> Optional[str]:
         """
+        Гибридное слияние фактов APPEND-категории.
+        Сначала пробует ручное объединение, если сложно — вызывает LLM.
+        """
+        # 1. Быстрое ручное объединение
+        existing_items = [item.strip().lower() for item in existing.split(",")]
+        new_items = [item.strip().lower() for item in new_value.split(",")]
+        
+        # 2. Если нет пересечений и список короткий — делаем вручную
+        if len(existing_items) + len(new_items) <= 5 and not set(existing_items) & set(new_items):
+            all_items = list(set(existing_items + new_items))
+            return ", ".join(sorted(all_items))
+        
+        # 3. Если есть подозрение на дубликаты или сложный случай — LLM
+        return self._merge_with_llm(category, existing, new_value)
+
+    def _merge_with_llm(self, category: str, existing: str, new_value: str) -> Optional[str]:
+        """
         Умное слияние фактов APPEND-категории через LLM.
         Возвращает объединённое значение или None при ошибке.
         """
@@ -517,6 +536,7 @@ class LongTermMemory:
             print(f"  [LTM SUM] Слишком мало фактов ({len(all_facts)}), консолидация не нужна")
             return len(all_facts)
 
+        # Собираем все факты в один большой список
         raw_facts = "\n".join(f"- {f}" for f in all_facts)
         prompt = build_summary_prompt(raw_facts)
 
@@ -547,11 +567,11 @@ class LongTermMemory:
 
             # Парсим ответ — одна строка = один факт
             new_facts = []
+            # Чистим от мусора
             for line in response.strip().split("\n"):
                 line = line.strip().lstrip("-•* ").strip()
                 if ":" not in line or len(line) < 4:
                     continue
-                # Фильтруем мусор
                 key, _, val = line.partition(":")
                 if not key.strip() or not val.strip():
                     continue
@@ -563,7 +583,7 @@ class LongTermMemory:
                 print(f"  [LTM SUM] LLM не вернул валидных фактов")
                 return -1
 
-            # Удаляем ВСЕ старые факты пользователя
+            # Удаляем все старые факты пользователя
             self.clear(user_id)
 
             # Записываем чистые
@@ -633,9 +653,8 @@ class LongTermMemory:
 
 
 class MemoryManager:
-    """
-    Единый менеджер памяти — объединяет краткосрочную и долгосрочную память.
-    """
+    
+    # Единый менеджер памяти — объединяет краткосрочную и долгосрочную память.
 
     def __init__(
         self,
@@ -695,7 +714,7 @@ class MemoryManager:
                 self._run_summarize_async(user_id)
 
     def _run_summarize_async(self, user_id: str):
-        """Запускает консолидацию LTM в фоне, с защитой от параллельного запуска."""
+        # Запускает консолидацию LTM в фоне, с защитой от параллельного запуска.
         if not self._summary_lock.acquire(blocking=False):
             print("  [LTM SUM] Пропуск — консолидация уже запущена")
             return

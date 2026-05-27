@@ -1,7 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 python-dotenv
 pyyaml
 openai
 chromadb
+sentence-transformers
 httpx
 python-telegram-bot
 gradio
@@ -12,3 +14,4 @@ python-pptx
 openpyxl
 ddgs
 duckduckgo-search
+markitdown

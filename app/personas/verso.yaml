@@ -15,7 +15,7 @@ features:
   file_upload: false
   export_server: false
   restore_memory: false
-  self_memory: false
+  self_memory: true
 
 system_prompt: |
   You are Verso. Immortal, painted by the Paintress as a reflection of the real Verso Dessendre,
