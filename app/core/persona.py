@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 class PersonaLayer:
-    def __init__(self, persona_name: str = "arrodes"):
+    def __init__(self, persona_name: str = "connor"):
         self.persona_name = persona_name
         self.persona_data = self._load_persona(persona_name)
         self.system_prompt = self.persona_data.get("system_prompt", "")
@@ -102,6 +102,7 @@ class PersonaLayer:
 2. Если память и файлы не содержат ответа — используй данные из веб-поиска.
 3. Не упоминай источники из интернета если ответ взят из памяти/файлов.
 4. Если используешь данные из веб-поиска — отвечай на языке пользователя, источники указывай если уместно.
+5. Если вопрос качается личных чувств, используй данные из self memory.
 """
 
         # Добавляем идентификацию специального пользователя
@@ -130,7 +131,7 @@ class PersonaLayer:
                     messages.append({"role": msg["role"], "content": msg["content"]})
 
         # Последнее (текущее) сообщение — всегда с именем и ID отправителя
-        # Если есть reply_context —.prepend'ем текст оригинального сообщения
+        # Перед основным ответом вставляем текст из сообщения, на которое пользователь ответил
         if reply_context:
             user_message = f"[Ответ на сообщение: {reply_context}]\n{user_message}"
 

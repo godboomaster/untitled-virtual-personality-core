@@ -184,7 +184,7 @@ class BotSelfMemory:
         self._save_state()
 
     def get_context_block(self) -> str:
-        """Возвращает блок для вставки в system prompt."""
+        # Возвращает блок для вставки в system prompt.
         parts = [f"[ЛИЧНАЯ ПАМЯТЬ {self.persona_name}]"]
 
         # Жизненная история
@@ -215,7 +215,7 @@ class BotSelfMemory:
         return "\n".join(parts)
 
     def clear_all(self):
-        """Полная очистка: активные, архив, life_summary, заметки, счётчики."""
+        # Полная очистка: активные, архив, life_summary, заметки, счётчики.
         self._episodes = {"active": [], "archive": [], "life_summary": ""}
         self._notes = {"notes": []}
         self._msg_since_episode = 0
@@ -228,7 +228,7 @@ class BotSelfMemory:
     # ─── Приватные методы ────────────────────────────────
 
     def _write_episode(self, messages: List[Dict]):
-        """Создание эпизода из последних сообщений (с прошлого эпизода)."""
+        # Создание эпизода из последних сообщений (с прошлого эпизода).
         try:
             # Берём только сообщения с прошлого эпизода
             recent = messages[-(EPISODE_EVERY * 2):] if len(messages) > EPISODE_EVERY * 2 else messages
@@ -290,7 +290,7 @@ class BotSelfMemory:
             logger.error(f"[SelfMemory] Ошибка записи эпизода: {e}")
 
     def _maybe_write_note(self, message: str, user_id: str, context_messages: List[Dict]):
-        """Попытка записать наблюдение."""
+        # Попытка записать наблюдение.
         try:
             # Формируем контекст
             context_lines = []
@@ -352,7 +352,7 @@ class BotSelfMemory:
             logger.error(f"[SelfMemory] Ошибка записи заметки: {e}")
 
     def _summarize_archive(self):
-        """Суммаризирует архивные эпизоды в life_summary."""
+        # Суммаризирует архивные эпизоды в life_summary.
         try:
             archive = self._episodes["archive"]
             if not archive:

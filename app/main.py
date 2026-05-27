@@ -7,6 +7,7 @@
     python -m app.main gradio       # Gradio-интерфейс
 """
 
+import asyncio
 import os
 import sys
 import logging
@@ -51,9 +52,8 @@ BOT_CHOICES = {
 
 
 def run_bot(token: str, persona_name: str, context: str = "tg"):
-    """
-    Создаёт и запускает одного бота в своём потоке.
-    """
+    
+    # Создаёт и запускает одного бота в своём потоке.
     logger.info(f"Инициализация бота: {persona_name}")
 
     bot_instance = BotInstance(persona_name=persona_name, context=context)
@@ -84,7 +84,7 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         commands.append(("files", "Список загруженных файлов"))
         commands.append(("reset_files", "Сбросить файловую базу"))
     if bot_instance._rate_limit_enabled:
-        commands.append(("ratelimits", "Статистика лимитов (владелец)"))
+        commands.append(("ratelimits", "Статистика лимитов"))
 
     from telegram import BotCommand
     bot_commands = [BotCommand(cmd, desc) for cmd, desc in commands]
@@ -99,19 +99,43 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
     app = Application.builder().token(token).request(request).post_init(post_init).build()
     register_handlers(app, bot_instance)
 
+    # run_polling() не работает в потоках (add_signal_handler) из-за нескольких потоков.
+    # Управляем event loop вручную.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def _start():
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
+
+    loop.run_until_complete(_start())
     logger.info(f"[{persona_name}] Бот запущен и ожидает сообщения...")
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+
+    try:
+        loop.run_forever()
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        async def _stop():
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
+        loop.run_until_complete(_stop())
+        loop.close()
 
 
 def run_gradio():
-    """Запускает Gradio-интерфейс."""
+    # Запускает Gradio-интерфейс.
     from app.gradio_app import bot, demo
-    print("\n  [Gradio] Запуск веб-интерфейса на http://localhost:7860\n")
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", server_port=7860)
 
 
 def start_target(target: str):
-    """Запускает выбранную цель."""
+    # Запускает выбранную цель.
     connor_token = os.getenv("CONNOR_BOT_TOKEN")
     arrodes_token = os.getenv("ARRODES_BOT_TOKEN")
 
@@ -140,12 +164,14 @@ def start_target(target: str):
 
         threads = []
 
+        # Создание потоков
         if connor_token:
             t = threading.Thread(
                 target=run_bot,
                 args=(connor_token, "connor"),
                 kwargs={"context": "connor"},
                 name="bot-connor",
+                # бота не убивают после выполнения основного кода
                 daemon=False,
             )
             threads.append(t)
@@ -168,6 +194,7 @@ def start_target(target: str):
 
         try:
             for t in threads:
+                # ждёт завершения процессов
                 t.join()
         except KeyboardInterrupt:
             logger.info("Остановка по Ctrl+C...")
@@ -175,7 +202,7 @@ def start_target(target: str):
 
 
 def show_menu():
-    """Интерактивное меню выбора."""
+    # Интерактивное меню выбора.
     for key, (_, label) in BOT_CHOICES.items():
         print(f"  {key}. {label}")
     print()
@@ -194,7 +221,9 @@ def show_menu():
 
 
 def main():
-    # Аргумент командной строки или меню
+    # 1. Аргумент командной строки
+    # 2. Env-переменная BOT_TARGET
+    # 3. Интерактивное меню (только если есть TTY)
     if len(sys.argv) > 1:
         arg = sys.argv[1].strip().lower()
         if arg in ("connor", "arrodes", "all", "gradio"):
@@ -205,8 +234,18 @@ def main():
             print(f"Неизвестный аргумент: {arg}")
             print("Допустимо: connor, arrodes, all, gradio")
             sys.exit(1)
-    else:
+    elif os.getenv("BOT_TARGET"):
+        target = os.getenv("BOT_TARGET").strip().lower()
+        if target not in ("connor", "arrodes", "all", "gradio"):
+            print(f"Неизвестный BOT_TARGET: {target}")
+            sys.exit(1)
+    elif sys.stdin.isatty():
         target = show_menu()
+    else:
+        print("Не указана цель запуска. Используйте аргумент или BOT_TARGET.")
+        print("  python -m app.main all")
+        print("  BOT_TARGET=all python -m app.main")
+        sys.exit(1)
 
     logger.info(f"Запуск: {target}")
     start_target(target)
