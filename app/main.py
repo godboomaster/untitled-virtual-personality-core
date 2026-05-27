@@ -131,7 +131,8 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
 def run_gradio():
     # Запускает Gradio-интерфейс.
     from app.gradio_app import bot, demo
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860, show_error=True)
+    print("\n[Gradio] Интерфейс доступен по адресу: http://localhost:7860/\n")
 
 
 def start_target(target: str):
