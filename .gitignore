@@ -3,9 +3,7 @@ __pycache__/
 
 # Environment variables
 .env
-.env.config
 .DS_Store
-.gitignore
 
 # Data directories
 data/
@@ -22,7 +20,3 @@ chroma_db/
 # Logs
 *.log
 logs/
-
-#Docker
-docker-compose.yml
-Dockerfile
