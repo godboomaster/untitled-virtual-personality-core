@@ -1,11 +1,10 @@
 """
 Скрипт миграции эмбеддингов на мультиязычную модель.
 
-Запустить ОДИН раз после замены DefaultEmbeddingFunction на мультиязычную
+Запустить один раз после замены DefaultEmbeddingFunction на мультиязычную
 в memory.py. Скрипт пересчитает все векторы в базах STM и LTM.
 
 Использование:
-    cd /Users/ghost/Documents/virtual-persona-core
     python -m app.scripts.migrate_embeddings
 """
 
