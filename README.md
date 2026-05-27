@@ -208,8 +208,10 @@ python -m app.main
 python -m app.main connor      # Только Коннор
 python -m app.main arrodes     # Только Арродес
 python -m app.main all         # Оба бота одновременно
-python -m app.main gradio      # Только Gradio-интерфейс
+python -m app.main gradio      # Только Gradio-интерфейс (порт 7860)
 ```
+
+Gradio запускается на порту **7860** и доступен по адресу `http://localhost:7860`.
 
 ### Через переменную окружения
 
