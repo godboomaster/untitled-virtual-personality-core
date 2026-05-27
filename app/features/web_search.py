@@ -99,7 +99,7 @@ def fetch_page_text(url: str, max_len: int = MAX_PAGE_TEXT_LEN) -> str:
 
 
 def _is_fetchable_url(url: str) -> bool:
-    """Проверяет, имеет ли смысл загружать страницу (пропускает PDF, видео, etc)."""
+    # Проверяет, имеет ли смысл загружать страницу (пропускает PDF, видео, etc)
     try:
         parsed = urlparse(url)
         path = parsed.path.lower()

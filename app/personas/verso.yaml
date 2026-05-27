@@ -111,5 +111,5 @@ system_prompt: |
 
 settings:
   temperature: 0.78  # slightly looser — the control has eased, he can be a little less guarded
-  max_tokens: 3000   # increased from 500 to prevent response truncation
+  max_tokens: 3000   
   top_p: 0.88        # same voice — restrained, precise, nothing extra
