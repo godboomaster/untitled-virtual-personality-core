@@ -26,14 +26,16 @@ def _collect_api_keys(prefix: str) -> list[str]:
     main = os.getenv(f"{prefix}_API_KEY")
     if main:
         keys.append(main)
-    # GROQ_API_KEY_1, GROQ_API_KEY_2, ...
+    # GROQ_API_KEY_1, GROQ_API_KEY_2, ... — ищем все подряд номера
     i = 1
-    while True:
+    empty_count = 0
+    while empty_count < 5:  # допускаем до 5 пропусков
         k = os.getenv(f"{prefix}_API_KEY_{i}")
-        if not k:
-            break
-        if k not in keys:
+        if k and k not in keys:
             keys.append(k)
+            empty_count = 0
+        else:
+            empty_count += 1
         i += 1
     return keys
 
