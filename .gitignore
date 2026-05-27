@@ -13,6 +13,7 @@ tests/
 *.db
 *.sqlite
 *.sqlite3
+gradio_output_files/
 
 # ChromaDB
 chroma_db/

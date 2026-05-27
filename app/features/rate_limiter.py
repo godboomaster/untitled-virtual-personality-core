@@ -16,12 +16,12 @@ _punish_blocked: dict[str, float] = {}  # user_id -> block_until timestamp
 
 
 def block_user(user_id: str, duration: int = None):
-    """Заблокировать пользователя на duration секунд."""
+    # Заблокировать пользователя на duration секунд
     _punish_blocked[user_id] = time.time() + (duration or RATE_WINDOW)
 
 
 def is_blocked(user_id: str) -> bool:
-    """Проверить, заблокирован ли пользователь (punish block)."""
+    # Проверить, заблокирован ли пользователь (punish block)
     if user_id not in _punish_blocked:
         return False
     if time.time() > _punish_blocked[user_id]:
@@ -43,7 +43,7 @@ def get_rate_limit(user_id: str, individual_limits: dict = None) -> int:
 
 
 def check_rate_limit(user_id: str, individual_limits: dict = None) -> bool:
-    """Возвращает True, если пользователь НЕ превысил лимит."""
+    # Возвращает True, если пользователь НЕ превысил лимит
     limit = get_rate_limit(user_id, individual_limits)
     if limit == 0:
         return True
@@ -59,7 +59,7 @@ def check_rate_limit(user_id: str, individual_limits: dict = None) -> bool:
 
 
 def get_status_text(individual_limits: dict = None) -> str:
-    """Текст для команды /ratelimits."""
+    # Текст для команды /ratelimits
     now = time.time()
     lines = []
     for uid, timestamps in _user_requests.items():

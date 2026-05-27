@@ -63,19 +63,19 @@ LANG_EXTENSIONS = {
 
 
 def _extract_code_blocks(text: str) -> List[Tuple[str, str]]:
-    """Извлекает блоки кода с указанным языком."""
+    # Извлекает блоки кода с указанным языком
     pattern = r'```(\w+)\n(.*?)```'
     matches = re.findall(pattern, text, flags=re.DOTALL)
     return [(lang.strip(), code.strip()) for lang, code in matches]
 
 
 def _get_extension(lang: str) -> str:
-    """Возвращает расширение файла для языка."""
+    # Возвращает расширение файла для языка
     return LANG_EXTENSIONS.get(lang.lower(), f".{lang.lower()}")
 
 
 def _is_mostly_code(text: str) -> bool:
-    """Если код занимает >50% ответа — это код-ответ."""
+    # Если код занимает >50% ответа — это код-ответ
     blocks = _extract_code_blocks(text)
     if not blocks:
         return False
@@ -84,14 +84,14 @@ def _is_mostly_code(text: str) -> bool:
 
 
 def _strip_code_blocks(text: str) -> str:
-    """Удаляет блоки кода из текста."""
+    # Удаляет блоки кода из текста
     result = re.sub(r'```\w*\n.*?```', '', text, flags=re.DOTALL)
     result = re.sub(r'\n{3,}', '\n\n', result)
     return result
 
 
 def _write_temp_file(content: str, filename: str) -> str:
-    """Записывает контент во временный файл."""
+    # Записывает контент во временный файл
     tmp_dir = tempfile.mkdtemp(prefix="virtp_")
     filepath = os.path.join(tmp_dir, filename)
     with open(filepath, 'w', encoding='utf-8') as f:
@@ -101,7 +101,7 @@ def _write_temp_file(content: str, filename: str) -> str:
 
 
 def _split_text(text: str, limit: int = TELEGRAM_LIMIT) -> List[str]:
-    """Разбивает длинный текст на части по абзацам с лимитом символов."""
+    # Разбивает длинный текст на части по абзацам с лимитом символов
     if len(text) <= limit:
         return [text]
 
@@ -204,7 +204,7 @@ def prepare_response(text: str) -> Tuple[List[str], Optional[list]]:
 
 
 def cleanup_files(files: List[Tuple[str, str]]):
-    """Удаляет временные файлы после отправки."""
+    # Удаляет временные файлы после отправки
     for filepath, _ in files:
         try:
             if os.path.exists(filepath):

@@ -46,7 +46,7 @@ class FileVectorDB:
 
     def add_file(self, user_id: str, filename: str, content: str):
         
-        #Добавить файл в базу. Если уже есть максимальное количество — удаляет самый старый.
+        # Добавить файл в базу. Если уже есть максимальное количество — удаляет самый старый.
         # Если файл с таким именем уже есть — удаляем все чанки
         
         user_docs = self.collection.get(where={"user_id": user_id})
@@ -187,7 +187,7 @@ class FileVectorDB:
         return list(filenames)
 
     def _delete_full_doc(self, user_id: str, filename: str):
-        """Удаляет все части полного текста документа."""
+        # Удаляет все части полного текста документа
         all_parts = self.full_docs.get(where={"user_id": user_id})
         if not all_parts or not all_parts["ids"]:
             return

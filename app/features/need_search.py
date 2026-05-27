@@ -51,7 +51,7 @@ _SEARCH_KEYWORDS = [
 
 
 def _keyword_match(text: str) -> bool:
-    """Быстрая проверка по ключевым словам — без вызова LLM."""
+    # Быстрая проверка по ключевым словам — без вызова LLM
     lower = text.lower()
     return any(kw in lower for kw in _SEARCH_KEYWORDS)
 

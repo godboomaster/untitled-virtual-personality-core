@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def _build_db_sources() -> dict:
-    """Строит маппинг динамически на основе persona-папок + gradio."""
+   # Строит маппинг динамически на основе persona-папок + gradio
     contexts = ["connor", "arrodes", "verso", "assistant", "gradio", "default"]
     sources = {}
     for ctx in contexts:
