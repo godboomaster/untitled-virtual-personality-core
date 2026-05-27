@@ -1,0 +1,47 @@
+services:
+  # Gradio-интерфейс
+  gradio:
+    build: .
+    container_name: virtual-persona-gradio
+    restart: unless-stopped
+    command: ["python", "-m", "app.main", "gradio"]
+    env_file: .env
+    environment:
+      - BOT_TARGET=gradio
+    volumes:
+      - persona_data:/app/data
+    ports:
+      - "7860:7860"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7860/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Telegram-бот Коннор (опционально, раскомментируй для запуска)
+  # connor:
+  #   build: .
+  #   container_name: virtual-persona-connor
+  #   restart: unless-stopped
+  #   command: ["python", "-m", "app.main", "connor"]
+  #   env_file: .env
+  #   environment:
+  #     - BOT_TARGET=connor
+  #   volumes:
+  #     - persona_data:/app/data
+
+  # Telegram-бот Арродес (опционально, раскомментируй для запуска)
+  # arrodes:
+  #   build: .
+  #   container_name: virtual-persona-arrodes
+  #   restart: unless-stopped
+  #   command: ["python", "-m", "app.main", "arrodes"]
+  #   env_file: .env
+  #   environment:
+  #     - BOT_TARGET=arrodes
+  #   volumes:
+  #     - persona_data:/app/data
+
+volumes:
+  persona_data:
