@@ -97,7 +97,7 @@ def get_available_providers() -> dict:
 class Config:
     DATA_DIR = os.getenv("DATA_DIR", "./data")
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-    STM_SIZE = int(os.getenv("STM_SIZE", "50"))
+    STM_SIZE = int(os.getenv("STM_SIZE", "500"))
     LTM_EXTRACTION_ENABLED = os.getenv("LTM_EXTRACTION_ENABLED", "true").lower() == "true"
     LTM_MODEL_PROVIDER = os.getenv("LTM_MODEL_PROVIDER", "hf")
 

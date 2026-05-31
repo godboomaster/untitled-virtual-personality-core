@@ -6,6 +6,7 @@ main.py запускает два Telegram Application, каждый со сво
 import asyncio
 import logging
 import re
+from typing import Optional
 from telegram import Update, BotCommand, InputFile
 from telegram.ext import (
     Application,
@@ -130,7 +131,8 @@ def create_handlers(bot: BotInstance) -> dict:
             "/start — начать диалог",
             "/help — эта справка",
             "/stats — статистика памяти",
-            "/clear — очистить память (устарело)",
+            "/last N — последние N сообщений (10 по умолчанию)",
+            "/erase N — удалить последние N из STM",
             "/reset — сбросить память текущего пользователя",
             "/resetall — сбросить память всех пользователей",
         ]
@@ -151,11 +153,60 @@ def create_handlers(bot: BotInstance) -> dict:
         )
         await update.message.reply_text(text)
 
-    async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def erase_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удалить последние N сообщений из STM (deque + ChromaDB)."""
+        import os
+        owner_id = os.getenv("OWNER_USER_ID", "")
+        if str(update.effective_user.id) != owner_id:
+            return
+
         chat_id = str(update.effective_chat.id)
-        user_id = str(update.effective_user.id)
-        bot.clear_memory(user_id=user_id, chat_id=chat_id)
-        await update.message.reply_text("Память очищена.")
+
+        if not context.args:
+            await update.message.reply_text("Использование: /erase N (число)")
+            return
+
+        try:
+            n = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Использование: /erase N (число)")
+            return
+        n = max(1, min(n, 500))
+
+        deleted = bot.stm_pop_last_n(n, chat_id)
+        await update.message.reply_text(f"Удалено {deleted} сообщений из STM.")
+
+    async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать последние n сообщений из STM (первое предложение)."""
+        import os
+        owner_id = os.getenv("OWNER_USER_ID", "")
+        if str(update.effective_user.id) != owner_id:
+            return
+
+        chat_id = str(update.effective_chat.id)
+        n = 10
+        if context.args:
+            try:
+                n = int(context.args[0])
+            except ValueError:
+                await update.message.reply_text("Использование: /last N (число)")
+                return
+        n = max(1, min(n, 100))
+
+        messages = bot.get_stm_last_display(n, chat_id)
+        if not messages:
+            await update.message.reply_text("STM пуст.")
+            return
+
+        lines = []
+        for i, m in enumerate(messages, 1):
+            role = m["role"]
+            name = m.get("user_name") or ("User" if role == "user" else "Bot")
+            content = m["content"]
+            tag = f"[{name}]" if role == "user" else "[Bot]"
+            lines.append(f"{i}. {tag} {content}")
+
+        await update.message.reply_text("\n".join(lines))
 
     async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = str(update.effective_user.id)
@@ -218,6 +269,14 @@ def create_handlers(bot: BotInstance) -> dict:
 
         logger.info(f"[{persona_name}] [MSG] chat={chat_id} user={user_id} text='{text[:80]}'")
 
+        # Логируем информацию о топике (для отладки)
+        message_thread_id = getattr(update.message, "message_thread_id", None)
+        is_topic_message = getattr(update.message, "is_topic_message", False)
+        if message_thread_id:
+            logger.info(f"[{persona_name}] [TOPIC] chat={chat_id} thread_id={message_thread_id} is_topic={is_topic_message}")
+            # Сохраняем топик для proactive messaging
+            bot.record_topic(chat_id, message_thread_id)
+
         if text.startswith("/"):
             return
 
@@ -230,6 +289,13 @@ def create_handlers(bot: BotInstance) -> dict:
                 is_reply_to_bot = True
             else:
                 reply_ctx = extract_reply_context(update, context.bot.id)
+
+        # Записываем активность ТОЛЬКО если сообщение адресовано боту
+        # (reply боту, trigger word, или личный чат)
+        is_private = update.effective_chat.type == "private"
+        is_addressed_to_bot = is_reply_to_bot or bot.should_respond(text) or is_private
+        if is_addressed_to_bot:
+            bot.record_activity(chat_id)
 
         # Trigger
         if not bot.should_respond(text) and not is_reply_to_bot:
@@ -357,7 +423,8 @@ def create_handlers(bot: BotInstance) -> dict:
         "start": start,
         "help": help_cmd,
         "stats": stats_cmd,
-        "clear": clear_cmd,
+        "erase": erase_cmd,
+        "last": last_cmd,
         "reset": reset_cmd,
         "resetall": resetall_cmd,
         "reset_diary": reset_diary_cmd if bot.self_memory else None,
@@ -375,10 +442,29 @@ def register_handlers(app: Application, bot: BotInstance):
     h = create_handlers(bot)
     persona_name = bot.persona_name
 
+    # Настраиваем proactive messaging с реальной отправкой
+    if bot.proactive:
+        async def _send_proactive(chat_id: str, message: str, topic_id: Optional[int] = None):
+            try:
+                if topic_id:
+                    logger.info(f"[Proactive] Отправка в чат {chat_id}, топик {topic_id}")
+                    await app.bot.send_message(
+                        chat_id=int(chat_id),
+                        text=message,
+                        message_thread_id=topic_id
+                    )
+                else:
+                    logger.info(f"[Proactive] Отправка в чат {chat_id} (без топика)")
+                    await app.bot.send_message(chat_id=int(chat_id), text=message)
+            except Exception as e:
+                logger.error(f"[Proactive] Ошибка отправки в {chat_id}: {e}")
+        bot.proactive._send_message = _send_proactive
+
     app.add_handler(CommandHandler("start", h["start"]))
     app.add_handler(CommandHandler("help", h["help"]))
     app.add_handler(CommandHandler("stats", h["stats"]))
-    app.add_handler(CommandHandler("clear", h["clear"]))
+    app.add_handler(CommandHandler("erase", h["erase"]))
+    app.add_handler(CommandHandler("last", h["last"]))
     app.add_handler(CommandHandler("reset", h["reset"]))
     app.add_handler(CommandHandler("resetall", h["resetall"]))
 

@@ -65,7 +65,8 @@ class PersonaLayer:
                          history: Optional[List[Dict]] = None, user_id: str = None,
                          user_name: str = None, web_context: Optional[str] = None,
                          has_files: bool = False, self_memory_block: Optional[str] = None,
-                         reply_context: Optional[str] = None) -> List[Dict]:
+                         reply_context: Optional[str] = None,
+                         stm_relevant: Optional[str] = None) -> List[Dict]:
         context_block = ""
         if memory_context:
             if has_files:
@@ -88,6 +89,15 @@ class PersonaLayer:
                 "НЕ пиши: «Внутренний монолог:», «Мои мысли:», «Я думаю про себя:», «Про себя:», "
                 "«Вспоминаю:» или любые подобные пометки. "
                 "Просто отвечай естественно, как если бы эти воспоминания были твоими естественными знаниями."
+            )
+
+        # Релевантный контекст из STM (векторный поиск)
+        if stm_relevant:
+            context_block += (
+                f"\n\nРанее в разговоре обсуждалось связанное:\n"
+                f"{stm_relevant}\n\n"
+                "Используй этот контекст если он относится к текущему вопросу. "
+                "НЕ упоминай что это «извлечённые воспоминания» — просто используй как естественный контекст."
             )
 
         # Веб-контекст (результаты поиска DuckDuckGo)

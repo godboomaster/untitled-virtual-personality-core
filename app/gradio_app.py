@@ -169,7 +169,7 @@ class GradioBot:
         self.memory.add_message("user", user_input, user_id)
 
         # 3. Контекст из памяти
-        stm_messages, ltm_facts = self.memory.get_context(user_id, ltm_query=user_input)
+        stm_messages, ltm_facts, _stm_relevant = self.memory.get_context(user_id, ltm_query=user_input)
 
         # 4. Файлы (если включены)
         file_context = None
