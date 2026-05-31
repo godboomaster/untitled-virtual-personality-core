@@ -115,11 +115,21 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
     loop.run_until_complete(_start())
     logger.info(f"[{persona_name}] Бот запущен и ожидает сообщения...")
 
+    # Запускаем proactive messaging если включено
+    if bot_instance.proactive:
+        def _start_proactive():
+            bot_instance.proactive.start(loop=loop)
+        loop.call_soon_threadsafe(_start_proactive)
+        logger.info(f"[{persona_name}] Proactive messaging запущен")
+
     try:
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
+        # Останавливаем proactive
+        if bot_instance.proactive:
+            bot_instance.proactive.stop()
         async def _stop():
             await app.updater.stop()
             await app.stop()

@@ -126,6 +126,26 @@ class BotInstance:
                 router=self.router
             )
 
+        # Proactive messaging (самоинициатива)
+        self.proactive = None
+        self._activity_tracker = None
+        proactive_config = self.features.get("proactive", {})
+        if proactive_config.get("enabled", False):
+            from app.features.proactive_messaging import ProactiveConfig, ProactiveMessaging, ChatActivityTracker
+            self._activity_tracker = ChatActivityTracker(context=context)
+            self.proactive = ProactiveMessaging(
+                config=ProactiveConfig.from_dict(proactive_config),
+                router=self.router,
+                persona=self.persona,
+                memory=self.memory,
+                activity_tracker=self._activity_tracker,
+                get_last_message_time=self._get_last_message_time,
+                send_message=self._send_proactive_message,
+                context=context,
+                self_memory=self.self_memory,
+            )
+            logger.info(f"  [{persona_name}] Proactive messaging включён")
+
         logger.info(f"  [{persona_name}] BotInstance создан | stm_size={self.stm_size} | features: {list(self.features.keys())}")
 
     # Trigger logic
@@ -190,7 +210,9 @@ class BotInstance:
 
         try:
             self.memory.add_message("user", user_input, user_id, chat_id, user_name)
-            stm_messages, ltm_facts = self.memory.get_context(user_id, chat_id, ltm_query=user_input)
+            stm_messages, ltm_facts, stm_relevant = self.memory.get_context(
+                user_id, chat_id, ltm_query=user_input
+            )
             file_context = None
             if self.file_db:
                 if self._is_full_doc_request(user_input):
@@ -224,11 +246,20 @@ class BotInstance:
             if self.self_memory:
                 self_memory_block = self.self_memory.get_context_block()
 
+            # Формируем блок релевантного STM-контекста
+            stm_relevant_text = None
+            if stm_relevant:
+                parts = []
+                for msg in stm_relevant:
+                    role_ru = msg.get("user_name", "Пользователь") if msg["role"] == "user" else "Ассистент"
+                    parts.append(f"  {role_ru}: {msg['content'][:200]}")
+                stm_relevant_text = "\n".join(parts)
+
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
                 user_id=user_id, user_name=user_name, web_context=web_context,
                 has_files=has_files, self_memory_block=self_memory_block,
-                reply_context=reply_context
+                reply_context=reply_context, stm_relevant=stm_relevant_text
             )
             settings = self.persona.get_settings()
             answer = self.router.get_response(messages, **settings)
@@ -339,6 +370,12 @@ class BotInstance:
     def get_memory_stats(self, user_id: str = "default", chat_id: str = None) -> dict:
         return self.memory.get_stats(user_id, chat_id)
 
+    def get_stm_last_display(self, n: int, chat_id: str) -> list:
+        return self.memory.stm.get_last_display(n, chat_id)
+
+    def stm_pop_last_n(self, n: int, chat_id: str) -> int:
+        return self.memory.stm.pop_last_n(n, chat_id)
+
     def clear_memory(self, user_id: str = "default", chat_id: str = None):
         self.memory.clear_stm(chat_id)
         self.memory.clear_ltm(user_id)
@@ -373,3 +410,64 @@ class BotInstance:
         if self._rate_limit_enabled:
             return self._rate_limit_status(self._rate_limit_individual)
         return "Rate limiter не активен."
+
+    # Proactive messaging helpers
+
+    def _get_last_message_time(self, chat_id: str) -> float:
+        """Возвращает timestamp последнего сообщения в чате.
+        Сначала смотрит в activity_tracker, потом в STM буфер."""
+        # 1. Смотрим в activity tracker (сохраняется между перезапусками)
+        if self._activity_tracker:
+            ts = self._activity_tracker.get_last_activity(chat_id)
+            if ts > 0:
+                return ts
+
+        # 2. Fallback: смотрим в STM буфер (текущая сессия)
+        try:
+            messages = self.memory.stm.get_messages(chat_id=chat_id)
+            if messages:
+                # Берем время последнего сообщения из STM
+                last_msg = messages[-1]
+                if isinstance(last_msg, dict) and "timestamp" in last_msg:
+                    return float(last_msg["timestamp"])
+                # Если timestamp нет, используем время загрузки из метаданных
+                if isinstance(last_msg, dict) and "metadata" in last_msg:
+                    meta = last_msg["metadata"]
+                    if isinstance(meta, dict) and "timestamp" in meta:
+                        return float(meta["timestamp"])
+        except Exception:
+            pass
+
+        # 3. Fallback: смотрим в текущий буфер в памяти
+        try:
+            if hasattr(self.memory.stm, "buffers") and chat_id in self.memory.stm.buffers:
+                buf = self.memory.stm.buffers[chat_id]
+                if buf:
+                    last = buf[-1]
+                    if isinstance(last, dict) and "timestamp" in last:
+                        return float(last["timestamp"])
+        except Exception:
+            pass
+
+        return 0
+
+    async def _send_proactive_message(self, chat_id: str, message: str, topic_id: Optional[int] = None):
+        """Отправляет proactive-сообщение в чат.
+        Этот метод будет переопределён в telegram_bot.py через замыкание."""
+        logger.warning(f"[Proactive] _send_proactive_message не переопределён для {chat_id}: {message[:60]}...")
+
+    def record_activity(self, chat_id: str):
+        """Записывает активность в чате. Вызывается при каждом сообщении."""
+        if self._activity_tracker:
+            self._activity_tracker.record_activity(chat_id)
+
+    def record_topic(self, chat_id: str, topic_id: int):
+        """Записывает ID топика для чата."""
+        if self._activity_tracker:
+            self._activity_tracker.record_topic(chat_id, topic_id)
+
+    def get_chat_topic(self, chat_id: str) -> Optional[int]:
+        """Возвращает ID топика для чата."""
+        if self._activity_tracker:
+            return self._activity_tracker.get_topic(chat_id)
+        return None

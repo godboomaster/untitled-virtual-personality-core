@@ -19,6 +19,23 @@ from concurrent.futures import ThreadPoolExecutor
 logger = logging.getLogger(__name__)
 
 
+def _first_sentence(text: str, max_len: int = 80) -> str:
+    """Обрезать текст до первого предложения. Если длиннее max_len — добавить ..."""
+    if not text:
+        return ""
+    # Конец предложения: . ! ? или перенос строки
+    for i, ch in enumerate(text):
+        if ch in ".!?\n" and i > 0:
+            sentence = text[:i + 1].strip()
+            if len(sentence) > max_len:
+                return sentence[:max_len] + "..."
+            return sentence
+    # Нет точки — берём до max_len
+    if len(text) > max_len:
+        return text[:max_len] + "..."
+    return text.strip()
+
+
 class ShortTermMemory:
     """
     Краткосрочная память — буфер последних N сообщений.
@@ -96,8 +113,6 @@ class ShortTermMemory:
                     if buf is None:
                         buf = deque(maxlen=self.max_messages)
                         self.buffers[msg["chat_id"]] = buf
-                    if len(buf) >= self.max_messages:
-                        continue
                     entry = {"role": msg["role"], "content": msg["content"], "chat_id": msg["chat_id"]}
                     if msg.get("user_name"):
                         entry["user_name"] = msg["user_name"]
@@ -118,6 +133,39 @@ class ShortTermMemory:
             documents=[content],
             metadatas=[metadata]
         )
+
+        # Автоочистка: удаляем самые старые записи чата если превышен лимит
+        self._trim_db(chat_id)
+
+    def _trim_db(self, chat_id: str):
+        """
+        Удаляет самые старые записи из ChromaDB для чата,
+        если их количество превышает max_messages.
+        """
+        try:
+            results = self.collection.get(
+                where={"chat_id": chat_id},
+                include=["metadatas"]
+            )
+            if not results or not results["ids"]:
+                return
+
+            count = len(results["ids"])
+            if count <= self.max_messages:
+                return
+
+            # Сортируем по timestamp и берём самые старые для удаления
+            items = list(zip(results["ids"], results["metadatas"]))
+            items.sort(key=lambda x: x[1].get("timestamp", 0))
+
+            excess = count - self.max_messages
+            ids_to_delete = [item[0] for item in items[:excess]]
+
+            if ids_to_delete:
+                self.collection.delete(ids=ids_to_delete)
+                logger.debug(f"  [STM] Trimmed {len(ids_to_delete)} old messages from chat {chat_id}")
+        except Exception as e:
+            logger.warning(f"  [STM] Trim error for chat {chat_id}: {e}")
 
     def add_message(self, role: str, content: str, user_id: str = "default",
                     chat_id: str = None, user_name: str = None):
@@ -169,6 +217,129 @@ class ShortTermMemory:
         """
         messages = self.get_messages(user_id, chat_id)
         return messages[-n:]
+
+    def search_relevant(self, query: str, chat_id: str, limit: int = 5,
+                        exclude_last_n: int = 15) -> List[Dict[str, str]]:
+        """
+        Векторный поиск по STM — возвращает семантически релевантные сообщения,
+        исключая последние exclude_last_n (они и так попадут как хронология).
+
+        Args:
+            query: Текст запроса (обычно текущее сообщение пользователя).
+            chat_id: ID чата для фильтрации.
+            limit: Сколько релевантных сообщений вернуть.
+            exclude_last_n: Сколько последних сообщений исключить (дубликаты с хронологией).
+
+        Returns:
+            Список {role, content, chat_id} релевантных сообщений, не входящих в последние n.
+        """
+        try:
+            if self.collection.count() == 0:
+                return []
+
+            # Получаем содержимое последних exclude_last_n чтобы отфильтровать дубли
+            recent = self.get_last(exclude_last_n, chat_id=chat_id)
+            recent_contents = {m["content"] for m in recent}
+
+            # Векторный поиск с запасом (на случай дубликатов с recent)
+            fetch_n = limit + exclude_last_n + 10
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=fetch_n,
+                where={"chat_id": chat_id},
+                include=["documents", "metadatas"]
+            )
+
+            if not results or not results["documents"] or not results["documents"][0]:
+                return []
+
+            relevant = []
+            seen = set()
+            for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+                # Пропускаем дубликаты с хронологией
+                if doc in recent_contents:
+                    continue
+                # Пропускаем дубликаты внутри результатов
+                if doc in seen:
+                    continue
+                seen.add(doc)
+
+                entry = {
+                    "role": meta.get("role", "user"),
+                    "content": doc,
+                    "chat_id": chat_id
+                }
+                if meta.get("user_name"):
+                    entry["user_name"] = meta["user_name"]
+                relevant.append(entry)
+
+                if len(relevant) >= limit:
+                    break
+
+            return relevant
+
+        except Exception as e:
+            logger.warning(f"  [STM] search_relevant error: {e}")
+            return []
+
+    def get_last_display(self, n: int, chat_id: str) -> List[Dict]:
+        """
+        Получить последние n сообщений для отображения (/last).
+        Возвращает список с role, user_name, content (обрезанное до первого предложения).
+        """
+        messages = self.get_last(n, chat_id=chat_id)
+        result = []
+        for m in messages:
+            content = m.get("content", "")
+            # Берём только первое предложение
+            first_sentence = _first_sentence(content)
+            result.append({
+                "role": m.get("role", "user"),
+                "user_name": m.get("user_name"),
+                "content": first_sentence,
+            })
+        return result
+
+    def pop_last_n(self, n: int, chat_id: str) -> int:
+        """
+        Удалить последние n сообщений из deque и ChromaDB.
+        Возвращает количество удалённых.
+        """
+        with self._lock:
+            buf = self.buffers.get(chat_id)
+            if not buf:
+                return 0
+
+            # Берём последние n из deque
+            to_remove = []
+            for _ in range(min(n, len(buf))):
+                if buf:
+                    to_remove.append(buf.pop())
+
+            if not to_remove:
+                return 0
+
+            # Ищем эти записи в ChromaDB по содержимому + chat_id
+            # (chroma_id = stm_{chat_id}_{timestamp}, но мы храним timestamp в metadata)
+            contents_to_remove = {m["content"] for m in to_remove}
+
+            try:
+                results = self.collection.get(
+                    where={"chat_id": chat_id},
+                    include=["documents", "metadatas"]
+                )
+                if results and results["ids"]:
+                    ids_to_delete = []
+                    for rid, doc in zip(results["ids"], results["documents"]):
+                        if doc in contents_to_remove:
+                            ids_to_delete.append(rid)
+                    if ids_to_delete:
+                        self.collection.delete(ids=ids_to_delete)
+                        logger.info(f"  [STM] pop_last_n: deleted {len(ids_to_delete)} from ChromaDB")
+            except Exception as e:
+                logger.warning(f"  [STM] pop_last_n ChromaDB error: {e}")
+
+            return len(to_remove)
 
     def clear(self, chat_id: str = None):
         """
@@ -731,10 +902,31 @@ class MemoryManager:
         print(f"  [LTM SUM] Консолидация запущена в фоне для {user_id}")
 
     def get_context(self, user_id: str = "default", chat_id: str = None,
-                    ltm_limit: int = 5, ltm_query: str = "") -> Tuple[List[Dict], List[str]]:
-        stm_messages = self.stm.get_messages(chat_id=chat_id) if chat_id else self.stm.get_messages(user_id)
+                    ltm_limit: int = 5, ltm_query: str = "",
+                    stm_relevant_limit: int = 5, stm_recent_n: int = 15) -> Tuple[List[Dict], List[str], List[Dict]]:
+        """
+        Возвращает контекст для формирования промпта.
+
+        Returns:
+            (stm_messages, ltm_facts, stm_relevant)
+            - stm_messages: последние n сообщений (хронология)
+            - ltm_facts: факты из долгосрочной памяти
+            - stm_relevant: семантически релевантные сообщения из STM (не из хронологии)
+        """
+        stm_messages = self.stm.get_last(stm_recent_n, chat_id=chat_id) if chat_id else self.stm.get_last(stm_recent_n, user_id)
         ltm_facts = self.ltm.search(ltm_query, user_id, limit=ltm_limit) if ltm_query else self.ltm.get_all_facts(user_id)[:ltm_limit]
-        return stm_messages, ltm_facts
+
+        # Векторный поиск по STM — только для чатов (не для личных)
+        stm_relevant = []
+        if chat_id:
+            stm_relevant = self.stm.search_relevant(
+                query=ltm_query or "",
+                chat_id=chat_id,
+                limit=stm_relevant_limit,
+                exclude_last_n=stm_recent_n
+            )
+
+        return stm_messages, ltm_facts, stm_relevant
 
     def get_context_for_prompt(self, user_id: str = "default", ltm_query: str = "") -> str:
         stm_messages = self.stm.get_last(10, user_id)

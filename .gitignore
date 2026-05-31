@@ -7,6 +7,7 @@ __pycache__/
 
 # Data directories
 data/
+dumps/
 docs/
 memory_export/
 tests/
