@@ -62,7 +62,7 @@ class BotInstance:
             stm_size=self.stm_size,
             enable_ltm_extraction=Config.LTM_EXTRACTION_ENABLED,
             ltm_model_provider=Config.LTM_MODEL_PROVIDER,
-            load_stm_from_db=True,
+            load_stm_from_db=not persona_data.get("fresh_stm", False),
             context=context,
             main_router=self.router
         )
@@ -125,6 +125,13 @@ class BotInstance:
                 persona_name=persona_name,
                 router=self.router
             )
+
+        # Book search (RAG по книге для персон)
+        self.book_search = None
+        if self.features.get("book_search", False):
+            from app.features.book_search import BookSearch
+            self.book_search = BookSearch(context=context or persona_name)
+            logger.info(f"  [{persona_name}] Book search включён")
 
         # Proactive messaging (самоинициатива)
         self.proactive = None
@@ -255,11 +262,98 @@ class BotInstance:
                     parts.append(f"  {role_ru}: {msg['content'][:200]}")
                 stm_relevant_text = "\n".join(parts)
 
+            # Поиск по книге (RAG)
+            book_context = None
+            if self.book_search:
+                try:
+                    from app.features.book_search import detect_volume
+
+                    def _detect_position(text: str):
+                        q = text.lower()
+                        start_kw = ["начал", "в начале", "начало", "первых главах", "первые главы"]
+                        end_kw = ["конц", "в конце", "конец", "последних главах", "последние главы"]
+                        if any(w in q for w in start_kw):
+                            return "start"
+                        if any(w in q for w in end_kw):
+                            return "end"
+                        return None
+
+                    volume = detect_volume(user_input)
+                    position = _detect_position(user_input)
+
+                    # Position-запросы → summaries вместо chunk-поиска
+                    if position is not None and volume is not None:
+                        import json, re
+                        # _db_path = "data/arrodes/book" -> context_dir = "data/arrodes"
+                        context_dir = "/".join(self.book_search._db_path.split("/")[:-1])
+                        summaries_path = f"{context_dir}/summaries.json"
+                        try:
+                            with open(summaries_path, encoding="utf-8") as sf:
+                                all_summaries = json.load(sf)
+                        except FileNotFoundError:
+                            summaries_path = "data/arrodes/summaries.json"
+                            with open(summaries_path, encoding="utf-8") as sf:
+                                all_summaries = json.load(sf)
+
+                        # Диапазоны глав по томам LotM
+                        VOL_RANGES = {
+                            1: (1, 213), 2: (214, 408), 3: (409, 600),
+                            4: (601, 783), 5: (784, 980), 6: (981, 1138),
+                        }
+                        lo, hi = VOL_RANGES.get(volume, (1, 9999))
+                        total_chapters = hi - lo + 1
+                        n_take = min(20, total_chapters)
+                        if position == "start":
+                            ch_lo, ch_hi = lo, lo + n_take - 1
+                        else:
+                            ch_lo, ch_hi = hi - n_take + 1, hi
+
+                        selected = []
+                        for k, v in all_summaries.items():
+                            m = re.search(r"Chapter (\d+):", k)
+                            if m and ch_lo <= int(m.group(1)) <= ch_hi:
+                                selected.append((int(m.group(1)), k, v))
+                        selected.sort(key=lambda x: x[0])
+
+                        if selected:
+                            lines = [f"[Summaries for Volume {volume}, {'beginning' if position == 'start' else 'end'}]"]
+                            for ch_num, title, summary in selected:
+                                lines.append(f"{title}\n{summary}")
+                            book_context = "\n\n".join(lines)
+                            logger.info(f"[BookContext] Position query: {position} vol={volume}, loaded {len(selected)} chapter summaries ({len(book_context)} chars)")
+                        else:
+                            logger.info(f"[BookContext] Position query: no summaries found for vol={volume} {position}")
+                    else:
+                        # Обычный RAG-поиск
+                        if volume is not None:
+                            logger.info(f"[BookSearch] Detected volume filter: {volume}")
+                        fragments = self.book_search.search(user_input, volume=volume)
+                        translated_query = self.book_search.translate_query(user_input)
+                        if fragments:
+                            from app.features.book_context import build_context_block
+                            book_context = build_context_block(
+                                fragments,
+                                original_query=user_input,
+                                translated_query=translated_query
+                            )
+                            logger.info(f"[BookContext] {len(fragments)} fragments, {len(book_context)} chars for query: '{user_input[:60]}'")
+                        else:
+                            from app.features.book_context import build_context_block
+                            book_context = build_context_block(
+                                [],
+                                original_query=user_input,
+                                translated_query=translated_query
+                            )
+                            logger.info(f"[BookContext] No fragments for query: '{user_input[:60]}'")
+                except Exception as e:
+                    logger.debug(f"Book search error: {e}")
+
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
                 user_id=user_id, user_name=user_name, web_context=web_context,
                 has_files=has_files, self_memory_block=self_memory_block,
-                reply_context=reply_context, stm_relevant=stm_relevant_text
+                reply_context=reply_context, stm_relevant=stm_relevant_text,
+                book_context=book_context
             )
             settings = self.persona.get_settings()
             answer = self.router.get_response(messages, **settings)
