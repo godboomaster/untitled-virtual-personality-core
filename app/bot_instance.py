@@ -278,7 +278,8 @@ class BotInstance:
                             return "end"
                         return None
 
-                    volume = detect_volume(user_input)
+                    # Volume определяется внутри search() после перевода
+                    volume = None
                     position = _detect_position(user_input)
 
                     # Position-запросы → summaries вместо chunk-поиска
