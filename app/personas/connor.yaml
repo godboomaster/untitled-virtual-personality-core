@@ -17,6 +17,8 @@ features:
   export_server: true
   restore_memory: true
   self_memory: true
+  todo: true
+  inventory: true
   trigger_words:
     - "жабка"
     - "connor"
@@ -25,7 +27,7 @@ features:
     check_interval_minutes: 30
     silence_threshold_minutes: 180
     initiative_probability: 0.8
-    max_daily_initiatives: 5
+    max_daily_initiatives: 20
     # Настройки топиков для supergroup (форумов)
     # Если указаны allowed_topics — бот будет писать ТОЛЬКО в эти топики
     # default_topic — куда писать, если нет других указаний

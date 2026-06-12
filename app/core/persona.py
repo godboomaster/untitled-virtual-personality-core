@@ -66,7 +66,9 @@ class PersonaLayer:
                          user_name: str = None, web_context: Optional[str] = None,
                          has_files: bool = False, self_memory_block: Optional[str] = None,
                          reply_context: Optional[str] = None,
-                         stm_relevant: Optional[str] = None) -> List[Dict]:
+                         stm_relevant: Optional[str] = None,
+                         todo_context: Optional[str] = None,
+                         inventory_context: Optional[str] = None) -> List[Dict]:
         context_block = ""
         if memory_context:
             if has_files:
@@ -120,8 +122,38 @@ class PersonaLayer:
         if user_id:
             special_note = self._get_special_user_note(user_id) or ""
 
+        # Todo-контекст: инструкция для LLM + текущий список
+        todo_note = ""
+        if todo_context:
+            todo_note = (
+                "\n\nУ пользователя есть общий список дел для этого чата. "
+                "Если он просит что-то записать, добавить, напомнить или отметить как дело — "
+                "извлеки чистый текст задачи из его сообщения и в конце своего ответа добавь маркер: "
+                "[TODO_ADD:текст задачи]. "
+                "После маркера выведи актуальный список дел. "
+                "Если он просто спрашивает список — покажи его без маркера.\n\n"
+                f"Текущий список дел:\n{todo_context}\n"
+            )
+
+        # Inventory-контекст: вещи бота
+        inventory_note = ""
+        if inventory_context:
+            inventory_note = (
+                "\n\nЭто твой личный инвентарь — вещи, которые у тебя есть. "
+                "Ты можешь упоминать их в ответах естественно, как часть своего образа. "
+                "Если пользователь просит взять, получить или надеть что-то — "
+                "придумай краткое описание предмета и добавь маркер [INVENTORY_ADD:Название в именительном падеже:описание]. "
+                "ВАЖНО: название в маркере должно быть в именительном падеже (кто? что?). "
+                "Например, если пользователь говорит 'возьми ключ' — маркер: [INVENTORY_ADD:Ключ:маленький металлический ключ]. "
+                "Если 'держи красный шар' — маркер: [INVENTORY_ADD:Красный шар:яркий резиновый шар]. "
+                "Если просит выбросить или убрать — добавь маркер [INVENTORY_REMOVE:Название в именительном падеже]. "
+                "ВАЖНО: без маркера предмет НЕ сохранится. Маркер обязателен. "
+                "Если просто спрашивает что у тебя есть — перечисли без маркеров.\n\n"
+                f"{inventory_context}\n"
+            )
+
         messages = [
-            {"role": "system", "content": self.system_prompt + context_block + special_note},
+            {"role": "system", "content": self.system_prompt + context_block + special_note + todo_note + inventory_note},
         ]
 
         # Определяем, является ли текущее сообщение от именованного пользователя (групповой чат)
