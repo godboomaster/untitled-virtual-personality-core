@@ -5,8 +5,10 @@
 
 import logging
 from app.core.router import ModelRouter
+from app.core.local_router import get_local_router
 
 _router = ModelRouter()
+_local = get_local_router()
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,24 @@ def need_web_search(user_question: str, context_summary: str = "") -> bool:
         {"role": "user", "content": context_block + user_block}
     ]
 
+    # Пробуем локальную модель сначала
+    if _local.is_available():
+        local_answer = _local.classify(
+            system_prompt=DECISION_PROMPT,
+            user_prompt=context_block + user_block,
+            valid_outputs=["SEARCH", "SKIP"],
+            temperature=0.0,
+            max_tokens=10,
+        )
+        if local_answer:
+            need = local_answer == "SEARCH"
+            logger.info(
+                f"[NEED_SEARCH] Q='{user_question[:50]}' -> {local_answer} "
+                f"(local: {_local.model})"
+            )
+            return need
+
+    # Fallback на основной роутер
     try:
         answer = _router.get_response(
             messages,

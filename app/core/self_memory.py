@@ -11,6 +11,7 @@ from typing import List, Dict, Optional
 
 from app.core.router import ModelRouter
 from app.core.config import get_db_paths
+from app.core.local_router import get_local_router
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ class BotSelfMemory:
         self.context = context
         self.persona_name = persona_name
         self.router = router
+        self.local_router = get_local_router()
 
         # Пути к файлам
         db = get_db_paths(context)
@@ -308,20 +310,34 @@ class BotSelfMemory:
                 context=context_text
             )
 
-            response = self.router.get_response(
-                messages=[
-                    {"role": "system", "content": "Ты решаешь, стоит ли записать наблюдение. Отвечай только SKIP или NOTE: ..."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                max_tokens=100,
-                timeout=15.0,
-            )
+            # Пробуем локальную модель для классификации SKIP/NOTE
+            local_response = None
+            if self.local_router.is_available():
+                local_response = self.local_router.classify(
+                    system_prompt=(
+                        "Ты решаешь, стоит ли записать наблюдение. "
+                        "Отвечай ТОЛЬКО SKIP или NOTE: ..."
+                    ),
+                    user_prompt=prompt,
+                    valid_outputs=["SKIP", "NOTE"],
+                    temperature=0.0,
+                    max_tokens=50,
+                )
 
-            if not response:
-                return
-
-            response_clean = response.strip()
+            if local_response:
+                response_clean = local_response
+                logger.info(f"[SelfMemory] Локальная классификация: {response_clean}")
+            else:
+                response = self.router.get_response(
+                    messages=[
+                        {"role": "system", "content": "Ты решаешь, стоит ли записать наблюдение. Отвечай только SKIP или NOTE: ..."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=100,
+                    timeout=15.0,
+                )
+                response_clean = response.strip() if response else ""
 
             if response_clean.upper().startswith("SKIP"):
                 logger.info(f"[SelfMemory] Заметка пропущена (SKIP)")

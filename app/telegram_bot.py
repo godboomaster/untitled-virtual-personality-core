@@ -18,6 +18,7 @@ from telegram.ext import (
 
 from app.bot_instance import BotInstance
 from app.core.users import register_user, get_user_display, get_user_tag
+from app.core.telegram_sender import TelegramMessageSender
 from app.features.file_sender import prepare_response, cleanup_files
 from app.features.reply_context import extract_reply_context
 
@@ -80,6 +81,8 @@ async def _reply_ai(message, text: str):
             continue
         try:
             html = _md_to_html(part)
+            # Сворачиваем в expandable blockquote для единообразия
+            html = f"<blockquote expandable>{html}</blockquote>"
             await message.reply_text(html, parse_mode="HTML")
         except Exception:
             try:
@@ -140,6 +143,10 @@ def create_handlers(bot: BotInstance) -> dict:
             lines.append("/files — список загруженных файлов")
             lines.append("/reset_files — сбросить файловую базу")
             lines.append("\nОтправьте файл — я прочитаю и сохраню!")
+        if bot.todo_manager:
+            lines.append("/todo — показать список дел чата")
+        if bot.inventory_manager:
+            lines.append("/inventory — показать инвентарь бота")
         await update.message.reply_text("\n".join(lines))
 
     async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -257,6 +264,21 @@ def create_handlers(bot: BotInstance) -> dict:
             await update.message.reply_text("Веб-поиск включён.")
         else:
             await update.message.reply_text("Веб-поиск выключен.")
+
+    async def todo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not bot.todo_manager:
+            await update.message.reply_text("Список дел не активен для этой персоны.")
+            return
+        chat_id = str(update.effective_chat.id)
+        todo_list = bot.todo_manager.get_list(chat_id)
+        await update.message.reply_text(todo_list or "Список дел пуст.")
+
+    async def inventory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not bot.inventory_manager:
+            await update.message.reply_text("Инвентарь не активен для этой персоны.")
+            return
+        inv_list = bot.inventory_manager.get_list_text()
+        await update.message.reply_text(inv_list)
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
@@ -432,6 +454,8 @@ def create_handlers(bot: BotInstance) -> dict:
         "reset_files": reset_files_cmd if bot.file_db else None,
         "ratelimits": ratelimits_cmd if bot._rate_limit_enabled else None,
         "web": web_cmd if bot._web_search_enabled else None,
+        "todo": todo_cmd if bot.todo_manager else None,
+        "inventory": inventory_cmd if bot.inventory_manager else None,
         "handle_message": handle_message,
         "handle_document": handle_document if bot.file_db else None,
     }
@@ -442,23 +466,10 @@ def register_handlers(app: Application, bot: BotInstance):
     h = create_handlers(bot)
     persona_name = bot.persona_name
 
-    # Настраиваем proactive messaging с реальной отправкой
-    if bot.proactive:
-        async def _send_proactive(chat_id: str, message: str, topic_id: Optional[int] = None):
-            try:
-                if topic_id:
-                    logger.info(f"[Proactive] Отправка в чат {chat_id}, топик {topic_id}")
-                    await app.bot.send_message(
-                        chat_id=int(chat_id),
-                        text=message,
-                        message_thread_id=topic_id
-                    )
-                else:
-                    logger.info(f"[Proactive] Отправка в чат {chat_id} (без топика)")
-                    await app.bot.send_message(chat_id=int(chat_id), text=message)
-            except Exception as e:
-                logger.error(f"[Proactive] Ошибка отправки в {chat_id}: {e}")
-        bot.proactive._send_message = _send_proactive
+    # Создаем sender и инициализируем proactive messaging
+    if bot._activity_tracker:
+        sender = TelegramMessageSender(bot=app.bot)
+        bot.setup_proactive(sender)
 
     app.add_handler(CommandHandler("start", h["start"]))
     app.add_handler(CommandHandler("help", h["help"]))
@@ -479,6 +490,10 @@ def register_handlers(app: Application, bot: BotInstance):
         app.add_handler(CommandHandler("ratelimits", h["ratelimits"]))
     if h.get("web"):
         app.add_handler(CommandHandler("web", h["web"]))
+    if h.get("todo"):
+        app.add_handler(CommandHandler("todo", h["todo"]))
+    if h.get("inventory"):
+        app.add_handler(CommandHandler("inventory", h["inventory"]))
 
     # Debug
     async def debug_all(update: Update, context: ContextTypes.DEFAULT_TYPE):

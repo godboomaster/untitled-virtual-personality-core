@@ -17,8 +17,20 @@ from app.core.router import ModelRouter
 from app.core.config import Config
 from app.core.file_vector_db import FileVectorDB
 from app.core.file_reader import extract_text, MAX_FILE_SIZE_DEFAULT
+from app.core.interfaces import MessageSender
+from app.features.todo_manager import TodoManager, is_todo_request, extract_task
+from app.features.inventory_manager import (
+    InventoryManager,
+    is_inventory_add_request,
+    is_inventory_remove_request,
+    extract_inventory_item,
+    extract_inventory_remove,
+)
 
 logger = logging.getLogger(__name__)
+
+# Сколько последних реплик передавать в query rewriter для разрешения кореференций
+_REWRITE_HISTORY = 6
 
 
 class BotInstance:
@@ -54,6 +66,18 @@ class BotInstance:
             self.file_db = FileVectorDB(context=context, max_docs=self.max_docs)
             logger.info(f"  [{persona_name}] FileVectorDB включён")
 
+        # Todo manager (только если todo)
+        self.todo_manager: Optional[TodoManager] = None
+        if self.features.get("todo", False):
+            self.todo_manager = TodoManager(context=self.context)
+            logger.info(f"  [{persona_name}] Todo manager включён")
+
+        # Inventory manager (только если inventory)
+        self.inventory_manager: Optional[InventoryManager] = None
+        if self.features.get("inventory", False):
+            self.inventory_manager = InventoryManager(context=self.context)
+            logger.info(f"  [{persona_name}] Inventory manager включён")
+
         # Router (создаём до Memory, чтобы передать в LTM)
         self.router = ModelRouter()
 
@@ -77,6 +101,14 @@ class BotInstance:
             self._format_web_results = format_web_results
             self._web_pool = ThreadPoolExecutor(max_workers=1)
             logger.info(f"  [{persona_name}] Web search включён (pool: 1 worker)")
+
+        # Local router (для query rewriting)
+        self._local_router = None
+        try:
+            from app.core.local_router import get_local_router
+            self._local_router = get_local_router()
+        except Exception:
+            pass
 
         # Rate limiter
         self._rate_limit_enabled = self.features.get("rate_limit", False)
@@ -129,22 +161,14 @@ class BotInstance:
         # Proactive messaging (самоинициатива)
         self.proactive = None
         self._activity_tracker = None
+        self._sender: Optional[MessageSender] = None
         proactive_config = self.features.get("proactive", {})
         if proactive_config.get("enabled", False):
             from app.features.proactive_messaging import ProactiveConfig, ProactiveMessaging, ChatActivityTracker
             self._activity_tracker = ChatActivityTracker(context=context)
-            self.proactive = ProactiveMessaging(
-                config=ProactiveConfig.from_dict(proactive_config),
-                router=self.router,
-                persona=self.persona,
-                memory=self.memory,
-                activity_tracker=self._activity_tracker,
-                get_last_message_time=self._get_last_message_time,
-                send_message=self._send_proactive_message,
-                context=context,
-                self_memory=self.self_memory,
-            )
-            logger.info(f"  [{persona_name}] Proactive messaging включён")
+            # sender будет установлен позже через setup_sender()
+            self.proactive = None  # создадим после установки sender
+            logger.info(f"  [{persona_name}] Proactive messaging подготовлен (ожидает sender)")
 
         logger.info(f"  [{persona_name}] BotInstance создан | stm_size={self.stm_size} | features: {list(self.features.keys())}")
 
@@ -203,15 +227,30 @@ class BotInstance:
     def process_message(self, user_input: str, user_id: str = "default",
                         chat_id: str = None, user_name: str = None,
                         reply_context: str = None) -> str:
+        from app.features.query_rewriter import rewrite_query
+
+        # Берём историю до добавления нового сообщения — для контекста rewriter'а
+        history_for_rewrite = self.memory.stm.get_last(_REWRITE_HISTORY, chat_id=chat_id)
+
+        # Переписываем запрос: разрешаем местоимения + получаем английскую версию
+        ru_rewritten, en_for_search = rewrite_query(
+            user_input, history_for_rewrite, self._local_router
+        )
+
         # 1. Запускаем веб-поиск в фоне (параллельно с памятью)
+        # Передаём оба запроса: ru_rewritten + en_for_search (если есть)
+        # search_web сам сделает мерж ru+en результатов 50/50
         web_future = None
         if self._web_search_enabled and chat_id not in self._web_search_disabled_chats and not self._is_docs_only_request(user_input):
-            web_future = self._web_pool.submit(self._search_web, user_input, 5)
+            web_future = self._web_pool.submit(
+                self._search_web, ru_rewritten, 5, False, en_for_search
+            )
 
         try:
-            self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+            # В STM сохраняем переписанную русскую версию (с разрешёнными местоимениями)
+            self.memory.add_message("user", ru_rewritten, user_id, chat_id, user_name)
             stm_messages, ltm_facts, stm_relevant = self.memory.get_context(
-                user_id, chat_id, ltm_query=user_input
+                user_id, chat_id, ltm_query=ru_rewritten
             )
             file_context = None
             if self.file_db:
@@ -255,16 +294,49 @@ class BotInstance:
                     parts.append(f"  {role_ru}: {msg['content'][:200]}")
                 stm_relevant_text = "\n".join(parts)
 
+            # Todo-контекст: определяем, является ли запрос todo-запросом
+            todo_context = None
+            extracted_task = None
+            if self.todo_manager and chat_id and is_todo_request(user_input):
+                extracted_task = extract_task(user_input)
+                current_todo = self.todo_manager.get_list(chat_id)
+                todo_context = current_todo or "Список дел пуст."
+
+            # Inventory-контекст: вещи бота
+            inventory_context = None
+            extracted_inventory_item = None
+            extracted_inventory_remove = None
+            if self.inventory_manager:
+                inv_block = self.inventory_manager.get_context_block()
+                if inv_block:
+                    inventory_context = inv_block
+                # Проверяем запрос на добавление/удаление
+                if is_inventory_add_request(user_input):
+                    extracted_inventory_item = extract_inventory_item(user_input)
+                elif is_inventory_remove_request(user_input):
+                    extracted_inventory_remove = extract_inventory_remove(user_input)
+
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
                 user_id=user_id, user_name=user_name, web_context=web_context,
                 has_files=has_files, self_memory_block=self_memory_block,
-                reply_context=reply_context, stm_relevant=stm_relevant_text
+                reply_context=reply_context, stm_relevant=stm_relevant_text,
+                todo_context=todo_context,
+                inventory_context=inventory_context
             )
             settings = self.persona.get_settings()
             answer = self.router.get_response(messages, **settings)
 
-            # 9. Punish parsing
+            # Очистка ответа от мета-рассуждений и Markdown
+            answer = self._clean_response(answer)
+
+            # Обработка todo-маркера
+            if self.todo_manager and chat_id and todo_context:
+                answer = self._process_todo_marker(answer, chat_id, user_name or "Пользователь", extracted_task)
+
+            # Обработка inventory-маркеров
+            if self.inventory_manager:
+                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove)
             if self._punish_enabled:
                 answer = self._parse_punishment(answer, user_id)
 
@@ -275,17 +347,60 @@ class BotInstance:
             if self.self_memory:
                 self.self_memory.tick(stm_messages, user_id, user_input)
 
+            # 12. Обратная связь proactive: если ждем ответа на инициативу -- фиксируем успех
+            if self.proactive and chat_id:
+                self.proactive.record_user_response(chat_id)
+                # Также обновляем досье на каждое входящее сообщение
+                self.proactive.record_incoming_message(chat_id)
+
             return answer
         finally:
             # Ничего не делаем — пул живёт всё время жизни бота
             pass
 
     def _clean_response(self, response: str) -> str:
-        # Очищает ответ от лишнего Markdown-форматирования.
+        # Очищает ответ от лишнего Markdown-форматирования и мета-рассуждений LLM.
         if not response:
             return response
+        response = self._strip_meta_reasoning(response)
         response = self._strip_markdown(response)
         return response.strip()
+
+    @staticmethod
+    def _strip_meta_reasoning(text: str) -> str:
+        """Удаляет мета-рассуждения LLM: вероятности, запросы, внутренний монолог."""
+        # Сохраняем блоки кода
+        code_blocks = []
+        def _save(m):
+            code_blocks.append(m.group(0))
+            return f'\x00CB{len(code_blocks) - 1}\x00'
+        text = re.sub(r'```.*?```', _save, text, flags=re.DOTALL)
+
+        # Мета-фразы инвентаря
+        meta_patterns = [
+            r'Запрос на добавление предмета в инвентарь\.?\s*',
+            r'Запрос на пиццу совпадает с предыдущим контекстом разговора\.?\s*',
+            r'Вероятность:\s*\d+%\.?\s*',
+            r'Вероятность продолжения темы:\s*\d+%\.?\s*',
+            r'Требуется создание описания для [^.]+\.?\s*',
+            r'Инвентарь обновл[её]н\.?\s*',
+            r'Предмет получен\.?\s*',
+            r'Пицца получена\.?\s*',
+            r'\*\s*Запрос на [^.]+\*\s*',
+            r'\*\s*Вероятность[^*]+\*\s*',
+            r'\*\s*Требуется[^*]+\*\s*',
+            r'Я принимаю [^.]+ от вас[^.]*\.?\s*',
+        ]
+        for pattern in meta_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+
+        # Убираем лишние пустые строки
+        text = re.sub(r'\n{3,}', '\n\n', text)
+
+        # Восстанавливаем code-блоки
+        for i, block in enumerate(code_blocks):
+            text = text.replace(f'\x00CB{i}\x00', block)
+        return text.strip()
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
@@ -335,6 +450,66 @@ class BotInstance:
             logger.info(f"Пользователь {user_id} — подставной факт: {fact_text}")
 
         return response
+
+    def _process_todo_marker(self, response: str, chat_id: str, user_name: str, fallback_task: Optional[str] = None) -> str:
+        """Парсит маркер [TODO_ADD:...], добавляет задачу в todo-файл и подставляет актуальный список."""
+        if not self.todo_manager:
+            return response
+
+        match = re.search(r'\[TODO_ADD:([^\]]+)\]', response)
+        task = None
+        if match:
+            task = match.group(1).strip()
+            response = response[:match.start()] + response[match.end():]
+        elif fallback_task:
+            task = fallback_task
+
+        if task:
+            todo_list = self.todo_manager.add_item(chat_id, user_name, task)
+            # Если LLM не вывел список сам — дописываем
+            if "Список дел" not in response:
+                response = response.strip() + "\n\n" + todo_list
+            else:
+                # Подменяем LLM-список на актуальный (с только что добавленным пунктом)
+                response = re.sub(r'Список дел:.*?$', todo_list, response, flags=re.DOTALL)
+
+        return response.strip()
+
+    def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None) -> str:
+        """Парсит маркеры [INVENTORY_ADD:...] и [INVENTORY_REMOVE:...], обновляет инвентарь.
+        Fallback используется если LLM понял intent но забыл маркер — тогда берем эвристику."""
+        if not self.inventory_manager:
+            return response
+
+        # INVENTORY_ADD — приоритет: маркер от LLM
+        add_match = re.search(r'\[INVENTORY_ADD:([^:\]]+)(?::([^\]]+))?\]', response)
+        if add_match:
+            name = add_match.group(1).strip()
+            desc = (add_match.group(2) or "").strip()
+            response = response[:add_match.start()] + response[add_match.end():]
+            result = self.inventory_manager.add_item(name, desc, source="пользователь")
+            if "Инвентарь" not in response:
+                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+        # Fallback: эвристика нашла предмет, но маркера нет
+        elif fallback_add:
+            result = self.inventory_manager.add_item(fallback_add, source="пользователь")
+            if "Инвентарь" not in response:
+                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+
+        # INVENTORY_REMOVE — приоритет: маркер от LLM
+        remove_match = re.search(r'\[INVENTORY_REMOVE:([^\]]+)\]', response)
+        if remove_match:
+            name = remove_match.group(1).strip()
+            response = response[:remove_match.start()] + response[remove_match.end():]
+            result = self.inventory_manager.remove_item(name)
+            if "Инвентарь" not in response:
+                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+        elif fallback_remove:
+            result = self.inventory_manager.remove_item(fallback_remove)
+            if "Инвентарь" not in response:
+                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+
+        return response.strip()
 
     # File helpers
 
@@ -451,10 +626,28 @@ class BotInstance:
 
         return 0
 
-    async def _send_proactive_message(self, chat_id: str, message: str, topic_id: Optional[int] = None):
-        """Отправляет proactive-сообщение в чат.
-        Этот метод будет переопределён в telegram_bot.py через замыкание."""
-        logger.warning(f"[Proactive] _send_proactive_message не переопределён для {chat_id}: {message[:60]}...")
+    def setup_proactive(self, sender: MessageSender):
+        """Создает ProactiveMessaging с готовым sender. Вызывается после инициализации Telegram Bot."""
+        if not self._activity_tracker:
+            return
+        from app.features.proactive_messaging import ProactiveConfig, ProactiveMessaging
+        proactive_config = self.features.get("proactive", {})
+        self._sender = sender
+        self.proactive = ProactiveMessaging(
+            config=ProactiveConfig.from_dict(proactive_config),
+            router=self.router,
+            persona=self.persona,
+            memory=self.memory,
+            activity_tracker=self._activity_tracker,
+            get_last_message_time=self._get_last_message_time,
+            sender=sender,
+            context=self.context,
+            self_memory=self.self_memory,
+        )
+        # Создаем досье на чат
+        from app.features.chat_dossier import ChatDossier
+        self.proactive.dossier = ChatDossier(context=self.context)
+        logger.info(f"  [{self.persona_name}] Proactive messaging инициализирован с sender и досье")
 
     def record_activity(self, chat_id: str):
         """Записывает активность в чате. Вызывается при каждом сообщении."""

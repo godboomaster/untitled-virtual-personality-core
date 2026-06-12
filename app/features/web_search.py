@@ -98,6 +98,57 @@ def fetch_page_text(url: str, max_len: int = MAX_PAGE_TEXT_LEN) -> str:
         return ""
 
 
+# Чёрный список доменов — соцсети, развлекательные, ненадёжные источники
+BLACKLIST_DOMAINS = {
+    # Соцсети
+    "instagram.com", "instagr.am",
+    "tiktok.com", "tiktokv.com",
+    "twitter.com", "x.com", "t.co",
+    "facebook.com", "fb.com", "fb.me",
+    "vk.com", "vk.me", "vkontakte.ru",
+    "ok.ru", "odnoklassniki.ru",
+    "telegram.org", "t.me", "telegra.ph",
+    "linkedin.com", "lnkd.in",
+    "pinterest.com", "pin.it",
+    "snapchat.com", "snap.com",
+    "reddit.com", "redd.it",
+    "tumblr.com",
+    "discord.com", "discord.gg", "discordapp.com",
+    # Видео
+    "youtube.com", "youtu.be",
+    "vimeo.com",
+    "twitch.tv",
+    # Развлекательные / ненадёжные
+    "9gag.com", "9gag.ru",
+    "buzzfeed.com", "buzzfeednews.com",
+    "memepedia.ru", "knowyourmeme.com",
+    "giphy.com", "tenor.com",
+    # Форумы с низким качеством
+    "pikabu.ru", "joyreactor.cc",
+    # Короткие ссылки (непредсказуемы)
+    "bit.ly", "tinyurl.com", "goo.gl", "ow.ly", "short.link",
+    # AI-генераторы контента (можут быть галлюцинации)
+    "chatgpt.com", "openai.com",
+}
+
+
+def _is_blacklisted(url: str) -> bool:
+    """Проверяет URL по чёрному списку доменов."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return True
+        hostname = hostname.lower()
+        # Проверяем точное совпадение и поддомены
+        for blocked in BLACKLIST_DOMAINS:
+            if hostname == blocked or hostname.endswith("." + blocked):
+                return True
+        return False
+    except Exception:
+        return True  # При ошибке — блокируем
+
+
 def _is_fetchable_url(url: str) -> bool:
     # Проверяет, имеет ли смысл загружать страницу (пропускает PDF, видео, etc)
     try:
@@ -107,19 +158,88 @@ def _is_fetchable_url(url: str) -> bool:
                      ".zip", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx")
         if path.endswith(skip_exts):
             return False
-        # Пропускаем известные не-текстовые хосты
-        skip_hosts = ("youtube.com", "youtu.be", "vimeo.com", "tiktok.com",
-                      "instagram.com", "twitter.com", "x.com", "facebook.com")
-        if parsed.hostname and any(h in parsed.hostname for h in skip_hosts):
+        # Проверяем чёрный список
+        if _is_blacklisted(url):
             return False
         return True
     except Exception:
         return False
 
 
-def search_web(query: str, max_results: int = MAX_RESULTS) -> list[dict]:
+def _enhance_query(query: str) -> tuple[str, str | None]:
+    """
+    Улучшает поисковый запрос через локальную LLM:
+    - Перефразирует под поиск (убирает разговорные обороты)
+    - Переводит на английский если тема техническая/международная
+
+    Возвращает (ru_query, en_query | None).
+    en_query = None если тема сугубо русскоязычная (локальные новости, люди, события).
+    """
+    try:
+        from app.core.local_router import get_local_router
+        router = get_local_router()
+        if not router or not router.is_available():
+            return query, None
+
+        prompt = (
+            "You improve search queries for a search engine. Your task:\n"
+            "1. Rephrase the query for better search results (remove conversational filler, make it concise and specific)\n"
+            "2. For technical/international topics (docker, kubernetes, python, AI, programming, software) — provide English translation\n"
+            "   For purely Russian topics (Russian news, Russian people, local events, weather in Russian cities) — English is not needed (null)\n\n"
+            "Reply STRICTLY in JSON format (no explanations, only JSON):\n"
+            '{"ru": "rephrased query in Russian", "en": "english query or null"}\n\n'
+            f'Query: "{query}"'
+        )
+
+        response = router.get_response(
+            messages=[
+                {"role": "system", "content": "You improve search queries. Reply ONLY JSON, no markdown code blocks."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=100,
+        )
+
+        if not response:
+            return query, None
+
+        # Парсим JSON
+        import json as _json
+        response = response.strip()
+
+        # Убираем markdown code blocks если есть
+        response = re.sub(r"^```(?:json)?\s*", "", response)
+        response = re.sub(r"\s*```$", "", response)
+
+        json_start = response.find("{")
+        json_end = response.rfind("}") + 1
+        if json_start == -1 or json_end == 0:
+            return query, None
+
+        data = _json.loads(response[json_start:json_end])
+        ru = (data.get("ru") or "").strip() or query
+        en = (data.get("en") or "").strip() or None
+        if en and en.lower() in ("null", "none", "-", ""):
+            en = None
+
+        logger.info(f"[WEB_SEARCH] Запрос улучшен: '{query[:50]}' → ru='{ru[:50]}' en='{en or 'нет'}'")
+        return ru, en
+
+    except Exception as e:
+        logger.debug(f"[WEB_SEARCH] Ошибка улучшения запроса: {e}")
+        return query, None
+
+
+def search_web(
+    query: str,
+    max_results: int = MAX_RESULTS,
+    enhance: bool = True,
+    en_query_override: str | None = None,
+) -> list[dict]:
     """
     Ищет запрос в DuckDuckGo и возвращает список результатов.
+    Если enhance=True — улучшает запрос через LLM и делает дополнительный поиск на английском.
+    Если en_query_override задан — использует его вместо LLM-перевода (для rewriter'а).
     Для топ-результатов загружает полный текст страницы.
 
     Returns:
@@ -130,34 +250,84 @@ def search_web(query: str, max_results: int = MAX_RESULTS) -> list[dict]:
         logger.error("[WEB_SEARCH] Пакет ddgs не установлен")
         return []
 
-    try:
-        ddgs = DDGS()
-        results = list(ddgs.text(query, max_results=max_results))
-        if not results:
-            logger.info(f"[WEB_SEARCH] Нет результатов для: '{query[:60]}'")
+    # Улучшаем запрос через LLM или используем готовый перевод от rewriter'а
+    ru_query = query
+    en_query = None
+    if en_query_override:
+        en_query = en_query_override
+    elif enhance:
+        ru_query, en_query = _enhance_query(query)
+
+    def _run_search(q: str, limit: int) -> list[dict]:
+        """Один поиск с фильтрацией по блэклисту."""
+        try:
+            ddgs = DDGS()
+            raw = list(ddgs.text(q, max_results=limit))
+            filtered = []
+            for r in raw:
+                url = r.get("href", "")
+                if not _is_blacklisted(url):
+                    filtered.append(r)
+                else:
+                    logger.debug(f"[WEB_SEARCH] Пропущен (blacklist): {url[:60]}")
+            return filtered
+        except Exception as e:
+            logger.error(f"[WEB_SEARCH] Ошибка поиска '{q[:50]}': {e}")
             return []
 
-        # Обрезаем длинные сниппеты
-        for r in results:
-            if len(r.get("body", "")) > MAX_SNIPPET_LEN:
-                r["body"] = r["body"][:MAX_SNIPPET_LEN] + "..."
-            r["full_text"] = ""
+    # Русскоязычный поиск
+    ru_results = _run_search(ru_query, max_results)
 
-        # Загружаем полный текст для топ-результатов
-        for r in results[:FETCH_TOP_N]:
-            url = r.get("href", "")
-            if url and _is_fetchable_url(url):
-                full = fetch_page_text(url)
-                if full:
-                    r["full_text"] = full
-                    logger.info(f"[WEB_SEARCH] Загружен текст: {url[:60]} ({len(full)} символов)")
+    # Англоязычный поиск (если есть перевод)
+    en_results = []
+    if en_query:
+        en_results = _run_search(en_query, max_results)
 
-        logger.info(f"[WEB_SEARCH] Найдено {len(results)} результатов для: '{query[:60]}'")
-        return results
+    # Мержим: дедупликация по URL, ru-результаты приоритетнее
+    seen_urls: set[str] = set()
+    merged: list[dict] = []
 
-    except Exception as e:
-        logger.error(f"[WEB_SEARCH] Ошибка поиска: {e}")
+    for r in ru_results:
+        url = r.get("href", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            r["_lang"] = "ru"
+            merged.append(r)
+
+    for r in en_results:
+        url = r.get("href", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            r["_lang"] = "en"
+            merged.append(r)
+
+    if not merged:
+        logger.info(f"[WEB_SEARCH] Нет результатов для: '{query[:60]}'")
         return []
+
+    # Ограничиваем общее количество
+    merged = merged[:max_results * 2]
+
+    # Обрезаем длинные сниппеты
+    for r in merged:
+        if len(r.get("body", "")) > MAX_SNIPPET_LEN:
+            r["body"] = r["body"][:MAX_SNIPPET_LEN] + "..."
+        r["full_text"] = ""
+
+    # Загружаем полный текст для топ-результатов
+    for r in merged[:FETCH_TOP_N]:
+        url = r.get("href", "")
+        if url and _is_fetchable_url(url):
+            full = fetch_page_text(url)
+            if full:
+                r["full_text"] = full
+                logger.info(f"[WEB_SEARCH] Загружен текст: {url[:60]} ({len(full)} символов)")
+
+    logger.info(
+        f"[WEB_SEARCH] Найдено {len(merged)} результатов "
+        f"(ru={len(ru_results)}, en={len(en_results)}) для: '{query[:60]}'"
+    )
+    return merged
 
 
 def format_web_results(results: list[dict]) -> str:
