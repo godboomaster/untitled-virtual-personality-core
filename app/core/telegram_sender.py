@@ -26,16 +26,29 @@ class TelegramMessageSender:
         text: str,
         *,
         topic_id: Optional[int] = None,
+        parse_mode: Optional[str] = None,
     ) -> bool:
+        """
+        Отправка сообщений через Telegram Bot API.
+        
+        Параметр parse_mode позволяет указать форматирование:
+        - None — обычный текст (экранирование HTML)
+        - "HTML" — HTML-форматирование
+        - "Markdown" — Markdown-форматирование
+        
+        Когда python-telegram-bot обновится до поддержки Bot API 10.1,
+        можно будет использовать send_rich_message() с InputRichMessage.
+        """
         try:
-            # Длинные сообщения (>100 символов) отправляем в сворачиваемой цитате
-            if len(text) > 100:
-                # Экранируем HTML внутри текста перед оборачиванием
-                safe_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                text = f"<blockquote expandable>{safe_text}</blockquote>"
-                parse_mode = ParseMode.HTML
-            else:
-                parse_mode = None
+            # Если parse_mode не указан — длинные сообщения в expandable blockquote
+            if parse_mode is None:
+                if len(text) > 100:
+                    # Экранируем HTML внутри текста перед оборачиванием
+                    safe_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    text = f"<blockquote expandable>{safe_text}</blockquote>"
+                    parse_mode = ParseMode.HTML
+                else:
+                    parse_mode = None
 
             kwargs = {
                 "chat_id": int(chat_id),
