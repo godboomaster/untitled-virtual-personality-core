@@ -27,43 +27,20 @@ logger = logging.getLogger(__name__)
 
 # ─── Markdown в HTML ──────────────────────────────────────
 
+from app.core.rich_message_formatter import RichMessageFormatter
+
+_rich_formatter = RichMessageFormatter()
+
 def _md_to_html(text: str) -> str:
-    code_blocks = []
-
-    def _save_block(m):
-        lang = m.group(1)
-        code = m.group(2).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        placeholder = f'\x00CODEBLOCK{len(code_blocks)}\x00'
-        if lang:
-            code_blocks.append(f'<pre><code class="language-{lang}">{code}</code></pre>')
-        else:
-            code_blocks.append(f'<pre>{code}</pre>')
-        return placeholder
-
-    text = re.sub(r'```(\w*)\n?(.*?)```', _save_block, text, flags=re.DOTALL)
-
-    def _save_inline(m):
-        code = m.group(1).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        placeholder = f'\x00CODEBLOCK{len(code_blocks)}\x00'
-        code_blocks.append(f'<code>{code}</code>')
-        return placeholder
-
-    text = re.sub(r'`([^`]+)`', _save_inline, text)
-    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
-    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
-    text = re.sub(r'^&gt;\s?(.*)$', r'<blockquote>\1</blockquote>', text, flags=re.MULTILINE)
-    text = re.sub(r'</blockquote>\n<blockquote>', '\n', text)
-    text = re.sub(r'^### (.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
-    text = re.sub(r'^## (.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
-    text = re.sub(r'^# (.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
-    text = re.sub(r'^---+$', '───────────', text, flags=re.MULTILINE)
-
-    for i, block in enumerate(code_blocks):
-        text = text.replace(f'\x00CODEBLOCK{i}\x00', block)
-    return text
+    """
+    Конвертирует Markdown в HTML для Telegram.
+    Использует RichMessageFormatter для поддержки новых тегов:
+    - <tg-spoiler> — спойлеры
+    - <u> — подчеркивание
+    - <sub>, <sup> — индексы
+    - <mark> — выделение
+    """
+    return _rich_formatter.to_current_html(text)
 
 
 async def _reply_ai(message, text: str):
