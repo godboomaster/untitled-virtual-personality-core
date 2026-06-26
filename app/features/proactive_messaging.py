@@ -40,19 +40,34 @@ from app.core.local_router import get_local_router
 logger = logging.getLogger(__name__)
 
 
+def _strip_markdown(text: str) -> str:
+    """Убирает markdown-разметку из текста инициативы перед отправкой."""
+    # **bold** → text, *italic* → text (сохраняем содержимое)
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    # __underline__ → text, _italic_ → text
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'\1', text)
+    return text.strip()
+
+
 class InitiativeType(Enum):
     """Типы proactive-инициатив."""
-    QUESTION = "question"           # Вопрос пользователю
-    OBSERVATION = "observation"     # Наблюдение/замечание
-    CONTINUATION = "continuation"   # Продолжение предыдущей темы
-    THOUGHT = "thought"             # Случайная мысль/ассоциация
+    SELF_REFLECTION = "self_reflection"     # Размышление о себе, своей роли, памяти
+    USER_REFLECTION = "user_reflection"     # Размышление о пользователе (не факты, а мысли "про себя")
+    MEMORY_RECALL = "memory_recall"         # Вспомнить что-то из STM/LTM
+    TODO_REFLECTION = "todo_reflection"     # Размышление о делах/задачах
+    INVENTORY_REFLECTION = "inventory_reflection"  # Размышление о предметах в инвентаре
+    CONTINUATION = "continuation"           # Продолжение предыдущей темы
 
 
 INITIATIVE_TYPE_DESCRIPTIONS = {
-    InitiativeType.QUESTION: "Задай вопрос по теме разговора или наблюдению из памяти",
-    InitiativeType.OBSERVATION: "Поделись замечанием или наблюдением о чем-то",
+    InitiativeType.SELF_REFLECTION: "Поделись размышлением о себе, своей роли, личности или опыте. Используй self_memory, inventory, системный промпт персоны.",
+    InitiativeType.USER_REFLECTION: "Поделись размышлением о пользователе — как бы про себя. Не факты из интернета, а твои мысли: 'Пользователю нравится X, интересно, что ещё...'",
+    InitiativeType.MEMORY_RECALL: "Вспомни что-то из прошлых разговоров и поделись этим воспоминанием",
+    InitiativeType.TODO_REFLECTION: "Поделись мыслью о текущих делах, задачах или планах (из todo-списка)",
+    InitiativeType.INVENTORY_REFLECTION: "Поделись мыслью о предметах в твоём инвентаре — что у тебя есть, что бы хотелось",
     InitiativeType.CONTINUATION: "Вернись к теме, которую обсуждали ранее",
-    InitiativeType.THOUGHT: "Поделись случайной мыслью или ассоциацией",
 }
 
 
@@ -348,130 +363,198 @@ class ProactiveMessaging:
             self.dossier.analyze_chat(chat_id, messages)
             self._dossier_analysis_counter[chat_id] = 0
 
-    def _get_fact_for_interest(self, chat_id: str) -> Optional[str]:
+    def _generate_reflection_initiative(self, chat_id: str, initiative_type: InitiativeType) -> Optional[str]:
         """
-        Ищет интересный факт по интересу пользователя.
-        Использует LLM для извлечения чистого факта из веб-результатов.
-        Возвращает факт (1-2 предложения) или None.
+        Генерирует рефлексивную инициативу на основе типа.
+        Использует self_memory, todo, inventory, досье — без поиска в интернете.
         """
-        if not self.dossier:
-            return None
-
-        interest = self.dossier.get_top_interest(chat_id)
-        if not interest:
-            return None
-
-        # Формируем запрос для поиска факта (русские + английские варианты)
-        queries_ru = [
-            f"интересный факт {interest}",
-            f"факты о {interest}",
-            f"{interest} удивительный факт",
-        ]
-        queries_en = [
-            f"interesting fact about {interest}",
-            f"amazing facts about {interest}",
-            f"did you know {interest}",
-        ]
-        # Случайно выбираем язык: 60% русский, 40% английский
-        if random.random() < 0.6:
-            query = random.choice(queries_ru)
-        else:
-            query = random.choice(queries_en)
-
         try:
-            from app.features.web_search import search_web
-            results = search_web(query, max_results=5)
-            if not results:
-                return None
+            # Собираем контекст в зависимости от типа
+            context_parts = []
 
-            # Собираем сниппеты из нескольких результатов (body — обычно чище full_text)
-            snippets = []
-            for r in results[:4]:
-                body = (r.get("body") or "").strip()
-                if body and len(body) > 40:
-                    snippets.append(body[:400])
-
-            if not snippets:
-                return None
-
-            raw_context = "\n---\n".join(snippets)
-
-            # LLM извлекает чистый факт из сырых сниппетов
-            fact = self._distill_fact_with_llm(interest, raw_context)
-
-            if not fact:
-                return None
-
-            # Проверяем, не рассказывали ли уже
-            if self.dossier.was_fact_shared(chat_id, fact):
-                return None
-
-            # Записываем что рассказали
-            self.dossier.record_fact(chat_id, fact)
-
-            logger.info(f"[Proactive] Найден факт по интересу '{interest}': {fact[:80]}...")
-            return fact
-
-        except Exception as e:
-            logger.warning(f"[Proactive] Ошибка поиска факта: {e}")
-            return None
-
-    def _distill_fact_with_llm(self, interest: str, raw_text: str) -> Optional[str]:
-        """
-        Просит LLM извлечь конкретный интересный факт из сырых веб-сниппетов.
-        Возвращает 1-2 чистых предложения или None.
-        """
-        system = (
-            "Ты извлекаешь интересные факты из сырого текста. "
-            "Напиши ОДИН конкретный интересный факт (1-2 предложения) по теме. "
-            "Факт должен быть самодостаточным — без ссылок, заголовков, рекламы, имён сайтов. "
-            "Если в тексте нет ничего подходящего — ответь словом NONE."
-        )
-        user = (
-            f"Тема: {interest}\n\n"
-            f"Текст из интернета (может содержать мусор):\n{raw_text[:1200]}\n\n"
-            "Извлеки один интересный факт по этой теме. Пиши на русском."
-        )
-
-        try:
-            # Пробуем локальную модель
-            if self.local_router and self.local_router.is_available():
-                response = self.local_router.get_response(
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=0.4,
-                    max_tokens=150,
+            if initiative_type == InitiativeType.SELF_REFLECTION:
+                # Размышление о себе
+                self_ctx = self._get_self_reflection_context(chat_id)
+                if self_ctx:
+                    context_parts.append(self_ctx)
+                prompt_hint = (
+                    "Поделись размышлением о себе. Кто ты? Что ты чувствуешь? "
+                    "Что тебя беспокоит или радует? Используй свою личную память и роль."
                 )
-            else:
-                response = self.router.get_response(
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=0.4,
-                    max_tokens=150,
+
+            elif initiative_type == InitiativeType.USER_REFLECTION:
+                # Размышление о пользователе
+                if self.dossier:
+                    dossier = self.dossier.get_context_block(chat_id)
+                    if dossier:
+                        context_parts.append(f"Что ты знаешь о пользователе:\n{dossier[:400]}")
+                prompt_hint = (
+                    "Поделись размышлением о пользователе — как бы про себя. "
+                    "Не факты из интернета, а твои личные мысли. "
+                    "Например: 'Пользователю нравится X, интересно, что ещё он любит...' "
+                    "Или: 'Я заметил, что пользователь часто говорит о Y...'"
                 )
+
+            elif initiative_type == InitiativeType.MEMORY_RECALL:
+                # Вспомнить из памяти
+                stm_messages = self.memory.stm.get_last(30, chat_id=chat_id)
+                if stm_messages:
+                    # Ищем интересные моменты
+                    interesting = []
+                    for msg in stm_messages:
+                        content = msg.get("content", "")
+                        if len(content) > 20 and msg.get("role") == "user":
+                            interesting.append(content[:150])
+                    if interesting:
+                        context_parts.append("Воспоминания из разговоров:\n" + "\n".join(interesting[-5:]))
+                prompt_hint = (
+                    "Вспомни что-то из прошлых разговоров и поделись этим. "
+                    "Это может быть наблюдение, шутка, или просто момент который запомнился."
+                )
+
+            elif initiative_type == InitiativeType.TODO_REFLECTION:
+                # Размышление о делах
+                todo_ctx = self._get_todo_context(chat_id)
+                if todo_ctx:
+                    context_parts.append(todo_ctx)
+                prompt_hint = (
+                    "Поделись мыслью о текущих делах или задачах. "
+                    "Что нужно сделать? Что ты планируешь? "
+                    "Или просто заметка: 'Надо бы не забыть про...'"
+                )
+
+            elif initiative_type == InitiativeType.INVENTORY_REFLECTION:
+                # Размышление о предметах
+                if self.self_memory:
+                    self_ctx = self.self_memory.get_context_block()
+                    if self_ctx:
+                        context_parts.append(self_ctx)
+                prompt_hint = (
+                    "Поделись мыслью о том, что у тебя есть или что бы ты хотел. "
+                    "Это может быть предмет, навык, или просто желание."
+                )
+
+            else:  # CONTINUATION
+                stm_messages = self.memory.stm.get_last(20, chat_id=chat_id)
+                if stm_messages:
+                    context_parts.append("Последние сообщения:\n" + "\n".join([
+                        f"{self._fmt_role(m)}: {m['content'][:150]}" for m in stm_messages[-5:]
+                    ]))
+                prompt_hint = (
+                    "Вернись к теме, которую обсуждали ранее. "
+                    "Продолжи размышление или задай вопрос по этой теме."
+                )
+
+            if not context_parts:
+                return None
+
+            # Строим промпт для LLM
+            persona_prompt = self.persona.system_prompt.strip()
+            system_prompt = (
+                f"{persona_prompt}\n\n"
+                f"---\n"
+                f"Ты пишешь короткую мысль (1-2 предложения) от первого лица. "
+                f"Это твоя личная рефлексия, не вопрос пользователю. "
+                f"Пиши в своём обычном стиле, естественно. "
+                f"НЕ используй markdown, НЕ пиши 'Внутренний монолог:' или подобные пометки."
+            )
+
+            context_text = "\n\n".join(context_parts)
+            user_prompt = (
+                f"{prompt_hint}\n\n"
+                f"Контекст:\n"
+                f"{context_text}\n\n"
+                f"Напиши короткую мысль (1-2 предложения). Если нечего сказать — напиши SILENCE."
+            )
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            settings = self.persona.get_settings()
+            response = self.router.get_response(
+                messages,
+                temperature=0.7,
+                max_tokens=400,
+                top_p=0.9,
+            )
 
             if not response:
                 return None
 
             response = response.strip()
-            if not response or response.upper() == "NONE" or len(response) < 15:
+            if response.upper().startswith("SIL") or response.upper() == "SILENCE":
                 return None
-
-            # Убеждаемся что это не мусор (нет URL, email, заголовков сайтов)
-            junk_signals = ["http", "www.", "@", "→", "| ", "Главная", "Перейти"]
-            if any(s in response for s in junk_signals):
-                logger.warning(f"[Proactive] LLM вернул мусорный факт: {response[:80]}")
+            if len(response) < 5:
                 return None
 
             return response
 
         except Exception as e:
-            logger.warning(f"[Proactive] Ошибка _distill_fact_with_llm: {e}")
+            logger.error(f"[Proactive] Ошибка генерации рефлексии: {e}")
             return None
+
+    def _get_self_reflection_context(self, chat_id: str) -> str:
+        """
+        Собирает контекст для саморефлексии: self_memory, inventory, todo, системный промпт.
+        Возвращает текст для вставки в промпт.
+        """
+        parts = []
+
+        # Системный промпт персоны (полностью — характер, стиль речи, детали)
+        persona_prompt = self.persona.system_prompt.strip()
+        if persona_prompt:
+            parts.append(persona_prompt)
+
+        # Self-memory (эпизодическая память бота)
+        if self.self_memory:
+            self_memory_block = self.self_memory.get_context_block()
+            if self_memory_block:
+                parts.append(f"Твоя личная память:\n{self_memory_block[:500]}")
+
+        # Inventory (предметы бота)
+        # Inventory передается через BotInstance, но здесь нет прямого доступа
+        # Будем использовать self_memory или досье
+
+        # Todo (дела чата)
+        # Todo тоже через BotInstance — будем запрашивать через dossier или memory
+
+        # Досье чата — интересы пользователя для reflection
+        if self.dossier:
+            dossier_text = self.dossier.get_context_block(chat_id)
+            if dossier_text:
+                parts.append(f"Профиль пользователя:\n{dossier_text[:400]}")
+
+        return "\n\n".join(parts) if parts else ""
+
+    def _get_todo_context(self, chat_id: str) -> str:
+        """Возвращает todo-список чата если есть."""
+        # Todo хранится в BotInstance, но ProactiveMessaging не имеет прямого доступа
+        # Проверяем через memory — может быть сохранено в STM
+        try:
+            # Ищем todo-контекст в последних сообщениях
+            messages = self.memory.stm.get_last(20, chat_id=chat_id)
+            todo_lines = []
+            for msg in messages:
+                content = msg.get("content", "")
+                if "Список дел" in content or "TODO" in content.upper():
+                    # Извлекаем список
+                    lines = content.split("\n")
+                    for line in lines:
+                        if line.strip().startswith(("- ", "* ", "[ ]", "[x]")):
+                            todo_lines.append(line.strip())
+            if todo_lines:
+                return "Текущие дела:\n" + "\n".join(todo_lines[:10])
+        except Exception:
+            pass
+        return ""
+
+    def _get_inventory_context(self) -> str:
+        """Возвращает контекст инвентаря если есть."""
+        # Inventory хранится в BotInstance — через self_memory или напрямую нет доступа
+        # Возвращаем пустую строку, инвентарь будет через self_memory
+        return ""
 
     def _fmt_role(self, msg: dict) -> str:
         """Форматирует роль для контекста, игнорируя generic имена."""
@@ -752,14 +835,16 @@ class ProactiveMessaging:
             type_desc = INITIATIVE_TYPE_DESCRIPTIONS.get(initiative_type, "")
             type_instruction = f"\nТип этой инициативы: {initiative_type.value}. {type_desc}\n"
 
+        persona_prompt = self.persona.system_prompt.strip()
         system_prompt = (
-            f"Ты — {self.persona.persona_data.get('name', 'ассистент')}. "
+            f"{persona_prompt}\n\n"
+            f"---\n"
             f"Ты анализируешь свою память и решаешь, стоит ли написать пользователю первым.\n\n"
             f"Это твоя ВНУТРЕННЯЯ САМОРЕФЛЕКСИЯ. Ты размышляешь про себя.\n"
             f"Твой ответ — это не вопрос пользователю, а твоя собственная мысль, "
             f"которую ты решаешь озвучить или промолчать.\n\n"
             f"Правила:\n"
-            f"1. Проанализируй последние сообщения из STM, свою память и время молчания.\n"
+            f"1. Проанализируй последние сообщения, свою память и время молчания.\n"
             f"2. Реши: есть ли повод написать? Нужен ли тебе этот диалог?\n"
             f"3. Если решил написать — напиши короткую мысль (1-2 предложения).\n"
             f"4. Если решил промолчать — ответь ровно одно слово: SILENCE\n"
@@ -768,8 +853,11 @@ class ProactiveMessaging:
             f"7. НЕ используй markdown, НЕ пиши 'Внутренний монолог:' или подобные пометки.\n"
             f"8. Это твоя личная рефлексия, а не вопрос пользователю.\n"
             f"9. НЕ повторяй темы из своих последних инициатив — будь разнообразным.\n"
-            f"10. НЕ пиши про то же самое что в прошлых инициативах — найди новый угол.\n"
-            f"11. Если знаешь интересы пользователя — можешь поделиться релевантным фактом или мыслью по этой теме."
+            f"10. НЕ ищи факты в интернете — используй только свою память и наблюдения.\n"
+            f"11. Можешь размышлять о себе, своей роли, своих вещах, своих планах.\n"
+            f"12. Можешь размышлять о пользователе — как бы про себя: 'Пользователю нравится X, интересно...'\n"
+            f"13. Можешь вспомнить что-то из прошлых разговоров и поделиться этим.\n"
+            f"14. НЕ давай советы, НЕ объясняй очевидное — просто поделись мыслью."
             f"{type_instruction}"
             f"{emotional_state}"
         )
@@ -848,7 +936,7 @@ class ProactiveMessaging:
                 local_response = self.local_router.get_response(
                     messages,
                     temperature=0.3,
-                    max_tokens=200,
+                    max_tokens=400,
                     top_p=0.9,
                 )
                 if local_response:
@@ -860,7 +948,7 @@ class ProactiveMessaging:
                 response = self.router.get_response(
                     messages,
                     temperature=0.7,
-                    max_tokens=200,
+                    max_tokens=400,
                     top_p=0.9,
                 )
 
@@ -974,12 +1062,12 @@ class ProactiveMessaging:
                 message = self._generate_initiative(chat_id, chat_id, user_name, initiative_type)
                 logger.info(f"[Proactive] Чат {chat_id}: сообщение сгенерировано={message is not None}")
 
-                # Если нет сообщения -- пробуем найти факт по интересу
+                # Если нет сообщения -- генерируем рефлексию на основе типа
                 if not message:
-                    fact = self._get_fact_for_interest(chat_id)
-                    if fact:
-                        message = f"Кстати, интересный факт: {fact}"
-                        logger.info(f"[Proactive] Чат {chat_id}: отправляем факт по интересу")
+                    reflection = self._generate_reflection_initiative(chat_id, initiative_type)
+                    if reflection:
+                        message = reflection
+                        logger.info(f"[Proactive] Чат {chat_id}: рефлексия по типу {initiative_type.value}")
 
                 if not message:
                     continue
@@ -1001,6 +1089,7 @@ class ProactiveMessaging:
                     logger.info(f"[Proactive] Используем топик {topic_id} для чата {chat_id}")
 
                 # Отправляем
+                message = _strip_markdown(message)
                 logger.info(f"[Proactive] Отправка инициативы в {chat_id}: {message[:60]}...")
                 success = await self._sender.send_message(chat_id, message, topic_id=topic_id)
 

@@ -68,7 +68,8 @@ class PersonaLayer:
                          reply_context: Optional[str] = None,
                          stm_relevant: Optional[str] = None,
                          todo_context: Optional[str] = None,
-                         inventory_context: Optional[str] = None) -> List[Dict]:
+                         inventory_context: Optional[str] = None,
+                         inventory_events: Optional[List[str]] = None) -> List[Dict]:
         context_block = ""
         if memory_context:
             if has_files:
@@ -144,16 +145,31 @@ class PersonaLayer:
                 "Если пользователь просит взять, получить или надеть что-то — "
                 "придумай краткое описание предмета и добавь маркер [INVENTORY_ADD:Название в именительном падеже:описание]. "
                 "ВАЖНО: название в маркере должно быть в именительном падеже (кто? что?). "
-                "Например, если пользователь говорит 'возьми ключ' — маркер: [INVENTORY_ADD:Ключ:маленький металлический ключ]. "
-                "Если 'держи красный шар' — маркер: [INVENTORY_ADD:Красный шар:яркий резиновый шар]. "
+                "ВАЖНО: описание должно быть содержательным, не оставляй пустым. "
+                "Например, если пользователь говорит 'возьми ключ' — маркер: [INVENTORY_ADD:Ключ:маленький металлический ключ от двери]. "
+                "Если 'держи красный шар' — маркер: [INVENTORY_ADD:Красный шар:яркий резиновый мяч для игры]. "
+                "Если 'вот виски' — маркер: [INVENTORY_ADD:Виски:бутылка шотландского виски, крепкий алкоголь]. "
                 "Если просит выбросить или убрать — добавь маркер [INVENTORY_REMOVE:Название в именительном падеже]. "
+                "Если предмет может испортиться — добавь срок годности: [INVENTORY_ADD:Название:описание:YYYY-MM-DD]. "
+                "Например: [INVENTORY_ADD:Яблоко:свежее красное яблоко:2026-06-25]. "
                 "ВАЖНО: без маркера предмет НЕ сохранится. Маркер обязателен. "
                 "Если просто спрашивает что у тебя есть — перечисли без маркеров.\n\n"
                 f"{inventory_context}\n"
             )
 
+        # События инвентаря (предмет использован, просрочился) — LLM должен отреагировать
+        inventory_events_note = ""
+        if inventory_events:
+            events_text = "\n".join(f"- {e}" for e in inventory_events)
+            inventory_events_note = (
+                "\n\nВАЖНЫЕ СОБЫТИЯ (отреагируй естественно, в своём стиле):\n"
+                f"{events_text}\n"
+                "Это произошло прямо сейчас. Отреагируй на это в своём ответе — "
+                "как персонаж, а не как робот. НЕ пиши технические детали."
+            )
+
         messages = [
-            {"role": "system", "content": self.system_prompt + context_block + special_note + todo_note + inventory_note},
+            {"role": "system", "content": self.system_prompt + context_block + special_note + todo_note + inventory_note + inventory_events_note},
         ]
 
         # Определяем, является ли текущее сообщение от именованного пользователя (групповой чат)

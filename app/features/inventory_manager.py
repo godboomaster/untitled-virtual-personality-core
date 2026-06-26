@@ -16,21 +16,34 @@ logger = logging.getLogger(__name__)
 
 class InventoryItem:
     def __init__(self, name: str, description: str = "", acquired: str = "",
-                 source: str = "", tags: Optional[List[str]] = None):
+                 source: str = "", tags: Optional[List[str]] = None,
+                 expires: Optional[str] = None):
         self.name = name
         self.description = description
         self.acquired = acquired or datetime.now().strftime("%Y-%m-%d")
         self.source = source
         self.tags = tags or []
+        self.expires = expires  # ISO date или None
+
+    def is_expired(self) -> bool:
+        if not self.expires:
+            return False
+        try:
+            return datetime.now().strftime("%Y-%m-%d") > self.expires
+        except Exception:
+            return False
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "name": self.name,
             "description": self.description,
             "acquired": self.acquired,
             "source": self.source,
             "tags": self.tags,
         }
+        if self.expires:
+            result["expires"] = self.expires
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> "InventoryItem":
@@ -40,6 +53,7 @@ class InventoryItem:
             acquired=data.get("acquired", ""),
             source=data.get("source", ""),
             tags=data.get("tags", []),
+            expires=data.get("expires"),
         )
 
 
@@ -78,7 +92,7 @@ class InventoryManager:
         except Exception as e:
             logger.warning(f"[Inventory] Не удалось сохранить {self._file}: {e}")
 
-    def add_item(self, name: str, description: str = "", source: str = "") -> str:
+    def add_item(self, name: str, description: str = "", source: str = "", expires: Optional[str] = None) -> str:
         """Добавляет предмет в инвентарь. Возвращает результат операции."""
         name = name.strip()
         if not name:
@@ -93,7 +107,7 @@ class InventoryManager:
             if len(self._items) >= self.max_slots:
                 return f"Инвентарь полон ({self.max_slots}/{self.max_slots}). Удалите что-нибудь."
 
-            item = InventoryItem(name=name, description=description, source=source)
+            item = InventoryItem(name=name, description=description, source=source, expires=expires)
             self._items.append(item)
             self._save()
 
@@ -115,6 +129,37 @@ class InventoryManager:
         with self._lock:
             return list(self._items)
 
+    def use_item(self, name: str) -> str:
+        """Использует предмет из инвентаря (удаляет его)."""
+        name = name.strip().lower()
+        with self._lock:
+            for i, item in enumerate(self._items):
+                if item.name.lower() == name:
+                    used = self._items.pop(i)
+                    self._save()
+                    return f"Предмет '{used.name}' использован и удален из инвентаря."
+        return f"Предмет '{name}' не найден в инвентаре."
+
+    def remove_expired_items(self) -> List[str]:
+        """Удаляет просроченные предметы. Возвращает список удаленных."""
+        removed = []
+        with self._lock:
+            remaining = []
+            for item in self._items:
+                if item.is_expired():
+                    removed.append(item.name)
+                else:
+                    remaining.append(item)
+            if removed:
+                self._items = remaining
+                self._save()
+        return removed
+
+    def get_expired_items(self) -> List[InventoryItem]:
+        """Возвращает список просроченных предметов без удаления."""
+        with self._lock:
+            return [item for item in self._items if item.is_expired()]
+
     def get_context_block(self) -> Optional[str]:
         """Возвращает форматированный блок для system prompt."""
         if not self._items:
@@ -122,7 +167,8 @@ class InventoryManager:
         lines = ["Твой инвентарь:"]
         for item in self._items:
             desc = f" — {item.description}" if item.description else ""
-            lines.append(f"  • {item.name}{desc}")
+            exp = " [просрочен]" if item.is_expired() else ""
+            lines.append(f"  • {item.name}{desc}{exp}")
         return "\n".join(lines)
 
     def get_list_text(self) -> str:

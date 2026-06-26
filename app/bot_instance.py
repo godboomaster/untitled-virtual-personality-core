@@ -30,7 +30,7 @@ from app.features.inventory_manager import (
 logger = logging.getLogger(__name__)
 
 # Сколько последних реплик передавать в query rewriter для разрешения кореференций
-_REWRITE_HISTORY = 6
+_REWRITE_HISTORY = 8
 
 
 class BotInstance:
@@ -229,21 +229,30 @@ class BotInstance:
                         reply_context: str = None) -> str:
         from app.features.query_rewriter import rewrite_query
 
+        logger.info(f"[BotInstance] process_message START: '{user_input[:60]}' | chat_id={chat_id}")
+
         # Берём историю до добавления нового сообщения — для контекста rewriter'а
         history_for_rewrite = self.memory.stm.get_last(_REWRITE_HISTORY, chat_id=chat_id)
+        logger.info(f"[BotInstance] history_for_rewrite: {len(history_for_rewrite)} messages")
 
-        # Переписываем запрос: разрешаем местоимения + получаем английскую версию
-        ru_rewritten, en_for_search = rewrite_query(
-            user_input, history_for_rewrite, self._local_router
+        # Переписываем запрос: разрешаем местоимения и анафору
+        persona_context = self._get_persona_context_for_search()
+        ru_rewritten = rewrite_query(
+            user_input, history_for_rewrite, self._local_router, persona_context=persona_context
         )
+        logger.info(f"[BotInstance] rewrite_query: '{user_input[:60]}' -> '{ru_rewritten[:60]}'")
 
         # 1. Запускаем веб-поиск в фоне (параллельно с памятью)
-        # Передаём оба запроса: ru_rewritten + en_for_search (если есть)
-        # search_web сам сделает мерж ru+en результатов 50/50
+        # QueryEnhancer преобразует ru_rewritten в короткий поисковый запрос через LLM
+        # Передаём историю и контекст персоны для корректного понимания вопроса
         web_future = None
         if self._web_search_enabled and chat_id not in self._web_search_disabled_chats and not self._is_docs_only_request(user_input):
+            # Собираем контекст персоны для QueryEnhancer
+            persona_context = self._get_persona_context_for_search()
+            # Берём последние 6 сообщений для контекста
+            history_for_search = self.memory.stm.get_last(6, chat_id=chat_id)
             web_future = self._web_pool.submit(
-                self._search_web, ru_rewritten, 5, False, en_for_search
+                self._search_web, ru_rewritten, 5, True, None, history_for_search, persona_context
             )
 
         try:
@@ -306,6 +315,7 @@ class BotInstance:
             inventory_context = None
             extracted_inventory_item = None
             extracted_inventory_remove = None
+            inventory_events = []  # События для LLM-реакции (использование, просрочка)
             if self.inventory_manager:
                 inv_block = self.inventory_manager.get_context_block()
                 if inv_block:
@@ -316,13 +326,41 @@ class BotInstance:
                 elif is_inventory_remove_request(user_input):
                     extracted_inventory_remove = extract_inventory_remove(user_input)
 
+                # Проверяем, не сказал ли пользователь что бот использовал предмет
+                # (например: "ты использовал X", "ты съел Y", "ты выпил Z", "давай съедим Z")
+                used_item = self._extract_user_reported_usage(user_input)
+                if used_item:
+                    # Проверяем что предмет действительно есть в инвентаре
+                    if self.inventory_manager.has_item(used_item):
+                        result = self.inventory_manager.use_item(used_item)
+                        inventory_events.append(f"Предмет '{used_item}' был использован и теперь его нет в инвентаре.")
+                    else:
+                        # Пробуем найти похожий предмет (по части названия)
+                        found = self._find_inventory_item_by_substring(used_item)
+                        if found:
+                            result = self.inventory_manager.use_item(found)
+                            inventory_events.append(f"Предмет '{found}' был использован и теперь его нет в инвентаре.")
+                        else:
+                            inventory_events.append(f"Пользователь говорит об использовании '{used_item}', но такого предмета нет в инвентаре.")
+
+                # Проверяем просроченные предметы
+                expired = self.inventory_manager.remove_expired_items()
+                for exp_name in expired:
+                    inventory_events.append(f"Предмет '{exp_name}' испортился/просрочился и исчез из инвентаря.")
+
+                # Обновляем контекст инвентаря после всех изменений
+                inv_block = self.inventory_manager.get_context_block()
+                if inv_block:
+                    inventory_context = inv_block
+
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
                 user_id=user_id, user_name=user_name, web_context=web_context,
                 has_files=has_files, self_memory_block=self_memory_block,
                 reply_context=reply_context, stm_relevant=stm_relevant_text,
                 todo_context=todo_context,
-                inventory_context=inventory_context
+                inventory_context=inventory_context,
+                inventory_events=inventory_events
             )
             settings = self.persona.get_settings()
             answer = self.router.get_response(messages, **settings)
@@ -334,10 +372,9 @@ class BotInstance:
             if self.todo_manager and chat_id and todo_context:
                 answer = self._process_todo_marker(answer, chat_id, user_name or "Пользователь", extracted_task)
 
-            # Обработка inventory-маркеров
+            # Обработка inventory-маркеров (добавление/удаление/использование через маркеры)
             if self.inventory_manager:
                 answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove)
-            if self._punish_enabled:
                 answer = self._parse_punishment(answer, user_id)
 
             # 10. Сохраняем ответ
@@ -476,10 +513,19 @@ class BotInstance:
         return response.strip()
 
     def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None) -> str:
-        """Парсит маркеры [INVENTORY_ADD:...] и [INVENTORY_REMOVE:...], обновляет инвентарь.
+        """Парсит маркеры [INVENTORY_ADD:...], [INVENTORY_REMOVE:...], [INVENTORY_USE:...], обновляет инвентарь.
         Fallback используется если LLM понял intent но забыл маркер — тогда берем эвристику."""
         if not self.inventory_manager:
             return response
+
+        # INVENTORY_USE — бот использует предмет (удаляется)
+        use_match = re.search(r'\[INVENTORY_USE:([^\]]+)\]', response)
+        if use_match:
+            name = use_match.group(1).strip()
+            response = response[:use_match.start()] + response[use_match.end():]
+            result = self.inventory_manager.use_item(name)
+            if "Инвентарь" not in response:
+                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
 
         # INVENTORY_ADD — приоритет: маркер от LLM
         add_match = re.search(r'\[INVENTORY_ADD:([^:\]]+)(?::([^\]]+))?\]', response)
@@ -496,7 +542,7 @@ class BotInstance:
             if "Инвентарь" not in response:
                 response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
 
-        # INVENTORY_REMOVE — приоритет: маркер от LLM
+        # INVENTORY_REMOVE — приоритет: маркер от LLM (пользователь забирает или отменяет)
         remove_match = re.search(r'\[INVENTORY_REMOVE:([^\]]+)\]', response)
         if remove_match:
             name = remove_match.group(1).strip()
@@ -508,6 +554,12 @@ class BotInstance:
             result = self.inventory_manager.remove_item(fallback_remove)
             if "Инвентарь" not in response:
                 response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+
+        # Проверяем просроченные предметы
+        expired = self.inventory_manager.remove_expired_items()
+        if expired and "Инвентарь" not in response:
+            exp_text = "Просроченные предметы удалены: " + ", ".join(expired)
+            response = response.strip() + "\n\n" + exp_text + "\n" + self.inventory_manager.get_list_text()
 
         return response.strip()
 
@@ -521,6 +573,29 @@ class BotInstance:
         "расскажи текст", "весь текст", "полный текст",
         "доклад по", "анализ документа", "разбор документа", "проанализируй"
     ]
+
+    def _get_persona_context_for_search(self) -> str:
+        """Собирает краткий контекст персоны для QueryEnhancer (имя, роль, ключевые черты)."""
+        data = self.persona.persona_data
+        parts = []
+        
+        name = data.get("name", self.persona_name)
+        if name:
+            parts.append(f"Имя персоны: {name}")
+        
+        description = data.get("description", "")
+        if description:
+            parts.append(f"Описание: {description}")
+        
+        # Из system_prompt берём только первые 500 символов — основная роль и внешность
+        system_prompt = data.get("system_prompt", "")
+        if system_prompt:
+            # Берём начало до первого крупного раздела
+            prompt_preview = system_prompt[:500].strip()
+            if prompt_preview:
+                parts.append(f"Роль и характер: {prompt_preview}")
+        
+        return "\n".join(parts) if parts else ""
 
     def _is_full_doc_request(self, text: str) -> bool:
         # Определяет, просит ли пользователь пересказ/анализ документа целиком.
@@ -539,6 +614,60 @@ class BotInstance:
         # Пользователь просит ответить только по документам — без веб-поиска.
         lower = text.lower()
         return any(kw in lower for kw in self._DOCS_ONLY_KEYWORDS)
+
+    # Inventory helpers
+
+    _INVENTORY_USAGE_PATTERNS = [
+        # Прямые утверждения: "ты съел X", "ты использовал Y"
+        re.compile(r"(?:ты|вы)\s+(?:использовал[ао]?|съел[ао]?|выпил[ао]?|применил[ао]?|взял[ао]?|открыл[ао]?|закурил[ао]?|съел[ао]?|съела|съел|поел[ао]?|попил[ао]?|съешь|выпей|используй|примени|съешь|выпей|открой|закури|возьми)\s+(.+)", re.IGNORECASE),
+        # "ты уже ..."
+        re.compile(r"(?:ты|вы)\s+(?:уже)\s+(?:использовал[ао]?|съел[ао]?|выпил[ао]?|применил[ао]?|взял[ао]?|открыл[ао]?|съел[ао]?|поел[ао]?|попил[ао]?)\s+(.+)", re.IGNORECASE),
+        # Предложения совместного действия: "давай съедим X", "давай выпьем Y"
+        re.compile(r"(?:давай|давайте)\s+(?:вместе\s+)?(?:съедим|поедим|выпьем|попьем|используем|применим|откроем|возьмем|съедим|выпьем)\s+(.+)", re.IGNORECASE),
+        # "X, которая у тебя есть" + контекст совместного использования
+        re.compile(r"(?:съедим|поедим|выпьем|попьем|используем|применим|откроем|возьмем)\s+(.+?)(?:\s+котор[аяое]\s+у\s+тебя\s+есть|\s+из\s+инвентаря|\s+что\s+у\s+тебя\s+есть)", re.IGNORECASE),
+    ]
+
+    def _find_inventory_item_by_substring(self, text: str) -> Optional[str]:
+        """
+        Ищет предмет в инвентаре по подстроке.
+        Например, 'пиццу' найдет 'Пицца с ананасом и халапеньо'.
+        """
+        if not self.inventory_manager:
+            return None
+        text_lower = text.strip().lower()
+        items = self.inventory_manager.get_items()
+        # Сначала точное совпадение
+        for item in items:
+            if item.name.lower() == text_lower:
+                return item.name
+        # Затем по подстроке (предмет содержит запрос)
+        for item in items:
+            if text_lower in item.name.lower():
+                return item.name
+        # Затем запрос содержит название предмета
+        for item in items:
+            if item.name.lower() in text_lower:
+                return item.name
+        return None
+
+    def _extract_user_reported_usage(self, text: str) -> Optional[str]:
+        """
+        Извлекает название предмета из сообщения пользователя о том,
+        что бот использовал/съел/выпил предмет.
+        Например: 'ты использовал меч', 'ты съел яблоко', 'ты выпил зелье'.
+        """
+        for pattern in self._INVENTORY_USAGE_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                item = match.group(1).strip()
+                # Убираем trailing punctuation
+                item = re.sub(r"[.!?\s]+$", "", item).strip()
+                # Убираем 'пожалуйста' и подобное
+                item = re.sub(r"\s+пожалуйста\s*$", "", item, flags=re.IGNORECASE).strip()
+                if item and len(item) > 1:
+                    return item
+        return None
 
     # Memory helpers
 

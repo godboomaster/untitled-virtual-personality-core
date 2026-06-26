@@ -313,7 +313,7 @@ class ChatDossier:
         by_user: Dict[str, List[str]] = {}
         for msg in messages:
             if msg.get("role") == "user":
-                logger.info(f"[Dossier] msg keys: {list(msg.keys())}, role={msg.get('role')}")
+
                 content = msg.get("content", "")
                 sender_id = (
                     msg.get("sender_id") or
