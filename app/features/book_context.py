@@ -21,7 +21,8 @@ def build_context_block(fragments: List[Dict],
                         high_quality_rerank: float = 2.0,
                         low_quality_rerank: float = 0.0,
                         high_quality_distance: float = 0.38,
-                        low_quality_distance: float = 0.46) -> str:
+                        low_quality_distance: float = 0.46,
+                        mode: str = "book") -> str:
     """
     Формирует блок [КОНТЕКСТ] с сигналом качества для LLM.
 
@@ -41,6 +42,7 @@ def build_context_block(fragments: List[Dict],
         0.38–0.46 — среднее качество
         > 0.46 — низкое качество
     """
+    mode_tag = "BOOK" if mode == "book" else "MIXED"
     # Формируем блок вопросов
     query_block = ""
     if original_query or translated_query:
@@ -53,7 +55,7 @@ def build_context_block(fragments: List[Dict],
 
     if not fragments:
         return (
-            "[КОНТЕКСТ — ПУСТО]\n"
+            f"[КОНТЕКСТ:{mode_tag} — ПУСТО]\n"
             f"{query_block}"
             "Поиск не нашёл релевантных фрагментов.\n"
             "ИНСТРУКЦИЯ: Признайся в незнании В ХАРАКТЕРЕ персонажа. "
@@ -109,7 +111,7 @@ def build_context_block(fragments: List[Dict],
         signal = f"лучшая дистанция = {best_dist:.3f}"
 
     header = (
-        f"[КОНТЕКСТ — качество поиска: {quality_label} ({signal})]\n"
+        f"[КОНТЕКСТ:{mode_tag} — качество поиска: {quality_label} ({signal})]\n"
         f"{quality_note}\n"
         f"{'─' * 60}"
     )

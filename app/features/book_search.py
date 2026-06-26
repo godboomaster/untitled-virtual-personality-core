@@ -228,35 +228,102 @@ _RU_EN_QUERY_MAP: List[Tuple[str, str]] = [
 _ollama_available: Optional[bool] = None
 
 
-def _translate_via_ollama(query: str) -> Optional[str]:
-    """Перевод запроса через локальную Ollama (qwen2.5:3b). ~0.3-0.5с."""
+def _find_glossary_entries(query: str, ru_to_en: Dict[str, str],
+                           limit: int = 30) -> Dict[str, str]:
+    """
+    Находит релевантные записи глоссария в запросе.
+    Использует границы слов (\\b) — НЕ матчит подстроки внутри слов.
+    Возвращает словарь {ru_name: en_name} только для совпавших записей.
+
+    Для многословных имён ("Форс Уолл"): если совпали все слова — полное имя.
+    Если совпало только первое слово (имя) и оно уникально в глоссарии — тоже матч.
+    Титулы ("Господин", "Мисс") не уникальны — частичный матч для них отключён.
+    """
+    # Считаем частоту первых слов — не уникальные = титулы, не имена
+    first_word_counts: Dict[str, int] = {}
+    for ru in ru_to_en:
+        words = ru.split()
+        if len(words) >= 2:
+            fw = words[0].lower()
+            first_word_counts[fw] = first_word_counts.get(fw, 0) + 1
+
+    result: Dict[str, str] = {}
+    query_lower = query.lower()
+    for ru, en in ru_to_en.items():
+        words = ru.split()
+        # Полное совпадение — все слова
+        all_matched = True
+        for w in words:
+            stem_len = max(3, len(w) - 1)
+            stem = re.escape(w[:stem_len].lower())
+            if not re.search(r'\b' + stem + r'[а-яё]*', query_lower):
+                all_matched = False
+                break
+        if all_matched:
+            result[ru] = en
+            if len(result) >= limit:
+                break
+            continue
+        # Частичное — первое слово, только если уникально и достаточно длинное
+        if len(words) >= 2 and len(words[0]) >= 4:
+            if first_word_counts.get(words[0].lower(), 0) > 1:
+                continue  # титул — пропускаем
+            w = words[0]
+            stem_len = max(3, len(w) - 1)
+            stem = re.escape(w[:stem_len].lower())
+            if re.search(r'\b' + stem + r'[а-яё]*', query_lower):
+                result[ru] = en
+                if len(result) >= limit:
+                    break
+    return result
+
+
+def _substitute_names_via_ollama(query: str,
+                                  glossary_entries: Dict[str, str]) -> Optional[str]:
+    """
+    Подстановка имён из глоссария через локальную Ollama (qwen2.5:3b).
+    Заменяет только русские имена/термины на английские, оставляя остальной текст на русском.
+    Возвращает модифицированный запрос или None при ошибке.
+    """
     global _ollama_available
     if _ollama_available is False:
-        return None  # Уже проверяли, не работает
+        return None
     try:
         import requests
+
+        name_map = "\n".join(f"  {ru} -> {en}" for ru, en in glossary_entries.items())
+
         resp = requests.post("http://localhost:11434/api/generate", json={
             "model": "qwen2.5:3b",
             "prompt": (
-                "Translate Russian to English. Context: Lord of the Mysteries novel. "
-                "Beyonder pathways with sequences. "
-                "Russian 'путь' = 'Pathway' (e.g. 'какого пути' = 'which pathway'). "
-                "Russian 'последовательность' = 'Sequence'. "
-                "Output ONLY the translation, nothing else.\n\n"
-                f"{query}"
+                "Substitute Russian names with their English equivalents. "
+                "Change ONLY the listed names, keep everything else unchanged.\n"
+                f"Name mappings:\n{name_map}\n\n"
+                f"Text: {query}\n\n"
+                "Output ONLY the text with names substituted:"
             ),
             "stream": False,
-            "options": {"temperature": 0.1, "num_predict": 80},
+            "options": {"temperature": 0.0, "num_predict": 100},
         }, timeout=5)
         text = resp.json()["response"].strip()
-        # Если модель вернула русский — что-то пошло не так
-        if re.search(r'[а-яёА-ЯЁ]', text):
-            return None
         _ollama_available = True
         return text
     except Exception:
         _ollama_available = False
         return None
+
+
+def _google_translate(text: str) -> Optional[str]:
+    """Перевод через deep_translator (Google Translate API)."""
+    try:
+        from deep_translator import GoogleTranslator
+        translator = GoogleTranslator(source="auto", target="en")
+        result = translator.translate(text)
+        if result and result.lower() != text.lower():
+            return result
+    except Exception as e:
+        logger.debug(f"[BookSearch] Google Translate недоступен: {e}")
+    return None
 
 
 def _build_pathway_map(glossary_path: str) -> Tuple[Dict[str, List[str]], Dict[str, str]]:
@@ -369,40 +436,51 @@ def _expand_query_with_pathway(query: str,
 
 
 def _translate_full_query(query: str,
-                          patterns: List[Tuple[str, str]]) -> str:
+                          ru_to_en: Dict[str, str],
+                          patterns: Optional[List[Tuple[str, str]]] = None) -> str:
     """
-    Полный перевод русского запроса на английский для cross-encoder.
-    Приоритет: Ollama (LLM) -> словарь -> исходный запрос.
+    Полный перевод русского запроса на английский.
+    Двухэтапный пайплайн:
+      1. LLM (Ollama) подставляет имена из глоссария — детерминированно и точно.
+         Fallback: regex-паттерны (стем + \b границы).
+      2. Google Translate переводит весь запрос целиком.
+         Fallback: словарь _RU_EN_QUERY_MAP.
     """
     # Если в запросе нет русского — нечего переводить
     if not re.search(r'[а-яёА-ЯЁ]', query):
         return query
 
-    # Сначала заменяем имена через глоссарий (Сасрир → Sasrir, Арродес → Arrodes)
-    name_translated = _translate_query(query, patterns)
-    if name_translated != query:
-        logger.info(f"[BookSearch] Names: '{query}' -> '{name_translated}'")
+    # --- Этап 1: подстановка имён ---
+    glossary_entries = _find_glossary_entries(query, ru_to_en)
+    if glossary_entries:
+        substituted = _substitute_names_via_ollama(query, glossary_entries)
+        if substituted:
+            logger.info(f"[BookSearch] Names: '{query}' -> '{substituted}'")
+            working = substituted
+        else:
+            # Ollama недоступен — regex fallback
+            working = _translate_query(query, patterns) if patterns else query
+            logger.info(f"[BookSearch] Names (regex fallback): '{query}' -> '{working}'")
+    else:
+        working = query
 
-    # Если в запросе нет русского — имена заменили, больше нечего делать
-    if not re.search(r'[а-яёА-ЯЁ]', name_translated):
-        return name_translated
+    # Если после подстановки не осталось русского — готово
+    if not re.search(r'[а-яёА-ЯЁ]', working):
+        return working
 
-    # Пробуем Ollama на запросе с уже английскими именами
-    llm = _translate_via_ollama(name_translated)
-    if llm:
+    # --- Этап 2: перевод через Google Translate ---
+    translated = _google_translate(working)
+    if translated:
         # Постобработка pathway-названий к каноническому виду "X Pathway"
-        # "path/pathway of [the] X" → "X Pathway"
-        # "X's path[way]" → "X Pathway"
-        # "Pathway X" → "X Pathway"  (Ollama часто ставит Pathway перед именем)
-        llm = re.sub(r'\bpath(?:way)?\s+of\s+(?:the\s+)?([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)\b', r'\1 Pathway', llm, flags=re.IGNORECASE)
-        llm = re.sub(r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)'s\s+(?:path|pathway)\b", r'\1 Pathway', llm, flags=re.IGNORECASE)
-        llm = re.sub(r'\bPathway\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)\b', r'\1 Pathway', llm)
-        logger.info(f"[BookSearch] Ollama: '{name_translated}' -> '{llm}'")
-        return llm
+        translated = re.sub(r'\bpath(?:way)?\s+of\s+(?:the\s+)?([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)\b', r'\1 Pathway', translated, flags=re.IGNORECASE)
+        translated = re.sub(r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)'s\s+(?:path|pathway)\b", r'\1 Pathway', translated, flags=re.IGNORECASE)
+        translated = re.sub(r'\bPathway\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)\b', r'\1 Pathway', translated)
+        logger.info(f"[BookSearch] Translate: '{working}' -> '{translated}'")
+        return translated
 
     # Fallback: словарная подстановка
-    logger.info(f"[BookSearch] Ollama unavailable, using dictionary fallback")
-    result = name_translated
+    logger.info(f"[BookSearch] Google Translate недоступен, using dictionary fallback")
+    result = working
     for ru, en in _RU_EN_QUERY_MAP:
         result = re.sub(re.escape(ru), en, result, flags=re.IGNORECASE)
     result = re.sub(r'\b[а-яёА-ЯЁ]+\b', '', result)
@@ -545,6 +623,7 @@ class BookSearch:
 
         glossary_path = Path(__file__).parent.parent / "personas" / "arrodes_glossary.yaml"
         ru_to_en = _load_ru_to_en(str(glossary_path))
+        self._ru_to_en = ru_to_en
         self._patterns = _build_patterns(ru_to_en)
         self._pathway_to_seqs, self._seq_to_pathway = _build_pathway_map(str(glossary_path))
         if ru_to_en:
@@ -684,13 +763,10 @@ class BookSearch:
         if not self._ensure_connection():
             return []
 
-        # Транслируем запрос (имена) и полностью (для reranker)
-        translated = _translate_query(query, self._patterns)
-        fully_translated = _translate_full_query(query, self._patterns)
-        if translated != query:
-            logger.info(f"[BookSearch] Translated: '{query}' -> '{translated}'")
-        if fully_translated != translated:
-            logger.info(f"[BookSearch] Full translate: '{query}' -> '{fully_translated}'")
+        # Полный перевод через Ollama (подстановка имён из глоссария + перевод)
+        fully_translated = _translate_full_query(query, self._ru_to_en, self._patterns)
+        if fully_translated != query:
+            logger.info(f"[BookSearch] Translate: '{query}' -> '{fully_translated}'")
 
         # Авто-определение тома — на переведённом (английском) запросе
         detected_vol = detect_volume(fully_translated)
@@ -703,8 +779,6 @@ class BookSearch:
         queries = []
         if fully_translated != query:
             queries.append(fully_translated)
-        if translated != query and translated != fully_translated:
-            queries.append(translated)
         queries.append(query)
 
         # Pathway expansion: если в запросе упомянут путь — добавляем названия
@@ -869,7 +943,7 @@ class BookSearch:
 
     def translate_query(self, query: str) -> str:
         """Возвращает полностью переведённый (английский) вариант запроса."""
-        return _translate_full_query(query, self._patterns)
+        return _translate_full_query(query, self._ru_to_en, self._patterns)
 
     def format_fragments(self, fragments: List[Dict],
                          max_chars_per_fragment: int = 800) -> str:

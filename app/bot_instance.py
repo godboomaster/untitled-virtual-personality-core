@@ -262,10 +262,22 @@ class BotInstance:
                     parts.append(f"  {role_ru}: {msg['content'][:200]}")
                 stm_relevant_text = "\n".join(parts)
 
-            # Поиск по книге (RAG)
-            book_context = None
+            # Intent classification — нужен ли контекст книги?
+            _book_intent = "book_only"
             if self.book_search:
                 try:
+                    from app.features.intent_router import classify_intent
+                    _book_intent = classify_intent(user_input, stm_messages)
+                    logger.info(f"[IntentRouter] intent={_book_intent} for: '{user_input[:60]}'")
+                except Exception as ie:
+                    logger.debug(f"Intent classification error: {ie}")
+
+            # Поиск по книге (RAG) — пропускаем при chat_only
+            book_context = None
+            context_mode = "book"
+            if self.book_search and _book_intent != "chat_only":
+                try:
+                    context_mode = "mixed" if _book_intent == "mixed" else "book"
                     from app.features.book_search import detect_volume
 
                     def _detect_position(text: str):
@@ -328,14 +340,16 @@ class BotInstance:
                         # Обычный RAG-поиск
                         if volume is not None:
                             logger.info(f"[BookSearch] Detected volume filter: {volume}")
-                        fragments = self.book_search.search(user_input, volume=volume)
+                        _n = 5 if _book_intent == "mixed" else 25
+                        fragments = self.book_search.search(user_input, volume=volume, n_results=_n)
                         translated_query = self.book_search.translate_query(user_input)
                         if fragments:
                             from app.features.book_context import build_context_block
                             book_context = build_context_block(
                                 fragments,
                                 original_query=user_input,
-                                translated_query=translated_query
+                                translated_query=translated_query,
+                                mode=context_mode
                             )
                             logger.info(f"[BookContext] {len(fragments)} fragments, {len(book_context)} chars for query: '{user_input[:60]}'")
                         else:
@@ -343,7 +357,8 @@ class BotInstance:
                             book_context = build_context_block(
                                 [],
                                 original_query=user_input,
-                                translated_query=translated_query
+                                translated_query=translated_query,
+                                mode=context_mode
                             )
                             logger.info(f"[BookContext] No fragments for query: '{user_input[:60]}'")
                 except Exception as e:
