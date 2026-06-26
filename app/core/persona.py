@@ -57,7 +57,7 @@ class PersonaLayer:
                 if line.endswith(":") and "=" not in line:
                     # Заголовок раздела
                     lines.append(f"\n{line}")
-                elif "=" in line:
+                elif "=" in line or "→" in line:
                     lines.append(f"  {line}")
         if not lines:
             return ""
