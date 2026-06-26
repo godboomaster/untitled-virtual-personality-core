@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.core.local_router import get_local_router
+
 logger = logging.getLogger(__name__)
 
 # Сколько результатов брать
@@ -166,68 +168,87 @@ def _is_fetchable_url(url: str) -> bool:
         return False
 
 
-def _enhance_query(query: str) -> tuple[str, str | None]:
+def _google_translate(text: str) -> str | None:
     """
-    Улучшает поисковый запрос через локальную LLM:
-    - Перефразирует под поиск (убирает разговорные обороты)
-    - Переводит на английский если тема техническая/международная
-
-    Возвращает (ru_query, en_query | None).
-    en_query = None если тема сугубо русскоязычная (локальные новости, люди, события).
+    Переводит текст через Google Translate (deep_translator).
+    Возвращает перевод или None при ошибке/недоступности.
     """
     try:
-        from app.core.local_router import get_local_router
-        router = get_local_router()
-        if not router or not router.is_available():
-            return query, None
+        from deep_translator import GoogleTranslator
+        translator = GoogleTranslator(source="auto", target="en")
+        result = translator.translate(text)
+        if result and result.lower() != text.lower():
+            return result
+    except Exception as e:
+        logger.debug(f"[WEB_SEARCH] Google Translate недоступен: {e}")
+    return None
 
-        prompt = (
-            "You improve search queries for a search engine. Your task:\n"
-            "1. Rephrase the query for better search results (remove conversational filler, make it concise and specific)\n"
-            "2. For technical/international topics (docker, kubernetes, python, AI, programming, software) — provide English translation\n"
-            "   For purely Russian topics (Russian news, Russian people, local events, weather in Russian cities) — English is not needed (null)\n\n"
-            "Reply STRICTLY in JSON format (no explanations, only JSON):\n"
-            '{"ru": "rephrased query in Russian", "en": "english query or null"}\n\n'
-            f'Query: "{query}"'
-        )
 
+def _verify_translation(original: str, translated: str, router) -> bool:
+    """
+    Локальная LLM проверяет пару оригинал/перевод.
+    Возвращает True если перевод корректен (Google не подменил термины синонимами).
+    """
+    if not router or not router.is_available():
+        return True  # нет возможности проверить — считаем ок
+
+    verify_prompt = (
+        "Проверь перевод с русского на английский.\n"
+        "Задача: убедись что Google Translate не заменил специфические термины "
+        "(имена персонажей, названия игр, незнакомые слова) синонимами или дословным переводом.\n"
+        "Ответь ТОЛЬКО 'OK' если перевод корректен, или 'FAIL' если есть подмена терминов.\n\n"
+        f"Оригинал: {original}\n"
+        f"Перевод: {translated}"
+    )
+    try:
         response = router.get_response(
-            messages=[
-                {"role": "system", "content": "You improve search queries. Reply ONLY JSON, no markdown code blocks."},
-                {"role": "user", "content": prompt},
-            ],
+            messages=[{"role": "user", "content": verify_prompt}],
             temperature=0.1,
-            max_tokens=100,
+            max_tokens=10,
         )
+        if response:
+            verdict = response.strip().upper()
+            ok = verdict.startswith("OK")
+            logger.info(f"[WEB_SEARCH] Верификация перевода: {verdict} | '{original[:40]}' -> '{translated[:40]}'")
+            return ok
+    except Exception as e:
+        logger.debug(f"[WEB_SEARCH] Ошибка верификации перевода: {e}")
+    return True  # при ошибке — считаем ок
 
-        if not response:
-            return query, None
 
-        # Парсим JSON
-        import json as _json
-        response = response.strip()
-
-        # Убираем markdown code blocks если есть
-        response = re.sub(r"^```(?:json)?\s*", "", response)
-        response = re.sub(r"\s*```$", "", response)
-
-        json_start = response.find("{")
-        json_end = response.rfind("}") + 1
-        if json_start == -1 or json_end == 0:
-            return query, None
-
-        data = _json.loads(response[json_start:json_end])
-        ru = (data.get("ru") or "").strip() or query
-        en = (data.get("en") or "").strip() or None
-        if en and en.lower() in ("null", "none", "-", ""):
-            en = None
-
-        logger.info(f"[WEB_SEARCH] Запрос улучшен: '{query[:50]}' → ru='{ru[:50]}' en='{en or 'нет'}'")
-        return ru, en
-
+def _enhance_query(query: str, history: list[dict] | None = None, persona_context: str | None = None) -> tuple[str, str | None]:
+    """
+    Улучшает поисковый запрос через локальную LLM.
+    Учитывает историю диалога и контекст персоны.
+    Возвращает (ru_query, en_query или None).
+    """
+    try:
+        from app.core.query_enhancer import QueryEnhancer
+        enhancer = QueryEnhancer()
+        logger.info(f"[WEB_SEARCH] Улучшение запроса: '{query[:50]}' (history={len(history) if history else 0}, persona={'yes' if persona_context else 'no'})")
+        enhanced = enhancer.enhance(query, history=history, persona_context=persona_context)
+        logger.info(f"[WEB_SEARCH] Результат улучшения: '{query[:50]}' -> '{enhanced[:50]}'")
     except Exception as e:
         logger.debug(f"[WEB_SEARCH] Ошибка улучшения запроса: {e}")
         return query, None
+
+    # Переводим на английский для расширения поиска
+    # Схема: enhanced -> Google Translate -> LLM верификация -> en_query
+    if not all(ord(c) < 128 for c in enhanced.replace(" ", "")):
+        en_translated = _google_translate(enhanced)
+        if en_translated:
+            router = get_local_router()
+            if _verify_translation(enhanced, en_translated, router):
+                logger.info(f"[WEB_SEARCH] Перевод (Google+verify): '{enhanced[:50]}' -> en='{en_translated[:50]}'")
+                return enhanced, en_translated
+            else:
+                logger.warning(f"[WEB_SEARCH] Перевод отклонён верификатором: '{en_translated[:50]}'")
+        else:
+            logger.info("[WEB_SEARCH] Google Translate недоступен, пропускаем английский поиск")
+    else:
+        logger.info("[WEB_SEARCH] Запрос уже на английском, перевод не нужен")
+
+    return enhanced, None
 
 
 def search_web(
@@ -235,6 +256,8 @@ def search_web(
     max_results: int = MAX_RESULTS,
     enhance: bool = True,
     en_query_override: str | None = None,
+    history: list[dict] | None = None,
+    persona_context: str | None = None,
 ) -> list[dict]:
     """
     Ищет запрос в DuckDuckGo и возвращает список результатов.
@@ -256,7 +279,7 @@ def search_web(
     if en_query_override:
         en_query = en_query_override
     elif enhance:
-        ru_query, en_query = _enhance_query(query)
+        ru_query, en_query = _enhance_query(query, history=history, persona_context=persona_context)
 
     def _run_search(q: str, limit: int) -> list[dict]:
         """Один поиск с фильтрацией по блэклисту."""
@@ -275,24 +298,17 @@ def search_web(
             logger.error(f"[WEB_SEARCH] Ошибка поиска '{q[:50]}': {e}")
             return []
 
-    # Русскоязычный поиск
-    ru_results = _run_search(ru_query, max_results)
-
-    # Англоязычный поиск (если есть перевод)
+    # Англоязычный поиск: 5 результатов (приоритет)
     en_results = []
     if en_query:
-        en_results = _run_search(en_query, max_results)
+        en_results = _run_search(en_query, 5)
 
-    # Мержим: дедупликация по URL, ru-результаты приоритетнее
+    # Русскоязычный поиск: 2 результата
+    ru_results = _run_search(ru_query, 2)
+
+    # Мержим: дедупликация по URL, en-результаты приоритетнее
     seen_urls: set[str] = set()
     merged: list[dict] = []
-
-    for r in ru_results:
-        url = r.get("href", "")
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            r["_lang"] = "ru"
-            merged.append(r)
 
     for r in en_results:
         url = r.get("href", "")
@@ -301,12 +317,19 @@ def search_web(
             r["_lang"] = "en"
             merged.append(r)
 
+    for r in ru_results:
+        url = r.get("href", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            r["_lang"] = "ru"
+            merged.append(r)
+
     if not merged:
         logger.info(f"[WEB_SEARCH] Нет результатов для: '{query[:60]}'")
         return []
 
-    # Ограничиваем общее количество
-    merged = merged[:max_results * 2]
+    # Ограничиваем общее количество до 7
+    merged = merged[:7]
 
     # Обрезаем длинные сниппеты
     for r in merged:
@@ -325,7 +348,7 @@ def search_web(
 
     logger.info(
         f"[WEB_SEARCH] Найдено {len(merged)} результатов "
-        f"(ru={len(ru_results)}, en={len(en_results)}) для: '{query[:60]}'"
+        f"(en={len(en_results)}, ru={len(ru_results)}) для: '{query[:60]}'"
     )
     return merged
 

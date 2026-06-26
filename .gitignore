@@ -11,10 +11,12 @@ dumps/
 docs/
 memory_export/
 tests/
+volumes/
 *.db
 *.sqlite
 *.sqlite3
 gradio_output_files/
+docs/
 
 # ChromaDB
 chroma_db/
