@@ -68,6 +68,7 @@ class PersonaLayer:
                          reply_context: Optional[str] = None,
                          stm_relevant: Optional[str] = None,
                          todo_context: Optional[str] = None,
+                         reminder_context: Optional[str] = None,
                          inventory_context: Optional[str] = None,
                          inventory_events: Optional[List[str]] = None) -> List[Dict]:
         context_block = ""
@@ -128,13 +129,20 @@ class PersonaLayer:
         if todo_context:
             todo_note = (
                 "\n\nУ пользователя есть общий список дел для этого чата. "
-                "Если он просит что-то записать, добавить, напомнить или отметить как дело — "
+                "Если он просит что-то записать, добавить или отметить как дело — "
                 "извлеки чистый текст задачи из его сообщения и в конце своего ответа добавь маркер: "
                 "[TODO_ADD:текст задачи]. "
-                "После маркера выведи актуальный список дел. "
+                "Если он просит убрать, вычеркнуть, отмечает как сделанное — "
+                "добавь маркер [TODO_DONE:N] где N — номер пункта из списка. "
+                "Актуальный список дел будет показан пользователю автоматически — НЕ выводи его сам. "
                 "Если он просто спрашивает список — покажи его без маркера.\n\n"
                 f"Текущий список дел:\n{todo_context}\n"
             )
+
+        # Reminder-контекст: напоминание уже запланировано — просто подтверди
+        reminder_note = ""
+        if reminder_context:
+            reminder_note = f"\n\n{reminder_context}\n"
 
         # Inventory-контекст: вещи бота
         inventory_note = ""
@@ -153,6 +161,7 @@ class PersonaLayer:
                 "Если предмет может испортиться — добавь срок годности: [INVENTORY_ADD:Название:описание:YYYY-MM-DD]. "
                 "Например: [INVENTORY_ADD:Яблоко:свежее красное яблоко:2026-06-25]. "
                 "ВАЖНО: без маркера предмет НЕ сохранится. Маркер обязателен. "
+                "Актуальный инвентарь будет показан пользователю автоматически после твоего ответа — НЕ выводи его сам. "
                 "Если просто спрашивает что у тебя есть — перечисли без маркеров.\n\n"
                 f"{inventory_context}\n"
             )
@@ -169,7 +178,7 @@ class PersonaLayer:
             )
 
         messages = [
-            {"role": "system", "content": self.system_prompt + context_block + special_note + todo_note + inventory_note + inventory_events_note},
+            {"role": "system", "content": self.system_prompt + context_block + special_note + todo_note + reminder_note + inventory_note + inventory_events_note},
         ]
 
         # Определяем, является ли текущее сообщение от именованного пользователя (групповой чат)

@@ -113,6 +113,34 @@ class TodoManager:
             lines.append(f"{i}. {name}: {task}")
         return "\n".join(lines)
 
+    def remove_item(self, chat_id: str, index: int) -> Optional[str]:
+        """
+        Удаляет пункт по номеру (1-based).
+        Возвращает отформатированный список или None если индекс невалиден.
+        """
+        with self._lock:
+            path = self._todo_path(chat_id)
+            if not path.exists():
+                return None
+            try:
+                items = self._parse_items(path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning(f"[Todo] Не удалось прочитать {path}: {e}")
+                return None
+
+            if index < 1 or index > len(items):
+                return None
+
+            removed = items.pop(index - 1)
+            logger.info(f"[Todo] Удалён пункт {index}: {removed}")
+
+            try:
+                path.write_text(self._format_items(items, chat_id), encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[Todo] Не удалось записать {path}: {e}")
+
+        return self._render_list(items)
+
     def clear(self, chat_id: str) -> bool:
         """Очищает список дел чата. Возвращает True если файл был удален."""
         path = self._todo_path(chat_id)
@@ -126,14 +154,15 @@ class TodoManager:
 
 
 # Эвристика для определения todo-запросов
+# ВАЖНО: "напомни" убрано — это путь напоминаний (reminder_manager).
+# Если в тексте есть "напом" в любом виде, todo не срабатывает.
 _TODO_TRIGGERS = [
-    "запиши", "добавь", "напомни", "список дел", "to-do", "todo",
+    "запиши", "добавь", "список дел", "to-do", "todo",
 ]
 
 _TODO_EXTRACT_PATTERNS = [
     re.compile(r"запиши[\s,]*(?:что)?\s*(?:мне|нам|ему|ей|им)?\s*(?:надо|нужно)?\s*[\s,:\-]*(.+)", re.IGNORECASE),
     re.compile(r"добавь(?:\s+в\s+список)?\s*[\s,:\-]*(.+)", re.IGNORECASE),
-    re.compile(r"напомни(?:\s+мне)?\s*[\s,:\-]*(.+)", re.IGNORECASE),
     re.compile(r"(?:надо|нужно)\s+(?:мне|нам|ему|ей|им)?\s*[\s,:\-]*(.+)", re.IGNORECASE),
 ]
 
@@ -142,6 +171,34 @@ def is_todo_request(text: str) -> bool:
     """Определяет, является ли запрос просьбой записать дело."""
     lower = text.lower()
     return any(trigger in lower for trigger in _TODO_TRIGGERS)
+
+
+def is_todo_done_request(text: str) -> bool:
+    """Определяет, просит ли пользователь убрать дело (сделано/вычеркни/убери)."""
+    lower = text.lower()
+    return any(t in lower for t in _TODO_DONE_TRIGGERS)
+
+
+_TODO_DONE_TRIGGERS = [
+    "сделал", "сделано", "готово", "вычеркни", "вычеркнуть",
+    "убери из", "убрать из", "удали из", "удалить из",
+    "выполнил", "выполнено", "закрыл дело", "зачеркни",
+]
+
+_TODO_DONE_NUMBER_RE = re.compile(
+    r"(?:пункт\s+)?(\d+)",
+)
+
+
+def extract_todo_done_index(text: str) -> Optional[int]:
+    """
+    Пытается извлечь номер пункта для удаления.
+    Возвращает 1-based индекс или None.
+    """
+    match = _TODO_DONE_NUMBER_RE.search(text)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def extract_task(text: str) -> Optional[str]:

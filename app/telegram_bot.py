@@ -6,6 +6,7 @@ main.py запускает два Telegram Application, каждый со сво
 import asyncio
 import logging
 import re
+import time
 from typing import Optional
 from telegram import Update, BotCommand, InputFile
 from telegram.ext import (
@@ -122,6 +123,8 @@ def create_handlers(bot: BotInstance) -> dict:
             lines.append("\nОтправьте файл — я прочитаю и сохраню!")
         if bot.todo_manager:
             lines.append("/todo — показать список дел чата")
+            lines.append("/reminders — активные напоминания")
+            lines.append("/cancel_reminder N — отменить напоминание №N")
         if bot.inventory_manager:
             lines.append("/inventory — показать инвентарь бота")
         await update.message.reply_text("\n".join(lines))
@@ -250,6 +253,47 @@ def create_handlers(bot: BotInstance) -> dict:
         todo_list = bot.todo_manager.get_list(chat_id)
         await update.message.reply_text(todo_list or "Список дел пуст.")
 
+    async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not bot.reminder_manager:
+            await update.message.reply_text("Напоминания не активны для этой персоны.")
+            return
+        chat_id = str(update.effective_chat.id)
+        active = bot.reminder_manager.get_active(chat_id)
+        if not active:
+            await update.message.reply_text("Активных напоминаний нет.")
+            return
+        from datetime import datetime
+        lines = ["Активные напоминания:"]
+        for i, r in enumerate(active):
+            remain = r["trigger_at"] - time.time()
+            task = r.get("task") or "(без описания)"
+            mins = int(remain / 60)
+            if mins > 0:
+                when = f"через {mins} мин"
+            else:
+                when = f"через {int(remain)} сек"
+            lines.append(f"{i + 1}. {task} — {when}")
+        lines.append("")
+        lines.append("Чтобы отменить: /cancel_reminder N")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cancel_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not bot.reminder_manager:
+            return
+        chat_id = str(update.effective_chat.id)
+        if not context.args:
+            await update.message.reply_text("Использование: /cancel_reminder N (номер из /reminders)")
+            return
+        try:
+            idx = int(context.args[0]) - 1
+        except ValueError:
+            await update.message.reply_text("Нужно число — номер напоминания из /reminders.")
+            return
+        if bot.reminder_manager.cancel_reminder(chat_id, idx):
+            await update.message.reply_text("Напоминание отменено.")
+        else:
+            await update.message.reply_text("Напоминание с таким номером не найдено.")
+
     async def inventory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.inventory_manager:
             await update.message.reply_text("Инвентарь не активен для этой персоны.")
@@ -335,6 +379,11 @@ def create_handlers(bot: BotInstance) -> dict:
             )
             logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
             await _reply_ai(update.message, response)
+
+            # Отправляем списки дел/инвентарь отдельными сообщениями
+            pending = bot._pending_list_messages
+            for msg in pending:
+                await _reply_ai(update.message, msg)
         except Exception as e:
             logger.error(f"[{persona_name}] Ошибка: {e}", exc_info=True)
             try:
@@ -432,6 +481,8 @@ def create_handlers(bot: BotInstance) -> dict:
         "ratelimits": ratelimits_cmd if bot._rate_limit_enabled else None,
         "web": web_cmd if bot._web_search_enabled else None,
         "todo": todo_cmd if bot.todo_manager else None,
+        "reminders": reminders_cmd if bot.reminder_manager else None,
+        "cancel_reminder": cancel_reminder_cmd if bot.reminder_manager else None,
         "inventory": inventory_cmd if bot.inventory_manager else None,
         "handle_message": handle_message,
         "handle_document": handle_document if bot.file_db else None,
@@ -447,6 +498,12 @@ def register_handlers(app: Application, bot: BotInstance):
     if bot._activity_tracker:
         sender = TelegramMessageSender(bot=app.bot)
         bot.setup_proactive(sender)
+
+    # Reminder manager — sender нужен независимо от proactive
+    if bot.reminder_manager:
+        sender = TelegramMessageSender(bot=app.bot)
+        bot.reminder_manager.set_sender(sender)
+        bot.reminder_manager.set_router_persona(bot.router, bot.persona)
 
     app.add_handler(CommandHandler("start", h["start"]))
     app.add_handler(CommandHandler("help", h["help"]))
@@ -469,6 +526,10 @@ def register_handlers(app: Application, bot: BotInstance):
         app.add_handler(CommandHandler("web", h["web"]))
     if h.get("todo"):
         app.add_handler(CommandHandler("todo", h["todo"]))
+    if h.get("reminders"):
+        app.add_handler(CommandHandler("reminders", h["reminders"]))
+    if h.get("cancel_reminder"):
+        app.add_handler(CommandHandler("cancel_reminder", h["cancel_reminder"]))
     if h.get("inventory"):
         app.add_handler(CommandHandler("inventory", h["inventory"]))
 
