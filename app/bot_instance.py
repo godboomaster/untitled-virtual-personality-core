@@ -18,7 +18,11 @@ from app.core.config import Config
 from app.core.file_vector_db import FileVectorDB
 from app.core.file_reader import extract_text, MAX_FILE_SIZE_DEFAULT
 from app.core.interfaces import MessageSender
-from app.features.todo_manager import TodoManager, is_todo_request, extract_task
+from app.features.todo_manager import (
+    TodoManager, is_todo_request, extract_task,
+    is_todo_done_request, extract_todo_done_index,
+)
+from app.features.reminder_manager import ReminderManager, parse_reminder
 from app.features.inventory_manager import (
     InventoryManager,
     is_inventory_add_request,
@@ -42,6 +46,9 @@ class BotInstance:
         self.persona_name = persona_name
         self.context = context or persona_name
         self.persona = PersonaLayer(persona_name=persona_name)
+
+        # Список дел/инвентарь для отправки отдельным сообщением после основного ответа
+        self._pending_list_messages: List[str] = []
 
         # Читаем features из YAML
         persona_data = self.persona.persona_data
@@ -71,6 +78,12 @@ class BotInstance:
         if self.features.get("todo", False):
             self.todo_manager = TodoManager(context=self.context)
             logger.info(f"  [{persona_name}] Todo manager включён")
+
+        # Reminder manager (только если todo — напоминания это расширение todo)
+        self.reminder_manager: Optional[ReminderManager] = None
+        if self.features.get("todo", False):
+            self.reminder_manager = ReminderManager(context=self.context)
+            logger.info(f"  [{persona_name}] Reminder manager включён")
 
         # Inventory manager (только если inventory)
         self.inventory_manager: Optional[InventoryManager] = None
@@ -229,6 +242,9 @@ class BotInstance:
                         reply_context: str = None) -> str:
         from app.features.query_rewriter import rewrite_query
 
+        # Очищаем pending-списки от предыдущего вызова
+        self._pending_list_messages = []
+
         logger.info(f"[BotInstance] process_message START: '{user_input[:60]}' | chat_id={chat_id}")
 
         # Берём историю до добавления нового сообщения — для контекста rewriter'а
@@ -303,20 +319,59 @@ class BotInstance:
                     parts.append(f"  {role_ru}: {msg['content'][:200]}")
                 stm_relevant_text = "\n".join(parts)
 
+            # Reminder: перехватываем перед todo (напомни через N ...)
+            # Любой текст со словом "напом" — это путь напоминаний, не todo.
+            reminder_context = None
+            is_reminder_request = False
+            if self.reminder_manager and chat_id and "напом" in user_input.lower():
+                is_reminder_request = True
+                parsed = parse_reminder(user_input)
+                if parsed:
+                    rem_task, rem_delay = parsed
+                    # Переформулирование задачи через LLM
+                    if rem_task:
+                        rem_task = self._reformulate_task(rem_task)
+                    topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                    delay_text = self.reminder_manager.format_delay(rem_delay)
+                    self.reminder_manager.add_reminder(
+                        chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id
+                    )
+                    task_display = f" '{rem_task}'" if rem_task else ""
+                    reminder_context = (
+                        f"Пользователь попросил напомнить{task_display} через {delay_text}. "
+                        f"Напоминание уже запланировано — просто подтверди это в своём стиле, коротко."
+                    )
+                else:
+                    reminder_context = (
+                        "Пользователь просит напоминание, но не указал через сколько времени. "
+                        "Уточни когда ему напомнить — в своём стиле, коротко."
+                    )
+
             # Todo-контекст: определяем, является ли запрос todo-запросом
+            # Может работать параллельно с напоминанием (напр. "напомни через час X и добавь в список дел")
             todo_context = None
             extracted_task = None
-            if self.todo_manager and chat_id and is_todo_request(user_input):
-                extracted_task = extract_task(user_input)
-                current_todo = self.todo_manager.get_list(chat_id)
-                todo_context = current_todo or "Список дел пуст."
+            extracted_done_index = None
+            if self.todo_manager and chat_id:
+                if is_todo_done_request(user_input):
+                    # Запрос на удаление/завершение дела
+                    extracted_done_index = extract_todo_done_index(user_input)
+                    current_todo = self.todo_manager.get_list(chat_id)
+                    todo_context = current_todo or "Список дел пуст."
+                elif is_todo_request(user_input):
+                    extracted_task = extract_task(user_input)
+                    if extracted_task:
+                        extracted_task = self._reformulate_task(extracted_task)
+                    current_todo = self.todo_manager.get_list(chat_id)
+                    todo_context = current_todo or "Список дел пуст."
 
             # Inventory-контекст: вещи бота
+            # (пропускаем если это напоминание — чтобы LLM не добавил мусор в инвентарь)
             inventory_context = None
             extracted_inventory_item = None
             extracted_inventory_remove = None
             inventory_events = []  # События для LLM-реакции (использование, просрочка)
-            if self.inventory_manager:
+            if not is_reminder_request and self.inventory_manager:
                 inv_block = self.inventory_manager.get_context_block()
                 if inv_block:
                     inventory_context = inv_block
@@ -359,6 +414,7 @@ class BotInstance:
                 has_files=has_files, self_memory_block=self_memory_block,
                 reply_context=reply_context, stm_relevant=stm_relevant_text,
                 todo_context=todo_context,
+                reminder_context=reminder_context,
                 inventory_context=inventory_context,
                 inventory_events=inventory_events
             )
@@ -370,11 +426,17 @@ class BotInstance:
 
             # Обработка todo-маркера
             if self.todo_manager and chat_id and todo_context:
-                answer = self._process_todo_marker(answer, chat_id, user_name or "Пользователь", extracted_task)
+                answer = self._process_todo_marker(
+                    answer, chat_id, user_name or "Пользователь",
+                    fallback_task=extracted_task,
+                    fallback_done_index=extracted_done_index,
+                )
 
             # Обработка inventory-маркеров (добавление/удаление/использование через маркеры)
+            # (пропускаем если это напоминание — LLM не должен добавлять в инвентарь)
+            if not is_reminder_request and self.inventory_manager:
+                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove, user_name or "пользователь")
             if self.inventory_manager:
-                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove)
                 answer = self._parse_punishment(answer, user_id)
 
             # 10. Сохраняем ответ
@@ -395,13 +457,92 @@ class BotInstance:
             # Ничего не делаем — пул живёт всё время жизни бота
             pass
 
+    def _reformulate_task(self, raw_task: str) -> str:
+        """
+        Очищает сырой текст задачи через local LLM.
+        'что пора написать Коннор' -> 'Написать Коннор'
+        'мне сделать апдейт' -> 'Сделать апдейт'
+        """
+        if not raw_task or len(raw_task.strip()) < 2:
+            return raw_task
+
+        if not self._local_router or not self._local_router.is_available():
+            return raw_task.strip()
+
+        try:
+            response = self._local_router.get_response(
+                messages=[
+                    {"role": "system", "content": (
+                        "Очисти текст задачи от местоимений и мусора. "
+                        "Ответ — только короткий текст задачи в инфинитиве."
+                    )},
+                    {"role": "user", "content": raw_task.strip()},
+                ],
+                temperature=0.0,
+                max_tokens=60,
+            )
+
+            if response:
+                cleaned = response.strip().strip('"\'""«»')
+
+                # Жёсткая валидация — локальная модель часто возвращает мусор
+                # 1. Не длиннее исходного + 20 символов
+                if len(cleaned) > len(raw_task) + 20:
+                    logger.info(f"[Task] Переформулирование отклонено (длиннее оригинала): '{cleaned[:60]}'")
+                    return raw_task.strip()
+
+                # 2. Не длиннее 100 символов
+                if len(cleaned) > 100:
+                    logger.info(f"[Task] Переформулирование отклонено (слишком длинный): '{cleaned[:60]}'")
+                    return raw_task.strip()
+
+                # 3. Не содержит слов из системного промпта (модель эхо)
+                _FORBIDDEN_WORDS = (
+                    "очисти", "убери", "местоимени", "мусор", "инфинитив",
+                    "разговорн", "обращени", "ответ", "только текст",
+                    # инфинитивные формы (модель перефразирует промпт)
+                    "очистить", "убрать", "оставить", "сохранить смысл",
+                    "суть задачи", "текст задачи", "короткий текст",
+                    "убери местоимения", "убрать местоимения",
+                    "в своём характере", "напиши короткое",
+                    "мета-пометки", "не используй markdown",
+                )
+                lower = cleaned.lower()
+                for word in _FORBIDDEN_WORDS:
+                    if word in lower:
+                        logger.info(f"[Task] Переформулирование отклонено (эхо промпта): '{cleaned[:60]}'")
+                        return raw_task.strip()
+
+                # 4. Минимум 2 символа
+                if len(cleaned) >= 2:
+                    logger.info(f"[Task] Переформулировано: '{raw_task}' -> '{cleaned}'")
+                    return cleaned
+
+        except Exception as e:
+            logger.debug(f"[Task] Переформулирование не удалось: {e}")
+
+        return raw_task.strip()
+
     def _clean_response(self, response: str) -> str:
         # Очищает ответ от лишнего Markdown-форматирования и мета-рассуждений LLM.
         if not response:
             return response
         response = self._strip_meta_reasoning(response)
         response = self._strip_markdown(response)
+        response = self._strip_inline_lists(response)
         return response.strip()
+
+    @staticmethod
+    def _strip_inline_lists(text: str) -> str:
+        """Удаляет секции 'Список дел:' и 'Инвентарь:' из ответа LLM.
+        Эти списки отправляются отдельным сообщением через _pending_list_messages."""
+        # Вырезаем секцию "Список дел:" и все её пункты до пустой строки или конца текста
+        text = re.sub(r'\n*Список дел:\n.*?(?=\n\s*\n|\Z)', '', text, flags=re.DOTALL)
+        # Вырезаем секцию "Инвентарь:" и все её пункты до пустой строки или конца текста
+        text = re.sub(r'\n*Инвентарь:\n.*?(?=\n\s*\n|\Z)', '', text, flags=re.DOTALL)
+        # Схлопываем лишние пустые строки, оставшиеся после вырезания
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
 
     @staticmethod
     def _strip_meta_reasoning(text: str) -> str:
@@ -488,11 +629,34 @@ class BotInstance:
 
         return response
 
-    def _process_todo_marker(self, response: str, chat_id: str, user_name: str, fallback_task: Optional[str] = None) -> str:
-        """Парсит маркер [TODO_ADD:...], добавляет задачу в todo-файл и подставляет актуальный список."""
+    def _process_todo_marker(
+        self, response: str, chat_id: str, user_name: str,
+        fallback_task: Optional[str] = None,
+        fallback_done_index: Optional[int] = None,
+    ) -> str:
+        """Парсит маркеры [TODO_ADD:...] и [TODO_DONE:N], обновляет список дел.
+        Список дел отправляется отдельным сообщением через _pending_list_messages."""
         if not self.todo_manager:
             return response
 
+        # Удаление: [TODO_DONE:N]
+        done_match = re.search(r'\[TODO_DONE:(\d+)\]', response)
+        if done_match:
+            index = int(done_match.group(1))
+            response = response[:done_match.start()] + response[done_match.end():]
+            result = self.todo_manager.remove_item(chat_id, index)
+            if result:
+                self._pending_list_messages.append(result)
+            return response.strip()
+
+        # Fallback удаление через эвристику
+        if fallback_done_index is not None:
+            result = self.todo_manager.remove_item(chat_id, fallback_done_index)
+            if result:
+                self._pending_list_messages.append(result)
+            return response.strip()
+
+        # Добавление: [TODO_ADD:...]
         match = re.search(r'\[TODO_ADD:([^\]]+)\]', response)
         task = None
         if match:
@@ -503,29 +667,25 @@ class BotInstance:
 
         if task:
             todo_list = self.todo_manager.add_item(chat_id, user_name, task)
-            # Если LLM не вывел список сам — дописываем
-            if "Список дел" not in response:
-                response = response.strip() + "\n\n" + todo_list
-            else:
-                # Подменяем LLM-список на актуальный (с только что добавленным пунктом)
-                response = re.sub(r'Список дел:.*?$', todo_list, response, flags=re.DOTALL)
+            self._pending_list_messages.append(todo_list)
 
         return response.strip()
 
-    def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None) -> str:
+    def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None, giver_name: str = "") -> str:
         """Парсит маркеры [INVENTORY_ADD:...], [INVENTORY_REMOVE:...], [INVENTORY_USE:...], обновляет инвентарь.
-        Fallback используется если LLM понял intent но забыл маркер — тогда берем эвристику."""
+        Инвентарь отправляется отдельным сообщением через _pending_list_messages."""
         if not self.inventory_manager:
             return response
+
+        inventory_changed = False
 
         # INVENTORY_USE — бот использует предмет (удаляется)
         use_match = re.search(r'\[INVENTORY_USE:([^\]]+)\]', response)
         if use_match:
             name = use_match.group(1).strip()
             response = response[:use_match.start()] + response[use_match.end():]
-            result = self.inventory_manager.use_item(name)
-            if "Инвентарь" not in response:
-                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+            self.inventory_manager.use_item(name)
+            inventory_changed = True
 
         # INVENTORY_ADD — приоритет: маркер от LLM
         add_match = re.search(r'\[INVENTORY_ADD:([^:\]]+)(?::([^\]]+))?\]', response)
@@ -533,33 +693,31 @@ class BotInstance:
             name = add_match.group(1).strip()
             desc = (add_match.group(2) or "").strip()
             response = response[:add_match.start()] + response[add_match.end():]
-            result = self.inventory_manager.add_item(name, desc, source="пользователь")
-            if "Инвентарь" not in response:
-                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+            self.inventory_manager.add_item(name, desc, source=giver_name)
+            inventory_changed = True
         # Fallback: эвристика нашла предмет, но маркера нет
         elif fallback_add:
-            result = self.inventory_manager.add_item(fallback_add, source="пользователь")
-            if "Инвентарь" not in response:
-                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+            self.inventory_manager.add_item(fallback_add, source=giver_name)
+            inventory_changed = True
 
         # INVENTORY_REMOVE — приоритет: маркер от LLM (пользователь забирает или отменяет)
         remove_match = re.search(r'\[INVENTORY_REMOVE:([^\]]+)\]', response)
         if remove_match:
             name = remove_match.group(1).strip()
             response = response[:remove_match.start()] + response[remove_match.end():]
-            result = self.inventory_manager.remove_item(name)
-            if "Инвентарь" not in response:
-                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+            self.inventory_manager.remove_item(name)
+            inventory_changed = True
         elif fallback_remove:
-            result = self.inventory_manager.remove_item(fallback_remove)
-            if "Инвентарь" not in response:
-                response = response.strip() + "\n\n" + result + "\n" + self.inventory_manager.get_list_text()
+            self.inventory_manager.remove_item(fallback_remove)
+            inventory_changed = True
 
         # Проверяем просроченные предметы
         expired = self.inventory_manager.remove_expired_items()
-        if expired and "Инвентарь" not in response:
-            exp_text = "Просроченные предметы удалены: " + ", ".join(expired)
-            response = response.strip() + "\n\n" + exp_text + "\n" + self.inventory_manager.get_list_text()
+        if expired:
+            inventory_changed = True
+
+        if inventory_changed:
+            self._pending_list_messages.append(self.inventory_manager.get_list_text())
 
         return response.strip()
 

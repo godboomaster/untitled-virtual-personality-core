@@ -930,27 +930,30 @@ class ProactiveMessaging:
             # Запрашиваем у LLM
             settings = self.persona.get_settings()
 
-            # Пробуем локальную модель сначала для бинарного решения МОЛЧУ / мысль
-            local_response = None
+            # Локальная модель — только бинарный фильтр: SILENCE или нет.
+            # Полный текст генерируем основной моделью (локальная 3B слишком слаба
+            # для креативной генерации — выдаёт мусор вроде 'По').
             if self.local_router.is_available():
                 local_response = self.local_router.get_response(
                     messages,
                     temperature=0.3,
-                    max_tokens=400,
+                    max_tokens=50,
                     top_p=0.9,
                 )
                 if local_response:
                     logger.info(f"[Proactive] Локальный LLM ответ: {repr(local_response[:100])}")
+                    if local_response.upper().startswith("SIL") or local_response.upper().strip() == "SILENCE":
+                        logger.info("[Proactive] Локальный LLM решил молчать (SILENCE)")
+                        return None
+                    logger.info("[Proactive] Локальный LLM хочет говорить — генерация через основную модель")
 
-            if local_response:
-                response = local_response
-            else:
-                response = self.router.get_response(
-                    messages,
-                    temperature=0.7,
-                    max_tokens=400,
-                    top_p=0.9,
-                )
+            # Генерируем текст инициативы через основную модель
+            response = self.router.get_response(
+                messages,
+                temperature=0.7,
+                max_tokens=400,
+                top_p=0.9,
+            )
 
             logger.info(f"[Proactive] LLM raw response: {repr(response)}")
 

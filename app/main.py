@@ -122,6 +122,14 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         loop.call_soon_threadsafe(_start_proactive)
         logger.info(f"[{persona_name}] Proactive messaging запущен")
 
+    # Запускаем reminder loop если включено
+    rm = bot_instance.reminder_manager
+    if rm:
+        def _start_reminders():
+            rm.start(loop=loop)
+        loop.call_soon_threadsafe(_start_reminders)
+        logger.info(f"[{persona_name}] Reminder manager запущен")
+
     try:
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
@@ -130,6 +138,9 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         # Останавливаем proactive
         if bot_instance.proactive:
             bot_instance.proactive.stop()
+        # Останавливаем reminders
+        if bot_instance.reminder_manager:
+            bot_instance.reminder_manager.stop()
         async def _stop():
             await app.updater.stop()
             await app.stop()
