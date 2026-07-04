@@ -31,3 +31,28 @@ class MessageSender(Protocol):
             True если отправка успешна, False если нет.
         """
         ...
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        filename: str,
+        *,
+        caption: Optional[str] = None,
+        topic_id: Optional[int] = None,
+        parse_mode: Optional[str] = None,
+    ) -> bool:
+        """
+        Отправляет файл (документ) в чат.
+
+        Args:
+            chat_id: ID чата.
+            file_path: Путь к файлу на диске.
+            filename: Имя файла, которое увидит пользователь.
+            caption: Подпись к файлу (опционально).
+            topic_id: ID топика/треда (опционально).
+
+        Returns:
+            True если отправка успешна, False если нет.
+        """
+        ...

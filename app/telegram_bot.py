@@ -123,10 +123,16 @@ def create_handlers(bot: BotInstance) -> dict:
             lines.append("\nОтправьте файл — я прочитаю и сохраню!")
         if bot.todo_manager:
             lines.append("/todo — показать список дел чата")
+            lines.append("/add_todo <задача> — добавить дело")
             lines.append("/reminders — активные напоминания")
             lines.append("/cancel_reminder N — отменить напоминание №N")
+        if bot.reminder_manager:
+            lines.append("/remind <что напомнить> [через N ...] — создать напоминание")
         if bot.inventory_manager:
             lines.append("/inventory — показать инвентарь бота")
+            lines.append("/add_inventory <предмет>[: описание] — добавить предмет")
+        if bot.learning_manager:
+            lines.append("/learn <тема> — запустить режим обучения")
         await update.message.reply_text("\n".join(lines))
 
     async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -300,6 +306,48 @@ def create_handlers(bot: BotInstance) -> dict:
             return
         inv_list = bot.inventory_manager.get_list_text()
         await update.message.reply_text(inv_list)
+
+    # ── слэш-команды как второй способ записи (ответ через LLM в образе персоны) ──
+
+    async def _run_command(update: Update, kind: str, usage: str, manager_attr: str):
+        """Общий каркас: проверяет менеджера, парсит аргументы, вызывает _dispatch_command, отвечает."""
+        if not getattr(bot, manager_attr):
+            await update.message.reply_text("Эта функция не активна для данной персоны.")
+            return
+        user = update.effective_user
+        chat_id = str(update.effective_chat.id)
+        user_id = str(user.id)
+        user_name = user.first_name or user.username or f"User_{user_id}"
+        # Сырой текст после имени команды
+        raw = update.message.text or ""
+        args = raw.split(" ", 1)[1].strip() if " " in raw else ""
+        if not args:
+            await update.message.reply_text(usage)
+            return
+        try:
+            response = await asyncio.to_thread(
+                bot._dispatch_command, kind, args, chat_id, user_id, user_name
+            )
+        except Exception as e:
+            logger.error(f"[{persona_name}] Ошибка команды /{kind}: {e}", exc_info=True)
+            response = "Произошла ошибка. Попробуйте позже."
+        await _reply_ai(update.message, response)
+
+    async def remind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await _run_command(update, "remind",
+                           "Использование: /remind <что напомнить> [через N ...]", "reminder_manager")
+
+    async def add_todo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await _run_command(update, "todo",
+                           "Использование: /add_todo <задача>", "todo_manager")
+
+    async def add_inventory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await _run_command(update, "inventory",
+                           "Использование: /add_inventory <название предмета>[: описание]", "inventory_manager")
+
+    async def learn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await _run_command(update, "learn",
+                           "Использование: /learn <тема>", "learning_manager")
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
@@ -484,6 +532,10 @@ def create_handlers(bot: BotInstance) -> dict:
         "reminders": reminders_cmd if bot.reminder_manager else None,
         "cancel_reminder": cancel_reminder_cmd if bot.reminder_manager else None,
         "inventory": inventory_cmd if bot.inventory_manager else None,
+        "remind": remind_cmd if bot.reminder_manager else None,
+        "add_todo": add_todo_cmd if bot.todo_manager else None,
+        "add_inventory": add_inventory_cmd if bot.inventory_manager else None,
+        "learn": learn_cmd if bot.learning_manager else None,
         "handle_message": handle_message,
         "handle_document": handle_document if bot.file_db else None,
     }
@@ -504,6 +556,11 @@ def register_handlers(app: Application, bot: BotInstance):
         sender = TelegramMessageSender(bot=app.bot)
         bot.reminder_manager.set_sender(sender)
         bot.reminder_manager.set_router_persona(bot.router, bot.persona)
+
+    # Learning manager — sender и роутеры для генерации уроков
+    if bot.learning_manager:
+        sender = TelegramMessageSender(bot=app.bot)
+        bot.setup_learning(sender)
 
     app.add_handler(CommandHandler("start", h["start"]))
     app.add_handler(CommandHandler("help", h["help"]))
@@ -532,6 +589,14 @@ def register_handlers(app: Application, bot: BotInstance):
         app.add_handler(CommandHandler("cancel_reminder", h["cancel_reminder"]))
     if h.get("inventory"):
         app.add_handler(CommandHandler("inventory", h["inventory"]))
+    if h.get("remind"):
+        app.add_handler(CommandHandler("remind", h["remind"]))
+    if h.get("add_todo"):
+        app.add_handler(CommandHandler("add_todo", h["add_todo"]))
+    if h.get("add_inventory"):
+        app.add_handler(CommandHandler("add_inventory", h["add_inventory"]))
+    if h.get("learn"):
+        app.add_handler(CommandHandler("learn", h["learn"]))
 
     # Debug
     async def debug_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
