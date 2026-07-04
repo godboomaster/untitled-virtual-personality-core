@@ -130,6 +130,14 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         loop.call_soon_threadsafe(_start_reminders)
         logger.info(f"[{persona_name}] Reminder manager запущен")
 
+    # Запускаем learning loop если включено
+    lm = bot_instance.learning_manager
+    if lm:
+        def _start_learning():
+            lm.start(loop=loop)
+        loop.call_soon_threadsafe(_start_learning)
+        logger.info(f"[{persona_name}] Learning manager запущен")
+
     try:
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
@@ -141,6 +149,9 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         # Останавливаем reminders
         if bot_instance.reminder_manager:
             bot_instance.reminder_manager.stop()
+        # Останавливаем learning
+        if bot_instance.learning_manager:
+            bot_instance.learning_manager.stop()
         async def _stop():
             await app.updater.stop()
             await app.stop()

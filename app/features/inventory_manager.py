@@ -212,14 +212,26 @@ _INVENTORY_REMOVE_PATTERNS = [
 ]
 
 
+# Word-boundary regex для триггеров: «получи» не должно ловить «получил/получила»,
+# «надень» — «наденьте» и т.п. \b в Python 3 Unicode-aware, корректно для кириллицы.
+_INVENTORY_ADD_TRIGGER_RE = re.compile(
+    r"\b(?:возьми|получи|надень|экипируй|подбери|забери|вот\s+тебе|держи|дарю|отдаю|передаю|"
+    r"добавь\s+в\s+инвентарь|положи\s+в\s+карман)\b",
+    re.IGNORECASE,
+)
+
+_INVENTORY_REMOVE_TRIGGER_RE = re.compile(
+    r"\b(?:выбрось|убери|сними|разэкипируй|выкинь|удали\s+из\s+инвентаря|убери\s+из\s+кармана)\b",
+    re.IGNORECASE,
+)
+
+
 def is_inventory_add_request(text: str) -> bool:
-    lower = text.lower()
-    return any(t in lower for t in _INVENTORY_ADD_TRIGGERS)
+    return bool(_INVENTORY_ADD_TRIGGER_RE.search(text))
 
 
 def is_inventory_remove_request(text: str) -> bool:
-    lower = text.lower()
-    return any(t in lower for t in _INVENTORY_REMOVE_TRIGGERS)
+    return bool(_INVENTORY_REMOVE_TRIGGER_RE.search(text))
 
 
 def extract_inventory_item(text: str) -> Optional[str]:

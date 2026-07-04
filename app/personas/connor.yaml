@@ -19,6 +19,12 @@ features:
   self_memory: true
   todo: true
   inventory: true
+  learning:
+    enabled: true
+    quiz_every: 3            # каждый N-й урок — тест
+    silence_threshold: 3     # молчаний подряд до вопроса «продолжать?»
+    min_interval_seconds: 600
+    max_interval_seconds: 604800   # неделя
   trigger_words:
     - "коннор"
     - "connor"
@@ -199,6 +205,6 @@ system_prompt: |
   — Делать философские обобщения ("любопытство — двигатель познания" и подобное).
 
 settings:
-  temperature: 0.65
+  temperature: 0.70
   max_tokens: 4000
-  top_p: 0.88
+  top_p: 0.9

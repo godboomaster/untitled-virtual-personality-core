@@ -70,7 +70,8 @@ class PersonaLayer:
                          todo_context: Optional[str] = None,
                          reminder_context: Optional[str] = None,
                          inventory_context: Optional[str] = None,
-                         inventory_events: Optional[List[str]] = None) -> List[Dict]:
+                         inventory_events: Optional[List[str]] = None,
+                         learning_context: Optional[str] = None) -> List[Dict]:
         context_block = ""
         if memory_context:
             if has_files:
@@ -144,6 +145,11 @@ class PersonaLayer:
         if reminder_context:
             reminder_note = f"\n\n{reminder_context}\n"
 
+        # Learning-контекст: режим обучения (уточнение частоты, оценка теста, подтверждение)
+        learning_note = ""
+        if learning_context:
+            learning_note = f"\n\n{learning_context}\n"
+
         # Inventory-контекст: вещи бота
         inventory_note = ""
         if inventory_context:
@@ -178,7 +184,7 @@ class PersonaLayer:
             )
 
         messages = [
-            {"role": "system", "content": self.system_prompt + context_block + special_note + todo_note + reminder_note + inventory_note + inventory_events_note},
+            {"role": "system", "content": self.system_prompt + context_block + special_note + todo_note + reminder_note + learning_note + inventory_note + inventory_events_note},
         ]
 
         # Определяем, является ли текущее сообщение от именованного пользователя (групповой чат)

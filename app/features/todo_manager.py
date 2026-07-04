@@ -167,16 +167,29 @@ _TODO_EXTRACT_PATTERNS = [
 ]
 
 
+# Word-boundary regex: «добавь» не должно ловить «добавьте», «сделал» — разговорные формы.
+_TODO_TRIGGER_RE = re.compile(
+    r"\b(?:запиши|добавь|список\s+дел|to-do|todo)\b",
+    re.IGNORECASE,
+)
+
+
 def is_todo_request(text: str) -> bool:
     """Определяет, является ли запрос просьбой записать дело."""
-    lower = text.lower()
-    return any(trigger in lower for trigger in _TODO_TRIGGERS)
+    return bool(_TODO_TRIGGER_RE.search(text))
+
+
+# Word-boundary regex для завершения дела.
+_TODO_DONE_TRIGGER_RE = re.compile(
+    r"\b(?:сделал|сделано|готово|вычеркни|вычеркнуть|убери\s+из|убрать\s+из|"
+    r"удали\s+из|удалить\s+из|выполнил|выполнено|закрыл\s+дело|зачеркни)\b",
+    re.IGNORECASE,
+)
 
 
 def is_todo_done_request(text: str) -> bool:
     """Определяет, просит ли пользователь убрать дело (сделано/вычеркни/убери)."""
-    lower = text.lower()
-    return any(t in lower for t in _TODO_DONE_TRIGGERS)
+    return bool(_TODO_DONE_TRIGGER_RE.search(text))
 
 
 _TODO_DONE_TRIGGERS = [

@@ -259,6 +259,10 @@ class ReminderManager:
         self._reminders: List[dict] = []
         self._load()
 
+        # In-memory состояние /remind без времени: chat_id -> task
+        # (пережидает до ответа пользователя, теряется на рестарте — это ок)
+        self._pending_remind: Dict[str, str] = {}
+
     def set_sender(self, sender):
         self._sender = sender
 
@@ -331,6 +335,21 @@ class ReminderManager:
                 return True
             except ValueError:
                 return False
+
+    # ── pending /remind без времени (in-memory) ──
+
+    def begin_pending_remind(self, chat_id: str, task: str):
+        """Запоминает задачу напоминания, ждём от пользователя ответа про время."""
+        with self._lock:
+            self._pending_remind[str(chat_id)] = task
+
+    def get_pending_remind(self, chat_id: str) -> Optional[str]:
+        with self._lock:
+            return self._pending_remind.get(str(chat_id))
+
+    def clear_pending_remind(self, chat_id: str):
+        with self._lock:
+            self._pending_remind.pop(str(chat_id), None)
 
     def _cleanup_fired(self):
         """Удаляет сработавшие напоминания старше 24ч."""

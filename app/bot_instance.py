@@ -23,6 +23,8 @@ from app.features.todo_manager import (
     is_todo_done_request, extract_todo_done_index,
 )
 from app.features.reminder_manager import ReminderManager, parse_reminder
+from app.features.learning_manager import LearningManager, parse_frequency, classify_continue_answer
+from app.features.learning_intent import classify_learning_intent, extract_subject
 from app.features.inventory_manager import (
     InventoryManager,
     is_inventory_add_request,
@@ -35,6 +37,21 @@ logger = logging.getLogger(__name__)
 
 # Сколько последних реплик передавать в query rewriter для разрешения кореференций
 _REWRITE_HISTORY = 8
+
+# Эвристика обрыва ответа по max_tokens (см. также learning_manager._looks_truncated —
+# та же логика, но там она приватная для LLM-вызовов учебного модуля).
+_SENTENCE_END_RE = re.compile(r'[.!?…»"\)\]]\s*$')
+
+
+def _looks_truncated(text: str) -> bool:
+    """Эвристика обрыва ответа по max_tokens. Ранее была хрупкая проверка парности **/```,
+    но она ложно срабатывала на завершённых текстах с одиночной markdown-разметкой, что
+    запускало лишнюю догенерацию и приводило к дублированию текста. Оставлен только
+    надёжный сигнал: текст не заканчивается знаком завершения предложения."""
+    t = (text or "").rstrip()
+    if not t:
+        return False
+    return not _SENTENCE_END_RE.search(t)
 
 
 class BotInstance:
@@ -90,6 +107,15 @@ class BotInstance:
         if self.features.get("inventory", False):
             self.inventory_manager = InventoryManager(context=self.context)
             logger.info(f"  [{persona_name}] Inventory manager включён")
+
+        # Learning manager (только если learning) — режим обучения по запросу
+        self.learning_manager: Optional[LearningManager] = None
+        if self.features.get("learning", False):
+            learning_cfg = self.features.get("learning") or {}
+            if isinstance(learning_cfg, bool):
+                learning_cfg = {}
+            self.learning_manager = LearningManager(context=self.context, config=learning_cfg)
+            logger.info(f"  [{persona_name}] Learning manager включён")
 
         # Router (создаём до Memory, чтобы передать в LTM)
         self.router = ModelRouter()
@@ -244,6 +270,7 @@ class BotInstance:
 
         # Очищаем pending-списки от предыдущего вызова
         self._pending_list_messages = []
+        self._skip_llm_answer = None  # готовый ответ, минующий основной LLM-вызов (фидбек теста)
 
         logger.info(f"[BotInstance] process_message START: '{user_input[:60]}' | chat_id={chat_id}")
 
@@ -323,7 +350,43 @@ class BotInstance:
             # Любой текст со словом "напом" — это путь напоминаний, не todo.
             reminder_context = None
             is_reminder_request = False
-            if self.reminder_manager and chat_id and "напом" in user_input.lower():
+
+            # Pending /remind без времени: пользователь отвечал на «через сколько?»
+            if self.reminder_manager and chat_id:
+                pending_task = self.reminder_manager.get_pending_remind(chat_id)
+                if pending_task:
+                    # Пытаемся вытащить время из ответа пользователя
+                    rem_delay = None
+                    parsed_pending = parse_reminder("напомни " + user_input)
+                    if parsed_pending:
+                        _, rem_delay = parsed_pending
+                    if rem_delay is None:
+                        # Пробуем парсер частоты из learning
+                        rem_delay = parse_frequency(user_input)
+                    if rem_delay:
+                        self.reminder_manager.clear_pending_remind(chat_id)
+                        rem_task = self._reformulate_task(pending_task)
+                        topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                        delay_text = self.reminder_manager.format_delay(rem_delay)
+                        self.reminder_manager.add_reminder(
+                            chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id
+                        )
+                        task_display = f" '{rem_task}'" if rem_task else ""
+                        reminder_context = (
+                            f"Пользователь указал время для напоминания{task_display} — через {delay_text}. "
+                            f"Напоминание запланировано — подтверди это в своём стиле, коротко."
+                        )
+                        is_reminder_request = True
+                    else:
+                        # Время снова не поняли — переспрашиваем ещё раз
+                        reminder_context = (
+                            f"Пользователь отвечает на вопрос про время напоминания «{pending_task}», "
+                            "но время не удалось понять. Переспроси: через сколько напомнить "
+                            "(например, «через 2 часа», «завтра в 12»). В своём стиле, коротко."
+                        )
+                        is_reminder_request = True
+
+            elif self.reminder_manager and chat_id and "напом" in user_input.lower():
                 is_reminder_request = True
                 parsed = parse_reminder(user_input)
                 if parsed:
@@ -346,6 +409,98 @@ class BotInstance:
                         "Пользователь просит напоминание, но не указал через сколько времени. "
                         "Уточни когда ему напомнить — в своём стиле, коротко."
                     )
+
+            # Learning-контекст: режим обучения («научи меня X»)
+            learning_context = None
+            is_learning_request = False
+            if self.learning_manager and chat_id:
+                # Сбрасываем счётчик молчания — пользователь написал что-то
+                self.learning_manager.record_user_activity(chat_id)
+
+                # 1. Если ждём ответа на «как часто?» — парсим частоту
+                setup = self.learning_manager.get_setup_state(chat_id)
+                if setup:
+                    topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                    subject = setup.get("subject", "")
+                    delay = self.learning_manager.parse_frequency_smart(user_input)
+                    if delay:
+                        self.learning_manager.commit_session(chat_id, delay, topic_id)
+                        delay_text = self.learning_manager.format_delay(delay)
+                        # Изолированный вызов (без STM/истории) — см. docstring
+                        # render_setup_reply про то, почему это не идёт через
+                        # общий self.persona.prepare_messages(...).
+                        self._skip_llm_answer = self.learning_manager.render_setup_reply(subject, "confirmed", delay_text)
+                    else:
+                        self._skip_llm_answer = self.learning_manager.render_setup_reply(subject, "reask")
+                    is_learning_request = True
+                else:
+                    # 2/3. Один из параллельных курсов ждёт ответа — на тест ИЛИ на
+                    # «продолжаем?». resolve_pending_target сам решает, к какой теме
+                    # относится сообщение (по смыслу через LLM, если кандидатов больше одного).
+                    _pending = self.learning_manager.resolve_pending_target(chat_id, user_input)
+                    if _pending and _pending["_pending_kind"] == "continue":
+                        _session_id = _pending.get("session_id")
+                        decision = classify_continue_answer(user_input)
+                        self.learning_manager.resolve_continue(chat_id, decision, session_id=_session_id)
+                        # Изолированный вызов (без STM/истории) — см. docstring
+                        # render_continue_reply про то, почему это не идёт через
+                        # общий self.persona.prepare_messages(...).
+                        self._skip_llm_answer = self.learning_manager.render_continue_reply(chat_id, decision, session_id=_session_id)
+                        is_learning_request = True
+                    elif _pending and _pending["_pending_kind"] == "quiz":
+                        _session_id = _pending.get("session_id")
+                        feedback = self.learning_manager.submit_quiz_answer(chat_id, user_input, session_id=_session_id)
+                        if feedback is not None:
+                            # Реальная попытка ответить (пусть неверная) — фидбек уже
+                            # сгенерирован в образе персоны в _evaluate_quiz. Возвращаем
+                            # напрямую, минуя основной LLM-вызов, чтобы персонаж не
+                            # «достроил» к оценке новый урок.
+                            learning_context = None
+                            self._skip_llm_answer = feedback
+                            is_learning_request = True
+                        # feedback is None — офф-топ: ученик сменил тему, тест остаётся
+                        # открытым. Сообщение уходит в обычную генерацию ответа, без
+                        # пометки is_learning_request — персона ответит по сути вопроса.
+                    else:
+                        # 4. Новая просьба об обучении — классификатор намерения
+                        intent = classify_learning_intent(user_input)
+                        if intent == "LEARN":
+                            subject = extract_subject(user_input)
+                            self.learning_manager.begin_setup(chat_id, subject, user_id or "default", user_name or "Пользователь")
+                            learning_context = (
+                                f"Пользователь хочет, чтобы ты научил его «{subject}». "
+                                "Спроси его коротко и в своём стиле, как часто присылать уроки "
+                                "(например: раз в день, каждые 2 часа). Обучение начнётся после его ответа."
+                            )
+                            is_learning_request = True
+                        else:
+                            # 5. Сессия(и) активна, но это не команда/тест/setup/continue.
+                            # Пользователь, скорее всего, отвечает на контрольные вопросы прошлого урока
+                            # или просто пишет по теме. Запрещаем персоне самой продолжать курс:
+                            # следующий урок придёт по расписанию как отдельный файл.
+                            # Курсов может быть несколько параллельно — перечисляем все темы,
+                            # т.к. get_session(chat_id) больше не возвращает одну сессию однозначно.
+                            active_sessions = self.learning_manager.get_sessions(chat_id)
+                            if active_sessions:
+                                subjects = [s.get("subject", "") for s in active_sessions if s.get("subject")]
+                                subjects_str = "«" + "», «".join(subjects) + "»" if subjects else ""
+                                courses_note = (
+                                    f"по теме {subjects_str}" if len(subjects) == 1
+                                    else f"сразу по нескольким темам: {subjects_str}"
+                                )
+                                learning_context = (
+                                    f"В этом чате идёт обучение {courses_note}. "
+                                    "Пользователь пишет в рамках учебной беседы — возможно, отвечает на "
+                                    "контрольные вопросы прошлого урока (по одной из тем) или обсуждает тему. "
+                                    "Реагируй ТОЛЬКО на сообщение пользователя, в своём стиле. "
+                                    "СТРОГИЕ ПРАВИЛА:\n"
+                                    "— НЕ генерируй новый урок, новую тему, контрольные вопросы или тест "
+                                    "ни по одной из тем.\n"
+                                    "— НЕ пиши учебный материал вперемешку с ответом — следующий урок "
+                                    "придёт позже по расписанию отдельным сообщением-файлом.\n"
+                                    "— Реагируй коротко: ответь/поясни/прокомментируй, не более."
+                                )
+                                is_learning_request = True
 
             # Todo-контекст: определяем, является ли запрос todo-запросом
             # Может работать параллельно с напоминанием (напр. "напомни через час X и добавь в список дел")
@@ -408,6 +563,14 @@ class BotInstance:
                 if inv_block:
                     inventory_context = inv_block
 
+            # Ранний возврат: готовый ответ, минующий LLM (фидбек теста, не генерируем новый контент)
+            if self._skip_llm_answer:
+                answer = self._clean_response(self._skip_llm_answer)
+                self.memory.add_message("assistant", answer, user_id, chat_id)
+                if self.proactive and chat_id:
+                    self.proactive.record_user_response(chat_id)
+                return answer
+
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
                 user_id=user_id, user_name=user_name, web_context=web_context,
@@ -416,26 +579,49 @@ class BotInstance:
                 todo_context=todo_context,
                 reminder_context=reminder_context,
                 inventory_context=inventory_context,
-                inventory_events=inventory_events
+                inventory_events=inventory_events,
+                learning_context=learning_context
             )
             settings = self.persona.get_settings()
+            # Когда есть учебный контекст (анонс/пересказ урока, фидбек) — ответ выходит
+            # длиннее обычной реплики, для которой рассчитан persona.get_settings(). Берём
+            # более щедрый max_tokens, чтобы не упираться в лимит и не дёргать догенерацию.
+            if learning_context:
+                settings = dict(settings)
+                settings["max_tokens"] = max(int(settings.get("max_tokens", 2000)), 3000)
             answer = self.router.get_response(messages, **settings)
+
+            # Защита от обрыва по max_tokens (persona.get_settings() рассчитан на обычную
+            # реплику; когда learning_context просит анонсировать/пересказать урок, ответ
+            # выходит длиннее и может упереться в лимит) — просим модель дописать.
+            _continuations = 0
+            while _looks_truncated(answer) and _continuations < 2:
+                follow_up_messages = messages + [
+                    {"role": "assistant", "content": answer},
+                    {"role": "user", "content": "Ты остановился на середине фразы. Допиши строго с того места, где прервался — не повторяй уже написанное и не начинай заново."},
+                ]
+                cont = self.router.get_response(follow_up_messages, **settings)
+                if not cont:
+                    break
+                answer = answer + cont
+                _continuations += 1
 
             # Очистка ответа от мета-рассуждений и Markdown
             answer = self._clean_response(answer)
 
             # Обработка todo-маркера
-            if self.todo_manager and chat_id and todo_context:
+            if self.todo_manager and chat_id and todo_context and not is_learning_request:
                 answer = self._process_todo_marker(
                     answer, chat_id, user_name or "Пользователь",
                     fallback_task=extracted_task,
                     fallback_done_index=extracted_done_index,
+                    user_text=user_input,
                 )
 
             # Обработка inventory-маркеров (добавление/удаление/использование через маркеры)
-            # (пропускаем если это напоминание — LLM не должен добавлять в инвентарь)
-            if not is_reminder_request and self.inventory_manager:
-                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove, user_name or "пользователь")
+            # (пропускаем если это напоминание или обучение — LLM не должен добавлять в инвентарь)
+            if not is_reminder_request and not is_learning_request and self.inventory_manager:
+                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove, user_name or "пользователь", user_text=user_input)
             if self.inventory_manager:
                 answer = self._parse_punishment(answer, user_id)
 
@@ -522,6 +708,60 @@ class BotInstance:
             logger.debug(f"[Task] Переформулирование не удалось: {e}")
 
         return raw_task.strip()
+
+    def _confirm_intent(
+        self, user_text: str, candidate: str, intent: str
+    ) -> str:
+        """
+        Подтверждает через локальную LLM, что эвристически извлечённый кандидат —
+        это явная просьба пользователя, а не огрызок из обычной реплики.
+
+        intent: 'inventory_add' | 'inventory_remove' | 'todo_add'.
+        Возвращает:
+          'ADD'  — локальная LLM подтвердила намерение;
+          'SKIP' — локальная LLM отклонила;
+          'ASK'  — локальная LLM недоступна → переспросить пользователя.
+        """
+        if not self._local_router or not self._local_router.is_available():
+            logger.info(f"[Intent] Локальная LLM недоступна, переспрос для '{candidate[:40]}'")
+            return "ASK"
+
+        intent_desc = {
+            "inventory_add": "добавить предмет в инвентарь персонажа",
+            "inventory_remove": "выбросить/убрать предмет из инвентаря",
+            "todo_add": "записать задачу в список дел",
+        }.get(intent, "выполнить действие")
+
+        system_prompt = (
+            "Ты — классификатор намерений. Реши, просит ли пользователь ЯВНО и ОСОЗНАННО "
+            f"{intent_desc}, или это просто обычная реплика/рассказ о прошлом. "
+            "Повествование о прошедших событиях («получил», «сделал», «купил») — НЕ просьба. "
+            "Ответь одним словом: ADD (явная просьба) или SKIP (не просьба)."
+        )
+        user_prompt = (
+            f"Реплика пользователя: «{user_text}»\n"
+            f"Извлечённый кандидат: «{candidate}»\n"
+            f"Это явная просьба {intent_desc}? ADD или SKIP."
+        )
+
+        try:
+            verdict = self._local_router.classify(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                valid_outputs=["ADD", "SKIP"],
+                temperature=0.0,
+                max_tokens=5,
+            )
+        except Exception as e:
+            logger.warning(f"[Intent] Ошибка классификации: {e}")
+            return "ASK"
+
+        if verdict is None:
+            logger.info(f"[Intent] Локальная LLM не распознала ответ для '{candidate[:40]}'")
+            return "ASK"
+
+        logger.info(f"[Intent] {intent}: '{candidate[:40]}' -> {verdict}")
+        return verdict
 
     def _clean_response(self, response: str) -> str:
         # Очищает ответ от лишнего Markdown-форматирования и мета-рассуждений LLM.
@@ -633,9 +873,11 @@ class BotInstance:
         self, response: str, chat_id: str, user_name: str,
         fallback_task: Optional[str] = None,
         fallback_done_index: Optional[int] = None,
+        user_text: str = "",
     ) -> str:
         """Парсит маркеры [TODO_ADD:...] и [TODO_DONE:N], обновляет список дел.
-        Список дел отправляется отдельным сообщением через _pending_list_messages."""
+        Список дел отправляется отдельным сообщением через _pending_list_messages.
+        Эвристический fallback подтверждается локальной LLM (_confirm_intent)."""
         if not self.todo_manager:
             return response
 
@@ -663,7 +905,13 @@ class BotInstance:
             task = match.group(1).strip()
             response = response[:match.start()] + response[match.end():]
         elif fallback_task:
-            task = fallback_task
+            # Эвристический fallback — подтверждаем через LLM
+            verdict = self._confirm_intent(user_text, fallback_task, "todo_add")
+            if verdict == "ADD":
+                task = fallback_task
+            elif verdict == "ASK":
+                self._pending_list_messages.append(f"Записать «{fallback_task}» в список дел?")
+            # SKIP — игнорируем
 
         if task:
             todo_list = self.todo_manager.add_item(chat_id, user_name, task)
@@ -671,9 +919,11 @@ class BotInstance:
 
         return response.strip()
 
-    def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None, giver_name: str = "") -> str:
+    def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None, giver_name: str = "", user_text: str = "") -> str:
         """Парсит маркеры [INVENTORY_ADD:...], [INVENTORY_REMOVE:...], [INVENTORY_USE:...], обновляет инвентарь.
-        Инвентарь отправляется отдельным сообщением через _pending_list_messages."""
+        Инвентарь отправляется отдельным сообщением через _pending_list_messages.
+        Эвристический fallback подтверждается локальной LLM (_confirm_intent), чтобы не добавлять
+        предметы из обычных реплик («получил жабку» не должно добавлять «л жабку»)."""
         if not self.inventory_manager:
             return response
 
@@ -695,10 +945,16 @@ class BotInstance:
             response = response[:add_match.start()] + response[add_match.end():]
             self.inventory_manager.add_item(name, desc, source=giver_name)
             inventory_changed = True
-        # Fallback: эвристика нашла предмет, но маркера нет
+        # Fallback: эвристика нашла предмет, но маркера нет — подтверждаем через LLM
         elif fallback_add:
-            self.inventory_manager.add_item(fallback_add, source=giver_name)
-            inventory_changed = True
+            verdict = self._confirm_intent(user_text, fallback_add, "inventory_add")
+            if verdict == "ADD":
+                self.inventory_manager.add_item(fallback_add, source=giver_name)
+                inventory_changed = True
+            elif verdict == "ASK":
+                # Локальная LLM недоступна — переспрашиваем вместо слепого добавления
+                self._pending_list_messages.append(f"Добавить «{fallback_add}» в инвентарь?")
+            # SKIP — игнорируем, предмет не создаётся
 
         # INVENTORY_REMOVE — приоритет: маркер от LLM (пользователь забирает или отменяет)
         remove_match = re.search(r'\[INVENTORY_REMOVE:([^\]]+)\]', response)
@@ -708,8 +964,12 @@ class BotInstance:
             self.inventory_manager.remove_item(name)
             inventory_changed = True
         elif fallback_remove:
-            self.inventory_manager.remove_item(fallback_remove)
-            inventory_changed = True
+            verdict = self._confirm_intent(user_text, fallback_remove, "inventory_remove")
+            if verdict == "ADD":
+                self.inventory_manager.remove_item(fallback_remove)
+                inventory_changed = True
+            elif verdict == "ASK":
+                self._pending_list_messages.append(f"Убрать «{fallback_remove}» из инвентаря?")
 
         # Проверяем просроченные предметы
         expired = self.inventory_manager.remove_expired_items()
@@ -935,6 +1195,196 @@ class BotInstance:
         from app.features.chat_dossier import ChatDossier
         self.proactive.dossier = ChatDossier(context=self.context)
         logger.info(f"  [{self.persona_name}] Proactive messaging инициализирован с sender и досье")
+
+    def setup_learning(self, sender: MessageSender):
+        """Передаёт sender, роутеры и memory в learning_manager. Вызывается после инициализации Telegram Bot."""
+        if not self.learning_manager:
+            return
+        self.learning_manager.set_sender(sender)
+        self.learning_manager.set_routers_persona(self.router, self.persona, self._local_router)
+        self.learning_manager.set_memory(self.memory)
+        logger.info(f"  [{self.persona_name}] Learning manager инициализирован с sender, роутерами и memory")
+
+    # ── слэш-команды: создание сущности + ответ через LLM в образе персоны ──
+
+    def _generate_inventory_description(self, name: str) -> str:
+        """Генерирует краткое описание предмета через LLM (если описание не задано пользователем)."""
+        if not name:
+            return ""
+        router = self._local_router or self.router
+        try:
+            messages = [
+                {"role": "system", "content": (
+                    "Придумай краткое (5-15 слов) содержательное описание предмета. "
+                    "Только описание, без названия и кавычек. Например для 'ключ' — 'маленький металлический ключ от двери'."
+                )},
+                {"role": "user", "content": name.strip()},
+            ]
+            resp = router.get_response(messages, temperature=0.4, max_tokens=40, top_p=0.9)
+            if resp:
+                cleaned = resp.strip().strip('"\'""«»').strip()
+                if 3 <= len(cleaned) <= 120:
+                    return cleaned
+        except Exception as e:
+            logger.debug(f"[Inventory] Генерация описания не удалась: {e}")
+        return ""
+
+    def command_reply(
+        self, context_note: str, note_kind: str,
+        chat_id: str, user_id: str, user_name: str, user_input: str,
+    ) -> str:
+        """
+        Генерирует ответ на слэш-команду в характере персоны.
+        Сущность (напоминание/задача/предмет/сессия обучения) уже создана в _dispatch_command —
+        здесь только формируется контекстная инструкция и вызывается LLM.
+        БЕЗ detection-блоков и обработки маркеров (чтобы не создать сущность повторно).
+        """
+        # Сохраняем сообщение пользователя (текст команды) в STM
+        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+
+        # Собираем контекст
+        stm_messages, ltm_facts, stm_relevant = self.memory.get_context(
+            user_id, chat_id, ltm_query=user_input
+        )
+        memory_text = ""
+        if ltm_facts:
+            memory_text = "\n".join(ltm_facts)
+        self_memory_block = None
+        if self.self_memory:
+            self_memory_block = self.self_memory.get_context_block()
+        stm_relevant_text = None
+        if stm_relevant:
+            parts = []
+            for msg in stm_relevant:
+                role_ru = msg.get("user_name", "Пользователь") if msg["role"] == "user" else "Ассистент"
+                parts.append(f"  {role_ru}: {msg['content'][:200]}")
+            stm_relevant_text = "\n".join(parts)
+
+        # Маршрутизируем note в нужный *_context параметр prepare_messages
+        kwargs = dict(
+            user_message=user_input, memory_context=memory_text, history=stm_messages,
+            user_id=user_id, user_name=user_name,
+            has_files=False, self_memory_block=self_memory_block,
+            stm_relevant=stm_relevant_text,
+        )
+        if note_kind == "reminder":
+            kwargs["reminder_context"] = context_note
+        elif note_kind == "todo":
+            kwargs["todo_context"] = context_note
+        elif note_kind == "learning":
+            kwargs["learning_context"] = context_note
+        elif note_kind == "inventory":
+            kwargs["inventory_context"] = context_note
+
+        messages = self.persona.prepare_messages(**kwargs)
+        settings = self.persona.get_settings()
+        answer = self.router.get_response(messages, **settings)
+
+        # Защита от обрыва по max_tokens — та же логика, что в основном процессе сообщений.
+        _continuations = 0
+        while _looks_truncated(answer) and _continuations < 2:
+            follow_up_messages = messages + [
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": "Ты остановился на середине фразы. Допиши строго с того места, где прервался — не повторяй уже написанное и не начинай заново."},
+            ]
+            cont = self.router.get_response(follow_up_messages, **settings)
+            if not cont:
+                break
+            answer = answer + cont
+            _continuations += 1
+
+        answer = self._clean_response(answer)
+
+        self.memory.add_message("assistant", answer, user_id, chat_id)
+        return answer
+
+    def _dispatch_command(
+        self, kind: str, args: str, chat_id: str, user_id: str, user_name: str,
+    ) -> str:
+        """
+        Оркестратор слэш-команд. Создаёт сущность через manager API и формирует
+        контекстную инструкцию для ответа в образе персоны.
+        kind: 'remind' | 'todo' | 'inventory' | 'learn'
+        """
+        args = (args or "").strip()
+        user_input_cmd = f"/{kind} {args}".strip()  # что сохранится в STM
+
+        if kind == "remind":
+            if not self.reminder_manager:
+                return "Напоминания не активны для этой персоны."
+            if not args:
+                return "Использование: /remind <что напомнить> [через N ...]"
+            parsed = parse_reminder("напомни " + args)
+            if parsed:
+                rem_task, rem_delay = parsed
+                if rem_task:
+                    rem_task = self._reformulate_task(rem_task)
+                topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                delay_text = self.reminder_manager.format_delay(rem_delay)
+                self.reminder_manager.add_reminder(chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id)
+                task_display = f" «{rem_task}»" if rem_task else ""
+                note = (
+                    f"Пользователь командой попросил напомнить{task_display} через {delay_text}. "
+                    "Напоминание уже запланировано — подтверди это в своём стиле, коротко."
+                )
+            else:
+                # Время не указано — переспрашиваем, запоминаем задачу
+                rem_task = self._reformulate_task(args)
+                self.reminder_manager.begin_pending_remind(chat_id, rem_task)
+                note = (
+                    f"Пользователь командой попросил напомнить «{rem_task}», но не указал через сколько. "
+                    "Уточни когда ему напомнить (например, «через 2 часа», «завтра в 12») — в своём стиле, коротко."
+                )
+            return self.command_reply(note, "reminder", chat_id, user_id, user_name, user_input_cmd)
+
+        if kind == "todo":
+            if not self.todo_manager:
+                return "Список дел не активен для этой персоны."
+            if not args:
+                return "Использование: /todo <задача>"
+            task = self._reformulate_task(args)
+            self.todo_manager.add_item(chat_id, user_name or "Пользователь", task)
+            note = (
+                f"Пользователь командой добавил в список дел задачу «{task}». "
+                "Подтверди это в своём стиле, коротко."
+            )
+            return self.command_reply(note, "todo", chat_id, user_id, user_name, user_input_cmd)
+
+        if kind == "inventory":
+            if not self.inventory_manager:
+                return "Инвентарь не активен для этой персоны."
+            if not args:
+                return "Использование: /inventory <название предмета>[: описание]"
+            # Разбираем название и опциональное описание (разделитель : или —)
+            parts = re.split(r"\s*[:—–-]\s*", args, maxsplit=1)
+            name = parts[0].strip()
+            desc = parts[1].strip() if len(parts) > 1 else ""
+            if not desc:
+                desc = self._generate_inventory_description(name)
+            result = self.inventory_manager.add_item(name, description=desc, source=user_name or "пользователь")
+            note = (
+                f"Пользователь командой положил тебе в инвентарь предмет «{name}»"
+                + (f" (описание: {desc})" if desc else "")
+                + f". Результат: {result} "
+                "Подтверди это в своём стиле, коротко."
+            )
+            return self.command_reply(note, "inventory", chat_id, user_id, user_name, user_input_cmd)
+
+        if kind == "learn":
+            if not self.learning_manager:
+                return "Режим обучения не активен для этой персоны."
+            if not args:
+                return "Использование: /learn <тема>"
+            subject = args
+            self.learning_manager.begin_setup(chat_id, subject, user_id or "default", user_name or "Пользователь")
+            note = (
+                f"Пользователь командой попросил научить его «{subject}». "
+                "Спроси коротко и в своём стиле, как часто присылать уроки "
+                "(например: раз в день, каждые 2 часа). Обучение начнётся после его ответа."
+            )
+            return self.command_reply(note, "learning", chat_id, user_id, user_name, user_input_cmd)
+
+        return "Неизвестная команда."
 
     def record_activity(self, chat_id: str):
         """Записывает активность в чате. Вызывается при каждом сообщении."""
