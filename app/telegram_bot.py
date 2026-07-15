@@ -45,6 +45,9 @@ def _md_to_html(text: str) -> str:
 
 
 async def _reply_ai(message, text: str):
+    """Отправляет ответ бота. Возвращает список message_id отправленных текстовых сообщений
+    (нужно, чтобы регистрировать сообщения-вопросы для reply-to-логики обучения)."""
+    sent_message_ids = []
     # Анализируем ответ — нужны ли файлы
     try:
         msg_parts, files = prepare_response(text)
@@ -61,10 +64,14 @@ async def _reply_ai(message, text: str):
             html = _md_to_html(part)
             # Сворачиваем в expandable blockquote для единообразия
             html = f"<blockquote expandable>{html}</blockquote>"
-            await message.reply_text(html, parse_mode="HTML")
+            sent = await message.reply_text(html, parse_mode="HTML")
+            if getattr(sent, "message_id", None):
+                sent_message_ids.append(sent.message_id)
         except Exception:
             try:
-                await message.reply_text(part)
+                sent = await message.reply_text(part)
+                if getattr(sent, "message_id", None):
+                    sent_message_ids.append(sent.message_id)
             except Exception:
                 pass
 
@@ -80,6 +87,8 @@ async def _reply_ai(message, text: str):
             except Exception as e:
                 logger.error(f"Ошибка отправки файла {filename}: {e}")
         cleanup_files(files)
+
+    return sent_message_ids
 
 
 # ─── Создание handlers для конкретного BotInstance ────────
@@ -374,10 +383,12 @@ def create_handlers(bot: BotInstance) -> dict:
         # Reply to bot?
         is_reply_to_bot = False
         reply_ctx = None
+        reply_to_bot_message_id = None
         if update.message.reply_to_message:
             replied = update.message.reply_to_message
             if replied.from_user and replied.from_user.id == context.bot.id:
                 is_reply_to_bot = True
+                reply_to_bot_message_id = replied.message_id
             else:
                 reply_ctx = extract_reply_context(update, context.bot.id)
 
@@ -423,10 +434,17 @@ def create_handlers(bot: BotInstance) -> dict:
                 bot.process_message, clean_text,
                 user_id=user_id, chat_id=chat_id,
                 user_name=user_tag if chat_id != user_id else user_name,
-                reply_context=reply_ctx
+                reply_context=reply_ctx,
+                reply_to_bot_message_id=reply_to_bot_message_id
             )
             logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
-            await _reply_ai(update.message, response)
+            sent_ids = await _reply_ai(update.message, response)
+
+            # Если этот ответ — бот-вопрос (частота уроков/«продолжаем?»), регистрируем его
+            # message_id, чтобы потом понять, ответил ли пользователь reply-ом именно на него.
+            if sent_ids and bot.learning_manager and getattr(bot, "_pending_question_kind", None):
+                for mid in sent_ids:
+                    bot.learning_manager.register_question_message(chat_id, mid)
 
             # Отправляем списки дел/инвентарь отдельными сообщениями
             pending = bot._pending_list_messages

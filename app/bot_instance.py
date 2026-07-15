@@ -23,7 +23,7 @@ from app.features.todo_manager import (
     is_todo_done_request, extract_todo_done_index,
 )
 from app.features.reminder_manager import ReminderManager, parse_reminder
-from app.features.learning_manager import LearningManager, parse_frequency, classify_continue_answer
+from app.features.learning_manager import LearningManager, parse_frequency
 from app.features.learning_intent import classify_learning_intent, extract_subject
 from app.features.inventory_manager import (
     InventoryManager,
@@ -36,22 +36,42 @@ from app.features.inventory_manager import (
 logger = logging.getLogger(__name__)
 
 # Сколько последних реплик передавать в query rewriter для разрешения кореференций
+# кореференций - местоимения и указательные слова, которые ссылаются на что-то из предыдущего контекста
 _REWRITE_HISTORY = 8
 
-# Эвристика обрыва ответа по max_tokens (см. также learning_manager._looks_truncated —
+# Эвристика обрыва ответа по max_tokens (learning_manager._looks_truncated —
 # та же логика, но там она приватная для LLM-вызовов учебного модуля).
 _SENTENCE_END_RE = re.compile(r'[.!?…»"\)\]]\s*$')
 
 
 def _looks_truncated(text: str) -> bool:
-    """Эвристика обрыва ответа по max_tokens. Ранее была хрупкая проверка парности **/```,
-    но она ложно срабатывала на завершённых текстах с одиночной markdown-разметкой, что
-    запускало лишнюю догенерацию и приводило к дублированию текста. Оставлен только
-    надёжный сигнал: текст не заканчивается знаком завершения предложения."""
+    """Эвристика обрыва ответа по max_tokens, 
+    текст не заканчивается знаком завершения предложения."""
     t = (text or "").rstrip()
     if not t:
         return False
     return not _SENTENCE_END_RE.search(t)
+
+
+# Эвристика: похоже ли сообщение на ответ про частоту уроков (а не на произвольную реплику
+# или запрос другой фичи). Используется, чтобы бот в setup-состоянии (ждёт «как часто?»)
+# активировался на «раз в день»/«каждые 2 часа», но НЕ на длинное сообщение или посторонний
+# текст. Короткое (до ~12 слов) И содержит временнУю лексику — типичный ответ о периодичности.
+_FREQUENCY_WORDS_RE = re.compile(
+    r"\b(?:раз\s+в|кажды[ей]|каждую|через|полчаса|ежечасн|ежедневн|еженедельн|интервал|"
+    r"час|минут|день|дн[яей]|недел[ьюя]|месяц|секунд)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_frequency_answer(text: str) -> bool:
+    if not text or not text.strip():
+        return False
+    # Короткое сообщение (ответ о частоте обычно в одну строчку)
+    word_count = len(text.split())
+    if word_count > 12:
+        return False
+    return bool(_FREQUENCY_WORDS_RE.search(text))
 
 
 class BotInstance:
@@ -96,9 +116,9 @@ class BotInstance:
             self.todo_manager = TodoManager(context=self.context)
             logger.info(f"  [{persona_name}] Todo manager включён")
 
-        # Reminder manager (только если todo — напоминания это расширение todo)
+        # Reminder manager — независимый флаг reminder (раньше был расширением todo)
         self.reminder_manager: Optional[ReminderManager] = None
-        if self.features.get("todo", False):
+        if self.features.get("reminder", False):
             self.reminder_manager = ReminderManager(context=self.context)
             logger.info(f"  [{persona_name}] Reminder manager включён")
 
@@ -265,12 +285,17 @@ class BotInstance:
 
     def process_message(self, user_input: str, user_id: str = "default",
                         chat_id: str = None, user_name: str = None,
-                        reply_context: str = None) -> str:
+                        reply_context: str = None,
+                        reply_to_bot_message_id: Optional[int] = None) -> str:
         from app.features.query_rewriter import rewrite_query
 
         # Очищаем pending-списки от предыдущего вызова
         self._pending_list_messages = []
         self._skip_llm_answer = None  # готовый ответ, минующий основной LLM-вызов (фидбек теста)
+        # Каким был последний _skip_llm_answer: 'frequency' | 'continue' | None.
+        # Нужно telegram-слою, чтобы зарегистрировать отправленное сообщение как «вопрос бота»
+        # для reply-to-логики обучения (пользователь может ответить reply-ом на этот вопрос).
+        self._pending_question_kind = None
 
         logger.info(f"[BotInstance] process_message START: '{user_input[:60]}' | chat_id={chat_id}")
 
@@ -354,6 +379,7 @@ class BotInstance:
             # Pending /remind без времени: пользователь отвечал на «через сколько?»
             if self.reminder_manager and chat_id:
                 pending_task = self.reminder_manager.get_pending_remind(chat_id)
+                logger.info(f"[Reminder] pending_remind для chat={chat_id}: {pending_task!r}")
                 if pending_task:
                     # Пытаемся вытащить время из ответа пользователя
                     rem_delay = None
@@ -386,40 +412,71 @@ class BotInstance:
                         )
                         is_reminder_request = True
 
-            elif self.reminder_manager and chat_id and "напом" in user_input.lower():
-                is_reminder_request = True
-                parsed = parse_reminder(user_input)
-                if parsed:
-                    rem_task, rem_delay = parsed
-                    # Переформулирование задачи через LLM
-                    if rem_task:
-                        rem_task = self._reformulate_task(rem_task)
-                    topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
-                    delay_text = self.reminder_manager.format_delay(rem_delay)
-                    self.reminder_manager.add_reminder(
-                        chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id
-                    )
-                    task_display = f" '{rem_task}'" if rem_task else ""
-                    reminder_context = (
-                        f"Пользователь попросил напомнить{task_display} через {delay_text}. "
-                        f"Напоминание уже запланировано — просто подтверди это в своём стиле, коротко."
-                    )
-                else:
-                    reminder_context = (
-                        "Пользователь просит напоминание, но не указал через сколько времени. "
-                        "Уточни когда ему напомнить — в своём стиле, коротко."
-                    )
+                # ВАЖНО: раньше это был `elif` на том же уровне, что и `if self.reminder_manager
+                # and chat_id:` выше — а условие elif было строгим подмножеством условия if,
+                # так что при отсутствии pending_task (обычный случай) сюда вообще никогда не
+                # попадали, и свежие текстовые запросы «напомни мне X через Y» никогда не
+                # парсились. Теперь это правильно вложено: проверяем «напом» только когда
+                # НЕТ pending-задачи.
+                elif "напом" in user_input.lower():
+                    is_reminder_request = True
+                    parsed = parse_reminder(user_input)
+                    logger.info(f"[Reminder] parse_reminder({user_input[:60]!r}) -> {parsed}")
+                    if parsed:
+                        rem_task, rem_delay = parsed
+                        # Переформулирование задачи через LLM
+                        if rem_task:
+                            rem_task = self._reformulate_task(rem_task)
+                        topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                        delay_text = self.reminder_manager.format_delay(rem_delay)
+                        self.reminder_manager.add_reminder(
+                            chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id
+                        )
+                        task_display = f" '{rem_task}'" if rem_task else ""
+                        reminder_context = (
+                            f"Пользователь попросил напомнить{task_display} через {delay_text}. "
+                            f"Напоминание уже запланировано — просто подтверди это в своём стиле, коротко."
+                        )
+                    else:
+                        # Время не указано — переспрашиваем и ЗАПОМИНАЕМ задачу (как в /remind),
+                        # иначе следующее сообщение "через 10 минут" не с чем будет связать.
+                        rem_task = self._reformulate_task(user_input)
+                        self.reminder_manager.begin_pending_remind(chat_id, rem_task)
+                        reminder_context = (
+                            f"Пользователь попросил напомнить «{rem_task}», но не указал через сколько. "
+                            "Уточни когда ему напомнить — в своём стиле, коротко."
+                        )
 
             # Learning-контекст: режим обучения («научи меня X»)
             learning_context = None
             is_learning_request = False
             if self.learning_manager and chat_id:
-                # Сбрасываем счётчик молчания — пользователь написал что-то
-                self.learning_manager.record_user_activity(chat_id)
+                # Ответил ли пользователь reply-ом на один из последних «вопросов» бота
+                # (частота уроков / «продолжаем?» / тест)? Это даёт обучению приоритет:
+                # если да — сообщение трактуется как ответ на этот вопрос.
+                reply_to_question = self.learning_manager.is_reply_to_question(chat_id, reply_to_bot_message_id)
+                # Явно другая фича (напоминание/todo/инвентарь) — даже без reply у неё
+                # приоритет над обучением, чтобы «напомни через 5 минут» не создавало
+                # фейковый урок через parse_frequency("5 минут")=300с.
+                explicit_other_feature = (
+                    is_reminder_request
+                    or is_inventory_add_request(user_input)
+                    or is_inventory_remove_request(user_input)
+                    or is_todo_request(user_input)
+                    or is_todo_done_request(user_input)
+                )
 
-                # 1. Если ждём ответа на «как часто?» — парсим частоту
+                # Сбрасываем счётчик молчания — но только если сообщение не про другую
+                # фичу (напоминание не должно сбрасывать молчание курса).
+                if not explicit_other_feature:
+                    self.learning_manager.record_user_activity(chat_id)
+
+                # 1. Если ждём ответа на «как часто?» — парсим частоту.
+                #    Чтобы не перехватывать напоминания/todo/инвентарь, активируемся только если:
+                #    (a) это reply на бот-вопрос о частоте, ИЛИ
+                #    (b) сообщение не похоже ни на какую другую фичу (explicit_other_feature=False).
                 setup = self.learning_manager.get_setup_state(chat_id)
-                if setup:
+                if setup and not explicit_other_feature and (reply_to_question or _looks_like_frequency_answer(user_input)):
                     topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                     subject = setup.get("subject", "")
                     delay = self.learning_manager.parse_frequency_smart(user_input)
@@ -432,21 +489,44 @@ class BotInstance:
                         self._skip_llm_answer = self.learning_manager.render_setup_reply(subject, "confirmed", delay_text)
                     else:
                         self._skip_llm_answer = self.learning_manager.render_setup_reply(subject, "reask")
+                    # Если частоту не поняли (reask) — бот переспрашивает, это «вопрос».
+                    # Если поняли (confirmed) — это не вопрос, а подтверждение старта.
+                    self._pending_question_kind = "frequency" if not delay else None
                     is_learning_request = True
                 else:
                     # 2/3. Один из параллельных курсов ждёт ответа — на тест ИЛИ на
-                    # «продолжаем?». resolve_pending_target сам решает, к какой теме
-                    # относится сообщение (по смыслу через LLM, если кандидатов больше одного).
-                    _pending = self.learning_manager.resolve_pending_target(chat_id, user_input)
+                    # «продолжаем?». Но если сообщение явно про другую фичу (напоминание/
+                    # todo/инвентарь) — не перехватываем, даём той фиче приоритет.
+                    _pending = None
+                    if not explicit_other_feature:
+                        _pending = self.learning_manager.resolve_pending_target(chat_id, user_input)
+
+                    _pending_handled = False
                     if _pending and _pending["_pending_kind"] == "continue":
-                        _session_id = _pending.get("session_id")
-                        decision = classify_continue_answer(user_input)
-                        self.learning_manager.resolve_continue(chat_id, decision, session_id=_session_id)
-                        # Изолированный вызов (без STM/истории) — см. docstring
-                        # render_continue_reply про то, почему это не идёт через
-                        # общий self.persona.prepare_messages(...).
-                        self._skip_llm_answer = self.learning_manager.render_continue_reply(chat_id, decision, session_id=_session_id)
-                        is_learning_request = True
+                        # ТОЛЬКО настоящий Telegram-reply на само сообщение с вопросом
+                        # «продолжаем?» считается ответом на него. Если пользователь просто
+                        # написал новое сообщение (не reply) — вопрос остаётся висеть НЕТРОНУТЫМ,
+                        # а сообщение уходит в обычную обработку ниже. Это надёжнее и дешевле,
+                        # чем гадать по содержанию через LLM (OFFTOPIC-классификация): реплай —
+                        # однозначный, явный сигнал от самого пользователя, а не эвристика.
+                        if reply_to_question:
+                            _session_id = _pending.get("session_id")
+                            decision = self.learning_manager.classify_continue_answer_smart(user_input)
+                            # OFFTOPIC — это reply на вопрос, но не по теме: вопрос не трогаем,
+                            # сообщение уходит в обычную обработку (персона ответит по сути).
+                            if decision == "OFFTOPIC":
+                                pass
+                            else:
+                                self.learning_manager.resolve_continue(chat_id, decision, session_id=_session_id)
+                                # Изолированный вызов (без STM/истории) — см. docstring
+                                # render_continue_reply про то, почему это не идёт через
+                                # общий self.persona.prepare_messages(...).
+                                self._skip_llm_answer = self.learning_manager.render_continue_reply(chat_id, decision, session_id=_session_id)
+                                # При UNKNOWN бот переспрашивает «да/нет» — это «вопрос».
+                                self._pending_question_kind = "continue" if decision == "UNKNOWN" else None
+                                is_learning_request = True
+                                _pending_handled = True
+                        # не реплай — просто падаем в обычную обработку ниже, вопрос не трогаем
                     elif _pending and _pending["_pending_kind"] == "quiz":
                         _session_id = _pending.get("session_id")
                         feedback = self.learning_manager.submit_quiz_answer(chat_id, user_input, session_id=_session_id)
@@ -458,10 +538,12 @@ class BotInstance:
                             learning_context = None
                             self._skip_llm_answer = feedback
                             is_learning_request = True
+                            _pending_handled = True
                         # feedback is None — офф-топ: ученик сменил тему, тест остаётся
                         # открытым. Сообщение уходит в обычную генерацию ответа, без
                         # пометки is_learning_request — персона ответит по сути вопроса.
-                    else:
+
+                    if not _pending_handled:
                         # 4. Новая просьба об обучении — классификатор намерения
                         intent = classify_learning_intent(user_input)
                         if intent == "LEARN":
@@ -501,6 +583,25 @@ class BotInstance:
                                     "— Реагируй коротко: ответь/поясни/прокомментируй, не более."
                                 )
                                 is_learning_request = True
+                                # get_nag_guard: персона сама (без инструкции) любит напоминать
+                                # о незакрытых контрольных вопросах почти в каждом ответе —
+                                # отсюда навязчивые «который раз за сессию», «паттерн
+                                # подтверждён» и т.п. Кулдаун 4ч на курс: пока не истекло с
+                                # последнего такого напоминания — явный запрет повторять;
+                                # как истекло — ничего не добавляем, оставляя персоне свободу
+                                # упомянуть (или нет) по своему усмотрению.
+                                nag_guard = self.learning_manager.get_nag_guard(chat_id)
+                                if nag_guard:
+                                    learning_context += "\n\n" + nag_guard
+                                # Изредка (кулдаун + вероятность внутри) добавляем к этой же
+                                # инструкции подсказку органично закрепить пройденный материал —
+                                # словом/фразой для языковых курсов или уместной отсылкой без
+                                # объяснений для остальных тем. Не отдельный контекст, а
+                                # дополнение к нему — иначе он никогда бы не сработал, ведь
+                                # guard выше занимает learning_context на КАЖДОМ сообщении.
+                                reinforcement = self.learning_manager.get_reinforcement_hint(chat_id)
+                                if reinforcement:
+                                    learning_context += "\n\n" + reinforcement
 
             # Todo-контекст: определяем, является ли запрос todo-запросом
             # Может работать параллельно с напоминанием (напр. "напомни через час X и добавь в список дел")

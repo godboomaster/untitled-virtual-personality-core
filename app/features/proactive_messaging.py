@@ -90,6 +90,14 @@ class ProactiveConfig:
     max_probability: float = 0.9     # максимальная вероятность инициативы
     type_balance: bool = True        # балансировать типы инициатив
     multi_turn_enabled: bool = False # multi-turn инициативы (ожидание ответа)
+    use_local_prefilter: bool = False  # локальная модель как бинарный SILENCE-фильтр перед
+    # основной моделью — экономит вызовы, НО маленькие модели (3B и меньше) на этой открытой,
+    # субъективной задаче ("стоит ли мне вообще что-то сказать?") систематически скатываются
+    # в самый безопасный ответ и почти всегда отвечают SILENCE, из-за чего основная модель
+    # никогда не получает шанс сгенерировать инициативу — даже при initiative_probability=1.0
+    # (вероятность проверяется ПОСЛЕ генерации и просто никогда не достигается). Выключено по
+    # умолчанию; включайте только если проверили, что локальная модель адекватно справляется
+    # с этим конкретным промптом.
 
     @classmethod
     def from_dict(cls, data: dict) -> "ProactiveConfig":
@@ -113,6 +121,7 @@ class ProactiveConfig:
             max_probability=data.get("max_probability", 0.9),
             type_balance=data.get("type_balance", True),
             multi_turn_enabled=data.get("multi_turn_enabled", False),
+            use_local_prefilter=data.get("use_local_prefilter", False),
         )
 
 
@@ -930,10 +939,11 @@ class ProactiveMessaging:
             # Запрашиваем у LLM
             settings = self.persona.get_settings()
 
-            # Локальная модель — только бинарный фильтр: SILENCE или нет.
-            # Полный текст генерируем основной моделью (локальная 3B слишком слаба
-            # для креативной генерации — выдаёт мусор вроде 'По').
-            if self.local_router.is_available():
+            # Локальная модель — необязательный бинарный фильтр: SILENCE или нет.
+            # Отключён по умолчанию (use_local_prefilter=False) — на практике маленькая
+            # локальная модель почти всегда отвечает SILENCE на этот открытый, субъективный
+            # промпт, и основная модель никогда не получает шанс сгенерировать инициативу.
+            if self.config.use_local_prefilter and self.local_router.is_available():
                 local_response = self.local_router.get_response(
                     messages,
                     temperature=0.3,
@@ -951,7 +961,7 @@ class ProactiveMessaging:
             response = self.router.get_response(
                 messages,
                 temperature=0.7,
-                max_tokens=400,
+                max_tokens=1200,
                 top_p=0.9,
             )
 

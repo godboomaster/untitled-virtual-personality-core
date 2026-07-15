@@ -195,6 +195,9 @@ class LearningManager:
 
     DEFAULT_QUIZ_EVERY = 3
     DEFAULT_SILENCE_THRESHOLD = 3
+    REINFORCE_COOLDOWN_SECONDS = 6 * 3600  # не чаще раза в 6 часов на курс
+    REINFORCE_PROBABILITY = 0.25  # и даже тогда — не гарантированно, для органичности
+    NAG_COOLDOWN_SECONDS = 4 * 3600  # не чаще раза в 4 часа — напоминание про незакрытые вопросы
 
     _SENTENCE_END_RE = re.compile(r'[.!?…»"\)\]]\s*$')
 
@@ -265,6 +268,35 @@ class LearningManager:
         # Состояние диалога «как часто?» — in-memory (теряется на рестарте, это ок)
         self._setup_state: Dict[str, dict] = {}
 
+        # Реестр message_id → признак, что это сообщение бота было вопросом (частота уроков /
+        # «продолжаем?» / тест). Нужен, чтобы понять, отвечает ли пользователь reply-ом именно
+        # на бот-вопрос, а не пишет произвольное сообщение. In-memory, обрезается до последних N.
+        self._question_msgs: Dict[str, list] = {}
+        self._QUESTION_MSG_LIMIT = 20
+
+    # ── реестр сообщений-вопросов бота ──
+
+    def register_question_message(self, chat_id: str, message_id: int):
+        """Отмечает, что сообщение бота с этим message_id — это вопрос (частота/continue/тест).
+        Потом is_reply_to_question проверит, ответил ли пользователь reply-ом именно на него."""
+        if not message_id:
+            return
+        chat_id = str(chat_id)
+        with self._lock:
+            bucket = self._question_msgs.setdefault(chat_id, [])
+            if message_id not in bucket:
+                bucket.append(message_id)
+            # Обрезаем до последних N
+            if len(bucket) > self._QUESTION_MSG_LIMIT:
+                self._question_msgs[chat_id] = bucket[-self._QUESTION_MSG_LIMIT:]
+
+    def is_reply_to_question(self, chat_id: str, message_id: Optional[int]) -> bool:
+        """ True если message_id — это одно из последних сообщений-вопросов бота в чате."""
+        if not message_id:
+            return False
+        with self._lock:
+            return message_id in self._question_msgs.get(str(chat_id), [])
+
     # ── инъекция зависимостей ──
 
     def set_sender(self, sender):
@@ -293,11 +325,24 @@ class LearningManager:
             self._sessions = []
 
     def _save(self):
+        """Атомарная запись: пишем во временный файл, затем переименовываем.
+        Защищает от порчи файла (0 байт / битый JSON) при аварийном завершении процесса
+        в момент записи — иначе _load молча вернёт пустой список и все сессии «исчезнут»."""
         try:
-            self._file.write_text(
-                json.dumps(self._sessions, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            import os, tempfile
+            data = json.dumps(self._sessions, ensure_ascii=False, indent=2)
+            fd, tmp_path = tempfile.mkstemp(dir=str(self._base_dir), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(data)
+                os.replace(tmp_path, self._file)
+            except Exception:
+                # Если переименование не удалось — чистим временный файл
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.warning(f"[Learning] Не удалось сохранить: {e}")
 
@@ -340,6 +385,9 @@ class LearningManager:
         # Нормализуем тему в именительный падёж («китайскому» → «китайский язык»)
         raw_subject = setup.get("subject", "")
         subject = self._normalize_subject(raw_subject)
+        # LANGUAGE vs TOPIC — определяет, как закреплять материал в обычном разговоре
+        # (см. get_reinforcement_hint): словами/фразами или уместной отсылкой без объяснений.
+        course_kind = self._classify_course_kind(subject)
         session = {
             "session_id": uuid.uuid4().hex,
             "chat_id": chat_id,
@@ -347,10 +395,14 @@ class LearningManager:
             "user_name": setup.get("user_name", "Пользователь"),
             "topic_id": topic_id,
             "subject": subject,
+            "course_kind": course_kind,
             "interval_seconds": interval,
             "next_lesson_at": now + interval,
             "lesson_count": 0,
             "covered_topics": [],
+            "learned_vocabulary": [],
+            "last_reinforced_at": None,
+            "last_nag_at": None,
             "quiz_every": self.default_quiz_every,
             "silence_threshold": self.default_silence_threshold,
             "consecutive_silences": 0,
@@ -583,6 +635,101 @@ class LearningManager:
             )
         # UNKNOWN — оставляем asked_continue=True, ждём явного ответа
 
+    def get_nag_guard(self, chat_id: str) -> str:
+        """Персона сама (без нашей инструкции) любит напоминать о незакрытых контрольных
+        вопросах прошлого урока — и делает это в КАЖДОМ ответе, что ощущается навязчиво.
+        Полностью запрещать это неверно (напоминание иногда уместно и полезно для учёбы) —
+        поэтому здесь кулдаун на курс: пока он не истёк, явно запрещаем упоминание в этом
+        ответе; как истёк — ничего не говорим, оставляя персоне свободу упомянуть (или нет)
+        по своему усмотрению, как обычно."""
+        sessions = self.get_sessions(chat_id)
+        if not sessions:
+            return ""
+        now = time.time()
+
+        def _cooled_down(s: dict) -> bool:
+            # Если ни разу не напоминали (last_nag_at is None) — кулдауна нет, разрешаем.
+            last = s.get("last_nag_at")
+            if last is None:
+                return True
+            return (now - last) >= self.NAG_COOLDOWN_SECONDS
+
+        ready = [s for s in sessions if _cooled_down(s)]
+        if ready:
+            # Кулдаун истёк хотя бы для одного курса — разрешаем, отмечаем его как
+            # "напомнили" (даже если модель в итоге не упомянёт — это лишь верхний лимит
+            # частоты, не гарантия, что напоминание случится).
+            for s in ready:
+                self._set_session(chat_id, session_id=s.get("session_id"), last_nag_at=now)
+            return ""
+
+        return (
+            "У тебя может возникнуть желание напомнить о незакрытых контрольных вопросах "
+            "прошлого урока или о том, что запрос «не по теме учёбы» — ты уже делал это "
+            "недавно. НЕ повторяй это в этом ответе (никаких «который раз за сессию», "
+            "«паттерн подтверждён» и т.п.) — просто ответь по существу сообщения."
+        )
+
+    def get_reinforcement_hint(self, chat_id: str) -> Optional[str]:
+        """Для ОБЫЧНОГО (не учебно-административного) сообщения — иногда подсказывает
+        персоне вплести в ответ что-то из активных курсов, для закрепления материала через
+        повторяющееся воздействие в разговоре, а не только в уроках. Намеренно редкое и
+        необязательное:
+        - кулдаун на курс (не чаще раза в REINFORCE_COOLDOWN_SECONDS) — чтобы не долбить
+          одним и тем же почти каждым сообщением;
+        - вероятность даже после кулдауна (REINFORCE_PROBABILITY) — чтобы это ощущалось как
+          органичная случайность, а не расписание;
+        - инструкция персоне явно разрешает пропустить вставку, если она не ложится
+          естественно в контекст разговора — принудительная вставка на любую цену испортит
+          эффект куда быстрее, чем редкий пропуск.
+        LANGUAGE-курсы закрепляются словами/фразами; остальные — уместной отсылкой/метафорой
+        БЕЗ объяснения, что она значит (см. пример «третий ключ» для криптографии)."""
+        import random
+        eligible = [
+            s for s in self.get_sessions(chat_id)
+            if int(s.get("lesson_count", 0)) >= 1 and (s.get("covered_topics") or s.get("learned_vocabulary"))
+        ]
+        if not eligible:
+            return None
+
+        now = time.time()
+
+        def _cooled_down(s: dict) -> bool:
+            last = s.get("last_reinforced_at") or s.get("created_at") or 0
+            return (now - last) >= self.REINFORCE_COOLDOWN_SECONDS
+
+        eligible = [s for s in eligible if _cooled_down(s)]
+        if not eligible:
+            return None
+        if random.random() > self.REINFORCE_PROBABILITY:
+            return None
+
+        session = random.choice(eligible)
+        subject = session.get("subject", "")
+
+        if session.get("course_kind") == "LANGUAGE" and session.get("learned_vocabulary"):
+            pick = random.sample(session["learned_vocabulary"], k=min(2, len(session["learned_vocabulary"])))
+            hint = (
+                f"У пользователя идёт курс «{subject}». Если это ляжет ЕСТЕСТВЕННО в твой "
+                f"ответ — используй в реплике 1 из этих ранее пройденных слов/фраз, к месту, "
+                f"без перевода и без пометки, что это из урока: {'; '.join(pick)}. "
+                "Если не ложится органично — просто пропусти, не притягивай за уши."
+            )
+        elif session.get("covered_topics"):
+            pick = random.choice(session["covered_topics"])
+            hint = (
+                f"У пользователя идёт курс «{subject}», недавно проходили: «{pick}». "
+                "Если это ляжет ЕСТЕСТВЕННО в твой ответ — можешь сделать короткую отсылку "
+                "к этому понятию/метафору в своём стиле, БЕЗ объяснения, что она значит "
+                "(пользователь либо поймёт, либо просто пройдёт мимо — оба варианта ок). "
+                "Если не ложится органично — просто пропусти, не притягивай за уши."
+            )
+        else:
+            return None
+
+        self._set_session(chat_id, session_id=session.get("session_id"), last_reinforced_at=now)
+        return hint
+
     def parse_frequency_smart(self, text: str) -> Optional[float]:
         """Парсит частоту уроков: сначала regex (parse_frequency) — он мгновенный, бесплатный
         и не ошибается в арифметике для чётких формулировок вида «каждые 10 минут». Если regex
@@ -658,6 +805,37 @@ class LearningManager:
         ]
         response = self._get_response_complete(messages, temperature=0.6, max_tokens=100, top_p=0.9)
         return (response or fallback).strip()
+
+    def classify_continue_answer_smart(self, text: str) -> str:
+        """YES/NO по regex (быстро, надёжно и бесплатно). Если неоднозначно — уточняем через
+        LLM, к какой из двух категорий это относится:
+        - UNKNOWN — похоже на попытку ответить да/нет, но неоднозначно («наверное», «хз»);
+        - OFFTOPIC — сообщение вообще не про вопрос «продолжаем?», пользователь пишет о чём-то
+          другом (шутит, спрашивает что-то не по теме и т.п.).
+        Разница важна: раньше ЛЮБОЕ неясное сообщение считалось UNKNOWN и бот переспрашивал
+        «да или нет?», игнорируя то, что человек реально написал — при активном continue-вопросе
+        любая шутка или посторонний вопрос утыкались в зацикленный переспрос. OFFTOPIC вместо
+        этого оставляет вопрос висеть НЕТРОНУТЫМ и пускает сообщение в обычную обработку —
+        аналогично тому, как офф-топ уже обрабатывается в submit_quiz_answer."""
+        fast = classify_continue_answer(text)
+        if fast in ("YES", "NO"):
+            return fast
+        if not self._router:
+            return fast
+        result = self._llm_clean_line(
+            system_prompt=(
+                "Пользователю задали вопрос «продолжаем обучение? (да/нет)». Определи его "
+                "сообщение: (а) неоднозначная попытка ответить да/нет (например, «наверное», "
+                "«не знаю», «хз») — ответь UNKNOWN; (б) сообщение вообще не про этот вопрос, "
+                "пользователь пишет/спрашивает о чём-то другом — ответь OFFTOPIC. "
+                "Ответь СТРОГО одним словом: UNKNOWN или OFFTOPIC."
+            ),
+            user_content=text,
+            max_tokens=6,
+        )
+        if result and "OFFTOPIC" in result.upper():
+            return "OFFTOPIC"
+        return "UNKNOWN"
 
     def render_continue_reply(self, chat_id: str, decision: str, session_id: Optional[str] = None) -> str:
         """Короткая реплика персоны на решение «продолжать обучение?» — YES/NO/UNKNOWN.
@@ -811,6 +989,57 @@ class LearningManager:
                 return line[:60]
         return ""
 
+    def _classify_course_kind(self, subject: str) -> str:
+        """LANGUAGE — курс живого/иностранного языка (испанский, китайский, латынь) — для
+        таких курсов закрепление уместно словами/фразами в обычной речи.
+        TOPIC — любая другая тема (в т.ч. языки программирования, технические предметы,
+        науки) — для них закрепление уместно уместной отсылкой/метафорой, а не словарём.
+        Ключевые слова вроде «язык» ненадёжны («язык программирования» — не язык в этом
+        смысле), поэтому решает LLM, а не regex."""
+        if not subject:
+            return "TOPIC"
+        result = self._llm_clean_line(
+            system_prompt=(
+                "Это курс изучения ЖИВОГО/иностранного языка (например, испанский, "
+                "китайский, латынь) или какая-то другая тема (включая языки "
+                "программирования, технические предметы, науки, искусства и т.п.)? "
+                "Ответь СТРОГО одним словом: LANGUAGE или TOPIC."
+            ),
+            user_content=f"Тема курса: «{subject}»",
+            max_tokens=6,
+        )
+        if result and "LANGUAGE" in result.upper():
+            return "LANGUAGE"
+        return "TOPIC"
+
+    def _extract_vocabulary(self, lesson_text: str) -> List[str]:
+        """Достаёт 2-4 ключевых слова/фразы урока (для курсов живого языка) в формате
+        'слово/фраза — краткий перевод или смысл' — потом естественно вплетаются в обычный
+        разговор для закрепления (см. get_reinforcement_hint)."""
+        router = self._local_router or self._router
+        if not lesson_text or not router:
+            return []
+        try:
+            response = router.get_response(
+                messages=[
+                    {"role": "system", "content": (
+                        "Из учебного текста выбери 2-4 самых важных новых слова/фразы урока. "
+                        "Каждое — на отдельной строке, в формате 'слово/фраза — краткий "
+                        "перевод или смысл'. Больше ничего не пиши."
+                    )},
+                    {"role": "user", "content": lesson_text[:1500]},
+                ],
+                temperature=0.3,
+                max_tokens=150,
+            )
+        except Exception as e:
+            logger.debug(f"[Learning] Извлечение словаря не удалось: {e}")
+            return []
+        if not response:
+            return []
+        items = [ln.strip(" \t-•*") for ln in response.splitlines() if ln.strip(" \t-•*")]
+        return items[:4]
+
     def _generate_lesson_text(self, session: dict) -> Optional[dict]:
         """
         Генерирует структурированный урок. Возвращает dict:
@@ -835,6 +1064,12 @@ class LearningManager:
                 "Ответь СТРОГО в формате (каждое поле с новой строки):\n"
                 "TOPIC: <короткая тема урока, до 6 слов, именительный падеж>\n"
                 "QUESTIONS: <2-3 контрольных вопроса через точку с запятой>\n"
+                "VOCAB: <2-4 коротких «единицы для закрепления» через точку с запятой — "
+                "если это ЯЗЫК, давай реальные слова/фразы на изучаемом языке с кратким "
+                "переводом через « — » (например: 你好 — привет); если это НЕ язык (техника, "
+                "наука и т.п.), давай короткий яркий термин или метафору из урока, который "
+                "можно естественно упомянуть в обычном разговоре без объяснений (например: "
+                "третий ключ; сессионный ключ). Без пояснений, только сам список.>\n"
                 "LESSON:\n<полный текст урока, markdown разрешён>"
             )},
             {"role": "user", "content": f"Дай урок №{lesson_num} по теме «{subject}»."},
@@ -875,18 +1110,19 @@ class LearningManager:
 
     @staticmethod
     def _parse_lesson(raw: str) -> Optional[dict]:
-        """Разбирает ответ LLM в формате TOPIC/QUESTIONS/LESSON."""
+        """Разбирает ответ LLM в формате TOPIC/QUESTIONS/VOCAB/LESSON."""
         topic_m = re.search(r"(?:TOPIC|ТЕМА):\s*(.+)", raw, re.IGNORECASE)
         questions_m = re.search(r"(?:QUESTIONS|ВОПРОСЫ):\s*(.+)", raw, re.IGNORECASE)
+        vocab_m = re.search(r"(?:VOCAB|VOCABULARY):\s*(.+)", raw, re.IGNORECASE)
         lesson_m = re.search(r"(?:LESSON|УРОК):\s*\n?(.+)$", raw, re.IGNORECASE | re.DOTALL)
 
         if lesson_m:
             lesson = lesson_m.group(1).strip()
         else:
-            # LESSON: не найден — убираем строки-маркеры TOPIC/QUESTIONS, остальное = урок
+            # LESSON: не найден — убираем строки-маркеры TOPIC/QUESTIONS/VOCAB, остальное = урок
             cleaned_lines = []
             for line in raw.splitlines():
-                if re.match(r"^\s*(TOPIC|ТЕМА|QUESTIONS|ВОПРОСЫ|LESSON|УРОК)\s*:", line, re.IGNORECASE):
+                if re.match(r"^\s*(TOPIC|ТЕМА|QUESTIONS|ВОПРОСЫ|VOCAB|VOCABULARY|LESSON|УРОК)\s*:", line, re.IGNORECASE):
                     continue
                 cleaned_lines.append(line)
             lesson = "\n".join(cleaned_lines).strip()
@@ -894,9 +1130,11 @@ class LearningManager:
         questions_raw = questions_m.group(1).strip() if questions_m else ""
         # Вопросы разделены ; или | или перенесены
         questions = [q.strip() for q in re.split(r"\s*[;|]\s*|\n", questions_raw) if q.strip()]
+        vocab_raw = vocab_m.group(1).strip() if vocab_m else ""
+        vocab = [v.strip() for v in re.split(r"\s*[;|]\s*|\n", vocab_raw) if v.strip()]
         if not lesson:
             return None
-        return {"topic": topic, "questions": questions, "lesson": lesson}
+        return {"topic": topic, "questions": questions, "vocab": vocab, "lesson": lesson}
 
     def _generate_quiz(self, session: dict, simple: bool = False) -> Optional[dict]:
         """Генерирует тест. Возвращает {question, answer, explanation} или None.
@@ -1068,7 +1306,7 @@ class LearningManager:
         except Exception as e:
             logger.warning(f"[Learning] Не удалось сохранить урок в STM: {e}")
 
-    async def _send(self, chat_id: str, text: str, topic_id: Optional[int]):
+    async def _send(self, chat_id: str, text: str, topic_id: Optional[int], is_question: bool = False):
         if not self._sender:
             return
         try:
@@ -1076,6 +1314,12 @@ class LearningManager:
             logger.info(f"[Learning] Отправлено в чат {chat_id}: {text[:60]}")
             if success:
                 self._save_to_stm(chat_id, text)
+                # Вопросы (тест, «продолжаем?») регистрируем, чтобы потом понять,
+                # ответил ли пользователь reply-ом именно на них.
+                if is_question:
+                    msg_id = getattr(self._sender, "last_sent_message_id", None)
+                    if msg_id:
+                        self.register_question_message(chat_id, msg_id)
         except Exception as e:
             logger.error(f"[Learning] Ошибка отправки в {chat_id}: {e}")
 
@@ -1131,7 +1375,7 @@ class LearningManager:
                     next_lesson_at=time.time() + session["interval_seconds"],
                 )
                 text = await asyncio.to_thread(self._render_quiz_announcement, subject, quiz["question"])
-                await self._send(chat_id, text, topic_id)
+                await self._send(chat_id, text, topic_id, is_question=True)
             else:
                 # Тест не сгенерировался — отправляем обычный урок, интервал не теряется
                 logger.info(f"[Learning] Тест не сгенерирован, отправляю урок-файл (chat={chat_id})")
@@ -1162,15 +1406,30 @@ class LearningManager:
             if not topic_title:
                 topic_title = await asyncio.to_thread(self._extract_topic, lesson.get("lesson", ""))
 
+        # Для языковых курсов достаём ключевые слова/фразы урока — пригодятся, чтобы
+        # потом естественно вплетать их в обычный разговор для закрепления
+        # (см. get_reinforcement_hint).
+        new_vocab_items: List[str] = []
+        if lesson and session.get("course_kind") == "LANGUAGE":
+            # Сначала пробуем vocab из структурированного ответа урока
+            new_vocab_items = list(lesson.get("vocab") or [])
+            if not new_vocab_items:
+                try:
+                    new_vocab_items = await asyncio.to_thread(self._extract_vocabulary, lesson.get("lesson", ""))
+                except Exception as e:
+                    logger.debug(f"[Learning] Извлечение словаря не удалось: {e}")
+
         # Обновляем состояние сессии
         covered_addition = [topic_title] if topic_title else []
         new_covered = (session.get("covered_topics") or []) + covered_addition
+        new_vocab = (session.get("learned_vocabulary") or []) + new_vocab_items
         self._set_session(
             chat_id,
             session_id=session.get("session_id"),
             lesson_count=next_num,
             next_lesson_at=time.time() + session["interval_seconds"],
             covered_topics=new_covered[-20:],
+            learned_vocabulary=new_vocab[-40:],
         )
 
         if not lesson or not lesson.get("lesson"):
@@ -1219,7 +1478,7 @@ class LearningManager:
             f"{session.get('user_name', '')}, по теме «{session.get('subject', '')}» "
             "я давно не получаю ответов. Продолжаем обучение? (да/нет)"
         )
-        await self._send(chat_id, text, topic_id)
+        await self._send(chat_id, text, topic_id, is_question=True)
 
     # ── фоновый цикл ──
 
