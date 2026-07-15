@@ -284,11 +284,23 @@ class ReminderManager:
             self._reminders = []
 
     def _save(self):
+        """Атомарная запись: пишем во временный файл, затем переименовываем.
+        Защищает от порчи файла (0 байт / битый JSON) при аварийном завершении процесса
+        в момент записи."""
         try:
-            self._file.write_text(
-                json.dumps(self._reminders, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            import os, tempfile
+            data = json.dumps(self._reminders, ensure_ascii=False, indent=2)
+            fd, tmp_path = tempfile.mkstemp(dir=str(self._base_dir), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(data)
+                os.replace(tmp_path, self._file)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.warning(f"[Reminder] Не удалось сохранить: {e}")
 

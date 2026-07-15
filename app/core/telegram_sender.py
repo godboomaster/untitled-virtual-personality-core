@@ -67,6 +67,9 @@ class TelegramMessageSender:
 
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
+        # message_id последнего успешно отправленного сообщения (для опционального чтения
+        # вызывающим кодом — например, чтобы зарегистрировать его как «вопрос бота»).
+        self.last_sent_message_id: Optional[int] = None
 
     async def send_message(
         self,
@@ -86,6 +89,8 @@ class TelegramMessageSender:
 
         Когда python-telegram-bot обновится до поддержки Bot API 10.1,
         можно будет использовать send_rich_message() с InputRichMessage.
+
+        После успешной отправки сохраняет message_id в self.last_sent_message_id.
         """
         try:
             # Если parse_mode не указан явно — считаем, что text написан персоной в Markdown,
@@ -105,13 +110,17 @@ class TelegramMessageSender:
             if topic_id:
                 kwargs["message_thread_id"] = topic_id
 
-            await self._bot.send_message(**kwargs)
+            sent = await self._bot.send_message(**kwargs)
+            # Сохраняем message_id для вызывающего кода (опционально)
+            self.last_sent_message_id = getattr(sent, "message_id", None)
             return True
         except TelegramError as e:
             logger.error(f"[TelegramSender] Ошибка отправки в {chat_id}: {e}")
+            self.last_sent_message_id = None
             return False
         except Exception as e:
             logger.error(f"[TelegramSender] Неожиданная ошибка при отправке в {chat_id}: {e}")
+            self.last_sent_message_id = None
             return False
 
     async def send_document(

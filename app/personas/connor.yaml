@@ -18,6 +18,7 @@ features:
   restore_memory: true
   self_memory: true
   todo: true
+  reminder: true
   inventory: true
   learning:
     enabled: true
@@ -31,9 +32,10 @@ features:
   proactive:
     enabled: true
     check_interval_minutes: 30
-    silence_threshold_minutes: 180
-    initiative_probability: 0.8
+    silence_threshold_minutes: 30
+    initiative_probability: 1.0
     max_daily_initiatives: 20
+    use_local_prefilter: false  # локальная SILENCE-модель отключена — решение принимает основная
     # Настройки топиков для supergroup (форумов)
     # Если указаны allowed_topics — бот будет писать ТОЛЬКО в эти топики
     # default_topic — куда писать, если нет других указаний
