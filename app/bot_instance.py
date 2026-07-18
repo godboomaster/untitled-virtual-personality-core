@@ -341,7 +341,16 @@ class BotInstance:
                         if volume is not None:
                             logger.info(f"[BookSearch] Detected volume filter: {volume}")
                         _n = 5 if _book_intent == "mixed" else 25
-                        fragments = self.book_search.search(user_input, volume=volume, n_results=_n)
+                        # История диалога строками — для резолюции местоимений
+                        # (last N messages: user + assistant, текущая не входит).
+                        _coref_history = [
+                            m["content"] for m in stm_messages
+                            if isinstance(m, dict) and m.get("content")
+                        ][-6:]
+                        fragments = self.book_search.search(
+                            user_input, volume=volume, n_results=_n,
+                            history=_coref_history,
+                        )
                         translated_query = self.book_search.translate_query(user_input)
                         if fragments:
                             from app.features.book_context import build_context_block
