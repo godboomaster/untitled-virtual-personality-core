@@ -227,6 +227,16 @@ _RU_EN_QUERY_MAP: List[Tuple[str, str]] = [
 
 _ollama_available: Optional[bool] = None
 
+# Модель Ollama для всех LLM-шагов переформулирования запроса
+# (подстановка имён, дистилляция, резолюция местоимений).
+# gemma3:4b стабильнее на классификации/переформулировании, чем qwen2.5:3b
+# (последняя флапает даже при temperature=0, давая ложные решения).
+OLLAMA_MODEL = "gemma3:4b"
+
+# Фича-флаг для query distillation. Позволяет отключать шаг для A/B-замеров
+# (recall до/после) и для фолбэка, если дистилляция нестабильна.
+DISTILL_ENABLED: bool = True
+
 
 def _find_glossary_entries(query: str, ru_to_en: Dict[str, str],
                            limit: int = 30) -> Dict[str, str]:
@@ -281,7 +291,7 @@ def _find_glossary_entries(query: str, ru_to_en: Dict[str, str],
 def _substitute_names_via_ollama(query: str,
                                   glossary_entries: Dict[str, str]) -> Optional[str]:
     """
-    Подстановка имён из глоссария через локальную Ollama (qwen2.5:3b).
+    Подстановка имён из глоссария через локальную Ollama (модель OLLAMA_MODEL).
     Заменяет только русские имена/термины на английские, оставляя остальной текст на русском.
     Возвращает модифицированный запрос или None при ошибке.
     """
@@ -294,7 +304,7 @@ def _substitute_names_via_ollama(query: str,
         name_map = "\n".join(f"  {ru} -> {en}" for ru, en in glossary_entries.items())
 
         resp = requests.post("http://localhost:11434/api/generate", json={
-            "model": "qwen2.5:3b",
+            "model": OLLAMA_MODEL,
             "prompt": (
                 "Substitute Russian names with their English equivalents. "
                 "Change ONLY the listed names, keep everything else unchanged.\n"
@@ -311,6 +321,242 @@ def _substitute_names_via_ollama(query: str,
     except Exception:
         _ollama_available = False
         return None
+
+
+def _distill_query_via_ollama(fully_translated: str) -> Optional[str]:
+    """
+    Сжимает переведённый (английский) запрос в компактный поисковый запрос,
+    убирая разговорный шум, но сохраняя все сущности и связи между ними.
+    Использует ту же Ollama-инстанс/флаг доступности, что и подстановка имён.
+    Возвращает None при ошибке или недоступности (для фолбэка).
+    """
+    global _ollama_available
+    if _ollama_available is False:
+        return None
+    prompt = (
+        "You are a search query optimizer for a vector database "
+        'containing narrative text from the novel "Lord of the Mysteries".\n\n'
+        "Rewrite the user's question into a concise search query for semantic "
+        "similarity search against book passages. Remove conversational filler "
+        "(tell me about, what is, can you explain, I want to know, please) but "
+        "KEEP all named entities and the relationship/action connecting them "
+        "if the question involves more than one entity or an event.\n\n"
+        "Output ONLY the rewritten query. No quotes, no explanation, "
+        "no punctuation at the end.\n\n"
+        'Examples:\n'
+        'Q: "tell me about tingen"\n'
+        "A: Tingen\n\n"
+        'Q: "tell me about the relationship between Klein and Tingen"\n'
+        "A: Klein relationship to Tingen\n\n"
+        'Q: "what happened when Klein first became a Beyonder"\n'
+        "A: Klein becomes Beyonder first time\n\n"
+        'Q: "can you explain how the Fool Pathway sequences work"\n'
+        "A: Fool Pathway sequences\n\n"
+        f"Question: {fully_translated}\n"
+        "Query:"
+    )
+    try:
+        import requests
+
+        resp = requests.post("http://localhost:11434/api/generate", json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 64},
+        }, timeout=5)
+        text = resp.json()["response"].strip()
+        _ollama_available = True
+        return text if text else None
+    except Exception as e:
+        _ollama_available = False
+        logger.warning(f"[BookSearch] distill_query failed: {e}")
+        return None
+
+
+def _clean_distilled(distilled: str, original: str) -> Optional[str]:
+    """
+    Пост-обработка distilled-запроса.
+    Отсекает три проблемных случая: пустой ответ, ленивое копирование
+    исходника (>= 80% длины) и точный дубль (без учёта регистра).
+    """
+    if not distilled:
+        return None
+    # снять случайные кавычки/точки, если модель их всё же добавила
+    cleaned = distilled.strip('"\'.,! ').strip()
+    if not cleaned:
+        return None
+    # не добавлять, если модель просто скопировала вопрос почти целиком
+    if len(cleaned) >= len(original) * 0.8:
+        return None
+    # не добавлять дубликат (без учёта регистра)
+    if cleaned.lower() == original.lower():
+        return None
+    return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Coreference resolution (Шаг 0): разрешаем местоимения 3-го лица в запросе
+# по истории диалога, ДО перевода/глоссария — на сыром русском тексте.
+# Иначе местоимение «он/его» пойдёт в retrieval и сломает поиск.
+# ---------------------------------------------------------------------------
+
+# Русские местоимения 3-го лица (ед. + мн. число, все падежи).
+_PRONOUN_PATTERN = re.compile(
+    r'\b(он|она|оно|его|её|ему|ей|им|ею|него|неё|нему|ней|'
+    r'они|их|ими|них|ним|ними)\b',
+    re.IGNORECASE,
+)
+
+
+def has_pronoun_reference(query: str) -> bool:
+    """True, если в запросе есть местоимение 3-го лица, требующее резолюции."""
+    return bool(_PRONOUN_PATTERN.search(query))
+
+
+def _is_person_name(ru_key: str) -> bool:
+    """
+    Приближённая фильтрация «имя персонажа» vs «служебный термин».
+    Критерии ИСТИНА:
+      - русское имя (кириллица, а не английская аббревиатура вроде seq)
+      - достаточно длинное (>= 4 символов) — отбрасывает служебные
+        «Шут»/«Путь»/«Маг», оставляя имена персонажей.
+    """
+    if not ru_key:
+        return False
+    # Английские ключи (seq/seq.) — не имена, это служебные аббревиатуры
+    if ru_key.isascii():
+        return False
+    # Только кириллица + пробелы
+    if not re.fullmatch(r'[а-яёА-ЯЁ ]+', ru_key):
+        return False
+    return len(ru_key) >= 4
+
+
+def _get_last_mentioned_entity(history: List[str],
+                               ru_to_en: Dict[str, str],
+                               n_messages: int = 6) -> Optional[str]:
+    """
+    Эвристический фолбэк: последнее упомянутое в истории имя персонажа.
+    Идёт от свежих сообщений к старым, пропуская служебные термины
+    (Pathway/Sequence/титулы) — берёт только имена (см. _is_person_name).
+    Приоритет: многословные имена (полные) выше коротких.
+    """
+    # Идём от свежих к старым, собираем всех кандидатов
+    for msg in reversed(history[-n_messages:]):
+        if not msg:
+            continue
+        entries = _find_glossary_entries(msg, ru_to_en)
+        # Сортируем совпадения в этом сообщении: длинные (полные имена) первыми
+        person_keys = [k for k in entries.keys() if _is_person_name(k)]
+        person_keys.sort(key=len, reverse=True)
+        if person_keys:
+            return person_keys[0]
+    return None
+
+
+def _resolve_pronoun_via_ollama(query: str,
+                                history: List[str]) -> Tuple[Optional[str], bool]:
+    """
+    LLM-резолюция местоимений: даём OLLAMA_MODEL последние сообщения диалога
+    и просим заменить местоимение на имя персонажа, оставив остальной
+    русский текст неизменным.
+
+    Returns:
+        (rewritten, llm_answered) —
+          rewritten: переписанный запрос или None.
+          llm_answered: True, если LLM вообще ответил (включая UNCLEAR).
+            False = Ollama недоступен/ошибка — можно применять эвристический фолбэк.
+    """
+    global _ollama_available
+    if _ollama_available is False:
+        return None, False
+    # Берём последние сообщения диалога (пользователь + ответы бота).
+    context = "\n".join(history[-6:])
+    if not context.strip():
+        return None, False
+    prompt = (
+        "You resolve pronoun references in a Russian conversation about "
+        'the novel "Lord of the Mysteries". Replace 3rd-person pronouns '
+        "(он/она/его/её/ему/ей/им/них) with the NAME of the character they "
+        "refer to, using the most recently discussed character from the "
+        "history. Keep everything else in Russian, unchanged. "
+        "Default to the last-mentioned character — only answer UNCLEAR when "
+        "truly impossible.\n\n"
+        f"Conversation history:\n{context}\n\n"
+        f"Current message: {query}\n\n"
+        "Examples:\n"
+        "History: Кто такой Клейн?  /  Клейн — Sequence 9 Seer.\n"
+        'Current: "а что с его способностями?"\n'
+        "Rewritten: а что со способностями Клейна?\n\n"
+        'History: Расскажи про Амона.  /  Амон — ангел пути Error.\n'
+        'Current: "где он появился?"\n'
+        "Rewritten: где появился Амон?\n\n"
+        'History: Кто такая Богиня Ночи?\n'
+        'Current: "расскажи про Тинген"\n'
+        "Rewritten: UNCLEAR\n\n"
+        "Output ONLY the rewritten message or UNCLEAR, nothing else.\n\n"
+        "Rewritten:"
+    )
+    try:
+        import requests
+
+        resp = requests.post("http://localhost:11434/api/generate", json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 128},
+        }, timeout=6)
+        result = resp.json()["response"].strip()
+        _ollama_available = True
+        if not result or result.upper().startswith("UNCLEAR"):
+            # LLM ответил, но считает антецедент неоднозначным — НЕ фолбэчим.
+            return None, True
+        return result, True
+    except Exception as e:
+        _ollama_available = False
+        logger.warning(f"[BookSearch] pronoun resolution failed: {e}")
+        return None, False
+
+
+def resolve_query_coref(query: str,
+                        history: Optional[List[str]],
+                        ru_to_en: Dict[str, str]) -> str:
+    """
+    Разрешает кореферентность местоимений в запросе, используя историю диалога.
+    Пайплайн:
+      1. Нет местоимения / нет истории → отдаём как есть.
+      2. LLM (Ollama) пробует разрешить по контексту.
+         - Если ответил UNCLEAR — антецедент неоднозначен, НЕ фолбэчим
+           (лучше оставить местоимение, чем подставить случайное имя).
+      3. Фолбэк (только если LLM недоступен/упал): regex-замена на последнее
+         упомянутое в истории имя.
+    Логирует каждый шаг для отладки (неверная резолвенция молча ломает retrieval).
+    """
+    if not history or not has_pronoun_reference(query):
+        return query
+
+    resolved, llm_answered = _resolve_pronoun_via_ollama(query, history)
+    if resolved and resolved != query:
+        logger.info(f"[BookSearch] [coref] LLM: '{query}' -> '{resolved}'")
+        return resolved
+    if llm_answered:
+        # LLM ответил, но не дал замены (UNCLEAR) — честнее оставить как есть.
+        logger.info(f"[BookSearch] [coref] LLM UNCLEAR: '{query}'")
+        return query
+
+    # Фолбэк (только при недоступности LLM): regex-замена на последнее имя.
+    last_entity = _get_last_mentioned_entity(history, ru_to_en)
+    if last_entity:
+        replaced = _PRONOUN_PATTERN.sub(last_entity, query)
+        if replaced != query:
+            logger.info(
+                f"[BookSearch] [coref] heuristic: '{query}' -> '{replaced}' "
+                f"(entity={last_entity!r})"
+            )
+            return replaced
+
+    logger.info(f"[BookSearch] [coref] unresolved: '{query}'")
+    return query
 
 
 def _google_translate(text: str) -> Optional[str]:
@@ -752,21 +998,44 @@ class BookSearch:
 
     def search(self, query: str, n_results: int = 25,
                volume: Optional[int] = None,
-               max_per_chapter: int = 3) -> List[Dict]:
+               max_per_chapter: int = 3,
+               history: Optional[List[str]] = None) -> List[Dict]:
         """
         Двухэтапный поиск:
+          0. Coreference resolution: разрешаем местоимения по истории диалога
           1. Retrieval: гибридный векторный + BM25 → 100 кандидатов
           2. Rerank: cross-encoder оценивает пары (запрос, чанк)
           3. Дедупликация: не более max_per_chapter из одной главы
           4. Возвращаем топ-n_results по rerank_score
+
+        Args:
+            history: последние сообщения диалога (строки) — нужны, чтобы
+                     разрешать местоимения («он/его» → имя персонажа).
+                     None = контекста нет, шаг 0 пропускается.
         """
         if not self._ensure_connection():
             return []
 
+        # --- Шаг 0: coreference resolution на сыром русском запросе ---
+        # До перевода/глоссария — пока есть диалоговый контекст в оригинале.
+        raw_query = query  # исходный запрос до любых преобразований (для логов)
+        coref_resolved = False
+        if history:
+            resolved = resolve_query_coref(query, history, self._ru_to_en)
+            if resolved != query:
+                query = resolved
+                coref_resolved = True
+
         # Полный перевод через Ollama (подстановка имён из глоссария + перевод)
         fully_translated = _translate_full_query(query, self._ru_to_en, self._patterns)
-        if fully_translated != query:
-            logger.info(f"[BookSearch] Translate: '{query}' -> '{fully_translated}'")
+
+        # Дистилляция: сжимаем переведённый запрос в компактный поисковый.
+        # Добавляется как ДОПОЛНЕНИЕ к вееру запросов, не заменяя existing.
+        distilled_query: Optional[str] = None
+        distilled_raw: Optional[str] = None
+        if DISTILL_ENABLED:
+            distilled_raw = _distill_query_via_ollama(fully_translated)
+            distilled_query = _clean_distilled(distilled_raw, fully_translated)
 
         # Авто-определение тома — на переведённом (английском) запросе
         detected_vol = detect_volume(fully_translated)
@@ -781,6 +1050,11 @@ class BookSearch:
             queries.append(fully_translated)
         queries.append(query)
 
+        # Distilled query: компактный поисковый запрос без разговорного шума.
+        # Добавляется как доп. вариант — recall-страховка, не заменяет existing.
+        if distilled_query:
+            queries.append(distilled_query)
+
         # Pathway expansion: если в запросе упомянут путь — добавляем названия
         # его последовательностей как отдельный поисковый запрос.
         # Если упомянута последовательность — добавляем название пути.
@@ -789,7 +1063,25 @@ class BookSearch:
         )
         if pathway_extra:
             queries.append(pathway_extra)
-            logger.info(f"[BookSearch] Pathway query added: '{pathway_extra[:80]}...'")
+
+        # --- Сводка перефразирования: наглядная цепочка преобразований запроса ---
+        # Показывает весь путь: оригинал → coref → перевод → дистилляция → pathway → fan-out.
+        logger.info(f"[BookSearch] ===== REWRITE =====")
+        logger.info(f"[BookSearch] [rewrite] original    : {raw_query!r}")
+        if coref_resolved:
+            logger.info(f"[BookSearch] [rewrite] coref       : {query!r}")
+        if fully_translated != query:
+            logger.info(f"[BookSearch] [rewrite] translated  : {fully_translated!r}")
+        else:
+            logger.info(f"[BookSearch] [rewrite] translated  : (unchanged)")
+        if DISTILL_ENABLED:
+            logger.info(
+                f"[BookSearch] [rewrite] distilled    : raw={distilled_raw!r} -> "
+                f"cleaned={distilled_query!r} (used={bool(distilled_query)})"
+            )
+        if pathway_extra:
+            logger.info(f"[BookSearch] [rewrite] pathway_exp : {pathway_extra!r}")
+        logger.info(f"[BookSearch] [rewrite] fan-out ({len(queries)}): {queries}")
 
         per_query = max(self._n_candidates, 10)
         seen_ids: set = set()

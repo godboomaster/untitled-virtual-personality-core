@@ -20,7 +20,7 @@ from app.features.book_search import _find_glossary_entries, _load_ru_to_en
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5:3b"
+OLLAMA_MODEL = "gemma3:4b"
 
 # Имена, которые не считаются book-сигналом (имя самого бота = обращение)
 _BOT_NAMES = {"арродес", "зеркало", "arrodes", "mirror"}
@@ -44,7 +44,7 @@ CLASSIFIER_PROMPT = """Classify the intent of the user's message.
 
 book_only  — user asks about Lord of the Mysteries lore, plot events, character details, worldbuilding, or specific scenes from the book. The answer requires book knowledge.
 
-chat_only  — casual conversation: greeting, praise, emotion, small talk, meta-dialogue. Mentions of the bot's own name (Arrodes, Арродес) or being addressed directly is NOT a book query — it's just talking to the bot.
+chat_only  — anything NOT about the Lord of the Mysteries novel: real-world questions (recipes, cooking, weather, homework, advice, how to do something), casual conversation, greetings, praise, emotions, small talk, meta-dialogue. A real-world "tell me how to X" or "give me a recipe" is chat_only, NOT book_only. Mentions of the bot's own name (Arrodes, Арродес) or being addressed directly is NOT a book query.
 
 mixed      — the message combines a real book question with casual chat in the same message.
 
@@ -52,6 +52,10 @@ Examples:
 "Who is Klein Moretti?" → book_only
 "What is the Fool pathway?" → book_only
 "Tell me about the Forsaken Land of the Gods" → book_only
+"Give me an iced tea recipe" → chat_only
+"How do I cook pasta" → chat_only
+"What's the weather like" → chat_only
+"Recommend me a movie" → chat_only
 "Good job Arrodes" → chat_only
 "Thank you mirror" → chat_only
 "Arrodes, you are wise" → chat_only
@@ -114,7 +118,7 @@ def classify_intent(message: str, stm: list[dict]) -> str:
                     "stop": ["\n", " ", "."]
                 }
             },
-            timeout=3.0
+            timeout=8.0
         )
         result = resp.json()["response"].strip().lower()
         if result in VALID_INTENTS:
