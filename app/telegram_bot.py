@@ -340,7 +340,15 @@ def create_handlers(bot: BotInstance) -> dict:
         except Exception as e:
             logger.error(f"[{persona_name}] Ошибка команды /{kind}: {e}", exc_info=True)
             response = "Произошла ошибка. Попробуйте позже."
-        await _reply_ai(update.message, response)
+        sent_ids = await _reply_ai(update.message, response)
+
+        # Если команда завершилась вопросом бота (у /learn — «как часто присылать
+        # уроки?»), регистрируем его message_id, чтобы reply пользователя на него
+        # распознавался как ответ на вопрос — та же логика, что в handle_message.
+        question_kind = bot.pop_pending_question_kind(chat_id)
+        if sent_ids and bot.learning_manager and question_kind:
+            for mid in sent_ids:
+                bot.learning_manager.register_question_message(chat_id, mid)
 
     async def remind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _run_command(update, "remind",
@@ -442,12 +450,15 @@ def create_handlers(bot: BotInstance) -> dict:
 
             # Если этот ответ — бот-вопрос (частота уроков/«продолжаем?»), регистрируем его
             # message_id, чтобы потом понять, ответил ли пользователь reply-ом именно на него.
-            if sent_ids and bot.learning_manager and getattr(bot, "_pending_question_kind", None):
+            # Флаг per-chat и одноразовый (pop) — при конкурентных чатах чужой флаг
+            # сюда не протечёт.
+            question_kind = bot.pop_pending_question_kind(chat_id)
+            if sent_ids and bot.learning_manager and question_kind:
                 for mid in sent_ids:
                     bot.learning_manager.register_question_message(chat_id, mid)
 
-            # Отправляем списки дел/инвентарь отдельными сообщениями
-            pending = bot._pending_list_messages
+            # Отправляем списки дел/инвентарь отдельными сообщениями (per-chat бакет)
+            pending = bot.pop_pending_list_messages(chat_id)
             for msg in pending:
                 await _reply_ai(update.message, msg)
         except Exception as e:

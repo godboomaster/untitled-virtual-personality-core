@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 # Все формы русских единиц времени (все падежи/числа), которые может написать пользователь.
 _UNIT_TO_SECONDS = {
     # секунды
-    "секунду": 1, "секунды": 1, "секунд": 1, "секунда": 1, "секунды": 1, "сек": 1, "с": 1,
+    "секунду": 1, "секунды": 1, "секунд": 1, "секунда": 1, "сек": 1, "с": 1,
     # минуты
-    "минуту": 60, "минуты": 60, "минут": 60, "минута": 60, "минуту": 60, "мин": 60, "м": 60,
+    "минуту": 60, "минуты": 60, "минут": 60, "минута": 60, "мин": 60, "м": 60,
     # часы
     "час": 3600, "часа": 3600, "часов": 3600, "часы": 3600,
     # дни
@@ -44,7 +44,7 @@ _UNIT_TO_SECONDS = {
 _RU_WORD_NUMBERS = {
     "ноль": 0, "полтора": 1.5,
     "одну": 1, "один": 1, "одно": 1, "одна": 1,
-    "две": 2, "два": 2, "две": 2,
+    "две": 2, "два": 2,
     "три": 3, "четыре": 4, "пять": 5, "шесть": 6, "семь": 7, "восемь": 8,
     "девять": 9, "десять": 10, "одиннадцать": 11, "двенадцать": 12,
     "тринадцать": 13, "четырнадцать": 14, "пятнадцать": 15, "шестнадцать": 16,
@@ -59,7 +59,7 @@ _SINGLE_UNIT_TO_SECONDS = {
 }
 
 # Указательные слова, после которых ожидается «N единиц»: «каждые/через N минут».
-_LEAD_WORDS_RE = re.compile(r"\b(?:каждые|каждую|каждое|каждого|через|спустя|спустя|раз\s+в|интервал[а-я]*|с\s+интервалом)\b", re.IGNORECASE)
+_LEAD_WORDS_RE = re.compile(r"\b(?:каждые|каждую|каждое|каждого|через|спустя|раз\s+в|интервал[а-я]*|с\s+интервалом)\b", re.IGNORECASE)
 
 # Паттерн «N <единиц>» — число (цифра) + единица в любой форме.
 _N_UNIT_NUM_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*([а-яё]+)", re.IGNORECASE)
@@ -102,6 +102,18 @@ def parse_frequency(text: str, min_seconds: float = 300, max_seconds: float = 25
         if unit:
             return _clip(unit, min_seconds, max_seconds)
 
+    # ── 2b. «каждый <единица-ед.ч.>»: каждый час / каждый день / каждое утро.
+    # ВАЖНО: идёт ДО общего поиска «N <единиц>» (шаг 3) — иначе «каждый день в 3 часа»
+    # ошибочно давал 3 часа вместо суток (бралось «3 часа» раньше).
+    # «утро»/«вечер» — это раз в сутки: бот работает по интервалам, а не по времени суток.
+    m = re.search(r"\bкажд(ый|ую|ое|ые|ого|ая)\s+(секунду|минуту|час|день|сутки|неделю|месяц|утро|вечер)", lower)
+    if m:
+        if m.group(2) in ("утро", "вечер"):
+            return _clip(86400, min_seconds, max_seconds)
+        unit = _UNIT_TO_SECONDS.get(m.group(2)) or _SINGLE_UNIT_TO_SECONDS.get(m.group(2), 0)
+        if unit:
+            return _clip(unit, min_seconds, max_seconds)
+
     # ── 3. Ищем «N <единиц>» (цифра) в тексте — с приоритетом после указательных слов
     #     (каждые/через/раз в/интервал). Берём первое подходящее.
     candidates_num: List[float] = []
@@ -140,13 +152,6 @@ def parse_frequency(text: str, min_seconds: float = 300, max_seconds: float = 25
         if word in _RU_WORD_NUMBERS and unit:
             return _clip(_RU_WORD_NUMBERS[word] * unit, min_seconds, max_seconds)
 
-    # ── 5. «каждый <единица-ед.ч.>»: каждый час / каждый день
-    m = re.search(r"\bкажд(ый|ую|ое|ые|ого|ая)\s+(секунду|минуту|час|день|сутки|неделю|месяц|утро|вечер)", lower)
-    if m:
-        unit = _UNIT_TO_SECONDS.get(m.group(2)) or _SINGLE_UNIT_TO_SECONDS.get(m.group(2), 0)
-        if unit:
-            return _clip(unit, min_seconds, max_seconds)
-
     # ── 6. Отдельные слова: «полчаса», «ежечасно», «ежедневно»
     if "полчаса" in lower or "пол-часа" in lower:
         return _clip(1800, min_seconds, max_seconds)
@@ -162,11 +167,13 @@ def parse_frequency(text: str, min_seconds: float = 300, max_seconds: float = 25
     return None
 
 
-def _clip(value: float, lo: float, hi: float) -> Optional[float]:
-    """Ограничивает значение диапазоном. Возвращает None если за пределами."""
-    if value < lo or value > hi:
-        return None
-    return value
+def _clip(value: float, lo: float, hi: float) -> float:
+    """Прижимает значение к границам диапазона (clamping).
+    Раньше при выходе за границы возвращал None — из-за этого понятая, но слишком
+    частая/редкая периодичность («каждую минуту») отвечалась пользователю как
+    «не понял частоту». Теперь прижимаем к ближайшей границе: подтверждение setup
+    всё равно показывает фактический интервал (format_delay), подмены незаметной нет."""
+    return max(lo, min(hi, value))
 
 
 # ─── Ответ «да/нет» на «продолжать обучение?» ───────────────
@@ -198,6 +205,11 @@ class LearningManager:
     REINFORCE_COOLDOWN_SECONDS = 6 * 3600  # не чаще раза в 6 часов на курс
     REINFORCE_PROBABILITY = 0.25  # и даже тогда — не гарантированно, для органичности
     NAG_COOLDOWN_SECONDS = 4 * 3600  # не чаще раза в 4 часа — напоминание про незакрытые вопросы
+    # Сколько подряд сообщений «мимо теста» (ОФФТОП, не reply) терпим, прежде чем
+    # перестать гонять каждое сообщение в LLM-проверку ответа (см. submit_quiz_answer).
+    QUIZ_OFFTOPIC_LIMIT = 3
+    # Сколько хранить остановленные (неактивные) сессии, прежде чем вычистить из learning.json.
+    INACTIVE_SESSION_TTL_SECONDS = 7 * 86400
 
     _SENTENCE_END_RE = re.compile(r'[.!?…»"\)\]]\s*$')
 
@@ -327,7 +339,15 @@ class LearningManager:
     def _save(self):
         """Атомарная запись: пишем во временный файл, затем переименовываем.
         Защищает от порчи файла (0 байт / битый JSON) при аварийном завершении процесса
-        в момент записи — иначе _load молча вернёт пустой список и все сессии «исчезнут»."""
+        в момент записи — иначе _load молча вернёт пустой список и все сессии «исчезнут».
+        Заодно вычищает давно остановленные сессии — иначе learning.json растёт бесконечно."""
+        # Неактивные сессии старше TTL выкидываем (точного stopped_at не храним,
+        # created_at для мёртвой истории достаточно).
+        cutoff = time.time() - self.INACTIVE_SESSION_TTL_SECONDS
+        self._sessions = [
+            s for s in self._sessions
+            if s.get("active") or s.get("created_at", 0) >= cutoff
+        ]
         try:
             import os, tempfile
             data = json.dumps(self._sessions, ensure_ascii=False, indent=2)
@@ -354,6 +374,9 @@ class LearningManager:
                 "subject": subject,
                 "user_id": user_id,
                 "user_name": user_name,
+                # Когда задан вопрос «как часто?» — при конфликте с pending-напоминанием
+                # ответ о периодичности получает тот, кто спросил ПОЗЖЕ (см. process_message).
+                "asked_at": time.time(),
             }
 
     def get_setup_state(self, chat_id: str) -> Optional[dict]:
@@ -409,6 +432,7 @@ class LearningManager:
             "asked_continue": False,
             "quiz_pending": None,
             "quiz_set_at": None,
+            "quiz_offtopic_count": 0,
             "continue_asked_at": None,
             "active": True,
             "created_at": now,
@@ -474,10 +498,16 @@ class LearningManager:
         разрешаются одним LLM-вызовом по смыслу сообщения — а не по тому, что произошло позже."""
         candidates: List[tuple] = []
         for s in self.get_sessions(chat_id):
-            if s.get("quiz_pending"):
-                candidates.append((s, "quiz"))
-            elif s.get("asked_continue"):
+            # asked_continue проверяем ПЕРВЫМ: «продолжаем?» может быть задан только
+            # после теста (по молчанию пользователя), т.е. это всегда более поздний
+            # и актуальный вопрос. Штатно quiz_pending при отправке «продолжаем?»
+            # закрывается (см. _send_continue_question), но сессии, сохранённые до
+            # этого исправления, могут хранить оба флага — для них приоритет критичен:
+            # иначе «да/нет» уходило в проверку теста вместо resolve_continue.
+            if s.get("asked_continue"):
                 candidates.append((s, "continue"))
+            elif s.get("quiz_pending"):
+                candidates.append((s, "quiz"))
         if not candidates:
             return None
         if len(candidates) == 1:
@@ -572,7 +602,7 @@ class LearningManager:
                 s["asked_continue"] = False
             if targets:
                 self._save()
-        logger.info(f"[Learning] Сессия остановлена: chat={chat_id} ({len(targets)} шт.)")
+                logger.info(f"[Learning] Сессия остановлена: chat={chat_id} ({len(targets)} шт.)")
 
     def _set_session(self, chat_id: str, session_id: Optional[str] = None, **fields):
         """Обновляет поля активной сессии и сохраняет. Возвращает сессию или None.
@@ -883,25 +913,37 @@ class LearningManager:
         response = self._get_response_complete(messages, temperature=0.6, max_tokens=100, top_p=0.9)
         return (response or fallback).strip()
 
-    def submit_quiz_answer(self, chat_id: str, answer_text: str, session_id: Optional[str] = None) -> Optional[str]:
+    def submit_quiz_answer(self, chat_id: str, answer_text: str, session_id: Optional[str] = None,
+                           is_reply: bool = False) -> Optional[str]:
         """Проверяет сообщение пользователя по тесту через LLM.
         Возвращает фидбек, если это была попытка ответить — тест засчитывается и закрывается.
         Возвращает None, если сообщение не по теме вопроса (ученик сменил тему/задал другой
         вопрос) — тест остаётся открытым (quiz_pending не сбрасывается), а вызывающий код
         должен обработать сообщение как обычное, не как ответ на тест.
         session_id — если не передан, берём курс с самым недавно заданным тестом
-        (см. find_pending_quiz_session) — актуально при нескольких параллельных курсах."""
+        (см. find_pending_quiz_session) — актуально при нескольких параллельных курсах.
+        is_reply — сообщение пришло Telegram-reply на сам вопрос теста: сильный сигнал,
+        оцениваем всегда. Без reply после QUIZ_OFFTOPIC_LIMIT подряд сообщений «мимо»
+        (ОФФТОП) проверку через LLM пропускаем: пользователь явно не отвечает на тест,
+        а каждая проверка — лишний вызов LLM и риск съесть обычное сообщение ложной
+        оценкой. Тест при этом остаётся открытым — ответить можно reply-ом."""
         if not session_id:
             target = self.find_pending_quiz_session(chat_id)
             session_id = target.get("session_id") if target else None
         s = self.get_session(chat_id, session_id=session_id) if session_id else self.get_session(chat_id)
         if not s or not s.get("quiz_pending"):
             return None
+        if not is_reply and int(s.get("quiz_offtopic_count", 0)) >= self.QUIZ_OFFTOPIC_LIMIT:
+            return None
         quiz = s["quiz_pending"]
         is_offtopic, feedback = self._evaluate_quiz(quiz, answer_text)
         if is_offtopic:
+            self._set_session(
+                chat_id, session_id=session_id,
+                quiz_offtopic_count=int(s.get("quiz_offtopic_count", 0)) + 1,
+            )
             return None
-        self._set_session(chat_id, session_id=session_id, quiz_pending=None)
+        self._set_session(chat_id, session_id=session_id, quiz_pending=None, quiz_offtopic_count=0)
         return feedback
 
     # ── генерация контента (через LLM) ──
@@ -1204,6 +1246,10 @@ class LearningManager:
                 "Если сообщение НЕ является попыткой ответить — ученик сменил тему, задал "
                 "совсем другой вопрос или пишет о постороннем — не придумывай натянутую "
                 "оценку, используй VERDICT: ОФФТОП.\n"
+                "ВАЖНО: вопрос с ученика — это НЕ попытка ответить, даже если он про тему "
+                "теста: уточнение условия («а что ты имеешь в виду?», «а почему?», вопрос "
+                "по материалу) — VERDICT: ОФФТОП. На вопрос ученика ответит обычный диалог, "
+                "а не ты — не закрывай тест ложной оценкой.\n"
                 "Ответь СТРОГО в формате:\n"
                 "VERDICT: ВЕРНО | НЕВЕРНО | ЧАСТИЧНО | ОФФТОП\n"
                 "FEEDBACK: <короткий комментарий; для ОФФТОП можно оставить пустым>\n"
@@ -1225,6 +1271,10 @@ class LearningManager:
         feedback = f.group(1).strip() if f else response.strip()
         if re.search(r"офф?топ|off.?topic", verdict, re.IGNORECASE):
             return True, ""
+        # VERDICT не распознан (модель отступила от формата) — отдаём текст без
+        # пустой приставки, иначе фидбек начинался бы с висячей «. ».
+        if not verdict:
+            return False, feedback
         return False, f"{verdict}. {feedback}".strip()
 
     def _render_quiz_announcement(self, subject: str, question: str) -> str:
@@ -1306,28 +1356,37 @@ class LearningManager:
         except Exception as e:
             logger.warning(f"[Learning] Не удалось сохранить урок в STM: {e}")
 
-    async def _send(self, chat_id: str, text: str, topic_id: Optional[int], is_question: bool = False):
+    async def _send(self, chat_id: str, text: str, topic_id: Optional[int], is_question: bool = False) -> bool:
         if not self._sender:
-            return
+            return False
         try:
             success = await self._sender.send_message(chat_id, text, topic_id=topic_id)
             logger.info(f"[Learning] Отправлено в чат {chat_id}: {text[:60]}")
             if success:
                 self._save_to_stm(chat_id, text)
                 # Вопросы (тест, «продолжаем?») регистрируем, чтобы потом понять,
-                # ответил ли пользователь reply-ом именно на них.
+                # ответил ли пользователь reply-ом именно на них. message_id берём
+                # по ЭТОМУ чату — общий атрибут sender'а при конкурентных отправках
+                # отдавал чужой id, и reply-gate привязывался не к тому сообщению.
                 if is_question:
-                    msg_id = getattr(self._sender, "last_sent_message_id", None)
+                    get_last_id = getattr(self._sender, "get_last_sent_message_id", None)
+                    msg_id = get_last_id(chat_id) if get_last_id else getattr(self._sender, "last_sent_message_id", None)
                     if msg_id:
                         self.register_question_message(chat_id, msg_id)
+            return bool(success)
         except Exception as e:
             logger.error(f"[Learning] Ошибка отправки в {chat_id}: {e}")
+            return False
 
     async def _send_document(self, chat_id: str, file_path: str, filename: str,
-                             caption: str, topic_id: Optional[int]):
-        """Отправляет md-файл урока. Подпись сохраняется в STM."""
+                             caption: str, topic_id: Optional[int]) -> bool:
+        """Отправляет md-файл урока. Подпись сохраняется в STM.
+        Возвращает успех True/False — по False вызывающий код делает fallback на
+        отправку текстом. Раньше успех наружу не возвращался (исключения гасились
+        здесь же), и fallback в _send_regular_lesson был мёртвым кодом: файл «не
+        ушёл» (например, caption длиннее лимита Telegram) — и урок молча терялся."""
         if not self._sender:
-            return
+            return False
         try:
             success = await self._sender.send_document(
                 chat_id, file_path, filename, caption=caption, topic_id=topic_id
@@ -1341,8 +1400,10 @@ class LearningManager:
                 # Сохраняем только подпись — этого достаточно, чтобы модель знала тему/вопросы
                 # последнего урока для последующего контекста.
                 self._save_to_stm(chat_id, caption)
+            return bool(success)
         except Exception as e:
             logger.error(f"[Learning] Ошибка отправки файла в {chat_id}: {e}")
+            return False
 
     async def _send_lesson(self, session: dict):
         """Генерирует и отправляет очередной урок/тест. Обновляет состояние сессии."""
@@ -1354,6 +1415,21 @@ class LearningManager:
         is_quiz = quiz_every > 0 and next_num % quiz_every == 0
 
         if is_quiz:
+            if session.get("quiz_pending"):
+                # Прошлый тест ещё не отвечен. Новый вопрос здесь перезаписал бы
+                # quiz_pending — и ответ пользователя на СТАРЫЙ вопрос проверялся
+                # бы уже по новому (submit_quiz_answer читает только текущий
+                # quiz_pending). Поэтому контент не шлём и тест не трогаем: просто
+                # переносим следующий тик на интервал. Счётчик молчания уже вырос
+                # в _loop() — по достижении порога спросим «продолжаем?», а при
+                # дальнейшем молчании курс остановится штатно.
+                logger.info(f"[Learning] Тест ещё не отвечен, пропускаю новый (chat={chat_id})")
+                self._set_session(
+                    chat_id,
+                    session_id=session.get("session_id"),
+                    next_lesson_at=time.time() + session["interval_seconds"],
+                )
+                return
             quiz = None
             try:
                 quiz = await asyncio.to_thread(self._generate_quiz, session)
@@ -1366,16 +1442,30 @@ class LearningManager:
                 except Exception as e:
                     logger.warning(f"[Learning] Повторная генерация теста не удалась: {e}")
             if quiz:
-                self._set_session(
-                    chat_id,
-                    session_id=session.get("session_id"),
-                    quiz_pending=quiz,
-                    quiz_set_at=time.time(),
-                    lesson_count=next_num,
-                    next_lesson_at=time.time() + session["interval_seconds"],
-                )
                 text = await asyncio.to_thread(self._render_quiz_announcement, subject, quiz["question"])
-                await self._send(chat_id, text, topic_id, is_question=True)
+                sent = await self._send(chat_id, text, topic_id, is_question=True)
+                if sent:
+                    # Тест выставляем ТОЛЬКО после доставки анонса — иначе при сбое
+                    # отправки пользователь, не видевший вопроса, отвечал бы вслепую
+                    # на невидимый тест (следующее сообщение проверялось бы по нему).
+                    self._set_session(
+                        chat_id,
+                        session_id=session.get("session_id"),
+                        quiz_pending=quiz,
+                        quiz_set_at=time.time(),
+                        quiz_offtopic_count=0,
+                        lesson_count=next_num,
+                        next_lesson_at=time.time() + session["interval_seconds"],
+                    )
+                else:
+                    # Анонс не ушёл — тик не засчитываем (lesson_count не растёт):
+                    # на следующем интервале тест сгенерируется и уйдёт заново.
+                    logger.warning(f"[Learning] Анонс теста не доставлен (chat={chat_id}), тест не выставлен, повтор на следующем тике")
+                    self._set_session(
+                        chat_id,
+                        session_id=session.get("session_id"),
+                        next_lesson_at=time.time() + session["interval_seconds"],
+                    )
             else:
                 # Тест не сгенерировался — отправляем обычный урок, интервал не теряется
                 logger.info(f"[Learning] Тест не сгенерирован, отправляю урок-файл (chat={chat_id})")
@@ -1398,19 +1488,29 @@ class LearningManager:
             logger.warning(f"[Learning] Генерация урока не удалась: {e}")
             lesson = None
 
+        if not lesson or not lesson.get("lesson"):
+            # Урок не сгенерировался — тик засчитываем как раньше (lesson_count растёт)
+            # и честно сообщаем в чат; учебного состояния (темы/словарь) не меняем.
+            self._set_session(
+                chat_id,
+                session_id=session.get("session_id"),
+                lesson_count=next_num,
+                next_lesson_at=time.time() + session["interval_seconds"],
+            )
+            await self._send(chat_id, f"Урок по теме «{subject}» не удалось подготовить. Продолжим в следующий раз.", topic_id)
+            return
+
         # Извлекаем тему для covered_topics
-        topic_title = ""
-        if lesson:
-            topic_title = lesson.get("topic", "") or ""
-            # Если LLM не вернула TOPIC явно — извлекаем из текста
-            if not topic_title:
-                topic_title = await asyncio.to_thread(self._extract_topic, lesson.get("lesson", ""))
+        topic_title = lesson.get("topic", "") or ""
+        # Если LLM не вернула TOPIC явно — извлекаем из текста
+        if not topic_title:
+            topic_title = await asyncio.to_thread(self._extract_topic, lesson.get("lesson", ""))
 
         # Для языковых курсов достаём ключевые слова/фразы урока — пригодятся, чтобы
         # потом естественно вплетать их в обычный разговор для закрепления
         # (см. get_reinforcement_hint).
         new_vocab_items: List[str] = []
-        if lesson and session.get("course_kind") == "LANGUAGE":
+        if session.get("course_kind") == "LANGUAGE":
             # Сначала пробуем vocab из структурированного ответа урока
             new_vocab_items = list(lesson.get("vocab") or [])
             if not new_vocab_items:
@@ -1418,23 +1518,6 @@ class LearningManager:
                     new_vocab_items = await asyncio.to_thread(self._extract_vocabulary, lesson.get("lesson", ""))
                 except Exception as e:
                     logger.debug(f"[Learning] Извлечение словаря не удалось: {e}")
-
-        # Обновляем состояние сессии
-        covered_addition = [topic_title] if topic_title else []
-        new_covered = (session.get("covered_topics") or []) + covered_addition
-        new_vocab = (session.get("learned_vocabulary") or []) + new_vocab_items
-        self._set_session(
-            chat_id,
-            session_id=session.get("session_id"),
-            lesson_count=next_num,
-            next_lesson_at=time.time() + session["interval_seconds"],
-            covered_topics=new_covered[-20:],
-            learned_vocabulary=new_vocab[-40:],
-        )
-
-        if not lesson or not lesson.get("lesson"):
-            await self._send(chat_id, f"Урок по теме «{subject}» не удалось подготовить. Продолжим в следующий раз.", topic_id)
-            return
 
         # Сообщение в чат: тема + контрольные вопросы (стилизация через персону)
         questions = lesson.get("questions", [])
@@ -1454,31 +1537,80 @@ class LearningManager:
         # Пишем во временный файл и отправляем
         import tempfile, os
         tmp_path = None
+        sent = False
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
                 f.write(md_content)
                 tmp_path = f.name
-            await self._send_document(chat_id, tmp_path, filename, caption=chat_msg, topic_id=topic_id)
+            sent = await self._send_document(chat_id, tmp_path, filename, caption=chat_msg, topic_id=topic_id)
         except Exception as e:
             logger.error(f"[Learning] Ошибка отправки md-файла: {e}")
-            # Fallback: отправить текстом, если файл не ушёл
-            await self._send(chat_id, f"{chat_msg}\n\n{lesson['lesson']}", topic_id)
         finally:
             if tmp_path:
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+        if not sent:
+            # Файл не ушёл (сеть, лимит caption, ошибка Telegram) — отдаём урок текстом.
+            # Длинный текст sender разобьёт на части сам (лимит сообщения Telegram 4096).
+            logger.info(f"[Learning] Файл не доставлен, отправляю урок текстом (chat={chat_id})")
+            sent_caption = await self._send(chat_id, chat_msg, topic_id)
+            sent_body = await self._send(chat_id, lesson["lesson"], topic_id)
+            sent = sent_caption and sent_body
+
+        # Состояние обновляем ТОЛЬКО после успешной доставки. Раньше оно сохранялось
+        # ДО отправки — и при сбое урок считался пройденным (lesson_count вырос, тема
+        # в covered_topics), хотя пользователь его не видел.
+        if sent:
+            covered_addition = [topic_title] if topic_title else []
+            new_covered = (session.get("covered_topics") or []) + covered_addition
+            new_vocab = (session.get("learned_vocabulary") or []) + new_vocab_items
+            self._set_session(
+                chat_id,
+                session_id=session.get("session_id"),
+                lesson_count=next_num,
+                next_lesson_at=time.time() + session["interval_seconds"],
+                covered_topics=new_covered[-20:],
+                learned_vocabulary=new_vocab[-40:],
+            )
+        else:
+            # Урок не дошёл ни файлом, ни текстом — тик не засчитываем, переносим
+            # попытку на следующий интервал.
+            logger.warning(f"[Learning] Урок не доставлен ни файлом, ни текстом (chat={chat_id}) — тик не засчитан, повтор на следующем")
+            self._set_session(
+                chat_id,
+                session_id=session.get("session_id"),
+                next_lesson_at=time.time() + session["interval_seconds"],
+            )
 
     async def _send_continue_question(self, session: dict):
         chat_id = session["chat_id"]
         topic_id = session.get("topic_id")
-        self._set_session(chat_id, session_id=session.get("session_id"), asked_continue=True, continue_asked_at=time.time())
         text = (
             f"{session.get('user_name', '')}, по теме «{session.get('subject', '')}» "
             "я давно не получаю ответов. Продолжаем обучение? (да/нет)"
         )
-        await self._send(chat_id, text, topic_id, is_question=True)
+        sent = await self._send(chat_id, text, topic_id, is_question=True)
+        if sent:
+            # Вопрос «продолжаем?» — теперь единственный живой вопрос курса: висящий
+            # тест (quiz_pending) закрываем, иначе ответ «да/нет» уходил в проверку
+            # теста вместо resolve_continue (resolve_pending_target брал quiz первым),
+            # а курс потом останавливался по молчанию, хотя человек ответил «да».
+            self._set_session(
+                chat_id, session_id=session.get("session_id"),
+                asked_continue=True, continue_asked_at=time.time(),
+                quiz_pending=None, quiz_offtopic_count=0,
+            )
+        else:
+            # Вопрос не доставлен — флаг не выставляем (иначе курс остановился бы на
+            # следующем тике, хотя пользователь вопроса не видел). Просто переносим
+            # попытку на интервал.
+            logger.warning(f"[Learning] Вопрос «продолжаем?» не доставлен (chat={chat_id}), повтор на следующем тике")
+            self._set_session(
+                chat_id, session_id=session.get("session_id"),
+                next_lesson_at=time.time() + session["interval_seconds"],
+            )
 
     # ── фоновый цикл ──
 
@@ -1510,21 +1642,41 @@ class LearningManager:
                         self._save()
 
                 for s in due:
-                    if s.get("_action") == "stop":
-                        logger.info(f"[Learning] Остановка по молчанию: chat={s['chat_id']} session={s.get('session_id')}")
-                        continue
-                    # Считаем молчание: для реальной сессии (не копии) инкрементируем.
-                    # Целимся по session_id — при нескольких параллельных курсах одного чата
-                    # chat_id больше не идентифицирует сессию однозначно.
-                    self._increment_silence(s.get("session_id"))
-                    real = self.get_session(s["chat_id"], session_id=s.get("session_id"))
-                    if not real:
-                        continue
-                    if real.get("consecutive_silences", 0) >= int(real.get("silence_threshold", self.default_silence_threshold)):
-                        # Достигли порога — спрашиваем, урок пропускаем
-                        await self._send_continue_question(real)
-                    else:
-                        await self._send_lesson(real)
+                    # Каждая сессия — в своём try: одно исключение НЕ должно ломать
+                    # остальные курсы. Раньше ошибка в середине цикла пропускала все
+                    # следующие сессии, а их next_lesson_at уже был отодвинут на
+                    # interval+86400 — они молча ждали лишние сутки.
+                    try:
+                        if s.get("_action") == "stop":
+                            logger.info(f"[Learning] Остановка по молчанию: chat={s['chat_id']} session={s.get('session_id')}")
+                            continue
+                        # Считаем молчание: для реальной сессии (не копии) инкрементируем.
+                        # Целимся по session_id — при нескольких параллельных курсах одного чата
+                        # chat_id больше не идентифицирует сессию однозначно.
+                        self._increment_silence(s.get("session_id"))
+                        real = self.get_session(s["chat_id"], session_id=s.get("session_id"))
+                        if not real:
+                            continue
+                        if real.get("consecutive_silences", 0) >= int(real.get("silence_threshold", self.default_silence_threshold)):
+                            # Достигли порога — спрашиваем, урок пропускаем
+                            await self._send_continue_question(real)
+                        else:
+                            await self._send_lesson(real)
+                    except Exception as e:
+                        logger.error(
+                            f"[Learning] Ошибка обработки сессии {s.get('session_id')} "
+                            f"(chat={s.get('chat_id')}): {e}", exc_info=True
+                        )
+                        # Переносим попытку на интервал, а не на сутки (сентинел
+                        # +86400 выше нужен только от повторной отправки до конца
+                        # обработки, он не должен становиться наказанием за ошибку).
+                        try:
+                            self._set_session(
+                                s["chat_id"], session_id=s.get("session_id"),
+                                next_lesson_at=time.time() + s.get("interval_seconds", 3600),
+                            )
+                        except Exception:
+                            pass
 
             except Exception as e:
                 logger.error(f"[Learning] Ошибка в цикле: {e}", exc_info=True)
