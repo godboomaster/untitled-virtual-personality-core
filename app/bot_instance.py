@@ -23,7 +23,7 @@ from app.features.todo_manager import (
     is_todo_done_request, extract_todo_done_index,
 )
 from app.features.reminder_manager import ReminderManager, parse_reminder
-from app.features.learning_manager import LearningManager, parse_frequency
+from app.features.learning_manager import LearningManager, parse_frequency, classify_continue_answer
 from app.features.learning_intent import classify_learning_intent, extract_subject
 from app.features.inventory_manager import (
     InventoryManager,
@@ -74,6 +74,18 @@ def _looks_like_frequency_answer(text: str) -> bool:
     return bool(_FREQUENCY_WORDS_RE.search(text))
 
 
+# Максимальная длина «короткого» ответа на вопрос «продолжаем?» (в словах).
+_CONTINUE_SHORT_ANSWER_MAX_WORDS = 6
+
+
+def _is_plain_yes_no(text: str) -> bool:
+    """Похоже ли сообщение на короткий ответ «да/нет» — такой безопасно принять как
+    ответ на вопрос «продолжаем?» даже без Telegram-reply. Длинное сообщение, пусть и
+    начинающееся с «да», обычно несёт свой вопрос/тему — его нельзя съедать ответом
+    на «продолжаем?», оно должно уйти в обычную обработку."""
+    return bool(text) and len(text.split()) <= _CONTINUE_SHORT_ANSWER_MAX_WORDS
+
+
 class BotInstance:
     
     # Каждому Telegram-боту (Коннор, Арродес) соответствует свой BotInstance.
@@ -84,8 +96,14 @@ class BotInstance:
         self.context = context or persona_name
         self.persona = PersonaLayer(persona_name=persona_name)
 
-        # Список дел/инвентарь для отправки отдельным сообщением после основного ответа
-        self._pending_list_messages: List[str] = []
+        # Список дел/инвентарь для отправки отдельным сообщением после основного ответа.
+        # Per-chat (dict по chat_id): process_message крутится конкурентно в потоках для
+        # разных чатов, и общий атрибут давал гонки — список одного чата мог уехать в другой.
+        self._pending_list_messages: Dict[str, List[str]] = {}
+
+        # Тип последнего ответа-вопроса бота ('frequency' | 'continue'), per-chat — по той
+        # же причине: общий флаг один чат сбрасывал/перезаписывал за другим.
+        self._pending_question_kind: Dict[str, Optional[str]] = {}
 
         # Читаем features из YAML
         persona_data = self.persona.persona_data
@@ -281,6 +299,23 @@ class BotInstance:
 
         return None
 
+    # ── per-chat pending-состояние (досылка списков, регистрация вопросов) ──
+
+    def _pending_lists(self, chat_id) -> List[str]:
+        """Бакет списков (дел/инвентаря) текущего чата для досылки после ответа."""
+        return self._pending_list_messages.setdefault(str(chat_id), [])
+
+    def pop_pending_list_messages(self, chat_id) -> List[str]:
+        """Забирает накопленные списки чата для досылки — и очищает бакет.
+        Вызывается telegram-слоем после отправки основного ответа."""
+        return self._pending_list_messages.pop(str(chat_id), [])
+
+    def pop_pending_question_kind(self, chat_id) -> Optional[str]:
+        """Забирает (и снимает) тип последнего ответа-вопроса бота для чата:
+        'frequency' | 'continue' | None. Pop-семантика: флаг одноразовый, старое
+        значение не может протечь в следующий ответ ни в этом, ни в чужом чате."""
+        return self._pending_question_kind.pop(str(chat_id), None)
+
     # Main processing
 
     def process_message(self, user_input: str, user_id: str = "default",
@@ -289,13 +324,17 @@ class BotInstance:
                         reply_to_bot_message_id: Optional[int] = None) -> str:
         from app.features.query_rewriter import rewrite_query
 
-        # Очищаем pending-списки от предыдущего вызова
-        self._pending_list_messages = []
-        self._skip_llm_answer = None  # готовый ответ, минующий основной LLM-вызов (фидбек теста)
-        # Каким был последний _skip_llm_answer: 'frequency' | 'continue' | None.
+        # Очищаем pending-состояние ЭТОГО чата от предыдущего вызова (атрибуты per-chat:
+        # process_message выполняется конкурентно в потоках для разных чатов, и общие
+        # атрибуты давали гонки — чужой фидбек/вопрос уезжал не в тот чат).
+        self._pending_list_messages[str(chat_id)] = []
+        # Каким был последний ответ-вопрос: 'frequency' | 'continue' | None.
         # Нужно telegram-слою, чтобы зарегистрировать отправленное сообщение как «вопрос бота»
         # для reply-to-логики обучения (пользователь может ответить reply-ом на этот вопрос).
-        self._pending_question_kind = None
+        self._pending_question_kind[str(chat_id)] = None
+        # Локальная переменная (раньше — общий атрибут, та же гонка): готовый ответ,
+        # минующий основной LLM-вызов (фидбек теста, реплики setup/continue обучения).
+        skip_llm_answer = None
 
         logger.info(f"[BotInstance] process_message START: '{user_input[:60]}' | chat_id={chat_id}")
 
@@ -380,7 +419,27 @@ class BotInstance:
             if self.reminder_manager and chat_id:
                 pending_task = self.reminder_manager.get_pending_remind(chat_id)
                 logger.info(f"[Reminder] pending_remind для chat={chat_id}: {pending_task!r}")
-                if pending_task:
+
+                # Конфликт ожиданий: одновременно висит вопрос обучения «как часто уроки?».
+                # Ответ о периодичности («раз в день», «каждые 2 часа») принадлежит тому, кто
+                # спросил ПОЗЖЕ — человек отвечает на последний заданный вопрос. Если свежее
+                # setup обучения — уступаем: напоминание НЕ потребляем (остаётся pending,
+                # на него можно ответить следующим сообщением), сообщение разберёт
+                # learning-блок ниже. Раньше напоминание всегда съедало такой ответ,
+                # и setup курса зависал навсегда.
+                _yield_to_learning = False
+                if pending_task and self.learning_manager:
+                    _setup = self.learning_manager.get_setup_state(chat_id)
+                    if _setup and (
+                        self.learning_manager.is_reply_to_question(chat_id, reply_to_bot_message_id)
+                        or _looks_like_frequency_answer(user_input)
+                    ):
+                        _remind_at = self.reminder_manager.get_pending_remind_asked_at(chat_id) or 0
+                        _yield_to_learning = (_setup.get("asked_at") or 0) > _remind_at
+                        if _yield_to_learning:
+                            logger.info(f"[Reminder] chat={chat_id}: ответ уступаю обучению (его вопрос свежее)")
+
+                if pending_task and not _yield_to_learning:
                     # Пытаемся вытащить время из ответа пользователя
                     rem_delay = None
                     parsed_pending = parse_reminder("напомни " + user_input)
@@ -486,12 +545,12 @@ class BotInstance:
                         # Изолированный вызов (без STM/истории) — см. docstring
                         # render_setup_reply про то, почему это не идёт через
                         # общий self.persona.prepare_messages(...).
-                        self._skip_llm_answer = self.learning_manager.render_setup_reply(subject, "confirmed", delay_text)
+                        skip_llm_answer = self.learning_manager.render_setup_reply(subject, "confirmed", delay_text)
                     else:
-                        self._skip_llm_answer = self.learning_manager.render_setup_reply(subject, "reask")
+                        skip_llm_answer = self.learning_manager.render_setup_reply(subject, "reask")
                     # Если частоту не поняли (reask) — бот переспрашивает, это «вопрос».
                     # Если поняли (confirmed) — это не вопрос, а подтверждение старта.
-                    self._pending_question_kind = "frequency" if not delay else None
+                    self._pending_question_kind[str(chat_id)] = "frequency" if not delay else None
                     is_learning_request = True
                 else:
                     # 2/3. Один из параллельных курсов ждёт ответа — на тест ИЛИ на
@@ -503,40 +562,50 @@ class BotInstance:
 
                     _pending_handled = False
                     if _pending and _pending["_pending_kind"] == "continue":
-                        # ТОЛЬКО настоящий Telegram-reply на само сообщение с вопросом
-                        # «продолжаем?» считается ответом на него. Если пользователь просто
-                        # написал новое сообщение (не reply) — вопрос остаётся висеть НЕТРОНУТЫМ,
-                        # а сообщение уходит в обычную обработку ниже. Это надёжнее и дешевле,
-                        # чем гадать по содержанию через LLM (OFFTOPIC-классификация): реплай —
-                        # однозначный, явный сигнал от самого пользователя, а не эвристика.
+                        # Ответ на «продолжаем?» принимаем двумя путями:
+                        # (a) настоящий Telegram-reply на само сообщение с вопросом —
+                        #     однозначный сигнал от пользователя, поэтому содержимое можно
+                        #     разобрать умным классификатором (LLM, с OFFTOPIC-веткой);
+                        # (b) обычное КОРОТКОЕ сообщение с однозначным да/нет по regex —
+                        #     в личных чатах reply почти не используют, и без этого пути
+                        #     вопрос висел до авто-остановки курса в _loop(), хотя человек
+                        #     по сути ответил. Лимит длины важен: длинное сообщение, пусть
+                        #     и начинающееся с «да», обычно несёт свой вопрос/тему — его
+                        #     нельзя съедать ответом на «продолжаем?».
+                        _session_id = _pending.get("session_id")
+                        decision = None
                         if reply_to_question:
-                            _session_id = _pending.get("session_id")
-                            decision = self.learning_manager.classify_continue_answer_smart(user_input)
-                            # OFFTOPIC — это reply на вопрос, но не по теме: вопрос не трогаем,
-                            # сообщение уходит в обычную обработку (персона ответит по сути).
-                            if decision == "OFFTOPIC":
-                                pass
-                            else:
-                                self.learning_manager.resolve_continue(chat_id, decision, session_id=_session_id)
-                                # Изолированный вызов (без STM/истории) — см. docstring
-                                # render_continue_reply про то, почему это не идёт через
-                                # общий self.persona.prepare_messages(...).
-                                self._skip_llm_answer = self.learning_manager.render_continue_reply(chat_id, decision, session_id=_session_id)
-                                # При UNKNOWN бот переспрашивает «да/нет» — это «вопрос».
-                                self._pending_question_kind = "continue" if decision == "UNKNOWN" else None
-                                is_learning_request = True
-                                _pending_handled = True
-                        # не реплай — просто падаем в обычную обработку ниже, вопрос не трогаем
+                            _smart = self.learning_manager.classify_continue_answer_smart(user_input)
+                            # OFFTOPIC — это reply на вопрос, но не по теме: вопрос не
+                            # трогаем, сообщение уходит в обычную обработку ниже.
+                            if _smart != "OFFTOPIC":
+                                decision = _smart
+                        elif _is_plain_yes_no(user_input):
+                            fast = classify_continue_answer(user_input)
+                            if fast in ("YES", "NO"):
+                                decision = fast
+                        if decision:
+                            self.learning_manager.resolve_continue(chat_id, decision, session_id=_session_id)
+                            # Изолированный вызов (без STM/истории) — см. docstring
+                            # render_continue_reply про то, почему это не идёт через
+                            # общий self.persona.prepare_messages(...).
+                            skip_llm_answer = self.learning_manager.render_continue_reply(chat_id, decision, session_id=_session_id)
+                            # При UNKNOWN бот переспрашивает «да/нет» — это «вопрос».
+                            self._pending_question_kind[str(chat_id)] = "continue" if decision == "UNKNOWN" else None
+                            is_learning_request = True
+                            _pending_handled = True
+                        # иначе — сообщение не про «продолжаем?»: падаем в обычную
+                        # обработку ниже, вопрос остаётся висеть НЕТРОНУТЫМ
                     elif _pending and _pending["_pending_kind"] == "quiz":
                         _session_id = _pending.get("session_id")
-                        feedback = self.learning_manager.submit_quiz_answer(chat_id, user_input, session_id=_session_id)
+                        feedback = self.learning_manager.submit_quiz_answer(chat_id, user_input, session_id=_session_id, is_reply=reply_to_question)
                         if feedback is not None:
                             # Реальная попытка ответить (пусть неверная) — фидбек уже
                             # сгенерирован в образе персоны в _evaluate_quiz. Возвращаем
                             # напрямую, минуя основной LLM-вызов, чтобы персонаж не
                             # «достроил» к оценке новый урок.
                             learning_context = None
-                            self._skip_llm_answer = feedback
+                            skip_llm_answer = feedback
                             is_learning_request = True
                             _pending_handled = True
                         # feedback is None — офф-топ: ученик сменил тему, тест остаётся
@@ -555,6 +624,11 @@ class BotInstance:
                                 "(например: раз в день, каждые 2 часа). Обучение начнётся после его ответа."
                             )
                             is_learning_request = True
+                            # Ответ ниже — вопрос «как часто?»: отмечаем, чтобы telegram-слой
+                            # зарегистрировал его message_id и reply пользователя распознался
+                            # как ответ о частоте (без этого reply-gate работал только на
+                            # переспросах, а на первом вопросе — нет).
+                            self._pending_question_kind[str(chat_id)] = "frequency"
                         else:
                             # 5. Сессия(и) активна, но это не команда/тест/setup/continue.
                             # Пользователь, скорее всего, отвечает на контрольные вопросы прошлого урока
@@ -582,7 +656,16 @@ class BotInstance:
                                     "придёт позже по расписанию отдельным сообщением-файлом.\n"
                                     "— Реагируй коротко: ответь/поясни/прокомментируй, не более."
                                 )
-                                is_learning_request = True
+                                # is_learning_request здесь НАМЕРЕННО не ставим: само
+                                # сообщение — обычный разговор при фоново активном курсе,
+                                # а не учебно-административное действие (setup/continue/
+                                # тест/новый курс — там флаг стоит). Гейты todo/inventory-
+                                # маркеров ниже пропускают обработку при флаге, чтобы LLM
+                                # не создавал сущности из учебных реплик; если выставить
+                                # его на КАЖДОЕ сообщение при активном курсе, то «добавь
+                                # в дела X» / «добавь в инвентарь Y» во время курса молча
+                                # перестают работать, а сырые маркеры [TODO_ADD:...]
+                                # утекают пользователю в ответ.
                                 # get_nag_guard: персона сама (без инструкции) любит напоминать
                                 # о незакрытых контрольных вопросах почти в каждом ответе —
                                 # отсюда навязчивые «который раз за сессию», «паттерн
@@ -665,8 +748,8 @@ class BotInstance:
                     inventory_context = inv_block
 
             # Ранний возврат: готовый ответ, минующий LLM (фидбек теста, не генерируем новый контент)
-            if self._skip_llm_answer:
-                answer = self._clean_response(self._skip_llm_answer)
+            if skip_llm_answer:
+                answer = self._clean_response(skip_llm_answer)
                 self.memory.add_message("assistant", answer, user_id, chat_id)
                 if self.proactive and chat_id:
                     self.proactive.record_user_response(chat_id)
@@ -711,6 +794,9 @@ class BotInstance:
             answer = self._clean_response(answer)
 
             # Обработка todo-маркера
+            # (пропускаем для учебно-административных сообщений — setup/continue/тест/
+            # новый курс, там is_learning_request=True; обычный разговор при активном
+            # курсе флаг не выставляет, и todo во время курса работает как обычно)
             if self.todo_manager and chat_id and todo_context and not is_learning_request:
                 answer = self._process_todo_marker(
                     answer, chat_id, user_name or "Пользователь",
@@ -720,9 +806,11 @@ class BotInstance:
                 )
 
             # Обработка inventory-маркеров (добавление/удаление/использование через маркеры)
-            # (пропускаем если это напоминание или обучение — LLM не должен добавлять в инвентарь)
+            # (пропускаем если это напоминание или учебно-административное сообщение —
+            # там LLM не должен добавлять в инвентарь; обычный разговор при активном
+            # курсе сюда проходит — инвентарь во время курса работает как обычно)
             if not is_reminder_request and not is_learning_request and self.inventory_manager:
-                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove, user_name or "пользователь", user_text=user_input)
+                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove, user_name or "пользователь", user_text=user_input, chat_id=chat_id)
             if self.inventory_manager:
                 answer = self._parse_punishment(answer, user_id)
 
@@ -989,14 +1077,14 @@ class BotInstance:
             response = response[:done_match.start()] + response[done_match.end():]
             result = self.todo_manager.remove_item(chat_id, index)
             if result:
-                self._pending_list_messages.append(result)
+                self._pending_lists(chat_id).append(result)
             return response.strip()
 
         # Fallback удаление через эвристику
         if fallback_done_index is not None:
             result = self.todo_manager.remove_item(chat_id, fallback_done_index)
             if result:
-                self._pending_list_messages.append(result)
+                self._pending_lists(chat_id).append(result)
             return response.strip()
 
         # Добавление: [TODO_ADD:...]
@@ -1011,18 +1099,19 @@ class BotInstance:
             if verdict == "ADD":
                 task = fallback_task
             elif verdict == "ASK":
-                self._pending_list_messages.append(f"Записать «{fallback_task}» в список дел?")
+                self._pending_lists(chat_id).append(f"Записать «{fallback_task}» в список дел?")
             # SKIP — игнорируем
 
         if task:
             todo_list = self.todo_manager.add_item(chat_id, user_name, task)
-            self._pending_list_messages.append(todo_list)
+            self._pending_lists(chat_id).append(todo_list)
 
         return response.strip()
 
-    def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None, giver_name: str = "", user_text: str = "") -> str:
+    def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None, giver_name: str = "", user_text: str = "", chat_id=None) -> str:
         """Парсит маркеры [INVENTORY_ADD:...], [INVENTORY_REMOVE:...], [INVENTORY_USE:...], обновляет инвентарь.
-        Инвентарь отправляется отдельным сообщением через _pending_list_messages.
+        Инвентарь отправляется отдельным сообщением через _pending_list_messages (per-chat бакет
+        по chat_id — иначе при параллельных чатах список уезжал не в тот чат).
         Эвристический fallback подтверждается локальной LLM (_confirm_intent), чтобы не добавлять
         предметы из обычных реплик («получил жабку» не должно добавлять «л жабку»)."""
         if not self.inventory_manager:
@@ -1054,7 +1143,7 @@ class BotInstance:
                 inventory_changed = True
             elif verdict == "ASK":
                 # Локальная LLM недоступна — переспрашиваем вместо слепого добавления
-                self._pending_list_messages.append(f"Добавить «{fallback_add}» в инвентарь?")
+                self._pending_lists(chat_id).append(f"Добавить «{fallback_add}» в инвентарь?")
             # SKIP — игнорируем, предмет не создаётся
 
         # INVENTORY_REMOVE — приоритет: маркер от LLM (пользователь забирает или отменяет)
@@ -1070,7 +1159,7 @@ class BotInstance:
                 self.inventory_manager.remove_item(fallback_remove)
                 inventory_changed = True
             elif verdict == "ASK":
-                self._pending_list_messages.append(f"Убрать «{fallback_remove}» из инвентаря?")
+                self._pending_lists(chat_id).append(f"Убрать «{fallback_remove}» из инвентаря?")
 
         # Проверяем просроченные предметы
         expired = self.inventory_manager.remove_expired_items()
@@ -1078,7 +1167,7 @@ class BotInstance:
             inventory_changed = True
 
         if inventory_changed:
-            self._pending_list_messages.append(self.inventory_manager.get_list_text())
+            self._pending_lists(chat_id).append(self.inventory_manager.get_list_text())
 
         return response.strip()
 
@@ -1410,6 +1499,12 @@ class BotInstance:
         args = (args or "").strip()
         user_input_cmd = f"/{kind} {args}".strip()  # что сохранится в STM
 
+        # Как и в process_message: сбрасываем флаг «последний ответ — вопрос бота»
+        # ЭТОГО чата. Команда тоже может закончиться вопросом (пока только /learn —
+        # «как часто присылать уроки?»), и telegram-слой по флагу регистрирует
+        # message_id ответа.
+        self._pending_question_kind[str(chat_id)] = None
+
         if kind == "remind":
             if not self.reminder_manager:
                 return "Напоминания не активны для этой персоны."
@@ -1483,6 +1578,10 @@ class BotInstance:
                 "Спроси коротко и в своём стиле, как часто присылать уроки "
                 "(например: раз в день, каждые 2 часа). Обучение начнётся после его ответа."
             )
+            # Ответ ниже — вопрос «как часто?»: отмечаем, чтобы telegram-слой
+            # зарегистрировал его message_id и reply пользователя распознался
+            # как ответ о частоте (без этого reply-gate для /learn не работал).
+            self._pending_question_kind[str(chat_id)] = "frequency"
             return self.command_reply(note, "learning", chat_id, user_id, user_name, user_input_cmd)
 
         return "Неизвестная команда."

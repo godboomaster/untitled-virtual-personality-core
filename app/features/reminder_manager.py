@@ -259,9 +259,9 @@ class ReminderManager:
         self._reminders: List[dict] = []
         self._load()
 
-        # In-memory состояние /remind без времени: chat_id -> task
+        # In-memory состояние /remind без времени: chat_id -> {task, asked_at}
         # (пережидает до ответа пользователя, теряется на рестарте — это ок)
-        self._pending_remind: Dict[str, str] = {}
+        self._pending_remind: Dict[str, dict] = {}
 
     def set_sender(self, sender):
         self._sender = sender
@@ -351,13 +351,24 @@ class ReminderManager:
     # ── pending /remind без времени (in-memory) ──
 
     def begin_pending_remind(self, chat_id: str, task: str):
-        """Запоминает задачу напоминания, ждём от пользователя ответа про время."""
+        """Запоминает задачу напоминания, ждём от пользователя ответа про время.
+        asked_at нужен, чтобы при одновременно висящем вопросе обучения «как часто?»
+        отдать ответ о периодичности тому, кто спросил ПОЗЖЕ (см. process_message)."""
         with self._lock:
-            self._pending_remind[str(chat_id)] = task
+            self._pending_remind[str(chat_id)] = {"task": task, "asked_at": time.time()}
 
     def get_pending_remind(self, chat_id: str) -> Optional[str]:
+        """Текст задачи pending-напоминания (или None)."""
         with self._lock:
-            return self._pending_remind.get(str(chat_id))
+            entry = self._pending_remind.get(str(chat_id))
+            # Совместимость со старым форматом (голая строка)
+            return entry.get("task") if isinstance(entry, dict) else entry
+
+    def get_pending_remind_asked_at(self, chat_id: str) -> Optional[float]:
+        """Когда был задан вопрос «через сколько напомнить?» (timestamp или None)."""
+        with self._lock:
+            entry = self._pending_remind.get(str(chat_id))
+            return entry.get("asked_at") if isinstance(entry, dict) else None
 
     def clear_pending_remind(self, chat_id: str):
         with self._lock:

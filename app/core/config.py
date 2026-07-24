@@ -70,6 +70,12 @@ PROVIDER_CONFIGS = {
         "api_keys": _collect_api_keys("KIMI"),
         "base_url": os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1"),
         "model": os.getenv("KIMI_MODEL", "moonshot-v1-8k"),
+        # Модели Kimi (k3 и др.) принимают только temperature=1 и top_p=0.95 — иначе
+        # API отвечает 400 «invalid temperature/top_p: only ... is allowed for this
+        # model». Фиксируем на уровне провайдера, игнорируя значения вызывающего кода;
+        # переопределяются через KIMI_TEMPERATURE / KIMI_TOP_P в .env.config.
+        "temperature": float(os.getenv("KIMI_TEMPERATURE", "1.0")),
+        "top_p": float(os.getenv("KIMI_TOP_P", "0.95")),
     },
     "google": {
         "api_keys": _collect_api_keys("GOOGLE"),

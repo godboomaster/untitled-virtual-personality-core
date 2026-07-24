@@ -63,7 +63,8 @@ class ModelRouter:
                 )
                 response = client.chat.completions.create(
                     model=cfg["model"], messages=messages,
-                    temperature=temperature, max_tokens=max_tokens, top_p=top_p
+                    temperature=cfg.get("temperature", temperature),
+                    max_tokens=max_tokens, top_p=cfg.get("top_p", top_p)
                 )
                 answer = response.choices[0].message.content
                 self._last_provider = provider
