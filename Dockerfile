@@ -11,8 +11,8 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 
 COPY . .
 
-# Healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/')" || exit 1
+# Healthcheck намеренно НЕ задаётся на уровне образа: он привязан к порту Gradio,
+# а этот же образ запускает Telegram-ботов — они были бы вечно unhealthy.
+# Healthcheck для Gradio определён в docker-compose.yml.
 
 CMD ["python", "-m", "app.main"]

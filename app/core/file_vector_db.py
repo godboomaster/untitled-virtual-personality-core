@@ -57,18 +57,34 @@ class FileVectorDB:
             ]
             if existing_ids:
                 self.collection.delete(ids=existing_ids)
+                # Удаляем и старые части полного текста — иначе при более
+                # короткой новой версии хвост старой склеится в конец
+                self._delete_full_doc(user_id, filename)
                 logger.info(f"  [FileDB] Обновлён файл {filename} для {user_id}")
 
-        # Если достигли лимита — удаляем самый старый документ
-        if user_docs and len(user_docs["ids"]) >= self.max_docs:
-            oldest_id = user_docs["ids"][0]
-            oldest_meta = user_docs["metadatas"][0]
-            oldest_filename = oldest_meta.get("filename", "")
-            self.collection.delete(ids=[oldest_id])
-            
-            # Удаляем и полный текст
+        # Лимит считаем по ДОКУМЕНТАМ (уникальным filename), а не по чанкам.
+        # Самый старый документ — с наименьшим timestamp среди его чанков.
+        docs_by_name = {}
+        for meta in (user_docs.get("metadatas") or []):
+            if isinstance(meta, dict) and "filename" in meta:
+                fn = meta["filename"]
+                if fn == filename:
+                    continue  # старая версия этого файла уже удалена выше
+                ts = meta.get("timestamp", 0)
+                if fn not in docs_by_name or ts < docs_by_name[fn]:
+                    docs_by_name[fn] = ts
+
+        while len(docs_by_name) >= self.max_docs:
+            oldest_filename = min(docs_by_name, key=docs_by_name.get)
+            chunk_ids = [
+                eid for eid, meta in zip(user_docs["ids"], user_docs.get("metadatas", []))
+                if isinstance(meta, dict) and meta.get("filename") == oldest_filename
+            ]
+            if chunk_ids:
+                self.collection.delete(ids=chunk_ids)
             self._delete_full_doc(user_id, oldest_filename)
-            logger.info(f"  [FileDB] Удалён старый документ для {user_id}")
+            del docs_by_name[oldest_filename]
+            logger.info(f"  [FileDB] Удалён старый документ {oldest_filename} для {user_id}")
 
         # Сохраняем полный текст отдельно (по частям если длинный)
         doc_id = f"{user_id}_{filename}"

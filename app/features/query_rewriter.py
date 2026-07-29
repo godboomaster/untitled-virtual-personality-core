@@ -185,8 +185,9 @@ def _clean_response(response: str) -> str:
     text = text.strip('"').strip("'").strip("«").strip("»")
     # Убираем возможные префиксы типа "Ответ: ..."
     text = re.sub(r'^(ответ|запрос|answer|query)[:\s]+', '', text, flags=re.IGNORECASE)
-    # Убираем markdown
-    text = re.sub(r'\*\*?|\*\*\*|__|_', '', text)
+    # Убираем markdown (одиночные подчёркивания НЕ трогаем —
+    # они легитимны в именах файлов и идентификаторах)
+    text = re.sub(r'\*{1,3}|_{2,}', '', text)
     # Сжимаем пробелы
     text = re.sub(r'\s+', ' ', text).strip()
     return text

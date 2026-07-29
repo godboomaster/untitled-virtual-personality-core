@@ -9,7 +9,9 @@
 
 import json
 import logging
+import os
 import re
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -190,9 +192,16 @@ class ChatDossier:
         "none", "нет", "не знаю",
     )
 
+    # Совпадение по границе слова — иначе «нет» режет «интернет», «кабинет», «монета»
+    _JUNK_RE = re.compile(
+        r"(?<![а-яёa-z])(?:" + "|".join(re.escape(p) for p in JUNK_PATTERNS) + ")",
+        re.IGNORECASE,
+    )
+
     def __init__(self, context: str = "default"):
         self.context = context
         self._profiles: Dict[str, ChatProfile] = {}
+        self._lock = threading.RLock()  # analyze_chat идёт из рабочих потоков конкурентно
         self._file = Path(f"data/{context}/chat_dossier.json")
         self._file.parent.mkdir(parents=True, exist_ok=True)
         self._local_router = get_local_router()
@@ -205,71 +214,78 @@ class ChatDossier:
                 with open(self._file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 for chat_id, profile_data in data.items():
-                    # Десериализуем user_facts
-                    user_facts_raw = profile_data.pop("user_facts", {})
-                    user_facts = {}
-                    for uid, uf_data in user_facts_raw.items():
-                        user_facts[uid] = UserFacts(
-                            user_id=uf_data.get("user_id", uid),
-                            facts=uf_data.get("facts", []),
-                            last_updated=uf_data.get("last_updated", 0.0),
-                        )
+                    try:
+                        # Десериализуем user_facts
+                        user_facts_raw = profile_data.pop("user_facts", {})
+                        user_facts = {}
+                        for uid, uf_data in user_facts_raw.items():
+                            user_facts[uid] = UserFacts(
+                                user_id=uf_data.get("user_id", uid),
+                                facts=uf_data.get("facts", []),
+                                last_updated=uf_data.get("last_updated", 0.0),
+                            )
 
-                    # Десериализуем interests (новый формат dict или старый формат str)
-                    raw_interests = profile_data.pop("interests", [])
-                    interests = []
-                    for item in raw_interests:
-                        if isinstance(item, dict):
-                            interests.append(AttributedItem.from_dict(item))
-                        elif isinstance(item, str):
-                            interests.append(AttributedItem.from_legacy(item))
+                        # Десериализуем interests (новый формат dict или старый формат str)
+                        raw_interests = profile_data.pop("interests", [])
+                        interests = []
+                        for item in raw_interests:
+                            if isinstance(item, dict):
+                                interests.append(AttributedItem.from_dict(item))
+                            elif isinstance(item, str):
+                                interests.append(AttributedItem.from_legacy(item))
 
-                    # Десериализуем topics
-                    raw_topics = profile_data.pop("topics", [])
-                    topics = []
-                    for item in raw_topics:
-                        if isinstance(item, dict):
-                            topics.append(AttributedItem.from_dict(item))
-                        elif isinstance(item, str):
-                            topics.append(AttributedItem.from_legacy(item))
+                        # Десериализуем topics
+                        raw_topics = profile_data.pop("topics", [])
+                        topics = []
+                        for item in raw_topics:
+                            if isinstance(item, dict):
+                                topics.append(AttributedItem.from_dict(item))
+                            elif isinstance(item, str):
+                                topics.append(AttributedItem.from_legacy(item))
 
-                    profile = ChatProfile(**profile_data)
-                    profile.user_facts = user_facts
-                    profile.interests = interests
-                    profile.topics = topics
-                    self._profiles[chat_id] = profile
+                        profile = ChatProfile(**profile_data)
+                        profile.user_facts = user_facts
+                        profile.interests = interests
+                        profile.topics = topics
+                        self._profiles[chat_id] = profile
+                    except Exception as e:
+                        # Один битый профиль не должен обнулять досье всех чатов
+                        logger.warning(f"[Dossier] Пропущен битый профиль чата {chat_id}: {e}")
                 logger.info(f"[Dossier] Загружено {len(self._profiles)} профилей")
             except Exception as e:
                 logger.warning(f"[Dossier] Не удалось загрузить: {e}")
                 self._profiles = {}
 
     def _save(self):
-        """Сохраняет досье на диск."""
-        try:
-            data = {}
-            for chat_id, profile in self._profiles.items():
-                # Сериализуем user_facts
-                user_facts_data = {}
-                for uid, uf in profile.user_facts.items():
-                    user_facts_data[uid] = {
-                        "user_id": uf.user_id,
-                        "facts": uf.facts,
-                        "last_updated": uf.last_updated,
+        """Сохраняет досье на диск (атомарно, под блокировкой)."""
+        with self._lock:
+            try:
+                data = {}
+                for chat_id, profile in list(self._profiles.items()):
+                    # Сериализуем user_facts
+                    user_facts_data = {}
+                    for uid, uf in profile.user_facts.items():
+                        user_facts_data[uid] = {
+                            "user_id": uf.user_id,
+                            "facts": uf.facts,
+                            "last_updated": uf.last_updated,
+                        }
+                    data[chat_id] = {
+                        "chat_id": profile.chat_id,
+                        "interests": [i.to_dict() for i in profile.interests],
+                        "topics": [t.to_dict() for t in profile.topics],
+                        "facts_shared": profile.facts_shared,
+                        "personality_notes": profile.personality_notes,
+                        "user_facts": user_facts_data,
+                        "last_updated": profile.last_updated,
+                        "message_count": profile.message_count,
                     }
-                data[chat_id] = {
-                    "chat_id": profile.chat_id,
-                    "interests": [i.to_dict() for i in profile.interests],
-                    "topics": [t.to_dict() for t in profile.topics],
-                    "facts_shared": profile.facts_shared,
-                    "personality_notes": profile.personality_notes,
-                    "user_facts": user_facts_data,
-                    "last_updated": profile.last_updated,
-                    "message_count": profile.message_count,
-                }
-            with open(self._file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.warning(f"[Dossier] Не удалось сохранить: {e}")
+                tmp_file = self._file.with_suffix(".tmp")
+                with open(tmp_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_file, self._file)
+            except Exception as e:
+                logger.warning(f"[Dossier] Не удалось сохранить: {e}")
 
     def _extract_words(self, text: str) -> List[str]:
         """Извлекает значимые слова из текста."""
@@ -291,6 +307,11 @@ class ChatDossier:
     _ANALYZE_COOLDOWN = 300  # минимум 5 минут между анализами одного чата
 
     def analyze_chat(self, chat_id: str, messages: List[dict]):
+        """Потокобезопасная обёртка — вызывается из рабочих потоков конкурентно."""
+        with self._lock:
+            self._analyze_chat_impl(chat_id, messages)
+
+    def _analyze_chat_impl(self, chat_id: str, messages: List[dict]):
         """
         Анализирует сообщения чата через LLM и обновляет профиль.
         Вызывается периодически или при накоплении N сообщений.
@@ -383,7 +404,7 @@ class ChatDossier:
                         if not fact or len(fact) < 3 or len(fact) > 150:
                             continue
                         fact_lower = fact.lower()
-                        if any(j in fact_lower for j in self.JUNK_PATTERNS):
+                        if self._JUNK_RE.search(fact_lower):
                             continue
                         if not any(fact_lower == f.lower() for f in uf.facts):
                             uf.facts.append(fact)
@@ -585,7 +606,7 @@ class ChatDossier:
 
                 # Фильтруем мусор от LLM
                 val_lower = val.lower()
-                if any(j in val_lower for j in self.JUNK_PATTERNS):
+                if self._JUNK_RE.search(val_lower):
                     continue
 
                 # Проверяем дубликаты

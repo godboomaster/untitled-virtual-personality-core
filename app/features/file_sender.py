@@ -118,6 +118,16 @@ def _split_text(text: str, limit: int = TELEGRAM_LIMIT) -> List[str]:
         if len(para) > limit:
             lines = para.split('\n')
             for line in lines:
+                # Строка длиннее лимита (base64, длинная ссылка, CJK) — режем принудительно,
+                # иначе Telegram отклонит сообщение и оно молча потеряется
+                while len(line) > limit:
+                    if current.strip():
+                        parts.append(current.strip())
+                        current = ""
+                    parts.append(line[:limit])
+                    line = line[limit:]
+                if not line.strip():
+                    continue
                 if len(current) + len(line) + 2 > limit and current:
                     parts.append(current.strip())
                     current = line

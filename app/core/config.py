@@ -3,8 +3,10 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 _project_root = Path(__file__).parent.parent.parent
-load_dotenv(_project_root / ".env.config")
+# .env грузим первым: load_dotenv не перезаписывает уже заданные переменные,
+# поэтому пользовательские значения из .env имеют приоритет над дефолтами .env.config
 load_dotenv(_project_root / ".env")
+load_dotenv(_project_root / ".env.config")
 
 # ─── Провайдеры ──────────────────────────────────────────
 # Все используют OpenAI-совместимый API.
@@ -45,31 +47,37 @@ PROVIDER_CONFIGS = {
         "api_keys": _collect_api_keys("ZAI"),
         "base_url": os.getenv("ZAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"),
         "model": os.getenv("ZAI_MODEL", "glm-5-turbo"),
+        "vision": os.getenv("ZAI_VISION", "auto"),
     },
     "openai": {
         "api_keys": _collect_api_keys("OPENAI"),
         "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "vision": os.getenv("OPENAI_VISION", "auto"),
     },
     "anthropic": {
         "api_keys": _collect_api_keys("ANTHROPIC"),
         "base_url": os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/"),
         "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+        "vision": os.getenv("ANTHROPIC_VISION", "auto"),
     },
     "groq": {
         "api_keys": _collect_api_keys("GROQ"),
         "base_url": os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
         "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        "vision": os.getenv("GROQ_VISION", "auto"),
     },
     "deepseek": {
         "api_keys": _collect_api_keys("DEEPSEEK"),
         "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         "model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+        "vision": os.getenv("DEEPSEEK_VISION", "auto"),
     },
     "kimi": {
         "api_keys": _collect_api_keys("KIMI"),
         "base_url": os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1"),
         "model": os.getenv("KIMI_MODEL", "moonshot-v1-8k"),
+        "vision": os.getenv("KIMI_VISION", "auto"),
         # Модели Kimi (k3 и др.) принимают только temperature=1 и top_p=0.95 — иначе
         # API отвечает 400 «invalid temperature/top_p: only ... is allowed for this
         # model». Фиксируем на уровне провайдера, игнорируя значения вызывающего кода;
@@ -81,18 +89,25 @@ PROVIDER_CONFIGS = {
         "api_keys": _collect_api_keys("GOOGLE"),
         "base_url": os.getenv("GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
         "model": os.getenv("GOOGLE_MODEL", "gemini-2.0-flash"),
+        "vision": os.getenv("GOOGLE_VISION", "auto"),
     },
     "mimo": {
         "api_keys": _collect_api_keys("MIMO"),
         "base_url": os.getenv("MIMO_BASE_URL", "https://token-plan-sgp.xiaomimimo.com/v1"),
         "model": os.getenv("MIMO_MODEL", "mimo-v2.5-pro"),
+        "vision": os.getenv("MIMO_VISION", "auto"),
     },
     "hf": {
         "api_keys": _collect_api_keys("HF"),
         "base_url": os.getenv("HF_BASE_URL", "https://router.huggingface.co/v1"),
         "model": os.getenv("HF_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
+        "vision": os.getenv("HF_VISION", "auto"),
     },
 }
+
+# Режимы флага vision: "auto" (по умолчанию — роутер сам пробует модель крошечной
+# тестовой картинкой при первом изображении и кеширует вердикт), "true"/"false"
+# (явное ручное переопределение, проба не делается).
 
 
 def get_available_providers() -> dict:

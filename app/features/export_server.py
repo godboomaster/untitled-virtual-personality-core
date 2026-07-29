@@ -1,18 +1,23 @@
 """
 Lightweight HTTP server for exporting all ChromaDB memory data.
 Runs alongside the main app on a separate port.
+
+Доступ: если задан EXPORT_TOKEN — требуется ?token=... или заголовок
+"Authorization: Bearer ...". Биндинг: EXPORT_HOST (по умолчанию 127.0.0.1).
 """
 
 import json
+import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import chromadb
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from app.core.config import Config, get_db_paths
 import logging
 
 logger = logging.getLogger(__name__)
+
+EXPORT_TOKEN = os.getenv("EXPORT_TOKEN", "")
 
 
 def _build_db_sources() -> dict:
@@ -32,15 +37,12 @@ DB_SOURCES = _build_db_sources()
 
 def dump_collection(db_path: str, collection_name: str) -> dict:
     # Dump all data from a ChromaDB collection.
+    # Эмбеддер не нужен для чтения; несуществующие БД не создаём на диске.
+    if not os.path.exists(db_path):
+        return {"count": 0, "documents": []}
     try:
         client = chromadb.PersistentClient(path=db_path)
-        embedder = SentenceTransformerEmbeddingFunction(
-            model_name="paraphrase-multilingual-MiniLM-L12-v2"
-        )
-        collection = client.get_or_create_collection(
-            collection_name,
-            embedding_function=embedder
-        )
+        collection = client.get_collection(collection_name)
 
         if collection.count() == 0:
             return {"count": 0, "documents": []}
@@ -63,8 +65,23 @@ def dump_collection(db_path: str, collection_name: str) -> dict:
 
 
 class ExportHandler(BaseHTTPRequestHandler):
+    def _authorized(self, parsed) -> bool:
+        if not EXPORT_TOKEN:
+            return True
+        params = parse_qs(parsed.query)
+        if params.get("token", [None])[0] == EXPORT_TOKEN:
+            return True
+        return self.headers.get("Authorization", "") == f"Bearer {EXPORT_TOKEN}"
+
     def do_GET(self):
         parsed = urlparse(self.path)
+
+        if parsed.path in ("/api/export-memory", "/api/export-memory/list") and not self._authorized(parsed):
+            self.send_response(401)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("Unauthorized: задайте ?token= или Authorization: Bearer".encode("utf-8"))
+            return
 
         if parsed.path == "/api/export-memory":
             params = parse_qs(parsed.query)
@@ -90,12 +107,12 @@ class ExportHandler(BaseHTTPRequestHandler):
             # List available databases
             listing = {}
             for key, source in DB_SOURCES.items():
+                if not os.path.exists(source["path"]):
+                    listing[key] = {"label": source["label"], "count": 0}
+                    continue
                 try:
                     client = chromadb.PersistentClient(path=source["path"])
-                    embedder = SentenceTransformerEmbeddingFunction(
-                        model_name="paraphrase-multilingual-MiniLM-L12-v2"
-                    )
-                    col = client.get_or_create_collection(source["collection"], embedding_function=embedder)
+                    col = client.get_collection(source["collection"])
                     listing[key] = {"label": source["label"], "count": col.count()}
                 except Exception as e:
                     listing[key] = {"label": source["label"], "error": str(e)}
@@ -121,11 +138,14 @@ class ExportHandler(BaseHTTPRequestHandler):
         logger.info(f"[ExportServer] {format % args}")
 
 
-def start_export_server(port: int = 8080):
+def start_export_server(port: int = 8080, host: str = None):
     # Start the export server in a background thread.
+    # По умолчанию слушаем только localhost; EXPORT_HOST=0.0.0.0 открывает наружу.
+    bind_host = host or os.getenv("EXPORT_HOST", "127.0.0.1")
+
     def _run():
-        server = HTTPServer(("0.0.0.0", port), ExportHandler)
-        logger.info(f"[ExportServer] Started on port {port}")
+        server = HTTPServer((bind_host, port), ExportHandler)
+        logger.info(f"[ExportServer] Started on {bind_host}:{port} (token: {'on' if EXPORT_TOKEN else 'off'})")
         server.serve_forever()
 
     thread = threading.Thread(target=_run, daemon=True, name="export-server")

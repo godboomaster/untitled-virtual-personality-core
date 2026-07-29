@@ -342,8 +342,17 @@ class ProactiveMessaging:
         self._save_feedback()
 
     def record_user_response(self, chat_id: str):
-        """Вызывается когда пользователь ответил на инициативу."""
-        self._update_probability(chat_id, got_response=True)
+        """Вызывается при входящем сообщении пользователя.
+
+        Ответ засчитывается как успех инициативы только если инициатива была
+        недавно (30 мин, как таймаут multi-turn) — иначе обычные сообщения
+        раздувают successes и вероятность дрейфует к максимуму.
+        """
+        last_initiative = self._last_initiative_time.get(chat_id, 0)
+        if last_initiative and time.time() - last_initiative < 1800:
+            self._update_probability(chat_id, got_response=True)
+            # Снимаем метку: следующие обычные сообщения не засчитываются повторно
+            self._last_initiative_time[chat_id] = 0
         # Сбрасываем multi-turn состояние
         if chat_id in self._multi_turn_state:
             self._multi_turn_state[chat_id]["waiting"] = False
@@ -362,15 +371,13 @@ class ProactiveMessaging:
         """Анализирует сообщения чата и обновляет досье."""
         if not self.dossier:
             return
-        # Считаем сообщения с последнего анализа
-        counter = self._dossier_analysis_counter.get(chat_id, 0)
-        counter += 1
+        # Анализируем на 1-м, 6-м, 11-м... сообщении (раз в 5 сообщений).
+        # Счётчик не сбрасываем — со сбросом условие срабатывало на каждое сообщение.
+        counter = self._dossier_analysis_counter.get(chat_id, 0) + 1
         self._dossier_analysis_counter[chat_id] = counter
-        # Анализируем каждые 5 сообщений или при первом вызове
-        if counter >= 5 or counter == 1:
+        if counter % 5 == 1:
             messages = self.memory.stm.get_last(50, chat_id=chat_id)
             self.dossier.analyze_chat(chat_id, messages)
-            self._dossier_analysis_counter[chat_id] = 0
 
     def _generate_reflection_initiative(self, chat_id: str, initiative_type: InitiativeType) -> Optional[str]:
         """
@@ -1071,13 +1078,18 @@ class ProactiveMessaging:
                 except Exception:
                     pass
 
-                # Генерируем через внутренний монолог
-                message = self._generate_initiative(chat_id, chat_id, user_name, initiative_type)
+                # Генерируем через внутренний монолог (синхронные LLM-вызовы — в поток,
+                # иначе блокируем event loop бота на десятки секунд на каждый чат)
+                message = await asyncio.to_thread(
+                    self._generate_initiative, chat_id, chat_id, user_name, initiative_type
+                )
                 logger.info(f"[Proactive] Чат {chat_id}: сообщение сгенерировано={message is not None}")
 
                 # Если нет сообщения -- генерируем рефлексию на основе типа
                 if not message:
-                    reflection = self._generate_reflection_initiative(chat_id, initiative_type)
+                    reflection = await asyncio.to_thread(
+                        self._generate_reflection_initiative, chat_id, initiative_type
+                    )
                     if reflection:
                         message = reflection
                         logger.info(f"[Proactive] Чат {chat_id}: рефлексия по типу {initiative_type.value}")
@@ -1116,7 +1128,7 @@ class ProactiveMessaging:
                     # Сохраняем в self_memory
                     if self.self_memory:
                         stm_messages = self.memory.stm.get_last(10, chat_id=chat_id)
-                        self.self_memory.tick(stm_messages, chat_id, message)
+                        await asyncio.to_thread(self.self_memory.tick, stm_messages, chat_id, message)
 
                     # Multi-turn: ставим состояние ожидания
                     if self.config.multi_turn_enabled:

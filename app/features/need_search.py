@@ -113,7 +113,10 @@ def need_web_search(user_question: str, context_summary: str = "") -> bool:
             top_p=1.0
         )
         # Ищем SEARCH или SKIP в ответе (модель может добавить лишний текст)
-        raw = answer.strip().upper() if answer else ""
+        if not answer:
+            # Провайдеры недоступны — лучше лишний поиск, чем тишина
+            return True
+        raw = answer.strip().upper()
         if "SEARCH" in raw:
             first_word = "SEARCH"
         elif "SKIP" in raw:

@@ -30,7 +30,17 @@ class PersonaLayer:
             }
         
         with open(persona_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+            data = yaml.safe_load(f)
+
+        # Пустой файл → None, файл со списком верхнего уровня → list:
+        # оба случая ломали бы .get() ниже по коду
+        if not isinstance(data, dict):
+            print(f"Персона '{name}' пуста или имеет неверный формат ({persona_path}).")
+            return {
+                "system_prompt": "",
+                "settings": {}
+            }
+        return data
 
     def available_personas(self) -> List[str]:
         personas_dir = Path(__file__).parent.parent / "personas"

@@ -11,6 +11,7 @@ import gradio as gr
 import yaml
 import shutil
 import os
+import threading
 from pathlib import Path
 from typing import Optional, Tuple, List
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +30,7 @@ GRADIO_FILES_DIR = Path(__file__).parent / "gradio_output_files"
 GRADIO_FILES_DIR.mkdir(exist_ok=True)
 
 # User ID владельца для Gradio (всегда owner)
-GRADIO_USER_ID = os.getenv("OWNER_USER_ID", "gradio_owner")
+GRADIO_USER_ID = os.getenv("OWNER_USER_ID") or "gradio_owner"
 
 # Специальный ID для Арродес (если есть в env)
 ARRODES_SPECIAL_ID = os.getenv("ARRODES_SPECIAL_USER_ID", "")
@@ -42,12 +43,18 @@ class GradioBot:
     def __init__(self):
         self.persona_name = "connor"
         self.context = "gradio"
+        # Сериализует chat/change_persona — Gradio исполняет события конкурентно
+        self._state_lock = threading.RLock()
         self.persona = PersonaLayer(persona_name=self.persona_name)
         self._init_from_yaml()
 
     def _init_from_yaml(self):
         """Инициализация компонентов на основе features из YAML персоны.
         Контекст = gradio_{persona_name} — отдельная база для каждой персоны."""
+        # Закрываем пул прошлой персоны — иначе каждое переключение теряет поток
+        old_pool = getattr(self, "_web_pool", None)
+        if old_pool is not None:
+            old_pool.shutdown(wait=False)
         persona_data = self.persona.persona_data
         self.features: dict = persona_data.get("features", {})
 
@@ -115,13 +122,14 @@ class GradioBot:
         if not message or not message.strip():
             return history, "", None
 
-        user_id = self._get_user_id()
+        with self._state_lock:
+            user_id = self._get_user_id()
 
-        # Добавляем сообщение пользователя
-        history = history + [{"role": "user", "content": message}]
+            # Добавляем сообщение пользователя
+            history = history + [{"role": "user", "content": message}]
 
-        # Генерируем ответ
-        answer = self.process_message(message, user_id=user_id)
+            # Генерируем ответ
+            answer = self.process_message(message, user_id=user_id)
 
         # Анализируем ответ — нужны ли файлы (как в Telegram)
         try:
@@ -182,7 +190,8 @@ class GradioBot:
         web_context = None
         if web_future is not None:
             try:
-                results = web_future.result(timeout=10)
+                # search_web регулярно занимает больше 10с (LLM-enhance + загрузка страниц)
+                results = web_future.result(timeout=25)
                 if results:
                     web_context = self._format_web_results(results)
             except Exception:
@@ -212,13 +221,20 @@ class GradioBot:
         settings = self.persona.get_settings()
         print(f"[Gradio] [Response] -> {self.router.get_provider_model_info()}")
         answer = self.router.get_response(messages, **settings)
+        if not answer:
+            return "Сейчас все LLM-провайдеры недоступны. Попробуйте позже."
 
         # 9. Сохраняем ответ
         self.memory.add_message("assistant", answer, user_id)
 
-        # 10. Self-memory tick (фоновая обработка)
+        # 10. Self-memory tick (фоновая обработка — LLM-вызовы внутри,
+        # не задерживаем ими ответ пользователю)
         if self.self_memory:
-            self.self_memory.tick(stm_messages, user_id, user_input)
+            threading.Thread(
+                target=self.self_memory.tick,
+                args=(stm_messages, user_id, user_input),
+                daemon=True,
+            ).start()
 
         return answer
 
@@ -235,13 +251,14 @@ class GradioBot:
         return "Память очищена", self.get_memory_stats()
 
     def change_persona(self, persona_name: str) -> str:
-        success = self.persona.change_persona(persona_name)
-        if success:
-            self.persona_name = persona_name
-            # Пересоздаем компоненты с новыми features
-            self._init_from_yaml()
-            return f"Персона изменена на: {persona_name}"
-        return f"Ошибка: персона '{persona_name}' не найдена"
+        with self._state_lock:
+            success = self.persona.change_persona(persona_name)
+            if success:
+                self.persona_name = persona_name
+                # Пересоздаем компоненты с новыми features
+                self._init_from_yaml()
+                return f"Персона изменена на: {persona_name}"
+            return f"Ошибка: персона '{persona_name}' не найдена"
 
     def get_persona_info(self, persona_name: str) -> str:
         persona_path = Path(__file__).parent / "personas" / f"{persona_name}.yaml"
@@ -464,7 +481,14 @@ with gr.Blocks(title="Виртуальная Личность") as demo:
 
 
 def main():
-    demo.launch(server_name="0.0.0.0")
+    # По умолчанию слушаем только localhost (интерфейс работает с правами владельца).
+    # Для Docker/внешнего доступа: GRADIO_HOST=0.0.0.0 (+ желательно GRADIO_AUTH=user:pass).
+    server_name = os.getenv("GRADIO_HOST", "127.0.0.1")
+    auth = None
+    auth_env = os.getenv("GRADIO_AUTH", "")
+    if auth_env and ":" in auth_env:
+        auth = tuple(auth_env.split(":", 1))
+    demo.launch(server_name=server_name, auth=auth)
 
 
 if __name__ == "__main__":

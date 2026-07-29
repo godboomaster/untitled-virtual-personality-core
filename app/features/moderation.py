@@ -43,7 +43,7 @@ def moderate_message(text: str) -> bool:
     ]
     try:
         hf = PROVIDER_CONFIGS["hf"]
-        client = OpenAI(api_key=hf["api_keys"][0], base_url=hf["base_url"])
+        client = OpenAI(api_key=hf["api_keys"][0], base_url=hf["base_url"], timeout=30.0)
         response = client.chat.completions.create(
             model=hf["model"],
             messages=messages,

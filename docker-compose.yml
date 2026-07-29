@@ -8,6 +8,7 @@ services:
     env_file: .env
     environment:
       - BOT_TARGET=gradio
+      - GRADIO_HOST=0.0.0.0
     volumes:
       - persona_data:/app/data
     ports:
@@ -20,6 +21,7 @@ services:
       start_period: 60s
 
   # Telegram-бот Коннор (опционально, раскомментируй для запуска)
+  # Для локальной модели (Ollama на хосте): OLLAMA_URL=host.docker.internal + extra_hosts
   # connor:
   #   build: .
   #   container_name: virtual-persona-connor
@@ -28,6 +30,9 @@ services:
   #   env_file: .env
   #   environment:
   #     - BOT_TARGET=connor
+  #     - OLLAMA_URL=http://host.docker.internal:11434
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
   #   volumes:
   #     - persona_data:/app/data
 
@@ -40,6 +45,9 @@ services:
   #   env_file: .env
   #   environment:
   #     - BOT_TARGET=arrodes
+  #     - OLLAMA_URL=http://host.docker.internal:11434
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
   #   volumes:
   #     - persona_data:/app/data
 

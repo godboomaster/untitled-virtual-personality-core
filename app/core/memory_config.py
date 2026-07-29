@@ -49,6 +49,8 @@ FACT_CATEGORIES = {
     # Отношения
     "Family": ["семья", "family", "wife", "husband", "children", "жена", "муж", "дети", "есть сын", "есть дочь"],
     "Pets": ["питомец", "pet", "cat", "dog", "кот", "собака", "есть кот", "есть собака"],
+    "Relation": ["мой брат", "моя сестра", "brother", "sister", "friend", "друг", "подруга",
+                 "коллега", "colleague", "знакомый", "мой парень", "моя девушка", "boyfriend", "girlfriend"],
     
     # Планы и цели
     "Goals": ["хочу", "want to", "planning to", "планирую", "цель", "goal", "мечтаю"],
@@ -76,6 +78,8 @@ POSITIVE_EXAMPLES = {
     "Обожаю играть на гитаре": "Hobby_music: guitar",
     "У меня есть кот и собака": "Pets: cat, dog",
     "Женат, двое детей": "Family: married, 2 children",
+    "Мой брат Илья тоже сидит в этом чате": "Relation: брат Илья",
+    "Познакомься, это моя подруга Оля": "Relation: подруга Оля",
     "Хочу выучить Python": "Goals: learn Python",
     "Занимаюсь бегом по утрам": "Sports: running",
 
@@ -248,6 +252,10 @@ Answer:"""
 # ФУНКЦИЯ ПАРСИНГА И ФИЛЬТРАЦИИ ФАКТОВ
 # =============================================================================
 
+# Начало новой категории: после старта строки или запятой — "Name: ", "Hobby_music: "
+_CATEGORY_START_RE = re.compile(r'(?:^|,)\s*([A-Za-z][A-Za-z0-9_]*)\s*:\s*')
+
+
 def parse_and_filter_facts(raw: str) -> dict:
     """
     Парсит строку фактов от LLM, выбрасывает пустышки, мусор, дубли и паттерны No_*.
@@ -260,18 +268,17 @@ def parse_and_filter_facts(raw: str) -> dict:
         return {}
     
     facts = {}
-    for part in stripped.split(","):
-        part = part.strip().rstrip(",")
-        if ":" not in part:
-            continue
-        
-        key, _, value = part.partition(":")
-        key = key.strip()
-        value = value.strip()
-        
+    # Категория начинается после начала строки или запятой: "Name: Ivan, Food: pizza, pasta"
+    # Значение может содержать запятые — режем только перед следующей "Категорией:".
+    matches = list(_CATEGORY_START_RE.finditer(stripped))
+    for i, m in enumerate(matches):
+        key = m.group(1).strip()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(stripped)
+        value = stripped[m.end():end].strip().rstrip(",").strip()
+
         if not key or not value:
             continue
-            
+
         # 1. Точные совпадения с маркерами пустоты
         if value.lower() in EMPTY_VALUES:
             continue
@@ -279,23 +286,23 @@ def parse_and_filter_facts(raw: str) -> dict:
         # 2. Безопасная проверка на префиксы отсутствия факта
         # Ловит: "No_pets", "not mentioned", "unknown", "n/a", "нет", "не указано"
         # НЕ ловит: "North", "Noah", "Norway" (нет пробела/подчёркивания после "no")
-        neg_prefixes = ("no ", "no_", "not ", "not_", "unknown", "n/a", "none", 
+        neg_prefixes = ("no ", "no_", "not ", "not_", "unknown", "n/a", "none",
                         "нет", "не ", "неизвестно", "не указано", "null")
         if value.lower().startswith(neg_prefixes):
             continue
-            
+
         # 3. Если маркер отсутствия встречается внутри значения (на всякий случай)
         if re.search(r'\bno_\w+', value, re.IGNORECASE) or re.search(r'\bnot_\w+', value, re.IGNORECASE):
             continue
-            
+
         # 4. Старые проверки для совместимости
         if any(marker in value.lower() for marker in ["no_facts", "not mentioned", "not known"]):
             continue
-            
+
         # Дедупликация: первое вхождение побеждает
         if key not in facts:
             facts[key] = value
-            
+
     return facts
 
 # =============================================================================
@@ -317,8 +324,32 @@ APPEND_CATEGORIES = {
     "Skills_tech", "Skills_languages", "Skills_creative",
     # Остальные
     "Pets", "Food", "Music", "Movies", "Books", "Games", "Sports",
-    "Family", "Goals", "Dreams", "Health",
+    "Family", "Goals", "Dreams", "Health", "Relation",
 }
+
+# =============================================================================
+# ПРИВАТНОСТЬ LTM: «публичный профиль»
+# =============================================================================
+# Эти категории — светские факты, которые бот может использовать в ЛЮБОМ чате.
+# Всё остальное по умолчанию приватно: факт виден только в чате, где он был
+# рассказан (и в личке). Правило fail-safe: неизвестная категория = приватная.
+PUBLIC_CATEGORIES = {
+    "Name", "Age", "Gender", "City", "Country",
+    "Profession", "Company", "Workplace",
+    "Food", "Pets", "Music", "Movies", "Books", "Games", "Sports",
+}
+
+# Префиксы публичных категорий (все хобби и навыки — светские темы)
+PUBLIC_CATEGORY_PREFIXES = ("Hobby_", "Skills_")
+
+
+def is_public_category(category: str) -> bool:
+    """Относится ли категория факта к публичному профилю."""
+    if not category:
+        return False
+    if category in PUBLIC_CATEGORIES:
+        return True
+    return any(category.startswith(p) for p in PUBLIC_CATEGORY_PREFIXES)
 
 MERGE_SETTINGS = {
     "temperature": 0.1,

@@ -414,10 +414,15 @@ class ReminderManager:
                 text = f"{user_name}, время пришло! Ты просил напомнить."
 
         try:
-            await self._sender.send_message(chat_id, text, topic_id=topic_id)
-            logger.info(f"[Reminder] Отправлено в чат {chat_id}: {text[:60]}")
+            ok = await self._sender.send_message(chat_id, text, topic_id=topic_id)
+            if ok:
+                logger.info(f"[Reminder] Отправлено в чат {chat_id}: {text[:60]}")
+            else:
+                logger.error(f"[Reminder] Отправка в {chat_id} вернула False")
+            return bool(ok)
         except Exception as e:
             logger.error(f"[Reminder] Ошибка отправки в {chat_id}: {e}")
+            return False
 
     def _generate_reminder_text(self, user_name: str, task: Optional[str]) -> Optional[str]:
         """Генерирует текст напоминания через LLM в характере персоны. Синхронный вызов."""
@@ -453,17 +458,27 @@ class ReminderManager:
         while self._running:
             try:
                 now = time.time()
-                due = []
                 with self._lock:
-                    for r in self._reminders:
-                        if not r.get("fired") and r["trigger_at"] <= now:
-                            r["fired"] = True
-                            due.append(r)
-                    if due:
-                        self._save()
+                    due = [r for r in self._reminders
+                           if not r.get("fired") and r["trigger_at"] <= now]
 
+                # fired ставим только ПОСЛЕ успешной отправки — иначе при сбое
+                # (падение процесса, ошибка сети) напоминание терялось без retry
+                changed = False
                 for r in due:
-                    await self._fire(r)
+                    success = await self._fire(r)
+                    with self._lock:
+                        if success:
+                            r["fired"] = True
+                        else:
+                            r["attempts"] = r.get("attempts", 0) + 1
+                            if r["attempts"] >= 3:
+                                r["fired"] = True  # сдаёмся после 3 попыток
+                                logger.error(f"[Reminder] Не доставлено после 3 попыток: {r.get('task')}")
+                        changed = True
+                if changed:
+                    with self._lock:
+                        self._save()
 
                 # Периодически чистим старые
                 cleanup_counter += 1

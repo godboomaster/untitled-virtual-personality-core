@@ -5,6 +5,7 @@ BotInstance — один бот с конкретной персоной и на
 
 import re
 import os
+import json
 import yaml
 import logging
 from pathlib import Path
@@ -58,10 +59,24 @@ def _looks_truncated(text: str) -> bool:
 # активировался на «раз в день»/«каждые 2 часа», но НЕ на длинное сообщение или посторонний
 # текст. Короткое (до ~12 слов) И содержит временнУю лексику — типичный ответ о периодичности.
 _FREQUENCY_WORDS_RE = re.compile(
-    r"\b(?:раз\s+в|кажды[ей]|каждую|через|полчаса|ежечасн|ежедневн|еженедельн|интервал|"
-    r"час|минут|день|дн[яей]|недел[ьюя]|месяц|секунд)\b",
+    r"\b(?:раз\s+в|кажды[ей]|каждую|через|полчаса|ежечасн\w*|ежедневн\w*|еженедельн\w*|интервал\w*|"
+    r"час(?:а|ов|у|е|ом|ы|ами|ах)?\b|минут(?:а|ы|у|е|ой|ам|ами|ах)?\b|"
+    r"день\b|дн[юяей]\w*|недел[ьюя]\w*|месяц\w*|секунд\w*)",
     re.IGNORECASE,
 )
+
+
+# Эвристика: похоже ли сообщение на исправление/поправку бота или просьбу запомнить.
+# Срабатывание лишь запускает локальную LLM-формулировку правила (см. ниже) — дёшево.
+_CORRECTION_HINT_RE = re.compile(
+    r"\b(?:не\s+так|неправильно|неверно|я\s+име[лл]\s+в\s+виду|запомни|не\s+называй|"
+    r"не\s+надо\s+так|не\s+говори\s+так|поправ\w*|исправь|ты\s+опять|ты\s+снова)\b",
+    re.IGNORECASE,
+)
+
+
+# «Зови меня X» — предпочитаемое имя пользователя
+_ALIAS_RE = re.compile(r"(?:зови|называй)\s+меня\s+([А-Яа-яЁёA-Za-z\-]{2,30})", re.IGNORECASE)
 
 
 def _looks_like_frequency_answer(text: str) -> bool:
@@ -176,8 +191,8 @@ class BotInstance:
             from app.features.web_search import search_web, format_web_results
             self._search_web = search_web
             self._format_web_results = format_web_results
-            self._web_pool = ThreadPoolExecutor(max_workers=1)
-            logger.info(f"  [{persona_name}] Web search включён (pool: 1 worker)")
+            self._web_pool = ThreadPoolExecutor(max_workers=2)
+            logger.info(f"  [{persona_name}] Web search включён (pool: 2 workers)")
 
         # Local router (для query rewriting)
         self._local_router = None
@@ -187,16 +202,20 @@ class BotInstance:
         except Exception:
             pass
 
+        # Punish block (нужен до rate limiter: использует block_user/is_blocked)
+        self._punish_enabled = self.features.get("punish_block", False)
+
         # Rate limiter
         self._rate_limit_enabled = self.features.get("rate_limit", False)
         self._rate_limit_individual: dict = {}
-        if self._rate_limit_enabled:
+        if self._rate_limit_enabled or self._punish_enabled:
             from app.features.rate_limiter import check_rate_limit, block_user, is_blocked, get_status_text
             self._check_rate_limit = check_rate_limit
             self._block_user = block_user
             self._is_blocked = is_blocked
             self._rate_limit_status = get_status_text
 
+        if self._rate_limit_enabled:
             # Парсим individual limits из env (RATE_LIMIT_USER_<ID>=<seconds>)
             self._rate_limit_individual = {}
             for key, value in os.environ.items():
@@ -215,15 +234,17 @@ class BotInstance:
             self._moderate_message = moderate_message
             logger.info(f"  [{persona_name}] Модерация включена")
 
-        # Punish block
-        self._punish_enabled = self.features.get("punish_block", False)
-
         # Владелец — полная защита от всех блокировок
         self.owner: str = str(self.features.get("owner", ""))
 
         # Allowed DM users — могут писать в личку, но подлежат наказаниям
-        self.allowed_dm_users: set = set(self.features.get("allowed_dm_users", []))
-        self.blocked_users: set = set(self.features.get("blocked_users", []))
+        # Пустые записи ("") отбрасываем, id приводим к str; пустой список = ЛС открыты всем
+        self.allowed_dm_users: set = {
+            str(u).strip() for u in self.features.get("allowed_dm_users", []) if str(u).strip()
+        }
+        self.blocked_users: set = {
+            str(u).strip() for u in self.features.get("blocked_users", []) if str(u).strip()
+        }
 
         # Self memory (эпизодическая память бота)
         self.self_memory = None
@@ -279,8 +300,8 @@ class BotInstance:
         if user_id in self.blocked_users:
             return "BLOCKED"
 
-        # 2. DM только для разрешённых
-        if is_private and user_id not in self.allowed_dm_users:
+        # 2. DM только для разрешённых (пустой список = ЛС открыты всем)
+        if is_private and self.allowed_dm_users and user_id not in self.allowed_dm_users:
             return "BLOCKED"
 
         # 3. Punish block
@@ -381,11 +402,14 @@ class BotInstance:
             web_context = None
             if web_future is not None:
                 try:
-                    results = web_future.result(timeout=10)
+                    # search_web (LLM-enhance + DDG + загрузка страниц) регулярно
+                    # занимает больше 10с — при меньшем таймауте результат терялся
+                    results = web_future.result(timeout=25)
                     if results:
                         web_context = self._format_web_results(results)
                 except FuturesTimeoutError:
-                    pass
+                    web_future.cancel()
+                    logger.info("  [WebSearch] Таймаут ожидания результатов, ищем без веба")
                 except Exception:
                     pass
             context_parts_out = []
@@ -393,6 +417,39 @@ class BotInstance:
                 context_parts_out.append("\n".join(ltm_facts))
             if file_context:
                 context_parts_out.append(file_context)
+            # В группе добавляем факты других участников, сказанные публично в этом чате
+            if chat_id and str(chat_id) != str(user_id):
+                chat_facts_block = self.memory.get_chat_facts_block(chat_id, exclude_user_id=user_id)
+                if chat_facts_block:
+                    context_parts_out.append(chat_facts_block)
+
+            # Исправления → правила: пользователь поправляет бота — формулируем
+            # правило локальной LLM и сохраняем; оно запинится в промпт ниже
+            if _CORRECTION_HINT_RE.search(user_input):
+                rule = self._extract_rule_from_correction(user_input)
+                if rule:
+                    self.memory.ltm.save_facts(
+                        f"Rule: {rule}", user_id, origin_chat=chat_id, user_name=user_name
+                    )
+                    logger.info(f"[Rules] Новое правило для {user_id}: {rule}")
+
+            # «Зови меня X» — сохраняем как факт Name (UPDATE-категория заменяет старый)
+            alias_match = _ALIAS_RE.search(user_input)
+            if alias_match:
+                alias = alias_match.group(1).strip()
+                self.memory.ltm.save_facts(
+                    f"Name: {alias}", user_id, origin_chat=chat_id, user_name=user_name
+                )
+                logger.info(f"[Alias] {user_id} попросил называть его «{alias}»")
+
+            # Правила от пользователя пиним ВСЕГДА, не полагаясь на семантический
+            # поиск — иначе бот повторит ту же ошибку в другом контексте
+            user_rules = self.memory.ltm.get_facts_by_category(user_id, "Rule", chat_id=chat_id)
+            if user_rules:
+                context_parts_out.append(
+                    "Правила от пользователя (соблюдай всегда, они важнее привычек):\n"
+                    + "\n".join(f"  - {r}" for r in user_rules[-10:])
+                )
             memory_text = "\n\n".join(context_parts_out) if context_parts_out else None
             has_files = file_context is not None
 
@@ -691,13 +748,40 @@ class BotInstance:
             todo_context = None
             extracted_task = None
             extracted_done_index = None
+
+            # Какие эвристики фич сработали на этом сообщении
+            _fired_intents = set()
             if self.todo_manager and chat_id:
                 if is_todo_done_request(user_input):
+                    _fired_intents.add("todo_remove")
+                elif is_todo_request(user_input):
+                    _fired_intents.add("todo_add")
+            if self.inventory_manager and not is_reminder_request:
+                if is_inventory_add_request(user_input):
+                    _fired_intents.add("inventory_add")
+                elif is_inventory_remove_request(user_input):
+                    _fired_intents.add("inventory_remove")
+
+            # Арбитр намерений: при конфликте триггеров («убери из списка дел задачу» —
+            # todo_remove И inventory_remove одновременно) локальная LLM выбирает
+            # одно намерение. Без конфликта классификатор не вызывается — бесплатно.
+            if len(_fired_intents) > 1:
+                winner = self._classify_intent(user_input, sorted(_fired_intents))
+                if winner == "CHAT":
+                    logger.info(f"[Intent] Конфликт {_fired_intents} → CHAT (локальная LLM)")
+                    _fired_intents = set()
+                elif winner:
+                    logger.info(f"[Intent] Конфликт {_fired_intents} → {winner} (локальная LLM)")
+                    _fired_intents = {winner}
+                # локальная недоступна — оставляем прежнее поведение
+
+            if self.todo_manager and chat_id:
+                if "todo_remove" in _fired_intents:
                     # Запрос на удаление/завершение дела
                     extracted_done_index = extract_todo_done_index(user_input)
                     current_todo = self.todo_manager.get_list(chat_id)
                     todo_context = current_todo or "Список дел пуст."
-                elif is_todo_request(user_input):
+                elif "todo_add" in _fired_intents:
                     extracted_task = extract_task(user_input)
                     if extracted_task:
                         extracted_task = self._reformulate_task(extracted_task)
@@ -715,9 +799,9 @@ class BotInstance:
                 if inv_block:
                     inventory_context = inv_block
                 # Проверяем запрос на добавление/удаление
-                if is_inventory_add_request(user_input):
+                if "inventory_add" in _fired_intents:
                     extracted_inventory_item = extract_inventory_item(user_input)
-                elif is_inventory_remove_request(user_input):
+                elif "inventory_remove" in _fired_intents:
                     extracted_inventory_remove = extract_inventory_remove(user_input)
 
                 # Проверяем, не сказал ли пользователь что бот использовал предмет
@@ -755,6 +839,14 @@ class BotInstance:
                     self.proactive.record_user_response(chat_id)
                 return answer
 
+            # Предпочитаемое имя: последний факт категории Name заменяет
+            # telegram-имя в форматировании — так работает «зови меня X»
+            name_facts = self.memory.ltm.get_facts_by_category(user_id, "Name", chat_id=chat_id)
+            if name_facts:
+                preferred = name_facts[-1].partition(":")[2].strip()
+                if preferred and len(preferred) <= 40:
+                    user_name = preferred
+
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
                 user_id=user_id, user_name=user_name, web_context=web_context,
@@ -774,6 +866,9 @@ class BotInstance:
                 settings = dict(settings)
                 settings["max_tokens"] = max(int(settings.get("max_tokens", 2000)), 3000)
             answer = self.router.get_response(messages, **settings)
+            if not answer:
+                logger.error("Все LLM-провайдеры недоступны, ответ не сгенерирован")
+                return "Сейчас все LLM-провайдеры недоступны. Попробуй позже."
 
             # Защита от обрыва по max_tokens (persona.get_settings() рассчитан на обычную
             # реплику; когда learning_context просит анонсировать/пересказать урок, ответ
@@ -811,7 +906,7 @@ class BotInstance:
             # курсе сюда проходит — инвентарь во время курса работает как обычно)
             if not is_reminder_request and not is_learning_request and self.inventory_manager:
                 answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove, user_name or "пользователь", user_text=user_input, chat_id=chat_id)
-            if self.inventory_manager:
+            if self._punish_enabled:
                 answer = self._parse_punishment(answer, user_id)
 
             # 10. Сохраняем ответ
@@ -898,6 +993,74 @@ class BotInstance:
 
         return raw_task.strip()
 
+    def _extract_rule_from_correction(self, user_text: str) -> Optional[str]:
+        """
+        Если реплика — исправление бота или просьба запомнить правило/предпочтение,
+        формулирует короткое правило через ЛОКАЛЬНУЮ LLM. Иначе возвращает None.
+        """
+        if not self._local_router or not self._local_router.is_available():
+            return None
+        try:
+            resp = self._local_router.get_response(
+                messages=[
+                    {"role": "system", "content": (
+                        "Определи, является ли реплика исправлением бота или просьбой запомнить "
+                        "правило/предпочтение (как обращаться, что делать или не делать). "
+                        "Если да — сформулируй правило ОДНИМ коротким предложением (до 12 слов), "
+                        "без пояснений и кавычек. Если это обычный разговор или вопрос — ответь ровно NO."
+                    )},
+                    {"role": "user", "content": user_text[:400]},
+                ],
+                temperature=0.0, max_tokens=60,
+            )
+            if not resp:
+                return None
+            rule = resp.strip().strip('"\'""«»').strip()
+            if not rule or rule.upper().startswith("NO") or not (5 <= len(rule) <= 150):
+                return None
+            return rule
+        except Exception as e:
+            logger.debug(f"[Rules] Извлечение правила не удалось: {e}")
+            return None
+
+    def _classify_intent(self, user_text: str, candidates: list) -> Optional[str]:
+        """
+        Арбитр намерений при конфликте эвристик: локальная LLM выбирает ОДНО
+        намерение из candidates (snake_case: todo_add, inventory_remove...).
+        Возвращает winner (snake_case), "CHAT" (ничего не подходит) или None
+        (локальная модель недоступна — оставляем прежнее поведение).
+        """
+        if not self._local_router or not self._local_router.is_available():
+            return None
+
+        intent_desc = {
+            "todo_add": "TODO_ADD — записать новую задачу в список дел",
+            "todo_remove": "TODO_REMOVE — убрать/вычеркнуть задачу из списка дел",
+            "inventory_add": "INVENTORY_ADD — дать/передать предмет боту в его инвентарь",
+            "inventory_remove": "INVENTORY_REMOVE — забрать/выбросить предмет из инвентаря бота",
+        }
+        valid_outputs = [c.upper() for c in candidates]
+        options_text = "\n".join(f"- {intent_desc[c]}" for c in candidates)
+
+        verdict = self._local_router.classify(
+            system_prompt=(
+                "Ты — классификатор намерений. Определи, что пользователь просит сделать.\n"
+                f"Варианты:\n{options_text}\n"
+                "- CHAT — обычный разговор, ничего из перечисленного.\n"
+                "Внимание на объект действия: «список дел» — это TODO, «инвентарь/у тебя/тебе» — INVENTORY. "
+                "Ответь одним словом."
+            ),
+            user_prompt=f"Реплика пользователя: «{user_text}»",
+            valid_outputs=valid_outputs + ["CHAT"],
+            temperature=0.0,
+            max_tokens=10,
+        )
+        if not verdict:
+            return None
+        if verdict == "CHAT":
+            return "CHAT"
+        return verdict.lower()
+
     def _confirm_intent(
         self, user_text: str, candidate: str, intent: str
     ) -> str:
@@ -919,6 +1082,7 @@ class BotInstance:
             "inventory_add": "добавить предмет в инвентарь персонажа",
             "inventory_remove": "выбросить/убрать предмет из инвентаря",
             "todo_add": "записать задачу в список дел",
+            "todo_remove": "отметить задачу выполненной и убрать из списка дел",
         }.get(intent, "выполнить действие")
 
         system_prompt = (
@@ -1080,11 +1244,16 @@ class BotInstance:
                 self._pending_lists(chat_id).append(result)
             return response.strip()
 
-        # Fallback удаление через эвристику
+        # Fallback удаление через эвристику — подтверждаем через LLM, иначе
+        # «готово, прочитал 3 главы» молча удаляло пункт №3
         if fallback_done_index is not None:
-            result = self.todo_manager.remove_item(chat_id, fallback_done_index)
-            if result:
-                self._pending_lists(chat_id).append(result)
+            verdict = self._confirm_intent(user_text, f"пункт №{fallback_done_index}", "todo_remove")
+            if verdict == "ADD":
+                result = self.todo_manager.remove_item(chat_id, fallback_done_index)
+                if result:
+                    self._pending_lists(chat_id).append(result)
+            elif verdict == "ASK":
+                self._pending_lists(chat_id).append(f"Отметить пункт №{fallback_done_index} как выполненный?")
             return response.strip()
 
         # Добавление: [TODO_ADD:...]
@@ -1128,18 +1297,23 @@ class BotInstance:
             inventory_changed = True
 
         # INVENTORY_ADD — приоритет: маркер от LLM
-        add_match = re.search(r'\[INVENTORY_ADD:([^:\]]+)(?::([^\]]+))?\]', response)
+        # Формат из промпта: [INVENTORY_ADD:Название:описание:YYYY-MM-DD] (дата опциональна)
+        add_match = re.search(r'\[INVENTORY_ADD:([^:\]]+?)(?::([^:\]]*))?(?::(\d{4}-\d{2}-\d{2}))?\]', response)
         if add_match:
             name = add_match.group(1).strip()
             desc = (add_match.group(2) or "").strip()
+            expires = add_match.group(3)
             response = response[:add_match.start()] + response[add_match.end():]
-            self.inventory_manager.add_item(name, desc, source=giver_name)
+            # Дополняем описание/срок через локальную модель, если LLM их не указала
+            desc, expires = self._enrich_inventory_item(name, desc, expires)
+            self.inventory_manager.add_item(name, desc, source=giver_name, expires=expires)
             inventory_changed = True
         # Fallback: эвристика нашла предмет, но маркера нет — подтверждаем через LLM
         elif fallback_add:
             verdict = self._confirm_intent(user_text, fallback_add, "inventory_add")
             if verdict == "ADD":
-                self.inventory_manager.add_item(fallback_add, source=giver_name)
+                f_desc, f_expires = self._enrich_inventory_item(fallback_add)
+                self.inventory_manager.add_item(fallback_add, f_desc, source=giver_name, expires=f_expires)
                 inventory_changed = True
             elif verdict == "ASK":
                 # Локальная LLM недоступна — переспрашиваем вместо слепого добавления
@@ -1298,6 +1472,83 @@ class BotInstance:
     def inject_fact(self, fact_text: str, user_id: str = "default"):
         self.memory.ltm.save_facts(fact_text, user_id)
 
+    def get_ltm_privacy(self, user_id: str) -> str:
+        """Режим приватности LTM пользователя: 'smart' (по умолчанию) | 'strict'."""
+        return self.memory.ltm.get_privacy_mode(user_id)
+
+    def set_ltm_privacy(self, user_id: str, mode: str) -> str:
+        """Устанавливает режим приватности LTM. Возвращает установленный режим."""
+        return self.memory.ltm.set_privacy_mode(user_id, mode)
+
+    def forget_fact(self, query: str, user_id: str) -> Optional[str]:
+        """Точечное забывание факта из LTM. Возвращает текст удалённого или None."""
+        return self.memory.ltm.forget(query, user_id)
+
+    def get_relations_text(self, user_id: str, chat_id: str = None) -> str:
+        """Социальный граф: связи пользователя и (в группе) других участников."""
+        from app.core.users import get_user_tag
+        lines = []
+        own = self.memory.ltm.get_facts_by_category(user_id, "Relation", chat_id=chat_id)
+        if own:
+            lines.append("Твои связи:")
+            lines += [f"  - {r.partition(':')[2].strip()}" for r in own]
+
+        if chat_id and str(chat_id) != str(user_id):
+            facts = self.memory.ltm.get_chat_facts(chat_id, exclude_user_id=user_id)
+            rel = [f for f in facts if f["category"] == "Relation"]
+            if rel:
+                if lines:
+                    lines.append("")
+                lines.append("Связи участников этого чата:")
+                for f in rel:
+                    name = f["user_name"] or get_user_tag(f["user_id"]) or "Участник"
+                    lines.append(f"  - {name}: {f['fact'].partition(':')[2].strip()}")
+
+        return "\n".join(lines) if lines else "Пока ничего не знаю о связях."
+
+    def debug_context(self, user_id: str, chat_id: str = None, query: str = "") -> str:
+        """Собирает блоки, которые ушли бы в промпт (отладка для owner'а)."""
+        stm_messages, ltm_facts, stm_relevant = self.memory.get_context(
+            user_id, chat_id, ltm_query=query or "контекст"
+        )
+        parts = [f"== LTM facts ({len(ltm_facts)}) =="]
+        parts += ltm_facts or ["(пусто)"]
+        rules = self.memory.ltm.get_facts_by_category(user_id, "Rule", chat_id=chat_id)
+        parts.append(f"\n== Rules ({len(rules)}) ==")
+        parts += rules or ["(пусто)"]
+        if chat_id and str(chat_id) != str(user_id):
+            block = self.memory.get_chat_facts_block(chat_id, exclude_user_id=user_id)
+            parts.append("\n== Chat facts (другие участники) ==")
+            parts.append(block or "(пусто)")
+        parts.append(f"\n== STM последние ({len(stm_messages)}) ==")
+        for m in stm_messages:
+            name = m.get("user_name") or m.get("role")
+            parts.append(f"[{m['role']}] {name}: {m['content'][:120]}")
+        parts.append(f"\n== STM relevant ({len(stm_relevant)}) ==")
+        for m in stm_relevant:
+            parts.append(f"- {m['content'][:120]}")
+        return "\n".join(parts)
+
+    def export_ltm_file(self, user_id: str) -> Optional[str]:
+        """Создаёт JSON-файл со всеми фактами LTM пользователя. Путь к файлу или None."""
+        import tempfile
+        from datetime import datetime
+        facts = self.memory.ltm.get_all_facts_with_meta(user_id)
+        if not facts:
+            return None
+        payload = {
+            "user_id": str(user_id),
+            "persona": self.persona_name,
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "privacy_mode": self.get_ltm_privacy(user_id),
+            "facts": facts,
+        }
+        tmp_dir = tempfile.mkdtemp(prefix="ltm_export_")
+        path = os.path.join(tmp_dir, f"ltm_{user_id}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return path
+
     def clear_all_memory(self):
         self.memory.clear_stm()
         try:
@@ -1397,27 +1648,61 @@ class BotInstance:
 
     # ── слэш-команды: создание сущности + ответ через LLM в образе персоны ──
 
-    def _generate_inventory_description(self, name: str) -> str:
-        """Генерирует краткое описание предмета через LLM (если описание не задано пользователем)."""
+    def describe_image(self, image_bytes: bytes, question: str = "") -> Optional[str]:
+        """OCR + описание изображения через vision-провайдер основного роутера.
+        Возвращает None, если ни один vision-провайдер не настроен/не ответил."""
+        if not self.router.supports_vision():
+            return None
+        prompt = (
+            "Пользователь прислал изображение. Вытащи с него весь видимый текст (OCR) "
+            "и коротко опиши, что изображено (1-2 предложения).\n"
+            "Формат ответа:\nТЕКСТ: <текст с изображения или «нет текста»>\nОПИСАНИЕ: <...>"
+        )
+        if question:
+            prompt += f"\nДополнительно ответь на вопрос пользователя об изображении: {question}"
+        return self.router.get_response_with_image(prompt, image_bytes)
+
+    def _enrich_inventory_item(self, name: str, desc: str = "", expires: Optional[str] = None) -> tuple:
+        """Дополняет описание и срок годности предмета через ЛОКАЛЬНУЮ модель
+        (основную не трогаем). Срок придумывается только для портящихся предметов.
+        Возвращает (desc, expires) — незаполненные поля остаются как были."""
         if not name:
-            return ""
-        router = self._local_router or self.router
+            return desc, expires
+        if not self._local_router or not self._local_router.is_available():
+            logger.info(f"[Inventory] Локальная модель недоступна — «{name}» без описания/срока")
+            return desc, expires
         try:
+            from datetime import date
+            today = date.today().isoformat()
             messages = [
                 {"role": "system", "content": (
-                    "Придумай краткое (5-15 слов) содержательное описание предмета. "
-                    "Только описание, без названия и кавычек. Например для 'ключ' — 'маленький металлический ключ от двери'."
+                    f"Сегодня {today}. Для предмета придумай:\n"
+                    "1) ОПИСАНИЕ — краткое (5-15 слов), без названия и кавычек.\n"
+                    "2) СРОК — дату годности ГГГГ-ММ-ДД, ТОЛЬКО если предмет портится "
+                    "(еда, напитки, цветы и т.п.); для непортящихся предметов напиши «-».\n"
+                    "Формат ответа строго две строки:\nОПИСАНИЕ: ...\nСРОК: ..."
                 )},
                 {"role": "user", "content": name.strip()},
             ]
-            resp = router.get_response(messages, temperature=0.4, max_tokens=40, top_p=0.9)
+            resp = self._local_router.get_response(messages, temperature=0.3, max_tokens=80, top_p=0.9)
             if resp:
-                cleaned = resp.strip().strip('"\'""«»').strip()
-                if 3 <= len(cleaned) <= 120:
-                    return cleaned
+                for line in resp.strip().splitlines():
+                    line = line.strip()
+                    low = line.lower()
+                    if not desc and low.startswith("описание"):
+                        candidate = line.partition(":")[2].strip().strip('"\'""«»').strip()
+                        if 3 <= len(candidate) <= 120:
+                            desc = candidate
+                    elif not expires and low.startswith("срок"):
+                        m = re.search(r"\d{4}-\d{2}-\d{2}", line)
+                        if m and m.group(0) >= today:  # прошедшую дату не принимаем
+                            expires = m.group(0)
+                logger.info(f"[Inventory] «{name}» → описание={desc!r}, срок={expires!r}")
+            else:
+                logger.info(f"[Inventory] Локальная модель не ответила для «{name}»")
         except Exception as e:
-            logger.debug(f"[Inventory] Генерация описания не удалась: {e}")
-        return ""
+            logger.debug(f"[Inventory] Обогащение предмета не удалось: {e}")
+        return desc, expires
 
     def command_reply(
         self, context_note: str, note_kind: str,
@@ -1436,9 +1721,15 @@ class BotInstance:
         stm_messages, ltm_facts, stm_relevant = self.memory.get_context(
             user_id, chat_id, ltm_query=user_input
         )
-        memory_text = ""
+        context_parts = []
         if ltm_facts:
-            memory_text = "\n".join(ltm_facts)
+            context_parts.append("\n".join(ltm_facts))
+        # В группе — факты других участников, сказанные публично в этом чате
+        if chat_id and str(chat_id) != str(user_id):
+            chat_facts_block = self.memory.get_chat_facts_block(chat_id, exclude_user_id=user_id)
+            if chat_facts_block:
+                context_parts.append(chat_facts_block)
+        memory_text = "\n\n".join(context_parts)
         self_memory_block = None
         if self.self_memory:
             self_memory_block = self.self_memory.get_context_block()
@@ -1469,6 +1760,9 @@ class BotInstance:
         messages = self.persona.prepare_messages(**kwargs)
         settings = self.persona.get_settings()
         answer = self.router.get_response(messages, **settings)
+        if not answer:
+            logger.error("Все LLM-провайдеры недоступны, ответ не сгенерирован")
+            return "Сейчас все LLM-провайдеры недоступны. Попробуй позже."
 
         # Защита от обрыва по max_tokens — та же логика, что в основном процессе сообщений.
         _continuations = 0
@@ -1498,6 +1792,9 @@ class BotInstance:
         """
         args = (args or "").strip()
         user_input_cmd = f"/{kind} {args}".strip()  # что сохранится в STM
+        # Якорь личности автора команды — иначе в групповом чате LLM может
+        # приписать команду другому участнику из истории (по имени/теме)
+        who = f"{user_name} (ID:{user_id})"
 
         # Как и в process_message: сбрасываем флаг «последний ответ — вопрос бота»
         # ЭТОГО чата. Команда тоже может закончиться вопросом (пока только /learn —
@@ -1520,16 +1817,18 @@ class BotInstance:
                 self.reminder_manager.add_reminder(chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id)
                 task_display = f" «{rem_task}»" if rem_task else ""
                 note = (
-                    f"Пользователь командой попросил напомнить{task_display} через {delay_text}. "
-                    "Напоминание уже запланировано — подтверди это в своём стиле, коротко."
+                    f"Пользователь {who} командой попросил напомнить{task_display} через {delay_text}. "
+                    "Напоминание уже запланировано — подтверди это в своём стиле, коротко. "
+                    f"Обращайся именно к {user_name}, а не к другим участникам чата."
                 )
             else:
                 # Время не указано — переспрашиваем, запоминаем задачу
                 rem_task = self._reformulate_task(args)
                 self.reminder_manager.begin_pending_remind(chat_id, rem_task)
                 note = (
-                    f"Пользователь командой попросил напомнить «{rem_task}», но не указал через сколько. "
-                    "Уточни когда ему напомнить (например, «через 2 часа», «завтра в 12») — в своём стиле, коротко."
+                    f"Пользователь {who} командой попросил напомнить «{rem_task}», но не указал через сколько. "
+                    "Уточни когда ему напомнить (например, «через 2 часа», «завтра в 12») — в своём стиле, коротко. "
+                    f"Обращайся именно к {user_name}, а не к другим участникам чата."
                 )
             return self.command_reply(note, "reminder", chat_id, user_id, user_name, user_input_cmd)
 
@@ -1541,7 +1840,7 @@ class BotInstance:
             task = self._reformulate_task(args)
             self.todo_manager.add_item(chat_id, user_name or "Пользователь", task)
             note = (
-                f"Пользователь командой добавил в список дел задачу «{task}». "
+                f"Пользователь {who} командой добавил в список дел задачу «{task}». "
                 "Подтверди это в своём стиле, коротко."
             )
             return self.command_reply(note, "todo", chat_id, user_id, user_name, user_input_cmd)
@@ -1555,12 +1854,13 @@ class BotInstance:
             parts = re.split(r"\s*[:—–-]\s*", args, maxsplit=1)
             name = parts[0].strip()
             desc = parts[1].strip() if len(parts) > 1 else ""
-            if not desc:
-                desc = self._generate_inventory_description(name)
-            result = self.inventory_manager.add_item(name, description=desc, source=user_name or "пользователь")
+            # Описание и срок годности (для портящегося) придумает локальная модель
+            desc, expires = self._enrich_inventory_item(name, desc, None)
+            result = self.inventory_manager.add_item(name, description=desc, source=user_name or "пользователь", expires=expires)
             note = (
-                f"Пользователь командой положил тебе в инвентарь предмет «{name}»"
+                f"Пользователь {who} командой положил тебе в инвентарь предмет «{name}»"
                 + (f" (описание: {desc})" if desc else "")
+                + (f" (годен до: {expires})" if expires else "")
                 + f". Результат: {result} "
                 "Подтверди это в своём стиле, коротко."
             )
@@ -1574,7 +1874,7 @@ class BotInstance:
             subject = args
             self.learning_manager.begin_setup(chat_id, subject, user_id or "default", user_name or "Пользователь")
             note = (
-                f"Пользователь командой попросил научить его «{subject}». "
+                f"Пользователь {who} командой попросил научить его «{subject}». "
                 "Спроси коротко и в своём стиле, как часто присылать уроки "
                 "(например: раз в день, каждые 2 часа). Обучение начнётся после его ответа."
             )

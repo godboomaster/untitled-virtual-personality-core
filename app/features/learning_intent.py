@@ -31,7 +31,7 @@ Reply ONLY with LEARN or INFO. Nothing else."""
 
 # Word-boundary keyword gate. «научи» не должно ловить «научный»/«наука».
 _LEARN_KEYWORD_RE = re.compile(
-    r"\b(?:научи|обучи|научить|обучить|научись|выучи|научимся|обучимся)\b",
+    r"\b(?:научи|обучи|научить|обучить|научись|выучи\w*|выучить|научимся|обучимся|научиться|обучиться)\b",
     re.IGNORECASE,
 )
 
@@ -98,12 +98,24 @@ _SUBJECT_PATTERNS = [
 ]
 
 
+# Хвост с периодичностью («каждые десять минут», «раз в день», «через 2 часа») —
+# не часть темы, срезаем. «через» — только с временным словом, чтобы не резать
+# легитимные темы вида «API через requests».
+_FREQUENCY_TAIL_RE = re.compile(
+    r"[\s,;–—-]+(?:кажд\w+|раз\s+в\b|ежечасн\w*|ежедневн\w*|еженедельн\w*|интервал\w*|"
+    r"через\s+(?:\d|полчаса|полтора|день|дн[яейю]|недел|месяц|час|минут|секунд))\s.*$",
+    re.IGNORECASE,
+)
+
+
 def extract_subject(text: str) -> str:
     """Извлекает тему обучения из фразы «научи меня X»."""
     for pattern in _SUBJECT_PATTERNS:
         m = pattern.search(text)
         if m:
             subject = m.group(1).strip()
+            # Срезаем хвост про частоту уроков — это не тема
+            subject = _FREQUENCY_TAIL_RE.sub("", subject).strip(" ,.;")
             # Чистим хвосты: «на python с нуля» → «python» (берём ядро)
             subject = re.sub(r"\s*(?:с нуля|с самого начала|пожалуйста|плиз|пож-та)[.!?\s]*$", "", subject, flags=re.IGNORECASE).strip()
             if len(subject) >= 2:
@@ -111,4 +123,5 @@ def extract_subject(text: str) -> str:
     # Fallback — весь текст после удаления обращений
     cleaned = re.sub(r"^(?:(?:коннор|жабка|connor)[,\s]+)+", "", text, flags=re.IGNORECASE).strip()
     cleaned = re.sub(r"^(?:научи|обучи)\S*\s+(?:меня\s+)?", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = _FREQUENCY_TAIL_RE.sub("", cleaned).strip(" ,.;")
     return cleaned[:80] if cleaned else "эта тема"

@@ -7,13 +7,14 @@ from app.core.router import ModelRouter
 from app.core.memory_config import (
     build_extraction_prompt, should_ignore_message, parse_and_filter_facts,
     PROMPT_SETTINGS, UPDATE_CATEGORIES, APPEND_CATEGORIES, MERGE_SETTINGS,
-    build_merge_prompt, build_summary_prompt, SUMMARY_SETTINGS
+    build_merge_prompt, build_summary_prompt, SUMMARY_SETTINGS, is_public_category
 )
 from app.core.users import get_user_tag
 import time
 import json
 import threading
 import logging
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
@@ -113,9 +114,12 @@ class ShortTermMemory:
                     if buf is None:
                         buf = deque(maxlen=self.max_messages)
                         self.buffers[msg["chat_id"]] = buf
-                    entry = {"role": msg["role"], "content": msg["content"], "chat_id": msg["chat_id"]}
+                    entry = {"role": msg["role"], "content": msg["content"], "chat_id": msg["chat_id"],
+                             "timestamp": msg["timestamp"] / 1000}  # в БД миллисекунды, в буфере — секунды
                     if msg.get("user_name"):
                         entry["user_name"] = msg["user_name"]
+                    if msg.get("sender_id"):
+                        entry["sender_id"] = msg["sender_id"]
                     buf.append(entry)
 
     def _save_to_db(self, role: str, content: str, chat_id: str = "default",
@@ -178,7 +182,7 @@ class ShortTermMemory:
             user_name: Имя пользователя для отображения в истории.
         """
         filter_id = chat_id if chat_id is not None else user_id
-        entry = {"role": role, "content": content, "chat_id": filter_id}
+        entry = {"role": role, "content": content, "chat_id": filter_id, "timestamp": time.time()}
         # sender_id — отправитель (для групповых чатов)
         if chat_id is not None:
             entry["sender_id"] = user_id
@@ -436,11 +440,76 @@ class LongTermMemory:
             print(f"  [LTM] LTM использует активный провайдер: {self.llm_router.get_provider_model_info()}")
         if self.exclude_provider:
             print(f"  [LTM] Пропускает провайдер основной модели: {self.exclude_provider}")
+
+        # Сериализует save_facts и summarize_user: read-modify-write по фактам
+        # не атомарен, параллельные фоновые задачи иначе плодят дубли/теряют факты
+        self._facts_lock = threading.RLock()
+
+        # Режимы приватности LTM per user: "smart" (по умолчанию) | "strict"
+        self._privacy_file = Path(db_path).parent / "ltm_privacy.json"
+        self._privacy_modes: Dict[str, str] = self._load_privacy_modes()
+
+    # ─── Приватность LTM ─────────────────────────────────
+
+    def _load_privacy_modes(self) -> Dict[str, str]:
+        try:
+            if self._privacy_file.exists():
+                with open(self._privacy_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return {str(k): v for k, v in data.items() if v in ("smart", "strict")}
+        except Exception as e:
+            logger.warning(f"[LTM] Не удалось загрузить режимы приватности: {e}")
+        return {}
+
+    def _save_privacy_modes(self):
+        try:
+            self._privacy_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._privacy_file.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._privacy_modes, f, ensure_ascii=False, indent=2)
+            tmp.replace(self._privacy_file)
+        except Exception as e:
+            logger.warning(f"[LTM] Не удалось сохранить режимы приватности: {e}")
+
+    def get_privacy_mode(self, user_id: str) -> str:
+        """Режим приватности пользователя: 'smart' (по умолчанию) или 'strict'."""
+        return self._privacy_modes.get(str(user_id), "smart")
+
+    def set_privacy_mode(self, user_id: str, mode: str) -> str:
+        """Устанавливает режим приватности. Возвращает фактически установленный."""
+        if mode not in ("smart", "strict"):
+            mode = "smart"
+        self._privacy_modes[str(user_id)] = mode
+        self._save_privacy_modes()
+        return mode
+
+    def _fact_visible(self, meta: dict, doc: str, user_id: str, chat_id) -> bool:
+        """Виден ли факт в текущем чате.
+
+        Правила:
+        - личка (chat_id == user_id или нет chat_id) — видно всё;
+        - strict: только факты, узнанные в этом чате;
+        - smart (по умолчанию): факты этого чата ИЛИ публичный профиль
+          (имя, город, хобби...). Легаси-факты без origin_chat считаются личными,
+          кроме публичных категорий (категория парсится из текста факта).
+        """
+        if chat_id is None or str(chat_id) == str(user_id):
+            return True
+        meta = meta or {}
+        if meta.get("origin_chat") == str(chat_id):
+            return True
+        if self.get_privacy_mode(user_id) == "strict":
+            return False
+        category = meta.get("category") or (doc.partition(":")[0].strip() if ":" in doc else "")
+        return is_public_category(category)
     
-    def extract_facts_async(self, user_message: str, user_id: str = "default", stm_context: str = None):
+    def extract_facts_async(self, user_message: str, user_id: str = "default", stm_context: str = None,
+                            origin_chat: str = None, user_name: str = None):
         """
         Запускает извлечение фактов в фоновом потоке.
         Не блокирует основной поток.
+        origin_chat — чат, где факт был рассказан (для скоупа приватности).
         """
         def _extract_and_save():
             try:
@@ -456,7 +525,7 @@ class LongTermMemory:
                         }
                         for category, value in safe_facts.items():
                             fact_text = f"{category}: {value}"
-                            self.save_facts(fact_text, user_id)
+                            self.save_facts(fact_text, user_id, origin_chat=origin_chat, user_name=user_name)
                         print(f"  [LTM] Сохранено фактов: {len(safe_facts)}")
                     else:
                         print(f"  [LTM] Факты отфильтрованы (пустые значения)")
@@ -512,7 +581,7 @@ class LongTermMemory:
                 timeout=15.0
             )
 
-            response_clean = response.strip()
+            response_clean = (response or "").strip()
             print(f"  [LTM] Extraction [{self.llm_router.get_provider_model_info()}]: '{user_message[:50]}...'")
             print(f"     -> RAW: '{response}'")
 
@@ -550,9 +619,19 @@ class LongTermMemory:
             traceback.print_exc()
             return None
     
-    def save_facts(self, facts_text: str, user_id: str = "default"):
+    def save_facts(self, facts_text: str, user_id: str = "default", origin_chat: str = None,
+                   user_name: str = None):
+        """Потокобезопасная обёртка над _save_facts_impl."""
+        with self._facts_lock:
+            self._save_facts_impl(facts_text, user_id, origin_chat, user_name)
+
+    def _save_facts_impl(self, facts_text: str, user_id: str = "default", origin_chat: str = None,
+                         user_name: str = None):
         """
         Сохраняет извлечённые факты в векторную базу.
+
+        origin_chat — чат, где факт был рассказан. Хранится в metadata и
+        определяет приватность: непубличный факт виден только там (и в личке).
         
         Логика:
         - Полный дубликат → пропуск
@@ -633,7 +712,14 @@ class LongTermMemory:
             self.collection.add(
                 ids=[f"{user_id}_fact_{int(time.time() * 1000) + i}"],
                 documents=[fact_stripped],
-                metadatas=[{"user_id": user_id, "type": "long_term"}]
+                metadatas=[{
+                    "user_id": user_id,
+                    "type": "long_term",
+                    # ChromaDB не принимает None в metadata — пустая строка = личное (нет origin)
+                    "origin_chat": str(origin_chat) if origin_chat else "",
+                    "category": cat_key or "",
+                    "user_name": user_name or "",
+                }]
             )
             existing_docs.add(fact_stripped.lower())
             added += 1
@@ -682,7 +768,7 @@ class LongTermMemory:
                 timeout=15.0
             )
 
-            merged = response.strip().strip('"').strip("'")
+            merged = (response or "").strip().strip('"').strip("'")
 
             if not merged or len(merged) < 2:
                 print(f"  [LTM] MERGE: пустой ответ для {category}")
@@ -695,6 +781,11 @@ class LongTermMemory:
             return None
 
     def summarize_user(self, user_id: str = "default") -> int:
+        """Потокобезопасная обёртка: консолидация не должна пересекаться с save_facts."""
+        with self._facts_lock:
+            return self._summarize_user_impl(user_id)
+
+    def _summarize_user_impl(self, user_id: str = "default") -> int:
         """
         Периодическая консолидация LTM для пользователя.
         LLM получает все факты, чистит противоречия и дубликаты,
@@ -754,15 +845,41 @@ class LongTermMemory:
                 print(f"  [LTM SUM] LLM не вернул валидных фактов")
                 return -1
 
+            # Sanity: если LLM вернул подозрительно мало фактов (обрыв по max_tokens),
+            # не удаляем старые — иначе потеряем большую часть памяти
+            if len(new_facts) * 3 < len(all_facts):
+                print(f"  [LTM SUM] Подозрительно мало фактов ({len(new_facts)} из {len(all_facts)}), консолидация отменена")
+                return -1
+
+            # Сохраняем метаданные старых фактов: после перезаписи нужно восстановить
+            # origin_chat/category/user_name, иначе приватность фактов слетит
+            old_meta_by_text = {}
+            old_meta_by_cat = {}
+            old_rows = self.collection.get(where={"user_id": user_id}, include=["documents", "metadatas"])
+            for doc, meta in zip(old_rows.get("documents", []), old_rows.get("metadatas", [])):
+                meta = meta or {}
+                old_meta_by_text[doc.strip()] = meta
+                cat = meta.get("category") or (doc.partition(":")[0].strip() if ":" in doc else "")
+                if cat and cat not in old_meta_by_cat:
+                    old_meta_by_cat[cat] = meta
+
             # Удаляем все старые факты пользователя
             self.clear(user_id)
 
             # Записываем чистые
             for i, fact in enumerate(new_facts):
+                cat = fact.partition(":")[0].strip() if ":" in fact else ""
+                old = old_meta_by_text.get(fact.strip()) or old_meta_by_cat.get(cat) or {}
                 self.collection.add(
                     ids=[f"{user_id}_fact_{int(time.time() * 1000) + i}"],
                     documents=[fact],
-                    metadatas=[{"user_id": user_id, "type": "long_term"}]
+                    metadatas=[{
+                        "user_id": user_id,
+                        "type": "long_term",
+                        "origin_chat": old.get("origin_chat", ""),
+                        "category": cat,
+                        "user_name": old.get("user_name", ""),
+                    }]
                 )
 
             print(f"  [LTM SUM] Консолидация: {len(all_facts)} → {len(new_facts)} фактов")
@@ -776,22 +893,40 @@ class LongTermMemory:
             traceback.print_exc()
             return -1
 
-    def search(self, query: str, user_id: str = "default", limit: int = 5) -> List[str]:
+    def search(self, query: str, user_id: str = "default", limit: int = 5, chat_id: str = None) -> List[str]:
+        """Семантический поиск фактов с учётом приватности (chat_id — текущий чат)."""
         if self.collection.count() == 0:
             return []
 
+        # В группе часть фактов отфильтруется по приватности — берём с запасом
+        is_group = chat_id is not None and str(chat_id) != str(user_id)
+        n_results = limit * 4 if is_group else limit
+
         results = self.collection.query(
             query_texts=[query],
-            n_results=limit,
+            n_results=n_results,
             where={"user_id": user_id}
         )
 
         if not results["documents"]:
             return []
 
-        return results["documents"][0]
-    
-    def get_all_facts(self, user_id: str = "default") -> List[str]:
+        docs = results["documents"][0]
+        metas = results["metadatas"][0] if results.get("metadatas") else [{}] * len(docs)
+
+        if not is_group:
+            return docs
+
+        filtered = []
+        for doc, meta in zip(docs, metas):
+            if self._fact_visible(meta, doc, user_id, chat_id):
+                filtered.append(doc)
+            if len(filtered) >= limit:
+                break
+        return filtered
+
+    def get_all_facts(self, user_id: str = "default", chat_id: str = None) -> List[str]:
+        """Все факты пользователя. Если задан chat_id — только видимые в этом чате."""
         if self.collection.count() == 0:
             return []
 
@@ -800,9 +935,112 @@ class LongTermMemory:
             return [
                 doc for doc, meta in zip(results.get("documents", []), results.get("metadatas", []))
                 if meta.get("user_id") == user_id
+                and self._fact_visible(meta, doc, user_id, chat_id)
             ]
         return []
     
+    def get_facts_by_category(self, user_id: str, category: str, chat_id: str = None) -> List[str]:
+        """Факты пользователя одной категории (с учётом приватности)."""
+        if self.collection.count() == 0:
+            return []
+
+        results = self.collection.get(where={"user_id": user_id})
+        if not results or not results["ids"]:
+            return []
+
+        out = []
+        for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
+            meta = meta or {}
+            cat = meta.get("category") or (doc.partition(":")[0].strip() if ":" in doc else "")
+            if cat != category:
+                continue
+            if self._fact_visible(meta, doc, user_id, chat_id):
+                out.append(doc)
+        return out
+
+    def get_all_facts_with_meta(self, user_id: str = "default") -> List[Dict]:
+        """Все факты пользователя с метаданными (для экспорта). Без фильтра приватности."""
+        if self.collection.count() == 0:
+            return []
+
+        results = self.collection.get()
+        if not results or not results["ids"]:
+            return []
+
+        facts = []
+        for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
+            meta = meta or {}
+            if meta.get("user_id") != user_id:
+                continue
+            category = meta.get("category") or (doc.partition(":")[0].strip() if ":" in doc else "")
+            facts.append({
+                "fact": doc,
+                "category": category,
+                "origin_chat": meta.get("origin_chat", ""),
+            })
+        return facts
+
+    def get_chat_facts(self, chat_id: str, exclude_user_id: str = None, limit: int = 50) -> List[Dict]:
+        """Факты ВСЕХ пользователей, узнанные в этом чате (origin_chat == chat_id).
+
+        Это публичные для чата данные: сказанное здесь при всех можно обсуждать
+        здесь со всеми. Факты из личных чатов сюда не попадают никогда.
+        """
+        if self.collection.count() == 0:
+            return []
+
+        results = self.collection.get(
+            where={"origin_chat": str(chat_id)},
+            include=["documents", "metadatas"],
+        )
+        if not results or not results["ids"]:
+            return []
+
+        facts = []
+        for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
+            meta = meta or {}
+            if exclude_user_id is not None and meta.get("user_id") == str(exclude_user_id):
+                continue
+            facts.append({
+                "fact": doc,
+                "category": meta.get("category", ""),
+                "user_id": meta.get("user_id", ""),
+                "user_name": meta.get("user_name", ""),
+            })
+            if len(facts) >= limit:
+                break
+        return facts
+
+    def forget(self, query: str, user_id: str = "default") -> Optional[str]:
+        """
+        Точечное забывание: ищет самый похожий факт пользователя и удаляет его.
+        Возвращает текст удалённого факта или None, если похожего нет.
+        """
+        if self.collection.count() == 0:
+            return None
+
+        with self._facts_lock:
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=1,
+                where={"user_id": user_id},
+                include=["documents", "distances", "metadatas"],
+            )
+            if not results["ids"] or not results["ids"][0]:
+                return None
+
+            # cosine distance: 0 = идентично, 2 = противоположно.
+            # Выше порога — считаем, что похожего факта нет, и не трогаем память.
+            distance = results["distances"][0][0] if results.get("distances") else 2.0
+            if distance > 1.0:
+                return None
+
+            fact_id = results["ids"][0][0]
+            doc = results["documents"][0][0]
+            self.collection.delete(ids=[fact_id])
+            logger.info(f"[LTM] Забыт факт для {user_id}: '{doc}' (distance={distance:.3f})")
+            return doc
+
     def clear(self, user_id: str = "default"):
         try:
             # Получаем все записи и фильтруем по user_id вручную
@@ -854,6 +1092,7 @@ class MemoryManager:
         self.enable_ltm_extraction = enable_ltm_extraction
         self._user_msg_counters = {}  # user_id → count
         self._summary_lock = threading.RLock()
+        self._counter_lock = threading.Lock()  # отдельный: summary lock держится долго
 
     def add_message(self, role: str, content: str, user_id: str = "default",
                     chat_id: str = None, user_name: str = None):
@@ -870,25 +1109,36 @@ class MemoryManager:
 
         if role == "user" and self.enable_ltm_extraction:
             # Контекст — последние 5 сообщений из чата
-            stm_messages = self.stm.get_last(5, chat_id=chat_id)
+            # (chat_id=None без fallback читал бы буферы ВСЕХ чатов — утечка контекста)
+            stm_messages = self.stm.get_last(5, chat_id=chat_id or user_id)
+            # В группе оставляем только сообщения ЭТОГО пользователя и ответы бота ему —
+            # иначе экстрактор сохранит чужие факты под его user_id
+            own_messages = [
+                msg for msg in stm_messages
+                if msg.get("sender_id") in (None, user_id)
+            ]
             stm_context = "\n".join([
                 f"{msg.get('user_name', 'User') if msg['role'] == 'user' else 'Assistant'}: {msg['content']}"
-                for msg in stm_messages[:-1]
-            ]) if len(stm_messages) > 1 else None
+                for msg in own_messages[:-1]
+            ]) if len(own_messages) > 1 else None
 
-            self.ltm.extract_facts_async(content, user_id, stm_context)
+            self.ltm.extract_facts_async(content, user_id, stm_context, origin_chat=chat_id, user_name=user_name)
 
             # Периодическая консолидация LTM
-            self._user_msg_counters[user_id] = self._user_msg_counters.get(user_id, 0) + 1
-            if self._user_msg_counters[user_id] >= SUMMARY_SETTINGS["trigger_every"]:
-                self._user_msg_counters[user_id] = 0
-                self._run_summarize_async(user_id)
+            with self._counter_lock:
+                self._user_msg_counters[user_id] = self._user_msg_counters.get(user_id, 0) + 1
+                due = self._user_msg_counters[user_id] >= SUMMARY_SETTINGS["trigger_every"]
+            if due and self._run_summarize_async(user_id):
+                # Сбрасываем счётчик только если консолидация реально запустилась
+                with self._counter_lock:
+                    self._user_msg_counters[user_id] = 0
 
-    def _run_summarize_async(self, user_id: str):
+    def _run_summarize_async(self, user_id: str) -> bool:
         # Запускает консолидацию LTM в фоне, с защитой от параллельного запуска.
+        # Возвращает True, если задача поставлена в пул.
         if not self._summary_lock.acquire(blocking=False):
             print("  [LTM SUM] Пропуск — консолидация уже запущена")
-            return
+            return False
 
         def _do():
             try:
@@ -900,6 +1150,7 @@ class MemoryManager:
         future = executor.submit(_do)
         future.add_done_callback(lambda f: f.exception() and print(f"  [LTM SUM] ОШИБКА: {f.exception()}"))
         print(f"  [LTM SUM] Консолидация запущена в фоне для {user_id}")
+        return True
 
     def get_context(self, user_id: str = "default", chat_id: str = None,
                     ltm_limit: int = 5, ltm_query: str = "",
@@ -914,7 +1165,10 @@ class MemoryManager:
             - stm_relevant: семантически релевантные сообщения из STM (не из хронологии)
         """
         stm_messages = self.stm.get_last(stm_recent_n, chat_id=chat_id) if chat_id else self.stm.get_last(stm_recent_n, user_id)
-        ltm_facts = self.ltm.search(ltm_query, user_id, limit=ltm_limit) if ltm_query else self.ltm.get_all_facts(user_id)[:ltm_limit]
+        ltm_facts = (
+            self.ltm.search(ltm_query, user_id, limit=ltm_limit, chat_id=chat_id)
+            if ltm_query else self.ltm.get_all_facts(user_id, chat_id=chat_id)[:ltm_limit]
+        )
 
         # Векторный поиск по STM — только для чатов (не для личных)
         stm_relevant = []
@@ -949,6 +1203,21 @@ class MemoryManager:
 
     def search_ltm(self, query: str, user_id: str = "default", limit: int = 5) -> List[str]:
         return self.ltm.search(query, user_id, limit)
+
+    def get_chat_facts_block(self, chat_id: str, exclude_user_id: str = None) -> Optional[str]:
+        """Текстовый блок «факты об участниках этого чата» для промпта.
+
+        Только факты, сказанные в этом чате (публичные для его участников);
+        факты спрашивающего исключаются — они уже есть в его персональном блоке.
+        """
+        facts = self.ltm.get_chat_facts(chat_id, exclude_user_id=exclude_user_id)
+        if not facts:
+            return None
+        lines = []
+        for f in facts:
+            name = f["user_name"] or get_user_tag(f["user_id"]) or "Участник"
+            lines.append(f"  {name}: {f['fact']}")
+        return "Факты об участниках этого чата (сказанные здесь публично):\n" + "\n".join(lines)
 
     def clear_stm(self, chat_id: str = None):
         self.stm.clear(chat_id)
