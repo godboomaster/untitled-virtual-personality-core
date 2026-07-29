@@ -40,7 +40,42 @@ class PersonaLayer:
                 "system_prompt": "",
                 "settings": {}
             }
+
+        # Загружаем glossary если указан
+        glossary_file = data.get("glossary")
+        if glossary_file:
+            glossary_path = persona_dir / glossary_file
+            if glossary_path.exists():
+                glossary_text = self._load_glossary(glossary_path)
+                if glossary_text:
+                    prompt = data.get("system_prompt", "")
+                    data["system_prompt"] = prompt + "\n\n" + glossary_text
+            else:
+                print(f"[PersonaLayer] Glossary не найден: {glossary_path}")
+
         return data
+
+    def _load_glossary(self, path: Path) -> str:
+        """Парсит файл glossary и форматирует в текстовый блок."""
+        lines = []
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                if line.endswith(":") and "=" not in line:
+                    # Заголовок раздела
+                    lines.append(f"\n{line}")
+                elif "=" in line or "→" in line:
+                    lines.append(f"  {line}")
+        if not lines:
+            return ""
+        return (
+            "\n\n══════════════════════\n"
+            " СЛОВАРЬ ИМЕН (английский → русский)\n"
+            "══════════════════════"
+            + "\n".join(lines)
+        )
 
     def available_personas(self) -> List[str]:
         personas_dir = Path(__file__).parent.parent / "personas"
@@ -81,7 +116,8 @@ class PersonaLayer:
                          reminder_context: Optional[str] = None,
                          inventory_context: Optional[str] = None,
                          inventory_events: Optional[List[str]] = None,
-                         learning_context: Optional[str] = None) -> List[Dict]:
+                         learning_context: Optional[str] = None,
+                         book_context: Optional[str] = None) -> List[Dict]:
         context_block = ""
         if memory_context:
             if has_files:
@@ -113,6 +149,18 @@ class PersonaLayer:
                 f"{stm_relevant}\n\n"
                 "Используй этот контекст если он относится к текущему вопросу. "
                 "НЕ упоминай что это «извлечённые воспоминания» — просто используй как естественный контекст."
+            )
+
+        # Контекст из книги (RAG по Lord of the Mysteries)
+        if book_context:
+            context_block += (
+                f"\n\n{book_context}\n\n"
+                "ПРАВИЛА РАБОТЫ С ФРАГМЕНТАМИ:\n"
+                "1. Фрагменты — твой ЕДИНСТВЕННЫЙ источник фактов о мире книги.\n"
+                "2. Фрагменты на английском — отвечай на русском.\n"
+                "3. НЕ цитируй дословно — пересказывай суть своими словами.\n"
+                "4. НЕ упоминай «база данных», «фрагменты», «поиск» — говори как знаток.\n"
+                "5. Собирай ответ из нескольких фрагментов — не жди что всё в одном."
             )
 
         # Веб-контекст (результаты поиска DuckDuckGo)
