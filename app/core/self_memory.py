@@ -5,6 +5,8 @@
 
 import json
 import logging
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -103,6 +105,8 @@ class BotSelfMemory:
         self.persona_name = persona_name
         self.router = router
         self.local_router = get_local_router()
+        # tick() вызывается конкурентно (потоки to_thread, proactive-цикл, gradio)
+        self._lock = threading.RLock()
 
         # Пути к файлам
         db = get_db_paths(context)
@@ -145,14 +149,25 @@ class BotSelfMemory:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"[SelfMemory] Ошибка загрузки {path}: {e}")
+                # Битый файл не затираем дефолтом — сохраняем копию для ручного восстановления
+                try:
+                    backup = path.with_suffix(path.suffix + ".corrupted")
+                    os.replace(path, backup)
+                    logger.error(f"[SelfMemory] Битый файл сохранён как {backup}")
+                except Exception:
+                    pass
         return default
 
     def _save_json(self, path: Path, data: dict):
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"[SelfMemory] Ошибка сохранения {path}: {e}")
+        # Атомарная запись: tmp + rename, иначе конкурентный/оборванный dump портит JSON
+        with self._lock:
+            try:
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, path)
+            except Exception as e:
+                logger.error(f"[SelfMemory] Ошибка сохранения {path}: {e}")
 
     # ─── Публичный API ───────────────────────────────────
 
@@ -168,22 +183,23 @@ class BotSelfMemory:
         Вызывается после каждого сообщения пользователя.
         Решает, нужно ли писать эпизод или заметку.
         """
-        self._msg_since_episode += 1
-        self._msg_since_last_note += 1
+        with self._lock:
+            self._msg_since_episode += 1
+            self._msg_since_last_note += 1
 
-        # Эпизод каждые N сообщений
-        if self._msg_since_episode >= EPISODE_EVERY:
-            self._msg_since_episode = 0
-            self._write_episode(messages)
+            # Эпизод каждые N сообщений
+            if self._msg_since_episode >= EPISODE_EVERY:
+                self._msg_since_episode = 0
+                self._write_episode(messages)
 
-        # Заметка — по маркерам и интервалу
-        if (self._msg_since_last_note >= MIN_NOTE_INTERVAL
-                and len(last_message) >= MIN_MSG_LEN_FOR_NOTE
-                and _has_reflection_marker(last_message)):
-            self._msg_since_last_note = 0
-            self._maybe_write_note(last_message, user_id, messages[-5:])
+            # Заметка — по маркерам и интервалу
+            if (self._msg_since_last_note >= MIN_NOTE_INTERVAL
+                    and len(last_message) >= MIN_MSG_LEN_FOR_NOTE
+                    and _has_reflection_marker(last_message)):
+                self._msg_since_last_note = 0
+                self._maybe_write_note(last_message, user_id, messages[-5:])
 
-        self._save_state()
+            self._save_state()
 
     def get_context_block(self) -> str:
         # Возвращает блок для вставки в system prompt.
@@ -310,8 +326,9 @@ class BotSelfMemory:
                 context=context_text
             )
 
-            # Пробуем локальную модель для классификации SKIP/NOTE
-            local_response = None
+            # Локальная модель — только фильтр SKIP/NOTE: classify() возвращает
+            # ровно одну строку из valid_outputs и не может вернуть текст заметки,
+            # поэтому сам текст всегда генерирует основной роутер
             if self.local_router.is_available():
                 local_response = self.local_router.classify(
                     system_prompt=(
@@ -323,21 +340,22 @@ class BotSelfMemory:
                     temperature=0.0,
                     max_tokens=50,
                 )
+                if local_response:
+                    logger.info(f"[SelfMemory] Локальная классификация: {local_response}")
+                    if local_response.upper().startswith("SKIP"):
+                        logger.info(f"[SelfMemory] Заметка пропущена (SKIP, локально)")
+                        return
 
-            if local_response:
-                response_clean = local_response
-                logger.info(f"[SelfMemory] Локальная классификация: {response_clean}")
-            else:
-                response = self.router.get_response(
-                    messages=[
-                        {"role": "system", "content": "Ты решаешь, стоит ли записать наблюдение. Отвечай только SKIP или NOTE: ..."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=100,
-                    timeout=15.0,
-                )
-                response_clean = response.strip() if response else ""
+            response = self.router.get_response(
+                messages=[
+                    {"role": "system", "content": "Ты решаешь, стоит ли записать наблюдение. Отвечай только SKIP или NOTE: ..."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=100,
+                timeout=15.0,
+            )
+            response_clean = response.strip() if response else ""
 
             if response_clean.upper().startswith("SKIP"):
                 logger.info(f"[SelfMemory] Заметка пропущена (SKIP)")

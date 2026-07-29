@@ -67,24 +67,39 @@ def migrate_collection(db_path: str, collection_name: str):
         return
 
     print(f"  [READ] {count} записей из {collection_name}")
-    results = old_collection.get(include=["documents", "metadatas", "embeddings"])
+    results = old_collection.get(include=["documents", "metadatas"])
 
     ids = results["ids"]
     documents = results["documents"]
     metadatas = results["metadatas"] if results["metadatas"] else [{}] * count
 
-    # 2. Удаляем старую коллекцию
+    # 2. Бэкап ДО удаления старой коллекции — иначе сбой на записи потеряет данные
+    import json
+    from datetime import datetime
+    backup_dir = os.path.join(db_path, "migration_backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    backup_path = os.path.join(
+        backup_dir, f"{collection_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    with open(backup_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {"ids": ids, "documents": documents, "metadatas": metadatas},
+            f, ensure_ascii=False
+        )
+    print(f"  [BACKUP] Сохранено в {backup_path}")
+
+    # 3. Удаляем старую коллекцию
     client.delete_collection(collection_name)
     print(f"  [DEL] Старая коллекция удалена")
 
-    # 3. Создаём новую с новым эмбеддером
+    # 4. Создаём новую с новым эмбеддером
     new_collection = client.get_or_create_collection(
         collection_name,
         embedding_function=NEW_EMBEDDER
     )
     print(f"  [NEW] Коллекция создана с multilingual embedder")
 
-    # 4. Записываем все данные обратно (эмбеддинги пересчитаются автоматически)
+    # 5. Записываем все данные обратно (эмбеддинги пересчитаются автоматически)
     # ChromaDB может не принять весь батч сразу — разбиваем по 100
     batch_size = 100
     for i in range(0, count, batch_size):

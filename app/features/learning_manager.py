@@ -178,8 +178,8 @@ def _clip(value: float, lo: float, hi: float) -> float:
 
 # ─── Ответ «да/нет» на «продолжать обучение?» ───────────────
 
-_POSITIVE_RE = re.compile(r"\b(?:да|давай|продолж|хочу|ок|ok|yes|конечно|поехали|угу)\b", re.IGNORECASE)
-_NEGATIVE_RE = re.compile(r"\b(?:нет|не надо|хватит|стоп|останов|no|не хочу|отстань)\b", re.IGNORECASE)
+_POSITIVE_RE = re.compile(r"\b(?:да|давай|продолж\w*|хочу|ок|ok|yes|конечно|поехали|угу)\b", re.IGNORECASE)
+_NEGATIVE_RE = re.compile(r"\b(?:нет|не\s+надо|хватит|стоп|останов\w*|no|не\s+хочу|отстань)\b", re.IGNORECASE)
 
 
 def classify_continue_answer(text: str) -> str:
@@ -379,9 +379,17 @@ class LearningManager:
                 "asked_at": time.time(),
             }
 
+    # Setup-состояние «как часто?» живёт ограниченное время — иначе любое сообщение
+    # с временнОй лексикой спустя дни неожиданно создаст курс
+    SETUP_TTL_SECONDS = 3600
+
     def get_setup_state(self, chat_id: str) -> Optional[dict]:
         with self._lock:
-            return self._setup_state.get(str(chat_id))
+            state = self._setup_state.get(str(chat_id))
+            if state and time.time() - state.get("asked_at", 0) > self.SETUP_TTL_SECONDS:
+                self._setup_state.pop(str(chat_id), None)
+                return None
+            return state
 
     def clear_setup(self, chat_id: str):
         with self._lock:
@@ -1656,6 +1664,11 @@ class LearningManager:
                         self._increment_silence(s.get("session_id"))
                         real = self.get_session(s["chat_id"], session_id=s.get("session_id"))
                         if not real:
+                            continue
+                        # Гонка: пока шла due-сборка, сессию могли остановить из потока
+                        # process_message (пользователь ответил «нет» на «продолжаем?»)
+                        if not real.get("active"):
+                            logger.info(f"[Learning] Сессия {s.get('session_id')} уже остановлена, урок не шлём")
                             continue
                         if real.get("consecutive_silences", 0) >= int(real.get("silence_threshold", self.default_silence_threshold)):
                             # Достигли порога — спрашиваем, урок пропускаем

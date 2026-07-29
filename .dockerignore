@@ -1,0 +1,18 @@
+# Секреты (.env.config оставляем — он в git и нужен приложению)
+.env
+
+# Данные и дампы памяти
+data/
+dumps/
+memory_export/
+volumes/
+
+# VCS и служебное
+.git/
+.zcode/
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/

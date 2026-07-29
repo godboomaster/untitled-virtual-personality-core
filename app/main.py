@@ -15,10 +15,10 @@ import threading
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Загружаем .env
+# Загружаем .env (первым — он имеет приоритет над дефолтами .env.config)
 _project_root = Path(__file__).parent.parent
-load_dotenv(_project_root / ".env.config")
 load_dotenv(_project_root / ".env")
+load_dotenv(_project_root / ".env.config")
 
 from telegram import Update
 from telegram.ext import Application
@@ -42,6 +42,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("urllib3.connection").setLevel(logging.ERROR)
 logging.getLogger("urllib3.util.connection").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
+
+# Event loop'ы запущенных ботов — для остановки из главного потока по Ctrl+C
+_running_loops: list = []
 
 BOT_CHOICES = {
     "1": ("connor", "Коннор (RK800, Telegram)"),
@@ -72,37 +75,83 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         start_export_server(port=export_port)
         logger.info(f"[{persona_name}] Export server на порту {export_port}")
 
-    # Команды меню
+    # Команды меню — Telegram показывает их во всплывающем списке при вводе "/"
+    # (автодополнение работает на стороне клиента через set_my_commands)
     commands = [
         ("start", "Начать диалог"),
         ("help", "Справка по командам"),
         ("stats", "Статистика памяти"),
-        ("reset", "Сбросить память пользователя"),
-        ("resetall", "Сбросить память всех пользователей"),
+        ("reset", "Сбросить мои факты из памяти"),
+        ("forget", "Забыть факт: /forget <что забыть>"),
+        ("relations", "Связи участников чата"),
+        ("last", "Последние N сообщений чата"),
+        ("context", "Контекст, уходящий в промпт"),
+        ("ratelimits", "Статистика лимитов"),
+        ("ltm_privacy", "Приватность памяти: smart | strict"),
+        ("ltm_export", "Выгрузить мою память файлом (в личку)"),
     ]
+    if bot_instance.todo_manager:
+        commands.append(("todo", "Мой список дел"))
+        commands.append(("add_todo", "Добавить дело: /add_todo <текст>"))
+    if bot_instance.inventory_manager:
+        commands.append(("inventory", "Инвентарь бота"))
+        commands.append(("add_inventory", "Дать предмет: /add_inventory <название>"))
+    if bot_instance.reminder_manager:
+        commands.append(("remind", "Напоминание: /remind <когда> <что>"))
+        commands.append(("reminders", "Мои напоминания"))
+        commands.append(("cancel_reminder", "Отменить: /cancel_reminder <номер>"))
+    if bot_instance.learning_manager:
+        commands.append(("learn", "Учить тему: /learn <тема>"))
     if bot_instance.file_db:
         commands.append(("files", "Список загруженных файлов"))
         commands.append(("reset_files", "Сбросить файловую базу"))
-    if bot_instance._rate_limit_enabled:
-        commands.append(("ratelimits", "Статистика лимитов"))
+    if bot_instance._web_search_enabled:
+        commands.append(("web", "Вкл/выкл веб-поиск в этом чате"))
 
-    from telegram import BotCommand
+    # Owner-only команды — показываем только владельцу (scope на его чат)
+    owner_commands = [
+        ("erase", "Удалить последние N сообщений STM"),
+        ("resetall", "Стереть ВСЮ память бота"),
+    ]
+    if bot_instance.self_memory:
+        owner_commands.append(("reset_diary", "Очистить дневник бота"))
+
+    from telegram import BotCommand, BotCommandScopeChat
     bot_commands = [BotCommand(cmd, desc) for cmd, desc in commands]
+    bot_owner_commands = [BotCommand(cmd, desc) for cmd, desc in (commands + owner_commands)]
 
     # Post-init hook: регистрируем команды внутри event loop бота
     async def post_init(app):
         await app.bot.set_my_commands(bot_commands)
         logger.info(f"[{persona_name}] Зарегистрировано {len(bot_commands)} команд")
+        # Владельцу — полный список (scope на личный чат с ним)
+        owner_id = os.getenv("OWNER_USER_ID") or str(bot_instance.owner or "")
+        if owner_id.isdigit():
+            try:
+                await app.bot.set_my_commands(
+                    bot_owner_commands,
+                    scope=BotCommandScopeChat(chat_id=int(owner_id)),
+                )
+            except Exception as e:
+                logger.warning(f"[{persona_name}] Не удалось задать owner-команды: {e}")
 
     # Telegram Application
+    # concurrent_updates=True — slash-команды (/reminders, /todo, /stats...)
+    # выполняются сразу, не дожидаясь окончания LLM-ответа на предыдущее сообщение.
+    # Порядок внутри одного чата защищён per-chat блокировкой в telegram_bot.
     request = HTTPXRequest(connect_timeout=30, read_timeout=60)
-    app = Application.builder().token(token).request(request).post_init(post_init).build()
+    app = (
+        Application.builder().token(token).request(request)
+        .concurrent_updates(True)
+        .post_init(post_init).build()
+    )
     register_handlers(app, bot_instance)
 
     # run_polling() не работает в потоках (add_signal_handler) из-за нескольких потоков.
     # Управляем event loop вручную.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    _running_loops.append(loop)
 
     async def _start():
         await app.initialize()
@@ -163,7 +212,12 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
 def run_gradio():
     # Запускает Gradio-интерфейс.
     from app.gradio_app import bot, demo
-    demo.launch(server_name="0.0.0.0", server_port=7860, show_error=True)
+    server_name = os.getenv("GRADIO_HOST", "127.0.0.1")
+    auth = None
+    auth_env = os.getenv("GRADIO_AUTH", "")
+    if auth_env and ":" in auth_env:
+        auth = tuple(auth_env.split(":", 1))
+    demo.launch(server_name=server_name, server_port=7860, show_error=True, auth=auth)
     print("\n[Gradio] Интерфейс доступен по адресу: http://localhost:7860/\n")
 
 
@@ -204,8 +258,9 @@ def start_target(target: str):
                 args=(connor_token, "connor"),
                 kwargs={"context": "connor"},
                 name="bot-connor",
-                # бота не убивают после выполнения основного кода
-                daemon=False,
+                # daemon=True — страховка: если graceful shutdown зависнет,
+                # потоки не заблокируют выход процесса
+                daemon=True,
             )
             threads.append(t)
 
@@ -215,7 +270,7 @@ def start_target(target: str):
                 args=(arrodes_token, "arrodes"),
                 kwargs={"context": "arrodes"},
                 name="bot-arrodes",
-                daemon=False,
+                daemon=True,
             )
             threads.append(t)
 
@@ -231,7 +286,18 @@ def start_target(target: str):
                 t.join()
         except KeyboardInterrupt:
             logger.info("Остановка по Ctrl+C...")
-            sys.exit(0)
+            # Останавливаем event loop'ы ботов — finally в run_bot выполнит
+            # корректное завершение (stop менеджеров, app.shutdown, loop.close)
+            for bot_loop in _running_loops:
+                try:
+                    bot_loop.call_soon_threadsafe(bot_loop.stop)
+                except RuntimeError:
+                    pass
+            for t in threads:
+                t.join(timeout=30)
+            alive = [t.name for t in threads if t.is_alive()]
+            if alive:
+                logger.warning(f"Потоки не завершились за 30с: {alive} — выходим принудительно")
 
 
 def show_menu():

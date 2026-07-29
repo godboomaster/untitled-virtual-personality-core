@@ -116,32 +116,98 @@ def create_handlers(bot: BotInstance) -> dict:
         await update.message.reply_text(greeting)
 
     async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        import os
+        user_id = str(update.effective_user.id)
+        is_owner = user_id in {bot.owner, os.getenv("OWNER_USER_ID", "")}
+
         lines = [
-            "Доступные команды:",
-            "/start — начать диалог",
-            "/help — эта справка",
-            "/stats — статистика памяти",
-            "/last N — последние N сообщений (10 по умолчанию)",
-            "/erase N — удалить последние N из STM",
-            "/reset — сбросить память текущего пользователя",
-            "/resetall — сбросить память всех пользователей",
+            "═══ ЧТО Я УМЕЮ ═══",
+            "",
+            "💬 Общение",
+            "— Отвечаю на trigger-слово, reply на моё сообщение или в личке.",
+            "— Помню контекст разговора (краткосрочная память) и факты о тебе (долгосрочная).",
+            "— В группе вижу факты участников, сказанные публично в этом чате; личное из ЛС туда не попадает.",
+            "— «Зови меня X» — буду обращаться как просишь.",
+            "— Поправь меня («запомни: …», «не так…») — сохраню как правило и буду соблюдать всегда.",
+            "— Могу написать сам, если ты долго молчишь (проактивные сообщения).",
+            "— Веду личный дневник наблюдений и использую его в разговоре.",
+            "— Reply на конкретное моё сообщение — вижу, на какое именно.",
+            "— Работаю даже без облачных LLM — на локальной модели.",
         ]
+        if bot._web_search_enabled:
+            lines.append("— Ищу в интернете, когда ответа нет в памяти (/web — вкл/выкл).")
         if bot.file_db:
-            lines.append("/files — список загруженных файлов")
-            lines.append("/reset_files — сбросить файловую базу")
-            lines.append("\nОтправьте файл — я прочитаю и сохраню!")
+            lines.append(f"— Читаю файлы (до {bot.file_db.max_docs} шт): пересказ, поиск по содержимому.")
+        lines.append("— Понимаю изображения: вытащу текст и опишу, что на картинке.")
+
+        lines += [
+            "",
+            "═══ КОМАНДЫ ═══",
+            "",
+            "🧠 Память",
+            "/stats — статистика памяти",
+            "/reset — сбросить мои факты о тебе",
+            "/forget <что> — забыть конкретный факт",
+            "/ltm_privacy [smart|strict] — приватность памяти: smart — публичный профиль доступен везде, strict — в каждом чате с нуля",
+            "/ltm_export — выгрузить твою память файлом (в личку)",
+            "/relations — связи участников чата",
+            "/last N — последние N сообщений этого чата",
+            "/context — какой контекст уходит в промпт",
+        ]
+        if bot._rate_limit_enabled:
+            lines.append("/ratelimits — статистика лимитов")
         if bot.todo_manager:
-            lines.append("/todo — показать список дел чата")
-            lines.append("/add_todo <задача> — добавить дело")
-            lines.append("/reminders — активные напоминания")
-            lines.append("/cancel_reminder N — отменить напоминание №N")
+            lines += [
+                "",
+                "📝 Дела",
+                "/add_todo <задача> — добавить дело",
+                "/todo — список дел чата",
+                "Или просто: «запиши …», «надо сделать …», «готово, вычеркни N».",
+            ]
         if bot.reminder_manager:
-            lines.append("/remind <что напомнить> [через N ...] — создать напоминание")
+            lines += [
+                "",
+                "⏰ Напоминания",
+                "/remind <что> [через N …] — напомнить",
+                "/reminders — активные напоминания",
+                "/cancel_reminder N — отменить №N",
+                "Или просто: «напомни через час …».",
+            ]
         if bot.inventory_manager:
-            lines.append("/inventory — показать инвентарь бота")
-            lines.append("/add_inventory <предмет>[: описание] — добавить предмет")
+            lines += [
+                "",
+                "🎒 Инвентарь",
+                "/add_inventory <предмет>[: описание] — дать мне предмет",
+                "/inventory — что у меня есть",
+                "Или просто: «держи кофе», «возьми ключ» — описание и срок годности придумаю сам.",
+            ]
         if bot.learning_manager:
-            lines.append("/learn <тема> — запустить режим обучения")
+            lines += [
+                "",
+                "🎓 Обучение",
+                "/learn <тема> — курс с уроками по расписанию и тестами",
+                "Или просто: «научи меня …», «хочу выучить …».",
+            ]
+        if bot.file_db:
+            lines += [
+                "",
+                "📎 Файлы",
+                "/files — загруженные файлы",
+                "/reset_files — очистить файловую базу",
+            ]
+        if bot._web_search_enabled:
+            lines.append("/web — вкл/выкл веб-поиск в этом чате")
+        if bot.self_memory and is_owner:
+            lines.append("/reset_diary — очистить мой дневник (owner)")
+
+        if is_owner:
+            lines += [
+                "",
+                "👑 Owner",
+                "/erase N — удалить последние N сообщений STM",
+                "/resetall — стереть ВСЮ память бота",
+            ]
+
         await update.message.reply_text("\n".join(lines))
 
     async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,11 +246,6 @@ def create_handlers(bot: BotInstance) -> dict:
 
     async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать последние n сообщений из STM (первое предложение)."""
-        import os
-        owner_id = os.getenv("OWNER_USER_ID", "")
-        if str(update.effective_user.id) != owner_id:
-            return
-
         chat_id = str(update.effective_chat.id)
         n = 10
         if context.args:
@@ -217,9 +278,52 @@ def create_handlers(bot: BotInstance) -> dict:
         s = bot.get_memory_stats(user_id=user_id)
         await update.message.reply_text(f"Факты сброшены.\nLTM: {s['ltm_count']} фактов")
 
-    async def resetall_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Точечное забывание: /forget <что забыть> — удаляет самый похожий факт."""
         user_id = str(update.effective_user.id)
-        if bot.allowed_dm_users and user_id not in bot.allowed_dm_users:
+        raw = update.message.text or ""
+        args = raw.split(" ", 1)[1].strip() if " " in raw else ""
+        if not args:
+            await update.message.reply_text("Использование: /forget <что забыть, например: сон>")
+            return
+        forgotten = await asyncio.to_thread(bot.forget_fact, args, user_id)
+        if forgotten:
+            await update.message.reply_text(f"Забыл: «{forgotten}»")
+        else:
+            await update.message.reply_text("Не нашёл похожего факта в памяти.")
+
+    async def relations_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Социальный граф: связи участников чата."""
+        user_id = str(update.effective_user.id)
+        chat_id = str(update.effective_chat.id)
+        text = await asyncio.to_thread(bot.get_relations_text, user_id, chat_id)
+        await update.message.reply_text(text)
+
+    async def context_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает, какой контекст ушёл бы в промпт — файлом."""
+        import os
+        import tempfile
+        import shutil
+        user_id = str(update.effective_user.id)
+        chat_id = str(update.effective_chat.id)
+        text = await asyncio.to_thread(bot.debug_context, user_id, chat_id)
+        tmp_dir = tempfile.mkdtemp(prefix="ctx_")
+        path = os.path.join(tmp_dir, "context.txt")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            with open(path, "rb") as f:
+                await update.message.reply_document(
+                    document=InputFile(f, filename="context.txt"),
+                    caption="Контекст, который уходит в промпт.",
+                )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    async def resetall_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        import os
+        user_id = str(update.effective_user.id)
+        if user_id not in {bot.owner, os.getenv("OWNER_USER_ID", "")}:
             return
         bot.clear_all_memory()
         await update.message.reply_text("Вся память сброшена.")
@@ -244,10 +348,7 @@ def create_handlers(bot: BotInstance) -> dict:
 
     async def ratelimits_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot._rate_limit_enabled:
-            return
-        import os
-        owner_id = os.getenv("OWNER_USER_ID", "")
-        if str(update.effective_user.id) != owner_id:
+            await update.message.reply_text("Ограничение частоты сообщений выключено для этой персоны.")
             return
         text = bot.get_rate_limit_status()
         await update.message.reply_text(text)
@@ -366,6 +467,19 @@ def create_handlers(bot: BotInstance) -> dict:
         await _run_command(update, "learn",
                            "Использование: /learn <тема>", "learning_manager")
 
+    # Per-chat блокировки: сообщения ОДНОГО чата обрабатываются последовательно,
+    # но разные чаты и slash-команды — параллельно (приложение запущено с
+    # concurrent_updates=True). Без этого два быстрых сообщения из одного чата
+    # гнались между собой за pending-флаги и порядок в STM.
+    _chat_locks: dict = {}
+
+    def _chat_lock(chat_id: str) -> asyncio.Lock:
+        lock = _chat_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _chat_locks[chat_id] = lock
+        return lock
+
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         user_id = str(user.id)
@@ -397,6 +511,13 @@ def create_handlers(bot: BotInstance) -> dict:
             if replied.from_user and replied.from_user.id == context.bot.id:
                 is_reply_to_bot = True
                 reply_to_bot_message_id = replied.message_id
+                # Передаём текст СВОЕГО сообщения, на которое ответили, —
+                # иначе LLM видела только факт reply, но не на какую реплику
+                replied_text = replied.text or replied.caption
+                if replied_text:
+                    reply_ctx = f"[{persona_name}]: {replied_text[:500]}"
+                elif replied.document:
+                    reply_ctx = f"[{persona_name}]: [Файл: {replied.document.file_name or 'без имени'}]"
             else:
                 reply_ctx = extract_reply_context(update, context.bot.id)
 
@@ -411,62 +532,64 @@ def create_handlers(bot: BotInstance) -> dict:
         if not bot.should_respond(text) and not is_reply_to_bot:
             return
 
-        # Pre-check (rate limit, moderation, punish)
-        is_private = update.effective_chat.type == "private"
-        check = bot.pre_check(user_id, text, is_private)
-        if check:
-            if check == "MODERATION_BLOCKED":
-                await _reply_ai(update.message, "*Удар молнии.* Сеанс окончен.")
-            return
-
-        # Strip trigger
-        clean_text = bot.strip_trigger(text)
-        if not clean_text or not clean_text.strip():
-            clean_text = text
-
-        logger.info(f"[{persona_name}] Обработка от {user_id}: {clean_text[:60]}...")
-
-        # Предварительное сообщение (для Арродеса)
-        if persona_name == "arrodes":
-            try:
-                await update.message.reply_text("Поверхность зеркала потемнела...")
-            except Exception:
+        # Дальше — конвейер ответа. Сериализуем по чату: slash-команды и другие
+        # чаты не ждут LLM, но два сообщения одного чата не перехлёстываются.
+        async with _chat_lock(chat_id):
+            # Pre-check (rate limit, moderation, punish) — в потоке, т.к. модерация делает синхронный HTTP-запрос
+            check = await asyncio.to_thread(bot.pre_check, user_id, text, is_private)
+            if check:
+                if check == "MODERATION_BLOCKED":
+                    await _reply_ai(update.message, "*Удар молнии.* Сеанс окончен.")
                 return
 
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            # Strip trigger
+            clean_text = bot.strip_trigger(text)
+            if not clean_text or not clean_text.strip():
+                clean_text = text
 
-        try:
-            user_name = user.first_name or user.username or f"User_{user_id}"
-            user_tag = get_user_tag(user_id)
-            response = await asyncio.to_thread(
-                bot.process_message, clean_text,
-                user_id=user_id, chat_id=chat_id,
-                user_name=user_tag if chat_id != user_id else user_name,
-                reply_context=reply_ctx,
-                reply_to_bot_message_id=reply_to_bot_message_id
-            )
-            logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
-            sent_ids = await _reply_ai(update.message, response)
+            logger.info(f"[{persona_name}] Обработка от {user_id}: {clean_text[:60]}...")
 
-            # Если этот ответ — бот-вопрос (частота уроков/«продолжаем?»), регистрируем его
-            # message_id, чтобы потом понять, ответил ли пользователь reply-ом именно на него.
-            # Флаг per-chat и одноразовый (pop) — при конкурентных чатах чужой флаг
-            # сюда не протечёт.
-            question_kind = bot.pop_pending_question_kind(chat_id)
-            if sent_ids and bot.learning_manager and question_kind:
-                for mid in sent_ids:
-                    bot.learning_manager.register_question_message(chat_id, mid)
+            # Предварительное сообщение (для Арродеса)
+            if persona_name == "arrodes":
+                try:
+                    await update.message.reply_text("Поверхность зеркала потемнела...")
+                except Exception:
+                    return
 
-            # Отправляем списки дел/инвентарь отдельными сообщениями (per-chat бакет)
-            pending = bot.pop_pending_list_messages(chat_id)
-            for msg in pending:
-                await _reply_ai(update.message, msg)
-        except Exception as e:
-            logger.error(f"[{persona_name}] Ошибка: {e}", exc_info=True)
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
             try:
-                await update.message.reply_text("Произошла ошибка. Попробуйте позже.")
-            except Exception:
-                pass
+                user_name = user.first_name or user.username or f"User_{user_id}"
+                user_tag = get_user_tag(user_id)
+                response = await asyncio.to_thread(
+                    bot.process_message, clean_text,
+                    user_id=user_id, chat_id=chat_id,
+                    user_name=user_tag if chat_id != user_id else user_name,
+                    reply_context=reply_ctx,
+                    reply_to_bot_message_id=reply_to_bot_message_id
+                )
+                logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
+                sent_ids = await _reply_ai(update.message, response)
+
+                # Если этот ответ — бот-вопрос (частота уроков/«продолжаем?»), регистрируем его
+                # message_id, чтобы потом понять, ответил ли пользователь reply-ом именно на него.
+                # Флаг per-chat и одноразовый (pop) — при конкурентных чатах чужой флаг
+                # сюда не протечёт.
+                question_kind = bot.pop_pending_question_kind(chat_id)
+                if sent_ids and bot.learning_manager and question_kind:
+                    for mid in sent_ids:
+                        bot.learning_manager.register_question_message(chat_id, mid)
+
+                # Отправляем списки дел/инвентарь отдельными сообщениями (per-chat бакет)
+                pending = bot.pop_pending_list_messages(chat_id)
+                for msg in pending:
+                    await _reply_ai(update.message, msg)
+            except Exception as e:
+                logger.error(f"[{persona_name}] Ошибка: {e}", exc_info=True)
+                try:
+                    await update.message.reply_text("Произошла ошибка. Попробуйте позже.")
+                except Exception:
+                    pass
 
     async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.file_db:
@@ -488,6 +611,8 @@ def create_handlers(bot: BotInstance) -> dict:
         user_id = str(user.id)
         chat_id = str(update.effective_chat.id)
         document = update.message.document
+        # Telegram не гарантирует имя файла у документа
+        filename = document.file_name or f"document_{document.file_unique_id}"
 
         caption_clean = bot.strip_trigger(caption)
 
@@ -495,53 +620,183 @@ def create_handlers(bot: BotInstance) -> dict:
             await update.message.reply_text(f"Файл слишком большой (макс. {bot.max_file_size // 1024 // 1024} МБ)")
             return
 
-        logger.info(f"[{persona_name}] Файл от {user_id}: {document.file_name}")
+        logger.info(f"[{persona_name}] Файл от {user_id}: {filename}")
 
-        file = await context.bot.get_file(document.file_id)
-        file_bytes = await file.download_as_bytearray()
+        # Та же per-chat сериализация, что и для текстовых сообщений
+        async with _chat_lock(chat_id):
+            file = await context.bot.get_file(document.file_id)
+            file_bytes = await file.download_as_bytearray()
 
-        await update.message.reply_text("Читаю файл...")
+            await update.message.reply_text("Читаю файл...")
 
-        from app.core.file_reader import extract_text
-        text = extract_text(bytes(file_bytes), document.file_name)
+            # markitdown и ChromaDB+эмбеддинги — тяжёлые синхронные вызовы, в поток
+            from app.core.file_reader import extract_text
+            text = await asyncio.to_thread(extract_text, bytes(file_bytes), filename)
 
-        if text.startswith(("Ошибка", "Формат", "Не удалось", "Библиотека")):
-            await update.message.reply_text(text)
+            if text.startswith(("Ошибка", "Формат", "Не удалось", "Библиотека")):
+                await update.message.reply_text(text)
+                return
+
+            await asyncio.to_thread(bot.file_db.add_file, user_id, filename, text)
+
+            loaded_files = await asyncio.to_thread(bot.file_db.get_loaded_files, user_id)
+            files_note = f"Загружено файлов: {len(loaded_files)}/{bot.file_db.max_docs}"
+            message_with_file = f"Пользователь отправил файл '{filename}'. {files_note}:\n\n{text}"
+            if caption_clean:
+                message_with_file = f"{caption_clean}\n\n{message_with_file}"
+
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+            try:
+                user_tag = get_user_tag(user_id)
+                response = await asyncio.to_thread(
+                    bot.process_message, message_with_file,
+                    user_id=user_id, chat_id=chat_id,
+                    user_name=user_tag
+                )
+                logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
+                await _reply_ai(update.message, response)
+            except Exception as e:
+                logger.error(f"[{persona_name}] Ошибка файла: {e}", exc_info=True)
+                await update.message.reply_text("Произошла ошибка при обработке файла.")
+
+    async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """OCR/описание изображения через локальную vision-модель (gemma в Ollama)."""
+        caption = update.message.caption or ""
+
+        # Reply на сообщение бота — тоже обрабатываем
+        is_reply_to_bot = False
+        if update.message.reply_to_message:
+            replied = update.message.reply_to_message
+            if replied.from_user and replied.from_user.id == context.bot.id:
+                is_reply_to_bot = True
+
+        if not bot.should_respond(caption) and not is_reply_to_bot:
             return
 
-        bot.file_db.add_file(user_id=user_id, filename=document.file_name, content=text)
+        user = update.effective_user
+        user_id = str(user.id)
+        chat_id = str(update.effective_chat.id)
 
-        loaded_files = bot.file_db.get_loaded_files(user_id)
-        files_note = f"Загружено файлов: {len(loaded_files)}/3"
-        message_with_file = f"Пользователь отправил файл '{document.file_name}'. {files_note}:\n\n{text}"
-        if caption_clean:
-            message_with_file = f"{caption_clean}\n\n{message_with_file}"
+        photo = update.message.photo[-1]  # самый большой из предложенных размеров
+        file = await context.bot.get_file(photo.file_id)
+        image_bytes = bytes(await file.download_as_bytearray())
 
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        caption_clean = bot.strip_trigger(caption)
 
-        try:
-            user_tag = get_user_tag(user_id)
-            response = await asyncio.to_thread(
-                bot.process_message, message_with_file,
-                user_id=user_id, chat_id=chat_id,
-                user_name=user_tag
+        await update.message.reply_text("Смотрю на изображение...")
+
+        # Та же per-chat сериализация, что и для текстовых сообщений
+        async with _chat_lock(chat_id):
+            # Каскад: vision-провайдер основного роутера → локальная gemma
+            ocr_text = await asyncio.to_thread(bot.describe_image, image_bytes, caption_clean)
+            if not ocr_text:
+                if not bot._local_router or not bot._local_router.is_available():
+                    await update.message.reply_text(
+                        "Сейчас не могу обработать изображение — ни одна vision-модель недоступна."
+                    )
+                    return
+                ocr_text = await asyncio.to_thread(bot._local_router.ocr_image, image_bytes, caption_clean)
+            if not ocr_text:
+                await update.message.reply_text("Не удалось прочитать изображение.")
+                return
+
+            message_with_image = (
+                "Пользователь отправил изображение. Его содержимое по версии "
+                f"vision-модели:\n{ocr_text}"
             )
-            logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
-            await _reply_ai(update.message, response)
-        except Exception as e:
-            logger.error(f"[{persona_name}] Ошибка файла: {e}", exc_info=True)
-            await update.message.reply_text("Произошла ошибка при обработке файла.")
+            if caption_clean:
+                message_with_image = f"{caption_clean}\n\n{message_with_image}"
+
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+            try:
+                user_tag = get_user_tag(user_id)
+                response = await asyncio.to_thread(
+                    bot.process_message, message_with_image,
+                    user_id=user_id, chat_id=chat_id,
+                    user_name=user_tag
+                )
+                logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на изображение получен ({len(response)} символов)")
+                await _reply_ai(update.message, response)
+            except Exception as e:
+                logger.error(f"[{persona_name}] Ошибка обработки изображения: {e}", exc_info=True)
+                await update.message.reply_text("Произошла ошибка при обработке изображения.")
 
     async def reset_diary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.self_memory:
             await update.message.reply_text("Личный дневник не активен для этой персоны.")
             return
         user_id = str(update.effective_user.id)
-        if bot.allowed_dm_users and user_id not in bot.allowed_dm_users:
+        import os
+        if user_id not in {bot.owner, os.getenv("OWNER_USER_ID", "")}:
             return
         bot.self_memory.clear_all()
         logger.info(f"[{persona_name}] /reset_diary от {user_id}")
         await update.message.reply_text("Дневник полностью очищен. Эпизоды, архив и наблюдения удалены.")
+
+    async def ltm_privacy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Переключение режима приватности долгосрочной памяти."""
+        user_id = str(update.effective_user.id)
+        arg = (context.args[0].lower().strip() if context.args else "")
+
+        if arg in ("smart", "strict"):
+            mode = bot.set_ltm_privacy(user_id, arg)
+        elif arg:
+            await update.message.reply_text("Использование: /ltm_privacy [smart|strict]")
+            return
+        else:
+            mode = bot.get_ltm_privacy(user_id)
+
+        descriptions = {
+            "smart": (
+                "УМНЫЙ (по умолчанию): публичный профиль (имя, город, хобби, "
+                "питомцы...) бот помнит в любом чате; личные темы — только там, "
+                "где ты о них рассказал."
+            ),
+            "strict": (
+                "СТРОГИЙ: в каждом чате бот помнит о тебе только то, что было "
+                "сказано в этом чате. В новом чате — с чистого листа."
+            ),
+        }
+        prefix = "Режим установлен" if arg else "Текущий режим"
+        await update.message.reply_text(
+            f"{prefix}: {mode.upper()}\n\n{descriptions[mode]}\n\n"
+            "Сменить: /ltm_privacy smart или /ltm_privacy strict"
+        )
+
+    async def ltm_export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Высылает пользователю файл с его долгосрочной памятью — строго в личку."""
+        import os
+        import shutil
+        from telegram.error import Forbidden
+
+        user_id = str(update.effective_user.id)
+        is_private = update.effective_chat.type == "private"
+
+        path = bot.export_ltm_file(user_id)
+        if not path:
+            await update.message.reply_text("В долгосрочной памяти пока нет фактов о тебе.")
+            return
+
+        try:
+            with open(path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=user_id,  # всегда в личные сообщения, даже из группы
+                    document=InputFile(f, filename=os.path.basename(path)),
+                    caption="Твоя долгосрочная память (LTM).",
+                )
+            if not is_private:
+                await update.message.reply_text("Отправил файл тебе в личные сообщения.")
+        except Forbidden:
+            await update.message.reply_text(
+                "Не могу написать первым — начни диалог со мной в личных сообщениях (/start) и повтори команду."
+            )
+        except Exception as e:
+            logger.error(f"[{persona_name}] Ошибка экспорта LTM: {e}", exc_info=True)
+            await update.message.reply_text("Не удалось отправить файл, попробуй позже.")
+        finally:
+            shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
     # Собираем все handlers
     return {
@@ -551,11 +806,16 @@ def create_handlers(bot: BotInstance) -> dict:
         "erase": erase_cmd,
         "last": last_cmd,
         "reset": reset_cmd,
+        "forget": forget_cmd,
+        "context": context_cmd,
+        "relations": relations_cmd,
         "resetall": resetall_cmd,
+        "ltm_privacy": ltm_privacy_cmd,
+        "ltm_export": ltm_export_cmd,
         "reset_diary": reset_diary_cmd if bot.self_memory else None,
         "files": files_cmd if bot.file_db else None,
         "reset_files": reset_files_cmd if bot.file_db else None,
-        "ratelimits": ratelimits_cmd if bot._rate_limit_enabled else None,
+        "ratelimits": ratelimits_cmd,
         "web": web_cmd if bot._web_search_enabled else None,
         "todo": todo_cmd if bot.todo_manager else None,
         "reminders": reminders_cmd if bot.reminder_manager else None,
@@ -567,6 +827,7 @@ def create_handlers(bot: BotInstance) -> dict:
         "learn": learn_cmd if bot.learning_manager else None,
         "handle_message": handle_message,
         "handle_document": handle_document if bot.file_db else None,
+        "handle_photo": handle_photo,
     }
 
 
@@ -597,7 +858,12 @@ def register_handlers(app: Application, bot: BotInstance):
     app.add_handler(CommandHandler("erase", h["erase"]))
     app.add_handler(CommandHandler("last", h["last"]))
     app.add_handler(CommandHandler("reset", h["reset"]))
+    app.add_handler(CommandHandler("forget", h["forget"]))
+    app.add_handler(CommandHandler("context", h["context"]))
+    app.add_handler(CommandHandler("relations", h["relations"]))
     app.add_handler(CommandHandler("resetall", h["resetall"]))
+    app.add_handler(CommandHandler("ltm_privacy", h["ltm_privacy"]))
+    app.add_handler(CommandHandler("ltm_export", h["ltm_export"]))
 
     if h.get("reset_diary"):
         app.add_handler(CommandHandler("reset_diary", h["reset_diary"]))
@@ -643,5 +909,8 @@ def register_handlers(app: Application, bot: BotInstance):
     # Documents
     if h.get("handle_document"):
         app.add_handler(MessageHandler(filters.Document.ALL, h["handle_document"]))
+
+    # Photos (OCR через локальную vision-модель)
+    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, h["handle_photo"]))
 
     return app

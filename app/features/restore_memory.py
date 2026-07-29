@@ -127,8 +127,9 @@ def restore_all(export_dir: str = None) -> dict:
     Возвращает словарь {db_name: количество_загруженных}.
     """
     if export_dir is None:
+        # memory_export/ лежит в корне проекта (app/features/ -> app/ -> корень)
         export_dir = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "memory_export"
         )
 

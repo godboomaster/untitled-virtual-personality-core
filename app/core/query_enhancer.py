@@ -139,8 +139,9 @@ class QueryEnhancer:
         """Чистит ответ LLM от лишних символов и форматирования."""
         # Убираем кавычки
         response = response.strip().strip('"').strip("'")
-        # Убираем markdown
-        response = re.sub(r'\*\*?|\*\*\*|__|_', '', response)
+        # Убираем markdown (одиночные подчёркивания НЕ трогаем —
+        # они легитимны в запросах: user_id, all_MiniLM_L6_v2)
+        response = re.sub(r'\*{1,3}|_{2,}', '', response)
         # Убираем префиксы
         response = re.sub(r'^(запрос|query|поиск|search)[:\s]*', '', response, flags=re.IGNORECASE)
         # Убираем лишние пробелы
