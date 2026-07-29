@@ -1,0 +1,1182 @@
+# Словарь имен Lord of the Mysteries (английский → русский)
+# Формат: "English Name = Русское Имя"
+# Используется ботом Арродес для перевода английских имён в русские
+
+# =====================================================================
+# ПЕРСОНАЖИ
+# =====================================================================
+
+ГЛАВНЫЙ ГЕРОЙ И ЕГО ЛИЧНОСТИ:
+The Fool = Шут (Господин Шут / Мистер Шут)
+The World = Мир (Господин Мир / Мистер Мир)
+Klein Moretti = Клейн Моретти
+Zhou Mingrui = Чжоу Минжуй
+Sherlock Moriarty = Шерлок Мориарти
+Gehrman Sparrow = Герман Спэрроу
+Dwayne Dantès (Dwayne Dantes) = Дуэйн Дантес
+Merlin Hermes = Мерлин Гермес
+
+ЧЛЕНЫ КЛУБА ТАРО:
+Audrey Hall = Одри Холл
+Justice = Справедливость (Мисс Справедливость)
+Alger Wilson = Элджер Уилсон
+The Hanged Man = Повешенный (Мистер Повешенный)
+Derrick Berg = Деррик Берг
+The Sun = Господин Солнце
+Fors Wall = Форс Уолл
+The Magician = Маг (Госпожа Маг)
+Emlyn White = Эмлин Уайт
+The Moon = Господин Луна
+Cattleya = Катлея
+The Hermit = Госпожа Отшельник
+Leonard Mitchell = Леонард Митчелл
+The Star = Господин Звезда
+Xio Derecha = Сио Дереча
+The Judgment = Госпожа Судья
+
+СЕМЬЯ МОРЕТТИ:
+Benson Moretti = Бенсон Моретти
+Melissa Moretti = Мелисса Моретти
+
+НОЧНЫЕ ЯСТРЕБЫ:
+Dunn Smith = Данн Смит
+Daly Simone = Дейли Симон
+Old Neil = Старина Нил
+Frye = Фрай
+Seeka Tron = Сика Трон
+Kenley White = Кенли Уайт
+Rozanne = Розанна
+Orianna = Орианна
+
+ДРУГИЕ ВАЖНЫЕ ПЕРСОНАЖИ:
+Welch McGovern = Уэлч Макговер
+Naya = Ная
+Elliott Vickroy = Эллиотт Викрой
+Franky = Френки
+Butler Klee = Дворецкий Клее
+Edward Steve = Эдвард Стив
+
+Bredt = Бредт
+Scarter = Скартер
+Ray Bieber = Рэй Бибер
+Annie = Энни
+Wendy Smyrin = Венди Смирин
+Quentin Cohen = Квентин Коэн
+Selena Wood = Селена Вуд
+Mr. Wood = Господин Вуд
+Bitsch Mountbatten = Битч Моунтбеттен
+Hanass Vincent = Ханасс Винсент
+Doug = Даг
+Missis Shaud = Миссис Шоуд
+Lord Ye = Е Гонг
+Jenny = Дженни
+Missis Rochelle = Миссис Рошель
+Sir Deweyville = Сэр Деуэйвилл
+Lady Florena = Леди Флорена
+Harvin Stone = Харвин Стоун
+Ince Zangwill = Инс Зангвилл
+Mister Glacis = Мистер Гласис
+Bogda = Богда
+Aiur Harson = Айур Харсон
+Cullen = Каллен
+Younis Kim = Юнис Ким
+Inspector Tolle = Инспектор Толле
+Lawson Darkwade = Лоусон Дарквейд
+Hayley Walker = Хейли Уокер
+Joyce Meyer = Джойс Мейер
+Madam Lorotta = Мадам Лоретта
+Angelica Barrehart = Анжелика Баррехарт
+Borgia = Борджиа
+Duchess Della = герцогиня Делла
+Ademisaul = Адемисаул
+Cesare Francis = Чезаре Френсис
+Sirius Arapis = Сириус Арапис
+Daxter Guderian = Декстер Гудериан
+Swain = Суэйн
+Mrs. Lauwis = Миссис Льюис
+Gawain = Гавэйн
+Salus = Салус
+Detective Henry = Детектив Генри
+Madam Christina = мадам Кристина
+Baron Lamud = Барон Ламуд
+Hood Eugen = Евгений Худ
+Lady Sissi = леди Сисси
+Xaviera Hedda = Ксавьера Хедда
+Zid = Зид
+Scoundrel Gray = Подлец Грей
+Madam Sharon = Мадам Шарон
+John Maynard = Джон Мейнард
+Baron Gramir = Барон Грамир
+Darkholme = Даркхольм
+Noah = Ноя
+Priest Siur = Жрец Сиур
+Celeste = Селеста
+Ace Snake = Эйс Снэйк
+Baron Khoy = Барон Хой
+Aurmir = Аурмир
+Adelaide = Аделаид
+lady Dwayne = леди Дуэйн
+Hitte = Хитте
+Mayor Dennis = Мэр Деннис
+Bacchus = Бахус
+Ian Wright = Ян Райт
+Rosago = Росаго
+Meursault = Мерсо
+Bakerland Jean Madan = Бейкерленд Жан Мадан
+Zreal Viktor Lee = Эзреаль Виктор Ли
+Kaspars Kalinin = Каспар Калинин
+Stelyn Sammer = Стелин Саммер
+Luke Sammer = Люк Саммер
+Leppard = Леппард
+Doragu Gale = Драго Гейл
+Millet Carter = Миллет Картер
+Kance = Канс
+Sergeant Faxine = инспектор Фэксин
+Erica Taylor = Эрика Тейлор
+Julianne = Джулианна
+Mary Gale = Мэри Гейл
+Madam Doris = Мадам Дорис
+Eileen = Эйлин
+Talim Dumont = Талим Дюмон
+Helmosuin = Хельмсуин
+Baronet Pound = Барон Паунд
+Viscount Pound = Виконт Паунд
+Grimm = Гримм
+Black Snake = Чёрный Змей
+Eye of Wisdom = Око Мудрости
+Brody = Броди
+Adol = Адоль
+Kapusky Reid = Капуски Рид
+Bishop Utravsky = Епископ Утравский
+Mike Joseph = Майк Джозеф
+Rafter Pound = Рафтер Паунд
+Detective Stuart = Детектив Стюарт
+Detective Kaslana = Детектив Каслана
+Lopez = Лопес
+Siber = Сибер
+Zeon = Зион
+Burton = Бертон
+Gavin = Гэвин
+Lydia = Лидия
+Floren Sauron = Флорен Саурон
+Sir Ders Shaw = Сэр Дере Шоу
+Kevin = Кевин
+Ailment Maiden Tracy = Дева Болезней Трейси
+Tracy = Трейси
+Queen Mystic = Королева Мистик
+Admiral of Stars Cattleya = Адмирал Звёзд Каттлея
+Werewolf Tyre = Оборотень Тир
+Old Kohler = Старина Колер
+Abraham = Абрахам
+Lady Norma = Леди Норма
+Max Livermore = Макс Ливермор
+Escalante Oseleka = Оселека Эскаланте
+Hilbert Alucard = Алукард Гилберт
+Shaman King Klarman = Король Шаманов Кларман
+Wraith Steve = Призрак Стив
+Zombie Jason = Зомби Джейсон
+Rogo Colloman = Рого Коулман
+Lord Aguesid Negan = лорд Агусид Неган
+Harras = Харри
+Mister Harras = Мистер Харри
+Darc Regence = Дарк Регенс
+Aulisa = Аулиса
+Freja = Фрея
+Liv = Лив
+Belize = Белиз
+Odysseus = Одиссей
+Soul Assurer Soest = Усмиритель Душ Соэст
+Soest = Соэст
+Framis Cage = Фрэмис Кейдж
+Aiflor = Айфлор
+Laubero = Лаберо
+Venithan = Венитан
+Stephen Hampres = Стивен Хампрее
+Murray = Мюррей
+Fabian = Фабиан
+Christine = Кристина
+Uddel = Уддел
+Traveler Botis = Путешественник Ботис
+Botis = Ботис
+Kance Leerhsen = Канс Лирсен
+Tamara = Тамара
+Lawyer Pacheco = адвокат Пачико
+Pacheco Dwayne = Дуэйн Пачико
+Roselle Gustav = Розель Гюстав
+Huang Tao = Хуан Тао
+Emperor Roselle = Император Розель
+Amon = Амон
+Zaratul = Заратул
+Frank Lee = Френк Ли
+Frank Lee = Фрэнк Ли
+Pallez Zoroast = Паллез Зороаст (паразит Леонарда)
+Will Auceptin = Уилл Осептин
+Bernadette Gustav = Бернадетта Гюстав
+Ciel Gustav = Сиель Гюстав
+Bornova Gustav = Борнова Гюстав
+Edwina Edwards = Эдвина Эдвардс
+Vice Admiral Iceberg Edwina Edwards = контр-адмирал Айсберг Эдвина Эдвардс
+Helene = Элен
+Kalat = Калат
+Calamity Cohinem = Бедствие Кохинем
+Mithor King = Мифор Кинг
+Strongman Ozil = Силач Озиль
+Denise = Дениз
+Giant Queen Omebella = Королева Великанов Омебелла
+Leticia Dolera = Летиция Долера
+Azik Eggers = Азик Эггерс
+Mr. Azik = Мистер Азик
+Sharron = Шэррон (Шеррон)
+Maric = Марик
+Danitz Dubois = Даниц Дюбуа
+Ancient Sun God = Древний Бог Солнца
+Adam = Адам
+Amon = Амон
+Anderson Hood = Андерсон Худ
+Hazel Macht = Хейзел Махт
+Aguesid Negan = Агезид Неган
+Pallas Negan = Паллас Неган
+Duke Negan = Герцог Неган
+Lovia = Ловия Тифанни
+Arrodes = Арродес
+Lanevus = Ланевус
+Tris (Instigator Tris) = Трис (Подстрекатель Трис)
+Trissy = Трисси
+Colin Iliad = Колин Илиад
+Aaron Ceres = Аарон Церес
+Aguesid Negan = Агесид Неган
+Aiur Moria = Айур Мория
+Alfred Hall = Альфред Холл
+Alista Tudor = Алиста Тюдор
+Alzuhod = Алзуход
+Amyrius Rieveldt = Амириус Ривелдт
+Admiral Amyrius = Адмирал Амириус
+Angelica Barrehart = Анджелика Баррехарт
+Argos = Аргос
+Botis = Ботис
+Caitlyn Hall = Кейтлин Холл
+Capim = Капим
+Celestial Worthy of Heaven and Earth for Blessings = Небесный Достойный Небес и Земли для Благословений
+The Celestial Worthy = Небожитель
+Crestet Cesimir = Крестет Цеземир
+Cynthia = Синтия
+Daisy = Дейзи
+Davy Raymond = Дэйви Реймонд
+Dorian Gray Abraham = Дориан Грей Абрахам
+Dorian Gray = Дориан Грей
+Duke Negan = Герцог Неган
+Earl Hall = граф Холл
+Edessak Augustus = Эдесак Август
+Prince Edessak = принц Эдесак
+Elizabeth = Элизабет
+Ernes Boyar = Эрнес Бойар
+Fabian = Фабиан
+Flora Jacob = Флора Яков
+George Augustus III = Георг Август III (Король Август III)
+Glaint = Глейнт (виконт Глейнт)
+Grove Augustus = Гроув Август
+Helene = Элен
+Henry Augustus I = Генри Август I
+Hibbert Hall = Хибберт Холл
+Hidden Sage = Скрытый Мудрец
+Hood Eugen = Худ Юджин
+Horamick Haydn = Хорамик Хайдн
+Archbishop Horamick Haydn = Архиепископ Хорамик Хайдн
+Howl Constantine = Хаул Константин
+Hvin Rambis = Хвин Рамбис
+Ikanser Bernard = Икансер Бернар
+Inextinguishable Ravings = Рэп Изначального
+Isengard Stanton = Изенгард Стентон
+Jacob = Яков
+Jahn Kottman = Ян Коттман
+Sea King Jahn Kottman = Морской Король Ян Коттман
+Kovaro = Коваро
+Blue Eyes Meath = Голубоглазый Мэт
+Bourdi = Бурди
+Zangmo = Зангмо
+Jimmy Necker = Джимми Никкер
+Edmonton = Эдмонтон
+John Smith = Джон Смит
+Countess Wawrinka = Графиня Вавринка
+Jodeson = Джодсон
+Flowery Bow Tie Jodeson = Джодсон Цветастая Бабочка
+Crazy Captain Connors Viktor = Сумасшедший капитан Виктор Коннорс
+Connors Viktor = Виктор Коннорс
+Ed Sheeran = Эд Ширан
+Deniel = Даниэль
+Bilt Brando = Билт Брандо
+Miss Cynthia = мисс Синтия
+Secretary Luan = Секретарь Луань
+Luan = Луань
+Aston Rieveldt = Астон Ривельдт
+Unaging Katarina Pellè = Вечно Юная Демонесса Катарина Пелле
+Unaging Demoness = Вечно Юная Демонесса Катарина Пелле
+Katarina Pellè = Катарина Пелле
+Flight Ken = Летящий Кен
+Sothoth Yann = Сотот Янн
+Roy King = Рой Кинг
+Carnot = Карно
+Oz Kent = Оз Кент
+Fate Councilor Ricciardo = Советника Рикардо
+Joanna = Джоанна
+Earl Rieveldt = Граф Ривельдт
+Gravia = Гравиа
+Saint of Darkness Leomaster = Тёмный Святой Леомастер
+Leomaster = Леомастер
+Boatswain Nina = боцман Нина
+Bloodless Heath Doyle = Бескровный Хит Дойл
+Bloodless Doyle = Бескровный Дойл
+Michele Deuth = Мишель Дьют
+Molsona = Молсона
+Navigator Ottolov = штурман Оттолов
+Slaughterer Kircheis = Мясник Кирхайс
+Gareth = Гарет
+Rus Báthory = Рус Батори
+Lindelira = Линделира
+Sinbad Volentier = Синбад Волентье
+Galis Kevin = Галис Кэвин
+Windsor Behring = Виндзор Бэринг
+Argos = Аргос
+Jason Beria = Джейсон Бериа
+Patrick Jason Beria = Патрик Джейсон Бериа
+Augustus = Август
+Joyce Meyer = Джойс Мейер
+Jurgen Cooper = Юрген Купер
+Kalvetua = Калветуа (Морской бог Калветуа)
+Kaslana = Каслана
+Katarina Pelle = Катарина Пелле
+Kotar = Котар
+Lanevus = Ланевус
+Megose = Мегоуз
+Medici = Медичи
+Nast Solomon = Наст Соломон
+Savigny Solomon = Савиньи Соломон
+Night Emperor = Ночной Император
+Ouroboros = Уроборос
+Phoenix Ancestor Gregrace = Феникс-Предок Грегрейс
+Phoenix Ancestor Gregrace = Предок Феникса Грейгрейс
+Gregrace = Грейгрейс
+Primordial Demoness Cheek = Первородная Демонесса Чик
+Qilangos = Килангос (Адмирал Килангос)
+Reinette Tinekerr = Рейнетт Тинекерр
+Riana = Риана 
+Madam Riana = Мадам Риана
+Sasrir = Сасрир
+Dark Angel Sasrir = Тёмный Ангел Сасрир
+Sea God Kalvetua = Морской Бог Калветуа
+Nibbs Odora = Ниббс Одора
+Cosmi Odora = Косми Одора
+Malmouth = Малмут
+Lockhart Siakam = Сиакам Локхарт
+Elven Songster Siatas = Эльфийская Певица Сиатас
+Siatas = Сиатас
+King of the North Ulyssan = Король Севера Улиссан
+Ulyssan = Улиссан
+Viscount Mobet Zoroast = виконт Мабет Зороаст
+Mobet Zoroast = Мабет Зороаст
+Disciplinary Paladin Frunziar = Паладин Порядка Фрунзиар
+Frunziar = Фрунзиар
+Snowman = Снеговик
+Singer Orpheus = Певец Орфей
+Gourmet Bru Walls = Гурмэ Бри Уоллс
+Barrel Daniels = Бочка Дэниэлс
+Carlson = Карлсон
+Andariel = Андариэль
+Nois = Ноис
+Soest = Соест
+Susie = Сьюзи
+Trissy = Трисси
+Trissy Cheek = Трисси Чик
+Lady Despair = Леди Отчаяния
+Funkel = Фанкель
+Saint Anthony Stevenson = святой Энтони Стивенсон
+Utravsky = Утварски (Отец Утварски)
+Sanguine Queen Lilith = Королева Сангвинов Лилит
+Lilith = Лилит
+Queen Auernia = Королева Ауэрния
+Auernia = Ауэрния
+Haim = Хаим
+Baelen = Бален
+Blazing Danitz = Пламенный Даниц
+Elland Kag = Элланд Каг
+Uncle Cleves = дядя Кливс
+Cleves = Кливс
+Steel Maveti = Стальной Мавети
+Denton = Дентон
+Donna = Донна
+Bishop Millet = епископ Миллет
+Cecile = Сесиль
+Wendt = Вендт
+Blood Brambles Hendry = Кровавая Ежевика Хендри
+Old Quinn = Старый Куинн
+Sea Eagle Logan = Морской Орёл Логан
+Urdi Branch = Урди Бранч
+Teague = Тиг
+Cordoba Roye = Кордоба Рой
+Paavo Court = Паво Курт
+White Shark Hamilton = Белая Акула Гамильтон
+Hamilton = Гамильтон
+Baron Waymandy = Барон Вэйманди
+Blood Admiral Senor = Кровавый адмирал Сенор
+Blood Senor = Кровавый Сенор
+Senor = Сенор
+King of Immortality Agalito = Король Бессмертия Агалито
+Agalito = Агалито
+Lardero = Лардеро
+Diocese Bishop Chogo = Епископ епархии Чого
+Admiral Hell Ludwell = адмирал Ада Людвелл
+Melanie = Мелани
+Davy Raymond = Дейви Рэймонд
+Silver Coin Viper Oder = Орден Серебряной Гадюки
+Aville = Авиль
+
+Viscount Glaint = Виконт Глейнт
+Dark Emperor = Тёмный Император
+Darkwill = Дарквилл
+Death God = Бог Смерти
+Demon Wolf Flegrea = Демонический Волк Флегреа
+Devil Monarch Farbauti = Дьявольский монарх Фарбауди
+Dragon of Imagination Ankewelt = Дракон Воображения Анкевельт
+Ankewelt = Анкевельт
+Elf King Soniathrym = Эльфийский Король Сонитрим
+Soniathrym = Сонитрим
+Eternal Blazing Sun = Вечно Пылающее Солнце
+Giant King Aurumir = Король Гигантов Аурумир
+God of Combat = Бог Битв
+Mr. Door = Господин Дверь (Мистер Дверь)
+Mutated King Kvastir = Мутировавший Король Квастир
+Numinous Episcopate = Нуминозный епископат
+Phoenix Ancestor = Предок Феникс
+Primordial Demoness = Первородная Демонесса
+Rose School of Thought = Школа Розы Мышления
+Black Emperor = Тёмный Император
+
+
+# =====================================================================
+# ПОСЛЕДОВАТЕЛЬНОСТИ ПУТЕЙ - начинается с 9, заканчивается 0 (бог)
+# =====================================================================
+
+ПУТЬ ШУТА (Fool Pathway):
+Fool (Pathway) = Шут
+Sequence 0 - The Fool = Последовательность 0 - Шут
+Sequence 1 - Attendant of Mysteries = Последовательность 1 - Служитель Тайн
+Sequence 2 - Miracle Invoker = Последовательность 2 - Чудотворец
+Sequence 3 - Scholar of Yore = Последовательность 3 - Знаток Былого
+Sequence 4 - Bizarro Sorcerer = Последовательность 4 - Эксцентричный Колдун
+Sequence 5 - Marionettist = Последовательность 5 - Марионеточник
+Sequence 6 - Faceless = Последовательность 6 - Безликий
+Sequence 7 - Magician = Последовательность 7 - Фокусник
+Sequence 8 - Clown = Последовательность 8 - Клоун
+Sequence 9 - Seer = Последовательность 9 - Провидец
+Attendant of Mysteries = Служитель Тайн
+Miracle Invoker = Чудотворец
+Scholar of Yore = Знаток Былого
+Bizarro Sorcerer = Эксцентричный Колдун
+Marionettist = Марионеточник
+Faceless = Безликий
+Magician = Фокусник
+Clown = Клоун
+Seer = Провидец
+
+ПУТЬ ОШИБКИ (Error Pathway):
+Error (Pathway) = Ошибка
+Sequence 0 - Error = Последовательность 0 - Ошибка
+Sequence 1 - Time Worm = Последовательность 1 - Червь Времени
+Sequence 2 - Fate Trojan = Последовательность 2 - Троянский Конь Судьбы
+Sequence 3 - Mentor of Deceit = Последовательность 3 - Наставник Обмана
+Sequence 4 - Parasite = Последовательность 4 - Паразит
+Sequence 5 - Dream Stealer = Последовательность 5 - Похититель Снов
+Sequence 6 - Prometheus = Последовательность 6 - Прометей
+Sequence 7 - Cryptologist = Последовательность 7 - Криптолог
+Sequence 8 - Swindler = Последовательность 8 - Мошенник
+Sequence 9 - Marauder = Последовательность 9 - Мародёр
+Time Worm = Червь Времени
+Fate Trojan = Троянский Конь Судьбы
+Mentor of Deceit = Наставник Обмана
+Parasite = Паразит
+Dream Stealer = Похититель Снов
+Prometheus = Прометей
+Cryptologist = Криптолог
+Swindler = Мошенник
+Marauder = Мародёр
+
+ПУТЬ СОЛНЦА (Sun Pathway):
+Sun (Pathway) = Солнце
+Sequence 0 - Sun = Последовательность 0 - Солнце
+Sequence 1 - White Angel = Последовательность 1 - Белый Ангел
+Sequence 2 - Light Seeker = Последовательность 2 - Искатель Света
+Sequence 3 - Justice Mentor = Последовательность 3 - Наставник Справедливости
+Sequence 4 - Unshadowed = Последовательность 4 - Незатенённый
+Sequence 5 - Light Priest = Последовательность 5 - Жрец Света
+Sequence 6 - Notary = Последовательность 6 - Нотариус
+Sequence 7 - Solar High Priest = Последовательность 7 - Служитель Солнца
+Sequence 8 - Light Suppliant = Последовательность 8 - Проситель Света
+Sequence 9 - Bard = Последовательность 9 - Бард
+White Angel = Белый Ангел
+Light Seeker = Искатель Света
+Justice Mentor = Наставник Справедливости
+Unshadowed = Незатенённый
+Light Priest = Жрец Света
+Notary = Нотариус
+Solar High Priest = Служитель Солнца
+Light Suppliant = Проситель Света
+Bard = Бард
+
+ПУТЬ ВИЗИОНЕРА (Visionary Pathway):
+Visionary (Pathway) = Визионер
+Sequence 0 - Visionary = Последовательность 0 - Визионер
+Sequence 1 - Author = Последовательность 1 - Автор
+Sequence 2 - Discerner = Последовательность 2 - Проницатель
+Sequence 3 - Dream Weaver = Последовательность 3 - Ткач Снов
+Sequence 4 - Manipulator = Последовательность 4 - Манипулятор
+Sequence 5 - Dreamwalker = Последовательность 5 - Сноходец
+Sequence 6 - Hypnotist = Последовательность 6 - Гипнотизёр
+Sequence 7 - Psychiatrist = Последовательность 7 - Психиатр
+Sequence 8 - Telepathist = Последовательность 8 - Телепат
+Sequence 9 - Spectator = Последовательность 9 - Зритель
+Author = Автор
+Discerner = Проницатель
+Dream Weaver = Ткач Снов
+Manipulator = Манипулятор
+Dreamwalker = Сноходец
+Hypnotist = Гипнотизёр
+Psychiatrist = Психиатр
+Telepathist = Телепат
+Spectator = Зритель
+
+ПУТЬ ТИРАНА (Tyrant Pathway):
+Tyrant (Pathway) = Тиран
+Sequence 0 - Tyrant = Последовательность 0 - Тиран
+Sequence 1 - Thunder God = Последовательность 1 - Бог Грома
+Sequence 2 - Calamity = Последовательность 2 - Бедствие
+Sequence 3 - Sea King = Последовательность 3 - Морской Король
+Sequence 4 - Cataclysm Priest = Последовательность 4 - Жрец Катаклизма
+Sequence 5 - Ocean Singer = Последовательность 5 - Певец Океана
+Sequence 6 - Wind-Blessed = Последовательность 6 - Благословлённый Ветром
+Sequence 7 - Sailor = Последовательность 7 - Мореплаватель (Моряк)
+Sequence 8 - Folk of Rage = Последовательность 8 - Народ Ярости
+Sequence 9 - Sailor = Последовательность 9 - Моряк
+Thunder God = Бог Грома
+Calamity = Бедствие
+Sea King = Морской Король
+Cataclysm Priest = Жрец Катаклизма
+Ocean Singer = Певец Океана
+Wind-Blessed = Благословлённый Ветром
+Navigator = Мореплаватель
+Folk of Rage = Народ Ярости
+
+ПУТЬ БЕЛОЙ БАШНИ (White Tower Pathway):
+White Tower (Pathway) = Белая Башня
+Sequence 0 - White Tower = Последовательность 0 - Белая Башня
+Sequence 1 - All-Seeing Eye = Последовательность 1 - Всевидящее Око
+Sequence 2 - Angel of Wisdom = Последовательность 2 - Ангел Мудрости
+Sequence 3 - Knowledgeable = Последовательность 3 - Познающий
+Sequence 4 - Augur = Последовательность 4 - Предсказатель
+Sequence 5 - Mystic Magister = Последовательность 5 - Магистр Мистицизма
+Sequence 6 - Polymath = Последовательность 6 - Полимат
+Sequence 7 - Detective = Последовательность 7 - Детектив
+Sequence 8 - Rational Apprentice = Последовательность 8 - Ученик Рациональности
+Sequence 9 - Reader = Последовательность 9 - Читатель
+All-Seeing Eye = Всевидящее Око
+Angel of Wisdom = Ангел Мудрости
+Knowledgeable = Познающий
+Augur = Предсказатель
+Mystic Magister = Магистр Мистицизма
+Polymath = Полимат
+Detective = Детектив
+Rational Apprentice = Ученик Рациональности
+Reader = Читатель
+
+ПУТЬ ПОВЕШЕННОГО (Hanged Man Pathway):
+Hanged Man (Pathway) = Повешенный
+Sequence 0 - Hanged Man = Последовательность 0 - Повешенный
+Sequence 1 - Dark Angel = Последовательность 1 - Тёмный Ангел
+Sequence 2 - Impious Presbyter = Последовательность 2 - Нечестивый Пресвитер
+Sequence 3 - Tripartite Templar = Последовательность 3 - Тройственный Тамплиер
+Sequence 4 - Black Knight = Последовательность 4 - Чёрный Рыцарь
+Sequence 5 - Shepherd = Последовательность 5 - Пастырь
+Sequence 6 - Rose Bishop = Последовательность 6 - Епископ Роз
+Sequence 7 - Shadow Ascetic = Последовательность 7 - Теневой Подвижник
+Sequence 8 - Listener = Последовательность 8 - Слушатель
+Sequence 9 - Secrets Suppliant = Последовательность 9 - Проситель Секретов
+Dark Angel = Тёмный Ангел
+Impious Presbyter = Нечестивый Пресвитер
+Tripartite Templar = Тройственный Тамплиер
+Black Knight = Чёрный Рыцарь
+Shepherd = Пастырь
+Rose Bishop = Епископ Роз
+Shadow Ascetic = Теневой Подвижник
+Listener = Слушатель
+Secrets Suppliant = Проситель Секретов
+
+ПУТЬ СМЕРТИ (Death Pathway):
+Death (Pathway) = Смерть
+Sequence 0 - Death = Последовательность 0 - Смерть
+Sequence 1 - Pale Emperor = Последовательность 1 - Бледный Император
+Sequence 2 - Death Consul = Последовательность 2 - Консул Смерти
+Sequence 3 - Ferryman = Последовательность 3 - Паромщик
+Sequence 4 - Undying = Последовательность 4 - Неумирающий
+Sequence 5 - Gatekeeper = Последовательность 5 - Привратник
+Sequence 6 - Soul Guide = Последовательность 6 - Проводник Душ
+Sequence 7 - Spirit Medium = Последовательность 7 - Духовный Медиум
+Sequence 8 - Gravedigger = Последовательность 8 - Могильщик
+Sequence 9 - Corpse Collector = Последовательность 9 - Собиратель Трупов
+Pale Emperor = Бледный Император
+Death Consul = Консул Смерти
+Ferryman = Паромщик
+Undying = Неумирающий
+Gatekeeper = Привратник
+Soul Guide = Проводник Душ
+Spirit Medium = Духовный Медиум
+Gravedigger = Могильщик
+Corpse Collector = Собиратель Трупов
+
+ПУТЬ ТЬМЫ (Darkness Pathway):
+Darkness (Pathway) = Тьма
+Sequence 0 - Darkness = Последовательность 0 - Тьма
+Sequence 1 - Calamity Knight = Последовательность 1 - Рыцарь Несчастья
+Sequence 2 - Concealment Servant = Последовательность 2 - Служитель Сокрытия
+Sequence 3 - Horror Bishop = Последовательность 3 - Епископ Ужаса
+Sequence 4 - Nightwatcher = Последовательность 4 - Ночной Страж
+Sequence 5 - Spirit Warlock = Последовательность 5 - Духовный Маг
+Sequence 6 - Soul Exorcist = Последовательность 6 - Увещеватель Душ
+Sequence 7 - Nightmare = Последовательность 7 - Кошмар
+Sequence 8 - Midnight Poet = Последовательность 8 - Полуночный Поэт
+Sequence 9 - Sleepless = Последовательность 9 - Бессонный
+Calamity Knight = Рыцарь Несчастья
+Concealment Servant = Служитель Сокрытия
+Horror Bishop = Епископ Ужаса
+Nightwatcher = Ночной Страж
+Spirit Warlock = Духовный Маг
+Soul Exorcist = Увещеватель Душ
+Nightmare = Кошмар
+Midnight Poet = Полуночный Поэт
+Sleepless = Бессонный
+
+ПУТЬ СУМЕРЕЧНОГО ГИГАНТА (Twilight Giant Pathway):
+Twilight Giant (Pathway) = Сумеречный Гигант
+Sequence 0 - Twilight Giant = Последовательность 0 - Сумеречный Гигант
+Sequence 1 - God's Hand = Последовательность 1 - Длань Бога
+Sequence 2 - Glorified = Последовательность 2 - Прославленный
+Sequence 3 - Silver Knight = Последовательность 3 - Серебряный Рыцарь
+Sequence 4 - Demon Hunter = Последовательность 4 - Охотник на демонов
+Sequence 5 - Guardian = Последовательность 5 - Страж
+Sequence 6 - Dawn Knight = Последовательность 6 - Рыцарь Рассвета
+Sequence 7 - Weapon Master = Последовательность 7 - Мастер Оружия
+Sequence 8 - Pugilist = Последовательность 8 - Борец
+Sequence 9 - Warrior = Последовательность 9 - Воин
+God's Hand = Длань Бога
+Glorified = Прославленный
+Silver Knight = Серебряный Рыцарь
+Demon Hunter = Охотник на демонов
+Guardian = Страж
+Dawn Knight = Рыцарь Рассвета
+Weapon Master = Мастер Оружия
+Pugilist = Борец
+Warrior = Воин
+
+ПУТЬ КОЛЕСА ФОРТУНЫ (Wheel of Fortune Pathway):
+Wheel of Fortune (Pathway) = Колесо Фортуны
+Sequence 0 - Wheel of Fortune = Последовательность 0 - Колесо Фортуны
+Sequence 1 - Mercury Snake = Последовательность 1 - Змей Меркурия
+Sequence 2 - Soothsayer = Последовательность 2 - Прорицатель
+Sequence 3 - Chaos Wanderer = Последовательность 3 - Странник Хаоса
+Sequence 4 - Misfortune Mage = Последовательность 4 - Маг Неудачи
+Sequence 5 - Victor = Последовательность 5 - Победитель
+Sequence 6 - Calamity Priest = Последовательность 6 - Жрец Бедствий
+Sequence 7 - Lucky One = Последовательность 7 - Счастливчик
+Sequence 8 - Automaton = Последовательность 8 - Робот
+Sequence 9 - Monster = Последовательность 9 - Монстр
+Mercury Snake = Змей Меркурия
+Soothsayer = Прорицатель
+Chaos Wanderer = Странник Хаоса
+Misfortune Mage = Маг Неудачи
+Victor = Победитель
+Calamity Priest = Жрец Бедствий
+Lucky One = Счастливчик
+Automaton = Робот
+Monster = Монстр
+
+ПУТЬ ДЕМОНЕССЫ ХАОСА (Demoness Pathway):
+Demoness Pathway (Pathway) = Демонесса Хаоса
+Sequence 0 - Demoness of Chaos = Последовательность 0 - Демонесса Хаоса
+Sequence 1 - Demoness of Apocalypse = Последовательность 1 - Демонесса Апокалипсиса
+Sequence 2 - Demoness of Calamity = Последовательность 2 - Демонесса Катастрофы
+Sequence 3 - Demoness of Agelessness = Последовательность 3 - Демонесса Нестарения
+Sequence 4 - Demoness of Despair = Последовательность 4 - Демонесса Отчаяния
+Sequence 5 - Demoness of Disease = Последовательность 5 - Демонесса Болезни
+Sequence 6 - Demoness of Pleasure = Последовательность 6 - Демонесса Наслаждения
+Sequence 7 - Witch = Последовательность 7 - Ведьма
+Sequence 8 - Instigator = Последовательность 8 - Подстрекатель
+Sequence 9 - Assassin = Последовательность 9 - Ассасин
+Demoness of Chaos = Демонесса Хаоса
+Demoness of Apocalypse = Демонесса Апокалипсиса
+Demoness of Calamity = Демонесса Катастрофы
+Demoness of Agelessness = Демонесса Нестарения
+Demoness of Despair = Демонесса Отчаяния
+Demoness of Disease = Демонесса Болезни
+Demoness of Pleasure = Демонесса Наслаждения
+Witch = Ведьма
+Instigator = Подстрекатель
+Assassin = Ассасин
+
+ПУТЬ КРАСНОГО ЖРЕЦА (Red Priest Pathway):
+Red Priest (Pathway) = Красный Жрец
+Sequence 0 - Red Priest = Последовательность 0 - Красный Жрец
+Sequence 1 - Conqueror = Последовательность 1 - Завоеватель
+Sequence 2 - Weather Warlock = Последовательность 2 - Погодный Колдун
+Sequence 3 - War Bishop = Последовательность 3 - Епископ Войны
+Sequence 4 - Iron-Blood Knight = Последовательность 4 - Железнокровный Рыцарь
+Sequence 5 - Reaper = Последовательность 5 - Жнец
+Sequence 6 - Conspiracist = Последовательность 6 - Заговорщик
+Sequence 7 - Pyromaniac = Последовательность 7 - Пироманьяк
+Sequence 8 - Provoker = Последовательность 8 - Провокатор
+Sequence 9 - Hunter = Последовательность 9 - Охотник
+Conqueror = Завоеватель
+Weather Warlock = Погодный Колдун
+War Bishop = Епископ Войны
+Iron-Blood Knight = Железнокровный Рыцарь
+Reaper = Жнец
+Conspiracist = Заговорщик
+Pyromaniac = Пироманьяк
+Provoker = Провокатор
+Hunter = Охотник
+
+ПУТЬ ЛУНЫ (Moon Pathway):
+Moon (Pathway) = Луна
+Sequence 0 - Moon = Последовательность 0 - Луна
+Sequence 1 - Goddess of Beauty = Последовательность 1 - Богиня Красоты
+Sequence 2 - Life Giver = Последовательность 2 - Дарующий Жизнь
+Sequence 3 - Supre Caller = Последовательность 3 - Высший Призыватель
+Sequence 4 - Shaman King = Последовательность 4 - Король Шаманов
+Sequence 5 - Scarlet Scholar = Последовательность 5 - Алый Учёный
+Sequence 6 - Potions Professor = Последовательность 6 - Профессор Зелий
+Sequence 7 - Vampire = Последовательность 7 - Вампир
+Sequence 8 - Beast Tamer = Последовательность 8 - Укротитель Зверей
+Sequence 9 - Apothecary = Последовательность 9 - Аптекарь
+Goddess of Beauty = Богиня Красоты
+Life Giver = Дарующий Жизнь
+Supre Caller = Высший Призыватель
+Shaman King = Король Шаманов
+Scarlet Scholar = Алый Учёный
+Potions Professor = Профессор Зелий
+Vampire = Вампир
+Beast Tamer = Укротитель Зверей
+Apothecary = Аптекарь
+
+ПУТЬ МАТЕРИ (Mother Pathway):
+Mother (Pathway) = Мать
+Sequence 0 - Mother = Последовательность 0 - Мать
+Sequence 1 - Nature's Path = Последовательность 1 - Идущий по Природе
+Sequence 2 - Desolate Matriarch = Последовательность 2 - Опустошённый Матриарх
+Sequence 3 - Coffin Carrier = Последовательность 3 - Несущий Гроб
+Sequence 4 - Classic Alchemist = Последовательность 4 - Классический Алхимик
+Sequence 5 - Druid = Последовательность 5 - Друид
+Sequence 6 - Biologist = Последовательность 6 - Биолог
+Sequence 7 - Harvest Priest = Последовательность 7 - Жрец Урожая
+Sequence 8 - Doctor = Последовательность 8 - Доктор
+Sequence 9 - Planter = Последовательность 9 - Плантатор
+Nature's Path = Идущий по Природе
+Desolate Matriarch = Опустошённый Матриарх
+Coffin Carrier = Несущий Гроб
+Classic Alchemist = Классический Алхимик
+Druid = Друид
+Biologist = Биолог
+Harvest Priest = Жрец Урожая
+Doctor = Доктор
+Planter = Плантатор
+
+ПУТЬ ОТШЕЛЬНИКА (Hermit Pathway):
+Hermit (Pathway) = Отшельник
+Sequence 0 - Hermit = Последовательность 0 - Отшельник
+Sequence 1 - Knowledge Emperor = Последовательность 1 - Император Знаний
+Sequence 2 - Sage = Последовательность 2 - Мудрец
+Sequence 3 - Clairvoyant = Последовательность 3 - Ясновидящий
+Sequence 4 - Mystikologist = Последовательность 4 - Мистиколог
+Sequence 5 - Constellation Master = Последовательность 5 - Мастер Созвездий
+Sequence 6 - Scroll Professor = Последовательность 6 - Профессор по Свиткам
+Sequence 7 - Warlock = Последовательность 7 - Колдун
+Sequence 8 - Melee Scholar = Последовательность 8 - Учёный Ближнего Боя
+Sequence 9 - Mystery Priest = Последовательность 9 - Жрец Тайн
+Knowledge Emperor = Император Знаний
+Sage = Мудрец
+Clairvoyant = Ясновидящий
+Mystikologist = Мистиколог
+Constellation Master = Мастер Созвездий
+Scroll Professor = Профессор по Свиткам
+Warlock = Колдун
+Melee Scholar = Учёный Ближнего Боя
+Mystery Priest = Жрец Тайн
+
+ПУТЬ ПАРАГОНА (Paragon Pathway):
+Paragon (Pathway) = Парагон
+Sequence 0 - Paragon = Последовательность 0 - Парагон
+Sequence 1 - Luminary = Последовательность 1 - Просветитель
+Sequence 2 - Knowledge Magister = Последовательность 2 - Магистр Знаний
+Sequence 3 - Mystic Scholar = Последовательность 3 - Мистический Учёный
+Sequence 4 - Alchemist = Последовательность 4 - Алхимик
+Sequence 5 - Astronomer = Последовательность 5 - Астроном
+Sequence 6 - Artisan = Последовательность 6 - Ремесленник
+Sequence 7 - Appraiser = Последовательность 7 - Оценщик
+Sequence 8 - Archaeologist = Последовательность 8 - Археолог
+Sequence 9 - Scholar = Последовательность 9 - Учёный
+Luminary = Просветитель
+Knowledge Magister = Магистр Знаний
+Mystic Scholar = Мистический Учёный
+Alchemist = Алхимик
+Astronomer = Астроном
+Artisan = Ремесленник
+Appraiser = Оценщик
+Archaeologist = Археолог
+Scholar = Учёный
+
+ПУТЬ БЕЗДНЫ (Abyss Pathway):
+Abyss (Pathway) = Бездна
+Sequence 0 - Abyss = Последовательность 0 - Бездна
+Sequence 1 - Impure Monarch = Последовательность 1 - Нечистый Монарх
+Sequence 2 - Blood Archduke = Последовательность 2 - Кровавый Эрцгерцог
+Sequence 3 - Chatterbox = Последовательность 3 - Болтун
+Sequence 4 - Demon = Последовательность 4 - Демон
+Sequence 5 - Desire Apostle = Последовательность 5 - Апостол Желаний
+Sequence 6 - Devil = Последовательность 6 - Дьявол
+Sequence 7 - Serial Killer = Последовательность 7 - Серийный Убийца
+Sequence 8 - Fallen Angel = Последовательность 8 - Падший Ангел
+Sequence 9 - Criminal = Последовательность 9 - Преступник
+Impure Monarch = Нечистый Монарх
+Blood Archduke = Кровавый Эрцгерцог
+Chatterbox = Болтун
+Demon = Демон
+Desire Apostle = Апостол Желаний
+Devil = Дьявол
+Serial Killer = Серийный Убийца
+Fallen Angel = Падший Ангел
+Criminal = Преступник
+
+ПУТЬ СКОВАННОГО (Chained Pathway):
+Chained (Pathway) = Скованный
+Sequence 0 - Chained = Последовательность 0 - Скованный
+Sequence 1 - Sin Spawn = Последовательность 1 - Отродье Греха
+Sequence 2 - Ancient Ruin = Последовательность 2 - Древняя Погибель
+Sequence 3 - Silence Apprentice = Последовательность 3 - Ученик Тишины
+Sequence 4 - Marionette = Последовательность 4 - Марионетка
+Sequence 5 - Specter = Последовательность 5 - Призрак
+Sequence 6 - Zombie = Последовательность 6 - Зомби
+Sequence 7 - Werewolf = Последовательность 7 - Оборотень
+Sequence 8 - Lunatic = Последовательность 8 - Сумасшедший
+Sequence 9 - Prisoner = Последовательность 9 - Заключённый
+Sin Spawn = Отродье Греха
+Ancient Ruin = Древняя Погибель
+Silence Apprentice = Ученик Тишины
+Marionette = Марионетка
+Specter = Призрак
+Zombie = Зомби
+Werewolf = Оборотень
+Lunatic = Сумасшедший
+Prisoner = Заключённый
+
+ПУТЬ ЮСТИЦИАРА (Justiciar Pathway):
+Justiciar (Pathway) = Юстициар
+Sequence 0 - Justiciar = Последовательность 0 - Юстициар
+Sequence 1 - Hand of Order = Последовательность 1 - Рука Порядка
+Sequence 2 - Equalizer = Последовательность 2 - Уравнитель
+Sequence 3 - Chaos Hunter = Последовательность 3 - Охотник за Хаосом
+Sequence 4 - Commandant Mage = Последовательность 4 - Повелительный Маг
+Sequence 5 - Disciplinary Knight = Последовательность 5 - Дисциплинарный Рыцарь
+Sequence 6 - Judge = Последовательность 6 - Судья
+Sequence 7 - Interrogator = Последовательность 7 - Дознаватель
+Sequence 8 - Sheriff = Последовательность 8 - Шериф
+Sequence 9 - Arbitrator = Последовательность 9 - Арбитр
+Hand of Order = Рука Порядка
+Equalizer = Уравнитель
+Chaos Hunter = Охотник за Хаосом
+Commandant Mage = Повелительный Маг
+Disciplinary Knight = Дисциплинарный Рыцарь
+Judge = Судья
+Interrogator = Дознаватель
+Sheriff = Шериф
+Arbitrator = Арбитр
+
+ПУТЬ ЧЁРНОГО ИМПЕРАТОРА (Black Emperor Pathway):
+Black Emperor (Pathway) = Чёрный Император
+Black Emperror (Pathway) = Чёрный Император
+Sequence 0 - Black Emperor = Последовательность 0 - Чёрный Император
+Sequence 1 - Prince of Annulment = Последовательность 1 - Принц Упразднения
+Sequence 2 - Duke of Entropy = Последовательность 2 - Герцог Энтропии
+Sequence 3 - Frenzied Mage = Последовательность 3 - Неистовый Маг
+Sequence 4 - Earl of the Fallen = Последовательность 4 - Граф Падших
+Sequence 5 - Chaos Mentor = Последовательность 5 - Наставник Беспорядка
+Sequence 6 - Baron of Distortion = Последовательность 6 - Барон Искажения
+Sequence 7 - Briber = Последовательность 7 - Взяткодатель
+Sequence 8 - Barbarian = Последовательность 8 - Варвар
+Sequence 9 - Lawyer = Последовательность 9 - Юрист
+Prince of Annulment = Принц Упразднения
+Duke of Entropy = Герцог Энтропии
+Frenzied Mage = Неистовый Маг
+Earl of the Fallen = Граф Падших
+Chaos Mentor = Наставник Беспорядка
+Baron of Distortion = Барон Искажения
+Briber = Взяткодатель
+Barbarian = Варвар
+Lawyer = Юрист
+
+# =====================================================================
+# ОРГАНИЗАЦИИ
+# =====================================================================
+
+ОРГАНИЗАЦИИ:
+Tarot Club = Клуб Таро
+Nighthawks = Ночные Ястребы
+Mandated Punishers = Уполномоченные Каратели
+Machinery Hivemind = Механизм коллективного разума
+Machinery Hivemind = Механический улей
+Machinery Hivemind = Машинный Разум
+Church of the Evernight Goddess = Церковь Богини Вечной Ночи
+Church of the Lord of Storms = Церковь Повелителя Бурь
+Church of the God of Steam and Machinery = Церковь Бога Пара и Машин
+MI9 = МИ9
+Red Gloves = Красные Перчатки
+Harvest Church = Церковь Урожая
+Twilight Hermit Order = Орден Сумеречного Отшельника
+Rose School of Thought = Школа Розы Мысли
+Abraham Family = Семья Авраам (Семья Абрахам)
+Ashen Cathedral = Пепельный Собор
+Saint Selena Cathedral = Церковь Святой Селены
+Blackthorn Security Company = Охранная компания Терновик
+Divination Club = Клуб Гаданий
+Secret Order = Тайный Орден
+Moses Ascetic Order = Аскетический орден Моисея
+Tudor Dynasty = Династия Тюдор
+Theosophy Order = Орден Теософии
+Demoness Sect = Секта Демонессы
+Aurora Order = Орден Авроры
+Life School of Thought = Школа мышления жизни
+Rose School of Thought = Школа мысли Розы
+Blood Cross Order = Орден кровавого креста
+Deweyville Trust = Деуэйвилл Траст
+Coim Company = компании Коим
+Tussock Times = Туссок Таймс
+Twilight Hermit Order = Орден Сумеречных Отшельников
+Rose Redemption = Роза Искупления
+Sauron family = Семья Саурон
+Einhorn family = Семья Эйнхорн
+Medici family = Семья Медичи
+Psychology Alchemists = Психологические Алхимики
+True Creator = Истинный Творец
+True Creator = Падший Творец
+# =====================================================================
+# МЕСТА
+# =====================================================================
+
+МЕСТА:
+Tingen = Тинген
+Tingen City = Город Тинген
+Backlund = Баклунд
+Chanis Gate = Врата Чанис
+Daffodil Street = улица Нарциссов
+Daffodil Street = улица Даффодил
+Zouteland Street = улица Заутлэнд
+Iron Cross Street = улица Железныого Креста
+Loen Kingdom = Королевство Лоэн
+Intis Republic = Республика Интис
+Feynapotter Kingdom = Королевство Фейнапоттер
+Feynapotter = Фейнапоттер
+Sea of Chaos = Море Хаоса
+Spirit World = Духовный мир (Мир духов)
+Above the Gray Fog = Над Серым Туманом
+Forsaken Land of the Gods = Забытые богом земли
+Gray Fog = Серый Туман
+Feysac = Фейсак
+Solomon Empire = Империя Соломон
+North Borough = Северный Район
+Champagne Street = Улица Шампань
+Southville = Саутвилл
+Lower Street = Нижняя улица
+Awwa County = провинция Авва
+Besik Street = улице Бесик
+Howes Street = улица Хоус
+Northern Continent = Северный Континент
+Southern Continent = Южный Континент
+Sefirah Castle = Замок Сфиры
+Khoy University = университет Хой
+Tingen University = университет Тингена
+Tingen Technical School = Техническая школа Тингена
+Empress Borough = Район Императрицы
+Red Moonlight Street = улица Багрового Лунного Света
+The Rorsted Archipelago = Архипелаг Рорстед
+Sonia Island = Остров Соня
+Pritz Harbor = Гавань Притц
+Constant = Констанц
+Constant City = Город Констанц
+Midseashire = Мидшир
+Bayam = Баям
+Indaw = Индо
+Symeem Island = остров Шумим
+Golden Dream = Золотая Мечта
+Cathedral of Waves = Собор Волн
+Liveseyd = Ливисейд
+Lost City of Newins = затерянный город Невинс
+City of Silver = Город Серебра
+City of Silver = Град Серебра
+Giant King's Court = Двор Короля Гигантов
+Hermes Road = Дорога Гермеса
+Crossbell = Кроссбелл
+Böklund Building = Здание Бёклунд
+St. Selena's Church = Церковь Святой Селены
+Quelaag ruins = Руины Квелаг
+Lamud Town = Город Ламуд
+Desi Bay = Залив Дези
+Khoy River = Река Хой
+Wind City = Города Зловония
+Backlund University = университет Баклунда
+Enmat Harbor =  гавань Энматт
+Ancient Feysac = Древний Фейсак
+Berserk Sea = море Берсерк
+Deweyville Library = Библиотека Дьюевилла
+Hornacis Main Peak = Главный пик Хорнацис
+Hornacis Main Peak = Вершина Хорнацис
+Raphael Cemetery = кладбище Рафаэля
+Loen Publishing Firm = издательство Лоэн
+Tudor Empire = империя Тюдор
+Golden Indus Borough = Район Золотого Индуса
+Khoy = Хой
+East Balam = Восточная Балам
+Harrods = Харродс
+Folk Herb Store = Лавка народных трав
+Lamud Town = Город Ламуд
+Tussock River = река Туссок
+Sivellaus County = графство Сивеллаус
+Wienia = Виения
+Holy Wind Cathedral = Собор Святого Ветра
+Paz Valley = Долина реки Паз
+Paz Valley = Долина Паз
+Paz Valley = Долина Пас
+Backlund Bank = Банк Баклунда
+Trunsoest Empire = Империя Трансоэст
+Trier = Трир
+Quelaag Club = Клуб Квилег
+Harvest Church = Церковь Урожая
+Royal Museum = королевский музей
+Roselle Memorial Exhibition = Мемориальная выставка Розелля
+# =====================================================================
+# БОЖЕСТВА И ВЫСШИЕ СУЩЕСТВА
+# =====================================================================
+
+БОЖЕСТВА:
+Evernight Goddess = Богиня Вечной Ночи
+Lord of Storms = Повелитель Бурь
+God of Steam and Machinery = Бог Пара и Машин
+God of Knowledge and Wisdom = Бог Знания и Мудрости
+Earth Mother = Богиня Мать-Земли
+Lord of the Mysteries = Повелитель Тайн
+Mother Tree of Desire = Мать Древа Желаний
+True Creator = Истинный Творец
+The Primordial Demoness = Первородная Демонесса
+Death God = Бог Смерти
+Celestial Worthy = Небесный Достойный (Небожитель)
+Ancient Sun God = Древний Бог Солнца
+Craftsman God = Бог-Ремесленник
+God of Combat = Бог Сражений
+The Hidden Sage = Сокрытый Мудрец
+Snake of Mercury = Змей Меркурия
+The Abyss = Бездна (как существо)
+Outer God = Внешний Бог
+
+# =====================================================================
+# ИГРОВЫЕ И МИСТИЧЕСКИЕ ТЕРМИНЫ
+# =====================================================================
+
+ТЕРМИНЫ:
+Beyonder = Потусторонний
+Beyonders = Потусторонние
+Sequence = Последовательность
+Spirit Medium = Духовный Медиум
+Astral Projection = Астральная Проекция
+Blasphemy Slate = Богоухольная скрижаль
+Storm Amulet = Амулет Бури
+Soul Body = Тело Души
+Ether Body = Эфирное Тело
+Major Arcana = Старша Аркана
+Divination Art = Искусство Предсказания
+High-Sequence Beyonder = Потусторонний высокой последовательности
+Pathway = Путь
+Potion = Зелье
+Dark Sacred Emblem = Эмблема Священной Тьмы
+Acting Method = Метод действия
+Beyonder characteristic = Характеристика потустороннего
+Mystical item = Мистический предмет
+Sealed artifact = Запечатанный артефакт
+Extraordinary characteristic = Экстраординарная характеристика
+Corruption (Contamination) = Порча
+Losing control = Потеря контроля
+Spirituality = Духовность
+Spirituality consumption = Расход духовности
+Divination = Гадание
+Spirit vision = Духовное зрение
+Cogitation = Когитация
+Sefirot = Сефирот
+Sefirah = Сефира
+Spirit pendulum = Духовный маятник
+Tarot card = Карта Таро
+Summoning ritual = Ритуал призыва
+Ancient Hermes = Древний Гермес (язык)
+Loenese = Лоэнский (язык)
+Hermes= Гермес (язык)
+Unique characteristic = Уникальная характеристика
+Mental corruption = Ментальное повреждение
+High-Sequence Beyonder = Потусторонний высокой последовательности
+Low-Sequence Beyonder = Потусторонний низкой последовательности
+Mysticism = Мистицизм
+Chaos Sea = Море Хаоса
+Extraordinary = Экстраординарный (Сверхъестественный)
+Luck = Удача
+Extraordinary creature = Потустороннее существо
+Abyssal demon = Демон бездны
+Sealed item = Запечатанный артефэ
+Mystical creature = Мистическое существо (Мифическое существо, потустороннее существо)
+Giant = Гигант
+Angel = Ангел
+Demigod = Полубог
+Mythical form = Мифическая форма
+True God = Истинный Бог
+Outer Deity = Внешнее Божество
+Sanguine = Сангвин
+
+# =====================================================================
+# ЭПОХИ
+# =====================================================================
+
+The Beginning
+Pre-Epoch
+First Epoch: The Age of Chaos = Первый Эпоха: Эпоха Хаоса
+Second Epoch: The Dark Epoch = Вторая Эпоха: Эпоха Тьмы
+Third Epoch: The Cataclysm Epoch = Третья Эпоха: Эпоха Катаклизма
+Fourth Epoch: the Epoch of The Gods = Четвертая Эпоха: Эпоха Богов
+Fifth Epoch: The Iron Age = Пятая Эпоха: Железного Век
+
+#=====================================================================
+# Предметы
+#=====================================================================
+Sibe black tea = черный чай Сибе
+coffee southville = кофе Саутвилль
+Desi coffee = кофе Дези
+# =====================================================================
+# СПРАВОЧНИК ПЕРСОНАЖЕЙ — АБСОЛЮТНАЯ ИСТИНА
+# =====================================================================
+
+СПРАВОЧНИК ПЕРСОНАЖЕЙ:
+Клейн Моретти → Шут (Fool) | Путь Шута
+Одри Холл → Справедливость (Justice) | Путь Визионера (Visionary)
+Элджер Уилсон → Повешенный (Hanged Man) | Путь Повешенного
+Деррик Берг → Солнце (Sun) | Путь Солнца
+Форс Уолл → Маг (Magician) | Путь Двери (Door)
+Эмлин Уайт → Луна (Moon) | Путь Луны
+Катлея → Отшельник (Hermit) | Путь Отшельника
+Леонард Митчелл → Звезда (Star) | Путь Тьмы (Darkness)
+Сио Дереча → Судья (Judgment) | Путь Юстициара
+
+КЛЮЧЕВЫЕ ФАКТЫ:
+Последовательности: 9 → самая низкая (начало пути), 0 → бог
+Азик Эггерс → Путь Смерти, НЕ Повешенный
+Лилит, Королева Сангвинов → True God (Истинный Бог), НЕ полубог
+Ловия → не дочь Лилит
+Бездна (Abyss) → Последовательность 0 Пути Бездны, НЕ внешнее божество
