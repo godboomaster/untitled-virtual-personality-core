@@ -379,16 +379,19 @@ def create_handlers(bot: BotInstance) -> dict:
             await update.message.reply_text("Активных напоминаний нет.")
             return
         from datetime import datetime
+        from app.features.reminder_manager import format_schedule
         lines = ["Активные напоминания:"]
         for i, r in enumerate(active):
-            remain = r["trigger_at"] - time.time()
             task = r.get("task") or "(без описания)"
-            mins = int(remain / 60)
-            if mins > 0:
-                when = f"через {mins} мин"
+            author = r.get("user_name") or ""
+            author_text = f" (от {author})" if author else ""
+            if r.get("recurrence"):
+                when = format_schedule(r["recurrence"])
             else:
-                when = f"через {int(remain)} сек"
-            lines.append(f"{i + 1}. {task} — {when}")
+                remain = r["trigger_at"] - time.time()
+                mins = int(remain / 60)
+                when = f"через {mins} мин" if mins > 0 else f"через {int(remain)} сек"
+            lines.append(f"{i + 1}. {task}{author_text} — {when}")
         lines.append("")
         lines.append("Чтобы отменить: /cancel_reminder N")
         await update.message.reply_text("\n".join(lines))

@@ -17,7 +17,7 @@ import re
 def build_context_block(fragments: List[Dict],
                         original_query: str = "",
                         translated_query: str = "",
-                        max_chars_per_fragment: int = 800,
+                        max_chars_per_fragment: int = 1000,
                         high_quality_rerank: float = 2.0,
                         low_quality_rerank: float = 0.0,
                         high_quality_distance: float = 0.38,
@@ -116,17 +116,69 @@ def build_context_block(fragments: List[Dict],
         f"{'─' * 60}"
     )
 
+    # Фрагменты из разных томов = из разных периодов истории. Предупреждаем,
+    # иначе модель переносит события/состав поздних томов на ранние сцены
+    # (кейс qa_eval: «Мистер Мир» на первом собрании Форс).
+    vols = sorted({f.get("volume") for f in fragments
+                   if isinstance(f.get("volume"), int)})
+    if len(vols) > 1:
+        vol_list = ", ".join(str(v) for v in vols)
+        header += (
+            f"\nВНИМАНИЕ: фрагменты из РАЗНЫХ томов ({vol_list}) — это разные "
+            "периоды истории. Не переноси события и состояние мира одного "
+            "периода на другой."
+        )
+
+    # Обзорный режим: фрагменты — это саммари глав, а не сырые чанки.
+    # Свой заголовок и инструкция (собрать цельный обзор, не домысливать).
+    if fragments and all(f.get("kind") == "summary" for f in fragments):
+        header = (
+            f"[КОНТЕКСТ:{mode_tag} — ОБЗОР ПО САММАРИ ГЛАВ]\n"
+            "Ниже — краткие пересказы глав книги, релевантные вопросу, "
+            "в хронологическом порядке. Собери из них цельный обзор по существу "
+            "вопроса. Для вопросов «кто такой/что такое» описывай сущность по её "
+            "САМОМУ ПОЗДНЕМУ состоянию (последние пересказы: актуальная организация, "
+            "последовательность, роль), а более ранние подавай как прошлое "
+            "(«раньше был…, позже…»). Не выдумывай фактов, которых нет в пересказах.\n"
+            f"{'─' * 60}"
+        )
+
     lines = [header]
     if query_block:
         lines.append(query_block)
 
-    for frag in fragments:
+    # Фрагменты нумеруем (Ф1..ФN): модель обязана помечать каждую фактическую
+    # фразу ответа скрытым маркером [ФN] — номер фрагмента-источника. Маркеры
+    # срезаются кодом перед отправкой; фразы со ссылкой на несуществующий
+    # номер удаляются (это сигнал выдумки).
+    lines.append(
+        "Каждую фразу с фактами из фрагментов завершай скрытым маркером "
+        "[ФN] — номером фрагмента-источника (например, [Ф2]). Маркер "
+        "скрыт от пользователя. Не помечай строку о взаимности и свой "
+        "встречный вопрос. Не ставь маркер на фразы без фактов из фрагментов."
+    )
+
+    # Префикс [SUMMARY: ...] оставляем на первом фрагменте каждой главы:
+    # саммари несёт ключевые факты главы (и курируется вручную), а раньше
+    # он срезался на ВСЕХ чанках — модель видела только тела и теряла
+    # главное (напр. четыре хлеба ритуала удачи). На повторных чанках той
+    # же главы префикс по-прежнему срезается, чтобы не дублировать.
+    seen_chapters = set()
+    for idx, frag in enumerate(fragments, 1):
         vol = frag.get("volume", "?")
         vol_name = frag.get("volume_name", "?")
         chapter = frag.get("chapter", "?")
-        text = frag["text"][:max_chars_per_fragment]
-        # Убираем SUMMARY префикс из текста для LLM
-        text = re.sub(r'^\[SUMMARY:.*?\]\n\n', '', text, flags=re.DOTALL)
-        lines.append(f"\n[Vol.{vol} {vol_name} / {chapter}]\n{text}")
+        full = frag["text"]
+        ch_key = (vol, chapter)
+        m = re.match(r'^\[SUMMARY:.*?\]\n\n', full, flags=re.DOTALL)
+        if m and ch_key not in seen_chapters:
+            seen_chapters.add(ch_key)
+            # Полный префикс + тело в пределах бюджета (префикс не съедает тело)
+            text = m.group(0) + full[m.end():m.end() + max_chars_per_fragment]
+        else:
+            # Убираем SUMMARY префикс из текста для LLM
+            text = re.sub(r'^\[SUMMARY:.*?\]\n\n', '', full, flags=re.DOTALL)
+            text = text[:max_chars_per_fragment]
+        lines.append(f"\n[Ф{idx}] [Vol.{vol} {vol_name} / {chapter}]\n{text}")
 
     return "\n".join(lines)

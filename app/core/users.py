@@ -30,6 +30,12 @@ def get_user_tag(user_id: str) -> str:
     return f"User_{user_id}"
 
 
+def get_username(user_id: str) -> str:
+    # Возвращает telegram-username (без @) или пустую строку
+    user = _known_users.get(str(user_id))
+    return user["username"] if user else ""
+
+
 def is_known_user(user_id: str) -> bool:
     # Проверяет, является ли пользователь известным
     return str(user_id) in _known_users

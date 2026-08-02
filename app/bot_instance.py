@@ -19,11 +19,14 @@ from app.core.config import Config
 from app.core.file_vector_db import FileVectorDB
 from app.core.file_reader import extract_text, MAX_FILE_SIZE_DEFAULT
 from app.core.interfaces import MessageSender
+from app.core.users import get_username
 from app.features.todo_manager import (
     TodoManager, is_todo_request, extract_task,
     is_todo_done_request, extract_todo_done_index,
 )
-from app.features.reminder_manager import ReminderManager, parse_reminder
+from app.features.reminder_manager import (
+    ReminderManager, parse_reminder, parse_recurring, format_schedule,
+)
 from app.features.learning_manager import LearningManager, parse_frequency, classify_continue_answer
 from app.features.learning_intent import classify_learning_intent, extract_subject
 from app.features.inventory_manager import (
@@ -260,7 +263,8 @@ class BotInstance:
         self.book_search = None
         if self.features.get("book_search", False):
             from app.features.book_search import BookSearch
-            self.book_search = BookSearch(context=context or persona_name)
+            self.book_search = BookSearch(context=context or persona_name,
+                                          router=self.router)
             logger.info(f"  [{persona_name}] Book search включён")
 
         # Proactive messaging (самоинициатива)
@@ -504,12 +508,33 @@ class BotInstance:
                             logger.info(f"[Reminder] chat={chat_id}: ответ уступаю обучению (его вопрос свежее)")
 
                 if pending_task and not _yield_to_learning:
-                    # Пытаемся вытащить время из ответа пользователя
+                    # Пытаемся вытащить время из ответа пользователя.
+                    # Сначала — повторяющееся расписание («каждый день в 12»).
+                    rec_pending = parse_recurring("напомни " + user_input)
                     rem_delay = None
-                    parsed_pending = parse_reminder("напомни " + user_input)
-                    if parsed_pending:
+                    if rec_pending:
+                        rec_task, rec_schedule = rec_pending
+                        self.reminder_manager.clear_pending_remind(chat_id)
+                        rem_task = self._reformulate_task(rec_task or pending_task)
+                        topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                        self.reminder_manager.add_reminder(
+                            chat_id, user_name or "Пользователь", rem_task, 0, topic_id,
+                            schedule=rec_schedule,
+                            user_id=user_id, username=get_username(user_id),
+                        )
+                        task_display = f" '{rem_task}'" if rem_task else ""
+                        reminder_context = (
+                            f"Пользователь попросил напоминать{task_display} — "
+                            f"{format_schedule(rec_schedule)}. Напоминание запланировано — "
+                            f"подтверди это в своём стиле, коротко."
+                        )
+                        is_reminder_request = True
+                        parsed_pending = None
+                    else:
+                        parsed_pending = parse_reminder("напомни " + user_input)
+                    if not is_reminder_request and parsed_pending:
                         _, rem_delay = parsed_pending
-                    if rem_delay is None:
+                    if rem_delay is None and not is_reminder_request:
                         # Пробуем парсер частоты из learning
                         rem_delay = parse_frequency(user_input)
                     if rem_delay:
@@ -518,7 +543,8 @@ class BotInstance:
                         topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                         delay_text = self.reminder_manager.format_delay(rem_delay)
                         self.reminder_manager.add_reminder(
-                            chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id
+                            chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id,
+                            user_id=user_id, username=get_username(user_id),
                         )
                         task_display = f" '{rem_task}'" if rem_task else ""
                         reminder_context = (
@@ -528,12 +554,15 @@ class BotInstance:
                         is_reminder_request = True
                     else:
                         # Время снова не поняли — переспрашиваем ещё раз
-                        reminder_context = (
-                            f"Пользователь отвечает на вопрос про время напоминания «{pending_task}», "
-                            "но время не удалось понять. Переспроси: через сколько напомнить "
-                            "(например, «через 2 часа», «завтра в 12»). В своём стиле, коротко."
-                        )
-                        is_reminder_request = True
+                        # (только если повторяющееся напоминание не создано выше)
+                        if not is_reminder_request:
+                            reminder_context = (
+                                f"Пользователь отвечает на вопрос про время напоминания «{pending_task}», "
+                                "но время не удалось понять. Переспроси: через сколько напомнить "
+                                "(например, «через 2 часа», «завтра в 12», «каждый день в 9»). "
+                                "В своём стиле, коротко."
+                            )
+                            is_reminder_request = True
 
                 # ВАЖНО: раньше это был `elif` на том же уровне, что и `if self.reminder_manager
                 # and chat_id:` выше — а условие elif было строгим подмножеством условия if,
@@ -543,32 +572,51 @@ class BotInstance:
                 # НЕТ pending-задачи.
                 elif "напом" in user_input.lower():
                     is_reminder_request = True
-                    parsed = parse_reminder(user_input)
-                    logger.info(f"[Reminder] parse_reminder({user_input[:60]!r}) -> {parsed}")
-                    if parsed:
-                        rem_task, rem_delay = parsed
-                        # Переформулирование задачи через LLM
+                    # Сначала — повторяющееся расписание («каждый день в 9», «по пятницам в 18:00»)
+                    rec = parse_recurring(user_input)
+                    if rec:
+                        rem_task, rec_schedule = rec
                         if rem_task:
                             rem_task = self._reformulate_task(rem_task)
                         topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
-                        delay_text = self.reminder_manager.format_delay(rem_delay)
                         self.reminder_manager.add_reminder(
-                            chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id
+                            chat_id, user_name or "Пользователь", rem_task, 0, topic_id,
+                            schedule=rec_schedule,
+                            user_id=user_id, username=get_username(user_id),
                         )
                         task_display = f" '{rem_task}'" if rem_task else ""
                         reminder_context = (
-                            f"Пользователь попросил напомнить{task_display} через {delay_text}. "
+                            f"Пользователь попросил напоминать{task_display} — {format_schedule(rec_schedule)}. "
                             f"Напоминание уже запланировано — просто подтверди это в своём стиле, коротко."
                         )
                     else:
-                        # Время не указано — переспрашиваем и ЗАПОМИНАЕМ задачу (как в /remind),
-                        # иначе следующее сообщение "через 10 минут" не с чем будет связать.
-                        rem_task = self._reformulate_task(user_input)
-                        self.reminder_manager.begin_pending_remind(chat_id, rem_task)
-                        reminder_context = (
-                            f"Пользователь попросил напомнить «{rem_task}», но не указал через сколько. "
-                            "Уточни когда ему напомнить — в своём стиле, коротко."
-                        )
+                        parsed = parse_reminder(user_input)
+                        logger.info(f"[Reminder] parse_reminder({user_input[:60]!r}) -> {parsed}")
+                        if parsed:
+                            rem_task, rem_delay = parsed
+                            # Переформулирование задачи через LLM
+                            if rem_task:
+                                rem_task = self._reformulate_task(rem_task)
+                            topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                            delay_text = self.reminder_manager.format_delay(rem_delay)
+                            self.reminder_manager.add_reminder(
+                                chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id,
+                                user_id=user_id, username=get_username(user_id),
+                            )
+                            task_display = f" '{rem_task}'" if rem_task else ""
+                            reminder_context = (
+                                f"Пользователь попросил напомнить{task_display} через {delay_text}. "
+                                f"Напоминание уже запланировано — просто подтверди это в своём стиле, коротко."
+                            )
+                        else:
+                            # Время не указано — переспрашиваем и ЗАПОМИНАЕМ задачу (как в /remind),
+                            # иначе следующее сообщение "через 10 минут" не с чем будет связать.
+                            rem_task = self._reformulate_task(user_input)
+                            self.reminder_manager.begin_pending_remind(chat_id, rem_task)
+                            reminder_context = (
+                                f"Пользователь попросил напомнить «{rem_task}», но не указал через сколько. "
+                                "Уточни когда ему напомнить — в своём стиле, коротко."
+                            )
 
             # Learning-контекст: режим обучения («научи меня X»)
             learning_context = None
@@ -867,6 +915,7 @@ class BotInstance:
             # Поиск по книге (RAG) — пропускаем при chat_only
             book_context = None
             context_mode = "book"
+            _book_frag_count = None  # для валидации маркеров [ФN] в ответе
             if self.book_search and _book_intent != "chat_only":
                 try:
                     context_mode = "mixed" if _book_intent == "mixed" else "book"
@@ -943,7 +992,18 @@ class BotInstance:
                             user_input, volume=volume, n_results=_n,
                             history=_coref_history,
                         )
+                        _book_frag_count = len(fragments) if fragments else 0
                         translated_query = self.book_search.translate_query(user_input)
+
+                        # Динамический глоссарий: только записи, релевантные
+                        # вопросу (раньше весь глоссарий ~17k токенов шёл
+                        # в системный промпт каждого сообщения).
+                        from app.features.glossary_context import build_glossary_block
+                        _glos = build_glossary_block(
+                            [user_input, translated_query or ""],
+                            fragments=fragments,
+                        )
+
                         if fragments:
                             from app.features.book_context import build_context_block
                             book_context = build_context_block(
@@ -952,6 +1012,8 @@ class BotInstance:
                                 translated_query=translated_query,
                                 mode=context_mode
                             )
+                            if _glos:
+                                book_context = _glos + "\n\n" + book_context
                             logger.info(f"[BookContext] {len(fragments)} fragments, {len(book_context)} chars for query: '{user_input[:60]}'")
                         else:
                             from app.features.book_context import build_context_block
@@ -961,6 +1023,8 @@ class BotInstance:
                                 translated_query=translated_query,
                                 mode=context_mode
                             )
+                            if _glos:
+                                book_context = _glos + "\n\n" + book_context
                             logger.info(f"[BookContext] No fragments for query: '{user_input[:60]}'")
                 except Exception as e:
                     logger.debug(f"Book search error: {e}")
@@ -1006,6 +1070,11 @@ class BotInstance:
 
             # Очистка ответа от мета-рассуждений и Markdown
             answer = self._clean_response(answer)
+
+            # Срезка маркеров источников [ФN] (книжный режим): строки со
+            # ссылкой на несуществующий фрагмент удаляются как выдуманные.
+            if _book_frag_count is not None:
+                answer = self._strip_fact_markers(answer, _book_frag_count)
 
             # Обработка todo-маркера
             # (пропускаем для учебно-административных сообщений — setup/continue/тест/
@@ -1243,6 +1312,49 @@ class BotInstance:
         response = self._strip_markdown(response)
         response = self._strip_inline_lists(response)
         return response.strip()
+
+    def _strip_fact_markers(self, response: str, frag_count: int) -> str:
+        """Срезает скрытые маркеры источников [ФN] из книжного ответа.
+
+        Модель помечает каждую фактическую фразу номером фрагмента-источника
+        (см. build_context_block). Правила:
+          - валидный номер (1..frag_count) — маркер просто срезаем;
+          - маркер с номером вне диапазона — удаляем ВСЮ строку: ссылка на
+            несуществующий источник — сигнал выдумки (модель «подтверждает»
+            деталь фрагментом, которого нет);
+          - когда фрагментов нет (пустой поиск) — любой маркер невалиден,
+            но ответ и так строится на честном неведении, поэтому только
+            срезаем маркеры, не удаляя строки.
+        Возвращает очищенный текст; статистика — в лог.
+        """
+        if not response or "Ф" not in response:
+            return response
+
+        # Одиночные и составные маркеры: [Ф2], [Ф22, Ф23], [Ф22,Ф23]
+        marker_re = re.compile(r"\[\s*Ф\s*[0-9]+(?:\s*[,;]\s*Ф?\s*[0-9]+)*\s*\]")
+        num_re = re.compile(r"[0-9]+")
+        valid = invalid = 0
+        out_lines = []
+        for line in response.splitlines():
+            nums = [int(n) for m in marker_re.findall(line)
+                    for n in num_re.findall(m)]
+            if nums and any(n < 1 or n > frag_count for n in nums):
+                invalid += 1
+                if frag_count > 0:
+                    logger.info(f"[FactMarkers] Удалена строка с выдуманным источником: {line[:100]}")
+                    continue
+            elif nums:
+                valid += 1
+            cleaned_line = marker_re.sub("", line)
+            cleaned_line = re.sub(r"\s+([.,!?…:;])", r"\1", cleaned_line)
+            cleaned_line = re.sub(r" {2,}", " ", cleaned_line).rstrip()
+            out_lines.append(cleaned_line)
+
+        cleaned = "\n".join(out_lines)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        if valid or invalid:
+            logger.info(f"[FactMarkers] валидных: {valid}, выдуманных: {invalid}")
+        return cleaned
 
     @staticmethod
     def _strip_inline_lists(text: str) -> str:
@@ -1926,6 +2038,20 @@ class BotInstance:
                 return "Напоминания не активны для этой персоны."
             if not args:
                 return "Использование: /remind <что напомнить> [через N ...]"
+            # Повторяющееся расписание («каждый день в 9», «по пятницам в 18»)
+            rec = parse_recurring("напомни " + args)
+            if rec:
+                rem_task, rec_schedule = rec
+                if rem_task:
+                    rem_task = self._reformulate_task(rem_task)
+                topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                self.reminder_manager.add_reminder(
+                    chat_id, user_name or "Пользователь", rem_task, 0, topic_id,
+                    schedule=rec_schedule,
+                    user_id=user_id, username=get_username(user_id),
+                )
+                task_display = f" «{rem_task}»" if rem_task else ""
+                return f"Хорошо, буду напоминать{task_display} — {format_schedule(rec_schedule)}."
             parsed = parse_reminder("напомни " + args)
             if parsed:
                 rem_task, rem_delay = parsed
@@ -1933,7 +2059,8 @@ class BotInstance:
                     rem_task = self._reformulate_task(rem_task)
                 topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                 delay_text = self.reminder_manager.format_delay(rem_delay)
-                self.reminder_manager.add_reminder(chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id)
+                self.reminder_manager.add_reminder(chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id,
+                                                   user_id=user_id, username=get_username(user_id))
                 task_display = f" «{rem_task}»" if rem_task else ""
                 note = (
                     f"Пользователь {who} командой попросил напомнить{task_display} через {delay_text}. "

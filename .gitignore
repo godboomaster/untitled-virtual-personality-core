@@ -4,6 +4,7 @@ __pycache__/
 # Environment variables
 .env
 .DS_Store
+.zcode/
 
 # Data directories
 data/
@@ -25,3 +26,12 @@ chroma_db/
 # Logs
 *.log
 logs/
+
+# QA-eval: сгенерированные артефакты прогонов (чанки, промпты, выдача, ответы, оценки)
+# Скрипты, отчёты (*.md) и QA-наборы (*.json) при этом отслеживаются.
+qa_eval/**/chunks/
+qa_eval/**/prompts/
+qa_eval/**/retrieval/
+qa_eval/**/answers/
+qa_eval/**/eval/
+qa_eval/**/qa_parts/

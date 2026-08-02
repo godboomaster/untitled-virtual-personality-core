@@ -15,7 +15,11 @@ import httpx
 import logging
 from pathlib import Path
 
-from app.features.book_search import _find_glossary_entries, _load_ru_to_en
+from app.features.book_search import (
+    _find_glossary_entries,
+    _load_ru_to_en,
+    get_suffix_alias_keys,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,8 @@ _BOT_NAMES = {"арродес", "зеркало", "arrodes", "mirror"}
 
 # Кеш словаря ru_to_en (загружается один раз)
 _ru_to_en: dict[str, str] | None = None
+# Кеш однословных авто-алиасов (слабый book-сигнал)
+_auto_single_aliases: set | None = None
 
 
 def _get_ru_to_en() -> dict[str, str]:
@@ -38,6 +44,21 @@ def _get_ru_to_en() -> dict[str, str]:
     _ru_to_en = _load_ru_to_en(str(glossary_path))
     logger.info(f"[IntentRouter] Loaded {len(_ru_to_en)} glossary entries")
     return _ru_to_en
+
+
+def _get_auto_single_aliases() -> set:
+    """
+    Однословные авто-алиасы суффиксов («Башня», «Коттман»). Это слабый
+    book-сигнал: показываем LLM как подсказку, но не даём им одним
+    принудительно переключать chat_only -> mixed — иначе общеупотребимое
+    слово в обычном разговоре включает book-режим без причины.
+    """
+    global _auto_single_aliases
+    if _auto_single_aliases is None:
+        _auto_single_aliases = {
+            k for k in get_suffix_alias_keys() if len(k.split()) == 1
+        }
+    return _auto_single_aliases
 
 
 CLASSIFIER_PROMPT = """Classify the intent of the user's message.
@@ -133,9 +154,15 @@ def classify_intent(message: str, stm: list[dict]) -> str:
         logger.error(f"Intent classification failed: {e}")
         intent = "chat_only"
 
-    # Жёсткое правило: словарный сигнал не даёт опуститься ниже mixed
-    if intent == "chat_only" and book_terms:
-        logger.info(f"[IntentRouter] Glossary override: chat_only -> mixed (terms: {list(book_terms.values())})")
+    # Жёсткое правило: словарный сигнал не даёт опуститься ниже mixed.
+    # Однословные авто-алиасы («Башня», «Бабочка») — слишком слабый сигнал
+    # для принудительного override: LLM видит их в подсказке и решает сам.
+    strong_terms = {
+        ru: en for ru, en in book_terms.items()
+        if ru not in _get_auto_single_aliases()
+    }
+    if intent == "chat_only" and strong_terms:
+        logger.info(f"[IntentRouter] Glossary override: chat_only -> mixed (terms: {list(strong_terms.values())})")
         return "mixed"
 
     logger.info(f"[IntentRouter] intent={intent}, book_terms={list(book_terms.values())}")

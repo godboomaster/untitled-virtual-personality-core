@@ -135,12 +135,14 @@ class ModelRouter:
             from app.core.local_router import get_local_router
             local = get_local_router()
             if local.is_available():
+                # Локальная модель на CPU медленная: даём ей минимум 180 сек,
+                # иначе длинные ответы (max_tokens=4000) обрываются по таймауту.
                 answer = local.get_response(
                     messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     top_p=top_p,
-                    timeout=timeout,
+                    timeout=max(timeout, 180.0),
                 )
                 if answer:
                     self._last_provider = "local"

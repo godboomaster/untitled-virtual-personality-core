@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -235,6 +235,99 @@ def parse_reminder(text: str) -> Optional[tuple]:
     return (after_time if after_time else None, delay_seconds)
 
 
+# ─── Повторяющиеся напоминания (каждый день / каждый день недели) ──────────
+
+_WEEKDAYS = {
+    "понедельник": 0, "понедельникам": 0,
+    "вторник": 1, "вторникам": 1,
+    "среду": 2, "средам": 2, "среда": 2,
+    "четверг": 3, "четвергам": 3,
+    "пятницу": 4, "пятницам": 4, "пятница": 4,
+    "субботу": 5, "субботам": 5, "суббота": 5,
+    "воскресенье": 6, "воскресеньям": 6,
+}
+_WEEKDAY_NAMES = [
+    "понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье",
+]
+
+_RECURRING_DAILY_RE = re.compile(r"\b(?:каждый\s+день|ежедневно)\b", re.IGNORECASE)
+_RECURRING_WEEKLY_RE = re.compile(
+    r"\b(?:каждый\s+(понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)"
+    r"|по\s+(понедельникам|вторникам|средам|четвергам|пятницам|субботам|воскресеньям))\b",
+    re.IGNORECASE,
+)
+
+
+def parse_recurring(text: str) -> Optional[tuple]:
+    """
+    Повторяющееся напоминание: «напоминай каждый день в 12:30»,
+    «напоминай каждый понедельник в 18», «по пятницам в 9:00 напоминай».
+
+    Возвращает (task, schedule), где
+        schedule = {"type": "daily"|"weekly", "hour": int, "minute": int, "weekday": int|None}
+    Время обязательно — без него возвращаем None (сработает pending-флоу
+    «уточни время», и ответ пользователя пройдёт через этот же парсер).
+    Время считается по ЛОКАЛЬНОМУ времени устройства/сервера.
+    """
+    lower = text.lower()
+    if "напом" not in lower:
+        return None
+
+    recur_match = _RECURRING_DAILY_RE.search(lower)
+    schedule = None
+    if recur_match:
+        schedule = {"type": "daily", "weekday": None}
+    else:
+        recur_match = _RECURRING_WEEKLY_RE.search(lower)
+        if recur_match:
+            wd_word = (recur_match.group(1) or recur_match.group(2)).lower()
+            schedule = {"type": "weekly", "weekday": _WEEKDAYS[wd_word]}
+    if schedule is None:
+        return None
+
+    abs_time = _parse_absolute_time(text)
+    if not abs_time:
+        return None  # время не указано — уточним через pending
+    abs_hour, abs_minute, time_match = abs_time
+    if abs_hour >= 24:
+        return None
+    schedule["hour"] = int(abs_hour)
+    schedule["minute"] = abs_minute
+
+    # Задача — текст без маркеров повторения, времени и «напомни».
+    # Спаны удаляем с КОНЦА строки, чтобы офсеты не съезжали.
+    task = text
+    for s, e in sorted([recur_match.span(), time_match.span()], reverse=True):
+        task = task[:s] + " " + task[e:]
+    task = re.sub(r"\b(?:напомни|напоминай|напомнить|напоминание|напомните|напомню|напоминал)\b", " ", task, flags=re.IGNORECASE)
+    task = re.sub(r"^(?:коннор|жабка|arrodes|connor|арродес)[,\s]+", " ", task, flags=re.IGNORECASE)
+    task = re.sub(r"\b(?:мне|мне\s+про|мне\s+о)\b", " ", task, flags=re.IGNORECASE)
+    task = re.sub(r"\s+", " ", task).strip(" ,.:;!?—-\n")
+
+    return (task if task else None, schedule)
+
+
+def _next_occurrence(schedule: dict, after: float) -> float:
+    """Ближайшее время срабатывания после `after` по локальному времени устройства."""
+    base = datetime.fromtimestamp(after)
+    target = base.replace(hour=schedule["hour"], minute=schedule["minute"],
+                          second=0, microsecond=0)
+    if schedule["type"] == "weekly":
+        days_ahead = (schedule["weekday"] - base.weekday()) % 7
+        target = target + timedelta(days=days_ahead)
+    if target.timestamp() <= after:
+        target = target + timedelta(days=7 if schedule["type"] == "weekly" else 1)
+    return target.timestamp()
+
+
+def format_schedule(schedule: dict) -> str:
+    """Человекочитаемое описание расписания: «каждый день в 12:30»."""
+    hh = f"{schedule['hour']:02d}:{schedule['minute']:02d}"
+    if schedule["type"] == "weekly":
+        return f"каждый {_WEEKDAY_NAMES[schedule['weekday']]} в {hh}"
+    return f"каждый день в {hh}"
+
+
 # ─── Менеджер ─────────────────────────────────────────────
 
 class ReminderManager:
@@ -307,22 +400,38 @@ class ReminderManager:
     # ── API ──
 
     def add_reminder(self, chat_id: str, user_name: str, task: Optional[str],
-                     delay_seconds: float, topic_id: Optional[int] = None) -> dict:
-        """Создаёт напоминание. Возвращает словарь с информацией."""
+                     delay_seconds: float, topic_id: Optional[int] = None,
+                     schedule: Optional[dict] = None,
+                     user_id: Optional[str] = None,
+                     username: Optional[str] = None) -> dict:
+        """Создаёт напоминание. Возвращает словарь с информацией.
+
+        schedule (из parse_recurring) — повторяющееся напоминание:
+        trigger_at считается от ближайшего времени по расписанию,
+        после срабатывания перепланируется автоматически.
+        user_id/username — кто попросил: при срабатывании бот тегает
+        (@username) или называет по имени.
+        """
         now = time.time()
         reminder = {
             "chat_id": str(chat_id),
             "user_name": user_name,
+            "user_id": str(user_id) if user_id else None,
+            "username": username or "",
             "task": task,
             "created_at": now,
-            "trigger_at": now + delay_seconds,
+            "trigger_at": (_next_occurrence(schedule, now) if schedule
+                           else now + delay_seconds),
             "topic_id": topic_id,
             "fired": False,
         }
+        if schedule:
+            reminder["recurrence"] = schedule
         with self._lock:
             self._reminders.append(reminder)
             self._save()
-        logger.info(f"[Reminder] Добавлено: chat={chat_id} task='{task}' через {delay_seconds:.0f}с")
+        logger.info(f"[Reminder] Добавлено: chat={chat_id} task='{task}' "
+                    + (format_schedule(schedule) if schedule else f"через {delay_seconds:.0f}с"))
         return reminder
 
     def get_active(self, chat_id: str) -> List[dict]:
@@ -409,9 +518,15 @@ class ReminderManager:
         # Fallback — статический шаблон
         if not text:
             if task:
-                text = f"{user_name}, напоминаю: {task}"
+                text = f"напоминаю: {task}"
             else:
-                text = f"{user_name}, время пришло! Ты просил напомнить."
+                text = "время пришло! Ты просил напомнить."
+
+        # Кто попросил: тегаем через @username, иначе просто называем по имени
+        if reminder.get("username"):
+            text = f"@{reminder['username']}, {text}"
+        elif user_name:
+            text = f"{user_name}, {text}"
 
         try:
             ok = await self._sender.send_message(chat_id, text, topic_id=topic_id)
@@ -469,12 +584,24 @@ class ReminderManager:
                     success = await self._fire(r)
                     with self._lock:
                         if success:
-                            r["fired"] = True
+                            if r.get("recurrence"):
+                                # Повторяющееся: не гасим, переносим на следующее время
+                                r["trigger_at"] = _next_occurrence(r["recurrence"], time.time())
+                                r["attempts"] = 0
+                            else:
+                                r["fired"] = True
                         else:
                             r["attempts"] = r.get("attempts", 0) + 1
                             if r["attempts"] >= 3:
-                                r["fired"] = True  # сдаёмся после 3 попыток
-                                logger.error(f"[Reminder] Не доставлено после 3 попыток: {r.get('task')}")
+                                if r.get("recurrence"):
+                                    # Пропускаем этот раз (сбой сети/процесса),
+                                    # переносим на следующее время расписания
+                                    r["trigger_at"] = _next_occurrence(r["recurrence"], time.time())
+                                    r["attempts"] = 0
+                                    logger.warning(f"[Reminder] Пропущено после 3 попыток, перенесено: {r.get('task')}")
+                                else:
+                                    r["fired"] = True  # сдаёмся после 3 попыток
+                                    logger.error(f"[Reminder] Не доставлено после 3 попыток: {r.get('task')}")
                         changed = True
                 if changed:
                     with self._lock:

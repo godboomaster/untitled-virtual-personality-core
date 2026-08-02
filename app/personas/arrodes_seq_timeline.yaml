@@ -1,0 +1,123 @@
+# Таймлайн последовательностей персонажей по томам (канон LotM).
+# Используется app.features.glossary_context: подставляется в промпт,
+# когда вопрос упоминает персонажа. Формат записи: ступень на момент тома
+# (не точная глава продвижения, а актуальный уровень в этом томе).
+characters:
+  - names: [Клейн, Клейн Моретти, Шерлок Мориарти, Герман Спэрроу, Мистер Мир,
+            Klein, Klein Moretti, Sherlock, Gehrman Sparrow, The World]
+    pathway: Шута (Fool)
+    timeline:
+      "1": Провидец (Seer, 9) → Клоун (Clown, 8) → Фокусник (Magician, 7)
+      "2": Безликий (Faceless, 6)
+      "3": Марионеточник (Marionettist, 5)
+      "4": Причудливый Чародей (Bizarro Sorcerer, 4)
+      "5": Учёный Прошлого (Scholar of Yore, 3)
+      "6": Вызывающий Чудеса (Miracle Invoker, 2)
+      "7": Служитель Тайн (Attendant of Mysteries, 1)
+      "8": Шут (Fool, 0)
+
+  - names: [Одри, Одри Холл, Audrey, Audrey Hall, Justice, Справедливость]
+    pathway: Визионера (Visionary)
+    timeline:
+      "1": Зритель (Spectator, 9)
+      "2": Телепат (Telepathist, 8)
+      "3": Психиатр (Psychiatrist, 7)
+      "4": Гипнотист (Hypnotist, 6)
+      "5": Сноходец (Dreamwalker, 5)
+      "6": Манипулятор (Manipulator, 4)
+
+  - names: [Элджер, Элджер Уилсон, Повешенный, Alger, Alger Wilson, The Hanged Man]
+    pathway: Тирана (Tyrant)
+    timeline:
+      "1": Народ Ярости (Folk of Rage, 8)
+      "2": Мореплаватель (Seafarer, 7)
+      "3": Мореплаватель (Seafarer, 7)
+      "4": Благословенный Ветром (Wind-blessed, 6)
+      "5": Певец Океана (Ocean Songster, 5)
+      "6": Катаклизм (Cataclysm, 4)
+
+  - names: [Деррик, Деррик Берг, Господин Солнце, Derrick, Derrick Berg, The Sun]
+    pathway: Солнца (Sun)
+    timeline:
+      "1": Певец (Bard, 9)
+      "2": Светский Проситель (Light Suppliant, 8)
+      "3": Жрец Солнца (Solar High Priest, 7)
+      "4": Нотариус (Notary, 6)
+      "5": Жрец Света (Priest of Light, 5)
+      "6": Бестеневой (Unshadowed, 4)
+
+  - names: [Форс, Форс Уолл, Госпожа Маг, Fors, Fors Wall, The Magician]
+    pathway: Двери (Door)
+    timeline:
+      "1": Ученик (Apprentice, 9)
+      "2": Астролог (Astrologer, 8)
+      "3": Писец (Scribe, 7)
+      "4": Писец (Scribe, 7)
+      "5": Путешественник (Traveler, 6)
+      "6": Чародей Тайн (Secrets Sorcerer, 5)
+
+  - names: [Сио, Сио Дереча, Госпожа Судья, Xio, Xio Derecha, The Judgment]
+    pathway: Юстициара (Justiciar)
+    timeline:
+      "1": Арбитр (Arbiter, 9)
+      "2": Арбитр (Arbiter, 9)
+      "3": Шериф (Sheriff, 8)
+      "4": Интеррогатор (Interrogator, 7)
+      "5": Интеррогатор (Interrogator, 7)
+      "6": Судья (Judge, 6)
+
+  - names: [Эмлин, Эмлин Уайт, Господин Луна, Emlyn, Emlyn White, The Moon]
+    pathway: Луны (Moon)
+    timeline:
+      "2": Вампир (Vampire, 7)
+      "3": Профессор Зелий (Potions Professor, 6)
+      "4": Профессор Зелий (Potions Professor, 6)
+      "5": Алый Учёный (Scarlet Scholar, 5)
+      "6": Король Шаманов (Shaman King, 4)
+
+  - names: [Леонард, Леонард Митчелл, Господин Звезда, Leonard, Leonard Mitchell, The Star]
+    pathway: Тьмы (Darkness)
+    timeline:
+      "1": Полуночный Поэт (Midnight Poet, 8)
+      "2": Кошмар (Nightmare, 7)
+      "3": Кошмар (Nightmare, 7)
+      "4": Успокоитель Душ (Soul Assurer, 6)
+      "5": Ночной Страж (Nightwatcher, 5)
+      "6": Духовный Доктор (Spirit Doctor, 4)
+
+  - names: [Каттлея, Госпожа Отшельник, Королева Мистик, Cattleya, The Hermit, Queen Mystic]
+    pathway: Отшельника (Hermit)
+    timeline:
+      "3": Мастер Созвездий (Constellations Master, 5)
+      "4": Мастер Созвездий (Constellations Master, 5)
+      "5": Тайный Мудрец (Mysticologist, 4)
+
+  - names: [Шэрон, Шэррон, Sharron]
+    pathway: Скованного (Chained)
+    timeline:
+      "2": Призрак (Wraith, 5)
+      "3": Призрак (Wraith, 5)
+      "4": Призрак (Wraith, 5)
+
+  - names: [Марик, Maric]
+    pathway: Скованного (Chained)
+    timeline:
+      "2": Зомби (Zombie, 6)
+      "3": Зомби (Zombie, 6)
+
+  - names: [Данн, Данн Смит, Dunn, Dunn Smith]
+    pathway: Тьмы (Darkness)
+    timeline:
+      "1": Кошмар (Nightmare, 7)
+
+  - names: [Дейли, Дейли Симон, Daly, Daly Simone]
+    pathway: Тьмы (Darkness)
+    timeline:
+      "1": Медиум (Spirit Medium, 7)
+
+  - names: [Азик, Мистер Азик, Azik, Mr. Azik]
+    pathway: Смерти (Death)
+    timeline:
+      "1": Высокая последовательность (точная ступень скрыта)
+      "2": Консул Смерти (Death Consul, 2)
+      "3": Консул Смерти (Death Consul, 2)

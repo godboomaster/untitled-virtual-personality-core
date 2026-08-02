@@ -1,0 +1,3504 @@
+{
+ "q01": {
+  "target_chapter": 1,
+  "fragments": [
+   {
+    "chapter": "Chapter 567: Source of the Matter",
+    "volume": 3,
+    "rerank_score": 4.611438274383545,
+    "distance": 0.15454399585723877,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 2: Situation",
+    "volume": 1,
+    "rerank_score": 4.452115535736084,
+    "distance": 0.1381974220275879,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 2: Situation",
+    "volume": 1,
+    "rerank_score": 4.3924665451049805,
+    "distance": 0.13090211153030396,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1352: Attendant of Mysteries",
+    "volume": 7,
+    "rerank_score": 4.267066955566406,
+    "distance": 0.13331526517868042,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1352: Attendant of Mysteries",
+    "volume": 7,
+    "rerank_score": 4.255634307861328,
+    "distance": 0.13170617818832397,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1380: A Miracle",
+    "volume": 8,
+    "rerank_score": 3.709385395050049,
+    "distance": 0.12169903516769409,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 2: Situation",
+    "volume": 1,
+    "rerank_score": 3.6710784435272217,
+    "distance": 0.13893985748291016,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1012: First Day of September",
+    "volume": 5,
+    "rerank_score": 3.444584369659424,
+    "distance": 0.14695751667022705,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 559: Meeting on the Way",
+    "volume": 3,
+    "rerank_score": 3.346144676208496,
+    "distance": 0.1327572464942932,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 845: Return",
+    "volume": 4,
+    "rerank_score": 3.2815310955047607,
+    "distance": 0.140597403049469,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 396: Great White Brotherhood",
+    "volume": 2,
+    "rerank_score": 3.2535736560821533,
+    "distance": 0.14072167873382568,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 559: Meeting on the Way",
+    "volume": 3,
+    "rerank_score": 3.240060806274414,
+    "distance": 0.13843458890914917,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1372: The Other Use of the Magic Wishing Lamp",
+    "volume": 8,
+    "rerank_score": 3.231692314147949,
+    "distance": 0.1328778862953186,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1232: Comparison Experiments",
+    "volume": 6,
+    "rerank_score": 3.1590211391448975,
+    "distance": 0.13739728927612305,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1137: Amidst History",
+    "volume": 5,
+    "rerank_score": 3.0067543983459473,
+    "distance": 0.1313900351524353,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 655: Dream Analysis",
+    "volume": 3,
+    "rerank_score": 2.930309295654297,
+    "distance": 0.14078772068023682,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1385: “Madness”",
+    "volume": 8,
+    "rerank_score": 2.9164605140686035,
+    "distance": 0.1384117603302002,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1362: Witness",
+    "volume": 8,
+    "rerank_score": 2.7689459323883057,
+    "distance": 0.12245017290115356,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 948: Meaning of Existence",
+    "volume": 5,
+    "rerank_score": 2.7162747383117676,
+    "distance": 0.13050734996795654,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 182: Wanderer Klein",
+    "volume": 1,
+    "rerank_score": 2.7133431434631348,
+    "distance": 0.1382960081100464,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1344: Humanity",
+    "volume": 7,
+    "rerank_score": 2.3445448875427246,
+    "distance": 0.13564038276672363,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1380: A Miracle",
+    "volume": 8,
+    "rerank_score": 2.307314395904541,
+    "distance": 0.13213253021240234,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 140: Expert At Courting Death",
+    "volume": 1,
+    "rerank_score": 2.265855312347412,
+    "distance": 0.1368018388748169,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 723: Another Good Deed Today",
+    "volume": 3,
+    "rerank_score": 2.1940996646881104,
+    "distance": 0.12952488660812378,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 181: Different State",
+    "volume": 1,
+    "rerank_score": 2.068336248397827,
+    "distance": 0.13434052467346191,
+    "source": null
+   }
+  ]
+ },
+ "q02": {
+  "target_chapter": 11,
+  "fragments": [
+   {
+    "chapter": "Chapter 11: Real Culinary Skills",
+    "volume": 1,
+    "rerank_score": 4.579033374786377,
+    "distance": 0.1471983790397644,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 11: Real Culinary Skills",
+    "volume": 1,
+    "rerank_score": 4.386933326721191,
+    "distance": 0.15537643432617188,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 11: Real Culinary Skills",
+    "volume": 1,
+    "rerank_score": 4.287474155426025,
+    "distance": 0.15191203355789185,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 11: Real Culinary Skills",
+    "volume": 1,
+    "rerank_score": 3.8667736053466797,
+    "distance": 0.1574176549911499,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 11: Real Culinary Skills",
+    "volume": 1,
+    "rerank_score": 3.8284997940063477,
+    "distance": 0.17225593328475952,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 10: The Norm",
+    "volume": 1,
+    "rerank_score": 3.2367215156555176,
+    "distance": 0.1700993776321411,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 280: The First Step",
+    "volume": 2,
+    "rerank_score": 3.1624817848205566,
+    "distance": 0.16071903705596924,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 231: Losses",
+    "volume": 2,
+    "rerank_score": 2.771084785461426,
+    "distance": 0.15527135133743286,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 411: Coming In Throngs",
+    "volume": 2,
+    "rerank_score": 2.5006065368652344,
+    "distance": 0.1673489809036255,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 298: Another Case",
+    "volume": 2,
+    "rerank_score": 2.4858479499816895,
+    "distance": 0.1577252745628357,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 411: Coming In Throngs",
+    "volume": 2,
+    "rerank_score": 2.4858133792877197,
+    "distance": 0.16253262758255005,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 230: Interrogation",
+    "volume": 2,
+    "rerank_score": 2.3053417205810547,
+    "distance": 0.15136992931365967,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 12: Here Again",
+    "volume": 1,
+    "rerank_score": 2.1493637561798096,
+    "distance": 0.1593760848045349,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 10: The Norm",
+    "volume": 1,
+    "rerank_score": 2.040389060974121,
+    "distance": 0.16715973615646362,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 10: The Norm",
+    "volume": 1,
+    "rerank_score": 1.694044589996338,
+    "distance": 0.17295658588409424,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 171: Promotion and Pay Raise",
+    "volume": 1,
+    "rerank_score": 1.6619130373001099,
+    "distance": 0.15166699886322021,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 12: Here Again",
+    "volume": 1,
+    "rerank_score": 1.5263452529907227,
+    "distance": 0.1731918454170227,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 247: The Whole Story",
+    "volume": 2,
+    "rerank_score": 1.4757698774337769,
+    "distance": 0.14354532957077026,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 412: Letter",
+    "volume": 2,
+    "rerank_score": 1.2369191646575928,
+    "distance": 0.14718014001846313,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1418: In Modern Day (16)",
+    "volume": 0,
+    "rerank_score": 1.235680103302002,
+    "distance": 0.1434817910194397,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 225: Unnoticeable Guidance",
+    "volume": 2,
+    "rerank_score": 1.2058812379837036,
+    "distance": 0.15971434116363525,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1418: In Modern Day (16)",
+    "volume": 0,
+    "rerank_score": 1.0871797800064087,
+    "distance": 0.15286892652511597,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1418: In Modern Day (16)",
+    "volume": 0,
+    "rerank_score": 1.0361158847808838,
+    "distance": 0.15338879823684692,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 411: Coming In Throngs",
+    "volume": 2,
+    "rerank_score": 0.8631770014762878,
+    "distance": 0.1534244418144226,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 6: Beyonder",
+    "volume": 1,
+    "rerank_score": 0.7632660269737244,
+    "distance": 0.14545893669128418,
+    "source": null
+   }
+  ]
+ },
+ "q03": {
+  "target_chapter": 21,
+  "fragments": [
+   {
+    "chapter": "Chapter 21: An Old Friend In A Different World",
+    "volume": 1,
+    "rerank_score": 7.4538068771362305,
+    "distance": 0.10886073112487793,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 21: An Old Friend In A Different World",
+    "volume": 1,
+    "rerank_score": 7.103824615478516,
+    "distance": 0.1192178726196289,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 21: An Old Friend In A Different World",
+    "volume": 1,
+    "rerank_score": 7.058341026306152,
+    "distance": 0.11490732431411743,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 21: An Old Friend In A Different World",
+    "volume": 1,
+    "rerank_score": 7.030068397521973,
+    "distance": 0.12360209226608276,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 21: An Old Friend In A Different World",
+    "volume": 1,
+    "rerank_score": 6.988147258758545,
+    "distance": 0.12502431869506836,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 290: Effecting Change Indirectly",
+    "volume": 2,
+    "rerank_score": 6.784063339233398,
+    "distance": 0.1162111759185791,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 715: Madness in His Later Years",
+    "volume": 3,
+    "rerank_score": 6.776061058044434,
+    "distance": 0.12400782108306885,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 615: Grayish-white Fog",
+    "volume": 3,
+    "rerank_score": 6.741668701171875,
+    "distance": 0.11984866857528687,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 59: Roselle’s Origins",
+    "volume": 1,
+    "rerank_score": 6.65476131439209,
+    "distance": 0.1273236870765686,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 567: Source of the Matter",
+    "volume": 3,
+    "rerank_score": 6.568097114562988,
+    "distance": 0.11884850263595581,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 59: Roselle’s Origins",
+    "volume": 1,
+    "rerank_score": 6.432593822479248,
+    "distance": 0.14642101526260376,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1129: Pressure",
+    "volume": 5,
+    "rerank_score": 6.358179092407227,
+    "distance": 0.1306854486465454,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 59: Roselle’s Origins",
+    "volume": 1,
+    "rerank_score": 6.313043117523193,
+    "distance": 0.13845139741897583,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 866: Home",
+    "volume": 4,
+    "rerank_score": 6.22002649307251,
+    "distance": 0.12160205841064453,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 790: The End of the Diary",
+    "volume": 4,
+    "rerank_score": 6.036550998687744,
+    "distance": 0.11112308502197266,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 866: Home",
+    "volume": 4,
+    "rerank_score": 5.844142436981201,
+    "distance": 0.11272847652435303,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1035: Diary Page in Advance",
+    "volume": 5,
+    "rerank_score": 5.8075056076049805,
+    "distance": 0.15230447053909302,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 218: Free General Knowledge",
+    "volume": 2,
+    "rerank_score": 5.759220123291016,
+    "distance": 0.11821788549423218,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 662: Powerful Aura",
+    "volume": 3,
+    "rerank_score": 5.7537946701049805,
+    "distance": 0.13670247793197632,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 204: Visitor",
+    "volume": 1,
+    "rerank_score": 5.7486891746521,
+    "distance": 0.13356775045394897,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 714: New Diary Pages",
+    "volume": 3,
+    "rerank_score": 5.716228485107422,
+    "distance": 0.1259511113166809,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 743: A Diary Page",
+    "volume": 4,
+    "rerank_score": 5.644105911254883,
+    "distance": 0.13078093528747559,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1104: Contradiction",
+    "volume": 5,
+    "rerank_score": 5.584630966186523,
+    "distance": 0.1118350625038147,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 765: Monday Again",
+    "volume": 4,
+    "rerank_score": 5.4841203689575195,
+    "distance": 0.16316717863082886,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 35: Exchange of Information",
+    "volume": 1,
+    "rerank_score": 5.44204044342041,
+    "distance": 0.1585162878036499,
+    "source": null
+   }
+  ]
+ },
+ "q04": {
+  "target_chapter": 31,
+  "fragments": [
+   {
+    "chapter": "Chapter 57: Organization and Summary",
+    "volume": 1,
+    "rerank_score": 6.771178841590881,
+    "distance": 0.14576423168182373,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 32: Spirit Vision",
+    "volume": 1,
+    "rerank_score": 6.703096094861492,
+    "distance": 0.15727239847183228,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 31: Potion",
+    "volume": 1,
+    "rerank_score": 8.4428209066391,
+    "distance": 0.1557179093360901,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 57: Organization and Summary",
+    "volume": 1,
+    "rerank_score": 8.640096783638,
+    "distance": 0.13599032163619995,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 519: Naming",
+    "volume": 3,
+    "rerank_score": 8.45332682132721,
+    "distance": 0.15466731786727905,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 937: Several Days Later",
+    "volume": 4,
+    "rerank_score": 3.496981620788574,
+    "distance": 0.15269845724105835,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 492: Adventurer",
+    "volume": 3,
+    "rerank_score": 3.232341766357422,
+    "distance": 0.150496244430542,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 153: Final Act of Laying the Foundation",
+    "volume": 1,
+    "rerank_score": 3.093393325805664,
+    "distance": 0.16557437181472778,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1380: A Miracle",
+    "volume": 8,
+    "rerank_score": 3.014082670211792,
+    "distance": 0.14861750602722168,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 7: Code Names",
+    "volume": 1,
+    "rerank_score": 2.882847785949707,
+    "distance": 0.1536051630973816,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 7: Code Names",
+    "volume": 1,
+    "rerank_score": 2.305666446685791,
+    "distance": 0.15055078268051147,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 7: Code Names",
+    "volume": 1,
+    "rerank_score": 2.0442001819610596,
+    "distance": 0.14997762441635132,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 6: Beyonder",
+    "volume": 1,
+    "rerank_score": 1.7367610931396484,
+    "distance": 0.14352542161941528,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 6: Beyonder",
+    "volume": 1,
+    "rerank_score": 1.7162169218063354,
+    "distance": 0.155981183052063,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 167: Holy Artifact",
+    "volume": 1,
+    "rerank_score": 1.699227213859558,
+    "distance": 0.1441255807876587,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 273: Handing Out A Formula",
+    "volume": 2,
+    "rerank_score": 1.5280336141586304,
+    "distance": 0.14806324243545532,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 22: Starting Sequence",
+    "volume": 1,
+    "rerank_score": 1.4099260568618774,
+    "distance": 0.16665703058242798,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 167: Holy Artifact",
+    "volume": 1,
+    "rerank_score": 1.3051655292510986,
+    "distance": 0.156721293926239,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 134: It’s Been More Than A Minute",
+    "volume": 1,
+    "rerank_score": 1.2619354724884033,
+    "distance": 0.16275763511657715,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 6: Beyonder",
+    "volume": 1,
+    "rerank_score": 1.1874802112579346,
+    "distance": 0.15261834859848022,
+    "source": null
+   }
+  ]
+ },
+ "q05": {
+  "target_chapter": 41,
+  "fragments": [
+   {
+    "chapter": "Chapter 338: The Experienced Klein",
+    "volume": 2,
+    "rerank_score": 1.9457297325134277,
+    "distance": 0.18484234809875488,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 337: The Search For A Missing Person",
+    "volume": 2,
+    "rerank_score": -0.17300987243652344,
+    "distance": 0.16751813888549805,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 41: Audrey and Her Susie",
+    "volume": 1,
+    "rerank_score": -0.37218186259269714,
+    "distance": 0.1607581377029419,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 41: Audrey and Her Susie",
+    "volume": 1,
+    "rerank_score": -0.3745419979095459,
+    "distance": 0.17755478620529175,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1015: March of War",
+    "volume": 5,
+    "rerank_score": -1.3062896728515625,
+    "distance": 0.17481458187103271,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1363: Treatment Plan",
+    "volume": 8,
+    "rerank_score": -2.0200774669647217,
+    "distance": 0.17926627397537231,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 384: On Your Own You Check Yourself",
+    "volume": 2,
+    "rerank_score": -2.370443344116211,
+    "distance": 0.1729753017425537,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1214: Voice",
+    "volume": 6,
+    "rerank_score": -2.4383935928344727,
+    "distance": 0.18860089778900146,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1046: A “Test”",
+    "volume": 5,
+    "rerank_score": -2.4890663623809814,
+    "distance": 0.16481882333755493,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1341: In the Dream",
+    "volume": 7,
+    "rerank_score": -2.810241937637329,
+    "distance": 0.17898434400558472,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 873: Undetectable Communication",
+    "volume": 4,
+    "rerank_score": -2.9172794818878174,
+    "distance": 0.18757331371307373,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 107: Fors",
+    "volume": 1,
+    "rerank_score": -3.0186986923217773,
+    "distance": 0.17615753412246704,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 254: Various Parties",
+    "volume": 2,
+    "rerank_score": -3.1910383701324463,
+    "distance": 0.18176281452178955,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 188: Ball",
+    "volume": 1,
+    "rerank_score": -3.3684279918670654,
+    "distance": 0.17624443769454956,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 873: Undetectable Communication",
+    "volume": 4,
+    "rerank_score": -3.5572190284729004,
+    "distance": 0.18056470155715942,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 113: Request",
+    "volume": 1,
+    "rerank_score": -3.5880470275878906,
+    "distance": 0.18624192476272583,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 113: Request",
+    "volume": 1,
+    "rerank_score": -3.5957064628601074,
+    "distance": 0.18414145708084106,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 430: A Brand New Day",
+    "volume": 2,
+    "rerank_score": -3.6585183143615723,
+    "distance": 0.18294930458068848,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 239: Each Having Their Own “Gathering”",
+    "volume": 2,
+    "rerank_score": -3.907534122467041,
+    "distance": 0.17685377597808838,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1363: Treatment Plan",
+    "volume": 8,
+    "rerank_score": -3.9997949600219727,
+    "distance": 0.18750566244125366,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 714: New Diary Pages",
+    "volume": 3,
+    "rerank_score": -4.251993656158447,
+    "distance": 0.1856297254562378,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 178: The Subsequent Ideas",
+    "volume": 1,
+    "rerank_score": -4.2925004959106445,
+    "distance": 0.18128222227096558,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 358: The Sun’s Worry",
+    "volume": 2,
+    "rerank_score": -4.319774627685547,
+    "distance": 0.17919009923934937,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1087: The Deities’ Attitudes",
+    "volume": 5,
+    "rerank_score": -4.436321258544922,
+    "distance": 0.1697508692741394,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1363: Treatment Plan",
+    "volume": 8,
+    "rerank_score": -4.507468223571777,
+    "distance": 0.17543089389801025,
+    "source": null
+   }
+  ]
+ },
+ "q06": {
+  "target_chapter": 51,
+  "fragments": [
+   {
+    "chapter": "Chapter 51: The Grounded Ritualistic Magic",
+    "volume": 1,
+    "rerank_score": 6.677602767944336,
+    "distance": 0.13746440410614014,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 51: The Grounded Ritualistic Magic",
+    "volume": 1,
+    "rerank_score": 6.587952613830566,
+    "distance": 0.15036147832870483,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 51: The Grounded Ritualistic Magic",
+    "volume": 1,
+    "rerank_score": 6.56882381439209,
+    "distance": 0.1440504789352417,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 51: The Grounded Ritualistic Magic",
+    "volume": 1,
+    "rerank_score": 6.52155065536499,
+    "distance": 0.1518934965133667,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 51: The Grounded Ritualistic Magic",
+    "volume": 1,
+    "rerank_score": 6.4555253982543945,
+    "distance": 0.13811779022216797,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 52: Spectator",
+    "volume": 1,
+    "rerank_score": 5.735452175140381,
+    "distance": 0.1473996639251709,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 52: Spectator",
+    "volume": 1,
+    "rerank_score": 5.086603164672852,
+    "distance": 0.1573154330253601,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 52: Spectator",
+    "volume": 1,
+    "rerank_score": 4.984519004821777,
+    "distance": 0.14579474925994873,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 32: Spirit Vision",
+    "volume": 1,
+    "rerank_score": 4.707457542419434,
+    "distance": 0.15494465827941895,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 32: Spirit Vision",
+    "volume": 1,
+    "rerank_score": 3.8057785034179688,
+    "distance": 0.1509782075881958,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 33: Switch",
+    "volume": 1,
+    "rerank_score": 3.779730796813965,
+    "distance": 0.15444529056549072,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 33: Switch",
+    "volume": 1,
+    "rerank_score": 3.7234959602355957,
+    "distance": 0.15827953815460205,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 32: Spirit Vision",
+    "volume": 1,
+    "rerank_score": 3.690357208251953,
+    "distance": 0.13933229446411133,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 127: Laying the Foundations",
+    "volume": 1,
+    "rerank_score": 3.6602280139923096,
+    "distance": 0.15158295631408691,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 33: Switch",
+    "volume": 1,
+    "rerank_score": 3.632187843322754,
+    "distance": 0.1579514741897583,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 163: Various Signs",
+    "volume": 1,
+    "rerank_score": 3.620697259902954,
+    "distance": 0.15097463130950928,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 47: Old Neil’s Lack of Money",
+    "volume": 1,
+    "rerank_score": 3.6201062202453613,
+    "distance": 0.14394289255142212,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 40: Mysticism Curriculum",
+    "volume": 1,
+    "rerank_score": 3.5483341217041016,
+    "distance": 0.14170169830322266,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 47: Old Neil’s Lack of Money",
+    "volume": 1,
+    "rerank_score": 3.5011730194091797,
+    "distance": 0.14125800132751465,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 163: Various Signs",
+    "volume": 1,
+    "rerank_score": 3.445169687271118,
+    "distance": 0.15634536743164062,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 50: Old Neil’s Method of Repayment",
+    "volume": 1,
+    "rerank_score": 3.3966636657714844,
+    "distance": 0.15006840229034424,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 40: Mysticism Curriculum",
+    "volume": 1,
+    "rerank_score": 3.216421127319336,
+    "distance": 0.14876669645309448,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 46: Portrait",
+    "volume": 1,
+    "rerank_score": 3.068784236907959,
+    "distance": 0.16119909286499023,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 40: Mysticism Curriculum",
+    "volume": 1,
+    "rerank_score": 2.863859176635742,
+    "distance": 0.1541656255722046,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 47: Old Neil’s Lack of Money",
+    "volume": 1,
+    "rerank_score": 2.8404030799865723,
+    "distance": 0.1513279676437378,
+    "source": null
+   }
+  ]
+ },
+ "q07": {
+  "target_chapter": 61,
+  "fragments": [
+   {
+    "chapter": "Chapter 642: Killing Three Birds With One Stone",
+    "volume": 3,
+    "rerank_score": 3.4041624069213867,
+    "distance": 0.14160311222076416,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 485: Rich Information",
+    "volume": 3,
+    "rerank_score": 3.1480140686035156,
+    "distance": 0.14857804775238037,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 643: Klein’s Version of “Magic Mirror Divination”",
+    "volume": 3,
+    "rerank_score": 3.070986270904541,
+    "distance": 0.1423856019973755,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 678: Punishment",
+    "volume": 3,
+    "rerank_score": 2.2275729179382324,
+    "distance": 0.13732516765594482,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 569: A Straw Will Show Which Way the Wind Blows",
+    "volume": 3,
+    "rerank_score": 2.210998058319092,
+    "distance": 0.18065375089645386,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 642: Killing Three Birds With One Stone",
+    "volume": 3,
+    "rerank_score": 2.1010396480560303,
+    "distance": 0.15178972482681274,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 572: Recite My Name",
+    "volume": 3,
+    "rerank_score": 2.0323903560638428,
+    "distance": 0.14263147115707397,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 642: Killing Three Birds With One Stone",
+    "volume": 3,
+    "rerank_score": 2.001431703567505,
+    "distance": 0.1766180396080017,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 487: The Growing Tarot Club",
+    "volume": 3,
+    "rerank_score": 1.9155163764953613,
+    "distance": 0.1488591432571411,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 570: Not Admitting or Denying",
+    "volume": 3,
+    "rerank_score": 1.9125794172286987,
+    "distance": 0.15100646018981934,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 569: A Straw Will Show Which Way the Wind Blows",
+    "volume": 3,
+    "rerank_score": 1.7860087156295776,
+    "distance": 0.15814906358718872,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 643: Klein’s Version of “Magic Mirror Divination”",
+    "volume": 3,
+    "rerank_score": 1.7698490619659424,
+    "distance": 0.13531064987182617,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 678: Punishment",
+    "volume": 3,
+    "rerank_score": 1.7531509399414062,
+    "distance": 0.14954519271850586,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 642: Killing Three Birds With One Stone",
+    "volume": 3,
+    "rerank_score": 1.4644191265106201,
+    "distance": 0.14267808198928833,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 592: Three Advancements in a Week",
+    "volume": 3,
+    "rerank_score": 1.4611141681671143,
+    "distance": 0.15036159753799438,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 560: The Hanged Man Gets Fleeced",
+    "volume": 3,
+    "rerank_score": 1.3768303394317627,
+    "distance": 0.16014540195465088,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 488: Living Expenses",
+    "volume": 3,
+    "rerank_score": 1.3556654453277588,
+    "distance": 0.14502644538879395,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 570: Not Admitting or Denying",
+    "volume": 3,
+    "rerank_score": 1.1700968742370605,
+    "distance": 0.16113126277923584,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 681: Indirect Answer",
+    "volume": 3,
+    "rerank_score": 1.059307336807251,
+    "distance": 0.1590585708618164,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 680: New Thoughts",
+    "volume": 3,
+    "rerank_score": 1.0196157693862915,
+    "distance": 0.14542639255523682,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 519: Naming",
+    "volume": 3,
+    "rerank_score": 1.0049031972885132,
+    "distance": 0.15361559391021729,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 642: Killing Three Birds With One Stone",
+    "volume": 3,
+    "rerank_score": 0.9526957869529724,
+    "distance": 0.1594114899635315,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 561: “Recruitment Fair”",
+    "volume": 3,
+    "rerank_score": 0.9342527389526367,
+    "distance": 0.15848147869110107,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 617: The Mysterious Adam",
+    "volume": 3,
+    "rerank_score": 0.9317623376846313,
+    "distance": 0.1528393030166626,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 601: Scaring Oneself",
+    "volume": 3,
+    "rerank_score": 0.8859427571296692,
+    "distance": 0.15528208017349243,
+    "source": null
+   }
+  ]
+ },
+ "q08": {
+  "target_chapter": 71,
+  "fragments": [
+   {
+    "chapter": "Chapter 210: Story",
+    "volume": 1,
+    "rerank_score": 6.861593127250671,
+    "distance": 0.12768137454986572,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 71: Sluggish Phenomenon",
+    "volume": 1,
+    "rerank_score": 6.824369165935805,
+    "distance": 0.11837559938430786,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 57: Organization and Summary",
+    "volume": 1,
+    "rerank_score": 6.6936299204826355,
+    "distance": 0.1612740159034729,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 75: Saving Himself",
+    "volume": 1,
+    "rerank_score": 4.961965560913086,
+    "distance": 0.15186917781829834,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 77: Remnant Items",
+    "volume": 1,
+    "rerank_score": 4.951415061950684,
+    "distance": 0.13948118686676025,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 75: Saving Himself",
+    "volume": 1,
+    "rerank_score": 4.798610210418701,
+    "distance": 0.15241700410842896,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 77: Remnant Items",
+    "volume": 1,
+    "rerank_score": 4.558606147766113,
+    "distance": 0.13778901100158691,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 154: Sharing “Experience”",
+    "volume": 1,
+    "rerank_score": 4.439614772796631,
+    "distance": 0.14318150281906128,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 75: Saving Himself",
+    "volume": 1,
+    "rerank_score": 4.415555953979492,
+    "distance": 0.15590733289718628,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 74: Ray Bieber",
+    "volume": 1,
+    "rerank_score": 4.3474578857421875,
+    "distance": 0.14234024286270142,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 72: Tracking",
+    "volume": 1,
+    "rerank_score": 4.074613571166992,
+    "distance": 0.1320483684539795,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 77: Remnant Items",
+    "volume": 1,
+    "rerank_score": 3.8260128498077393,
+    "distance": 0.15448302030563354,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 76: Dealing With The Aftermath",
+    "volume": 1,
+    "rerank_score": 3.3994522094726562,
+    "distance": 0.14515161514282227,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 53: Listener",
+    "volume": 1,
+    "rerank_score": 3.315643310546875,
+    "distance": 0.14750707149505615,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 74: Ray Bieber",
+    "volume": 1,
+    "rerank_score": 3.207958698272705,
+    "distance": 0.14545327425003052,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 327: Encounter on the Road",
+    "volume": 2,
+    "rerank_score": 2.5827746391296387,
+    "distance": 0.14590400457382202,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 160: Seizing the Opportunity",
+    "volume": 1,
+    "rerank_score": 2.1831793785095215,
+    "distance": 0.1463354229927063,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 76: Dealing With The Aftermath",
+    "volume": 1,
+    "rerank_score": 2.1385834217071533,
+    "distance": 0.15020418167114258,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 72: Tracking",
+    "volume": 1,
+    "rerank_score": 1.593153715133667,
+    "distance": 0.15151149034500122,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 74: Ray Bieber",
+    "volume": 1,
+    "rerank_score": 1.5420303344726562,
+    "distance": 0.14396405220031738,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 76: Dealing With The Aftermath",
+    "volume": 1,
+    "rerank_score": 1.503678798675537,
+    "distance": 0.1517307162284851,
+    "source": null
+   }
+  ]
+ },
+ "q09": {
+  "target_chapter": 81,
+  "fragments": [
+   {
+    "chapter": "Chapter 82: Herb Store",
+    "volume": 1,
+    "rerank_score": 7.658496379852295,
+    "distance": 0.11818093061447144,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 82: Herb Store",
+    "volume": 1,
+    "rerank_score": 7.645040988922119,
+    "distance": 0.12363559007644653,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 82: Herb Store",
+    "volume": 1,
+    "rerank_score": 7.604678153991699,
+    "distance": 0.13175082206726074,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 82: Herb Store",
+    "volume": 1,
+    "rerank_score": 7.530828952789307,
+    "distance": 0.1251404881477356,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 82: Herb Store",
+    "volume": 1,
+    "rerank_score": 7.494696140289307,
+    "distance": 0.13009625673294067,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 81: Finally Meeting",
+    "volume": 1,
+    "rerank_score": 4.64348840713501,
+    "distance": 0.1215941309928894,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 81: Finally Meeting",
+    "volume": 1,
+    "rerank_score": 4.2644758224487305,
+    "distance": 0.11933529376983643,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 81: Finally Meeting",
+    "volume": 1,
+    "rerank_score": 4.162633895874023,
+    "distance": 0.13220685720443726,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 83: Carving",
+    "volume": 1,
+    "rerank_score": 2.7143044471740723,
+    "distance": 0.14667856693267822,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 83: Carving",
+    "volume": 1,
+    "rerank_score": 2.540524482727051,
+    "distance": 0.15230154991149902,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 95: The Supplicant",
+    "volume": 1,
+    "rerank_score": 2.1161978244781494,
+    "distance": 0.16199225187301636,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 1.9999480247497559,
+    "distance": 0.17269331216812134,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 1.8986406326293945,
+    "distance": 0.16400349140167236,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 1.8360615968704224,
+    "distance": 0.17654329538345337,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 38: Novice Hobbyist",
+    "volume": 1,
+    "rerank_score": 1.5835254192352295,
+    "distance": 0.16465097665786743,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 48: Hanass Vincent",
+    "volume": 1,
+    "rerank_score": 1.3982748985290527,
+    "distance": 0.1575145125389099,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 95: The Supplicant",
+    "volume": 1,
+    "rerank_score": 1.369949460029602,
+    "distance": 0.16499680280685425,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 62: The Seer’s Suggestion",
+    "volume": 1,
+    "rerank_score": 1.3635214567184448,
+    "distance": 0.18680578470230103,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 62: The Seer’s Suggestion",
+    "volume": 1,
+    "rerank_score": 1.33545982837677,
+    "distance": 0.17179834842681885,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 62: The Seer’s Suggestion",
+    "volume": 1,
+    "rerank_score": 1.2334644794464111,
+    "distance": 0.17151403427124023,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 38: Novice Hobbyist",
+    "volume": 1,
+    "rerank_score": 1.1504278182983398,
+    "distance": 0.17207348346710205,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 48: Hanass Vincent",
+    "volume": 1,
+    "rerank_score": 1.1209841966629028,
+    "distance": 0.16249030828475952,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 83: Carving",
+    "volume": 1,
+    "rerank_score": 1.113982915878296,
+    "distance": 0.1573876142501831,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 38: Novice Hobbyist",
+    "volume": 1,
+    "rerank_score": 1.0673882961273193,
+    "distance": 0.16179496049880981,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 48: Hanass Vincent",
+    "volume": 1,
+    "rerank_score": 1.0472133159637451,
+    "distance": 0.1694585084915161,
+    "source": null
+   }
+  ]
+ },
+ "q10": {
+  "target_chapter": 91,
+  "fragments": [
+   {
+    "chapter": "Chapter 91: Solution",
+    "volume": 1,
+    "rerank_score": 3.4240126609802246,
+    "distance": 0.13003009557724,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 91: Solution",
+    "volume": 1,
+    "rerank_score": 3.4094159603118896,
+    "distance": 0.12463408708572388,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 91: Solution",
+    "volume": 1,
+    "rerank_score": 3.380518913269043,
+    "distance": 0.12815642356872559,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 91: Solution",
+    "volume": 1,
+    "rerank_score": 3.237614631652832,
+    "distance": 0.12880384922027588,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 91: Solution",
+    "volume": 1,
+    "rerank_score": 3.2047436237335205,
+    "distance": 0.13628911972045898,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1133: Chant",
+    "volume": 5,
+    "rerank_score": 2.654207229614258,
+    "distance": 0.13834446668624878,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 975: A Familiar Feeling",
+    "volume": 5,
+    "rerank_score": 1.9796631336212158,
+    "distance": 0.14340370893478394,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 165: Epitaph",
+    "volume": 1,
+    "rerank_score": 1.4277064800262451,
+    "distance": 0.13690787553787231,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1111: “Poker Expert”",
+    "volume": 5,
+    "rerank_score": 1.0626713037490845,
+    "distance": 0.13170504570007324,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 582: “Provocation”",
+    "volume": 3,
+    "rerank_score": 0.8094258308410645,
+    "distance": 0.143466055393219,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 174: Madam Sharon",
+    "volume": 1,
+    "rerank_score": 0.7790212035179138,
+    "distance": 0.1387500762939453,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 165: Epitaph",
+    "volume": 1,
+    "rerank_score": 0.744871199131012,
+    "distance": 0.1424577236175537,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1091: Asking Himself",
+    "volume": 5,
+    "rerank_score": 0.7384699583053589,
+    "distance": 0.13964951038360596,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 579: Academic Question",
+    "volume": 3,
+    "rerank_score": 0.5045698881149292,
+    "distance": 0.16281938552856445,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 165: Epitaph",
+    "volume": 1,
+    "rerank_score": 0.4948379099369049,
+    "distance": 0.14244961738586426,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 200: The Demoness of Pleasure",
+    "volume": 1,
+    "rerank_score": 0.4839043617248535,
+    "distance": 0.1419791579246521,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 133: Expensive Charms",
+    "volume": 1,
+    "rerank_score": 0.4054255485534668,
+    "distance": 0.13922178745269775,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1107: Relax",
+    "volume": 5,
+    "rerank_score": 0.37997809052467346,
+    "distance": 0.14339679479599,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 840: Using His Advantage",
+    "volume": 4,
+    "rerank_score": 0.36850500106811523,
+    "distance": 0.13651591539382935,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 978: Gift",
+    "volume": 5,
+    "rerank_score": 0.3310450613498688,
+    "distance": 0.13971877098083496,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 575: Golden Dream",
+    "volume": 3,
+    "rerank_score": 0.23380762338638306,
+    "distance": 0.16259771585464478,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 167: Holy Artifact",
+    "volume": 1,
+    "rerank_score": 0.22234199941158295,
+    "distance": 0.13826847076416016,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 782: Saturday Night",
+    "volume": 4,
+    "rerank_score": 0.19977855682373047,
+    "distance": 0.13590312004089355,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 367: Threatening Letter",
+    "volume": 2,
+    "rerank_score": 0.18583014607429504,
+    "distance": 0.14152079820632935,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 69: Protection Amulet",
+    "volume": 1,
+    "rerank_score": 0.16882291436195374,
+    "distance": 0.1393495798110962,
+    "source": null
+   }
+  ]
+ },
+ "q11": {
+  "target_chapter": 101,
+  "fragments": [
+   {
+    "chapter": "Chapter 101: Unexpected Clue",
+    "volume": 1,
+    "rerank_score": 7.948485851287842,
+    "distance": 0.1594671607017517,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 101: Unexpected Clue",
+    "volume": 1,
+    "rerank_score": 7.848278045654297,
+    "distance": 0.1581813097000122,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 101: Unexpected Clue",
+    "volume": 1,
+    "rerank_score": 7.696824073791504,
+    "distance": 0.14477074146270752,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 101: Unexpected Clue",
+    "volume": 1,
+    "rerank_score": 7.695407390594482,
+    "distance": 0.1547718644142151,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 101: Unexpected Clue",
+    "volume": 1,
+    "rerank_score": 7.6207356452941895,
+    "distance": 0.15448790788650513,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 136: The Stumped Klein",
+    "volume": 1,
+    "rerank_score": 4.936458110809326,
+    "distance": 0.16721689701080322,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 136: The Stumped Klein",
+    "volume": 1,
+    "rerank_score": 4.9208526611328125,
+    "distance": 0.1705092191696167,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 136: The Stumped Klein",
+    "volume": 1,
+    "rerank_score": 4.892116546630859,
+    "distance": 0.1604648232460022,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 48: Hanass Vincent",
+    "volume": 1,
+    "rerank_score": 4.500465393066406,
+    "distance": 0.15752309560775757,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 48: Hanass Vincent",
+    "volume": 1,
+    "rerank_score": 4.145016670227051,
+    "distance": 0.15126264095306396,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 62: The Seer’s Suggestion",
+    "volume": 1,
+    "rerank_score": 3.9617271423339844,
+    "distance": 0.14678704738616943,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 115: Cheat",
+    "volume": 1,
+    "rerank_score": 3.921468734741211,
+    "distance": 0.165973961353302,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 48: Hanass Vincent",
+    "volume": 1,
+    "rerank_score": 3.8557662963867188,
+    "distance": 0.154712975025177,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 62: The Seer’s Suggestion",
+    "volume": 1,
+    "rerank_score": 3.7867050170898438,
+    "distance": 0.15462100505828857,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 62: The Seer’s Suggestion",
+    "volume": 1,
+    "rerank_score": 3.2810800075531006,
+    "distance": 0.154163658618927,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 38: Novice Hobbyist",
+    "volume": 1,
+    "rerank_score": 3.254222869873047,
+    "distance": 0.15866446495056152,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 3.236259937286377,
+    "distance": 0.1635129451751709,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 38: Novice Hobbyist",
+    "volume": 1,
+    "rerank_score": 3.202087879180908,
+    "distance": 0.16212403774261475,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 38: Novice Hobbyist",
+    "volume": 1,
+    "rerank_score": 3.1320059299468994,
+    "distance": 0.1548214554786682,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 2.9578287601470947,
+    "distance": 0.16959822177886963,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 2.892599582672119,
+    "distance": 0.15297812223434448,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 115: Cheat",
+    "volume": 1,
+    "rerank_score": 2.60640287399292,
+    "distance": 0.17088693380355835,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 111: Letting Slip",
+    "volume": 1,
+    "rerank_score": 2.5886664390563965,
+    "distance": 0.17460119724273682,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 284: Instinctive Trembling",
+    "volume": 2,
+    "rerank_score": 2.576902389526367,
+    "distance": 0.1705174446105957,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 111: Letting Slip",
+    "volume": 1,
+    "rerank_score": 2.4314374923706055,
+    "distance": 0.1781119704246521,
+    "source": null
+   }
+  ]
+ },
+ "q12": {
+  "target_chapter": 111,
+  "fragments": [
+   {
+    "chapter": "Chapter 243: Catching the Adulterous Act",
+    "volume": 2,
+    "rerank_score": 6.261322498321533,
+    "distance": 0.14867085218429565,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 48: Hanass Vincent",
+    "volume": 1,
+    "rerank_score": 6.093524932861328,
+    "distance": 0.15351200103759766,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 153: Final Act of Laying the Foundation",
+    "volume": 1,
+    "rerank_score": 5.985937595367432,
+    "distance": 0.1597786545753479,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 48: Hanass Vincent",
+    "volume": 1,
+    "rerank_score": 5.836296558380127,
+    "distance": 0.15352708101272583,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 5.716987609863281,
+    "distance": 0.1480603814125061,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 38: Novice Hobbyist",
+    "volume": 1,
+    "rerank_score": 5.7024664878845215,
+    "distance": 0.15072494745254517,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 48: Hanass Vincent",
+    "volume": 1,
+    "rerank_score": 5.580013275146484,
+    "distance": 0.15298134088516235,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 38: Novice Hobbyist",
+    "volume": 1,
+    "rerank_score": 5.504533767700195,
+    "distance": 0.14177531003952026,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 38: Novice Hobbyist",
+    "volume": 1,
+    "rerank_score": 5.488040924072266,
+    "distance": 0.13767743110656738,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 95: The Supplicant",
+    "volume": 1,
+    "rerank_score": 5.421018600463867,
+    "distance": 0.1592240333557129,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 423: Winds Arise",
+    "volume": 2,
+    "rerank_score": 5.411194801330566,
+    "distance": 0.17013657093048096,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 115: Cheat",
+    "volume": 1,
+    "rerank_score": 5.250743865966797,
+    "distance": 0.14849573373794556,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 69: Protection Amulet",
+    "volume": 1,
+    "rerank_score": 5.160621166229248,
+    "distance": 0.1580597162246704,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 5.150238037109375,
+    "distance": 0.15988385677337646,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 115: Cheat",
+    "volume": 1,
+    "rerank_score": 5.112554550170898,
+    "distance": 0.15340667963027954,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 115: Cheat",
+    "volume": 1,
+    "rerank_score": 5.08459997177124,
+    "distance": 0.15853196382522583,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1035: Diary Page in Advance",
+    "volume": 5,
+    "rerank_score": 4.979599475860596,
+    "distance": 0.14188742637634277,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 62: The Seer’s Suggestion",
+    "volume": 1,
+    "rerank_score": 4.969326019287109,
+    "distance": 0.1564706563949585,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 62: The Seer’s Suggestion",
+    "volume": 1,
+    "rerank_score": 4.909400939941406,
+    "distance": 0.14169716835021973,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 62: The Seer’s Suggestion",
+    "volume": 1,
+    "rerank_score": 4.836180686950684,
+    "distance": 0.15700620412826538,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 4.73548698425293,
+    "distance": 0.158186674118042,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 82: Herb Store",
+    "volume": 1,
+    "rerank_score": 4.6423749923706055,
+    "distance": 0.1575564742088318,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 132: Meeting the Monster Again",
+    "volume": 1,
+    "rerank_score": 4.600132942199707,
+    "distance": 0.1429603099822998,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 132: Meeting the Monster Again",
+    "volume": 1,
+    "rerank_score": 4.4514570236206055,
+    "distance": 0.1494612693786621,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 111: Letting Slip",
+    "volume": 1,
+    "rerank_score": 4.431324005126953,
+    "distance": 0.15278911590576172,
+    "source": null
+   }
+  ]
+ },
+ "q13": {
+  "target_chapter": 121,
+  "fragments": [
+   {
+    "chapter": "Chapter 121: Leonard’s Hypothesis",
+    "volume": 1,
+    "rerank_score": 4.929369926452637,
+    "distance": 0.15430879592895508,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 121: Leonard’s Hypothesis",
+    "volume": 1,
+    "rerank_score": 4.7715864181518555,
+    "distance": 0.15817415714263916,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 121: Leonard’s Hypothesis",
+    "volume": 1,
+    "rerank_score": 4.5183329582214355,
+    "distance": 0.1299349069595337,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 121: Leonard’s Hypothesis",
+    "volume": 1,
+    "rerank_score": 4.423409461975098,
+    "distance": 0.15980970859527588,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 121: Leonard’s Hypothesis",
+    "volume": 1,
+    "rerank_score": 4.405224800109863,
+    "distance": 0.14799624681472778,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 161: Inverted Mausoleum",
+    "volume": 1,
+    "rerank_score": 0.5753817558288574,
+    "distance": 0.17247766256332397,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 161: Inverted Mausoleum",
+    "volume": 1,
+    "rerank_score": 0.18659792840480804,
+    "distance": 0.18879848718643188,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 160: Seizing the Opportunity",
+    "volume": 1,
+    "rerank_score": 0.17325946688652039,
+    "distance": 0.1934841275215149,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 161: Inverted Mausoleum",
+    "volume": 1,
+    "rerank_score": -0.21904650330543518,
+    "distance": 0.1852014660835266,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 160: Seizing the Opportunity",
+    "volume": 1,
+    "rerank_score": -0.4368959069252014,
+    "distance": 0.18750780820846558,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 160: Seizing the Opportunity",
+    "volume": 1,
+    "rerank_score": -0.8726692795753479,
+    "distance": 0.17340844869613647,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1430: In Modern Day (28)",
+    "volume": 0,
+    "rerank_score": -1.0480846166610718,
+    "distance": 1.0,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 853: Comparison of Experience in Sophistry",
+    "volume": 4,
+    "rerank_score": -1.5697174072265625,
+    "distance": 0.19678360223770142,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 938: Writing",
+    "volume": 4,
+    "rerank_score": -1.8957337141036987,
+    "distance": 1.0,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1430: In Modern Day (28)",
+    "volume": 0,
+    "rerank_score": -1.9403185844421387,
+    "distance": 1.0,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1430: In Modern Day (28)",
+    "volume": 0,
+    "rerank_score": -2.0250768661499023,
+    "distance": 1.0,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 639: Name List",
+    "volume": 3,
+    "rerank_score": -2.071455478668213,
+    "distance": 0.19492864608764648,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 938: Writing",
+    "volume": 4,
+    "rerank_score": -2.334745168685913,
+    "distance": 1.0,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 639: Name List",
+    "volume": 3,
+    "rerank_score": -2.414860963821411,
+    "distance": 1.0,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 124: Wrapping Up Work",
+    "volume": 1,
+    "rerank_score": -2.4500057697296143,
+    "distance": 1.0,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 854: Confession",
+    "volume": 4,
+    "rerank_score": -3.223473310470581,
+    "distance": 1.0,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 945: The Story’s Ending",
+    "volume": 4,
+    "rerank_score": -3.7476181983947754,
+    "distance": 0.1793026328086853,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 119: The True Lower Street",
+    "volume": 1,
+    "rerank_score": -3.791214942932129,
+    "distance": 0.19034743309020996,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 852: Straight to the Point",
+    "volume": 4,
+    "rerank_score": -3.9557127952575684,
+    "distance": 0.17561942338943481,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 764: First Investigation",
+    "volume": 4,
+    "rerank_score": -4.0554351806640625,
+    "distance": 1.0,
+    "source": null
+   }
+  ]
+ },
+ "q14": {
+  "target_chapter": 131,
+  "fragments": [
+   {
+    "chapter": "Chapter 254: Various Parties",
+    "volume": 2,
+    "rerank_score": 1.4838101863861084,
+    "distance": 0.1675490140914917,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 948: Meaning of Existence",
+    "volume": 5,
+    "rerank_score": 0.9414421319961548,
+    "distance": 0.17351514101028442,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 570: Not Admitting or Denying",
+    "volume": 3,
+    "rerank_score": 0.4999234676361084,
+    "distance": 0.1603933572769165,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 218: Free General Knowledge",
+    "volume": 2,
+    "rerank_score": 0.4860960841178894,
+    "distance": 0.1748306155204773,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1318: Seven Councilors",
+    "volume": 7,
+    "rerank_score": 0.3930726647377014,
+    "distance": 0.1795191764831543,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1101: Special Reward",
+    "volume": 5,
+    "rerank_score": 0.340224027633667,
+    "distance": 0.17416095733642578,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 131: Transaction",
+    "volume": 1,
+    "rerank_score": 0.17750278115272522,
+    "distance": 0.16279172897338867,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 266: The World’s Commission",
+    "volume": 2,
+    "rerank_score": -0.09007304906845093,
+    "distance": 0.17012512683868408,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 391: The Great Seafarer Roselle",
+    "volume": 2,
+    "rerank_score": -0.09310705214738846,
+    "distance": 0.18066996335983276,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 947: House Call",
+    "volume": 5,
+    "rerank_score": -0.1451040506362915,
+    "distance": 0.17211753129959106,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 823: The Maturing Tarot Club",
+    "volume": 4,
+    "rerank_score": -0.17032532393932343,
+    "distance": 0.1765316128730774,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 570: Not Admitting or Denying",
+    "volume": 3,
+    "rerank_score": -0.26700976490974426,
+    "distance": 0.17249250411987305,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 947: House Call",
+    "volume": 5,
+    "rerank_score": -0.4484928250312805,
+    "distance": 0.16584503650665283,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 310: National Atmospheric Pollution Council",
+    "volume": 2,
+    "rerank_score": -0.5174440145492554,
+    "distance": 0.1725977063179016,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 244: Appointee",
+    "volume": 2,
+    "rerank_score": -0.8990112543106079,
+    "distance": 0.17066353559494019,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1010: Consultant Fee",
+    "volume": 5,
+    "rerank_score": -1.015271782875061,
+    "distance": 0.1772034764289856,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 743: A Diary Page",
+    "volume": 4,
+    "rerank_score": -1.0745997428894043,
+    "distance": 0.17837953567504883,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 958: Labeling",
+    "volume": 5,
+    "rerank_score": -1.0969126224517822,
+    "distance": 0.1775296926498413,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 805: Meeting Up",
+    "volume": 4,
+    "rerank_score": -1.1173148155212402,
+    "distance": 0.16421353816986084,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 716: Island and Ruins",
+    "volume": 3,
+    "rerank_score": -1.1219552755355835,
+    "distance": 0.17267662286758423,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1172: “Unperturbed”",
+    "volume": 6,
+    "rerank_score": -1.2289931774139404,
+    "distance": 0.17287927865982056,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 131: Transaction",
+    "volume": 1,
+    "rerank_score": -1.2346148490905762,
+    "distance": 0.17172271013259888,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 245: Confirmation",
+    "volume": 2,
+    "rerank_score": -1.313018798828125,
+    "distance": 0.17763853073120117,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 963: Problem with Intelligence",
+    "volume": 5,
+    "rerank_score": -1.4749644994735718,
+    "distance": 0.1785460114479065,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1318: Seven Councilors",
+    "volume": 7,
+    "rerank_score": -1.5291234254837036,
+    "distance": 0.16959470510482788,
+    "source": null
+   }
+  ]
+ },
+ "q15": {
+  "target_chapter": 141,
+  "fragments": [
+   {
+    "chapter": "Chapter 1075: No Response",
+    "volume": 5,
+    "rerank_score": 3.8926305770874023,
+    "distance": 0.16793709993362427,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 141: Nightmare",
+    "volume": 1,
+    "rerank_score": 3.666900157928467,
+    "distance": 0.1724507212638855,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 141: Nightmare",
+    "volume": 1,
+    "rerank_score": 3.6401517391204834,
+    "distance": 0.1707248091697693,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 141: Nightmare",
+    "volume": 1,
+    "rerank_score": 3.4163522720336914,
+    "distance": 0.17452144622802734,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 648: Noon and Night",
+    "volume": 3,
+    "rerank_score": 3.027134895324707,
+    "distance": 0.17670929431915283,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 199: Successful Toss of the Die",
+    "volume": 1,
+    "rerank_score": 2.8831305503845215,
+    "distance": 0.17545348405838013,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 847: The Name Hidden in the Dossiers",
+    "volume": 4,
+    "rerank_score": 2.8276607990264893,
+    "distance": 0.15800023078918457,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 263: Spiritual Perception and Attempt",
+    "volume": 2,
+    "rerank_score": 2.8232598304748535,
+    "distance": 0.16530543565750122,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 389: Nighthawk",
+    "volume": 2,
+    "rerank_score": 2.7834420204162598,
+    "distance": 0.17177635431289673,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 874: I Didn’t Say Anything",
+    "volume": 4,
+    "rerank_score": 2.715723991394043,
+    "distance": 0.16080403327941895,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 198: Appropriating Uniqueness",
+    "volume": 1,
+    "rerank_score": 2.691664218902588,
+    "distance": 0.159862220287323,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 390: Anticipation!",
+    "volume": 2,
+    "rerank_score": 2.600064516067505,
+    "distance": 0.17253226041793823,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 388: Exploring the Dreamland",
+    "volume": 2,
+    "rerank_score": 2.559635639190674,
+    "distance": 0.17132341861724854,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 389: Nighthawk",
+    "volume": 2,
+    "rerank_score": 2.5378689765930176,
+    "distance": 0.15882760286331177,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 361: Translucent Worm",
+    "volume": 2,
+    "rerank_score": 2.165555477142334,
+    "distance": 0.17621451616287231,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 388: Exploring the Dreamland",
+    "volume": 2,
+    "rerank_score": 2.0666167736053467,
+    "distance": 0.16957402229309082,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 351: “Game” of Question and Answer",
+    "volume": 2,
+    "rerank_score": 2.057164192199707,
+    "distance": 0.16644072532653809,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 830: Infiltration",
+    "volume": 4,
+    "rerank_score": 2.053680419921875,
+    "distance": 0.17078238725662231,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 830: Infiltration",
+    "volume": 4,
+    "rerank_score": 1.9976136684417725,
+    "distance": 0.16603296995162964,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 936: Don’t Want to Miss Out",
+    "volume": 4,
+    "rerank_score": 1.8764017820358276,
+    "distance": 0.17915207147598267,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1: Crimson",
+    "volume": 1,
+    "rerank_score": 1.8376771211624146,
+    "distance": 0.16133707761764526,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 770: A Child Should Act like a Child",
+    "volume": 4,
+    "rerank_score": 1.7226927280426025,
+    "distance": 0.1633739471435547,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 804: Archaeological Team",
+    "volume": 4,
+    "rerank_score": 1.5917110443115234,
+    "distance": 0.17625194787979126,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 200: The Demoness of Pleasure",
+    "volume": 1,
+    "rerank_score": 1.5435278415679932,
+    "distance": 0.16964930295944214,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 16: Rat-Baiting With Dogs",
+    "volume": 1,
+    "rerank_score": 1.3703503608703613,
+    "distance": 0.16635620594024658,
+    "source": null
+   }
+  ]
+ },
+ "q16": {
+  "target_chapter": 151,
+  "fragments": [
+   {
+    "chapter": "Chapter 139: Studying 3-0782",
+    "volume": 1,
+    "rerank_score": 6.7087215185165405,
+    "distance": 0.1582556962966919,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 160: Seizing the Opportunity",
+    "volume": 1,
+    "rerank_score": 6.580957770347595,
+    "distance": 0.18380844593048096,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 139: Studying 3-0782",
+    "volume": 1,
+    "rerank_score": 6.575148439467369,
+    "distance": 0.13741075992584229,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 162: Intense Sunlight",
+    "volume": 1,
+    "rerank_score": 7.187143325805664,
+    "distance": 0.12753373384475708,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 162: Intense Sunlight",
+    "volume": 1,
+    "rerank_score": 7.110255241394043,
+    "distance": 0.13034802675247192,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 300: Spirit Dance",
+    "volume": 2,
+    "rerank_score": 7.024683475494385,
+    "distance": 0.15947818756103516,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 133: Expensive Charms",
+    "volume": 1,
+    "rerank_score": 6.858236312866211,
+    "distance": 0.13345485925674438,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 161: Inverted Mausoleum",
+    "volume": 1,
+    "rerank_score": 6.638055801391602,
+    "distance": 0.13379275798797607,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 198: Appropriating Uniqueness",
+    "volume": 1,
+    "rerank_score": 6.52821683883667,
+    "distance": 0.13992244005203247,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 140: Expert At Courting Death",
+    "volume": 1,
+    "rerank_score": 6.373909950256348,
+    "distance": 0.1389976143836975,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 151: Klein’s Request",
+    "volume": 1,
+    "rerank_score": 6.116890907287598,
+    "distance": 0.11634427309036255,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 141: Nightmare",
+    "volume": 1,
+    "rerank_score": 5.800571441650391,
+    "distance": 0.13767850399017334,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 206: Grade 2 Sealed Artifacts",
+    "volume": 1,
+    "rerank_score": 5.752111911773682,
+    "distance": 0.1363966464996338,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 140: Expert At Courting Death",
+    "volume": 1,
+    "rerank_score": 5.722334861755371,
+    "distance": 0.1322285532951355,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 141: Nightmare",
+    "volume": 1,
+    "rerank_score": 5.650202751159668,
+    "distance": 0.14012175798416138,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 162: Intense Sunlight",
+    "volume": 1,
+    "rerank_score": 5.582859992980957,
+    "distance": 0.13365250825881958,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 135: Portrait of a Baron",
+    "volume": 1,
+    "rerank_score": 5.5203142166137695,
+    "distance": 0.15671658515930176,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 206: Grade 2 Sealed Artifacts",
+    "volume": 1,
+    "rerank_score": 5.271344184875488,
+    "distance": 0.13670015335083008,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 300: Spirit Dance",
+    "volume": 2,
+    "rerank_score": 5.261893272399902,
+    "distance": 0.16281521320343018,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 196: Spirit Medium Mirror",
+    "volume": 1,
+    "rerank_score": 5.236676216125488,
+    "distance": 0.15733087062835693,
+    "source": null
+   }
+  ]
+ },
+ "q17": {
+  "target_chapter": 161,
+  "fragments": [
+   {
+    "chapter": "Chapter 202: Confirming the Situation",
+    "volume": 1,
+    "rerank_score": 3.9319920539855957,
+    "distance": 0.1435796022415161,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 245: Confirmation",
+    "volume": 2,
+    "rerank_score": 3.4433391094207764,
+    "distance": 0.1556122899055481,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 161: Inverted Mausoleum",
+    "volume": 1,
+    "rerank_score": 3.3065590858459473,
+    "distance": 0.1571561098098755,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 704: Origins",
+    "volume": 3,
+    "rerank_score": 3.2967989444732666,
+    "distance": 0.16111505031585693,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 121: Leonard’s Hypothesis",
+    "volume": 1,
+    "rerank_score": 3.2750773429870605,
+    "distance": 0.17160296440124512,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 243: Catching the Adulterous Act",
+    "volume": 2,
+    "rerank_score": 2.977794647216797,
+    "distance": 0.14861375093460083,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 161: Inverted Mausoleum",
+    "volume": 1,
+    "rerank_score": 2.9712345600128174,
+    "distance": 0.16198748350143433,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 161: Inverted Mausoleum",
+    "volume": 1,
+    "rerank_score": 2.937464952468872,
+    "distance": 0.15671491622924805,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 121: Leonard’s Hypothesis",
+    "volume": 1,
+    "rerank_score": 2.6822149753570557,
+    "distance": 0.1643640398979187,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 126: Divination Isn’t All-Powerful",
+    "volume": 1,
+    "rerank_score": 2.5333633422851562,
+    "distance": 0.15401339530944824,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 243: Catching the Adulterous Act",
+    "volume": 2,
+    "rerank_score": 2.4742743968963623,
+    "distance": 0.15963786840438843,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 121: Leonard’s Hypothesis",
+    "volume": 1,
+    "rerank_score": 2.3483614921569824,
+    "distance": 0.17097800970077515,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 2.3211965560913086,
+    "distance": 0.1748805046081543,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 126: Divination Isn’t All-Powerful",
+    "volume": 1,
+    "rerank_score": 2.3144640922546387,
+    "distance": 0.16041702032089233,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1035: Diary Page in Advance",
+    "volume": 5,
+    "rerank_score": 2.229783773422241,
+    "distance": 0.15412020683288574,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 460: Cyclic Explorations",
+    "volume": 2,
+    "rerank_score": 2.179964542388916,
+    "distance": 0.17515969276428223,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 283: Dock Union",
+    "volume": 2,
+    "rerank_score": 2.135361671447754,
+    "distance": 0.16341572999954224,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 195: “Lockpicking Expert” Klein",
+    "volume": 1,
+    "rerank_score": 1.9939590692520142,
+    "distance": 0.15772122144699097,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 54: The First Divination Requester",
+    "volume": 1,
+    "rerank_score": 1.9577531814575195,
+    "distance": 0.16390055418014526,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 126: Divination Isn’t All-Powerful",
+    "volume": 1,
+    "rerank_score": 1.9332184791564941,
+    "distance": 0.16227829456329346,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 2: Situation",
+    "volume": 1,
+    "rerank_score": 1.9144436120986938,
+    "distance": 0.15044766664505005,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 139: Studying 3-0782",
+    "volume": 1,
+    "rerank_score": 1.8760788440704346,
+    "distance": 0.1731548309326172,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 755: “Switchboard Receptionist”",
+    "volume": 4,
+    "rerank_score": 1.7776637077331543,
+    "distance": 0.15815949440002441,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 320: Action",
+    "volume": 2,
+    "rerank_score": 1.7523624897003174,
+    "distance": 0.15663540363311768,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 63: Dream Interpretation",
+    "volume": 1,
+    "rerank_score": 1.741297960281372,
+    "distance": 0.1764918565750122,
+    "source": null
+   }
+  ]
+ },
+ "q18": {
+  "target_chapter": 171,
+  "fragments": [
+   {
+    "chapter": "Chapter 103: Doing As The Heart Willed",
+    "volume": 1,
+    "rerank_score": 4.3230485916137695,
+    "distance": 0.16758602857589722,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 532: Lord “Caucasian”",
+    "volume": 3,
+    "rerank_score": 4.006156921386719,
+    "distance": 0.15430086851119995,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 530: Chronicles",
+    "volume": 3,
+    "rerank_score": 3.7830936908721924,
+    "distance": 0.15395736694335938,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 31: Potion",
+    "volume": 1,
+    "rerank_score": 2.3796277046203613,
+    "distance": 0.1628783941268921,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1368: Death Imprint",
+    "volume": 8,
+    "rerank_score": 2.3512418270111084,
+    "distance": 0.14565211534500122,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 31: Potion",
+    "volume": 1,
+    "rerank_score": 1.8572264909744263,
+    "distance": 0.16342973709106445,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1380: A Miracle",
+    "volume": 8,
+    "rerank_score": 1.718315839767456,
+    "distance": 0.15671753883361816,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1344: Humanity",
+    "volume": 7,
+    "rerank_score": 1.602401614189148,
+    "distance": 0.15007680654525757,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 95: The Supplicant",
+    "volume": 1,
+    "rerank_score": 1.5857828855514526,
+    "distance": 0.1696842908859253,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1169: Klein’s Plan",
+    "volume": 6,
+    "rerank_score": 1.5625557899475098,
+    "distance": 0.15364259481430054,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 163: Various Signs",
+    "volume": 1,
+    "rerank_score": 1.5617847442626953,
+    "distance": 0.14751076698303223,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 161: Inverted Mausoleum",
+    "volume": 1,
+    "rerank_score": 1.5108401775360107,
+    "distance": 0.17400318384170532,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1344: Humanity",
+    "volume": 7,
+    "rerank_score": 1.480438470840454,
+    "distance": 0.14246046543121338,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 778: 1 + 1 > 2",
+    "volume": 4,
+    "rerank_score": 1.4445483684539795,
+    "distance": 0.1532769799232483,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 538: Dispel",
+    "volume": 3,
+    "rerank_score": 1.1108052730560303,
+    "distance": 0.15109366178512573,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 229: Lesser of Two Evils",
+    "volume": 2,
+    "rerank_score": 1.032485008239746,
+    "distance": 0.15136992931365967,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 229: Lesser of Two Evils",
+    "volume": 2,
+    "rerank_score": 0.764466404914856,
+    "distance": 0.1443488597869873,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 778: 1 + 1 > 2",
+    "volume": 4,
+    "rerank_score": 0.7508008480072021,
+    "distance": 0.1507624387741089,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 194: Infiltration",
+    "volume": 1,
+    "rerank_score": 0.736321747303009,
+    "distance": 0.1535245180130005,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 538: Dispel",
+    "volume": 3,
+    "rerank_score": 0.6872897148132324,
+    "distance": 0.14400702714920044,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 189: Prayers and Replies",
+    "volume": 1,
+    "rerank_score": 0.6542187333106995,
+    "distance": 0.15726900100708008,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1171: The Third One",
+    "volume": 6,
+    "rerank_score": 0.5306700468063354,
+    "distance": 0.15047574043273926,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1035: Diary Page in Advance",
+    "volume": 5,
+    "rerank_score": 0.4878687858581543,
+    "distance": 0.15018057823181152,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 163: Various Signs",
+    "volume": 1,
+    "rerank_score": 0.47122788429260254,
+    "distance": 0.15242332220077515,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 977: First Sermon",
+    "volume": 5,
+    "rerank_score": 0.3819369673728943,
+    "distance": 0.1536407470703125,
+    "source": null
+   }
+  ]
+ },
+ "q19": {
+  "target_chapter": 181,
+  "fragments": [
+   {
+    "chapter": "Chapter 181: Different State",
+    "volume": 1,
+    "rerank_score": 8.226930618286133,
+    "distance": 0.11185038089752197,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 181: Different State",
+    "volume": 1,
+    "rerank_score": 8.131420135498047,
+    "distance": 0.11537986993789673,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 181: Different State",
+    "volume": 1,
+    "rerank_score": 8.02094841003418,
+    "distance": 0.11337172985076904,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 181: Different State",
+    "volume": 1,
+    "rerank_score": 7.824384689331055,
+    "distance": 0.11586052179336548,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 181: Different State",
+    "volume": 1,
+    "rerank_score": 7.791257858276367,
+    "distance": 0.11159580945968628,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 152: Nice Attempt",
+    "volume": 1,
+    "rerank_score": 7.789552211761475,
+    "distance": 0.11263179779052734,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 152: Nice Attempt",
+    "volume": 1,
+    "rerank_score": 7.582603454589844,
+    "distance": 0.14036232233047485,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 152: Nice Attempt",
+    "volume": 1,
+    "rerank_score": 7.476446151733398,
+    "distance": 0.12389415502548218,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 223: Three Matters",
+    "volume": 2,
+    "rerank_score": 6.888722896575928,
+    "distance": 0.12216496467590332,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 127: Laying the Foundations",
+    "volume": 1,
+    "rerank_score": 6.6439666748046875,
+    "distance": 0.12019598484039307,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 1122: The Instructions of The Fool",
+    "volume": 5,
+    "rerank_score": 6.594405174255371,
+    "distance": 0.12120997905731201,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 710: Plan",
+    "volume": 3,
+    "rerank_score": 6.556970596313477,
+    "distance": 0.12458699941635132,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 67: Response",
+    "volume": 1,
+    "rerank_score": 6.5538249015808105,
+    "distance": 0.1144368052482605,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 664: Every Second Counts",
+    "volume": 3,
+    "rerank_score": 6.441352367401123,
+    "distance": 0.12631827592849731,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 321: Appearance of A Living Person",
+    "volume": 2,
+    "rerank_score": 6.4283294677734375,
+    "distance": 0.1154056191444397,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 127: Laying the Foundations",
+    "volume": 1,
+    "rerank_score": 6.39701509475708,
+    "distance": 0.10989165306091309,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 133: Expensive Charms",
+    "volume": 1,
+    "rerank_score": 6.389463901519775,
+    "distance": 0.12389099597930908,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 911: Strange Scene",
+    "volume": 4,
+    "rerank_score": 6.367082595825195,
+    "distance": 0.12166911363601685,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 321: Appearance of A Living Person",
+    "volume": 2,
+    "rerank_score": 6.363687515258789,
+    "distance": 0.1101294755935669,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 133: Expensive Charms",
+    "volume": 1,
+    "rerank_score": 6.352331161499023,
+    "distance": 0.11933785676956177,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 377: Capim’s Dinner",
+    "volume": 2,
+    "rerank_score": 6.328509330749512,
+    "distance": 0.12076258659362793,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 133: Expensive Charms",
+    "volume": 1,
+    "rerank_score": 6.27629280090332,
+    "distance": 0.11011427640914917,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 229: Lesser of Two Evils",
+    "volume": 2,
+    "rerank_score": 6.27341365814209,
+    "distance": 0.12446832656860352,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 58: A Train of Thought",
+    "volume": 1,
+    "rerank_score": 6.261845111846924,
+    "distance": 0.1465054750442505,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 67: Response",
+    "volume": 1,
+    "rerank_score": 6.226748466491699,
+    "distance": 0.11626583337783813,
+    "source": null
+   }
+  ]
+ },
+ "q20": {
+  "target_chapter": 191,
+  "fragments": [
+   {
+    "chapter": "Chapter 187: Azik’s Warning",
+    "volume": 1,
+    "rerank_score": 8.428146362304688,
+    "distance": 0.12309491634368896,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 191: Unclear Motives",
+    "volume": 1,
+    "rerank_score": 6.952035427093506,
+    "distance": 0.13438886404037476,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 157: Item of His Dreams",
+    "volume": 1,
+    "rerank_score": 6.550472259521484,
+    "distance": 0.14270025491714478,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 157: Item of His Dreams",
+    "volume": 1,
+    "rerank_score": 6.306638240814209,
+    "distance": 0.1433911919593811,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 815: After-action review",
+    "volume": 4,
+    "rerank_score": 5.95865535736084,
+    "distance": 0.13231152296066284,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 130: Backlund’s Secret Gathering",
+    "volume": 1,
+    "rerank_score": 5.84086799621582,
+    "distance": 0.13949733972549438,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 192: Attention",
+    "volume": 1,
+    "rerank_score": 5.796338081359863,
+    "distance": 0.1425001621246338,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 157: Item of His Dreams",
+    "volume": 1,
+    "rerank_score": 5.748801231384277,
+    "distance": 0.14750224351882935,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 179: Praising Mr. Fool",
+    "volume": 1,
+    "rerank_score": 5.646055698394775,
+    "distance": 0.15136337280273438,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 130: Backlund’s Secret Gathering",
+    "volume": 1,
+    "rerank_score": 5.633379936218262,
+    "distance": 0.13694292306900024,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 188: Ball",
+    "volume": 1,
+    "rerank_score": 5.625420570373535,
+    "distance": 0.1329967975616455,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 178: The Subsequent Ideas",
+    "volume": 1,
+    "rerank_score": 5.579025745391846,
+    "distance": 0.15098899602890015,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 130: Backlund’s Secret Gathering",
+    "volume": 1,
+    "rerank_score": 5.564418792724609,
+    "distance": 0.15195739269256592,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 190: The Assortment of Abilities",
+    "volume": 1,
+    "rerank_score": 5.483011722564697,
+    "distance": 0.14324802160263062,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 193: Coming To A Close",
+    "volume": 1,
+    "rerank_score": 5.3220367431640625,
+    "distance": 0.1512792706489563,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 190: The Assortment of Abilities",
+    "volume": 1,
+    "rerank_score": 5.218448638916016,
+    "distance": 0.1559276580810547,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 190: The Assortment of Abilities",
+    "volume": 1,
+    "rerank_score": 5.113750457763672,
+    "distance": 0.1411948800086975,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 372: Missing Case",
+    "volume": 2,
+    "rerank_score": 5.00462532043457,
+    "distance": 0.15571510791778564,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 159: Bestowment and Sacrifice",
+    "volume": 1,
+    "rerank_score": 4.902872085571289,
+    "distance": 0.14348965883255005,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 192: Attention",
+    "volume": 1,
+    "rerank_score": 4.873041152954102,
+    "distance": 0.1430269479751587,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 187: Azik’s Warning",
+    "volume": 1,
+    "rerank_score": 4.823808670043945,
+    "distance": 0.16144251823425293,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 193: Coming To A Close",
+    "volume": 1,
+    "rerank_score": 4.752306938171387,
+    "distance": 0.14904159307479858,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 189: Prayers and Replies",
+    "volume": 1,
+    "rerank_score": 4.6498260498046875,
+    "distance": 0.16243010759353638,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 179: Praising Mr. Fool",
+    "volume": 1,
+    "rerank_score": 4.545505046844482,
+    "distance": 0.1458173394203186,
+    "source": null
+   },
+   {
+    "chapter": "Chapter 187: Azik’s Warning",
+    "volume": 1,
+    "rerank_score": 4.529016494750977,
+    "distance": 0.14906173944473267,
+    "source": null
+   }
+  ]
+ }
+}

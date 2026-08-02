@@ -41,41 +41,16 @@ class PersonaLayer:
                 "settings": {}
             }
 
-        # Загружаем glossary если указан
+        # Загружаем glossary если указан — НЕ в системный промпт целиком
+        # (~17k токенов на каждое сообщение), а динамически по вопросу:
+        # релевантные записи собирает app.features.glossary_context и
+        # bot_instance добавляет их в book_context. Здесь только проверяем,
+        # что файл существует.
         glossary_file = data.get("glossary")
-        if glossary_file:
-            glossary_path = persona_dir / glossary_file
-            if glossary_path.exists():
-                glossary_text = self._load_glossary(glossary_path)
-                if glossary_text:
-                    prompt = data.get("system_prompt", "")
-                    data["system_prompt"] = prompt + "\n\n" + glossary_text
-            else:
-                print(f"[PersonaLayer] Glossary не найден: {glossary_path}")
+        if glossary_file and not (persona_dir / glossary_file).exists():
+            print(f"[PersonaLayer] Glossary не найден: {persona_dir / glossary_file}")
 
         return data
-
-    def _load_glossary(self, path: Path) -> str:
-        """Парсит файл glossary и форматирует в текстовый блок."""
-        lines = []
-        with open(path, "r", encoding="utf-8") as f:
-            for raw in f:
-                line = raw.rstrip("\n")
-                if not line or line.startswith("#"):
-                    continue
-                if line.endswith(":") and "=" not in line:
-                    # Заголовок раздела
-                    lines.append(f"\n{line}")
-                elif "=" in line or "→" in line:
-                    lines.append(f"  {line}")
-        if not lines:
-            return ""
-        return (
-            "\n\n══════════════════════\n"
-            " СЛОВАРЬ ИМЕН (английский → русский)\n"
-            "══════════════════════"
-            + "\n".join(lines)
-        )
 
     def available_personas(self) -> List[str]:
         personas_dir = Path(__file__).parent.parent / "personas"

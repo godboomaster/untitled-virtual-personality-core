@@ -25,7 +25,7 @@ SUMMARIES_PATH = "data/arrodes/summaries.json"
 CHUNK_SIZE = 800       # символов на чанк (используется только если CHUNK_BY_CHAPTER = False)
 CHUNK_OVERLAP = 200    # перекрытие между чанками (используется только если CHUNK_BY_CHAPTER = False)
 CHUNK_BY_CHAPTER = False  # True = каждая глава = один чанк, False = разбивать на куски CHUNK_SIZE
-EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
 
 # Маппинг: имя файла -> (том, название)
 VOLUME_MAP = {
@@ -209,6 +209,9 @@ def main():
     # 5. Подключаемся к ChromaDB
     client = chromadb.PersistentClient(path=DB_PATH)
     embedder = SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL)
+    # 512 вместо дефолтных 128 токенов: длинный [SUMMARY:]-префикс иначе
+    # съедает весь бюджет, и все чанки главы получают одинаковый вектор
+    embedder._model.max_seq_length = 512
 
     # Удаляем старую коллекцию если есть
     try:
@@ -234,7 +237,10 @@ def main():
             "chapter": c["chapter"],
         } for c in batch]
 
-        collection.add(ids=ids, documents=documents, metadatas=metadatas)
+        # e5: документы эмбеддим с префиксом 'passage: ' (модель так обучена)
+        embeddings = embedder(["passage: " + d for d in documents])
+        collection.add(ids=ids, documents=documents, metadatas=metadatas,
+                       embeddings=embeddings)
         print(f"  Batch {i // batch_size + 1}: {len(batch)} chunks inserted")
 
     final = collection.count()
