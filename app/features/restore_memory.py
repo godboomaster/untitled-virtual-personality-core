@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 def _build_restore_map() -> dict:
-    """Строит маппинг динамически на основе persona-папок + gradio."""
-    contexts = ["connor", "arrodes", "verso", "assistant", "gradio", "default"]
+    """Строит маппинг динамически на основе persona-папок."""
+    contexts = ["connor", "arrodes", "verso", "assistant", "default"]
     mapping = {}
     for ctx in contexts:
         paths = get_db_paths(ctx)

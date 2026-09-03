@@ -11,7 +11,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from app.core.language import detect_language
+
 logger = logging.getLogger(__name__)
+
+# Заголовки списка для пользователя: язык — язык записей (записи всегда
+# на языке того, кто их диктовал), иначе — язык, переданный вызовом
+_LIST_TITLE = {"ru": "Список дел:", "en": "Todo list:"}
+_LIST_EMPTY = {"ru": "Список дел пуст.", "en": "The todo list is empty."}
 
 
 class TodoManager:
@@ -61,18 +68,19 @@ class TodoManager:
             lines.append("# Пока нет записанных дел.")
         else:
             for user_name, task in items:
-                name = user_name or "Неизвестный"
+                name = user_name or "Unknown"
                 lines.append(f"- {name}: {task}")
         return "\n".join(lines) + "\n"
 
-    def add_item(self, chat_id: str, user_name: str, task: str) -> str:
+    def add_item(self, chat_id: str, user_name: str, task: str, lang: str = None) -> str:
         """
         Добавляет пункт в список дел чата.
         Возвращает отформатированный список дел.
+        lang ('ru'/'en') — язык заголовков списка (по умолчанию — язык записей).
         """
         task = task.strip()
         if not task:
-            return self.get_list(chat_id) or "Список дел пуст."
+            return self.get_list(chat_id, lang=lang) or _LIST_EMPTY.get(lang or "ru", _LIST_EMPTY["ru"])
 
         with self._lock:
             path = self._todo_path(chat_id)
@@ -83,16 +91,16 @@ class TodoManager:
                 except Exception as e:
                     logger.warning(f"[Todo] Не удалось прочитать {path}: {e}")
 
-            items.append((user_name.strip() or "Пользователь", task))
+            items.append((user_name.strip() or "User", task))
 
             try:
                 path.write_text(self._format_items(items, chat_id), encoding="utf-8")
             except Exception as e:
                 logger.warning(f"[Todo] Не удалось записать {path}: {e}")
 
-        return self._render_list(items)
+        return self._render_list(items, lang=lang)
 
-    def get_list(self, chat_id: str) -> Optional[str]:
+    def get_list(self, chat_id: str, lang: str = None) -> Optional[str]:
         """Возвращает отформатированный список дел или None если файла нет."""
         path = self._todo_path(chat_id)
         if not path.exists():
@@ -102,18 +110,21 @@ class TodoManager:
         except Exception as e:
             logger.warning(f"[Todo] Не удалось прочитать {path}: {e}")
             return None
-        return self._render_list(items)
+        return self._render_list(items, lang=lang)
 
-    def _render_list(self, items: List[tuple]) -> str:
+    def _render_list(self, items: List[tuple], lang: str = None) -> str:
+        # Язык заголовков: явный → язык записей → русский
+        if lang not in _LIST_TITLE:
+            lang = detect_language(" ".join(task for _, task in items)) or "ru"
         if not items:
-            return "Список дел пуст."
-        lines = ["Список дел:"]
+            return _LIST_EMPTY[lang]
+        lines = [_LIST_TITLE[lang]]
         for i, (user_name, task) in enumerate(items, 1):
-            name = user_name or "Пользователь"
+            name = user_name or "User"
             lines.append(f"{i}. {name}: {task}")
         return "\n".join(lines)
 
-    def remove_item(self, chat_id: str, index: int) -> Optional[str]:
+    def remove_item(self, chat_id: str, index: int, lang: str = None) -> Optional[str]:
         """
         Удаляет пункт по номеру (1-based).
         Возвращает отформатированный список или None если индекс невалиден.
@@ -139,7 +150,7 @@ class TodoManager:
             except Exception as e:
                 logger.warning(f"[Todo] Не удалось записать {path}: {e}")
 
-        return self._render_list(items)
+        return self._render_list(items, lang=lang)
 
     def clear(self, chat_id: str) -> bool:
         """Очищает список дел чата. Возвращает True если файл был удален."""
@@ -178,6 +189,28 @@ _TODO_TRIGGER_RE = re.compile(
 def is_todo_request(text: str) -> bool:
     """Определяет, является ли запрос просьбой записать дело."""
     return bool(_TODO_TRIGGER_RE.search(text))
+
+
+# Просьба ПОКАЗАТЬ список: текст заканчивается на «список/списка/списке дел»
+# (опционально «на сегодня/завтра» и знаки): «дай мой список дел», «что в списке дел?».
+_TODO_LIST_REQUEST_RE = re.compile(
+    r"\bспис\w*\s+дел\b(?:\s+на\s+(?:сегодня|завтра|неделю))?\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# Явные команды изменения списка — отменяют показ
+# («запиши в список дел», «удали пункт из списка дел» — не просьба показать).
+_TODO_LIST_EXCLUDE_RE = re.compile(
+    r"\b(?:запиши|записать|добавь|добавить|доделать|удали|удалить|убери|убрать|вычеркни|зачеркни)\b",
+    re.IGNORECASE,
+)
+
+
+def is_todo_list_request(text: str) -> bool:
+    """Просьба показать список дел (а не добавить/убрать пункт)."""
+    if not _TODO_LIST_REQUEST_RE.search(text):
+        return False
+    return not _TODO_LIST_EXCLUDE_RE.search(text)
 
 
 # Word-boundary regex для завершения дела.

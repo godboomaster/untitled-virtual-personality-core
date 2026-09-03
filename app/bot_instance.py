@@ -6,13 +6,15 @@ BotInstance — один бот с конкретной персоной и на
 import re
 import os
 import json
+import time
 import yaml
 import logging
 from pathlib import Path
 from typing import Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from app.core.persona import PersonaLayer
+from app.core.persona import PersonaLayer, _format_msg_ts
+from app.core.language import detect_language, detect_dialogue_language
 from app.core.memory import MemoryManager
 from app.core.router import ModelRouter
 from app.core.config import Config
@@ -22,10 +24,11 @@ from app.core.interfaces import MessageSender
 from app.core.users import get_username
 from app.features.todo_manager import (
     TodoManager, is_todo_request, extract_task,
-    is_todo_done_request, extract_todo_done_index,
+    is_todo_done_request, extract_todo_done_index, is_todo_list_request,
 )
 from app.features.reminder_manager import (
-    ReminderManager, parse_reminder, parse_recurring, format_schedule,
+    ReminderManager, parse_reminder, parse_recurring, parse_postpone,
+    extract_postpone_hint, format_schedule,
 )
 from app.features.learning_manager import LearningManager, parse_frequency, classify_continue_answer
 from app.features.learning_intent import classify_learning_intent, extract_subject
@@ -36,6 +39,17 @@ from app.features.inventory_manager import (
     extract_inventory_item,
     extract_inventory_remove,
 )
+from app.features.computer_control import (
+    ComputerControlManager, classify_confirmation, config_enabled as cc_config_enabled,
+    PAGE_REF, parse_cart_request, parse_click_request, parse_close_request,
+    parse_control_mode, parse_download_request, parse_key_request,
+    parse_media_request,
+    parse_open_on_page, parse_open_many, parse_open_with_url, parse_page_question,
+    parse_read_request,
+    parse_scroll_request, parse_search_on_site, parse_send_request,
+    parse_slider_request,
+    parse_tab_list_query, parse_tab_switch, parse_type_request)
+from app.features.scenario_manager import ScenarioManager
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +61,64 @@ _REWRITE_HISTORY = 8
 # та же логика, но там она приватная для LLM-вызовов учебного модуля).
 _SENTENCE_END_RE = re.compile(r'[.!?…»"\)\]]\s*$')
 
+# Хвостовой «декор» реплики — каомодзи/эмодзи вроде «(。•̀ᴗ-)✧», «(´• ω •`)ノ» —
+# не признак обрыва: срезаем и судим по тексту до него (знаки завершения
+# фразы в классе-исключении, поэтому срезка остановится на них).
+_TRAILING_DECOR_RE = re.compile(r'[^0-9A-Za-zА-Яа-яЁё.!?…»"\)\]]+$')
+
+
+def _fmt_reminder_choices(choices: list) -> str:
+    """Нумерованный список напоминаний для LLM-контекста: 1) "задача" at 12:30."""
+    from datetime import datetime as _dt
+    parts = []
+    for i, c in enumerate(choices):
+        when_dt = _dt.fromtimestamp(c["trigger_at"])
+        when = when_dt.strftime("%H:%M")
+        if when_dt.date() != _dt.now().date():
+            when = when_dt.strftime("%d.%m %H:%M")
+        parts.append(f"{i+1}) \"{c.get('task') or '?'}\" at {when}")
+    return "; ".join(parts)
+
+
+def _postpone_result_context(result: Optional[dict]) -> str:
+    """LLM-контекст после попытки переноса напоминания (см. process_message).
+    Явно сообщаем, применён ли перенос, — иначе модель «подтверждала»
+    перенос, которого на самом деле не было."""
+    if not result:
+        return (
+            "The user asked to move a reminder, but there is nothing to move "
+            "(no active and no recently fired reminders). Say there is nothing "
+            "to move — in your own style, briefly. Do NOT confirm any rescheduling."
+        )
+    from datetime import datetime as _dt
+    when_dt = _dt.fromtimestamp(result["trigger_at"])
+    when = when_dt.strftime("%H:%M")
+    if when_dt.date() != _dt.now().date():
+        when = when_dt.strftime("%d.%m %H:%M")
+    task_disp = f" '{result['task']}'" if result.get("task") else ""
+    if result.get("recreated"):
+        return (
+            f"The user asked to move a reminder{task_disp}, but it had already fired, "
+            f"so a NEW reminder with the same task was created — at {when}. "
+            f"The reminder is scheduled — confirm briefly in your own style. "
+            f"Name the reminder exactly as given above."
+        )
+    return (
+        f"The user asked to move the reminder{task_disp}. "
+        f"It is now scheduled for {when} — the change is ALREADY applied. "
+        f"Confirm briefly in your own style. "
+        f"Name the reminder exactly as given above."
+    )
+
 
 def _looks_truncated(text: str) -> bool:
-    """Эвристика обрыва ответа по max_tokens, 
-    текст не заканчивается знаком завершения предложения."""
+    """Эвристика обрыва ответа по max_tokens,
+    текст не заканчивается знаком завершения предложения.
+    Каомодзи/эмодзи на хвосте («…выбрали? (。•̀ᴗ-)✧») обрывом не считаются."""
     t = (text or "").rstrip()
+    if not t:
+        return False
+    t = _TRAILING_DECOR_RE.sub("", t).rstrip()
     if not t:
         return False
     return not _SENTENCE_END_RE.search(t)
@@ -123,9 +190,25 @@ class BotInstance:
         # же причине: общий флаг один чат сбрасывал/перезаписывал за другим.
         self._pending_question_kind: Dict[str, Optional[str]] = {}
 
+        # Хвост расщеплённого ответа (settings.split_messages): ответ режется
+        # по абзацам на отдельные сообщения, первая часть возвращается как обычно,
+        # остальные ждут здесь — платформа (веб/TG) забирает их после отправки
+        # первой. Per-chat — та же защита от гонок, что у списков выше.
+        self._pending_split_messages: Dict[str, List[str]] = {}
+
         # Читаем features из YAML
         persona_data = self.persona.persona_data
         self.features: dict = persona_data.get("features", {}) # получаем навыки персоны
+
+        # Уровень интеллекта (план уровней): tier + overrides; без блока
+        # intellect — legacy-режим, уровневые механики не активируются
+        from app.core.intellect import IntellectConfig
+        self.intellect = IntellectConfig(persona_data)
+
+        # Платформенное правило финальных вопросов (conversation_style):
+        # дефолт rare применяется ко ВСЕМ персонам, включая legacy
+        from app.features.conversation_style import ConversationStyleConfig
+        self.conversation_style = ConversationStyleConfig(persona_data)
 
         # STM size из YAML (fallback на Config)
         self.stm_size: int = persona_data.get("stm_size", Config.STM_SIZE)
@@ -156,6 +239,8 @@ class BotInstance:
         self.reminder_manager: Optional[ReminderManager] = None
         if self.features.get("reminder", False):
             self.reminder_manager = ReminderManager(context=self.context)
+            # §3.5 плана уровней: primitive — минимальная вербализация напоминаний
+            self.reminder_manager.set_intellect_tier(self.intellect.tier)
             logger.info(f"  [{persona_name}] Reminder manager включён")
 
         # Inventory manager (только если inventory)
@@ -164,17 +249,54 @@ class BotInstance:
             self.inventory_manager = InventoryManager(context=self.context)
             logger.info(f"  [{persona_name}] Inventory manager включён")
 
+        # Computer control (только если computer_control): открытие сайтов/
+        # приложений/именованных задач на компьютере пользователя (уровень 1).
+        # Режим выключен: false/отсутствует, пустой dict или enabled: false
+        # внутри dict (веб-настройка фич так гасит режим, сохраняя allowlist'ы)
+        self.computer_control: Optional[ComputerControlManager] = None
+        cc_cfg = self.features.get("computer_control", False)
+        if cc_config_enabled(cc_cfg):
+            self.computer_control = ComputerControlManager(
+                context=self.context, config=cc_cfg)
+            logger.info(f"  [{persona_name}] Computer control включён "
+                        f"(confirm={self.computer_control.confirm})")
+
+        # Сценарии (запись/воспроизведение цепочек действий) — надстройка над
+        # computer_control: без него бессмысленны. `scenarios: false` гасит.
+        self.scenario_manager: Optional[ScenarioManager] = None
+        if self.computer_control and self.features.get("scenarios", True):
+            self.scenario_manager = ScenarioManager(
+                context=self.context, computer_control=self.computer_control)
+            logger.info(f"  [{persona_name}] Scenario manager включён")
+
+        # Режим управления (per chat): computer control работает ТОЛЬКО в нём
+        # («перейди в режим управления»), иначе CC-команды не перехватываются.
+        # В режиме наоборот молчат напоминания/дела/инвентарь/обучение
+        self._control_mode: set = set()
+
         # Learning manager (только если learning) — режим обучения по запросу
         self.learning_manager: Optional[LearningManager] = None
-        if self.features.get("learning", False):
-            learning_cfg = self.features.get("learning") or {}
-            if isinstance(learning_cfg, bool):
-                learning_cfg = {}
+        learning_cfg = self.features.get("learning", False)
+        if isinstance(learning_cfg, bool):
+            learning_on, learning_cfg = learning_cfg, {}
+        else:
+            # dict: enabled решает явно; без него непустой dict — включён (старое поведение)
+            learning_on = bool(learning_cfg) and learning_cfg.get("enabled", True)
+        if learning_on:
             self.learning_manager = LearningManager(context=self.context, config=learning_cfg)
             logger.info(f"  [{persona_name}] Learning manager включён")
 
         # Router (создаём до Memory, чтобы передать в LTM)
-        self.router = ModelRouter()
+        self.router = ModelRouter(context=self.context)
+
+        # Персональный выбор провайдеров (YAML, секция llm):
+        # основной + приоритет fallback-цепочки + свои модели + веб-чат сайт
+        # + лимиты веб-чатов (webchat_limits)
+        llm_cfg = persona_data.get("llm") or {}
+        if llm_cfg:
+            self.router.set_persona_llm(llm_cfg.get("primary"), llm_cfg.get("fallback"),
+                                        llm_cfg.get("models"), webchat=llm_cfg.get("webchat"),
+                                        webchat_limits=llm_cfg.get("webchat_limits"))
 
         # Memory + Router
         self.memory = MemoryManager(
@@ -237,8 +359,13 @@ class BotInstance:
             self._moderate_message = moderate_message
             logger.info(f"  [{persona_name}] Модерация включена")
 
-        # Владелец — полная защита от всех блокировок
-        self.owner: str = str(self.features.get("owner", ""))
+        # Владелец — полная защита от всех блокировок.
+        # Fallback: YAML персоны → глобальный OWNER_USER_ID из окружения.
+        self.owner: str = str(self.features.get("owner") or os.getenv("OWNER_USER_ID") or "")
+
+        # Однопользовательский режим (веб/API): собеседник один — он и владелец.
+        # Флаг выставляет API-реестр (app/api/runtime.py); в Telegram-режиме False.
+        self.web_single_user: bool = False
 
         # Allowed DM users — могут писать в личку, но подлежат наказаниям
         # Пустые записи ("") отбрасываем, id приводим к str; пустой список = ЛС открыты всем
@@ -250,14 +377,48 @@ class BotInstance:
         }
 
         # Self memory (эпизодическая память бота)
+        # Режим по intellect tier (§3.1): none — модуль не создаётся вообще,
+        # primitive — вспышки-впечатления, full — как обычно
         self.self_memory = None
-        if self.features.get("self_memory", False):
+        if self.features.get("self_memory", False) and self.intellect.self_memory_mode != "none":
             from app.core.self_memory import BotSelfMemory
             self.self_memory = BotSelfMemory(
                 context=context,
                 persona_name=persona_name,
-                router=self.router
+                router=self.router,
+                mode=self.intellect.self_memory_mode,
             )
+            if self.intellect.self_memory_mode == "primitive":
+                logger.info(f"  [{persona_name}] Self memory в примитивном режиме (вспышки-впечатления)")
+
+        # Living persona (слои state/world плана «живой» персоны):
+        # тики состояния, офлайн-события мира, суммаризация, сюжетные арки.
+        # Intellect tier сужает слои (§3.3-3.4 плана уровней): primitive —
+        # world без NPC/арок, события = физические действия с инвентарём
+        self.living = None
+        try:
+            from app.core.living_persona import LivingPersona, LivingPersonaConfig
+            _living_cfg = LivingPersonaConfig(self.features)
+            if _living_cfg.enabled:
+                self.living = LivingPersona(
+                    context=context or persona_name,
+                    persona=self.persona,
+                    router=self.router,
+                    config=_living_cfg,
+                    self_memory=self.self_memory,
+                    intellect=self.intellect,
+                    inventory_manager=self.inventory_manager,
+                )
+                logger.info(
+                    f"  [{persona_name}] Living persona включена "
+                    f"(state={_living_cfg.state_enabled}, world={_living_cfg.world_enabled}"
+                    + (", primitive-режим" if self.intellect.is_primitive else "") + ")")
+        except Exception as e:
+            logger.warning(f"  [{persona_name}] Living persona не запущена: {e}")
+
+        # Напоминания знают о living-состоянии (mood/energy в тексте, §7)
+        if self.reminder_manager is not None and self.living is not None:
+            self.reminder_manager.set_living(self.living)
 
         # Book search (RAG по книге для персон)
         self.book_search = None
@@ -271,7 +432,12 @@ class BotInstance:
         self.proactive = None
         self._activity_tracker = None
         self._sender: Optional[MessageSender] = None
+        # Общее досье на чаты: один экземпляр на бота (proactive + rhythm),
+        # иначе два экземпляра перезатирали бы записи друг друга на диске
+        self._chat_dossier = None
         proactive_config = self.features.get("proactive", {})
+        if isinstance(proactive_config, bool):  # допускаем простой true/false
+            proactive_config = {"enabled": proactive_config}
         if proactive_config.get("enabled", False):
             from app.features.proactive_messaging import ProactiveConfig, ProactiveMessaging, ChatActivityTracker
             self._activity_tracker = ChatActivityTracker(context=context)
@@ -279,7 +445,57 @@ class BotInstance:
             self.proactive = None  # создадим после установки sender
             logger.info(f"  [{persona_name}] Proactive messaging подготовлен (ожидает sender)")
 
+        # Суточный ритм: утреннее приветствие / ночной «пора спать» / погода
+        self.rhythm = None
+        rhythm_config = self.features.get("rhythm", {})
+        if isinstance(rhythm_config, bool):  # допускаем простой true/false
+            rhythm_config = {"enabled": rhythm_config}
+        if rhythm_config.get("enabled", False):
+            if self._activity_tracker is None:
+                from app.features.proactive_messaging import ChatActivityTracker
+                self._activity_tracker = ChatActivityTracker(context=context)
+            # manager создастся позже через setup_rhythm(sender)
+            logger.info(f"  [{persona_name}] Rhythm (утро/ночь/погода) подготовлен (ожидает sender)")
+
         logger.info(f"  [{persona_name}] BotInstance создан | stm_size={self.stm_size} | features: {list(self.features.keys())}")
+
+    def sync_feature_managers(self) -> dict:
+        """Приводит менеджеры reminder/todo/inventory в соответствие с self.features
+        (живое включение/выключение фич из веб-настроек, без рестарта бота):
+        создаёт недостающие, останавливает и убирает лишние. Платформенную
+        обвязку (sender, запуск фонового цикла) делает вызывающая сторона —
+        см. _apply_feature_managers_live в settings_api / start_bot_features в inbox.
+        Возвращает {feature: включена ли} после синхронизации."""
+        result = {}
+        if self.features.get("reminder", False):
+            if self.reminder_manager is None:
+                self.reminder_manager = ReminderManager(context=self.context)
+                self.reminder_manager.set_intellect_tier(self.intellect.tier)
+                logger.info(f"  [{self.persona_name}] Reminder manager включён (live)")
+        elif self.reminder_manager is not None:
+            self.reminder_manager.stop()
+            self.reminder_manager = None
+            logger.info(f"  [{self.persona_name}] Reminder manager выключен (live)")
+        result["reminder"] = self.reminder_manager is not None
+
+        if self.features.get("todo", False):
+            if self.todo_manager is None:
+                self.todo_manager = TodoManager(context=self.context)
+                logger.info(f"  [{self.persona_name}] Todo manager включён (live)")
+        elif self.todo_manager is not None:
+            self.todo_manager = None
+            logger.info(f"  [{self.persona_name}] Todo manager выключен (live)")
+        result["todo"] = self.todo_manager is not None
+
+        if self.features.get("inventory", False):
+            if self.inventory_manager is None:
+                self.inventory_manager = InventoryManager(context=self.context)
+                logger.info(f"  [{self.persona_name}] Inventory manager включён (live)")
+        elif self.inventory_manager is not None:
+            self.inventory_manager = None
+            logger.info(f"  [{self.persona_name}] Inventory manager выключен (live)")
+        result["inventory"] = self.inventory_manager is not None
+        return result
 
     # Trigger logic
 
@@ -297,6 +513,13 @@ class BotInstance:
                 return text.strip()[len(trigger):].strip().lstrip(",.!?:; ")
         return text
 
+    def is_owner(self, user_id: str) -> bool:
+        """Владелец ли пользователь: id из YAML персоны или OWNER_USER_ID.
+        В однопользовательском веб-режиме собеседник всегда владелец."""
+        if self.web_single_user:
+            return True
+        return bool(user_id) and user_id in {self.owner, os.getenv("OWNER_USER_ID", "")}
+
     # Pre-check pipeline
 
     def pre_check(self, user_id: str, text: str, is_private: bool) -> Optional[str]:
@@ -304,7 +527,7 @@ class BotInstance:
         # Проверки перед обработкой. Возвращает текст ошибки или None если всё ОК.
         
         # 0. Владелец — полная защита
-        if user_id == self.owner:
+        if self.is_owner(user_id):
             return None
 
         # 1. Заблокированные
@@ -348,18 +571,99 @@ class BotInstance:
         значение не может протечь в следующий ответ ни в этом, ни в чужом чате."""
         return self._pending_question_kind.pop(str(chat_id), None)
 
+    def pop_pending_split_messages(self, chat_id) -> List[str]:
+        """Забирает хвост расщеплённого ответа чата (и очищает бакет).
+        Вызывается платформой сразу после process_message/command_reply —
+        до pop_pending_list_messages, чтобы части ушли раньше досылаемых списков."""
+        return self._pending_split_messages.pop(str(chat_id), [])
+
+    def split_reply_parts(self, text: str) -> List[str]:
+        """Расщепление ответа на отдельные сообщения (settings.split_messages).
+
+        Маркер границы — пустая строка: каждый абзац (блок строк между пустыми
+        строками) становится отдельным сообщением. Выключено или абзац один —
+        возвращается [text] как есть. Пустые куски отбрасываются."""
+        if not text or not text.strip():
+            return []
+        if not self.persona.settings.get("split_messages"):
+            return [text]
+        parts = [p.strip() for p in re.split(r"\n[ \t]*\n+", text)]
+        parts = [p for p in parts if p]
+        return parts or [text.strip()]
+
+    def _save_assistant_reply(self, answer: str, user_id: str, chat_id: str) -> str:
+        """Сохраняет ответ персоны в STM и возвращает текст для отправки.
+
+        При включённом settings.split_messages ответ режется на абзацы: каждая
+        часть пишется в STM отдельным сообщением (история совпадает с тем, что
+        видит пользователь), а возвращается только первая часть — хвост ждёт
+        в _pending_split_messages, его платформа досылает следом."""
+        parts = self.split_reply_parts(answer)
+        if len(parts) <= 1:
+            self.memory.add_message("assistant", answer, user_id, chat_id)
+            return answer
+        for part in parts:
+            self.memory.add_message("assistant", part, user_id, chat_id)
+        self._pending_split_messages[str(chat_id)] = parts[1:]
+        return parts[0]
+
     # Main processing
+
+    def control_mode_on(self, chat_id) -> bool:
+        """Включён ли режим управления (computer control) для чата."""
+        return str(chat_id) in self._control_mode
+
+    def _control_mode_switch(self, chat_id: str, turn_on: bool) -> str:
+        """Реплика на «перейди в режим управления»/«выйди из режима
+        управления» + побочки переключения (чистка подвисших CC-состояний)."""
+        if turn_on:
+            if not self.computer_control:
+                return ("Управление компьютером у меня выключено в "
+                        "настройках — включи его в досье («Инструменты»).")
+            if chat_id in self._control_mode:
+                return ("Я уже в режиме управления. Обратно — «выйди из "
+                        "режима управления».")
+            self._control_mode.add(chat_id)
+            logger.info(f"[BotInstance] режим управления ON (chat {chat_id})")
+            return ("Режим управления включён: «открой …», «нажми …», "
+                    "«введи …», сценарии — всё работает. На время режима "
+                    "молчат: напоминания, список дел, инвентарь, обучение. "
+                    "Закончить — «выйди из режима управления».")
+        if chat_id not in self._control_mode:
+            return "Режим управления и так выключен."
+        self._control_mode.discard(chat_id)
+        logger.info(f"[BotInstance] режим управления OFF (chat {chat_id})")
+        # Подвисшие CC-состояния чата недействительны вне режима
+        try:
+            if self.computer_control:
+                self.computer_control.clear_pending(chat_id)
+        except Exception:
+            pass
+        try:
+            if self.scenario_manager:
+                if self.scenario_manager.active(chat_id):
+                    self.scenario_manager.cancel(chat_id)
+                if self.scenario_manager.recording(chat_id):
+                    self.scenario_manager.record_stop(chat_id)
+        except Exception:
+            pass
+        return ("Вышел из режима управления — браузером не управляю. "
+                "Напоминания, список дел, инвентарь и обучение снова "
+                "работают.")
 
     def process_message(self, user_input: str, user_id: str = "default",
                         chat_id: str = None, user_name: str = None,
                         reply_context: str = None,
-                        reply_to_bot_message_id: Optional[int] = None) -> str:
+                        reply_to_bot_message_id: Optional[int] = None,
+                        on_token=None) -> str:
         from app.features.query_rewriter import rewrite_query
 
         # Очищаем pending-состояние ЭТОГО чата от предыдущего вызова (атрибуты per-chat:
         # process_message выполняется конкурентно в потоках для разных чатов, и общие
         # атрибуты давали гонки — чужой фидбек/вопрос уезжал не в тот чат).
         self._pending_list_messages[str(chat_id)] = []
+        # Хвост расщеплённого ответа от предыдущего вызова тоже гасим
+        self._pending_split_messages[str(chat_id)] = []
         # Каким был последний ответ-вопрос: 'frequency' | 'continue' | None.
         # Нужно telegram-слою, чтобы зарегистрировать отправленное сообщение как «вопрос бота»
         # для reply-to-логики обучения (пользователь может ответить reply-ом на этот вопрос).
@@ -367,12 +671,394 @@ class BotInstance:
         # Локальная переменная (раньше — общий атрибут, та же гонка): готовый ответ,
         # минующий основной LLM-вызов (фидбек теста, реплики setup/continue обучения).
         skip_llm_answer = None
+        # Вопрос о секции открытой страницы («что находится в X?»): живой текст
+        # секции заполняется в cc fast-path ниже и уезжает в LLM контекстом
+        # (context_parts_out) — список/ответ формулирует модель, не шаблон
+        page_section_note = None
 
         logger.info(f"[BotInstance] process_message START: '{user_input[:60]}' | chat_id={chat_id}")
+
+        # «перейди в режим управления» / «выйди из режима управления» —
+        # переключатель computer control. Работает всегда и раньше всех
+        # fast-path: иначе «выйди…» мог бы съесть CC-парсер, а «перейди…» —
+        # отвечаться LLM
+        if chat_id:
+            _mode = parse_control_mode(user_input)
+            if _mode is not None:
+                _cm_reply = self._control_mode_switch(str(chat_id), _mode)
+                self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                self.memory.add_message("assistant", _cm_reply, user_id, chat_id)
+                if self.proactive:
+                    self.proactive.record_user_response(chat_id)
+                return _cm_reply
+
+        # Быстрый путь computer_control: перехват «да»/«нет» на pending-действие
+        # и голая команда «открой X» — оба обслуживаются шаблонно, весь тяжёлый
+        # LLM-пайплайн (rewrite/поиск/LTM/генерация, ~10+ сек) пропускается.
+        # Работает только в режиме управления («перейди в режим управления»).
+        if (self.computer_control and chat_id
+                and self.control_mode_on(chat_id)):
+            # Сценарии — ДО pending-confirm и fast-path парсеров: ответы слотов
+            # («гавайскую») и «отмена» при живом прогоне не должны уходить
+            # в команды странице; «запомни сценарий X» и имя сценария —
+            # тоже раньше «открой X»
+            if self.scenario_manager:
+                sc_reply = None
+                try:
+                    if self.scenario_manager.active(chat_id):
+                        sc_reply = (self.scenario_manager.cancel(chat_id)
+                                    if self.scenario_manager.parse_cancel(user_input)
+                                    else self.scenario_manager.feed(
+                                        chat_id, user_input, self.router))
+                    else:
+                        # «начни записывать сценарий (X)» — явные скобки
+                        # записи; «сохрани сценарий» внутри неё берёт трассу
+                        # с момента старта (обрабатывает record_reply)
+                        sc_start = self.scenario_manager.parse_start_record(
+                            user_input)
+                        if sc_start is not None:
+                            sc_reply = self.scenario_manager.record_start(
+                                chat_id, sc_start)
+                        elif self.scenario_manager.parse_stop_record(user_input):
+                            sc_reply = self.scenario_manager.record_stop(chat_id)
+                        else:
+                            sc_save = self.scenario_manager.parse_save_request(user_input)
+                            if sc_save is not None:
+                                sc_reply = self.scenario_manager.record_reply(
+                                    chat_id, sc_save, self.router)
+                            else:
+                                sc_name = self.scenario_manager.find_scenario(user_input)
+                                if sc_name:
+                                    logger.info(f"[Scenarios] fast-path: "
+                                                f"'{user_input[:40]}' → «{sc_name}»")
+                                    sc_reply = self.scenario_manager.start(
+                                        sc_name, chat_id, self.router)
+                except Exception as e:
+                    logger.warning(f"[Scenarios] fast-path упал: {e}")
+                    self.scenario_manager.cancel(chat_id)
+                    sc_reply = f"Сценарий сломался ({str(e)[:80]}) — отменил его."
+                if sc_reply is not None:
+                    self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                    self.memory.add_message("assistant", sc_reply, user_id, chat_id)
+                    if self.proactive and chat_id:
+                        self.proactive.record_user_response(chat_id)
+                    return sc_reply
+            cc_pending = self.computer_control.get_pending(chat_id)
+            if cc_pending:
+                cc_verdict = classify_confirmation(user_input)
+                cc_reply = None
+                if cc_verdict == "YES":
+                    self.computer_control.stats["confirmed"] += 1
+                    # Pending снимаем ДО исполнения: иначе следующее «да»
+                    # (на любой другой вопрос) исполнит действие повторно
+                    self.computer_control.clear_pending(chat_id)
+                    cc_ok, cc_detail = self.computer_control.execute(
+                        cc_pending, chat_id, router=self.router)
+                    cc_reply = (
+                        f"Готово, {self.computer_control.describe_done(cc_pending)}."
+                        if cc_ok else
+                        f"Не удалось {self.computer_control.describe(cc_pending)}: {cc_detail}."
+                    )
+                elif cc_verdict == "NO":
+                    self.computer_control.stats["declined"] += 1
+                    self.computer_control.clear_pending(chat_id)
+                    cc_reply = "Хорошо, не выполняю."
+                if cc_reply is not None:
+                    self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                    self.memory.add_message("assistant", cc_reply, user_id, chat_id)
+                    if self.proactive and chat_id:
+                        self.proactive.record_user_response(chat_id)
+                    return cc_reply
+                # UNKNOWN — не перехватываем: сообщение уходит в обычный поток,
+                # pending живёт до TTL
+
+            # «включи X на ютубе» (поиск на сайте) проверяем ДО «открой X»:
+            # иначе «интерстеллар на кинопоиске» уйдёт в резолв как имя сайта
+            cc_action = None
+            cc_err = None
+            cc_pair = parse_search_on_site(user_input)
+            if cc_pair:
+                try:
+                    cc_action = self.computer_control.resolve_search(*cc_pair)
+                except Exception as e:
+                    logger.debug(f"[CompControl] fast-path поиск на сайте не удался: {e}")
+            # «открой на ciu.nstu.ru/827 студентам — …»: явный адрес в фразе —
+            # открываем его, даже когда вокруг длинный текст; хвост по
+            # сепараторам « - »/«→» — путь кликами по странице (nav-действие).
+            # До клика и open_many: те обе длинную фразу отвергнут по длине
+            if cc_action is None:
+                cc_nav = parse_open_with_url(user_input)
+                if cc_nav:
+                    try:
+                        cc_action = self.computer_control.resolve_nav(*cc_nav)
+                    except Exception as e:
+                        logger.debug(f"[CompControl] fast-path явный URL не удался: {e}")
+            # «нажми X (на сайте)» / «скачай X» / «введи X в поле Y» /
+            # «отправь» (Enter в поле) / «открой X на этой странице» —
+            # агентный клик, скачивание и ввод:
+            # снапшот страницы + выбор элемента; подтверждение покажет, что
+            # именно нажмётся/скачается/введётся. Неудача — честный отказ
+            # шаблоном: LLM-путь это выполнить не может, а изобразить
+            # выполнение («Действие выполнено», «Введено») — может, поэтому
+            # туда не пускаем. «Не наша» команда ввода (resolve_type вернул
+            # (None, None) — «напиши мне письмо») уходит в обычный поток.
+            # Под-переключатель click: при выключенном клике команда уходит в
+            # обычный LLM-поток (фича клика off — бот просто отвечает текстом)
+            if cc_action is None and self.computer_control.click:
+                cc_parsed = None  # (цель, сайт/PAGE_REF, вид: click/download/type)
+                cc_page_goal = parse_open_on_page(user_input)
+                if cc_page_goal:
+                    cc_parsed = (cc_page_goal, PAGE_REF, "click")
+                else:
+                    cc_dl = parse_download_request(user_input)
+                    if cc_dl:
+                        cc_parsed = (cc_dl[0], cc_dl[1], "download")
+                    else:
+                        cc_type = parse_type_request(user_input)
+                        if cc_type:
+                            # Сайт/поле/текст разберёт resolve_type по снапшоту
+                            cc_parsed = (cc_type, None, "type")
+                        else:
+                            cc_send = parse_send_request(user_input)
+                            if cc_send:
+                                # «отправь» — Enter в поле, сайт как у клика
+                                cc_parsed = (None, cc_send[1], "send")
+                            else:
+                                # «пауза»/«тише»/«громче»/«без звука» —
+                                # медиа-команды плеера клавишами; ДО
+                                # клавиш-«нажми» и клика
+                                cc_media = parse_media_request(user_input)
+                                if cc_media:
+                                    cc_parsed = (cc_media, None, "key")
+                                else:
+                                    # «нажми пробел/энтер/эскейп…» — клавиша
+                                    # в страницу (без выбора элемента); ДО
+                                    # generic-клика: «нажми esc» — не цель «esc»
+                                    cc_key = parse_key_request(user_input)
+                                    if cc_key:
+                                        cc_parsed = (cc_key[0], cc_key[1], "key")
+                                    else:
+                                        # «промотай страницу» / «стоп»: листание в фоне.
+                                        # «промотай раздел слева (вверх)» — режим
+                                        # уезжает резолверу кортежем ("start", side, dir).
+                                        # «стоп» без активного листания резолвер вернёт
+                                        # (None, None) — фраза уйдёт в обычный диалог
+                                        cc_scroll = parse_scroll_request(user_input)
+                                        if cc_scroll:
+                                            cc_parsed = ((cc_scroll[0], cc_scroll[2],
+                                                          cc_scroll[3]),
+                                                         cc_scroll[1], "scroll")
+                                        else:
+                                            # «убери X из корзины» / «убавь/прибавь X» —
+                                            # корзина сайта, ДО generic-клика и до
+                                            # инвентаря бота (тот ловит «убери X»)
+                                            cc_cart = parse_cart_request(user_input)
+                                            if cc_cart:
+                                                cc_parsed = (cc_cart, None, "cart")
+                                            else:
+                                                # «перетащи/поставь слайдер X на N» —
+                                                # ползунок на странице; числовой
+                                                # хвост «на N» отличает от клика
+                                                cc_slider = parse_slider_request(
+                                                    user_input)
+                                                if cc_slider:
+                                                    cc_parsed = (cc_slider[0],
+                                                                 cc_slider[1],
+                                                                 "slider")
+                                                else:
+                                                    # «закрой окно/попап/соусы к
+                                                    # бортикам» — закрытие (целевое
+                                                    # или крестик), ДО generic-клика
+                                                    cc_close = parse_close_request(user_input)
+                                                    if cc_close:
+                                                        cc_parsed = (cc_close[0], cc_close[1], "click")
+                                                    else:
+                                                        cc_click = parse_click_request(user_input)
+                                                        if cc_click:
+                                                            cc_parsed = (cc_click[0], cc_click[1], "click")
+                if cc_parsed:
+                    resolver = {"download": self.computer_control.resolve_download,
+                                "type": self.computer_control.resolve_type,
+                                "scroll": self.computer_control.resolve_scroll,
+                                "cart": self.computer_control.resolve_cart,
+                                "send": self.computer_control.resolve_send,
+                                "key": self.computer_control.resolve_key,
+                                "slider": self.computer_control.resolve_slider}.get(
+                        cc_parsed[2], self.computer_control.resolve_click)
+                    try:
+                        cc_action, cc_err = resolver(cc_parsed[0], cc_parsed[1],
+                                                     self.router,
+                                                     chat_id=str(chat_id or ""))
+                    except Exception as e:
+                        logger.debug(f"[CompControl] fast-path клик/скачивание не удалось: {e}")
+                        cc_err = "Не удалось выполнить действие на странице."
+                    if cc_action is None and cc_err:
+                        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                        self.memory.add_message("assistant", cc_err, user_id, chat_id)
+                        if self.proactive and chat_id:
+                            self.proactive.record_user_response(chat_id)
+                        return cc_err
+            # «перейди на вкладку X» / «какие вкладки открыты» — переключение
+            # и список вкладок. Ничего не меняют на страницах — выполняются
+            # сразу, без подтверждения (как чтение). Явная форма со словом
+            # «вкладку» при промахе — честный отказ со списком открытых;
+            # мягкая («перейди на X») при промахе молча уходит дальше по
+            # fast-path (может, это «открой X» или вообще не наша команда)
+            cc_tab_direct = False
+            if cc_action is None and self.computer_control.click:
+                if parse_tab_list_query(user_input):
+                    try:
+                        cc_tabs_text = \
+                            self.computer_control.list_open_tabs_text()
+                    except Exception as e:
+                        logger.debug(f"[CompControl] список вкладок не "
+                                     f"удался: {e}")
+                        cc_tabs_text = "Не удалось получить список вкладок."
+                    self.memory.add_message("user", user_input, user_id,
+                                            chat_id, user_name)
+                    self.memory.add_message("assistant", cc_tabs_text,
+                                            user_id, chat_id)
+                    if self.proactive and chat_id:
+                        self.proactive.record_user_response(chat_id)
+                    return cc_tabs_text
+                cc_tab = parse_tab_switch(user_input)
+                if cc_tab:
+                    try:
+                        cc_action, cc_err = \
+                            self.computer_control.resolve_tab_switch(
+                                cc_tab[0], cc_tab[1],
+                                chat_id=str(chat_id or ""))
+                        # Переключение — сразу; фолбэк на открытие сайта
+                        # (url-действие) идёт обычным путём с подтверждением
+                        cc_tab_direct = bool(cc_action) and \
+                            cc_action.get("kind") == "tab_switch"
+                    except Exception as e:
+                        logger.debug(f"[CompControl] fast-path переключение "
+                                     f"вкладки не удалось: {e}")
+                        cc_err = "Не удалось переключить вкладку."
+                    if cc_action is None and cc_err:
+                        self.memory.add_message("user", user_input, user_id,
+                                                chat_id, user_name)
+                        self.memory.add_message("assistant", cc_err, user_id,
+                                                chat_id)
+                        if self.proactive and chat_id:
+                            self.proactive.record_user_response(chat_id)
+                        return cc_err
+            # «прочитай последнее сообщение (на кладе)» / «что ответил клод» —
+            # чтение со страницы: без подтверждения (ничего не меняет),
+            # прочитанный текст — сразу ответом
+            cc_read_kind = None
+            if cc_action is None and self.computer_control.click:
+                cc_read = parse_read_request(user_input)
+                if cc_read:
+                    try:
+                        cc_action, cc_err = self.computer_control.resolve_read(
+                            *cc_read, chat_id=str(chat_id or ""))
+                        cc_read_kind = "read" if cc_action else None
+                    except Exception as e:
+                        logger.debug(f"[CompControl] fast-path чтение не удалось: {e}")
+                        cc_err = "Не удалось прочитать страницу."
+                    if cc_action is None and cc_err:
+                        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                        self.memory.add_message("assistant", cc_err, user_id, chat_id)
+                        if self.proactive and chat_id:
+                            self.proactive.record_user_response(chat_id)
+                        return cc_err
+            if cc_action is None:
+                cc_names = parse_open_many(user_input)
+                if cc_names:
+                    try:
+                        cc_action = self.computer_control.resolve_many(cc_names)
+                    except Exception as e:
+                        logger.debug(f"[CompControl] fast-path резолв не удался: {e}")
+            if cc_action:
+                logger.info(f"[CompControl] fast-path: '{user_input[:40]}' → "
+                            f"{self.computer_control.describe(cc_action)}")
+                self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                if cc_read_kind == "read":
+                    cc_ok, cc_detail = self.computer_control.execute(
+                        cc_action, chat_id, router=self.router)
+                    cc_reply = (cc_detail if cc_ok else
+                                f"Не удалось прочитать: {cc_detail}.")
+                elif cc_tab_direct:
+                    # Переключение вкладки — как чтение: без подтверждения
+                    cc_ok, cc_detail = self.computer_control.execute(
+                        cc_action, chat_id, router=self.router)
+                    cc_reply = (
+                        f"Готово, {self.computer_control.describe_done(cc_action)}."
+                        if cc_ok else
+                        f"Не удалось {self.computer_control.describe(cc_action)}: {cc_detail}.")
+                elif self.computer_control.confirm:
+                    self.computer_control.set_pending(chat_id, cc_action)
+                    cc_reply = self.computer_control.confirm_question(cc_action)
+                else:
+                    cc_ok, cc_detail = self.computer_control.execute(
+                        cc_action, chat_id, router=self.router)
+                    cc_reply = (
+                        f"Готово, {self.computer_control.describe_done(cc_action)}."
+                        if cc_ok else
+                        f"Не удалось {self.computer_control.describe(cc_action)}: {cc_detail}."
+                    )
+                self.memory.add_message("assistant", cc_reply, user_id, chat_id)
+                if self.proactive and chat_id:
+                    self.proactive.record_user_response(chat_id)
+                return cc_reply
+            # «что находится в X?» / «что в разделе X?» — вопрос о содержимом
+            # секции открытой страницы: текст секции читаем со страницы и
+            # подаём в общий LLM-поток контекстом — список формулирует модель.
+            # Не fast-path ответ: return тут нет. Секция не нашлась / страницу
+            # не открывали — молча обычный диалог (вопрос мог быть не о странице)
+            if self.computer_control.click:
+                cc_pq = parse_page_question(user_input)
+                if cc_pq:
+                    try:
+                        _pq = self.computer_control.read_page_section(*cc_pq)
+                    except Exception as e:
+                        logger.debug(f"[CompControl] чтение секции страницы не удалось: {e}")
+                        _pq = None
+                    if _pq:
+                        _pq_text, _pq_host, _pq_q = _pq
+                        logger.info(f"[CompControl] секция «{_pq_q}» прочитана "
+                                    f"({len(_pq_text)} симв., {_pq_host})")
+                        page_section_note = (
+                            f"The user asked about the \"{_pq_q}\" section of the web page "
+                            f"currently open in the browser ({_pq_host}). Here is the section's "
+                            f"actual content, read live from the page just now:\n---\n"
+                            f"{_pq_text}\n---\n"
+                            "Answer STRICTLY from this content: list the items (with prices, "
+                            "if shown). Do not invent items that are not listed there — if the "
+                            "user expects something that is missing, say the section does not "
+                            "show it right now.")
+            # не резолвится — обычный путь через LLM
 
         # Берём историю до добавления нового сообщения — для контекста rewriter'а
         history_for_rewrite = self.memory.stm.get_last(_REWRITE_HISTORY, chat_id=chat_id)
         logger.info(f"[BotInstance] history_for_rewrite: {len(history_for_rewrite)} messages")
+
+        # Серия подряд идущих ответов бота с финальным вопросом (conversation_style):
+        # по истории ДО текущего сообщения; ниже решает, нужна ли регенерация
+        from app.features.conversation_style import count_question_streak
+        question_streak = count_question_streak(history_for_rewrite)
+
+        # Живой контекст персоны (state/world): считаем ДО добавления сообщения
+        # в STM — по последней реплике истории ещё видна пауза отсутствия
+        # пользователя, и приветствие-дневник (§7) собирается честно
+        living_context = None
+        if self.living is not None and chat_id:
+            living_context = self._build_living_context(
+                chat_id, history_for_rewrite, user_message=user_input)
+
+        # Стилевой модификатор помощи по intellect tier (§4 плана уровней):
+        # Gemma-детекция help-запроса идёт ФОНОМ, параллельно с rewrite/
+        # памятью/поиском — результат собирается ниже перед prepare_messages
+        help_style_future = None
+        if self.intellect.active:
+            try:
+                from app.features.help_style import submit_block_for_message
+                help_style_future = submit_block_for_message(
+                    user_input, self.intellect, self._local_router)
+            except Exception as e:
+                logger.debug(f"[HelpStyle] фоновая детекция не запущена: {e}")
 
         # Переписываем запрос: разрешаем местоимения и анафору
         persona_context = self._get_persona_context_for_search()
@@ -381,11 +1067,27 @@ class BotInstance:
         )
         logger.info(f"[BotInstance] rewrite_query: '{user_input[:60]}' -> '{ru_rewritten[:60]}'")
 
+        # Лёгкий режим: отвечать будет локальная модель (Ollama) ИЛИ флаг
+        # features.light_context принудительно включён в YAML персоны — слабая
+        # модель тонет в большом промпте, поэтому урезаем всё необязательное
+        # (короткая история, минимум фактов, без RAG/веба/self-memory/файлов).
+        light_mode = self.router.is_local_primary() or self.features.get("light_context") is True
+        if light_mode:
+            logger.info(
+                "[BotInstance] light-режим контекста "
+                f"(local-провайдер: {self.router.is_local_primary()}, "
+                f"features.light_context: {self.features.get('light_context') is True})"
+            )
+
         # 1. Запускаем веб-поиск в фоне (параллельно с памятью)
         # QueryEnhancer преобразует ru_rewritten в короткий поисковый запрос через LLM
         # Передаём историю и контекст персоны для корректного понимания вопроса
         web_future = None
-        if self._web_search_enabled and chat_id not in self._web_search_disabled_chats and not self._is_docs_only_request(user_input):
+        # При прочитанной секции страницы веб-поиск не нужен: ответ целиком
+        # в живом тексте секции, выдача DDG только сместит фокус ответа
+        if (self._web_search_enabled and chat_id not in self._web_search_disabled_chats
+                and not self._is_docs_only_request(user_input)
+                and page_section_note is None):
             # Собираем контекст персоны для QueryEnhancer
             persona_context = self._get_persona_context_for_search()
             # Берём последние 6 сообщений для контекста
@@ -396,20 +1098,27 @@ class BotInstance:
 
         try:
             # В STM сохраняем переписанную русскую версию (с разрешёнными местоимениями)
-            self.memory.add_message("user", ru_rewritten, user_id, chat_id, user_name)
-            stm_messages, ltm_facts, stm_relevant = self.memory.get_context(
-                user_id, chat_id, ltm_query=ru_rewritten
-            )
+            self.memory.add_message("user", ru_rewritten, user_id, chat_id, user_name,
+                                    light_mode=light_mode)
+            if light_mode:
+                stm_messages, ltm_facts, stm_relevant = self.memory.get_context(
+                    user_id, chat_id, ltm_query=ru_rewritten,
+                    stm_recent_n=6, ltm_limit=3, stm_relevant_limit=0,
+                )
+            else:
+                stm_messages, ltm_facts, stm_relevant = self.memory.get_context(
+                    user_id, chat_id, ltm_query=ru_rewritten
+                )
             file_context = None
-            if self.file_db:
+            if self.file_db and not light_mode:
                 if self._is_full_doc_request(user_input):
                     full_text = self.file_db.get_full_document(user_id)
                     if full_text:
-                        file_context = f"Полный текст загруженного документа:\n{full_text}"
+                        file_context = f"Full text of the uploaded document:\n{full_text}"
                 else:
                     file_chunks = self.file_db.search(user_id=user_id, query=user_input, limit=5)
                     if file_chunks:
-                        file_context = "Контекст из загруженных файлов:\n" + "\n---\n".join(file_chunks)
+                        file_context = "Context from uploaded files:\n" + "\n---\n".join(file_chunks)
             web_context = None
             if web_future is not None:
                 try:
@@ -418,6 +1127,10 @@ class BotInstance:
                     results = web_future.result(timeout=25)
                     if results:
                         web_context = self._format_web_results(results)
+                        # В light-режиме веб-выдача (полные тексты страниц) без ограничения
+                        # по размеру — режем жёстко, иначе слабая модель теряет нить.
+                        if light_mode and web_context and len(web_context) > 1500:
+                            web_context = web_context[:1500] + "\n[...truncated]"
                 except FuturesTimeoutError:
                     web_future.cancel()
                     logger.info("  [WebSearch] Таймаут ожидания результатов, ищем без веба")
@@ -429,7 +1142,7 @@ class BotInstance:
             if file_context:
                 context_parts_out.append(file_context)
             # В группе добавляем факты других участников, сказанные публично в этом чате
-            if chat_id and str(chat_id) != str(user_id):
+            if chat_id and str(chat_id) != str(user_id) and not light_mode:
                 chat_facts_block = self.memory.get_chat_facts_block(chat_id, exclude_user_id=user_id)
                 if chat_facts_block:
                     context_parts_out.append(chat_facts_block)
@@ -458,15 +1171,39 @@ class BotInstance:
             user_rules = self.memory.ltm.get_facts_by_category(user_id, "Rule", chat_id=chat_id)
             if user_rules:
                 context_parts_out.append(
-                    "Правила от пользователя (соблюдай всегда, они важнее привычек):\n"
+                    "Rules from the user (always follow them, they override habits):\n"
                     + "\n".join(f"  - {r}" for r in user_rules[-10:])
                 )
+
+            # Портрет из досье (интересы + стиль) — одна короткая строка, чтобы
+            # автоанализ диалога работал и в обычных ответах, а не только когда
+            # бот пишет первым
+            if not light_mode and chat_id:
+                try:
+                    dossier_line = self._get_dossier_context_line(chat_id, user_id)
+                    if dossier_line:
+                        context_parts_out.append(dossier_line)
+                except Exception as _de:
+                    logger.debug(f"[Dossier] Строка контекста недоступна: {_de}")
+            # Секция открытой страницы («что находится в X?») — реальный текст,
+            # прочитанный со страницы в fast-path; ответ строится только из него
+            if page_section_note:
+                context_parts_out.append(page_section_note)
             memory_text = "\n\n".join(context_parts_out) if context_parts_out else None
             has_files = file_context is not None
 
+            # Окружение пользователя (город, его локальное время, погода) — одна
+            # строка, кешируется; добавляется и в light-режиме (она крошечная)
+            env_context = None
+            try:
+                from app.features import env_context as _env_ctx
+                env_context = _env_ctx.get_env_line()
+            except Exception as _ee:
+                logger.debug(f"[Env] Строка окружения недоступна: {_ee}")
+
             # Получаем блок личной памяти бота
             self_memory_block = None
-            if self.self_memory:
+            if self.self_memory and not light_mode:
                 self_memory_block = self.self_memory.get_context_block()
 
             # Формируем блок релевантного STM-контекста
@@ -474,8 +1211,10 @@ class BotInstance:
             if stm_relevant:
                 parts = []
                 for msg in stm_relevant:
-                    role_ru = msg.get("user_name", "Пользователь") if msg["role"] == "user" else "Ассистент"
-                    parts.append(f"  {role_ru}: {msg['content'][:200]}")
+                    role_ru = msg.get("user_name", "User") if msg["role"] == "user" else "Assistant"
+                    ts = _format_msg_ts(msg.get("timestamp"))
+                    ts_tag = f" [{ts}]" if ts else ""
+                    parts.append(f"  {role_ru}{ts_tag}: {msg['content'][:200]}")
                 stm_relevant_text = "\n".join(parts)
 
             # Reminder: перехватываем перед todo (напомни через N ...)
@@ -484,7 +1223,8 @@ class BotInstance:
             is_reminder_request = False
 
             # Pending /remind без времени: пользователь отвечал на «через сколько?»
-            if self.reminder_manager and chat_id:
+            if self.reminder_manager and chat_id \
+                    and not self.control_mode_on(chat_id):
                 pending_task = self.reminder_manager.get_pending_remind(chat_id)
                 logger.info(f"[Reminder] pending_remind для chat={chat_id}: {pending_task!r}")
 
@@ -507,7 +1247,78 @@ class BotInstance:
                         if _yield_to_learning:
                             logger.info(f"[Reminder] chat={chat_id}: ответ уступаю обучению (его вопрос свежее)")
 
-                if pending_task and not _yield_to_learning:
+                # Ответ на «какое именно напоминание перенести?» (несколько активных,
+                # подсказки не было — сдвиг уже запомнен в pending)
+                if not _yield_to_learning and self.reminder_manager.get_pending_postpone_choice(chat_id):
+                    is_reminder_request = True
+                    result = self.reminder_manager.resolve_postpone_choice(chat_id, user_input)
+                    if result and result.get("gone"):
+                        reminder_context = (
+                            "The user was choosing which reminder to move, but there are no "
+                            "active reminders anymore. Say there is nothing to move — "
+                            "in your own style, briefly."
+                        )
+                    elif result:
+                        reminder_context = _postpone_result_context(result)
+                    else:
+                        reminder_context = (
+                            "The user is choosing which reminder to move, but the answer does "
+                            "not match any of them. Ask again: reply with the number or words "
+                            "from the task. In your own style, briefly. "
+                            "Do NOT say anything was moved."
+                        )
+
+                # Ответ на «на когда перенести напоминание?» (перенос без времени).
+                # Без этой ветки ответ улетал в общий LLM, и модель могла
+                # «подтвердить» перенос, который нигде не применялся.
+                elif not _yield_to_learning and self.reminder_manager.get_pending_postpone(chat_id):
+                    is_reminder_request = True
+                    shift = parse_postpone(f"перенеси напоминание {user_input}")
+                    p_delay = p_abs = None
+                    p_rel = False
+                    if shift and not shift.get("unknown"):
+                        p_delay = shift.get("seconds")
+                        p_abs = shift.get("abs")
+                        p_rel = bool(shift.get("relative_to_trigger"))
+                    if p_delay is None and p_abs is None:
+                        # Ответ вида «через 10 минут» / «в 18:00» / голое «18:30»
+                        parsed_shift = parse_reminder("напомни " + user_input)
+                        if not parsed_shift:
+                            parsed_shift = parse_reminder("напомни в " + user_input)
+                        if parsed_shift:
+                            _, p_delay = parsed_shift
+                        else:
+                            p_delay = parse_frequency(user_input)
+                    if p_delay is not None or p_abs is not None:
+                        self.reminder_manager.clear_pending_remind(chat_id)
+                        # Подсказка задачи — только если пользователь переформулировал
+                        # весь запрос («перенеси напоминание приготовить еду на час»),
+                        # а не просто ответил на вопрос («на 15 минут» — там подсказки нет,
+                        # а extract вытащил бы мусор вроде «через час»).
+                        p_hint = (
+                            extract_postpone_hint(user_input)
+                            if parse_postpone(user_input) else None
+                        )
+                        reminder_context = self._postpone_handled_context(
+                            chat_id,
+                            self.reminder_manager.postpone_reminder(
+                                chat_id, seconds=p_delay, abs_time=p_abs,
+                                relative_to_trigger=p_rel,
+                                task_hint=p_hint,
+                            ),
+                            seconds=p_delay, abs_time=p_abs, relative_to_trigger=p_rel,
+                        )
+                    else:
+                        reminder_context = (
+                            "The user is answering the question about when to move the "
+                            "reminder to, but the time could not be understood. Ask again: "
+                            "to what time should the reminder be moved "
+                            "(for example, \"in 10 minutes\", \"at 18:30\")? "
+                            "In your own style, briefly. "
+                            "Do NOT say the reminder was moved — it was NOT."
+                        )
+
+                elif pending_task and not _yield_to_learning:
                     # Пытаемся вытащить время из ответа пользователя.
                     # Сначала — повторяющееся расписание («каждый день в 12»).
                     rec_pending = parse_recurring("напомни " + user_input)
@@ -518,15 +1329,15 @@ class BotInstance:
                         rem_task = self._reformulate_task(rec_task or pending_task)
                         topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                         self.reminder_manager.add_reminder(
-                            chat_id, user_name or "Пользователь", rem_task, 0, topic_id,
+                            chat_id, user_name or "User", rem_task, 0, topic_id,
                             schedule=rec_schedule,
                             user_id=user_id, username=get_username(user_id),
                         )
                         task_display = f" '{rem_task}'" if rem_task else ""
                         reminder_context = (
-                            f"Пользователь попросил напоминать{task_display} — "
-                            f"{format_schedule(rec_schedule)}. Напоминание запланировано — "
-                            f"подтверди это в своём стиле, коротко."
+                            f"The user asked to be reminded{task_display} — "
+                            f"{format_schedule(rec_schedule)}. The reminder is scheduled — "
+                            f"confirm this in your own style, briefly."
                         )
                         is_reminder_request = True
                         parsed_pending = None
@@ -543,13 +1354,13 @@ class BotInstance:
                         topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                         delay_text = self.reminder_manager.format_delay(rem_delay)
                         self.reminder_manager.add_reminder(
-                            chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id,
+                            chat_id, user_name or "User", rem_task, rem_delay, topic_id,
                             user_id=user_id, username=get_username(user_id),
                         )
                         task_display = f" '{rem_task}'" if rem_task else ""
                         reminder_context = (
-                            f"Пользователь указал время для напоминания{task_display} — через {delay_text}. "
-                            f"Напоминание запланировано — подтверди это в своём стиле, коротко."
+                            f"The user specified the time for the reminder{task_display} — in {delay_text}. "
+                            f"The reminder is scheduled — confirm this in your own style, briefly."
                         )
                         is_reminder_request = True
                     else:
@@ -557,10 +1368,11 @@ class BotInstance:
                         # (только если повторяющееся напоминание не создано выше)
                         if not is_reminder_request:
                             reminder_context = (
-                                f"Пользователь отвечает на вопрос про время напоминания «{pending_task}», "
-                                "но время не удалось понять. Переспроси: через сколько напомнить "
-                                "(например, «через 2 часа», «завтра в 12», «каждый день в 9»). "
-                                "В своём стиле, коротко."
+                                f"The user is answering the question about the time for the reminder \"{pending_task}\", "
+                                "but the time could not be understood. Ask again: how soon to remind "
+                                "(for example, \"in 2 hours\", \"tomorrow at 12\", \"every day at 9\"). "
+                                "In your own style, briefly. "
+                                "Do NOT confirm that any reminder was scheduled — it was NOT."
                             )
                             is_reminder_request = True
 
@@ -568,28 +1380,55 @@ class BotInstance:
                 # and chat_id:` выше — а условие elif было строгим подмножеством условия if,
                 # так что при отсутствии pending_task (обычный случай) сюда вообще никогда не
                 # попадали, и свежие текстовые запросы «напомни мне X через Y» никогда не
-                # парсились. Теперь это правильно вложено: проверяем «напом» только когда
-                # НЕТ pending-задачи.
-                elif "напом" in user_input.lower():
+                # парсились. Теперь это правильно вложено: проверяем «напом»/«remind» только
+                # когда НЕТ pending-задачи.
+                elif "напом" in user_input.lower() or re.search(r"\bremind", user_input.lower()):
                     is_reminder_request = True
+                    # Перенос существующего напоминания («перенеси/отложи/сдвинь
+                    # напоминание ...») — строго ДО обычного парсера: иначе весь текст
+                    # уезжал в pending-задачу нового напоминания, реального переноса не
+                    # происходило, а бот словами его «подтверждал».
+                    postpone = parse_postpone(user_input)
+                    if postpone and postpone.get("unknown"):
+                        self.reminder_manager.begin_pending_postpone(chat_id)
+                        reminder_context = (
+                            "The user asked to move/reschedule a reminder, but did not say "
+                            "to when. Ask: to what time should the reminder be moved "
+                            "(for example, \"in 10 minutes\", \"at 18:30\")? "
+                            "In your own style, briefly. Do NOT say anything was rescheduled yet."
+                        )
+                    elif postpone:
+                        reminder_context = self._postpone_handled_context(
+                            chat_id,
+                            self.reminder_manager.postpone_reminder(
+                                chat_id,
+                                seconds=postpone.get("seconds"),
+                                abs_time=postpone.get("abs"),
+                                relative_to_trigger=postpone.get("relative_to_trigger", False),
+                                task_hint=extract_postpone_hint(user_input),
+                            ),
+                            seconds=postpone.get("seconds"),
+                            abs_time=postpone.get("abs"),
+                            relative_to_trigger=postpone.get("relative_to_trigger", False),
+                        )
                     # Сначала — повторяющееся расписание («каждый день в 9», «по пятницам в 18:00»)
-                    rec = parse_recurring(user_input)
+                    rec = parse_recurring(user_input) if not postpone else None
                     if rec:
                         rem_task, rec_schedule = rec
                         if rem_task:
                             rem_task = self._reformulate_task(rem_task)
                         topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                         self.reminder_manager.add_reminder(
-                            chat_id, user_name or "Пользователь", rem_task, 0, topic_id,
+                            chat_id, user_name or "User", rem_task, 0, topic_id,
                             schedule=rec_schedule,
                             user_id=user_id, username=get_username(user_id),
                         )
                         task_display = f" '{rem_task}'" if rem_task else ""
                         reminder_context = (
-                            f"Пользователь попросил напоминать{task_display} — {format_schedule(rec_schedule)}. "
-                            f"Напоминание уже запланировано — просто подтверди это в своём стиле, коротко."
+                            f"The user asked to be reminded{task_display} — {format_schedule(rec_schedule)}. "
+                            f"The reminder is already scheduled — just confirm this in your own style, briefly."
                         )
-                    else:
+                    elif not postpone:
                         parsed = parse_reminder(user_input)
                         logger.info(f"[Reminder] parse_reminder({user_input[:60]!r}) -> {parsed}")
                         if parsed:
@@ -600,13 +1439,13 @@ class BotInstance:
                             topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                             delay_text = self.reminder_manager.format_delay(rem_delay)
                             self.reminder_manager.add_reminder(
-                                chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id,
+                                chat_id, user_name or "User", rem_task, rem_delay, topic_id,
                                 user_id=user_id, username=get_username(user_id),
                             )
                             task_display = f" '{rem_task}'" if rem_task else ""
                             reminder_context = (
-                                f"Пользователь попросил напомнить{task_display} через {delay_text}. "
-                                f"Напоминание уже запланировано — просто подтверди это в своём стиле, коротко."
+                                f"The user asked to be reminded{task_display} in {delay_text}. "
+                                f"The reminder is already scheduled — just confirm this in your own style, briefly."
                             )
                         else:
                             # Время не указано — переспрашиваем и ЗАПОМИНАЕМ задачу (как в /remind),
@@ -614,14 +1453,16 @@ class BotInstance:
                             rem_task = self._reformulate_task(user_input)
                             self.reminder_manager.begin_pending_remind(chat_id, rem_task)
                             reminder_context = (
-                                f"Пользователь попросил напомнить «{rem_task}», но не указал через сколько. "
-                                "Уточни когда ему напомнить — в своём стиле, коротко."
+                                f"The user asked to be reminded \"{rem_task}\", but did not specify how soon. "
+                                "Ask when to remind them — in your own style, briefly."
                             )
 
             # Learning-контекст: режим обучения («научи меня X»)
             learning_context = None
             is_learning_request = False
-            if self.learning_manager and chat_id:
+            # В режиме управления обучение молчит (как и остальные фичи-слова)
+            if self.learning_manager and chat_id \
+                    and not self.control_mode_on(chat_id):
                 # Ответил ли пользователь reply-ом на один из последних «вопросов» бота
                 # (частота уроков / «продолжаем?» / тест)? Это даёт обучению приоритет:
                 # если да — сообщение трактуется как ответ на этот вопрос.
@@ -635,6 +1476,7 @@ class BotInstance:
                     or is_inventory_remove_request(user_input)
                     or is_todo_request(user_input)
                     or is_todo_done_request(user_input)
+                    or is_todo_list_request(user_input)
                 )
 
                 # Сбрасываем счётчик молчания — но только если сообщение не про другую
@@ -656,10 +1498,15 @@ class BotInstance:
                         delay_text = self.learning_manager.format_delay(delay)
                         # Изолированный вызов (без STM/истории) — см. docstring
                         # render_setup_reply про то, почему это не идёт через
-                        # общий self.persona.prepare_messages(...).
-                        skip_llm_answer = self.learning_manager.render_setup_reply(subject, "confirmed", delay_text)
+                        # общий self.persona.prepare_messages(...). Язык триггерного
+                        # сообщения передаём явно: в изолированном вызове реплик
+                        # пользователя нет, иначе модель ответит на языке персоны.
+                        skip_llm_answer = self.learning_manager.render_setup_reply(
+                            subject, "confirmed", delay_text,
+                            user_language=detect_language(user_input))
                     else:
-                        skip_llm_answer = self.learning_manager.render_setup_reply(subject, "reask")
+                        skip_llm_answer = self.learning_manager.render_setup_reply(
+                            subject, "reask", user_language=detect_language(user_input))
                     # Если частоту не поняли (reask) — бот переспрашивает, это «вопрос».
                     # Если поняли (confirmed) — это не вопрос, а подтверждение старта.
                     self._pending_question_kind[str(chat_id)] = "frequency" if not delay else None
@@ -700,8 +1547,11 @@ class BotInstance:
                             self.learning_manager.resolve_continue(chat_id, decision, session_id=_session_id)
                             # Изолированный вызов (без STM/истории) — см. docstring
                             # render_continue_reply про то, почему это не идёт через
-                            # общий self.persona.prepare_messages(...).
-                            skip_llm_answer = self.learning_manager.render_continue_reply(chat_id, decision, session_id=_session_id)
+                            # общий self.persona.prepare_messages(...). Язык передаём
+                            # явно — реплик пользователя в изолированном вызове нет.
+                            skip_llm_answer = self.learning_manager.render_continue_reply(
+                                chat_id, decision, session_id=_session_id,
+                                user_language=detect_language(user_input))
                             # При UNKNOWN бот переспрашивает «да/нет» — это «вопрос».
                             self._pending_question_kind[str(chat_id)] = "continue" if decision == "UNKNOWN" else None
                             is_learning_request = True
@@ -729,11 +1579,11 @@ class BotInstance:
                         intent = classify_learning_intent(user_input)
                         if intent == "LEARN":
                             subject = extract_subject(user_input)
-                            self.learning_manager.begin_setup(chat_id, subject, user_id or "default", user_name or "Пользователь")
+                            self.learning_manager.begin_setup(chat_id, subject, user_id or "default", user_name or "User")
                             learning_context = (
-                                f"Пользователь хочет, чтобы ты научил его «{subject}». "
-                                "Спроси его коротко и в своём стиле, как часто присылать уроки "
-                                "(например: раз в день, каждые 2 часа). Обучение начнётся после его ответа."
+                                f"The user wants you to teach them \"{subject}\". "
+                                "Ask them briefly and in your own style how often to send lessons "
+                                "(for example: once a day, every 2 hours). The course starts after their reply."
                             )
                             is_learning_request = True
                             # Ответ ниже — вопрос «как часто?»: отмечаем, чтобы telegram-слой
@@ -753,20 +1603,20 @@ class BotInstance:
                                 subjects = [s.get("subject", "") for s in active_sessions if s.get("subject")]
                                 subjects_str = "«" + "», «".join(subjects) + "»" if subjects else ""
                                 courses_note = (
-                                    f"по теме {subjects_str}" if len(subjects) == 1
-                                    else f"сразу по нескольким темам: {subjects_str}"
+                                    f"on the topic {subjects_str}" if len(subjects) == 1
+                                    else f"on several topics at once: {subjects_str}"
                                 )
                                 learning_context = (
-                                    f"В этом чате идёт обучение {courses_note}. "
-                                    "Пользователь пишет в рамках учебной беседы — возможно, отвечает на "
-                                    "контрольные вопросы прошлого урока (по одной из тем) или обсуждает тему. "
-                                    "Реагируй ТОЛЬКО на сообщение пользователя, в своём стиле. "
-                                    "СТРОГИЕ ПРАВИЛА:\n"
-                                    "— НЕ генерируй новый урок, новую тему, контрольные вопросы или тест "
-                                    "ни по одной из тем.\n"
-                                    "— НЕ пиши учебный материал вперемешку с ответом — следующий урок "
-                                    "придёт позже по расписанию отдельным сообщением-файлом.\n"
-                                    "— Реагируй коротко: ответь/поясни/прокомментируй, не более."
+                                    f"A learning course is running in this chat {courses_note}. "
+                                    "The user is writing within the learning conversation — possibly answering "
+                                    "the previous lesson's review questions (on one of the topics) or discussing the topic. "
+                                    "React ONLY to the user's message, in your own style. "
+                                    "STRICT RULES:\n"
+                                    "— DO NOT generate a new lesson, new topic, review questions or a quiz "
+                                    "on any of the topics.\n"
+                                    "— DO NOT mix study material into your reply — the next lesson "
+                                    "will arrive later on schedule as a separate file message.\n"
+                                    "— React briefly: answer/explain/comment, nothing more."
                                 )
                                 # is_learning_request здесь НАМЕРЕННО не ставим: само
                                 # сообщение — обычный разговор при фоново активном курсе,
@@ -806,12 +1656,16 @@ class BotInstance:
 
             # Какие эвристики фич сработали на этом сообщении
             _fired_intents = set()
-            if self.todo_manager and chat_id:
+            if self.todo_manager and chat_id \
+                    and not self.control_mode_on(chat_id):
                 if is_todo_done_request(user_input):
                     _fired_intents.add("todo_remove")
+                elif is_todo_list_request(user_input):
+                    _fired_intents.add("todo_show")
                 elif is_todo_request(user_input):
                     _fired_intents.add("todo_add")
-            if self.inventory_manager and not is_reminder_request:
+            if (self.inventory_manager and not is_reminder_request
+                    and not self.control_mode_on(chat_id)):
                 if is_inventory_add_request(user_input):
                     _fired_intents.add("inventory_add")
                 elif is_inventory_remove_request(user_input):
@@ -835,13 +1689,17 @@ class BotInstance:
                     # Запрос на удаление/завершение дела
                     extracted_done_index = extract_todo_done_index(user_input)
                     current_todo = self.todo_manager.get_list(chat_id)
-                    todo_context = current_todo or "Список дел пуст."
+                    todo_context = current_todo or "The todo list is empty."
+                elif "todo_show" in _fired_intents:
+                    # Просьба показать список: только контекст со списком, без
+                    # extracted_task — добавление не срабатывает, LLM показывает список
+                    todo_context = self.todo_manager.get_list(chat_id) or "The todo list is empty."
                 elif "todo_add" in _fired_intents:
                     extracted_task = extract_task(user_input)
                     if extracted_task:
                         extracted_task = self._reformulate_task(extracted_task)
                     current_todo = self.todo_manager.get_list(chat_id)
-                    todo_context = current_todo or "Список дел пуст."
+                    todo_context = current_todo or "The todo list is empty."
 
             # Inventory-контекст: вещи бота
             # (пропускаем если это напоминание — чтобы LLM не добавил мусор в инвентарь)
@@ -849,7 +1707,8 @@ class BotInstance:
             extracted_inventory_item = None
             extracted_inventory_remove = None
             inventory_events = []  # События для LLM-реакции (использование, просрочка)
-            if not is_reminder_request and self.inventory_manager:
+            if (not is_reminder_request and self.inventory_manager
+                    and not (chat_id and self.control_mode_on(chat_id))):
                 inv_block = self.inventory_manager.get_context_block()
                 if inv_block:
                     inventory_context = inv_block
@@ -866,20 +1725,20 @@ class BotInstance:
                     # Проверяем что предмет действительно есть в инвентаре
                     if self.inventory_manager.has_item(used_item):
                         result = self.inventory_manager.use_item(used_item)
-                        inventory_events.append(f"Предмет '{used_item}' был использован и теперь его нет в инвентаре.")
+                        inventory_events.append(f"The item '{used_item}' was used and is no longer in the inventory.")
                     else:
                         # Пробуем найти похожий предмет (по части названия)
                         found = self._find_inventory_item_by_substring(used_item)
                         if found:
                             result = self.inventory_manager.use_item(found)
-                            inventory_events.append(f"Предмет '{found}' был использован и теперь его нет в инвентаре.")
+                            inventory_events.append(f"The item '{found}' was used and is no longer in the inventory.")
                         else:
-                            inventory_events.append(f"Пользователь говорит об использовании '{used_item}', но такого предмета нет в инвентаре.")
+                            inventory_events.append(f"The user mentions using '{used_item}', but there is no such item in the inventory.")
 
                 # Проверяем просроченные предметы
                 expired = self.inventory_manager.remove_expired_items()
                 for exp_name in expired:
-                    inventory_events.append(f"Предмет '{exp_name}' испортился/просрочился и исчез из инвентаря.")
+                    inventory_events.append(f"The item '{exp_name}' has spoiled/expired and disappeared from the inventory.")
 
                 # Обновляем контекст инвентаря после всех изменений
                 inv_block = self.inventory_manager.get_context_block()
@@ -889,7 +1748,7 @@ class BotInstance:
             # Ранний возврат: готовый ответ, минующий LLM (фидбек теста, не генерируем новый контент)
             if skip_llm_answer:
                 answer = self._clean_response(skip_llm_answer)
-                self.memory.add_message("assistant", answer, user_id, chat_id)
+                answer = self._save_assistant_reply(answer, user_id, chat_id)
                 if self.proactive and chat_id:
                     self.proactive.record_user_response(chat_id)
                 return answer
@@ -904,7 +1763,7 @@ class BotInstance:
 
             # Intent classification — нужен ли контекст книги?
             _book_intent = "book_only"
-            if self.book_search:
+            if self.book_search and not light_mode:
                 try:
                     from app.features.intent_router import classify_intent
                     _book_intent = classify_intent(user_input, stm_messages)
@@ -916,7 +1775,7 @@ class BotInstance:
             book_context = None
             context_mode = "book"
             _book_frag_count = None  # для валидации маркеров [ФN] в ответе
-            if self.book_search and _book_intent != "chat_only":
+            if self.book_search and _book_intent != "chat_only" and not light_mode:
                 try:
                     context_mode = "mixed" if _book_intent == "mixed" else "book"
                     from app.features.book_search import detect_volume
@@ -937,7 +1796,10 @@ class BotInstance:
 
                     # Position-запросы → summaries вместо chunk-поиска
                     if position is not None and volume is not None:
-                        import json, re
+                        # ВАЖНО: здесь НЕ делать `import json, re` — инлайновый импорт
+                        # делал re локальным для ВСЕГО process_message, и любой
+                        # re.* выше по функции падал с UnboundLocalError
+                        # (json и re уже импортированы на уровне модуля)
                         # _db_path = "data/arrodes/book" -> context_dir = "data/arrodes"
                         context_dir = "/".join(self.book_search._db_path.split("/")[:-1])
                         summaries_path = f"{context_dir}/summaries.json"
@@ -1029,6 +1891,31 @@ class BotInstance:
                 except Exception as e:
                     logger.debug(f"Book search error: {e}")
 
+            # Стилевой модификатор помощи по intellect tier (§4 плана
+            # уровней): детекция стартовала фоном в начале process_message —
+            # здесь только забираем результат (обычно уже готов)
+            help_style_block = None
+            if help_style_future is not None:
+                try:
+                    help_style_block = help_style_future.result(timeout=10)
+                except Exception as e:
+                    logger.debug(f"[HelpStyle] модификатор не собран: {e}")
+
+            # Платформенное правило финальных вопросов (conversation_style):
+            # нота последней в системном блоке. Не подмешивается в учебные
+            # сообщения — там вопросы пользователю часть механики курса
+            from app.features.conversation_style import build_style_note
+            conv_style_note = None
+            if not learning_context:
+                conv_style_note = build_style_note(self.conversation_style.frequency)
+
+            # Computer control: инструкция о маркерах — только в режиме
+            # управления (иначе LLM изображает «Открыл», ничего не открыв)
+            cc_prompt = None
+            if self.computer_control and chat_id \
+                    and self.control_mode_on(chat_id):
+                cc_prompt = self.computer_control.instruction_block()
+
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
                 user_id=user_id, user_name=user_name, web_context=web_context,
@@ -1039,7 +1926,12 @@ class BotInstance:
                 inventory_context=inventory_context,
                 inventory_events=inventory_events,
                 learning_context=learning_context,
-                book_context=book_context
+                book_context=book_context,
+                env_context=env_context,
+                living_context=living_context,
+                help_style_context=help_style_block,
+                conversation_style_context=conv_style_note,
+                computer_control_context=cc_prompt
             )
             settings = self.persona.get_settings()
             # Когда есть учебный контекст (анонс/пересказ урока, фидбек) — ответ выходит
@@ -1048,7 +1940,22 @@ class BotInstance:
             if learning_context:
                 settings = dict(settings)
                 settings["max_tokens"] = max(int(settings.get("max_tokens", 2000)), 3000)
-            answer = self.router.get_response(messages, **settings)
+            if light_mode:
+                # Локальная модель: длинная генерация — медленно и чаще «уезжает»,
+                # ограничиваем размер ответа. Догенерация в light-режиме отключена
+                # (модель дублирует реплику вместо продолжения): короткие обрывы
+                # ловит гвард мусорных ответов ниже, а с num_ctx 8192 потолок
+                # 1200 токенов не давит на контекст.
+                settings = dict(settings)
+                settings["max_tokens"] = min(int(settings.get("max_tokens", 2000)), 1200)
+            # Стриминг (on_token задан): токены уходят подписчику сырыми,
+            # финальный ответ после _clean_response/маркеров возвращается как обычно.
+            # Веб/API сюда не передаёт on_token — /api/chat/stream сам «печатает»
+            # финальный reply порциями, чтобы клиент не показывал сырой стрим.
+            if on_token is not None:
+                answer = self.router.get_response_stream(messages, on_token, **settings)
+            else:
+                answer = self.router.get_response(messages, **settings)
             if not answer:
                 logger.error("Все LLM-провайдеры недоступны, ответ не сгенерирован")
                 return "Сейчас все LLM-провайдеры недоступны. Попробуй позже."
@@ -1056,11 +1963,17 @@ class BotInstance:
             # Защита от обрыва по max_tokens (persona.get_settings() рассчитан на обычную
             # реплику; когда learning_context просит анонсировать/пересказать урок, ответ
             # выходит длиннее и может упереться в лимит) — просим модель дописать.
+            # В light-режиме догенерация отключена: слабая локальная модель на повторном
+            # заходе плодит варианты реплики вместо продолжения.
+            # Для webchat — тоже отключена: «continue» засоряет непрерывный чат
+            # служебными репликами (их видно в ленте), а веб-модель вместо строгого
+            # продолжения выдаёт новую вариацию ответа — склейка даёт дубли.
+            _webchat_answered = str(getattr(self.router, "_last_provider", "") or "").startswith("webchat")
             _continuations = 0
-            while _looks_truncated(answer) and _continuations < 2:
+            while not (light_mode or _webchat_answered) and _looks_truncated(answer) and _continuations < 2:
                 follow_up_messages = messages + [
                     {"role": "assistant", "content": answer},
-                    {"role": "user", "content": "Ты остановился на середине фразы. Допиши строго с того места, где прервался — не повторяй уже написанное и не начинай заново."},
+                    {"role": "user", "content": "You stopped mid-sentence. Continue strictly from where you left off — do not repeat what was already written and do not start over. Continue in the same language as the reply."},
                 ]
                 cont = self.router.get_response(follow_up_messages, **settings)
                 if not cont:
@@ -1071,10 +1984,62 @@ class BotInstance:
             # Очистка ответа от мета-рассуждений и Markdown
             answer = self._clean_response(answer)
 
+            # Webchat-модель нередко обрезается лимитом длины прямо посреди
+            # маркера источника — «…убил его. [Ф1». Висящий хвост ломает баланс
+            # скобок, и garbage-гард ниже выбрасывает целиком валидный ответ
+            # (догенерация для webchat отключена). Чиним обрыв до проверки.
+            answer = self._repair_truncated_markers(answer)
+
+            # Страховка от оборванной/мусорной генерации (маленькие локальные
+            # модели иногда выдают обрывки маркеров — «[», «[16.» — или пустоту):
+            # один повторный заход, иначе нейтральная заглушка вместо мусора.
+            def _is_garbage(t: str) -> bool:
+                t = (t or "").rstrip()
+                return (not re.search(r"[0-9A-Za-zА-Яа-яЁё]", t)
+                        or t.count("[") != t.count("]")  # оборванный маркер
+                        # короткий обрыв посреди слова («Анализ запроса. Тре») —
+                        # нет знака завершения фразы. Только light-режим (там
+                        # нет догенерации); в обычном короткая реплика без
+                        # точки в конце — разговорный стиль, а не мусор
+                        or (light_mode and len(t) < 60
+                            and not _SENTENCE_END_RE.search(t)))
+            if _is_garbage(answer):
+                logger.warning(f"[BotInstance] Мусорный ответ ({answer!r}) — регенерация")
+                retry = self.router.get_response(messages, **settings)
+                if retry:
+                    answer = self._repair_truncated_markers(self._clean_response(retry))
+                else:
+                    answer = ""
+                if _is_garbage(answer):
+                    answer = "Не удалось сформулировать ответ — попробуй переформулировать."
+
+            # Предохранитель conversation_style: ответ закончился вопросом сверх
+            # лимита серии — одна регенерация с усиленным напоминанием (модель
+            # сама оставит вопрос, если он нужен по смыслу). Регенерированный
+            # текст ниже проходит ту же обработку маркеров, что и обычный.
+            # Учебные сообщения пропускаем — там вопросы часть механики курса.
+            if not learning_context:
+                from app.features.conversation_style import (
+                    should_regenerate, regenerate_without_tail_question)
+                if should_regenerate(self.conversation_style, answer, question_streak):
+                    logger.info(
+                        f"[ConvStyle] Финальный вопрос сверх лимита "
+                        f"(streak={question_streak}, mode={self.conversation_style.frequency}) — регенерация")
+                    new_answer = regenerate_without_tail_question(
+                        self.router, messages, answer, settings)
+                    if new_answer:
+                        answer = self._clean_response(new_answer) or answer
+
             # Срезка маркеров источников [ФN] (книжный режим): строки со
             # ссылкой на несуществующий фрагмент удаляются как выдуманные.
             if _book_frag_count is not None:
                 answer = self._strip_fact_markers(answer, _book_frag_count)
+            elif "Ф" in answer:
+                # Поиска не было (chat_only/light) — валидных фрагментов нет,
+                # но веб-чат видит старые RAG-инструкции в истории чата и
+                # копирует стиль: маркеры-мимикрию срезаем, строки не трогаем
+                # (frag_count=0 — любой маркер «вне диапазона»).
+                answer = self._strip_fact_markers(answer, 0)
 
             # Обработка todo-маркера
             # (пропускаем для учебно-административных сообщений — setup/continue/тест/
@@ -1082,7 +2047,7 @@ class BotInstance:
             # курсе флаг не выставляет, и todo во время курса работает как обычно)
             if self.todo_manager and chat_id and todo_context and not is_learning_request:
                 answer = self._process_todo_marker(
-                    answer, chat_id, user_name or "Пользователь",
+                    answer, chat_id, user_name or "User",
                     fallback_task=extracted_task,
                     fallback_done_index=extracted_done_index,
                     user_text=user_input,
@@ -1093,27 +2058,136 @@ class BotInstance:
             # там LLM не должен добавлять в инвентарь; обычный разговор при активном
             # курсе сюда проходит — инвентарь во время курса работает как обычно)
             if not is_reminder_request and not is_learning_request and self.inventory_manager:
-                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove, user_name or "пользователь", user_text=user_input, chat_id=chat_id)
+                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove, user_name or "user", user_text=user_input, chat_id=chat_id)
+
+            # Маркеры управления компьютером (open_url/open_app/run_task): срезка +
+            # pending на подтверждение (или немедленное исполнение при confirm: false).
+            # Те же пропуски, что у инвентаря — административные ответы маркеров не несут;
+            # и только в режиме управления — иначе LLM-маркер не исполняем
+            if (self.computer_control and chat_id
+                    and self.control_mode_on(chat_id)
+                    and not is_reminder_request and not is_learning_request):
+                answer, cc_notices = self.computer_control.process_markers(answer, chat_id)
+                for _cc_note in cc_notices:
+                    self._pending_lists(chat_id).append(_cc_note)
             if self._punish_enabled:
                 answer = self._parse_punishment(answer, user_id)
 
-            # 10. Сохраняем ответ
-            self.memory.add_message("assistant", answer, user_id, chat_id)
+            # 9.5 Автопредложение записать сценарий: закрывающая реплика
+            # («спасибо»/«готово») после цепочки действий → один раз
+            # предлагаем «запомни сценарий …». Только в режиме управления.
+            if (self.scenario_manager and chat_id
+                    and self.control_mode_on(chat_id)):
+                try:
+                    _sc_offer = self.scenario_manager.maybe_offer(chat_id, user_input)
+                    if _sc_offer:
+                        answer = f"{answer}\n\n{_sc_offer}"
+                except Exception as e:
+                    logger.debug(f"[Scenarios] maybe_offer не удался: {e}")
+
+            # 10. Сохраняем ответ (при split_messages — по частям, хвост в pending)
+            answer = self._save_assistant_reply(answer, user_id, chat_id)
 
             # 11. Эпизодическая память (self_memory)
             if self.self_memory:
                 self.self_memory.tick(stm_messages, user_id, user_input)
 
+            # 11b. Мир персоны: детекция новых NPC/мест из диалога (в фоне)
+            if self.living is not None and chat_id:
+                try:
+                    self.living.on_user_message(str(chat_id), stm_messages)
+                except Exception as e:
+                    logger.debug(f"[Living] Диалоговый тик не удался: {e}")
+
             # 12. Обратная связь proactive: если ждем ответа на инициативу -- фиксируем успех
+            # (record_user_response сам обновляет досье — отдельный вызов
+            # record_incoming_message здесь гнал счётчик анализа вдвое быстрее)
             if self.proactive and chat_id:
                 self.proactive.record_user_response(chat_id)
-                # Также обновляем досье на каждое входящее сообщение
-                self.proactive.record_incoming_message(chat_id)
 
             return answer
         finally:
             # Ничего не делаем — пул живёт всё время жизни бота
             pass
+
+    def chat_user_language(self, chat_id: str) -> Optional[str]:
+        """Язык пользователя чата по последним репликам STM ('ru'/'en'/None).
+        Для служебных текстов вне LLM-пайплайна (список дел и т.п.)."""
+        try:
+            return detect_dialogue_language(
+                "", self.memory.stm.get_last(8, chat_id=chat_id))
+        except Exception:
+            return None
+
+    def _build_living_context(self, chat_id: str, history: List[Dict],
+                              user_message: str = "") -> Optional[str]:
+        """Собирает living-контекст для prepare_messages: приветствие-дневник
+        при долгой паузе (§7) + текущее состояние персоны. Пауза считается по
+        последней реплике истории ДО добавления текущего сообщения в STM.
+        user_message — текущая реплика: последний факт жизни включается,
+        только когда у него есть топическая зацепка (реактивная подача)."""
+        if self.living is None:
+            return None
+        parts = []
+        try:
+            last_ts = None
+            for msg in reversed(history or []):
+                ts = msg.get("timestamp")
+                if isinstance(ts, (int, float)) and ts > 0:
+                    last_ts = float(ts)
+                    break
+            if last_ts:
+                absence_h = (time.time() - last_ts) / 3600
+                if absence_h >= 12:
+                    entries = self.living.state_engine.entries_since(
+                        chat_id, time.time() - absence_h * 3600)
+                    return_ctx = self.living.summarizer.build_return_context(
+                        chat_id, entries, absence_h,
+                        user_language=detect_dialogue_language("", history))
+                    if return_ctx:
+                        parts.append(return_ctx)
+                        self.living.state_engine.mark_consumed(
+                            [e["id"] for e in entries])
+            state_ctx = self.living.get_living_context(
+                chat_id, topic_text=user_message)
+            if state_ctx:
+                parts.append(state_ctx)
+        except Exception as e:
+            logger.debug(f"[Living] Контекст не собран: {e}")
+        return "\n\n".join(p for p in parts if p) or None
+
+    def _postpone_handled_context(self, chat_id: str, result: Optional[dict],
+                                  seconds: Optional[float] = None,
+                                  abs_time: Optional[tuple] = None,
+                                  relative_to_trigger: bool = False) -> str:
+        """LLM-контекст после попытки переноса напоминания.
+        ambiguous — запоминаем сдвиг и спрашиваем КАКОЕ напоминание двигать
+        (показываем нумерованный список); not_found — такого нет, ничего не
+        двинуто; остальное — стандартное подтверждение/отказ."""
+        if result and result.get("ambiguous"):
+            self.reminder_manager.begin_pending_postpone_choice(
+                chat_id, seconds=seconds, abs_time=abs_time,
+                relative_to_trigger=relative_to_trigger,
+            )
+            choices = _fmt_reminder_choices(result["choices"])
+            return (
+                "No reminder was moved. NOTHING was rescheduled. "
+                f"There are several active reminders: {choices}. "
+                "Your reply MUST be a question asking which one to move, "
+                "showing the numbered list above. "
+                "In your own style, briefly."
+            )
+        if result and result.get("not_found"):
+            choices = _fmt_reminder_choices(result.get("choices") or [])
+            listing = f" Active reminders: {choices}." if choices else ""
+            return (
+                "No reminder was moved. NOTHING was rescheduled. "
+                f"The user asked to move a reminder matching \"{result.get('hint')}\", "
+                f"but no reminder matches it.{listing} "
+                "Say that no such reminder was found (mention what does exist, if anything). "
+                "In your own style, briefly."
+            )
+        return _postpone_result_context(result)
 
     def _reformulate_task(self, raw_task: str) -> str:
         """
@@ -1124,20 +2198,23 @@ class BotInstance:
         if not raw_task or len(raw_task.strip()) < 2:
             return raw_task
 
-        if not self._local_router or not self._local_router.is_available():
+        if not self._local_router or not self._local_router.is_available(task="todo_cleanup"):
             return raw_task.strip()
 
         try:
             response = self._local_router.get_response(
                 messages=[
                     {"role": "system", "content": (
-                        "Очисти текст задачи от местоимений и мусора. "
-                        "Ответ — только короткий текст задачи в инфинитиве."
+                        "Clean up the task text: remove pronouns and clutter. "
+                        "The answer is only the short task text, phrased as an infinitive. "
+                        "STRICTLY keep the language of the original text: "
+                        "do NOT translate — Russian stays Russian, English stays English."
                     )},
                     {"role": "user", "content": raw_task.strip()},
                 ],
                 temperature=0.0,
                 max_tokens=60,
+                task="todo_cleanup",
             )
 
             if response:
@@ -1156,14 +2233,9 @@ class BotInstance:
 
                 # 3. Не содержит слов из системного промпта (модель эхо)
                 _FORBIDDEN_WORDS = (
-                    "очисти", "убери", "местоимени", "мусор", "инфинитив",
-                    "разговорн", "обращени", "ответ", "только текст",
-                    # инфинитивные формы (модель перефразирует промпт)
-                    "очистить", "убрать", "оставить", "сохранить смысл",
-                    "суть задачи", "текст задачи", "короткий текст",
-                    "убери местоимения", "убрать местоимения",
-                    "в своём характере", "напиши короткое",
-                    "мета-пометки", "не используй markdown",
+                    "clean up", "pronoun", "clutter", "infinitive",
+                    "only the short", "task text", "short task",
+                    "rephrase", "meta-note", "markdown",
                 )
                 lower = cleaned.lower()
                 for word in _FORBIDDEN_WORDS:
@@ -1186,20 +2258,21 @@ class BotInstance:
         Если реплика — исправление бота или просьба запомнить правило/предпочтение,
         формулирует короткое правило через ЛОКАЛЬНУЮ LLM. Иначе возвращает None.
         """
-        if not self._local_router or not self._local_router.is_available():
+        if not self._local_router or not self._local_router.is_available(task="rule_extract"):
             return None
         try:
             resp = self._local_router.get_response(
                 messages=[
                     {"role": "system", "content": (
-                        "Определи, является ли реплика исправлением бота или просьбой запомнить "
-                        "правило/предпочтение (как обращаться, что делать или не делать). "
-                        "Если да — сформулируй правило ОДНИМ коротким предложением (до 12 слов), "
-                        "без пояснений и кавычек. Если это обычный разговор или вопрос — ответь ровно NO."
+                        "Determine whether the message is a correction of the bot or a request to remember "
+                        "a rule/preference (how to address the user, what to do or not do). "
+                        "If yes — formulate the rule as ONE short sentence (up to 12 words), "
+                        "without explanations or quotes. If it is ordinary conversation or a question — answer exactly NO."
                     )},
                     {"role": "user", "content": user_text[:400]},
                 ],
                 temperature=0.0, max_tokens=60,
+                task="rule_extract",
             )
             if not resp:
                 return None
@@ -1218,30 +2291,32 @@ class BotInstance:
         Возвращает winner (snake_case), "CHAT" (ничего не подходит) или None
         (локальная модель недоступна — оставляем прежнее поведение).
         """
-        if not self._local_router or not self._local_router.is_available():
+        if not self._local_router or not self._local_router.is_available(task="intent_router"):
             return None
 
         intent_desc = {
-            "todo_add": "TODO_ADD — записать новую задачу в список дел",
-            "todo_remove": "TODO_REMOVE — убрать/вычеркнуть задачу из списка дел",
-            "inventory_add": "INVENTORY_ADD — дать/передать предмет боту в его инвентарь",
-            "inventory_remove": "INVENTORY_REMOVE — забрать/выбросить предмет из инвентаря бота",
+            "todo_add": "TODO_ADD — write down a new task in the todo list",
+            "todo_remove": "TODO_REMOVE — remove/cross out a task from the todo list",
+            "todo_show": "TODO_SHOW — show/read the current todo list",
+            "inventory_add": "INVENTORY_ADD — give/hand an item to the bot for its inventory",
+            "inventory_remove": "INVENTORY_REMOVE — take away/discard an item from the bot's inventory",
         }
         valid_outputs = [c.upper() for c in candidates]
         options_text = "\n".join(f"- {intent_desc[c]}" for c in candidates)
 
         verdict = self._local_router.classify(
             system_prompt=(
-                "Ты — классификатор намерений. Определи, что пользователь просит сделать.\n"
-                f"Варианты:\n{options_text}\n"
-                "- CHAT — обычный разговор, ничего из перечисленного.\n"
-                "Внимание на объект действия: «список дел» — это TODO, «инвентарь/у тебя/тебе» — INVENTORY. "
-                "Ответь одним словом."
+                "You are an intent classifier. Determine what the user is asking to do.\n"
+                f"Options:\n{options_text}\n"
+                "- CHAT — ordinary conversation, none of the above.\n"
+                "Pay attention to the object of the action: \"todo list\" is TODO, \"inventory/you have/to you\" is INVENTORY. "
+                "Answer with one word."
             ),
-            user_prompt=f"Реплика пользователя: «{user_text}»",
+            user_prompt=f"User message: \"{user_text}\"",
             valid_outputs=valid_outputs + ["CHAT"],
             temperature=0.0,
             max_tokens=10,
+            task="intent_router",
         )
         if not verdict:
             return None
@@ -1262,27 +2337,32 @@ class BotInstance:
           'SKIP' — локальная LLM отклонила;
           'ASK'  — локальная LLM недоступна → переспросить пользователя.
         """
-        if not self._local_router or not self._local_router.is_available():
+        if not self._local_router or not self._local_router.is_available(task="intent_router"):
             logger.info(f"[Intent] Локальная LLM недоступна, переспрос для '{candidate[:40]}'")
             return "ASK"
 
         intent_desc = {
-            "inventory_add": "добавить предмет в инвентарь персонажа",
-            "inventory_remove": "выбросить/убрать предмет из инвентаря",
-            "todo_add": "записать задачу в список дел",
-            "todo_remove": "отметить задачу выполненной и убрать из списка дел",
-        }.get(intent, "выполнить действие")
+            "inventory_add": "add an item to the character's inventory",
+            "inventory_remove": "discard/remove an item from the inventory",
+            "todo_add": "write down a task in the todo list",
+            "todo_remove": "mark a task as done and remove it from the todo list",
+        }.get(intent, "perform an action")
 
         system_prompt = (
-            "Ты — классификатор намерений. Реши, просит ли пользователь ЯВНО и ОСОЗНАННО "
-            f"{intent_desc}, или это просто обычная реплика/рассказ о прошлом. "
-            "Повествование о прошедших событиях («получил», «сделал», «купил») — НЕ просьба. "
-            "Ответь одним словом: ADD (явная просьба) или SKIP (не просьба)."
+            "Ты — классификатор намерений. Определи, ЯВНО ли пользователь просит "
+            f"{intent_desc}, или это просто реплика/рассказ.\n"
+            "ПРАВИЛА:\n"
+            "- Пользователь вручает предмет персонажу («держи X», «возьми X», «вот тебе X», "
+            "«надень X», «дарю X») — это ADD.\n"
+            "- Рассказ о прошлом («я купил X», «мне подарили X», «получил X») — это SKIP.\n"
+            "- Кандидат уже извлечён из сообщения автоматически — оцени, осознанно ли "
+            "пользователь это просит.\n"
+            "Ответь ОДНИМ словом: ADD или SKIP."
         )
         user_prompt = (
-            f"Реплика пользователя: «{user_text}»\n"
-            f"Извлечённый кандидат: «{candidate}»\n"
-            f"Это явная просьба {intent_desc}? ADD или SKIP."
+            f"Сообщение пользователя: \"{user_text}\"\n"
+            f"Извлечённый кандидат: \"{candidate}\"\n"
+            f"Это явная просьба: {intent_desc}? Ответь ADD или SKIP."
         )
 
         try:
@@ -1292,6 +2372,7 @@ class BotInstance:
                 valid_outputs=["ADD", "SKIP"],
                 temperature=0.0,
                 max_tokens=5,
+                task="intent_router",
             )
         except Exception as e:
             logger.warning(f"[Intent] Ошибка классификации: {e}")
@@ -1311,7 +2392,25 @@ class BotInstance:
         response = self._strip_meta_reasoning(response)
         response = self._strip_markdown(response)
         response = self._strip_inline_lists(response)
+        # Слабые модели копируют метку времени [DD.MM HH:MM] из промпта в ответ
+        response = re.sub(
+            r"^\s*\[\d{2}\.\d{2}(?:\.\d{4})?\s+\d{1,2}:\d{2}\]\s*", "", response)
         return response.strip()
+
+    @staticmethod
+    def _repair_truncated_markers(text: str) -> str:
+        """Срезает маркер [ФN], оборванный лимитом длины на самом хвосте ответа.
+
+        Обрыв приходится на конец текста («…убил его. [Ф1», «…[Ф22, Ф2»),
+        догенерация для webchat отключена — без починки баланс скобок
+        нарушен и garbage-гард выбрасывает валидный ответ целиком.
+        Валидные закрытые маркеры не трогает: у них есть «]» после номера.
+        """
+        if not text or "[" not in text:
+            return text
+        return re.sub(
+            r"\[\s*Ф\s*[0-9]*(?:\s*[,;\-–—]\s*Ф?\s*[0-9]*)*\s*$",
+            "", text.rstrip()).rstrip()
 
     def _strip_fact_markers(self, response: str, frag_count: int) -> str:
         """Срезает скрытые маркеры источников [ФN] из книжного ответа.
@@ -1319,51 +2418,81 @@ class BotInstance:
         Модель помечает каждую фактическую фразу номером фрагмента-источника
         (см. build_context_block). Правила:
           - валидный номер (1..frag_count) — маркер просто срезаем;
-          - маркер с номером вне диапазона — удаляем ВСЮ строку: ссылка на
-            несуществующий источник — сигнал выдумки (модель «подтверждает»
-            деталь фрагментом, которого нет);
+          - близкий промах (frag_count+1..frag_count+3) — модель сбилась в
+            счёте фрагментов (в контексте их до 25): срезаем только маркер,
+            строку сохраняем;
+          - дикий номер (n < 1 или n > frag_count+3) — удаляем ВСЮ строку:
+            ссылка на несуществующий источник — сигнал выдумки (модель
+            «подтверждает» деталь фрагментом, которого нет);
           - когда фрагментов нет (пустой поиск) — любой маркер невалиден,
             но ответ и так строится на честном неведении, поэтому только
-            срезаем маркеры, не удаляя строки.
+            срезаем маркеры, не удаляя строки;
+          - коллапс-гард: если удаление диких строк опустошило ответ (не
+            осталось ни одной содержательной строки — обычно выживает только
+            «ритуальный» вопрос, который инструкция освобождает от маркеров),
+            значит модель ошиблась в нумерации всего ответа — возвращаем все
+            строки, срезав лишь сами маркеры.
         Возвращает очищенный текст; статистика — в лог.
         """
         if not response or "Ф" not in response:
             return response
 
-        # Одиночные и составные маркеры: [Ф2], [Ф22, Ф23], [Ф22,Ф23]
-        marker_re = re.compile(r"\[\s*Ф\s*[0-9]+(?:\s*[,;]\s*Ф?\s*[0-9]+)*\s*\]")
+        # Одиночные, составные и диапазонные маркеры:
+        # [Ф2], [Ф22, Ф23], [Ф22,Ф23], [Ф5–6], [Ф10-11], [Ф1–3, Ф5]
+        marker_re = re.compile(
+            r"\[\s*Ф\s*[0-9]+(?:\s*[,;\-–—]\s*Ф?\s*[0-9]+)*\s*\]")
         num_re = re.compile(r"[0-9]+")
-        valid = invalid = 0
+        tolerance = 3
+
+        def _clean_line(line: str) -> str:
+            cleaned = marker_re.sub("", line)
+            cleaned = re.sub(r"\s+([.,!?…:;])", r"\1", cleaned)
+            return re.sub(r" {2,}", " ", cleaned).rstrip()
+
+        valid = near_miss = invalid = 0
         out_lines = []
+        strip_only_lines = []
         for line in response.splitlines():
             nums = [int(n) for m in marker_re.findall(line)
                     for n in num_re.findall(m)]
+            cleaned_line = _clean_line(line)
+            strip_only_lines.append(cleaned_line)
             if nums and any(n < 1 or n > frag_count for n in nums):
-                invalid += 1
-                if frag_count > 0:
+                if frag_count > 0 and any(n < 1 or n > frag_count + tolerance
+                                          for n in nums):
+                    invalid += 1
                     logger.info(f"[FactMarkers] Удалена строка с выдуманным источником: {line[:100]}")
                     continue
+                near_miss += 1
             elif nums:
                 valid += 1
-            cleaned_line = marker_re.sub("", line)
-            cleaned_line = re.sub(r"\s+([.,!?…:;])", r"\1", cleaned_line)
-            cleaned_line = re.sub(r" {2,}", " ", cleaned_line).rstrip()
             out_lines.append(cleaned_line)
 
-        cleaned = "\n".join(out_lines)
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-        if valid or invalid:
-            logger.info(f"[FactMarkers] валидных: {valid}, выдуманных: {invalid}")
+        def _collapse_ws(text: str) -> str:
+            return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+        cleaned = _collapse_ws("\n".join(out_lines))
+        if invalid:
+            def _substantive(text: str) -> bool:
+                return len(re.sub(r"[^0-9A-Za-zА-Яа-яЁё]", "", text)) >= 60
+            if not _substantive(cleaned):
+                logger.warning(
+                    f"[FactMarkers] Удаление {invalid} строк опустошило ответ "
+                    f"(frag_count={frag_count}) — откат: маркеры срезаны, строки сохранены")
+                cleaned = _collapse_ws("\n".join(strip_only_lines))
+        if valid or near_miss or invalid:
+            logger.info(f"[FactMarkers] валидных: {valid}, промахов счёта: "
+                        f"{near_miss}, выдуманных: {invalid}")
         return cleaned
 
     @staticmethod
     def _strip_inline_lists(text: str) -> str:
         """Удаляет секции 'Список дел:' и 'Инвентарь:' из ответа LLM.
         Эти списки отправляются отдельным сообщением через _pending_list_messages."""
-        # Вырезаем секцию "Список дел:" и все её пункты до пустой строки или конца текста
-        text = re.sub(r'\n*Список дел:\n.*?(?=\n\s*\n|\Z)', '', text, flags=re.DOTALL)
-        # Вырезаем секцию "Инвентарь:" и все её пункты до пустой строки или конца текста
-        text = re.sub(r'\n*Инвентарь:\n.*?(?=\n\s*\n|\Z)', '', text, flags=re.DOTALL)
+        # Вырезаем секцию "Список дел:"/"Todo list:" и все её пункты до пустой строки или конца текста
+        text = re.sub(r'\n*(?:Список дел|Todo list):\n.*?(?=\n\s*\n|\Z)', '', text, flags=re.DOTALL)
+        # Вырезаем секцию "Инвентарь:"/"Inventory:" и все её пункты до пустой строки или конца текста
+        text = re.sub(r'\n*(?:Инвентарь|Inventory):\n.*?(?=\n\s*\n|\Z)', '', text, flags=re.DOTALL)
         # Схлопываем лишние пустые строки, оставшиеся после вырезания
         text = re.sub(r'\n{3,}', '\n\n', text)
         return text.strip()
@@ -1377,6 +2506,17 @@ class BotInstance:
             code_blocks.append(m.group(0))
             return f'\x00CB{len(code_blocks) - 1}\x00'
         text = re.sub(r'```.*?```', _save, text, flags=re.DOTALL)
+
+        # Вставки в двойных звёздочках — художественный приём («внутренние
+        # процессы», см. connor.yaml), читатель должен их видеть: рендер
+        # Telegram сам показывает **x** жирным. Мета-паттерны ниже писались
+        # под одиночные *...* — внутри пары ** они матчатся посередине и
+        # съедают текст, оставляя висящий **.
+        bold_spans = []
+        def _save_bold(m):
+            bold_spans.append(m.group(0))
+            return f'\x00MB{len(bold_spans) - 1}\x00'
+        text = re.sub(r'\*\*.+?\*\*', _save_bold, text, flags=re.DOTALL)
 
         # Мета-фразы инвентаря
         meta_patterns = [
@@ -1399,7 +2539,10 @@ class BotInstance:
         # Убираем лишние пустые строки
         text = re.sub(r'\n{3,}', '\n\n', text)
 
-        # Восстанавливаем code-блоки
+        # Восстанавливаем bold-вставки и code-блоки
+        # (bold раньше code: спан мог сохранить внутри себя плейсхолдер блока)
+        for i, span in enumerate(bold_spans):
+            text = text.replace(f'\x00MB{i}\x00', span)
         for i, block in enumerate(code_blocks):
             text = text.replace(f'\x00CB{i}\x00', block)
         return text.strip()
@@ -1418,16 +2561,20 @@ class BotInstance:
             return f'\x00CB{len(code_blocks) - 1}\x00'
         text = re.sub(r'```.*?```', _save, text, flags=re.DOTALL)
 
-        # Пустые маркеры: **\n\n** или *** без контента убрать
-        text = re.sub(r'\*{2,}\s*\*{2,}', '', text)
+        # Пустые маркеры: **\n\n** или *** без контента убрать.
+        # (?<!\S) — не трогаем ** между двумя жирными фрагментами
+        # («**воду** и **зонт**»): там это закрывающая и открывающая пары,
+        # а не пустой маркер — иначе фрагменты склеятся в «**водузонт**»
+        text = re.sub(r'(?<!\S)\*{2,}\s*\*{2,}', '', text)
         # Заголовки: #### Заголовок → Заголовок
         text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
         # Изображения: ![alt](url) → alt
         text = re.sub(r'!\[(.+?)\]\(.+?\)', r'\1', text)
         # Горизонтальная линия: --- → юникод-разделитель
         text = re.sub(r'^-{3,}\s*$', '───────────', text, flags=re.MULTILINE)
-        # Горизонтальная линия: *** или ___ → пустая строка
-        text = re.sub(r'^[*_]{3,}\s*$', '', text, flags=re.MULTILINE)
+        # Горизонтальная линия: *** или ___ → пустая строка; заодно и
+        # осиротевшая линия ** — остаток оборванного/испорченного маркера
+        text = re.sub(r'^[*_]{2,}\s*$', '', text, flags=re.MULTILINE)
         # Убираем лишние пустые строки
         text = re.sub(r'\n{3,}', '\n\n', text)
 
@@ -1470,7 +2617,7 @@ class BotInstance:
         if done_match:
             index = int(done_match.group(1))
             response = response[:done_match.start()] + response[done_match.end():]
-            result = self.todo_manager.remove_item(chat_id, index)
+            result = self.todo_manager.remove_item(chat_id, index, lang=detect_language(user_text))
             if result:
                 self._pending_lists(chat_id).append(result)
             return response.strip()
@@ -1478,9 +2625,9 @@ class BotInstance:
         # Fallback удаление через эвристику — подтверждаем через LLM, иначе
         # «готово, прочитал 3 главы» молча удаляло пункт №3
         if fallback_done_index is not None:
-            verdict = self._confirm_intent(user_text, f"пункт №{fallback_done_index}", "todo_remove")
+            verdict = self._confirm_intent(user_text, f"item #{fallback_done_index}", "todo_remove")
             if verdict == "ADD":
-                result = self.todo_manager.remove_item(chat_id, fallback_done_index)
+                result = self.todo_manager.remove_item(chat_id, fallback_done_index, lang=detect_language(user_text))
                 if result:
                     self._pending_lists(chat_id).append(result)
             elif verdict == "ASK":
@@ -1503,7 +2650,7 @@ class BotInstance:
             # SKIP — игнорируем
 
         if task:
-            todo_list = self.todo_manager.add_item(chat_id, user_name, task)
+            todo_list = self.todo_manager.add_item(chat_id, user_name, task, lang=detect_language(user_text))
             self._pending_lists(chat_id).append(todo_list)
 
         return response.strip()
@@ -1594,19 +2741,19 @@ class BotInstance:
         
         name = data.get("name", self.persona_name)
         if name:
-            parts.append(f"Имя персоны: {name}")
-        
+            parts.append(f"Persona name: {name}")
+
         description = data.get("description", "")
         if description:
-            parts.append(f"Описание: {description}")
-        
+            parts.append(f"Description: {description}")
+
         # Из system_prompt берём только первые 500 символов — основная роль и внешность
         system_prompt = data.get("system_prompt", "")
         if system_prompt:
             # Берём начало до первого крупного раздела
             prompt_preview = system_prompt[:500].strip()
             if prompt_preview:
-                parts.append(f"Роль и характер: {prompt_preview}")
+                parts.append(f"Role and character: {prompt_preview}")
         
         return "\n".join(parts) if parts else ""
 
@@ -1687,6 +2834,33 @@ class BotInstance:
     def get_memory_stats(self, user_id: str = "default", chat_id: str = None) -> dict:
         return self.memory.get_stats(user_id, chat_id)
 
+    def get_dossier_snapshot(self, chat_id: str, user_id: str = None) -> dict:
+        """Профиль досье чата (интересы/темы/наблюдения) для веб-UI.
+        user_id — только записи этого участника (персональный контекст)."""
+        if self._chat_dossier is None:
+            from app.features.chat_dossier import ChatDossier
+            self._chat_dossier = ChatDossier(context=self.context, router=self.router)
+        return self._chat_dossier.get_profile_snapshot(chat_id, user_id=user_id)
+
+    def _get_dossier_context_line(self, chat_id: str, user_id: str) -> Optional[str]:
+        """Короткая строка портрета из досье (интересы + пара наблюдений) в
+        основной ответ — чтобы бот опирался на неё не только в инициативах.
+        Темы сознательно не берём: они ситуативные, в постоянном контексте — шум."""
+        snap = self.get_dossier_snapshot(chat_id, user_id=user_id)
+        parts = []
+        interests = snap["interests"][-8:]
+        if interests:
+            parts.append("interests: " + ", ".join(interests))
+        # Наблюдения не атрибутированы по пользователям — в группе это
+        # смешанный портрет, поэтому даём их только в личном чате
+        if str(chat_id) == str(user_id):
+            notes = snap["personality_notes"][-2:]
+            if notes:
+                parts.append("style: " + "; ".join(notes))
+        if not parts:
+            return None
+        return "Known about the user (chat analysis): " + "; ".join(parts)
+
     def get_stm_last_display(self, n: int, chat_id: str) -> list:
         return self.memory.stm.get_last_display(n, chat_id)
 
@@ -1714,6 +2888,10 @@ class BotInstance:
     def forget_fact(self, query: str, user_id: str) -> Optional[str]:
         """Точечное забывание факта из LTM. Возвращает текст удалённого или None."""
         return self.memory.ltm.forget(query, user_id)
+
+    def update_fact(self, old_query: str, new_text: str, user_id: str) -> Optional[str]:
+        """Замена факта новым текстом (правка из веб-UI). Возвращает старый текст или None."""
+        return self.memory.ltm.update_fact(old_query, new_text, user_id)
 
     def get_relations_text(self, user_id: str, chat_id: str = None) -> str:
         """Социальный граф: связи пользователя и (в группе) других участников."""
@@ -1862,11 +3040,26 @@ class BotInstance:
             sender=sender,
             context=self.context,
             self_memory=self.self_memory,
+            living=self.living,
+            intellect=self.intellect,
         )
-        # Создаем досье на чат
+        # Создаем досье на чат (общий экземпляр с rhythm — один файл на бота)
         from app.features.chat_dossier import ChatDossier
-        self.proactive.dossier = ChatDossier(context=self.context)
+        if self._chat_dossier is None:
+            self._chat_dossier = ChatDossier(context=self.context, router=self.router)
+        self.proactive.dossier = self._chat_dossier
         logger.info(f"  [{self.persona_name}] Proactive messaging инициализирован с sender и досье")
+
+        # Живая персона: сигналы инициативы + источники чатов (§3.2)
+        if self.living is not None:
+            self.living.on_initiative_signal = self.proactive.state_initiative_signal
+            self.living.get_known_chats = self._activity_tracker.get_known_chats
+            self.living.get_last_message_time = self._get_last_message_time
+            self.living.get_last_initiative_time = (
+                lambda chat_id: self.proactive._last_initiative_time.get(str(chat_id), 0))
+            # дешёвые гейты перед LLM-скорингом инициативы (§3.4)
+            self.living.pre_initiative_gate = self.proactive.initiative_cheaply_possible
+            logger.info(f"  [{self.persona_name}] Living persona связана с proactive")
 
     def setup_learning(self, sender: MessageSender):
         """Передаёт sender, роутеры и memory в learning_manager. Вызывается после инициализации Telegram Bot."""
@@ -1877,6 +3070,37 @@ class BotInstance:
         self.learning_manager.set_memory(self.memory)
         logger.info(f"  [{self.persona_name}] Learning manager инициализирован с sender, роутерами и memory")
 
+    def setup_rhythm(self, sender: MessageSender):
+        """Создает RhythmManager с готовым sender (утренние приветствия /
+        ночные «пора спать» / погодные предупреждения). Вызывается после
+        инициализации Telegram Bot / веб-inbox; no-op при выключенной фиче."""
+        rhythm_config = self.features.get("rhythm", {})
+        if isinstance(rhythm_config, bool):
+            rhythm_config = {"enabled": rhythm_config}
+        if not rhythm_config.get("enabled", False):
+            return
+        from app.features.rhythm_manager import RhythmConfig, RhythmManager
+        if self._activity_tracker is None:
+            from app.features.proactive_messaging import ChatActivityTracker
+            self._activity_tracker = ChatActivityTracker(context=self.context)
+        # Досье общее с proactive (один экземпляр на бота); включённому без
+        # proactive нужен свой — отметки событий rhythm в досье чата
+        if self._chat_dossier is None:
+            from app.features.chat_dossier import ChatDossier
+            self._chat_dossier = ChatDossier(context=self.context, router=self.router)
+        self.rhythm = RhythmManager(
+            context=self.context,
+            config=RhythmConfig.from_dict(rhythm_config),
+            router=self.router,
+            persona=self.persona,
+            memory=self.memory,
+            activity_tracker=self._activity_tracker,
+            sender=sender,
+            muted_check=lambda: bool((self.features or {}).get("muted")),
+            dossier=self._chat_dossier,
+        )
+        logger.info(f"  [{self.persona_name}] Rhythm инициализирован с sender")
+
     # ── слэш-команды: создание сущности + ответ через LLM в образе персоны ──
 
     def describe_image(self, image_bytes: bytes, question: str = "") -> Optional[str]:
@@ -1885,12 +3109,12 @@ class BotInstance:
         if not self.router.supports_vision():
             return None
         prompt = (
-            "Пользователь прислал изображение. Вытащи с него весь видимый текст (OCR) "
-            "и коротко опиши, что изображено (1-2 предложения).\n"
-            "Формат ответа:\nТЕКСТ: <текст с изображения или «нет текста»>\nОПИСАНИЕ: <...>"
+            "The user sent an image. Extract all visible text from it (OCR) "
+            "and briefly describe what is shown (1-2 sentences).\n"
+            "Response format:\nTEXT: <text from the image or \"no text\">\nDESCRIPTION: <...>"
         )
         if question:
-            prompt += f"\nДополнительно ответь на вопрос пользователя об изображении: {question}"
+            prompt += f"\nAdditionally answer the user's question about the image: {question}"
         return self.router.get_response_with_image(prompt, image_bytes)
 
     def _enrich_inventory_item(self, name: str, desc: str = "", expires: Optional[str] = None) -> tuple:
@@ -1899,7 +3123,7 @@ class BotInstance:
         Возвращает (desc, expires) — незаполненные поля остаются как были."""
         if not name:
             return desc, expires
-        if not self._local_router or not self._local_router.is_available():
+        if not self._local_router or not self._local_router.is_available(task="inventory_enrich"):
             logger.info(f"[Inventory] Локальная модель недоступна — «{name}» без описания/срока")
             return desc, expires
         try:
@@ -1907,24 +3131,24 @@ class BotInstance:
             today = date.today().isoformat()
             messages = [
                 {"role": "system", "content": (
-                    f"Сегодня {today}. Для предмета придумай:\n"
-                    "1) ОПИСАНИЕ — краткое (5-15 слов), без названия и кавычек.\n"
-                    "2) СРОК — дату годности ГГГГ-ММ-ДД, ТОЛЬКО если предмет портится "
-                    "(еда, напитки, цветы и т.п.); для непортящихся предметов напиши «-».\n"
-                    "Формат ответа строго две строки:\nОПИСАНИЕ: ...\nСРОК: ..."
+                    f"Today is {today}. For the item, come up with:\n"
+                    "1) DESCRIPTION — brief (5-15 words), without the name and without quotes.\n"
+                    "2) EXPIRES — an expiration date YYYY-MM-DD, ONLY if the item can spoil "
+                    "(food, drinks, flowers, etc.); for non-perishable items write \"-\".\n"
+                    "The answer is strictly two lines:\nDESCRIPTION: ...\nEXPIRES: ..."
                 )},
                 {"role": "user", "content": name.strip()},
             ]
-            resp = self._local_router.get_response(messages, temperature=0.3, max_tokens=80, top_p=0.9)
+            resp = self._local_router.get_response(messages, temperature=0.3, max_tokens=80, top_p=0.9, task="inventory_enrich")
             if resp:
                 for line in resp.strip().splitlines():
                     line = line.strip()
                     low = line.lower()
-                    if not desc and low.startswith("описание"):
+                    if not desc and low.startswith(("description", "описание")):
                         candidate = line.partition(":")[2].strip().strip('"\'""«»').strip()
                         if 3 <= len(candidate) <= 120:
                             desc = candidate
-                    elif not expires and low.startswith("срок"):
+                    elif not expires and low.startswith(("expires", "срок")):
                         m = re.search(r"\d{4}-\d{2}-\d{2}", line)
                         if m and m.group(0) >= today:  # прошедшую дату не принимаем
                             expires = m.group(0)
@@ -1968,7 +3192,7 @@ class BotInstance:
         if stm_relevant:
             parts = []
             for msg in stm_relevant:
-                role_ru = msg.get("user_name", "Пользователь") if msg["role"] == "user" else "Ассистент"
+                role_ru = msg.get("user_name", "User") if msg["role"] == "user" else "Assistant"
                 parts.append(f"  {role_ru}: {msg['content'][:200]}")
             stm_relevant_text = "\n".join(parts)
 
@@ -1996,11 +3220,14 @@ class BotInstance:
             return "Сейчас все LLM-провайдеры недоступны. Попробуй позже."
 
         # Защита от обрыва по max_tokens — та же логика, что в основном процессе сообщений.
+        # Для webchat догенерация отключена (см. process_message): «continue» в
+        # непрерывном чате даёт дубли реплики и мусор в ленте.
+        _webchat_answered = str(getattr(self.router, "_last_provider", "") or "").startswith("webchat")
         _continuations = 0
-        while _looks_truncated(answer) and _continuations < 2:
+        while not _webchat_answered and _looks_truncated(answer) and _continuations < 2:
             follow_up_messages = messages + [
                 {"role": "assistant", "content": answer},
-                {"role": "user", "content": "Ты остановился на середине фразы. Допиши строго с того места, где прервался — не повторяй уже написанное и не начинай заново."},
+                {"role": "user", "content": "You stopped mid-sentence. Continue strictly from where you left off — do not repeat what was already written and do not start over."},
             ]
             cont = self.router.get_response(follow_up_messages, **settings)
             if not cont:
@@ -2010,7 +3237,7 @@ class BotInstance:
 
         answer = self._clean_response(answer)
 
-        self.memory.add_message("assistant", answer, user_id, chat_id)
+        answer = self._save_assistant_reply(answer, user_id, chat_id)
         return answer
 
     def _dispatch_command(
@@ -2046,7 +3273,7 @@ class BotInstance:
                     rem_task = self._reformulate_task(rem_task)
                 topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                 self.reminder_manager.add_reminder(
-                    chat_id, user_name or "Пользователь", rem_task, 0, topic_id,
+                    chat_id, user_name or "User", rem_task, 0, topic_id,
                     schedule=rec_schedule,
                     user_id=user_id, username=get_username(user_id),
                 )
@@ -2059,22 +3286,22 @@ class BotInstance:
                     rem_task = self._reformulate_task(rem_task)
                 topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                 delay_text = self.reminder_manager.format_delay(rem_delay)
-                self.reminder_manager.add_reminder(chat_id, user_name or "Пользователь", rem_task, rem_delay, topic_id,
+                self.reminder_manager.add_reminder(chat_id, user_name or "User", rem_task, rem_delay, topic_id,
                                                    user_id=user_id, username=get_username(user_id))
                 task_display = f" «{rem_task}»" if rem_task else ""
                 note = (
-                    f"Пользователь {who} командой попросил напомнить{task_display} через {delay_text}. "
-                    "Напоминание уже запланировано — подтверди это в своём стиле, коротко. "
-                    f"Обращайся именно к {user_name}, а не к другим участникам чата."
+                    f"User {who} used a command to ask to be reminded{task_display} in {delay_text}. "
+                    "The reminder is already scheduled — confirm this in your own style, briefly. "
+                    f"Address {user_name} specifically, not other chat participants."
                 )
             else:
                 # Время не указано — переспрашиваем, запоминаем задачу
                 rem_task = self._reformulate_task(args)
                 self.reminder_manager.begin_pending_remind(chat_id, rem_task)
                 note = (
-                    f"Пользователь {who} командой попросил напомнить «{rem_task}», но не указал через сколько. "
-                    "Уточни когда ему напомнить (например, «через 2 часа», «завтра в 12») — в своём стиле, коротко. "
-                    f"Обращайся именно к {user_name}, а не к другим участникам чата."
+                    f"User {who} used a command to ask to be reminded \"{rem_task}\", but did not specify how soon. "
+                    "Ask when to remind them (for example, \"in 2 hours\", \"tomorrow at 12\") — in your own style, briefly. "
+                    f"Address {user_name} specifically, not other chat participants."
                 )
             return self.command_reply(note, "reminder", chat_id, user_id, user_name, user_input_cmd)
 
@@ -2084,10 +3311,10 @@ class BotInstance:
             if not args:
                 return "Использование: /todo <задача>"
             task = self._reformulate_task(args)
-            self.todo_manager.add_item(chat_id, user_name or "Пользователь", task)
+            self.todo_manager.add_item(chat_id, user_name or "User", task)
             note = (
-                f"Пользователь {who} командой добавил в список дел задачу «{task}». "
-                "Подтверди это в своём стиле, коротко."
+                f"User {who} used a command to add the task \"{task}\" to the todo list. "
+                "Confirm this in your own style, briefly."
             )
             return self.command_reply(note, "todo", chat_id, user_id, user_name, user_input_cmd)
 
@@ -2102,13 +3329,13 @@ class BotInstance:
             desc = parts[1].strip() if len(parts) > 1 else ""
             # Описание и срок годности (для портящегося) придумает локальная модель
             desc, expires = self._enrich_inventory_item(name, desc, None)
-            result = self.inventory_manager.add_item(name, description=desc, source=user_name or "пользователь", expires=expires)
+            result = self.inventory_manager.add_item(name, description=desc, source=user_name or "user", expires=expires)
             note = (
-                f"Пользователь {who} командой положил тебе в инвентарь предмет «{name}»"
-                + (f" (описание: {desc})" if desc else "")
-                + (f" (годен до: {expires})" if expires else "")
-                + f". Результат: {result} "
-                "Подтверди это в своём стиле, коротко."
+                f"User {who} used a command to put the item \"{name}\" into your inventory"
+                + (f" (description: {desc})" if desc else "")
+                + (f" (expires: {expires})" if expires else "")
+                + f". Result: {result} "
+                "Confirm this in your own style, briefly."
             )
             return self.command_reply(note, "inventory", chat_id, user_id, user_name, user_input_cmd)
 
@@ -2118,11 +3345,11 @@ class BotInstance:
             if not args:
                 return "Использование: /learn <тема>"
             subject = args
-            self.learning_manager.begin_setup(chat_id, subject, user_id or "default", user_name or "Пользователь")
+            self.learning_manager.begin_setup(chat_id, subject, user_id or "default", user_name or "User")
             note = (
-                f"Пользователь {who} командой попросил научить его «{subject}». "
-                "Спроси коротко и в своём стиле, как часто присылать уроки "
-                "(например: раз в день, каждые 2 часа). Обучение начнётся после его ответа."
+                f"User {who} used a command to ask you to teach them \"{subject}\". "
+                "Ask briefly and in your own style how often to send lessons "
+                "(for example: once a day, every 2 hours). The course starts after their reply."
             )
             # Ответ ниже — вопрос «как часто?»: отмечаем, чтобы telegram-слой
             # зарегистрировал его message_id и reply пользователя распознался
@@ -2136,6 +3363,15 @@ class BotInstance:
         """Записывает активность в чате. Вызывается при каждом сообщении."""
         if self._activity_tracker:
             self._activity_tracker.record_activity(chat_id)
+
+    def note_presence(self, chat_id: str):
+        """Сигнал «пользователь появился» (сообщение в TG / поллинг веб-инбокса) —
+        триггер утреннего приветствия фичи rhythm. Дёшев, не блокирует."""
+        if self.rhythm is not None:
+            try:
+                self.rhythm.note_presence(chat_id)
+            except Exception as e:
+                logger.debug(f"[{self.persona_name}] note_presence: {e}")
 
     def record_topic(self, chat_id: str, topic_id: int):
         """Записывает ID топика для чата."""

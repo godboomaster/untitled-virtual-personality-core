@@ -55,13 +55,14 @@ def classify_learning_intent(text: str) -> str:
         return "INFO"
 
     # 2. Локальная модель
-    if _local.is_available():
+    if _local.is_available(task="learning_intent"):
         verdict = _local.classify(
             system_prompt=DECISION_PROMPT,
             user_prompt=user_block,
             valid_outputs=["LEARN", "INFO"],
             temperature=0.0,
             max_tokens=10,
+            task="learning_intent",
         )
         if verdict:
             logger.info(f"[LEARN_INTENT] Q='{text[:50]}' -> {verdict} (local)")

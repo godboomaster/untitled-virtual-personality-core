@@ -4,7 +4,7 @@
     python -m app.main connor       # Только Коннор
     python -m app.main arrodes      # Только Арродес
     python -m app.main all          # Оба бота
-    python -m app.main gradio       # Gradio-интерфейс
+    python -m app.main api          # FastAPI-сервер (порт 8000)
 """
 
 import asyncio
@@ -20,12 +20,7 @@ _project_root = Path(__file__).parent.parent
 load_dotenv(_project_root / ".env")
 load_dotenv(_project_root / ".env.config")
 
-from telegram import Update
-from telegram.ext import Application
-from telegram.request import HTTPXRequest
-
 from app.bot_instance import BotInstance
-from app.telegram_bot import register_handlers
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -50,13 +45,20 @@ BOT_CHOICES = {
     "1": ("connor", "Коннор (RK800, Telegram)"),
     "2": ("arrodes", "Арродес (Зеркало, Telegram)"),
     "3": ("all", "Все боты"),
-    "4": ("gradio", "Gradio (веб-интерфейс)"),
+    "4": ("api", "API-сервер (FastAPI)"),
 }
 
 
 def run_bot(token: str, persona_name: str, context: str = "tg"):
     
     # Создаёт и запускает одного бота в своём потоке.
+    # Импорты telegram — ленивые: режим api не требует python-telegram-bot.
+    from telegram import Update
+    from telegram.ext import Application
+    from telegram.request import HTTPXRequest
+
+    from app.telegram_bot import register_handlers
+
     logger.info(f"Инициализация бота: {persona_name}")
 
     bot_instance = BotInstance(persona_name=persona_name, context=context)
@@ -171,6 +173,13 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         loop.call_soon_threadsafe(_start_proactive)
         logger.info(f"[{persona_name}] Proactive messaging запущен")
 
+    # Запускаем суточный ритм (утро/ночь/погода) если включено
+    if bot_instance.rhythm is not None:
+        def _start_rhythm():
+            bot_instance.rhythm.start(loop=loop)
+        loop.call_soon_threadsafe(_start_rhythm)
+        logger.info(f"[{persona_name}] Rhythm запущен")
+
     # Запускаем reminder loop если включено
     rm = bot_instance.reminder_manager
     if rm:
@@ -187,6 +196,13 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         loop.call_soon_threadsafe(_start_learning)
         logger.info(f"[{persona_name}] Learning manager запущен")
 
+    # Запускаем живую персону (тики состояния + события мира) если включена
+    if bot_instance.living is not None:
+        def _start_living():
+            bot_instance.living.start(loop=loop)
+        loop.call_soon_threadsafe(_start_living)
+        logger.info(f"[{persona_name}] Living persona запущена")
+
     try:
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
@@ -198,9 +214,15 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         # Останавливаем reminders
         if bot_instance.reminder_manager:
             bot_instance.reminder_manager.stop()
+        # Останавливаем суточный ритм
+        if bot_instance.rhythm is not None:
+            bot_instance.rhythm.stop()
         # Останавливаем learning
         if bot_instance.learning_manager:
             bot_instance.learning_manager.stop()
+        # Останавливаем живую персону
+        if bot_instance.living is not None:
+            bot_instance.living.stop()
         async def _stop():
             await app.updater.stop()
             await app.stop()
@@ -209,16 +231,12 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         loop.close()
 
 
-def run_gradio():
-    # Запускает Gradio-интерфейс.
-    from app.gradio_app import bot, demo
-    server_name = os.getenv("GRADIO_HOST", "127.0.0.1")
-    auth = None
-    auth_env = os.getenv("GRADIO_AUTH", "")
-    if auth_env and ":" in auth_env:
-        auth = tuple(auth_env.split(":", 1))
-    demo.launch(server_name=server_name, server_port=7860, show_error=True, auth=auth)
-    print("\n[Gradio] Интерфейс доступен по адресу: http://localhost:7860/\n")
+def run_api():
+    # Запускает FastAPI-сервер для веб-фронта и десктоп-приложения.
+    import uvicorn
+    host = os.getenv("API_HOST", "127.0.0.1")
+    port = int(os.getenv("API_PORT", "8000"))
+    uvicorn.run("app.api.server:app", host=host, port=port)
 
 
 def start_target(target: str):
@@ -226,8 +244,8 @@ def start_target(target: str):
     connor_token = os.getenv("CONNOR_BOT_TOKEN")
     arrodes_token = os.getenv("ARRODES_BOT_TOKEN")
 
-    if target == "gradio":
-        run_gradio()
+    if target == "api":
+        run_api()
         return
 
     if target == "connor":
@@ -305,14 +323,14 @@ def show_menu():
     for key, (_, label) in BOT_CHOICES.items():
         print(f"  {key}. {label}")
     print()
-    print("  Или имя напрямую: connor / arrodes / all / gradio")
+    print("  Или имя напрямую: connor / arrodes / all / api")
     print()
 
     choice = input("  >  ").strip().lower()
 
     if choice in BOT_CHOICES:
         return BOT_CHOICES[choice][0]
-    if choice in ("connor", "arrodes", "all", "gradio"):
+    if choice in ("connor", "arrodes", "all", "api"):
         return choice
 
     print(f"  Неизвестный выбор: {choice}")
@@ -325,17 +343,17 @@ def main():
     # 3. Интерактивное меню (только если есть TTY)
     if len(sys.argv) > 1:
         arg = sys.argv[1].strip().lower()
-        if arg in ("connor", "arrodes", "all", "gradio"):
+        if arg in ("connor", "arrodes", "all", "api"):
             target = arg
         elif arg in BOT_CHOICES:
             target = BOT_CHOICES[arg][0]
         else:
             print(f"Неизвестный аргумент: {arg}")
-            print("Допустимо: connor, arrodes, all, gradio")
+            print("Допустимо: connor, arrodes, all, api")
             sys.exit(1)
     elif os.getenv("BOT_TARGET"):
         target = os.getenv("BOT_TARGET").strip().lower()
-        if target not in ("connor", "arrodes", "all", "gradio"):
+        if target not in ("connor", "arrodes", "all", "api"):
             print(f"Неизвестный BOT_TARGET: {target}")
             sys.exit(1)
     elif sys.stdin.isatty():

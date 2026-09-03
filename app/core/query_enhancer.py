@@ -23,21 +23,21 @@ class QueryEnhancer:
     """
 
     _SYSTEM_PROMPT = (
-        "Ты преобразуешь вопросы пользователя в короткие поисковые запросы для DuckDuckGo.\n\n"
-        "ПРАВИЛА (в порядке важности):\n"
-        "1. СОХРАНЯЙ все слова из оригинального вопроса — НЕ заменяй их синонимами, НЕ перефразируй\n"
-        "2. Если слово непонятно — оставь его как есть, не заменяй на близкое по смыслу\n"
-        "3. Убери вопросительные слова (что, как, где, когда, почему, зачем, кто, сколько)\n"
-        "4. Убери знаки вопроса и лишнюю пунктуацию\n"
-        "5. Запрос должен быть на языке вопроса (русский -> русский, английский -> английский)\n"
-        "6. Длина: 1-7 слов\n"
-        "7. НЕ добавляй пояснений, НЕ используй кавычки, НЕ включай имя персоны в запрос\n"
-        "8. Ответь ТОЛЬКО поисковым запросом, ничего больше\n\n"
-        "ВАЖНО: Учитывай контекст персоны и историю диалога. "
-        "Если вопрос относится к персоне (ее внешность, характер, предпочтения), "
-        "преобразуй в ПОИСКОВЫЙ ЗАПРОС о том же предмете, но БЕЗ упоминания имени персоны. "
-        "Например: 'какая еда тебе нравится' -> 'вкусная еда', а не 'Коннор предпочитает'.\n"
-        "Если вопрос НЕ о персоне — просто убери вопросительные слова и оставь все остальные слова без изменений."
+        "You convert user questions into short search queries for DuckDuckGo.\n\n"
+        "RULES (in order of importance):\n"
+        "1. KEEP all words from the original question — do NOT replace them with synonyms, do NOT rephrase\n"
+        "2. If a word is unclear — leave it as is, do not replace it with a similar one\n"
+        "3. Remove question words (what, how, where, when, why, who, how many)\n"
+        "4. Remove question marks and extra punctuation\n"
+        "5. The query must be in the language of the question (Russian -> Russian, English -> English)\n"
+        "6. Length: 1-7 words\n"
+        "7. Do NOT add explanations, do NOT use quotes, do NOT include the persona's name in the query\n"
+        "8. Answer with ONLY the search query, nothing else\n\n"
+        "IMPORTANT: Take the persona context and dialogue history into account. "
+        "If the question is about the persona (their appearance, character, preferences), "
+        "convert it into a SEARCH QUERY about the same subject, but WITHOUT mentioning the persona's name. "
+        "For example: 'what food do you like' -> 'tasty food', not 'Connor prefers'.\n"
+        "If the question is NOT about the persona — just remove the question words and keep all other words unchanged."
     )
 
     _FEW_SHOT_EXAMPLES = []
@@ -65,8 +65,8 @@ class QueryEnhancer:
         # Проверяем доступность локальной модели
         logger.info(f"[QueryEnhancer] Проверка доступности: router={self.router is not None}")
         if self.router:
-            logger.info(f"[QueryEnhancer] router.is_available()={self.router.is_available()}")
-        if not self.router or not self.router.is_available():
+            logger.info(f"[QueryEnhancer] router.is_available()={self.router.is_available(task='query_rewrite')}")
+        if not self.router or not self.router.is_available(task="query_rewrite"):
             logger.warning("[QueryEnhancer] Локальная LLM недоступна, используем fallback")
             fallback = self._fallback_enhance(user_question)
             logger.info(f"[QueryEnhancer] Fallback: '{user_question}' -> '{fallback}'")
@@ -76,7 +76,7 @@ class QueryEnhancer:
         context_parts = []
 
         if persona_context:
-            context_parts.append(f"Контекст персоны:\n{persona_context}")
+            context_parts.append(f"Persona context:\n{persona_context}")
 
         if history:
             history_lines = []
@@ -86,7 +86,7 @@ class QueryEnhancer:
                 if role in ("user", "assistant"):
                     history_lines.append(f"{role}: {content}")
             if history_lines:
-                context_parts.append("История диалога:\n" + "\n".join(history_lines))
+                context_parts.append("Dialogue history:\n" + "\n".join(history_lines))
 
         # Формируем промпт с few-shot примерами и контекстом
         messages = [
@@ -97,7 +97,7 @@ class QueryEnhancer:
         user_content = ""
         if context_parts:
             user_content = "\n\n".join(context_parts) + "\n\n"
-        user_content += f"Вопрос: {user_question.strip()}\nЗапрос:"
+        user_content += f"Question: {user_question.strip()}\nQuery:"
 
         messages.append({"role": "user", "content": user_content})
 
@@ -109,6 +109,7 @@ class QueryEnhancer:
                 temperature=0.2,
                 max_tokens=50,
                 top_p=0.9,
+                task="query_rewrite",
             )
 
             if not response:

@@ -96,22 +96,22 @@ class InventoryManager:
         """Добавляет предмет в инвентарь. Возвращает результат операции."""
         name = name.strip()
         if not name:
-            return "Название предмета не может быть пустым."
+            return "Item name cannot be empty."
 
         with self._lock:
             # Проверяем дубликат
             for item in self._items:
                 if item.name.lower() == name.lower():
-                    return f"Предмет '{name}' уже есть в инвентаре."
+                    return f"Item '{name}' is already in the inventory."
 
             if len(self._items) >= self.max_slots:
-                return f"Инвентарь полон ({self.max_slots}/{self.max_slots}). Удалите что-нибудь."
+                return f"Inventory is full ({self.max_slots}/{self.max_slots}). Remove something first."
 
             item = InventoryItem(name=name, description=description, source=source, expires=expires)
             self._items.append(item)
             self._save()
 
-        return f"Предмет '{name}' добавлен в инвентарь."
+        return f"Item '{name}' added to the inventory."
 
     def remove_item(self, name: str) -> str:
         """Удаляет предмет из инвентаря."""
@@ -121,8 +121,8 @@ class InventoryManager:
                 if item.name.lower() == name:
                     removed = self._items.pop(i)
                     self._save()
-                    return f"Предмет '{removed.name}' удален из инвентаря."
-        return f"Предмет '{name}' не найден."
+                    return f"Item '{removed.name}' removed from the inventory."
+        return f"Item '{name}' not found."
 
     def get_items(self) -> List[InventoryItem]:
         """Возвращает список предметов."""
@@ -137,8 +137,8 @@ class InventoryManager:
                 if item.name.lower() == name:
                     used = self._items.pop(i)
                     self._save()
-                    return f"Предмет '{used.name}' использован и удален из инвентаря."
-        return f"Предмет '{name}' не найден в инвентаре."
+                    return f"Item '{used.name}' used and removed from the inventory."
+        return f"Item '{name}' not found in the inventory."
 
     def remove_expired_items(self) -> List[str]:
         """Удаляет просроченные предметы. Возвращает список удаленных."""
@@ -164,10 +164,10 @@ class InventoryManager:
         """Возвращает форматированный блок для system prompt."""
         if not self._items:
             return None
-        lines = ["Твой инвентарь:"]
+        lines = ["Your inventory:"]
         for item in self._items:
             desc = f" — {item.description}" if item.description else ""
-            exp = " [просрочен]" if item.is_expired() else ""
+            exp = " [expired]" if item.is_expired() else ""
             lines.append(f"  • {item.name}{desc}{exp}")
         return "\n".join(lines)
 

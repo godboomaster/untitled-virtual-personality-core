@@ -194,13 +194,14 @@ def build_extraction_prompt(user_message: str, stm_context: str = None) -> str:
 
     prompt = f"""You are a fact extractor for long-term memory of an AI assistant.
 
-TASK: Find ONLY personal facts that are EXPLICITLY present in the LAST MESSAGE from the user.
+TASK: Find ONLY personal facts that are EXPLICITLY present in the USER MESSAGES in the block below (extract from ALL of them, not just the last one).
 
 POSSIBLE CATEGORIES (use only relevant ones): {categories_hint}
 
 {context_section}STRICT RULES:
-- Extract facts ONLY from the last user message — NOT from the conversation context!
+- Extract facts ONLY from the user messages in the block — NOT from the conversation context!
 - The conversation context is ONLY for understanding pronouns and references
+- ALWAYS use the exact English category names from POSSIBLE CATEGORIES (never translate them), answer in ONE line: Category: value, Category: value — no bullets, no markdown
 - Include a category ONLY if the fact is clearly stated or strongly implied
 - !! NEVER write "none", "no", "unknown", "not mentioned" — SKIP the category entirely !!
 - !! Output ONLY categories that have real values — nothing else !!
@@ -242,7 +243,8 @@ EXAMPLES — extract facts:
 EXAMPLES — no facts:
 {neg_examples}
 
-Message: "{user_message}"
+User messages (dialogue block):
+"{user_message}"
 Answer:"""
 
     return prompt
@@ -253,26 +255,97 @@ Answer:"""
 # =============================================================================
 
 # Начало новой категории: после старта строки или запятой — "Name: ", "Hobby_music: "
-_CATEGORY_START_RE = re.compile(r'(?:^|,)\s*([A-Za-z][A-Za-z0-9_]*)\s*:\s*')
+# Кириллица включена: webchat-модели нередко отвечают «Город: …» вместо «City: …»
+_CATEGORY_START_RE = re.compile(r'(?:^|,)\s*([A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_]*)\s*:\s*')
+
+# Русские названия категорий → канонические английские (от них зависят
+# UPDATE/APPEND-семантика и приватность — «Город» без маппинга копился бы
+# вечно и не светился в публичном профиле)
+_RU_CATEGORY_MAP = {
+    "имя": "Name", "возраст": "Age", "пол": "Gender",
+    "город": "City", "страна": "Country",
+    "профессия": "Profession", "работа": "Profession", "должность": "Profession",
+    "компания": "Company", "место_работы": "Workplace", "рабочее_место": "Workplace",
+    "хобби": "Hobby",
+    "хобби_музыка": "Hobby_music", "хобби_чтение": "Hobby_reading",
+    "хобби_творчество": "Hobby_creative", "хобби_улица": "Hobby_outdoors",
+    "хобби_техника": "Hobby_tech", "хобби_игры": "Hobby_gaming",
+    "хобби_кулинария": "Hobby_cooking", "хобби_фитнес": "Hobby_fitness",
+    "навыки": "Skills",
+    "навыки_технические": "Skills_tech", "навыки_языки": "Skills_languages",
+    "навыки_творческие": "Skills_creative",
+    "еда": "Food", "музыка": "Music", "фильмы": "Movies", "кино": "Movies",
+    "книги": "Books", "игры": "Games", "спорт": "Sports",
+    "семья": "Family", "питомцы": "Pets", "питомец": "Pets", "животные": "Pets",
+    "отношения": "Relation",
+    "цели": "Goals", "цель": "Goals", "мечты": "Dreams", "мечта": "Dreams",
+    "доход": "Income", "зарплата": "Income", "расходы": "Expenses",
+    "здоровье": "Health",
+}
+
+
+def _canon_category(key: str) -> str:
+    """Каноническое имя категории: латиницу оставляем как есть, русские
+    названия переводим в английские по карте; «хобби_…»/«навыки_…» без
+    точного маппинга — в широкие Hobby/Skills."""
+    k = key.strip()
+    if not k:
+        return k
+    if k.isascii():
+        return k
+    lk = k.lower().replace(" ", "_").replace("-", "_")
+    if lk in _RU_CATEGORY_MAP:
+        return _RU_CATEGORY_MAP[lk]
+    prefix, sep, _rest = lk.partition("_")
+    if prefix == "хобби":
+        return "Hobby"
+    if prefix in ("навыки", "навык"):
+        return "Skills"
+    return k  # неизвестная русская категория — сохраняем как есть
+
+
+def split_facts_text(facts_text: str) -> list:
+    """«Cat: val, Cat2: val2» → список фактов. Резка по границам категорий,
+    а не по запятым: значение само может содержать запятые («Food: pizza,
+    pasta» — «pasta» не должна становиться отдельным бескатегорийным фактом)."""
+    text = str(facts_text or "").replace("\n", ", ")
+    matches = list(_CATEGORY_START_RE.finditer(text))
+    if not matches:
+        t = text.strip()
+        return [t] if t else []
+    out = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        piece = text[m.start():end].strip().strip(",").strip()
+        if piece:
+            out.append(piece)
+    return out
 
 
 def parse_and_filter_facts(raw: str) -> dict:
     """
     Парсит строку фактов от LLM, выбрасывает пустышки, мусор, дубли и паттерны No_*.
+    Терпим к форматам webchat-моделей: буллеты, переносы строк, markdown-bold
+    и русские названия категорий (переводятся в канонические английские).
     """
     if not raw:
         return {}
-    
-    stripped = raw.strip()
-    if stripped == PROMPT_SETTINGS["no_facts_marker"]:
+
+    # Нормализация: снимаем **bold**, буллеты/нумерацию в начале строк,
+    # переносы строк превращаем в разделитель пар ", "
+    stripped = re.sub(r"\*\*(.+?)\*\*", r"\1", raw.strip())
+    stripped = re.sub(r"(?m)^\s*(?:[-*•]|\d+[.)])\s*", "", stripped)
+    stripped = stripped.replace("\n", ", ")
+
+    if stripped.strip() == PROMPT_SETTINGS["no_facts_marker"]:
         return {}
-    
+
     facts = {}
     # Категория начинается после начала строки или запятой: "Name: Ivan, Food: pizza, pasta"
     # Значение может содержать запятые — режем только перед следующей "Категорией:".
     matches = list(_CATEGORY_START_RE.finditer(stripped))
     for i, m in enumerate(matches):
-        key = m.group(1).strip()
+        key = _canon_category(m.group(1).strip())
         end = matches[i + 1].start() if i + 1 < len(matches) else len(stripped)
         value = stripped[m.end():end].strip().rstrip(",").strip()
 

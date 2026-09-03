@@ -6,7 +6,6 @@ chromadb
 sentence-transformers
 httpx
 python-telegram-bot
-gradio
 python-docx
 pypdf
 pdfplumber
@@ -16,3 +15,7 @@ ddgs
 duckduckgo-search
 deep-translator
 markitdown
+fastapi
+uvicorn[standard]
+python-multipart
+playwright  # этап 3b computer_control: браузерные рецепты через CDP (без "playwright install" — цепляемся к Chrome пользователя)

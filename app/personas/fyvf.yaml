@@ -1,0 +1,40 @@
+id: fyvf
+name: фывф
+version: "1.0"
+description: фывфывф
+stm_size: 50
+
+features:
+  rate_limit: false
+  moderation: false
+  punish_block: false
+  web_search: false
+  file_upload: false
+  export_server: false
+  restore_memory: false
+  self_memory: false
+  todo: false
+  reminder: false
+  inventory: false
+  learning:
+    enabled: false
+    quiz_every: 3            # каждый N-й урок — тест
+    silence_threshold: 3     # молчаний подряд до вопроса «продолжать?»
+    min_interval_seconds: 600
+    max_interval_seconds: 604800   # неделя
+  trigger_words:
+    - "asd"
+  proactive:
+    enabled: false
+    check_interval_minutes: 30
+    silence_threshold_minutes: 30
+    initiative_probability: 1
+    max_daily_initiatives: 20
+
+system_prompt: |
+  asdadadasdasd
+
+settings:
+  temperature: 0.75  # Креативность: 0.0 (точно) — 1.0 (свободно)
+  max_tokens: 2000   # Максимальная длина ответа
+  top_p: 0.9        # Разнообразие токенов: обычно 0.85–0.95

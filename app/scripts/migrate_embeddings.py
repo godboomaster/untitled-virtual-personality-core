@@ -23,7 +23,7 @@ NEW_EMBEDDER = SentenceTransformerEmbeddingFunction(
 )
 
 # Все контексты (персоны)
-CONTEXTS = ["connor", "arrodes", "verso", "assistant", "gradio", "default", "tg"]
+CONTEXTS = ["connor", "arrodes", "verso", "assistant", "default", "tg"]
 
 # Поддерживаемые коллекции
 COLLECTIONS = ["short_term_memory", "long_term_memory", "file_documents", "file_full_docs"]

@@ -27,12 +27,12 @@ def extract_reply_context(update: Update, bot_id: int) -> str | None:
     if not replied_text:
         # Если это документ без текста — берём имя файла
         if replied.document:
-            replied_text = f"[Файл: {replied.document.file_name}]" if replied.document.file_name else "[Файл]"
+            replied_text = f"[File: {replied.document.file_name}]" if replied.document.file_name else "[File]"
         else:
             return None
 
     # Автор
-    author = "Неизвестный"
+    author = "Unknown"
     if replied.from_user:
         author = replied.from_user.first_name or replied.from_user.username or f"User_{replied.from_user.id}"
 

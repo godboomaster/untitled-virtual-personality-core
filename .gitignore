@@ -20,7 +20,6 @@ volumes/
 *.db
 *.sqlite
 *.sqlite3
-gradio_output_files/
 docs/
 
 # ChromaDB

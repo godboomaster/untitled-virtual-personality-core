@@ -2,7 +2,8 @@
 intent_router.py — классификатор намерений для Арродеса.
 
 Определяет, нужен ли контекст книги (RAG) для ответа, или это обычный разговор.
-Использует локальную Ollama (qwen2.5:3b). При недоступности — keyword fallback.
+Использует локальную Ollama (модель — OLLAMA_MODEL из app/core/config.py,
+дефолт gemma4:e2b). При недоступности — keyword fallback.
 
 Гибридная логика:
   1. _find_glossary_entries (из book_search) находит совпадения со словарём.
@@ -15,24 +16,22 @@ import httpx
 import logging
 from pathlib import Path
 
+from app.core.config import OLLAMA_MODEL
 from app.features.book_search import (
     _find_glossary_entries,
     _load_ru_to_en,
-    get_suffix_alias_keys,
+    get_weak_single_aliases,
 )
 
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "gemma3:4b"
 
 # Имена, которые не считаются book-сигналом (имя самого бота = обращение)
 _BOT_NAMES = {"арродес", "зеркало", "arrodes", "mirror"}
 
 # Кеш словаря ru_to_en (загружается один раз)
 _ru_to_en: dict[str, str] | None = None
-# Кеш однословных авто-алиасов (слабый book-сигнал)
-_auto_single_aliases: set | None = None
 
 
 def _get_ru_to_en() -> dict[str, str]:
@@ -48,17 +47,13 @@ def _get_ru_to_en() -> dict[str, str]:
 
 def _get_auto_single_aliases() -> set:
     """
-    Однословные авто-алиасы суффиксов («Башня», «Коттман»). Это слабый
-    book-сигнал: показываем LLM как подсказку, но не даём им одним
-    принудительно переключать chat_only -> mixed — иначе общеупотребимое
-    слово в обычном разговоре включает book-режим без причины.
+    Однословные алиасы-переводы («Башня», «Бабочка») — слабый book-сигнал:
+    показываем LLM как подсказку, но не даём им одним принудительно
+    переключать chat_only -> mixed — иначе общеупотребимое слово в обычном
+    разговоре включает book-режим без причины. Алиасы-имена («Митчелл»)
+    в это множество не попадают и остаются сильным сигналом.
     """
-    global _auto_single_aliases
-    if _auto_single_aliases is None:
-        _auto_single_aliases = {
-            k for k in get_suffix_alias_keys() if len(k.split()) == 1
-        }
-    return _auto_single_aliases
+    return get_weak_single_aliases()
 
 
 CLASSIFIER_PROMPT = """Classify the intent of the user's message.
@@ -133,6 +128,9 @@ def classify_intent(message: str, stm: list[dict]) -> str:
                     book_terms=terms_line
                 ),
                 "stream": False,
+                # reasoning-модели (gemma4) без этого съедают num_predict
+                # на thinking и возвращают пустой ответ
+                "think": False,
                 "options": {
                     "temperature": 0.0,
                     "num_predict": 5,
@@ -155,8 +153,9 @@ def classify_intent(message: str, stm: list[dict]) -> str:
         intent = "chat_only"
 
     # Жёсткое правило: словарный сигнал не даёт опуститься ниже mixed.
-    # Однословные авто-алиасы («Башня», «Бабочка») — слишком слабый сигнал
-    # для принудительного override: LLM видит их в подсказке и решает сам.
+    # Однословные алиасы-переводы («Башня», «Бабочка») — слишком слабый
+    # сигнал для принудительного override: LLM видит их в подсказке и
+    # решает сам. Алиасы-имена («Митчелл») исключений не имеют.
     strong_terms = {
         ru: en for ru, en in book_terms.items()
         if ru not in _get_auto_single_aliases()
@@ -164,6 +163,19 @@ def classify_intent(message: str, stm: list[dict]) -> str:
     if intent == "chat_only" and strong_terms:
         logger.info(f"[IntentRouter] Glossary override: chat_only -> mixed (terms: {list(strong_terms.values())})")
         return "mixed"
+
+    # Зеркальное правило: LLM сказал «книга», но словарь не нашёл ни одного
+    # book-термина, а предыдущая реплика ассистента содержала вопрос —
+    # это короткий эллиптический ответ на вопрос бота («неизвестности, арродес»),
+    # а не запрос лора. Иначе сообщение уходит в book-режим и получает
+    # несвязный «не знаю» вместо реакции на ответ.
+    if intent != "chat_only" and not book_terms and stm:
+        last_assistant = next(
+            (m for m in reversed(stm) if m.get("role") == "assistant"), None
+        )
+        if last_assistant and "?" in (last_assistant.get("content") or ""):
+            logger.info(f"[IntentRouter] Pending-question override: {intent} -> chat_only (нет book-терминов, ответ на вопрос бота)")
+            intent = "chat_only"
 
     logger.info(f"[IntentRouter] intent={intent}, book_terms={list(book_terms.values())}")
     return intent

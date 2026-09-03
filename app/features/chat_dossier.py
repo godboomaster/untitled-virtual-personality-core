@@ -24,25 +24,25 @@ from app.core.local_router import get_local_router
 logger = logging.getLogger(__name__)
 
 # Промпт для LLM-анализа досье
-_DOSSIER_ANALYSIS_PROMPT = """Проанализируй сообщения пользователя. Ответь СТРОГО в формате JSON:
+_DOSSIER_ANALYSIS_PROMPT = """Analyze the user's messages. Answer STRICTLY in JSON format:
 {{
-  "interests": ["конкретный интерес"],
-  "topics": ["конкретная тема разговора"],
-  "personality_notes": ["наблюдение о стиле/характере"],
-  "personal_facts": ["конкретный факт о человеке"]
+  "interests": ["concrete interest"],
+  "topics": ["concrete conversation topic"],
+  "personality_notes": ["observation about style/character"],
+  "personal_facts": ["concrete fact about the person"]
 }}
 
-Правила:
-- interests: хобби, технологии, профессия — только конкретные слова (python, игры, музыка). НЕ общие фразы.
-- topics: конкретные темы разговора (3-6 слов). НЕ однословные мусорные слова вроде "рублей", "теперь".
-  Минимум 2 слова в теме, кроме имён собственных. НЕ включай служебные запросы (переводы, форматирование).
-- personality_notes: только реальные наблюдения о человеке. Не более 1-2 штук.
-- personal_facts: ТОЛЬКО то, что пользователь явно сказал о себе — имя, город, профессия, возраст.
-  НЕ включай: задачи пользователя, его запросы к боту, упомянутые суммы денег, названия игр/фильмов.
-  Если нет явных фактов о человеке — пустой список [].
-- Пиши на русском языке.
+Rules:
+- interests: hobbies, technologies, profession — only concrete words (python, games, music). NO generic phrases.
+- topics: concrete conversation topics (3-6 words). NO one-word junk like "rubles", "now".
+  Minimum 2 words per topic, except proper names. Do NOT include utility requests (translations, formatting).
+- personality_notes: only real observations about the person. No more than 1-2 items.
+- personal_facts: ONLY what the user explicitly said about themselves — name, city, profession, age.
+  Do NOT include: the user's tasks, their requests to the bot, mentioned amounts of money, game/movie titles.
+  If there are no explicit facts about the person — an empty list [].
+- Write the values in the language of the user's messages.
 
-Сообщения пользователя:
+User messages:
 {messages}
 
 JSON:"""
@@ -89,6 +89,7 @@ class ChatProfile:
     facts_shared: List[str] = field(default_factory=list)  # Уже рассказанные факты (ботом)
     personality_notes: List[str] = field(default_factory=list)  # Наблюдения о пользователе
     user_facts: Dict[str, UserFacts] = field(default_factory=dict)  # user_id -> факты пользователя
+    events: List[str] = field(default_factory=list)  # События от бота (rhythm: приветствия/предупреждения)
     last_updated: float = 0.0
     message_count: int = 0
 
@@ -190,6 +191,7 @@ class ChatDossier:
         "не указ", "неизвест", "нет факт", "нет данн", "нет информ",
         "невозможно", "требуется", "запрашивает", "пользователь пытается",
         "none", "нет", "не знаю",
+        "unknown", "not specified", "not mentioned", "no facts", "n/a",
     )
 
     # Совпадение по границе слова — иначе «нет» режет «интернет», «кабинет», «монета»
@@ -198,14 +200,35 @@ class ChatDossier:
         re.IGNORECASE,
     )
 
-    def __init__(self, context: str = "default"):
+    def __init__(self, context: str = "default", router=None):
         self.context = context
         self._profiles: Dict[str, ChatProfile] = {}
         self._lock = threading.RLock()  # analyze_chat идёт из рабочих потоков конкурентно
         self._file = Path(f"data/{context}/chat_dossier.json")
         self._file.parent.mkdir(parents=True, exist_ok=True)
+        self._router = router  # основной роутер бота (побочные — fallback минус primary)
         self._local_router = get_local_router()
+        # Уже обработанные сообщения (chat_id → маркеры): analyze_chat идёт по
+        # последним 50 сообщениям каждые 5 входящих — без дедупликации старые
+        # сообщения экстрактились заново на каждом цикле (спам LLM-вызовами)
+        self._facts_seen: Dict[str, set] = {}
+        # Водяной знак: бэклог STM (сообщения ДО старта процесса) в экстракцию
+        # не берём вообще — факты нужны только из свежих сообщений
+        self._facts_watermark: Dict[str, float] = {}
+        self._started_at = time.time()
         self._load()
+
+    def _side_response(self, messages, **kw):
+        """Побочный вызов LLM (анализ досье): fallback-цепочка основного
+        роутера МИНУС основной провайдер (веб-чат — отдельный side-чат);
+        без основного роутера — локальная модель, как раньше."""
+        if self._router is not None:
+            return self._router.get_response(
+                messages, exclude_provider=self._router.active_provider,
+                webchat_channel="side", **kw)
+        if self._local_router and self._local_router.is_available(task="dossier"):
+            return self._local_router.get_response(messages, task="dossier", **kw)
+        return None
 
     def _load(self):
         """Загружает досье с диска."""
@@ -277,6 +300,7 @@ class ChatDossier:
                         "facts_shared": profile.facts_shared,
                         "personality_notes": profile.personality_notes,
                         "user_facts": user_facts_data,
+                        "events": profile.events,
                         "last_updated": profile.last_updated,
                         "message_count": profile.message_count,
                     }
@@ -331,7 +355,10 @@ class ChatDossier:
 
         # Группируем сообщения по user_id чтобы знать кто что написал
         # { user_id -> [content, ...] }
+        # Водяной знак экстракции фактов: старше него — не трогаем
+        watermark = self._facts_watermark.get(chat_id, self._started_at)
         by_user: Dict[str, List[str]] = {}
+        new_facts: Dict[str, List[str]] = {}  # новые сообщения для пакетной экстракции
         for msg in messages:
             if msg.get("role") == "user":
 
@@ -346,7 +373,22 @@ class ChatDossier:
                 sender_id = str(sender_id).strip() if sender_id else "unknown"
                 if len(content) > 10:
                     by_user.setdefault(sender_id, []).append(content[:500])
-                self._extract_user_facts(chat_id, sender_id, content)
+                msg_ts = float(msg.get("timestamp") or 0)
+                if (msg_ts > watermark and len(content) >= 15
+                        and not content.startswith("/")):
+                    # Дедуп: одно и то же сообщение не уходит в экстракцию дважды
+                    seen = self._facts_seen.setdefault(chat_id, set())
+                    marker = (sender_id, content[:200])
+                    if marker not in seen:
+                        seen.add(marker)
+                        if len(seen) > 500:
+                            self._facts_seen[chat_id] = set(list(seen)[-250:])
+                        new_facts.setdefault(sender_id, []).append(content)
+        self._facts_watermark[chat_id] = time.time()
+        # Пакетная экстракция фактов: ОДИН вызов на все новые сообщения
+        # отправителя за цикл (раньше — вызов на каждое сообщение)
+        for sender_id, contents in new_facts.items():
+            self._extract_user_facts(chat_id, sender_id, contents)
 
         if not by_user:
             return
@@ -365,10 +407,16 @@ class ChatDossier:
                             value=interest, user_id=sender_id, ts=time.time()
                         ))
                         existing_interests.add(interest)
-                # Вытесняем unknown когда есть реальные user_id
-                known = [i for i in profile.interests if i.user_id not in ("unknown", "")]
-                unknown_items = [i for i in profile.interests if i.user_id in ("unknown", "")]
-                profile.interests = (known + unknown_items)[:20]
+                # Вытесняем unknown когда есть реальные user_id. Свежие
+                # вытесняют старые: кап с головы ([:20]) молча отбрасывал
+                # НОВЫЕ интересы — при полном списке ничего не добавлялось
+                known = [i for i in profile.interests
+                         if i.user_id not in ("unknown", "")][-20:]
+                unknown_items = [i for i in profile.interests
+                                 if i.user_id in ("unknown", "")]
+                free = 20 - len(known)
+                profile.interests = known + (unknown_items[-free:]
+                                             if free > 0 else [])
 
                 existing_topics = {t.value for t in profile.topics}
                 for topic in llm_analysis.get("topics", []):
@@ -385,7 +433,9 @@ class ChatDossier:
                             value=topic, user_id=sender_id, ts=time.time()
                         ))
                         existing_topics.add(topic)
-                profile.topics = profile.topics[:30]
+                # Кап с хвоста: [:30] отбрасывал НОВЫЕ темы — при полном
+                # списке анализ сохранялся, но добавить в него ничего не мог
+                profile.topics = profile.topics[-30:]
 
                 for note in llm_analysis.get("personality_notes", []):
                     note = note.strip()
@@ -422,18 +472,18 @@ class ChatDossier:
         logger.info(f"[Dossier] Профиль {chat_id} обновлен: интересы={profile.interests[:5]}")
 
     def _analyze_with_llm(self, user_messages: List[str]) -> Optional[dict]:
-        """Анализирует сообщения через локальную LLM."""
-        if not self._local_router.is_available():
+        """Анализирует сообщения через LLM (fallback-цепочка без основного)."""
+        if self._router is None and not self._local_router.is_available():
             return None
 
         try:
-            messages_text = "\n---\n".join(user_messages[-10:])  # последние 10 сообщений
+            messages_text = "\n---\n".join(user_messages[-30:])  # последние 30 сообщений
 
             prompt = _DOSSIER_ANALYSIS_PROMPT.format(messages=messages_text)
 
-            response = self._local_router.get_response(
+            response = self._side_response(
                 messages=[
-                    {"role": "system", "content": "Ты аналитик. Извлекай факты из сообщений. Отвечай ТОЛЬКО JSON."},
+                    {"role": "system", "content": "You are an analyst. Extract facts from messages. Answer ONLY with JSON."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
@@ -497,14 +547,14 @@ class ChatDossier:
             if w not in existing_interest_values:
                 profile.interests.append(AttributedItem(value=w, user_id="unknown", ts=now))
                 existing_interest_values.add(w)
-        profile.interests = profile.interests[:15]
+        profile.interests = profile.interests[-15:]
 
         existing_topic_values = {t.value for t in profile.topics}
         for w in top_words:
             if w not in existing_topic_values:
                 profile.topics.append(AttributedItem(value=w, user_id="unknown", ts=now))
                 existing_topic_values.add(w)
-        profile.topics = profile.topics[:30]
+        profile.topics = profile.topics[-30:]
 
     def get_profile(self, chat_id: str) -> Optional[ChatProfile]:
         """Возвращает профиль чата."""
@@ -516,7 +566,7 @@ class ChatDossier:
         if not profile or not profile.interests:
             return ""
         interests = ", ".join(i.value for i in profile.interests[:8])
-        return f"\n\nИнтересы пользователя (упоминались в разговорах): {interests}"
+        return f"\n\nUser interests (mentioned in conversations): {interests}"
 
     def get_top_interest(self, chat_id: str) -> Optional[str]:
         """Возвращает главный интерес для поиска фактов."""
@@ -535,6 +585,20 @@ class ChatDossier:
             profile.facts_shared = profile.facts_shared[-20:]
         self._save()
 
+    def record_event(self, chat_id: str, event: str):
+        """Записывает событие от бота (напр., rhythm: отправлено утреннее
+        приветствие / погодное предупреждение) — персона видит его в контексте
+        досье и не повторяется. С меткой времени, последние 20."""
+        profile = self._profiles.get(chat_id)
+        if not profile:
+            profile = ChatProfile(chat_id=chat_id)
+            self._profiles[chat_id] = profile
+        ts = datetime.now().strftime("%d.%m.%Y %H:%M")
+        profile.events.append(f"[{ts}] {event[:200]}")
+        if len(profile.events) > 20:
+            profile.events = profile.events[-20:]
+        self._save()
+
     def was_fact_shared(self, chat_id: str, fact: str) -> bool:
         """Проверялся ли похожий факт ранее."""
         profile = self._profiles.get(chat_id)
@@ -548,27 +612,28 @@ class ChatDossier:
                 return True
         return False
 
-    def _extract_user_facts(self, chat_id: str, user_id: str, content: str):
-        """Извлекает факты о пользователе из сообщения через LLM."""
-        if not self._local_router or not self._local_router.is_available():
+    def _extract_user_facts(self, chat_id: str, user_id: str, contents: List[str]):
+        """Извлекает факты о пользователе ПАКЕТОМ: один LLM-вызов на все
+        новые сообщения цикла анализа (раньше — вызов на каждое сообщение)."""
+        if self._router is None and (not self._local_router
+                                     or not self._local_router.is_available()):
+            return
+        if not contents:
             return
 
-        # Пропускаем слишком короткие сообщения и команды
-        if len(content) < 15 or content.startswith("/"):
-            return
-
+        block = "\n".join(f"Message: {c[:500]}" for c in contents[-10:])
         prompt = (
-            "Извлеки конкретные факты о пользователе: имя, город, работа, хобби, возраст, цели.\n"
-            "Только то, что явно указано в сообщении. Никаких предположений.\n"
-            "Если ничего нет — ответь одним словом: NONE\n"
-            "Формат: одна строка = один факт. Без пояснений, без 'не указано', без 'неизвестно'.\n\n"
-            f"Сообщение: {content[:500]}"
+            "Extract concrete facts about the user: name, city, job, hobbies, age, goals.\n"
+            "Only what is explicitly stated in the messages. No guesses.\n"
+            "If there is nothing — answer with one word: NONE\n"
+            "Format: one line = one fact. No explanations, no 'not specified', no 'unknown'.\n\n"
+            f"{block}"
         )
 
         try:
-            response = self._local_router.get_response(
+            response = self._side_response(
                 messages=[
-                    {"role": "system", "content": "Ты извлекаешь факты о пользователе. Только факты, ничего лишнего."},
+                    {"role": "system", "content": "You extract facts about the user. Only facts, nothing extra."},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.2,
@@ -636,12 +701,35 @@ class ChatDossier:
             profile.personality_notes = profile.personality_notes[-10:]
         self._save()
 
+    def get_profile_snapshot(self, chat_id: str, user_id: str = None) -> dict:
+        """Снимок профиля чата для веб-UI и контекста ответа: интересы, темы,
+        наблюдения. Только чтение; пустые списки если профиля ещё нет.
+        user_id — оставить только записи этого участника (в группе чужие
+        интересы/темы не подмешиваются в его персональный контекст)."""
+        with self._lock:
+            profile = self._profiles.get(chat_id)
+            if not profile:
+                return {"interests": [], "topics": [], "personality_notes": []}
+
+            def _own(item) -> bool:
+                return (user_id is None or item.user_id == user_id
+                        or item.user_id in ("unknown", ""))
+
+            # Мусорные значения («none» и т.п.) в чипсы UI и промпт не отдаём
+            junk = {"none", "unknown", "n/a", "нет", "null", "-"}
+            return {
+                "interests": [i.value for i in profile.interests
+                              if _own(i) and i.value.strip().lower() not in junk],
+                "topics": [t.value for t in profile.topics
+                           if _own(t) and t.value.strip().lower() not in junk],
+                "personality_notes": list(profile.personality_notes),
+            }
+
     def get_context_block(self, chat_id: str) -> str:
         """Возвращает полный блок контекста для промпта."""
         profile = self._profiles.get(chat_id)
         if not profile:
             return ""
-
         parts = []
         if profile.interests:
             # Группируем интересы по user_id для читаемого вывода
@@ -652,7 +740,7 @@ class ChatDossier:
             for uid, vals in by_user.items():
                 uid_short = uid[:8] if uid != "unknown" else "unknown"
                 interest_lines.append(f"{uid_short}: {', '.join(vals[:5])}")
-            parts.append("Интересы:\n  " + "\n  ".join(interest_lines))
+            parts.append("Interests:\n  " + "\n  ".join(interest_lines))
 
         if profile.topics:
             by_user_t: Dict[str, List[str]] = {}
@@ -662,12 +750,12 @@ class ChatDossier:
             for uid, vals in by_user_t.items():
                 uid_short = uid[:8] if uid != "unknown" else "unknown"
                 topic_lines.append(f"{uid_short}: {', '.join(vals[:5])}")
-            parts.append("Темы:\n  " + "\n  ".join(topic_lines))
+            parts.append("Topics:\n  " + "\n  ".join(topic_lines))
 
         if profile.personality_notes:
-            parts.append(f"Наблюдения: {'; '.join(profile.personality_notes[-3:])}")
+            parts.append(f"Observations: {'; '.join(profile.personality_notes[-3:])}")
         if profile.facts_shared:
-            parts.append(f"Уже рассказано фактов: {len(profile.facts_shared)}")
+            parts.append(f"Facts already shared: {len(profile.facts_shared)}")
 
         # Факты по пользователям
         if profile.user_facts:
@@ -677,10 +765,14 @@ class ChatDossier:
                     uid_short = uid[:8] if uid != "unknown" else "unknown"
                     user_parts.append(f"  {uid_short}: {', '.join(uf.facts[:5])}")
             if user_parts:
-                parts.append("Факты о пользователях:")
+                parts.append("Facts about users:")
                 parts.extend(user_parts)
+
+        # События от бота (rhythm: приветствия, «пора спать», погода)
+        if profile.events:
+            parts.append(f"Recent bot-initiated events: {'; '.join(profile.events[-3:])}")
 
         if not parts:
             return ""
 
-        return "\n\n[ДОСЬЕ ЧАТА]\n" + "\n".join(parts)
+        return "\n\n[CHAT DOSSIER]\n" + "\n".join(parts)

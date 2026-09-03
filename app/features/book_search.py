@@ -10,13 +10,17 @@
   - n_results=12 по умолчанию
 """
 
+import os
 import re
+import time
 import logging
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
 import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+
+from app.core.config import OLLAMA_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +35,24 @@ def _tokenize(text: str) -> List[str]:
 
 
 # Ключи авто-сгенерированных суффиксных алиасов (см. _expand_suffix_aliases).
-# IntentRouter использует их, чтобы общеупотребимые однословные алиасы
-# («Башня», «Бабочка») не переключали обычный разговор в book-режим.
 _SUFFIX_ALIAS_KEYS: set = set()
+
+# Однословные авто-алиасы, являющиеся ПЕРЕВОДАМИ общеупотребимых слов
+# («Башня» = Tower, «Бабочка» из Jodeson), а не транслитерацией имён
+# («Митчелл» = Mitchell). IntentRouter не даёт им одним принудительно
+# переключать обычный разговор в book-режим; алиасы-имена — полноправный
+# сильный сигнал.
+_WEAK_SINGLE_ALIASES: set = set()
 
 
 def get_suffix_alias_keys() -> set:
     """Множество ключей-алиасов, добавленных автоматически (не из глоссария)."""
     return _SUFFIX_ALIAS_KEYS
+
+
+def get_weak_single_aliases() -> set:
+    """Однословные алиасы-переводы — слабый book-сигнал для IntentRouter."""
+    return _WEAK_SINGLE_ALIASES
 
 
 def _load_ru_to_en(glossary_path: str) -> Dict[str, str]:
@@ -95,6 +109,11 @@ def _load_ru_to_en(glossary_path: str) -> Dict[str, str]:
         aliases.setdefault(k, v)
     mapping.update(aliases)
     _SUFFIX_ALIAS_KEYS.update(aliases)
+    # Слабые — только однословные алиасы-переводы («Башня» = Tower);
+    # транслитерации имён («Митчелл» = Mitchell) остаются сильными.
+    for k, v in aliases.items():
+        if len(k.split()) == 1 and not _translit_matches_en(k, v):
+            _WEAK_SINGLE_ALIASES.add(k)
     if aliases:
         logger.info(
             f"[BookSearch] Auto aliases added: {len(aliases)} "
@@ -152,22 +171,39 @@ def _expand_suffix_aliases(ru_to_en: Dict[str, str]) -> Dict[str, str]:
       - захват имени: однословный суффикс, чей стем совпадает со стемом
         первого слова другого имени («Розелля» из «выставки Розелля» имеет
         стем «Розел», как и «Розель» из «Розель Гюстав») — отбрасывается,
-        иначе алиас перехватывает обычное имя персонажа.
+        иначе алиас перехватывает обычное имя персонажа;
+      - затмение записи: однословный суффикс, чей стем совпадает со стемом
+        существующей однословной записи («Бэклунда» из «Великий смог
+        Бэклунда» против записи «Бэклунд») — отбрасывается: оба компилируются
+        в один regex (стем + падежный суффикс), а алиас длиннее и потому
+        перехватывал бы подстановку самой записи («университет Бэклунда»
+        превращался в «университет Great Smog of Backlund»).
     """
     def stem_of(word: str) -> str:
         # Стем по тем же правилам, что в _build_patterns
         return word[:max(4, len(word) - 2)].lower()
 
+    # Стемы однословных записей глоссария — для проверки затмения.
+    entry_stems = {
+        _ru_name_stem(k).lower()
+        for k in ru_to_en if len(k.split()) == 1
+    }
+
     # suffix -> множество нормализованных полных ключей
     suffix_map: Dict[str, set] = {}
-    # стемы первых слов имён — ими пользователи называют персонажей
+    # стемы первых слов имён — ими пользователи называют персонажей.
+    # Короткие слова («МИ» из «МИ 9») стема не дают: их «стем» — само
+    # слово — префиксится к чужим («ми» ⊂ «митче» из «Митчелл») и ложно
+    # отбрасывает алиасы-фамилии как перехват имени.
     first_stems: set = set()
     for key in ru_to_en:
         nk = _normalize_glossary_key(key)
         words = nk.split()
         if len(words) < 2:
             continue
-        first_stems.add(stem_of(words[0]))
+        fs = stem_of(words[0])
+        if len(fs) >= 4:
+            first_stems.add(fs)
         for start in range(1, len(words)):
             suffix = " ".join(words[start:])
             suffix_map.setdefault(suffix, set()).add(nk)
@@ -202,6 +238,10 @@ def _expand_suffix_aliases(ru_to_en: Dict[str, str]) -> Dict[str, str]:
             continue
         if hijacks_first_name(suffix):
             continue
+        # Затмение однословной записи одностеммным однословным суффиксом
+        if len(suffix.split()) == 1 \
+                and _ru_name_stem(suffix).lower() in entry_stems:
+            continue
         ens = {norm_en.get(k, k) for k in keys}
         # Совместимость: все en-формы образуют цепочку по вложенности
         low = sorted({e.lower() for e in ens}, key=len)
@@ -222,6 +262,25 @@ _RU_LAT_TABLE = str.maketrans({
 
 def _translit_ru(word: str) -> str:
     return word.lower().translate(_RU_LAT_TABLE)
+
+
+def _translit_matches_en(ru_word: str, en_form: str) -> bool:
+    """
+    True, если RU-слово — транслитерация одного из слов EN-формы
+    («Митчелл» → mitchell ≈ Mitchell). Переводные названия
+    («Башня» → bashnya ≠ Tower) дают False — это общеупотребимые слова.
+    Порог 0.65 тот же, что в _expand_first_name_aliases.
+    """
+    from difflib import SequenceMatcher
+
+    t = _translit_ru(ru_word)
+    for ew in en_form.split():
+        ew_c = ew.strip(".,'\"()")
+        if len(ew_c) < 3 or not ew_c[0].isupper():
+            continue
+        if SequenceMatcher(None, t, ew_c.lower()).ratio() >= 0.65:
+            return True
+    return False
 
 
 def _expand_first_name_aliases(ru_to_en: Dict[str, str]) -> Dict[str, str]:
@@ -486,12 +545,34 @@ _RU_EN_QUERY_MAP: List[Tuple[str, str]] = [
 
 
 _ollama_available: Optional[bool] = None
+_ollama_down_since: float = 0.0
+# Повторная попытка после сбоя Ollama не раньше этого интервала. Без него
+# один таймаут (холодная загрузка модели дольше таймаута запроса) навсегда
+# отключал Ollama до рестарта бота — и перевод каждого сообщения уходил
+# в rate-limited Google Translate.
+_OLLAMA_RETRY_SECS = 120.0
+
+
+def _ollama_down() -> bool:
+    """True — Ollama помечен недоступным и кулдаун повтора ещё не вышел."""
+    return _ollama_available is False \
+        and (time.time() - _ollama_down_since) < _OLLAMA_RETRY_SECS
+
+
+def _ollama_mark(ok: bool) -> None:
+    global _ollama_available, _ollama_down_since
+    if ok:
+        _ollama_available = True
+    else:
+        _ollama_available = False
+        _ollama_down_since = time.time()
 
 # Модель Ollama для всех LLM-шагов переформулирования запроса
-# (подстановка имён, дистилляция, резолюция местоимений).
-# gemma3:4b стабильнее на классификации/переформулировании, чем qwen2.5:3b
-# (последняя флапает даже при temperature=0, давая ложные решения).
-OLLAMA_MODEL = "gemma3:4b"
+# (подстановка имён, дистилляция, резолюция местоимений) — единая на весь
+# проект, задаётся в app/core/config.py (OLLAMA_MODEL в .env / .env.config
+# или через настройки веба). Для reasoning-моделей (gemma4) каждый
+# /api/generate зовётся с "think": False — иначе thinking-токены съедают
+# num_predict и ответ пуст.
 
 # Фича-флаг для query distillation. Позволяет отключать шаг для A/B-замеров
 # (recall до/после) и для фолбэка, если дистилляция нестабильна.
@@ -509,6 +590,36 @@ RERANK_EXCERPT_CHARS: int = 1400
 # видимости cross-encoder'а. Префикс важен: в нём курируемые связки
 # («Antigonus family notebook»), которых нет в теле чанка.
 _RERANK_PREFIX_SHARE = 0.4
+
+# --- Защита системы от деградации rerank ---
+# Rerank — самый тяжёлый этап поиска (cross-encoder на GPU). Под давлением
+# памяти (своп) или при конкуренции за GPU (локальный ollama) inference
+# деградирует в десятки раз (замерено: 1с -> 44с на батч), а композитор
+# интерфейса делит тот же GPU — система подвисает на минуты. Две обороны:
+#  1) пре-проверка памяти: мало свободной — урезаем/пропускаем rerank;
+#  2) бюджет времени на predict: inference идёт слишком медленно —
+#     прерываемся и остаёмся на гибридной сортировке.
+# Пороги откалиброваны под 16 GB: swap-резиденты сами по себе не мешают
+# (с 10+ GB занятого свопа батч идёт за 1с), мешает именно нехватка available.
+MEM_PRESSURE_DEGRADE_GB = 2.5   # available < этого — урезанный rerank
+MEM_PRESSURE_SKIP_GB = 1.2      # available < этого — rerank пропускаем
+RERANK_CANDIDATES_PRESSURE = 24  # кандидатов при урезанном rerank
+RERANK_TIME_BUDGET_SEC = 20.0    # суммарный бюджет на все predict-проходы
+RERANK_CHUNK = 16                # чанк predict — точки контроля времени
+
+
+def memory_pressure_level() -> int:
+    """0 = памяти достаточно, 1 = под давлением (урезать rerank), 2 = критично (пропустить)."""
+    try:
+        import psutil
+        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        return 0
+    if avail_gb < MEM_PRESSURE_SKIP_GB:
+        return 2
+    if avail_gb < MEM_PRESSURE_DEGRADE_GB:
+        return 1
+    return 0
 
 
 def _rerank_excerpt(text: str) -> str:
@@ -582,15 +693,41 @@ def _find_glossary_entries(query: str, ru_to_en: Dict[str, str],
     return result
 
 
+def _local_llm(prompt: str, max_tokens: int) -> Optional[str]:
+    """Вызов локального движка задачи «book_search» (Ollama или веб-чат —
+    как выбрал пользователь в настройках досье) с общим троттлингом
+    недоступности. None — не ответил/недоступен."""
+    if _ollama_down():
+        return None
+    try:
+        from app.core.local_router import get_local_router
+
+        router = get_local_router()
+        if not router.is_available(task="book_search"):
+            return None
+        out = router.get_response(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=max_tokens,
+            task="book_search",
+        )
+        out = (out or "").strip()
+        _ollama_mark(bool(out))
+        return out or None
+    except Exception as e:
+        _ollama_mark(False)
+        logger.warning(f"[BookSearch] local llm failed: {e}")
+        return None
+
+
 def _translate_via_ollama(text: str) -> Optional[str]:
     """
-    Полный перевод запроса на английский через локальную Ollama.
-    Имена собственные в тексте уже подставлены regex-глоссарием — модели
-    остаётся только перевести связной текст, с чем она справляется заметно
+    Полный перевод запроса на английский через локальный движок задачи
+    «book_search». Имена собственные в тексте уже подставлены regex-глоссарием —
+    модели остаётся только перевести связной текст, с чем она справляется заметно
     лучше, чем с хирургией отдельных слов. None при ошибке/недоступности.
     """
-    global _ollama_available
-    if _ollama_available is False:
+    if _ollama_down():
         return None
     prompt = (
         "Translate the following Russian search query into English. "
@@ -599,22 +736,10 @@ def _translate_via_ollama(text: str) -> Optional[str]:
         f"Query: {text}\n"
         "Translation:"
     )
-    try:
-        import requests
-
-        resp = requests.post("http://localhost:11434/api/generate", json={
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 128},
-        }, timeout=8)
-        text_out = resp.json()["response"].strip().strip('"').strip()
-        _ollama_available = True
-        return text_out if text_out else None
-    except Exception as e:
-        _ollama_available = False
-        logger.warning(f"[BookSearch] ollama translate failed: {e}")
+    text_out = _local_llm(prompt, max_tokens=128)
+    if text_out is None:
         return None
+    return text_out.strip('"').strip() or None
 
 
 def _distill_query_via_ollama(fully_translated: str) -> Optional[str]:
@@ -624,8 +749,7 @@ def _distill_query_via_ollama(fully_translated: str) -> Optional[str]:
     Использует ту же Ollama-инстанс/флаг доступности, что и подстановка имён.
     Возвращает None при ошибке или недоступности (для фолбэка).
     """
-    global _ollama_available
-    if _ollama_available is False:
+    if _ollama_down():
         return None
     prompt = (
         "You are a search query optimizer for a vector database "
@@ -649,22 +773,7 @@ def _distill_query_via_ollama(fully_translated: str) -> Optional[str]:
         f"Question: {fully_translated}\n"
         "Query:"
     )
-    try:
-        import requests
-
-        resp = requests.post("http://localhost:11434/api/generate", json={
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 64},
-        }, timeout=5)
-        text = resp.json()["response"].strip()
-        _ollama_available = True
-        return text if text else None
-    except Exception as e:
-        _ollama_available = False
-        logger.warning(f"[BookSearch] distill_query failed: {e}")
-        return None
+    return _local_llm(prompt, max_tokens=64)
 
 
 def _split_aspects_via_ollama(translated: str) -> List[str]:
@@ -676,8 +785,7 @@ def _split_aspects_via_ollama(translated: str) -> List[str]:
     Возвращает до 3 коротких подзапросов; для одноаспектного вопроса —
     пустой список. Фолбэк как у distill: недоступность Ollama = без сплита.
     """
-    global _ollama_available
-    if _ollama_available is False:
+    if _ollama_down():
         return []
     prompt = (
         "You are a search query analyzer for a book Q&A system.\n"
@@ -697,20 +805,8 @@ def _split_aspects_via_ollama(translated: str) -> List[str]:
         "A:\nTarot Club\nTarot Club founder\n\n"
         f'Q: "{translated}"\nA:'
     )
-    try:
-        import requests
-
-        resp = requests.post("http://localhost:11434/api/generate", json={
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 96},
-        }, timeout=5)
-        text = resp.json().get("response", "").strip()
-        _ollama_available = True
-    except Exception as e:
-        _ollama_available = False
-        logger.warning(f"[BookSearch] aspect_split failed: {e}")
+    text = _local_llm(prompt, max_tokens=96)
+    if text is None:
         return []
 
     if not text or "single" in text.lower():
@@ -855,7 +951,7 @@ def _resolve_pronoun_via_router(query: str, history: List[str],
                                 router) -> Tuple[Optional[str], bool]:
     """
     Резолюция местоимений через основную LLM (router). Заметно надёжнее
-    локальной gemma3:4b, которая на этой задаче флапает и копирует сущности
+    локальной Ollama, которая на этой задаче флапает и копирует сущности
     из few-shot примеров («Как он выглядит?» → «как выглядит Тинген?»).
     Returns: (rewritten, answered) — семантика как у _resolve_pronoun_via_ollama.
     """
@@ -864,9 +960,15 @@ def _resolve_pronoun_via_router(query: str, history: List[str],
         return None, False
     prompt = _COREF_PROMPT.format(context=context, query=query)
     try:
+        # Побочный вызов: отдельный side-чат, основной провайдер пропускаем
+        # (как LTM/досье) — иначе служебные промпты резолюции попадают в
+        # диалоговый чат веб-LLM: засоряют диалог и подставляются под ожидание
+        # ответа (реформулировка coref возвращалась как ответ пользователю).
         result = router.get_response(
             [{"role": "user", "content": prompt}],
             temperature=0.0, max_tokens=128,
+            exclude_provider=getattr(router, "active_provider", None),
+            webchat_channel="side",
         ).strip()
         if not result or result.upper().startswith("UNCLEAR"):
             return None, True
@@ -882,33 +984,20 @@ def _resolve_pronoun_via_ollama(query: str,
     LLM-резолюция местоимений через локальную Ollama (фолбэк к router-варианту).
     Returns: (rewritten, answered) — см. _resolve_pronoun_via_router.
     """
-    global _ollama_available
-    if _ollama_available is False:
+    if _ollama_down():
         return None, False
     # Берём последние сообщения диалога (пользователь + ответы бота).
     context = "\n".join(history[-6:])
     if not context.strip():
         return None, False
     prompt = _COREF_PROMPT.format(context=context, query=query)
-    try:
-        import requests
-
-        resp = requests.post("http://localhost:11434/api/generate", json={
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 128},
-        }, timeout=6)
-        result = resp.json()["response"].strip()
-        _ollama_available = True
-        if not result or result.upper().startswith("UNCLEAR"):
-            # LLM ответил, но считает антецедент неоднозначным — НЕ фолбэчим.
-            return None, True
-        return result, True
-    except Exception as e:
-        _ollama_available = False
-        logger.warning(f"[BookSearch] pronoun resolution failed: {e}")
+    result = _local_llm(prompt, max_tokens=128)
+    if result is None:
         return None, False
+    if not result or result.upper().startswith("UNCLEAR"):
+        # LLM ответил, но считает антецедент неоднозначным — НЕ фолбэчим.
+        return None, True
+    return result, True
 
 
 def resolve_query_coref(query: str,
@@ -920,7 +1009,7 @@ def resolve_query_coref(query: str,
     Пайплайн:
       1. Нет местоимения / нет истории → отдаём как есть.
       2. Router (основная LLM) пробует разрешить по контексту — надёжнее всего.
-      3. Фолбэк: локальная Ollama (gemma3:4b), затем regex-эвристика
+      3. Фолбэк: локальная Ollama, затем regex-эвристика
          на последнее упомянутое имя.
          - Если LLM ответил UNCLEAR — антецедент неоднозначен, НЕ фолбэчим
            (лучше оставить местоимение, чем подставить случайное имя).
@@ -962,17 +1051,86 @@ def resolve_query_coref(query: str,
     return query
 
 
-def _google_translate(text: str) -> Optional[str]:
-    """Перевод через deep_translator (Google Translate API)."""
+# Маркеры HTML-страницы ошибок Google: при 4xx/5xx клиент без браузерного
+# User-Agent получает тело страницы как «перевод» («Error 500 (Server
+# Error)!!1…That's all we know»). Апостроф ’ из страницы Google
+# нормализуем к ', иначе маркер с ' не совпадёт.
+_TRANSLATE_ERROR_MARKERS = (
+    "that's an error", "that's all we know", "server error",
+    "<html", "<!doctype",
+)
+
+# Кулдаун Google Translate после сбоя: бесплатный эндпоинт лимитится по IP,
+# а повторы каждым сообщением только продлевают блокировку.
+_GOOGLE_DOWN_UNTIL: float = 0.0
+_GOOGLE_COOLDOWN_SECS = 600.0
+
+
+def _looks_like_translate_error(result: str) -> bool:
+    r = result.lower().replace('\u2019', "'")
+    return any(m in r for m in _TRANSLATE_ERROR_MARKERS) \
+        or bool(re.search(r'\berror\s*\d{3}', r))
+
+
+def _google_translate_gtx(text: str) -> Optional[str]:
+    """
+    Прямой запрос к translate.googleapis.com (client=gtx) с браузерным
+    User-Agent. deep_translator скрейпит мобильную страницу
+    translate.google.com/m «голым» requests — Google отвечает ей 500.
+    """
+    try:
+        import requests
+
+        resp = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "auto", "tl": "en",
+                    "dt": "t", "q": text},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            logger.debug(f"[BookSearch] gtx translate HTTP {resp.status_code}")
+            return None
+        segs = [s[0] for s in resp.json()[0] if s and s[0]]
+        out = "".join(segs).strip()
+        return out if out and out.lower() != text.lower() else None
+    except Exception as e:
+        logger.debug(f"[BookSearch] gtx translate failed: {e}")
+        return None
+
+
+def _google_translate_deep(text: str) -> Optional[str]:
+    """Перевод через deep_translator (мобильная страница Google)."""
     try:
         from deep_translator import GoogleTranslator
         translator = GoogleTranslator(source="auto", target="en")
         result = translator.translate(text)
         if result and result.lower() != text.lower():
+            if _looks_like_translate_error(result):
+                logger.warning(
+                    f"[BookSearch] Google Translate вернул страницу ошибки "
+                    f"вместо перевода: {result[:80]!r}"
+                )
+                return None
             return result
     except Exception as e:
         logger.debug(f"[BookSearch] Google Translate недоступен: {e}")
     return None
+
+
+def _google_translate(text: str) -> Optional[str]:
+    """Google-перевод: gtx-эндпоинт, при сбое deep_translator; далее кулдаун."""
+    global _GOOGLE_DOWN_UNTIL
+    if time.time() < _GOOGLE_DOWN_UNTIL:
+        return None
+    result = _google_translate_gtx(text) or _google_translate_deep(text)
+    if not result:
+        _GOOGLE_DOWN_UNTIL = time.time() + _GOOGLE_COOLDOWN_SECS
+        logger.info(f"[BookSearch] Google Translate недоступен, "
+                    f"кулдаун {_GOOGLE_COOLDOWN_SECS:.0f} с")
+        return None
+    _GOOGLE_DOWN_UNTIL = 0.0
+    return result
 
 
 def _build_pathway_map(glossary_path: str) -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[Tuple[str, int], str]]:
@@ -1661,6 +1819,18 @@ def _expand_concepts(raw_query: str, translated: str) -> Optional[str]:
     return f"{translated} {' '.join(extra)}"
 
 
+def _dir_has_collection_data(path: str) -> bool:
+    """В каталоге ChromaDB есть данные коллекций (подкаталоги сегментов).
+
+    Пустая база, случайно созданная PersistentClient при подключении, содержит
+    только chroma.sqlite3 без подкаталогов.
+    """
+    try:
+        return any(e.is_dir() for e in Path(path).iterdir())
+    except OSError:
+        return False
+
+
 class BookSearch:
     """Поиск релевантных фрагментов книги: гибрид векторный + BM25 + cross-encoder rerank."""
 
@@ -1671,7 +1841,7 @@ class BookSearch:
                  max_distance: float = 0.50,
                  alpha: float = 0.6,
                  rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
-                 n_candidates: int = 100,
+                 n_candidates: int = 40,
                  router=None):
         """
         Args:
@@ -1680,9 +1850,20 @@ class BookSearch:
                 Устарело: слияние вариантов теперь через RRF (параметр
                 оставлен для совместимости, ни на что не влияет).
             rerank_model: cross-encoder для reranking (None = выключить).
-            n_candidates: сколько кандидатов собирать перед rerank.
+            n_candidates: сколько кандидатов собирать перед rerank. 40 достаточно:
+                ниже топ-40 гибридный скор редко что-то меняет, а predict идёт
+                линейно дольше (100 кандидатов ≈ 3 мин под нагрузкой).
         """
         self._db_path = f"data/{context}/book"
+        # Книжная база — ресурс персоны, а не контекста. Веб-режим работает в
+        # api_*-контексте, где своей базы обычно нет (пустая создавалась при
+        # подключении и search падал: collection does not exist) — используем
+        # общую базу data/{persona}/book, если она есть, а своей нет.
+        if context.startswith("api_"):
+            shared = f"data/{context[len('api_'):]}/book"
+            if _dir_has_collection_data(shared) and not _dir_has_collection_data(self._db_path):
+                self._db_path = shared
+                logger.info(f"[BookSearch] Контекст {context}: используем общую базу {shared}")
         self._collection_name = collection_name
         self._model_name = model_name
         # e5-модели обучены с префиксами: документы — 'passage: ', запросы — 'query: '.
@@ -1783,6 +1964,30 @@ class BookSearch:
         except Exception as e:
             logger.warning(f"[BookSearch] Reranker load failed: {e}")
             self._rerank_model_name = None
+
+    def _predict_throttled(self, pairs: List[Tuple[str, str]],
+                           deadline: float) -> Optional[List[float]]:
+        """
+        predict по чанкам с контролем суммарного времени. Если inference
+        деградировал (своп, конкуренция за GPU с ollama), возвращает None —
+        вызывающий код остаётся на гибридной сортировке вместо минут
+        подвисшей системы. Норма для 16 пар — ~0.5с.
+        """
+        scores: List[float] = []
+        for i in range(0, len(pairs), RERANK_CHUNK):
+            scores.extend(
+                float(s) for s in self._reranker.predict(
+                    pairs[i:i + RERANK_CHUNK], batch_size=RERANK_CHUNK,
+                    show_progress_bar=False)
+            )
+            if time.time() > deadline:
+                logger.warning(
+                    f"[BookSearch] rerank: бюджет {RERANK_TIME_BUDGET_SEC:.0f}с "
+                    f"исчерпан на {min(i + RERANK_CHUNK, len(pairs))}/{len(pairs)} "
+                    f"парах — прерываем"
+                )
+                return None
+        return scores
 
     def _load_bm25(self) -> bool:
         """Загружает все чанки из ChromaDB и строит BM25 индекс."""
@@ -2067,11 +2272,16 @@ class BookSearch:
             return []
 
         self._load_reranker()
-        if self._reranker is not None:
+        # Кандидатов здесь <= 20, поэтому без урезания — только пропуск при
+        # критической нехватке памяти и общий бюджет времени (см. MEM_PRESSURE_*).
+        if self._reranker is not None and memory_pressure_level() < 2:
             pairs = [(rerank_query, _rerank_excerpt(c["text"]))
                      for c in candidates]
             try:
-                scores = self._reranker.predict(pairs, batch_size=32)
+                scores = self._predict_throttled(
+                    pairs, time.time() + RERANK_TIME_BUDGET_SEC)
+                if scores is None:
+                    raise TimeoutError("rerank time budget exceeded")
                 for c, s in zip(candidates, scores):
                     c["rerank_score"] = float(s)
                 candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
@@ -2310,6 +2520,8 @@ class BookSearch:
                 quote = self._router.get_response(
                     [{"role": "user", "content": prompt}],
                     temperature=0.0, max_tokens=400,
+                    exclude_provider=getattr(self._router, "active_provider", None),
+                    webchat_channel="side",
                 ).strip()
             except Exception as e:
                 logger.warning(f"[BookSearch] quote extraction failed: {e}")
@@ -2517,7 +2729,7 @@ class BookSearch:
         # Полный перевод через Ollama (подстановка имён из глоссария + перевод)
         fully_translated = _translate_full_query(query, self._ru_to_en, self._patterns)
 
-        # Дополнительный вариант перевода от Google Translate: Ollama (gemma3:4b)
+        # Дополнительный вариант перевода от Google Translate: Ollama
         # периодически инвертирует порядок слов («Which city created Klein»),
         # Google — заметно реже. Добавляется просто как ещё один вариант
         # в fan-out, основной перевод не заменяет. Пропускается, если Google
@@ -2686,7 +2898,7 @@ class BookSearch:
             logger.info("[BookSearch] Overview mode: no summaries, fallback to chunks")
 
         # per_query > n_candidates намеренно: Chroma HNSW — приближённый поиск,
-        # ef растёт вместе с n_results. При per_query=n_candidates=100 (ef=100)
+        # ef растёт вместе с n_results. При per_query=n_candidates (маленький ef)
         # ANN теряет настоящих близких соседей (кейс: чанк с dist=0.154 не
         # попадал в выдачу вовсе). 3x запас почти не стоит времени (мс),
         # а candidate recall заметно выше.
@@ -2843,8 +3055,27 @@ class BookSearch:
                         logger.info(f"[BookSearch] aspect rescue: +{rescued} for '{aq[:50]}'")
 
         # --- Этап 2: Rerank через cross-encoder ---
+        # Пре-проверка памяти: под давлением урезаем пул (rescue-чанки
+        # сохраняем — они несут второстепенные аспекты запроса), при критической
+        # нехватке пропускаем rerank вовсе. Иначе inference на GPU в свопе
+        # вешает всю систему на минуты (см. константы MEM_PRESSURE_*).
+        pressure = memory_pressure_level()
+        if pressure == 1 and len(candidates) > RERANK_CANDIDATES_PRESSURE:
+            kept = candidates[:RERANK_CANDIDATES_PRESSURE]
+            kept.extend(c for c in candidates[RERANK_CANDIDATES_PRESSURE:]
+                        if c.get("_rescued"))
+            logger.warning(
+                f"[BookSearch] память под давлением — rerank урезан: "
+                f"{len(candidates)} -> {len(kept)} кандидатов"
+            )
+            candidates = kept
+        elif pressure >= 2:
+            logger.warning(
+                "[BookSearch] критически мало памяти — rerank пропущен, "
+                "остаётся гибридная сортировка"
+            )
         self._load_reranker()
-        if self._reranker is not None:
+        if self._reranker is not None and pressure < 2:
             # Готовим пары (query, doc) для reranker
             # Используем полностью переведённый запрос — cross-encoder англоязычный
             rerank_query = fully_translated if fully_translated != query else query
@@ -2871,37 +3102,36 @@ class BookSearch:
             pairs = [(rerank_query, _rerank_excerpt(c["text"]))
                      for c in candidates]
             try:
-                rerank_scores = list(self._reranker.predict(pairs, batch_size=32))
-                # Дистиллят как дополнительный rerank-запрос (max по скорам):
-                # составные вопросы («какую карту..., и чем прерывается...»)
-                # cross-encoder'у трудны в полной формулировке, а сжатый
-                # запрос без разговорного шума ранжирует их заметно точнее.
-                if distilled_query and distilled_query.lower() != rerank_query.lower():
-                    import numpy as np
-                    dq_pairs = [(distilled_query, _rerank_excerpt(c["text"]))
-                                for c in candidates]
-                    dq_scores = self._reranker.predict(dq_pairs, batch_size=32)
-                    rerank_scores = np.maximum(rerank_scores, dq_scores).tolist()
-                # Алиасы: rerank берёт max по основному запросу и вариантам
-                # («Клейн» ↔ «Zhou Mingrui»), иначе правильная глава с
-                # алиасом получает отрицательный скор и тонет.
-                if alias_queries:
-                    import numpy as np
-                    for aq in alias_queries:
-                        aq_pairs = [(aq, _rerank_excerpt(c["text"]))
-                                    for c in candidates]
-                        aq_scores = self._reranker.predict(aq_pairs, batch_size=32)
-                        rerank_scores = np.maximum(rerank_scores, aq_scores).tolist()
-                # Аспекты: rerank берёт max по основному запросу и подзапросам —
-                # чанк второстепенного аспекта («трофеи») получает свой шанс
-                # даже если основная формулировка его не покрывает.
-                if aspect_queries:
-                    import numpy as np
-                    for aq in aspect_queries:
-                        aq_pairs = [(aq, _rerank_excerpt(c["text"]))
-                                    for c in candidates]
-                        aq_scores = self._reranker.predict(aq_pairs, batch_size=32)
-                        rerank_scores = np.maximum(rerank_scores, aq_scores).tolist()
+                import numpy as np
+                deadline = time.time() + RERANK_TIME_BUDGET_SEC
+                rerank_scores = self._predict_throttled(pairs, deadline)
+                if rerank_scores is None:
+                    raise TimeoutError("rerank time budget exceeded")
+                # Дополнительные rerank-запросы (max по скорам) — только если
+                # основной проход уложился в бюджет и память не под давлением:
+                #  - дистиллят: составные вопросы («какую карту..., и чем
+                #    прерывается...») cross-encoder'у трудны в полной
+                #    формулировке, сжатый запрос ранжирует их точнее;
+                #  - алиасы («Клейн» ↔ «Zhou Mingrui»): иначе глава с алиасом
+                #    получает отрицательный скор и тонет;
+                #  - аспекты: чанк второстепенного аспекта («трофеи») получает
+                #    шанс, даже если основная формулировка его не покрывает.
+                if pressure == 0:
+                    extra_queries: List[str] = []
+                    if distilled_query and distilled_query.lower() != rerank_query.lower():
+                        extra_queries.append(distilled_query)
+                    extra_queries.extend(alias_queries or [])
+                    extra_queries.extend(aspect_queries or [])
+                    for eq in extra_queries:
+                        if time.time() > deadline:
+                            logger.info("[BookSearch] rerank: бюджет исчерпан, доп. проходы пропущены")
+                            break
+                        eq_scores = self._predict_throttled(
+                            [(eq, _rerank_excerpt(c["text"])) for c in candidates],
+                            deadline)
+                        if eq_scores is None:
+                            break
+                        rerank_scores = np.maximum(rerank_scores, eq_scores).tolist()
                 for i, score in enumerate(rerank_scores):
                     candidates[i]["rerank_score"] = float(score)
                 # Сортируем по rerank_score

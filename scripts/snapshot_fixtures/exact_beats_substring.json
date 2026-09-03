@@ -1,0 +1,10 @@
+{
+ "name": "exact_beats_substring",
+ "comment": "Точное совпадение текста (100) бьёт более длинный текст с той же подстрокой (50)",
+ "goal": "скачать",
+ "expect": {"idx": 1},
+ "items": [
+  {"idx": 0, "tag": "a", "role": "", "text": "Скачать все материалы курса", "ctx": "", "aria": "", "title": "", "href": "https://x.ru/all", "w": 220.0, "h": 30.0, "x": 40.0, "vw": 1280.0, "vp": true, "ed": false},
+  {"idx": 1, "tag": "a", "role": "", "text": "Скачать", "ctx": "", "aria": "", "title": "", "href": "https://x.ru/file.pdf", "w": 90.0, "h": 30.0, "x": 300.0, "vw": 1280.0, "vp": true, "ed": false}
+ ]
+}

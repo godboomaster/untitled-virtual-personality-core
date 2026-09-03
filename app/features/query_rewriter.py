@@ -19,48 +19,51 @@ logger = logging.getLogger(__name__)
 _CONTEXT_WINDOW = 8
 
 _SYSTEM_PROMPT = """\
-Ты — модуль разрешения кореференций для поискового движка.
+You are a coreference resolution module for a search engine.
 
-ЗАДАЧА:
-Пользователь написал сообщение, которое может содержать местоимения или анафору
-(«он», «она», «эта игра», «его способности» и т.п.), ссылающиеся на сущности
-из предыдущих реплик диалога.
+TASK:
+The user wrote a message that may contain pronouns or anaphora
+("he", "she", "this game", "his abilities", etc.) referring to entities
+from previous dialogue turns.
 
-Твоя задача — переписать сообщение пользователя так, чтобы оно стало самодостаточным
-поисковым запросом: заменить все местоимения и неопределённые указания на конкретные
-имена/названия из контекста.
+Your job is to rewrite the user's message so that it becomes a self-sufficient
+search query: replace all pronouns and indefinite references with concrete
+names/titles from the context.
 
-ПРАВИЛА:
-1. Заменяй ТОЛЬКО то, что явно ссылается на конкретную сущность из истории.
-2. Не меняй слова, которые уже конкретны (имена собственные, названия, числа).
-3. Не добавляй слова, которых нет ни в вопросе, ни в истории.
-4. Если непонятно, на что ссылается местоимение — оставь вопрос как есть.
-5. Сохраняй падеж и синтаксис фразы насколько возможно.
-6. КРИТИЧНО: различай сущности из разных контекстов — «Симон из Expedition 33»
-   и другой «Симон» из другой игры — это разные сущности. Используй ту, о которой
-   шла речь непосредственно перед вопросом пользователя.
-7. ПЕРСОНА: если передан «Контекст персоны», её имя — это имя бота-ассистента.
-   Обращения «ты», «твои», «тебе» адресованы боту, а НЕ игровым персонажам.
-   Такие местоимения НЕ заменяй — они не анафора, это обращение к боту.
-   Пример: «что ты думаешь о его способностях» — «ты» оставляем, «его» заменяем.
-8. Ответь ТОЛЬКО переписанным запросом, без пояснений.
+RULES:
+1. Replace ONLY what explicitly refers to a concrete entity from the history.
+2. Do not change words that are already concrete (proper names, titles, numbers).
+3. Do not add words that appear neither in the question nor in the history.
+4. If it is unclear what a pronoun refers to — leave the question as is.
+5. Keep the grammar and syntax of the phrase as much as possible.
+6. CRITICAL: distinguish entities from different contexts — "Simon from Expedition 33"
+   and another "Simon" from a different game are different entities. Use the one
+   discussed immediately before the user's question.
+7. PERSONA: if a "Persona context" is provided, the persona's name is the
+   bot assistant's name. Address forms like "you", "your", "to you" are addressed
+   to the bot, NOT to game characters. Do NOT replace such pronouns — they are
+   not anaphora, they address the bot.
+   Example: "what do you think about his abilities" — keep "you", replace "his".
+8. CRITICAL: keep the language of the user's message — rewrite a Russian message
+   in Russian, an English message in English.
+9. Answer ONLY with the rewritten query, no explanations.
 
-ПРИМЕРЫ:
-История: [user: расскажи про Симона из Expedition 33, assistant: Симон — главный герой...]
-Вопрос: «расскажи про его особенности боя в игре»
-Ответ: «особенности боя Симона в Expedition 33»
+EXAMPLES:
+History: [user: tell me about Simon from Expedition 33, assistant: Simon is the main hero...]
+Question: "tell me about his combat features in the game"
+Answer: "Simon combat features in Expedition 33"
 
-История: [user: что за игра Elden Ring, assistant: ..., user: а кто такой Маления, assistant: Маления — босс...]
-Вопрос: «как её победить»
-Ответ: «как победить Маленью в Elden Ring»
+History: [user: what is Elden Ring, assistant: ..., user: and who is Malenia, assistant: Malenia is a boss...]
+Question: "how to beat her"
+Answer: "how to beat Malenia in Elden Ring"
 
-История: [user: посоветуй фильм, assistant: советую Inception]
-Вопрос: «о чём он»
-Ответ: «о чём фильм Inception»
+History: [user: посоветуй фильм, assistant: советую Inception]
+Question: «о чём он»
+Answer: «о чём фильм Inception»
 
-История: [user: привет]
-Вопрос: «как дела»
-Ответ: «как дела»\
+History: [user: привет]
+Question: «как дела»
+Answer: «как дела»\
 """
 
 
@@ -108,7 +111,7 @@ def rewrite_query(
         except Exception:
             pass
 
-    if not router or not router.is_available():
+    if not router or not router.is_available(task="query_rewrite"):
         logger.warning("[QueryRewriter] LLM недоступна, возвращаем оригинал")
         return user_input
 
@@ -119,13 +122,13 @@ def rewrite_query(
     # кто такой «ассистент» в истории и не путала его имя с игровыми персонажами
     context_parts = []
     if persona_context:
-        context_parts.append(f"Контекст персоны (бот в диалоге):\n{persona_context.strip()}")
-    context_parts.append(f"История диалога:\n{history_text}")
+        context_parts.append(f"Persona context (the bot in the dialogue):\n{persona_context.strip()}")
+    context_parts.append(f"Dialogue history:\n{history_text}")
 
     user_content = (
         "\n\n".join(context_parts) + "\n\n"
-        f"Вопрос пользователя: «{user_input.strip()}»\n\n"
-        f"Переписанный запрос:"
+        f"User question: \"{user_input.strip()}\"\n\n"
+        f"Rewritten query:"
     )
 
     try:
@@ -134,6 +137,7 @@ def rewrite_query(
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ],
+            task="query_rewrite",
             temperature=0.1,   # минимум случайности — нужна точность
             max_tokens=80,
             top_p=0.9,

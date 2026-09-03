@@ -21,7 +21,7 @@ class FileVectorDB:
 
         Args:
             db_path: Путь к базе данных. Если None, выбирается по context.
-            context: Контекст использования — "tg", "gradio" или "default".
+            context: Контекст использования — "tg", "api_{persona}" или "default".
             max_docs: Максимальное количество файлов на пользователя. Если None — дефолт 3.
         """
         self.max_docs = max_docs or MAX_DOCS_DEFAULT
@@ -201,6 +201,36 @@ class FileVectorDB:
             if isinstance(meta, dict) and "filename" in meta:
                 filenames.add(meta["filename"])
         return list(filenames)
+
+    def list_files_detailed(self, user_id: str) -> list[dict]:
+        """Список файлов с метаданными: имя, размер полного текста (символов), дата загрузки."""
+        docs = self.full_docs.get(where={"user_id": user_id})
+        out: dict = {}
+        for meta in (docs.get("metadatas") or []):
+            if not isinstance(meta, dict):
+                continue
+            fn = meta.get("filename")
+            if fn and fn not in out:
+                out[fn] = {
+                    "filename": fn,
+                    "size": meta.get("total_chars", 0),
+                    "timestamp": meta.get("timestamp", 0),
+                }
+        return sorted(out.values(), key=lambda d: d["timestamp"])
+
+    def remove_file(self, user_id: str, filename: str) -> bool:
+        """Удалить один файл пользователя (чанки + полный текст). False — файла не было."""
+        user_docs = self.collection.get(where={"user_id": user_id})
+        chunk_ids = [
+            eid for eid, meta in zip(user_docs["ids"], user_docs.get("metadatas", []))
+            if isinstance(meta, dict) and meta.get("filename") == filename
+        ]
+        if not chunk_ids:
+            return False
+        self.collection.delete(ids=chunk_ids)
+        self._delete_full_doc(user_id, filename)
+        logger.info(f"  [FileDB] Удалён файл {filename} для {user_id}")
+        return True
 
     def _delete_full_doc(self, user_id: str, filename: str):
         # Удаляет все части полного текста документа

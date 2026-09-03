@@ -88,13 +88,14 @@ def need_web_search(user_question: str, context_summary: str = "") -> bool:
     ]
 
     # Пробуем локальную модель сначала
-    if _local.is_available():
+    if _local.is_available(task="need_search"):
         local_answer = _local.classify(
             system_prompt=DECISION_PROMPT,
             user_prompt=context_block + user_block,
             valid_outputs=["SEARCH", "SKIP"],
             temperature=0.0,
             max_tokens=10,
+            task="need_search",
         )
         if local_answer:
             need = local_answer == "SEARCH"
