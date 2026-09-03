@@ -112,8 +112,6 @@ virtual-persona-core/
 ├── qa_eval/                     # Harness оценки качества лор-бота
 ├── data/                        # ChromaDB базы и JSON-состояние (per context)
 ├── persona_template.yaml        # Шаблон новой персоны
-├── Dockerfile
-├── docker-compose.yml
 ├── requirements.txt
 └── .env                         # API-ключи и токены
 ```
@@ -136,8 +134,7 @@ virtual-persona-core/
 ## Требования
 
 - **Python** 3.11+
-- **Docker** + Docker Compose (опционально)
-- **API-ключи** минимум для одного LLM-провайдера (см. Конфигурация)
+- **API-ключи** минимум для одного LLM-провайдера (см. Конфигурация) — либо веб-чат LLM в браузере / локальная Ollama (см. «Модели: API, веб-чаты или локально»)
 - **Токены Telegram** (если используете Telegram-ботов)
 
 ### Зависимости
@@ -180,12 +177,6 @@ source .venv/bin/activate  # Linux/Mac
 
 # 3. Установите зависимости
 pip install -r requirements.txt
-```
-
-### Установка через Docker
-
-```bash
-docker-compose up --build
 ```
 
 ---
@@ -370,77 +361,6 @@ React-фронт (`web/`) при доступном бэкенде автома�
 ```bash
 cd web && npm run dev   # http://localhost:5173
 ```
-
----
-
-## Docker
-
-### Dockerfile
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir -r requirements.txt
-
-# Предзагрузка SentenceTransformer модели в образ
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
-
-COPY . .
-
-CMD ["python", "-m", "app.main"]
-```
-
-Особенности образа:
-- Используется `python:3.11-slim` для минимального размера
-- PyTorch устанавливается в CPU-версии (`--index-url https://download.pytorch.org/whl/cpu`)
-- Модель `paraphrase-multilingual-MiniLM-L12-v2` предзагружается на этапе сборки, ускоряя старт контейнера
-
-### docker-compose.yml
-
-```yaml
-services:
-  # connor:
-  #   build: .
-  #   container_name: virtual-persona-connor
-  #   restart: unless-stopped
-  #   command: ["python", "-m", "app.main", "connor"]
-  #   env_file: .env
-  #   environment:
-  #     - BOT_TARGET=connor
-  #   volumes:
-  #     - persona_data:/app/data
-
-volumes:
-  persona_data:
-```
-
-Команды:
-
-```bash
-# Запуск Telegram-бота (раскомментируйте в docker-compose.yml)
-docker-compose up -d connor
-
-# Запуск с интерактивным меню (через docker run)
-docker run -it --rm --name vp-menu --env-file .env -v persona_data:/app/data virtual-persona
-
-# Запуск всех сервисов
-docker-compose up -d
-```
-
-**Интерактивное меню через `docker run`:**
-
-Команда `docker run -it --rm ... virtual-persona` запускает контейнер с TTY и интерактивным вводом, позволяя выбрать режим работы (Connor, Arrodes или все боты). Флаги:
-- `-i` — интерактивный режим (stdin открыт)
-- `-t` — pseudo-TTY (терминал)
-- `--rm` — удалить контейнер после остановки
-- `--env-file .env` — загрузка переменных окружения
-- `-v persona_data:/app/data` — сохранение данных между запусками
-
-Общий volume `persona_data` обеспечивает персистентность ChromaDB между перезапусками.
 
 ---
 
