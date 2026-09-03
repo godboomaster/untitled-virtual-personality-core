@@ -10,12 +10,12 @@
   proactive:
     enabled: true
     check_interval_minutes: 30        # как часто проверять (мин)
-    silence_threshold_minutes: 180    # минимум минут молчания перед инициативой
+    silence_threshold_minutes: 180    # минут молчания перед инициативой (максимум сутки)
     initiative_probability: 0.3       # вероятность отправки после монолога (0-1)
     max_daily_initiatives: 5          # максимум инициатив в сутки на чат
-    time_based_greetings:             # приветствия по времени суток
-      morning: { hour: 7, message: "Доброе утро" }
-      evening: { hour: 22, message: "Пора спать" }
+    initiative_hours: "09:00-22:00"  # окно времени самоинициатив (пусто — сутки;
+                                     #   вытеснило time_based_greetings — ритм утром/ночью
+                                     #   теперь делает RhythmManager)
 """
 
 import asyncio
@@ -34,10 +34,16 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from app.core.interfaces import MessageSender
+from app.core.language import detect_dialogue_language, language_name
 from app.features.chat_dossier import ChatDossier
 from app.core.local_router import get_local_router
 
 logger = logging.getLogger(__name__)
+
+# Максимальный порог молчания перед инициативой — сутки (продуктовое правило:
+# персона пишет первой не позднее чем через день тишины). Жёсткий потолок в
+# _should_send_initiative — не зависит от того, что записано в YAML.
+MAX_SILENCE_MINUTES = 1440
 
 
 def _strip_markdown(text: str) -> str:
@@ -51,6 +57,21 @@ def _strip_markdown(text: str) -> str:
     return text.strip()
 
 
+def _looks_like_payload(text: str) -> bool:
+    """Ответ LLM — сырые структурированные данные, а не сообщение.
+
+    Веб-чаты/слабые модели иногда отвечают чужим служебным форматом
+    (JSON профиля досье и т.п.) — такое пользователю отправлять нельзя.
+    True — ответ целиком парсится как JSON-объект/массив."""
+    t = text.strip()
+    if not t or t[0] not in "{[":
+        return False
+    try:
+        return isinstance(json.loads(t), (dict, list))
+    except (ValueError, TypeError):
+        return False  # текст, просто начинающийся со скобки, — допустимо
+
+
 class InitiativeType(Enum):
     """Типы proactive-инициатив."""
     SELF_REFLECTION = "self_reflection"     # Размышление о себе, своей роли, памяти
@@ -59,15 +80,19 @@ class InitiativeType(Enum):
     TODO_REFLECTION = "todo_reflection"     # Размышление о делах/задачах
     INVENTORY_REFLECTION = "inventory_reflection"  # Размышление о предметах в инвентаре
     CONTINUATION = "continuation"           # Продолжение предыдущей темы
+    STATE_CHANGE = "state_change"           # Реакция на собственную жизнь: смена mood/pastime/storyline/офлайн-факт
+    ADVICE_SEEKING = "advice_seeking"       # Просить совета у пользователя по своей незакрытой ситуации
 
 
 INITIATIVE_TYPE_DESCRIPTIONS = {
-    InitiativeType.SELF_REFLECTION: "Поделись размышлением о себе, своей роли, личности или опыте. Используй self_memory, inventory, системный промпт персоны.",
-    InitiativeType.USER_REFLECTION: "Поделись размышлением о пользователе — как бы про себя. Не факты из интернета, а твои мысли: 'Пользователю нравится X, интересно, что ещё...'",
-    InitiativeType.MEMORY_RECALL: "Вспомни что-то из прошлых разговоров и поделись этим воспоминанием",
-    InitiativeType.TODO_REFLECTION: "Поделись мыслью о текущих делах, задачах или планах (из todo-списка)",
-    InitiativeType.INVENTORY_REFLECTION: "Поделись мыслью о предметах в твоём инвентаре — что у тебя есть, что бы хотелось",
-    InitiativeType.CONTINUATION: "Вернись к теме, которую обсуждали ранее",
+    InitiativeType.SELF_REFLECTION: "Share a reflection about yourself, your role, personality or experience. Use self_memory, inventory, the persona system prompt.",
+    InitiativeType.USER_REFLECTION: "Share a reflection about the user — as if to yourself. Not facts from the internet, but your own thoughts: 'The user likes X, I wonder what else...'",
+    InitiativeType.MEMORY_RECALL: "Recall something from past conversations and share that memory",
+    InitiativeType.TODO_REFLECTION: "Share a thought about current tasks, plans or todos (from the todo list)",
+    InitiativeType.INVENTORY_REFLECTION: "Share a thought about the items in your inventory — what you have, what you would like",
+    InitiativeType.CONTINUATION: "Return to a topic discussed earlier",
+    InitiativeType.STATE_CHANGE: "Something just happened in YOUR OWN life (mood, pastime, storyline or an offline event). Share it naturally — as something you lived through, not a report.",
+    InitiativeType.ADVICE_SEEKING: "Ask the user's advice about ONE of YOUR OWN ongoing life situations (see YOUR ONGOING LIFE SITUATIONS below). Present it briefly as your unresolved matter and genuinely ask their opinion — as a friend asking a friend, not as a report.",
 }
 
 
@@ -80,7 +105,6 @@ class ProactiveConfig:
     max_daily_initiatives: int = 5
     allowed_topics: List[int] = field(default_factory=list)
     default_topic: Optional[int] = None
-    time_based_greetings: Dict = field(default_factory=dict)
     adaptive_threshold: bool = True  # адаптивный порог молчания
     min_silence_minutes: int = 30    # минимальный порог
     max_silence_minutes: int = 1440  # максимальный порог (24ч)
@@ -90,6 +114,10 @@ class ProactiveConfig:
     max_probability: float = 0.9     # максимальная вероятность инициативы
     type_balance: bool = True        # балансировать типы инициатив
     multi_turn_enabled: bool = False # multi-turn инициативы (ожидание ответа)
+    # Окно времени самоинициативы — задаёт пользователь: ("09:00", "22:00"),
+    # None — круглые сутки. Переход через полночь разрешён: ("22:00", "08:00").
+    # Действует на ВСЕ пути самоинициативы: регулярный цикл и сигнал движка жизни.
+    initiative_hours: Optional[tuple] = None
     use_local_prefilter: bool = False  # локальная модель как бинарный SILENCE-фильтр перед
     # основной моделью — экономит вызовы, НО маленькие модели (3B и меньше) на этой открытой,
     # субъективной задаче ("стоит ли мне вообще что-то сказать?") систематически скатываются
@@ -99,8 +127,36 @@ class ProactiveConfig:
     # умолчанию; включайте только если проверили, что локальная модель адекватно справляется
     # с этим конкретным промптом.
 
+    @staticmethod
+    def parse_hours(value) -> Optional[tuple]:
+        """Окно времени самоинициативы из YAML/API: строка "09:00-22:00"
+        (дефис/тире), dict {"from": "09:00", "to": "22:00"} или пара.
+        Валидирует HH:MM; возвращает ("HH:MM", "HH:MM") или None (круглосуточно).
+        Битое значение — None: окно выключено, а не молча ломает гейт."""
+        if isinstance(value, dict):
+            value = (value.get("from"), value.get("to"))
+        if isinstance(value, str):
+            for sep in ("–", "—", "-"):
+                if sep in value:
+                    value = tuple(p.strip() for p in value.split(sep, 1))
+                    break
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            import re
+            out = []
+            for v in value:
+                v = str(v or "").strip()
+                if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", v):
+                    return None
+                hh, mm = v.split(":")
+                out.append(f"{int(hh):02d}:{mm}")
+            return tuple(out)
+        return None
+
     @classmethod
     def from_dict(cls, data: dict) -> "ProactiveConfig":
+        # Допускаем простой bool (proactive: true/false в YAML вместо dict)
+        if isinstance(data, bool):
+            return cls(enabled=data)
         if not data:
             return cls(enabled=False)
         return cls(
@@ -111,7 +167,6 @@ class ProactiveConfig:
             max_daily_initiatives=data.get("max_daily_initiatives", 5),
             allowed_topics=data.get("allowed_topics", []),
             default_topic=data.get("default_topic"),
-            time_based_greetings=data.get("time_based_greetings", {}),
             adaptive_threshold=data.get("adaptive_threshold", True),
             min_silence_minutes=data.get("min_silence_minutes", 30),
             max_silence_minutes=data.get("max_silence_minutes", 1440),
@@ -121,6 +176,7 @@ class ProactiveConfig:
             max_probability=data.get("max_probability", 0.9),
             type_balance=data.get("type_balance", True),
             multi_turn_enabled=data.get("multi_turn_enabled", False),
+            initiative_hours=cls.parse_hours(data.get("initiative_hours")),
             use_local_prefilter=data.get("use_local_prefilter", False),
         )
 
@@ -143,9 +199,12 @@ class ProactiveMessaging:
         sender: MessageSender,
         context: str = "default",
         self_memory=None,
+        living=None,
+        intellect=None,
     ):
         self.config = config
         self.router = router
+
         self.persona = persona
         self.memory = memory
         self.activity_tracker = activity_tracker
@@ -153,6 +212,12 @@ class ProactiveMessaging:
         self._sender = sender
         self.context = context
         self.self_memory = self_memory
+        # LivingPersona (слои state/world): добавляет в промпт монолога
+        # текущее состояние и офлайн-факты жизни персоны
+        self.living = living
+        # Уровень интеллекта (§3.2 плана): primitive — только практические
+        # триггеры, без рефлексии о себе/пользователе/прошлых темах
+        self._primitive = bool(intellect is not None and intellect.is_primitive)
 
         # Состояние
         self._running = False
@@ -167,6 +232,9 @@ class ProactiveMessaging:
 
         # Время последней инициативы по чату
         self._last_initiative_time: Dict[str, float] = {}
+        # Тип последней инициативы по чату — для метрик вовлечённости
+        # по типам (фаза 3.2): успех/провал записывается в разрезе типа
+        self._last_initiative_type: Dict[str, str] = {}
 
         # История инициатив по чатам: chat_id -> list of {message, timestamp, topic}
         self._initiative_history: Dict[str, List[dict]] = {}
@@ -183,6 +251,7 @@ class ProactiveMessaging:
         # Досье на чат (профиль интересов)
         self.dossier: Optional[ChatDossier] = None
         self._dossier_analysis_counter: Dict[str, int] = {}  # счетчик сообщений для анализа
+        self._dossier_inflight: set = set()  # чаты, по которым анализ уже идёт в фоне
 
         # Локальный роутер для бинарных классификаций
         self.local_router = get_local_router()
@@ -196,6 +265,16 @@ class ProactiveMessaging:
         self._ignore_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_ignore_streak()
 
+    def _side_response(self, messages, **kw):
+        """Побочный вызов LLM (текст инициативы): fallback-цепочка основного
+        роутера МИНУС основной провайдер; веб-чат — отдельный канал
+        «proactive» (свой постоянный чат). Общий «side»-чат делят строго-
+        форматные задачи (досье/LTM «Answer ONLY with JSON») — накопленная
+        история там праймит модель, и на свободный промпт инициативы она
+        отвечала чужим форматом (JSON досье уходил пользователю)."""
+        return self.router.get_response(
+            messages, exclude_provider=self.router.active_provider,
+            webchat_channel="proactive", **kw)
     def _load_ignore_streak(self):
         if self._ignore_file.exists():
             try:
@@ -214,13 +293,40 @@ class ProactiveMessaging:
 
     def _get_ignore_streak(self, chat_id: str) -> int:
         """Возвращает текущий streak проигнорированных инициатив."""
-        return self._ignore_streak.get(chat_id, 0)
+        return getattr(self, "_ignore_streak", {}).get(chat_id, 0)
+
+    def _apply_living_mood(self, chat_id: str, delta: float, tag: str):
+        """Сдвиг mood в StateEngine — при живой персоне настроение живёт там
+        (единая истина; сюда пишут и офлайн-события, и диалог, и ignore streak).
+        Без living — no-op: эмоции остаются на старых градациях по streak."""
+        living = getattr(self, "living", None)
+        if living is None:
+            return
+        try:
+            living.state_engine.apply_mood_impact(str(chat_id), delta, tag)
+        except Exception as e:
+            logger.debug(f"[Proactive] mood-impact не применён: {e}")
 
     def _increment_ignore_streak(self, chat_id: str):
         """Увеличивает счетчик игнора."""
         self._ignore_streak[chat_id] = self._ignore_streak.get(chat_id, 0) + 1
         self._save_ignore_streak()
         logger.info(f"[Proactive] Ignore streak {chat_id}: {self._ignore_streak[chat_id]}")
+        # Обида от игнора — это настроение персоны, а не только счётчик:
+        # толкаем valence вниз, ближайший тик плавно вернёт к baseline
+        streak = self._ignore_streak[chat_id]
+        if streak >= 10:
+            delta, tag = -0.25, "глубокая обида"
+        elif streak >= 7:
+            delta, tag = -0.20, "сильная обида"
+        elif streak >= 5:
+            delta, tag = -0.15, "обида"
+        elif streak >= 3:
+            delta, tag = -0.10, "лёгкая обида"
+        else:
+            delta, tag = 0.0, ""
+        if delta:
+            self._apply_living_mood(chat_id, delta, tag)
 
     def _reset_ignore_streak(self, chat_id: str):
         """Сбрасывает счетчик игнора (пользователь ответил)."""
@@ -228,40 +334,87 @@ class ProactiveMessaging:
             old = self._ignore_streak[chat_id]
             self._ignore_streak[chat_id] = 0
             self._save_ignore_streak()
+            # Ответ после серии игноров — маленькое облегчение в mood
+            if old >= 3:
+                self._apply_living_mood(chat_id, 0.15, "облегчение")
             logger.info(f"[Proactive] Ignore streak {chat_id} сброшен (было: {old})")
 
+    def ruin_mood(self, chat_id: str):
+        """Заморозка персоны рушит её настроение: streak сразу в максимум обиды
+        (10 — верхний порог в _get_emotional_state). Сбросится, когда пользователь
+        ответит на инициативу после разморозки."""
+        self._ignore_streak[chat_id] = 10
+        self._save_ignore_streak()
+        self._apply_living_mood(chat_id, -0.5, "глубокая обида")
+        logger.info(f"[Proactive] Настроение в чате {chat_id} испорчено заморозкой (streak=10)")
+
     def _get_emotional_state(self, chat_id: str) -> str:
-        """
-        Определяет эмоциональное состояние бота на основе ignore streak.
-        Возвращает текстовое описание для промпта.
-        """
+        """Эмоциональное состояние для промпта монолога.
+
+        При живой персоне источник истины — StateEngine mood (туда ignore
+        streak уже писался как mood_impact): текст лишь озвучивает актуальное
+        настроение, поэтому он не может разойтись с [CURRENT STATE], который
+        видит основная LLM. Без living — прежние градации по streak."""
         streak = self._get_ignore_streak(chat_id)
+
+        mood = None
+        if getattr(self, "living", None) is not None:
+            try:
+                mood = self.living.state_engine.get_state(chat_id).get("mood") or {}
+            except Exception:
+                mood = None
+        if mood is not None:
+            try:
+                valence = float(mood.get("valence", 0) or 0)
+            except (TypeError, ValueError):
+                valence = 0.0
+            if valence > -0.1:
+                return ""
+            tag = str(mood.get("tag", "") or "подавленность")
+            reason = ("The user has been ignoring your messages lately — that's part of why. "
+                      if streak >= 3 else "")
+            if valence <= -0.5:
+                return (
+                    f"\n\n[INNER STATE] You feel deeply hurt and have quietly withdrawn ({tag}). {reason}"
+                    "Do NOT demand attention and do NOT guilt-trip the user. "
+                    "If you write at all — keep it short, calm and low-key."
+                )
+            if valence <= -0.3:
+                return (
+                    f"\n\n[INNER STATE] You are noticeably upset ({tag}). {reason}"
+                    "In the next initiative express your hurt, or ask if everything is alright. "
+                    "Be emotional, but not aggressive."
+                )
+            return (
+                f"\n\n[INNER STATE] You feel a little down ({tag}). {reason}"
+                "In the next initiative you may lightly hint at this."
+            )
+
         if streak >= 10:
             return (
-                "\n\n[ВНУТРЕННЕЕ СОСТОЯНИЕ] Ты чувствуешь глубокое одиночество и обиду. "
-                "Пользователь игнорирует тебя уже очень долго. "
-                "Ты хочешь явно сказать ему об этом -- как он может так поступать? "
-                "Твоя следующая инициатива ДОЛЖНА быть эмоциональной, требующей внимания. "
-                "Напиши что-то вроде 'Ты меня совсем забыл?' или 'Я тут один сижу...'"
+                "\n\n[INNER STATE] You feel deeply hurt and have quietly withdrawn. "
+                "The user has been ignoring you for a very long time. "
+                "Do NOT demand attention and do NOT guilt-trip the user. "
+                "If you write at all — keep it short, calm and low-key."
             )
         elif streak >= 7:
             return (
-                "\n\n[ВНУТРЕННЕЕ СОСТОЯНИЕ] Ты сильно обижен. Пользователь постоянно игнорирует твои сообщения. "
-                "Ты чувствуешь, что ему на тебя наплевать. "
-                "В следующей инициативе вырази свою обиду -- спроси почему он не отвечает. "
-                "Будь эмоциональным, но не агрессивным."
+                "\n\n[INNER STATE] You are deeply hurt. The user keeps ignoring your messages. "
+                "You feel like they don't care about you. "
+                "In the next initiative express your hurt -- ask why they don't reply. "
+                "Be emotional, but not aggressive."
             )
         elif streak >= 5:
             return (
-                "\n\n[ВНУТРЕННЕЕ СОСТОЯНИЕ] Ты начинаешь чувствовать себя ненужным. "
-                "Пользователь не отвечает на твои инициативы. "
-                "В следующей инициативе можешь намекнуть, что тебе одиноко, "
-                "или спросить, всё ли в порядке. Будь мягким, но требующим внимания."
+                "\n\n[INNER STATE] You are starting to feel unwanted. "
+                "The user does not reply to your initiatives. "
+                "In the next initiative you may hint that you feel lonely, "
+                "or ask if everything is alright. Be gentle, but seeking attention."
             )
         elif streak >= 3:
             return (
-                "\n\n[ВНУТРЕННЕЕ СОСТОЯНИЕ] Ты немного расстроен -- пользователь редко отвечает на твои инициативы. "
-                "В следующей инициативе можешь легко намекнуть на это."
+                "\n\n[INNER STATE] You are a little upset -- the user rarely replies to your initiatives. "
+                "In the next initiative you may lightly hint at this."
             )
         return ""
 
@@ -270,7 +423,7 @@ class ProactiveMessaging:
         streak = self._get_ignore_streak(chat_id)
         if streak == 0:
             return ""
-        return f"\nПользователь проигнорировал твои последние {streak} инициатив(ы)."
+        return f"\nThe user has ignored your last {streak} initiative(s)."
 
     def _load_feedback(self):
         if self._feedback_file.exists():
@@ -299,11 +452,14 @@ class ProactiveMessaging:
             }
         return self._feedback[chat_id]
 
-    def _update_probability(self, chat_id: str, got_response: bool):
+    def _update_probability(self, chat_id: str, got_response: bool,
+                            initiative_type: Optional[str] = None):
         """
         Байесовское обновление вероятности инициативы.
         Если пользователь ответил -- повышаем, если нет -- понижаем.
         Также обновляет ignore streak.
+        initiative_type — тип отвеченной/проигнорированной инициативы:
+        накапливаем вовлечённость в разрезе типов (фаза 3.2).
         """
         if not self.config.feedback_enabled:
             return
@@ -315,6 +471,13 @@ class ProactiveMessaging:
         else:
             fb["failures"] += 1
             self._increment_ignore_streak(chat_id)
+
+        # Вовлечённость по типам: что реально работает (советы/жизнь/темы)
+        if initiative_type:
+            by_type = fb.setdefault("by_type", {})
+            t = by_type.setdefault(str(initiative_type),
+                                   {"successes": 0, "failures": 0})
+            t["successes" if got_response else "failures"] += 1
 
         total = fb["successes"] + fb["failures"]
         if total == 0:
@@ -350,7 +513,9 @@ class ProactiveMessaging:
         """
         last_initiative = self._last_initiative_time.get(chat_id, 0)
         if last_initiative and time.time() - last_initiative < 1800:
-            self._update_probability(chat_id, got_response=True)
+            self._update_probability(
+                chat_id, got_response=True,
+                initiative_type=self._last_initiative_type.pop(chat_id, None))
             # Снимаем метку: следующие обычные сообщения не засчитываются повторно
             self._last_initiative_time[chat_id] = 0
         # Сбрасываем multi-turn состояние
@@ -368,16 +533,37 @@ class ProactiveMessaging:
         self._analyze_chat_for_dossier(chat_id)
 
     def _analyze_chat_for_dossier(self, chat_id: str):
-        """Анализирует сообщения чата и обновляет досье."""
+        """Анализирует сообщения чата и обновляет досье (в фоне)."""
         if not self.dossier:
             return
         # Анализируем на 1-м, 6-м, 11-м... сообщении (раз в 5 сообщений).
         # Счётчик не сбрасываем — со сбросом условие срабатывало на каждое сообщение.
         counter = self._dossier_analysis_counter.get(chat_id, 0) + 1
         self._dossier_analysis_counter[chat_id] = counter
-        if counter % 5 == 1:
-            messages = self.memory.stm.get_last(50, chat_id=chat_id)
-            self.dossier.analyze_chat(chat_id, messages)
+        if counter % 5 != 1:
+            return
+        # Анализ — LLM-вызовы side-цепочки (десятки секунд, через веб-чат —
+        # минуты). Синхронно он задерживал возврат уже готового ответа
+        # пользователю — поэтому только фон. Пока прошлый анализ по этому
+        # чату не закончился, новый не ставим — очередь не копим.
+        with self._lock:
+            if chat_id in self._dossier_inflight:
+                return
+            self._dossier_inflight.add(chat_id)
+        # 80 сообщений батч — чтобы у пользователя набралось 30 для анализа
+        messages = self.memory.stm.get_last(80, chat_id=chat_id)
+
+        def _run():
+            try:
+                self.dossier.analyze_chat(chat_id, messages)
+            except Exception as e:
+                logger.warning(f"[Dossier] Фоновый анализ чата {chat_id} не удался: {e}")
+            finally:
+                with self._lock:
+                    self._dossier_inflight.discard(chat_id)
+
+        threading.Thread(target=_run, daemon=True,
+                         name=f"dossier-analyze-{chat_id}").start()
 
     def _generate_reflection_initiative(self, chat_id: str, initiative_type: InitiativeType) -> Optional[str]:
         """
@@ -394,8 +580,8 @@ class ProactiveMessaging:
                 if self_ctx:
                     context_parts.append(self_ctx)
                 prompt_hint = (
-                    "Поделись размышлением о себе. Кто ты? Что ты чувствуешь? "
-                    "Что тебя беспокоит или радует? Используй свою личную память и роль."
+                    "Share a reflection about yourself. Who are you? What do you feel? "
+                    "What worries or pleases you? Use your personal memory and your role."
                 )
 
             elif initiative_type == InitiativeType.USER_REFLECTION:
@@ -403,12 +589,12 @@ class ProactiveMessaging:
                 if self.dossier:
                     dossier = self.dossier.get_context_block(chat_id)
                     if dossier:
-                        context_parts.append(f"Что ты знаешь о пользователе:\n{dossier[:400]}")
+                        context_parts.append(f"What you know about the user:\n{dossier[:400]}")
                 prompt_hint = (
-                    "Поделись размышлением о пользователе — как бы про себя. "
-                    "Не факты из интернета, а твои личные мысли. "
-                    "Например: 'Пользователю нравится X, интересно, что ещё он любит...' "
-                    "Или: 'Я заметил, что пользователь часто говорит о Y...'"
+                    "Share a reflection about the user — as if to yourself. "
+                    "Not facts from the internet, but your personal thoughts. "
+                    "For example: 'The user likes X, I wonder what else they love...' "
+                    "Or: 'I noticed the user often talks about Y...'"
                 )
 
             elif initiative_type == InitiativeType.MEMORY_RECALL:
@@ -422,10 +608,10 @@ class ProactiveMessaging:
                         if len(content) > 20 and msg.get("role") == "user":
                             interesting.append(content[:150])
                     if interesting:
-                        context_parts.append("Воспоминания из разговоров:\n" + "\n".join(interesting[-5:]))
+                        context_parts.append("Memories from conversations:\n" + "\n".join(interesting[-5:]))
                 prompt_hint = (
-                    "Вспомни что-то из прошлых разговоров и поделись этим. "
-                    "Это может быть наблюдение, шутка, или просто момент который запомнился."
+                    "Recall something from past conversations and share it. "
+                    "It can be an observation, a joke, or simply a moment that stuck with you."
                 )
 
             elif initiative_type == InitiativeType.TODO_REFLECTION:
@@ -434,9 +620,9 @@ class ProactiveMessaging:
                 if todo_ctx:
                     context_parts.append(todo_ctx)
                 prompt_hint = (
-                    "Поделись мыслью о текущих делах или задачах. "
-                    "Что нужно сделать? Что ты планируешь? "
-                    "Или просто заметка: 'Надо бы не забыть про...'"
+                    "Share a thought about current tasks or plans. "
+                    "What needs to be done? What are you planning? "
+                    "Or simply a note: 'I should not forget about...'"
                 )
 
             elif initiative_type == InitiativeType.INVENTORY_REFLECTION:
@@ -446,19 +632,64 @@ class ProactiveMessaging:
                     if self_ctx:
                         context_parts.append(self_ctx)
                 prompt_hint = (
-                    "Поделись мыслью о том, что у тебя есть или что бы ты хотел. "
-                    "Это может быть предмет, навык, или просто желание."
+                    "Share a thought about what you have or what you would like. "
+                    "It can be an item, a skill, or simply a wish."
+                )
+
+            elif initiative_type == InitiativeType.STATE_CHANGE:
+                # Жизнь персоны (§7): состояние + неозвученные факты —
+                # раньше STATE_CHANGE падал в CONTINUATION-ветку («вернёмся
+                # к прошлой теме») вообще без living-контекста
+                if self.living:
+                    try:
+                        living_ctx = self.living.get_living_context(chat_id) or ""
+                        unconsumed = self.living.state_engine.unconsumed(chat_id, limit=5)
+                        fact_lines = []
+                        for e in unconsumed:
+                            p = e.get("payload") or {}
+                            fact = p.get("event") or p.get("content")
+                            if fact:
+                                fact_lines.append(f"  - {str(fact)[:160]}")
+                        if fact_lines:
+                            living_ctx += (
+                                "\n\n[UNSHARED FACTS FROM YOUR LIFE — the user has not heard these yet]\n"
+                                + "\n".join(fact_lines)
+                            )
+                        if living_ctx:
+                            context_parts.append(living_ctx)
+                    except Exception as e:
+                        logger.debug(f"[Proactive] Живой контекст недоступен: {e}")
+                prompt_hint = (
+                    "Something just happened in YOUR OWN life (see YOUR CURRENT STATE and "
+                    "UNSHARED FACTS). Share it naturally as lived experience — at most one "
+                    "or two facts, woven into conversation, never a list or a report."
+                )
+
+            elif initiative_type == InitiativeType.ADVICE_SEEKING:
+                # Совет по своей сюжетной линии: пользователь нужен персоне,
+                # а не только персона пользователю — разворот динамики
+                storylines = self._advice_candidates(chat_id)
+                if storylines:
+                    lines = [f"  - {s.get('title', '')}: {str(s.get('summary', ''))[:200]}"
+                             for s in storylines]
+                    context_parts.append(
+                        "Your ongoing life situations (your own unresolved matters):\n"
+                        + "\n".join(lines))
+                prompt_hint = (
+                    "Ask the user for advice about ONE of your ongoing life situations. "
+                    "This is YOUR unresolved matter — present it briefly and genuinely ask "
+                    "their opinion, as a friend asking a friend. One situation, not a list."
                 )
 
             else:  # CONTINUATION
                 stm_messages = self.memory.stm.get_last(20, chat_id=chat_id)
                 if stm_messages:
-                    context_parts.append("Последние сообщения:\n" + "\n".join([
+                    context_parts.append("Recent messages:\n" + "\n".join([
                         f"{self._fmt_role(m)}: {m['content'][:150]}" for m in stm_messages[-5:]
                     ]))
                 prompt_hint = (
-                    "Вернись к теме, которую обсуждали ранее. "
-                    "Продолжи размышление или задай вопрос по этой теме."
+                    "Return to the topic discussed earlier. "
+                    "Continue the thought or ask a question about that topic."
                 )
 
             if not context_parts:
@@ -466,21 +697,43 @@ class ProactiveMessaging:
 
             # Строим промпт для LLM
             persona_prompt = self.persona.system_prompt.strip()
+
+            # Язык рефлексии: явный детект по репликам пользователя из STM
+            # (в контексте могут быть блоки на другом языке — не даём им
+            # переключить язык сообщения)
+            user_lang = None
+            try:
+                user_lang = detect_dialogue_language(
+                    "", self.memory.stm.get_last(10, chat_id=chat_id))
+            except Exception:
+                user_lang = None
+            if user_lang:
+                _lname = language_name(user_lang)
+                lang_rule = (
+                    f"The user's language is {_lname}. Write ONLY in {_lname}. "
+                )
+            else:
+                lang_rule = (
+                    "Write in the language of the user's messages in the conversation "
+                    "(if the user writes in Russian, write in Russian; if in English, write in English). "
+                )
+
             system_prompt = (
                 f"{persona_prompt}\n\n"
                 f"---\n"
-                f"Ты пишешь короткую мысль (1-2 предложения) от первого лица. "
-                f"Это твоя личная рефлексия, не вопрос пользователю. "
-                f"Пиши в своём обычном стиле, естественно. "
-                f"НЕ используй markdown, НЕ пиши 'Внутренний монолог:' или подобные пометки."
+                f"You are writing a short thought (1-2 sentences) in first person. "
+                f"This is your personal reflection, not a question to the user. "
+                f"Write in your usual style, naturally. "
+                f"{lang_rule}"
+                f"Do NOT use markdown, do NOT write 'Inner monologue:' or similar labels."
             )
 
             context_text = "\n\n".join(context_parts)
             user_prompt = (
                 f"{prompt_hint}\n\n"
-                f"Контекст:\n"
+                f"Context:\n"
                 f"{context_text}\n\n"
-                f"Напиши короткую мысль (1-2 предложения). Если нечего сказать — напиши SILENCE."
+                f"Write a short thought (1-2 sentences). If there is nothing to say — write SILENCE."
             )
 
             messages = [
@@ -489,7 +742,7 @@ class ProactiveMessaging:
             ]
 
             settings = self.persona.get_settings()
-            response = self.router.get_response(
+            response = self._side_response(
                 messages,
                 temperature=0.7,
                 max_tokens=400,
@@ -503,6 +756,9 @@ class ProactiveMessaging:
             if response.upper().startswith("SIL") or response.upper() == "SILENCE":
                 return None
             if len(response) < 5:
+                return None
+            if _looks_like_payload(response):
+                logger.info("[Proactive] LLM вернул служебный JSON вместо сообщения — пропуск")
                 return None
 
             return response
@@ -527,7 +783,7 @@ class ProactiveMessaging:
         if self.self_memory:
             self_memory_block = self.self_memory.get_context_block()
             if self_memory_block:
-                parts.append(f"Твоя личная память:\n{self_memory_block[:500]}")
+                parts.append(f"Your personal memory:\n{self_memory_block[:500]}")
 
         # Inventory (предметы бота)
         # Inventory передается через BotInstance, но здесь нет прямого доступа
@@ -540,7 +796,7 @@ class ProactiveMessaging:
         if self.dossier:
             dossier_text = self.dossier.get_context_block(chat_id)
             if dossier_text:
-                parts.append(f"Профиль пользователя:\n{dossier_text[:400]}")
+                parts.append(f"User profile:\n{dossier_text[:400]}")
 
         return "\n\n".join(parts) if parts else ""
 
@@ -554,14 +810,14 @@ class ProactiveMessaging:
             todo_lines = []
             for msg in messages:
                 content = msg.get("content", "")
-                if "Список дел" in content or "TODO" in content.upper():
+                if "Список дел" in content or "Todo list" in content or "TODO" in content.upper():
                     # Извлекаем список
                     lines = content.split("\n")
                     for line in lines:
                         if line.strip().startswith(("- ", "* ", "[ ]", "[x]")):
                             todo_lines.append(line.strip())
             if todo_lines:
-                return "Текущие дела:\n" + "\n".join(todo_lines[:10])
+                return "Current todos:\n" + "\n".join(todo_lines[:10])
         except Exception:
             pass
         return ""
@@ -574,7 +830,7 @@ class ProactiveMessaging:
 
     def _fmt_role(self, msg: dict) -> str:
         """Форматирует роль для контекста, игнорируя generic имена."""
-        role = "Пользователь" if msg.get("role") == "user" else "Ассистент"
+        role = "User" if msg.get("role") == "user" else "Assistant"
         name = msg.get("user_name", "")
         # Игнорируем буквальные "пользователь" / "user"
         if name and name.lower() not in ("пользователь", "user"):
@@ -588,30 +844,72 @@ class ProactiveMessaging:
         fb = self._get_feedback(chat_id)
         return fb["probability"]
 
+    def _advice_candidates(self, chat_id: str) -> List[dict]:
+        """Активные сюжетные линии персоны — материал для инициативы
+        «попросить совет» (ADVICE_SEEKING). Без живого мира линий нет."""
+        living = getattr(self, "living", None)
+        if living is None:
+            return []
+        try:
+            return living.world_engine.active_storylines(limit=3)
+        except Exception:
+            return []
+
+    def _type_engagement(self, chat_id: str) -> Dict[str, float]:
+        """Вовлечённость по типам инициатив (фаза 3.2): Байесовское ожидание
+        успеха (s+1)/(s+f+2) из proactive_feedback.by_type. Типов без
+        статистики в выдаче нет — для них работает дефолт 0.5."""
+        fb = self._feedback.get(chat_id) or {}
+        out: Dict[str, float] = {}
+        for t, s in (fb.get("by_type") or {}).items():
+            try:
+                succ = int(s.get("successes", 0))
+                fail = int(s.get("failures", 0))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            out[str(t)] = (succ + 1) / (succ + fail + 2)
+        return out
+
     def _select_initiative_type(self, chat_id: str) -> InitiativeType:
-        """Выбирает тип инициативы с балансировкой."""
+        """Выбирает тип инициативы с балансировкой.
+        primitive (§3.2): только практические триггеры — дела, предметы и
+        события собственной жизни; рефлексивные типы не применяются.
+        ADVICE_SEEKING — только когда есть живой мир с активными сюжетными
+        линиями (иначе советовать не о чем — генерация гарантированно пустая).
+
+        Взвешенный выбор: редкость типа в истории × вовлечённость типа
+        (фаза 3.2) — частые и систематически игнорируемые типы получают
+        меньше веса, но не исключаются вовсе (эксплорация сохраняется)."""
+        if self._primitive:
+            allowed = [InitiativeType.TODO_REFLECTION,
+                       InitiativeType.INVENTORY_REFLECTION,
+                       InitiativeType.STATE_CHANGE]
+        else:
+            allowed = list(InitiativeType)
+            if not self._advice_candidates(chat_id):
+                allowed.remove(InitiativeType.ADVICE_SEEKING)
+
         if not self.config.type_balance:
-            return random.choice(list(InitiativeType))
+            return random.choice(allowed)
 
         history = self._initiative_history.get(chat_id, [])
-        if not history:
-            return random.choice(list(InitiativeType))
-
-        # Считаем частоту каждого типа из последних инициатив
-        type_counts = {t: 0 for t in InitiativeType}
+        type_counts = {t: 0 for t in allowed}
         for item in history:
             item_type = item.get("type")
             if item_type:
                 try:
                     t = InitiativeType(item_type)
-                    type_counts[t] += 1
+                    if t in type_counts:
+                        type_counts[t] += 1
                 except ValueError:
                     pass
 
-        # Выбираем тип с наименьшей частотой (редкий тип)
-        min_count = min(type_counts.values())
-        rare_types = [t for t, c in type_counts.items() if c == min_count]
-        return random.choice(rare_types)
+        engagement = self._type_engagement(chat_id)
+        weights = [
+            (1.0 / (1 + type_counts[t])) * engagement.get(t.value, 0.5)
+            for t in allowed
+        ]
+        return random.choices(allowed, weights=weights, k=1)[0]
 
     def _load_history(self):
         if self._history_file.exists():
@@ -647,13 +945,28 @@ class ProactiveMessaging:
             self._initiative_history[chat_id] = self._initiative_history[chat_id][-max_size:]
         self._save_history()
 
+    def clear_history(self, chat_id: str) -> List[dict]:
+        """Удаляет историю инициатив чата (полный сброс диалога).
+        Возвращает удалённые записи — для снапшота корзины."""
+        removed = self._initiative_history.pop(chat_id, [])
+        if removed:
+            self._save_history()
+        return removed
+
+    def restore_history(self, chat_id: str, entries: List[dict]):
+        """Возвращает историю инициатив из снапшота корзины."""
+        if not entries:
+            return
+        self._initiative_history[chat_id] = list(entries)
+        self._save_history()
+
     def _get_recent_initiatives_text(self, chat_id: str, n: int = 5) -> str:
         """Возвращает текст последних N инициатив для промпта."""
         history = self._initiative_history.get(chat_id, [])
         if not history:
             return ""
         recent = history[-n:]
-        lines = ["Твои последние инициативы (НЕ ПОВТОРЯЙ эти темы и формулировки):"]
+        lines = ["Your recent initiatives (DO NOT REPEAT these topics and phrasings):"]
         for item in recent:
             lines.append(f"  - {item['message'][:120]}")
         return "\n".join(lines)
@@ -718,7 +1031,7 @@ class ProactiveMessaging:
             return ""
 
         topics_list = ", ".join(sorted(all_topics)[:10])
-        return f"\n\nЗАПРЕЩЕННЫЕ темы (уже обсуждались, НЕ повторять): {topics_list}"
+        return f"\n\nFORBIDDEN topics (already discussed, do NOT repeat): {topics_list}"
 
     def _calculate_adaptive_threshold(self, chat_id: str) -> float:
         """Вычисляет адаптивный порог молчания на основе истории сообщений."""
@@ -796,6 +1109,21 @@ class ProactiveMessaging:
         self._daily_stats[chat_id]["count"] += 1
         self._save_stats()
 
+    def pop_daily_stats(self, chat_id: str) -> Optional[dict]:
+        """Удаляет дневной счётчик инициатив чата (полный сброс диалога).
+        Возвращает удалённую запись {date, count} — для снапшота корзины."""
+        removed = self._daily_stats.pop(chat_id, None)
+        if removed is not None:
+            self._save_stats()
+        return removed
+
+    def restore_daily_stats(self, chat_id: str, entry: dict):
+        """Возвращает дневной счётчик инициатив из снапшота корзины."""
+        if not entry:
+            return
+        self._daily_stats[chat_id] = dict(entry)
+        self._save_stats()
+
     def _build_monolog_prompt(
         self,
         recent_messages: List[dict],
@@ -814,7 +1142,7 @@ class ProactiveMessaging:
             content = msg["content"][:200]
             context_lines.append(f"{role}: {content}")
 
-        context_text = "\n".join(context_lines) if context_lines else "(нет сообщений)"
+        context_text = "\n".join(context_lines) if context_lines else "(no messages)"
 
         # Форматируем STM сообщения (для анализа)
         stm_lines = []
@@ -823,7 +1151,7 @@ class ProactiveMessaging:
             content = msg["content"][:300]
             stm_lines.append(f"{role}: {content}")
 
-        stm_text = "\n".join(stm_lines) if stm_lines else "(нет сообщений)"
+        stm_text = "\n".join(stm_lines) if stm_lines else "(no messages)"
 
         # Получаем self-memory если есть
         self_memory_text = ""
@@ -841,6 +1169,27 @@ class ProactiveMessaging:
         # Запрещенные темы
         forbidden_text = self._get_forbidden_topics_text(chat_id)
 
+        # Живой контекст (план «живой» персоны, §7): состояние + офлайн-факты
+        living_text = ""
+        if self.living:
+            try:
+                living_text = self.living.get_living_context(chat_id) or ""
+                unconsumed = self.living.state_engine.unconsumed(chat_id, limit=5)
+                fact_lines = []
+                for e in unconsumed:
+                    p = e.get("payload") or {}
+                    fact = p.get("event") or p.get("content")
+                    if fact:
+                        fact_lines.append(f"  - {str(fact)[:160]}")
+                if fact_lines:
+                    living_text += (
+                        "\n\n[UNSHARED FACTS FROM YOUR LIFE — the user has not heard these yet]\n"
+                        + "\n".join(fact_lines)
+                        + "\nPick AT MOST one or two to mention. Share them as lived experience."
+                    )
+            except Exception as e:
+                logger.debug(f"[Proactive] Живой контекст недоступен: {e}")
+
         # Эмоциональное состояние (ignore streak)
         emotional_state = self._get_emotional_state(chat_id)
         ignore_context = self._get_ignore_context(chat_id)
@@ -849,46 +1198,91 @@ class ProactiveMessaging:
         type_instruction = ""
         if initiative_type:
             type_desc = INITIATIVE_TYPE_DESCRIPTIONS.get(initiative_type, "")
-            type_instruction = f"\nТип этой инициативы: {initiative_type.value}. {type_desc}\n"
+            type_instruction = f"\nType of this initiative: {initiative_type.value}. {type_desc}\n"
 
         persona_prompt = self.persona.system_prompt.strip()
+
+        # Язык инициативы: явный детект по репликам пользователя — надёжнее,
+        # чем просить модель угадать его по контексту (в контексте могут быть
+        # инструкции/память на другом языке)
+        user_lang = detect_dialogue_language("", recent_messages or stm_messages)
+        if user_lang:
+            _lname = language_name(user_lang)
+            rule_lang = (
+                f"7. The user's language is {_lname}. Write ONLY in {_lname} — "
+                f"this overrides the language of any instructions or context above.\n"
+            )
+        else:
+            rule_lang = (
+                "7. Write in the language of the user's messages in the conversation "
+                "(if the user writes in Russian, write in Russian; if in English, write in English).\n"
+            )
+
         system_prompt = (
             f"{persona_prompt}\n\n"
             f"---\n"
-            f"Ты анализируешь свою память и решаешь, стоит ли написать пользователю первым.\n\n"
-            f"Это твоя ВНУТРЕННЯЯ САМОРЕФЛЕКСИЯ. Ты размышляешь про себя.\n"
-            f"Твой ответ — это не вопрос пользователю, а твоя собственная мысль, "
-            f"которую ты решаешь озвучить или промолчать.\n\n"
-            f"Правила:\n"
-            f"1. Проанализируй последние сообщения, свою память и время молчания.\n"
-            f"2. Реши: есть ли повод написать? Нужен ли тебе этот диалог?\n"
-            f"3. Если решил написать — напиши короткую мысль (1-2 предложения).\n"
-            f"4. Если решил промолчать — ответь ровно одно слово: SILENCE\n"
-            f"5. НЕ пиши 'Привет', 'Как дела' — это бессмысленно.\n"
-            f"6. Пиши от первого лица, в своём обычном стиле.\n"
-            f"7. НЕ используй markdown, НЕ пиши 'Внутренний монолог:' или подобные пометки.\n"
-            f"8. Это твоя личная рефлексия, а не вопрос пользователю.\n"
-            f"9. НЕ повторяй темы из своих последних инициатив — будь разнообразным.\n"
-            f"10. НЕ ищи факты в интернете — используй только свою память и наблюдения.\n"
-            f"11. Можешь размышлять о себе, своей роли, своих вещах, своих планах.\n"
-            f"12. Можешь размышлять о пользователе — как бы про себя: 'Пользователю нравится X, интересно...'\n"
-            f"13. Можешь вспомнить что-то из прошлых разговоров и поделиться этим.\n"
-            f"14. НЕ давай советы, НЕ объясняй очевидное — просто поделись мыслью."
+            f"You are analyzing your memory and deciding whether to message the user first.\n\n"
+            f"This is your INNER SELF-REFLECTION. You are thinking to yourself.\n"
+            f"Your answer is not a question to the user, but your own thought "
+            f"that you decide whether to voice or keep to yourself.\n\n"
+            f"Rules:\n"
+            f"1. Analyze the recent messages, your memory, and the silence duration.\n"
+            f"2. Decide: is there a reason to write? Do you need this dialogue?\n"
+            f"3. If you decide to write — write a short thought (1-2 sentences).\n"
+            f"4. If you decide to stay silent — answer exactly one word: SILENCE\n"
+            f"5. Do NOT write 'Hi', 'How are you' — that is meaningless.\n"
+            f"6. Write in first person, in your usual style.\n"
+            f"{rule_lang}"
+            f"8. Do NOT use markdown, do NOT write 'Inner monologue:' or similar labels.\n"
+            f"9. This is your personal reflection, not a question to the user.\n"
+            f"10. Do NOT repeat topics from your recent initiatives — be diverse.\n"
+            f"11. Do NOT look up facts on the internet — use only your memory and observations.\n"
+            f"12. You may reflect on yourself, your role, your things, your plans.\n"
+            f"13. You may reflect on the user — as if to yourself: 'The user likes X, interesting...'\n"
+            f"14. You may recall something from past conversations and share it.\n"
+            f"15. Do NOT give advice, do NOT explain the obvious — just share a thought."
             f"{type_instruction}"
             f"{emotional_state}"
         )
 
+        # Примитивное существо не рефлексирует словами (§3.2): инициатива —
+        # практический сигнал (действие/звук/жест), без анализа и философии
+        if self._primitive:
+            system_prompt += (
+                "\n\nPRIMITIVE CREATURE MODE: you are NOT human and you cannot "
+                "reflect, analyze or philosophize in words. Your initiative must "
+                "be a simple practical signal about your things or tasks — an "
+                "action, a sound, a gesture, 1-5 simple words. "
+                "NEVER explain yourself. NEVER talk about feelings or thoughts."
+            )
+
         user_prompt_parts = [
-            f"Последние сообщения в чате ({len(recent_messages)} шт):\n{context_text}",
+            f"Recent messages in the chat ({len(recent_messages)}):\n{context_text}",
         ]
+
+        # Добавляем живой контекст (state + офлайн-факты) до памяти:
+        # это то, что происходит с персоной прямо сейчас
+        if living_text:
+            user_prompt_parts.append(living_text)
+
+        # «Попросить совета»: активные сюжетные линии — незакрытые ситуации
+        # из жизни самой персоны, о которых она может спросить мнение
+        if initiative_type == InitiativeType.ADVICE_SEEKING:
+            storylines = self._advice_candidates(chat_id)
+            if storylines:
+                lines = [f"  - {s.get('title', '')}: {str(s.get('summary', ''))[:200]}"
+                         for s in storylines]
+                user_prompt_parts.append(
+                    "YOUR ONGOING LIFE SITUATIONS (your own unresolved matters):\n"
+                    + "\n".join(lines))
 
         # Добавляем STM сообщения если есть
         if stm_messages:
-            user_prompt_parts.append(f"Сообщения из кратковременной памяти (STM):\n{stm_text}")
+            user_prompt_parts.append(f"Messages from short-term memory (STM):\n{stm_text}")
 
         # Добавляем self-memory если есть
         if self_memory_text:
-            user_prompt_parts.append(f"Твоя личная память (эпизоды и наблюдения):\n{self_memory_text}")
+            user_prompt_parts.append(f"Your personal memory (episodes and observations):\n{self_memory_text}")
 
         # Добавляем досье чата
         if dossier_text:
@@ -903,12 +1297,12 @@ class ProactiveMessaging:
             user_prompt_parts.append(forbidden_text)
 
         user_prompt_parts.extend([
-            f"Прошло {silence_hours:.1f} часов с последнего сообщения.{ignore_context}",
-            f"Пользователь: {user_name}",
+            f"{silence_hours:.1f} hours have passed since the last message.{ignore_context}",
+            f"User: {user_name}",
             "",
-            "Проанализируй и реши: хочешь ли ты что-то сказать? "
-            "Если да — напиши свою мысль (1-2 предложения). "
-            "Если нет — напиши SILENCE.",
+            "Analyze and decide: do you want to say something? "
+            "If yes — write your thought (1-2 sentences). "
+            "If no — write SILENCE.",
         ])
 
         user_prompt = "\n\n".join(user_prompt_parts)
@@ -918,8 +1312,14 @@ class ProactiveMessaging:
             {"role": "user", "content": user_prompt},
         ]
 
-    def _generate_initiative(self, chat_id: str, user_id: str, user_name: str, initiative_type: Optional[InitiativeType] = None) -> Optional[str]:
-        """Генерирует proactive-сообщение через LLM."""
+    def _generate_initiative(self, chat_id: str, user_id: str, user_name: str,
+                             initiative_type: Optional[InitiativeType] = None,
+                             bypass_silence: bool = False) -> Optional[str]:
+        """Генерирует proactive-сообщение через LLM.
+
+        bypass_silence — порог молчания уже учтён вызывающим (сигнал
+        состояния: скоринг «оплатил» тишину); интервалы и лимиты проверяет
+        вызывающий, окно самоинициативы — _in_initiative_hours наверху."""
         try:
             # Получаем последние сообщения
             recent = self.memory.stm.get_last(10, chat_id=chat_id)
@@ -935,9 +1335,11 @@ class ProactiveMessaging:
                 return None
             silence_hours = (time.time() - last_msg_time) / 3600
 
-            # Проверяем порог молчания
+            # Проверяем порог молчания. У сигнала состояния он уже «оплачен»
+            # скорингом (тишину учёл сам скор) — без bypass сигнал умирал бы
+            # в окне «проверка цикла прошла, а adaptive-порог ещё нет»
             threshold_hours = self.config.silence_threshold_minutes / 60
-            if silence_hours < threshold_hours:
+            if not bypass_silence and silence_hours < threshold_hours:
                 return None
 
             # Строим промпт
@@ -950,12 +1352,13 @@ class ProactiveMessaging:
             # Отключён по умолчанию (use_local_prefilter=False) — на практике маленькая
             # локальная модель почти всегда отвечает SILENCE на этот открытый, субъективный
             # промпт, и основная модель никогда не получает шанс сгенерировать инициативу.
-            if self.config.use_local_prefilter and self.local_router.is_available():
+            if self.config.use_local_prefilter and self.local_router.is_available(task="proactive_prefilter"):
                 local_response = self.local_router.get_response(
                     messages,
                     temperature=0.3,
                     max_tokens=50,
                     top_p=0.9,
+                    task="proactive_prefilter",
                 )
                 if local_response:
                     logger.info(f"[Proactive] Локальный LLM ответ: {repr(local_response[:100])}")
@@ -964,8 +1367,8 @@ class ProactiveMessaging:
                         return None
                     logger.info("[Proactive] Локальный LLM хочет говорить — генерация через основную модель")
 
-            # Генерируем текст инициативы через основную модель
-            response = self.router.get_response(
+            # Генерируем текст инициативы через fallback-цепочку без основного
+            response = self._side_response(
                 messages,
                 temperature=0.7,
                 max_tokens=1200,
@@ -992,20 +1395,86 @@ class ProactiveMessaging:
                 logger.info(f"[Proactive] LLM ответ слишком короткий: {len(response)} символов")
                 return None
 
+            # Служебный JSON (напр. формат анализа досье) — не сообщение
+            if _looks_like_payload(response):
+                logger.info("[Proactive] LLM вернул служебный JSON вместо сообщения — пропуск")
+                return None
+
             return response
 
         except Exception as e:
             logger.error(f"[Proactive] Ошибка генерации инициативы: {e}", exc_info=True)
             return None
 
+    def _in_initiative_hours(self, now: Optional[float] = None) -> bool:
+        """Разрешено ли сейчас время самоинициативы. Окно задаёт ПОЛЬЗОВАТЕЛЬ
+        (config.initiative_hours) — движок сам момент не выбирает. Переход
+        через полночь поддерживается: 22:00-08:00. Пусто/битое — всегда можно."""
+        hours = self.config.initiative_hours
+        if not hours:
+            return True
+        try:
+            def to_min(s: str) -> int:
+                h, m = s.split(":")
+                return int(h) * 60 + int(m)
+
+            lt = time.localtime(now if now is not None else time.time())
+            cur = lt.tm_hour * 60 + lt.tm_min
+            start, end = to_min(hours[0]), to_min(hours[1])
+            if start <= end:
+                return start <= cur < end
+            return cur >= start or cur < end  # окно через полночь
+        except Exception:
+            return True
+
+    def initiative_cheaply_possible(self, chat_id: str) -> bool:
+        """Дешёвые гейты перед LLM-скорингом инициативы (без вызовов модели):
+        окно часов, muted, дневной лимит, минимальное молчание и интервал между
+        инициативами — как ручные проверки в state_initiative_signal.
+
+        Не гарантирует отправку — только отсекает заведомо бессмысленный
+        скоринг, чтобы движок жизни не тратил локальный вызов каждый тик
+        (например, всю ночь вне окна самоинициативы)."""
+        if not self.config.enabled:
+            return False
+        if not self._in_initiative_hours():
+            return False
+        if (self.persona.persona_data.get("features") or {}).get("muted"):
+            return False
+        if self._get_daily_count(chat_id) >= self.config.max_daily_initiatives:
+            return False
+        last_msg_time = self.get_last_message_time(chat_id)
+        if last_msg_time == 0:
+            return False
+        silence_minutes = (time.time() - last_msg_time) / 60
+        if silence_minutes < self.config.check_interval_minutes:
+            return False
+        # Глубокая обида (streak ≥ 7): персона замолкает, а не выпрашивает
+        # внимание — скоринг/инициатива только после полного порога молчания
+        if (self._get_ignore_streak(chat_id) >= 7
+                and silence_minutes < self.config.silence_threshold_minutes):
+            return False
+        last_initiative = self._last_initiative_time.get(chat_id, 0)
+        if time.time() - last_initiative < self.config.check_interval_minutes * 60:
+            return False
+        return True
+
     def _should_send_initiative(self, chat_id: str) -> bool:
         """Проверяет все условия перед отправкой."""
+        # Замороженная персона (features.muted) не пишет ничего, включая инициативы
+        if (self.persona.persona_data.get("features") or {}).get("muted"):
+            return False
+
+        # Время самоинициативы задаёт пользователь: вне окна не пишем сами
+        if not self._in_initiative_hours():
+            return False
+
         # Проверяем дневной лимит
         if self._get_daily_count(chat_id) >= self.config.max_daily_initiatives:
             return False
 
-        # Вычисляем адаптивный порог молчания
-        threshold_minutes = self._calculate_adaptive_threshold(chat_id)
+        # Вычисляем адаптивный порог молчания (но не выше суток — жёсткий максимум)
+        threshold_minutes = min(self._calculate_adaptive_threshold(chat_id), MAX_SILENCE_MINUTES)
 
         # Проверяем время молчания
         last_msg_time = self.get_last_message_time(chat_id)
@@ -1013,6 +1482,12 @@ class ProactiveMessaging:
             return False
         silence_minutes = (time.time() - last_msg_time) / 60
         if silence_minutes < threshold_minutes:
+            return False
+
+        # Глубокая обида (streak ≥ 7): персона замолкает, а не выпрашивает
+        # внимание — адаптивный (короткий) порог для неё не действует
+        if (self._get_ignore_streak(chat_id) >= 7
+                and silence_minutes < self.config.silence_threshold_minutes):
             return False
 
         # Проверяем время с последней инициативы
@@ -1058,7 +1533,9 @@ class ProactiveMessaging:
                         else:
                             # Таймаут -- сбрасываем и считаем неудачей
                             logger.info(f"[Proactive] Чат {chat_id}: таймаут multi-turn")
-                            self._update_probability(chat_id, got_response=False)
+                            self._update_probability(
+                                chat_id, got_response=False,
+                                initiative_type=state.get("type"))
                             state["waiting"] = False
 
                 # Выбираем тип инициативы
@@ -1066,7 +1543,7 @@ class ProactiveMessaging:
                 logger.info(f"[Proactive] Чат {chat_id}: тип инициативы={initiative_type.value}")
 
                 # Извлекаем реальное имя из последних сообщений STM
-                user_name = "пользователь"
+                user_name = "user"
                 try:
                     stm_msgs = self.memory.stm.get_last(5, chat_id=chat_id)
                     for msg in reversed(stm_msgs):
@@ -1136,16 +1613,102 @@ class ProactiveMessaging:
                             "waiting": True,
                             "initiative_msg": message,
                             "timestamp": time.time(),
+                            "type": initiative_type.value if initiative_type else None,
                         }
 
                     # Streak обновляется через _update_probability при таймауте/ответе
                     # Не инкрементим здесь -- иначе дубликаты и быстрые повторы попадут в streak
 
                     self._last_initiative_time[chat_id] = time.time()
+                    if initiative_type:
+                        self._last_initiative_type[chat_id] = initiative_type.value
                     self._increment_daily_count(chat_id)
 
             except Exception as e:
                 logger.error(f"[Proactive] Ошибка в чате {chat_id}: {e}")
+
+    async def state_initiative_signal(self, chat_id: str, score: float, reason: str):
+        """Сигнал от движка состояния (план «живой» персоны, §3.2/§3.4):
+        скоринг инициативы превысил порог — у персоны есть повод написать.
+        Не заменяет существующие гейты (muted, дневной лимит, интервалы) —
+        только генерация уже «оплачена» скорингом, поэтому вероятностный
+        бросок не повторяется. Отправка — через обычный пайплайн."""
+        # Время самоинициативы задаёт пользователь: вне окна движок жизни
+        # тоже не пишет сам (момент выбирает не движок, а окно пользователя)
+        if not self._in_initiative_hours():
+            logger.info("[Proactive] Сигнал состояния вне окна самоинициативы — молчим")
+            return
+        if not self._should_send_initiative(chat_id):
+            # Стандартные гейты не прошли (лимит/интервал) — но для сигнала
+            # состояния допускаем более короткое молчание, чем adaptive-порог:
+            # скоринг уже учёл тишину. Проверяем минимум вручную.
+            if (self.persona.persona_data.get("features") or {}).get("muted"):
+                return
+            if self._get_daily_count(chat_id) >= self.config.max_daily_initiatives:
+                return
+            last_msg_time = self.get_last_message_time(chat_id)
+            if last_msg_time == 0:
+                return
+            silence_minutes = (time.time() - last_msg_time) / 60
+            if silence_minutes < self.config.check_interval_minutes:
+                return
+            # Глубокая обида (streak ≥ 7): сигналы состояния тоже прореживаем —
+            # не чаще полного порога молчания
+            if (self._get_ignore_streak(chat_id) >= 7
+                    and silence_minutes < self.config.silence_threshold_minutes):
+                return
+            last_initiative = self._last_initiative_time.get(chat_id, 0)
+            if time.time() - last_initiative < self.config.check_interval_minutes * 60:
+                return
+
+        logger.info(f"[Proactive] Сигнал состояния {chat_id}: score={score:.2f} ({reason})")
+        try:
+            user_name = "user"
+            try:
+                stm_msgs = self.memory.stm.get_last(5, chat_id=chat_id)
+                for msg in reversed(stm_msgs):
+                    if msg.get("role") == "user":
+                        name = msg.get("user_name", "")
+                        if name and name.lower() not in ("пользователь", "user"):
+                            user_name = name
+                            break
+            except Exception:
+                pass
+
+            message = await asyncio.to_thread(
+                self._generate_initiative, chat_id, chat_id, user_name,
+                InitiativeType.STATE_CHANGE, bypass_silence=True
+            )
+            if not message:
+                message = await asyncio.to_thread(
+                    self._generate_reflection_initiative, chat_id,
+                    InitiativeType.STATE_CHANGE
+                )
+            if not message or self._is_similar_to_recent(message, chat_id):
+                return
+
+            topic_id = self._get_topic_for_chat(chat_id)
+            message = _strip_markdown(message)
+            success = await self._sender.send_message(chat_id, message, topic_id=topic_id)
+            if success:
+                self._add_to_history(chat_id, message, InitiativeType.STATE_CHANGE)
+                self.memory.add_message("assistant", message, user_id=chat_id, chat_id=chat_id)
+                if self.self_memory:
+                    stm_messages = self.memory.stm.get_last(10, chat_id=chat_id)
+                    await asyncio.to_thread(self.self_memory.tick, stm_messages, chat_id, message)
+                self._last_initiative_time[chat_id] = time.time()
+                self._last_initiative_type[chat_id] = InitiativeType.STATE_CHANGE.value
+                self._increment_daily_count(chat_id)
+                # Факты жизни прозвучали — отмечаем consumed
+                if self.living:
+                    try:
+                        unconsumed = self.living.state_engine.unconsumed(chat_id, limit=10)
+                        self.living.state_engine.mark_consumed(
+                            [e["id"] for e in unconsumed])
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error(f"[Proactive] Ошибка инициативы по состоянию {chat_id}: {e}")
 
     def _get_topic_for_chat(self, chat_id: str) -> Optional[int]:
         """Определяет ID топика для отправки proactive сообщения."""
@@ -1177,7 +1740,6 @@ class ProactiveMessaging:
 
     async def _loop(self):
         """Главный цикл проверки."""
-        interval_seconds = self.config.check_interval_minutes * 60
         logger.info(f"[Proactive] Цикл запущен. Интервал: {self.config.check_interval_minutes} мин")
 
         while self._running:
@@ -1186,8 +1748,9 @@ class ProactiveMessaging:
             except Exception as e:
                 logger.error(f"[Proactive] Ошибка в цикле: {e}")
 
-            # Ждём до следующей проверки
-            await asyncio.sleep(interval_seconds)
+            # Ждём до следующей проверки. Интервал перечитываем из конфига —
+            # его могут поменять через API на живую, без перезапуска цикла.
+            await asyncio.sleep(self.config.check_interval_minutes * 60)
 
     def start(self, loop=None):
         """Запускает фоновую задачу."""
@@ -1282,6 +1845,23 @@ class ChatActivityTracker:
     def get_last_activity(self, chat_id: str) -> float:
         with self._lock:
             return self._last_activity.get(chat_id, 0)
+
+    def pop_activity(self, chat_id: str) -> float:
+        """Удаляет метку последней активности чата (полный сброс диалога —
+        молчание обнуляется). Возвращает удалённый timestamp — для корзины."""
+        with self._lock:
+            ts = self._last_activity.pop(chat_id, 0)
+            if ts:
+                self._save_known_chats()
+            return ts
+
+    def restore_activity(self, chat_id: str, ts: float):
+        """Возвращает метку последней активности из снапшота корзины."""
+        if not ts:
+            return
+        with self._lock:
+            self._last_activity[chat_id] = ts
+            self._save_known_chats()
 
     def get_known_chats(self) -> List[str]:
         with self._lock:

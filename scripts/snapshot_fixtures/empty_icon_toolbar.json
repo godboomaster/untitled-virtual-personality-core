@@ -1,0 +1,11 @@
+{
+ "name": "empty_icon_toolbar",
+ "comment": "Иконки вообще без accessible name: текстовый скоринг бессилен, честный отказ (кейс для будущего визуального фолбэка)",
+ "goal": "настройки",
+ "expect": {"none": true},
+ "items": [
+  {"idx": 0, "tag": "button", "role": "", "text": "", "ctx": "", "aria": "", "title": "", "href": "", "w": 36.0, "h": 36.0, "x": 1100.0, "vw": 1280.0, "vp": true, "ed": false},
+  {"idx": 1, "tag": "button", "role": "", "text": "", "ctx": "", "aria": "", "title": "", "href": "", "w": 36.0, "h": 36.0, "x": 1150.0, "vw": 1280.0, "vp": true, "ed": false},
+  {"idx": 2, "tag": "a", "role": "", "text": "Главная", "ctx": "", "aria": "", "title": "", "href": "https://x.ru/", "w": 90.0, "h": 30.0, "x": 100.0, "vw": 1280.0, "vp": true, "ed": false}
+ ]
+}

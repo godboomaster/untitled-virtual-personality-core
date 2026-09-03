@@ -19,6 +19,8 @@ import uuid
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+from app.core.language import language_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +40,13 @@ _UNIT_TO_SECONDS = {
     "неделю": 604800, "недели": 604800, "недель": 604800, "неделя": 604800,
     # месяц
     "месяц": 2592000, "месяца": 2592000, "месяцев": 2592000,
+    # английские
+    "second": 1, "seconds": 1, "sec": 1, "secs": 1,
+    "minute": 60, "minutes": 60, "min": 60, "mins": 60,
+    "hour": 3600, "hours": 3600, "hr": 3600, "hrs": 3600,
+    "day": 86400, "days": 86400,
+    "week": 604800, "weeks": 604800,
+    "month": 2592000, "months": 2592000,
 }
 
 # Числительные прописью для формулировок «каждые десять минут», «раз в два часа».
@@ -52,19 +61,34 @@ _RU_WORD_NUMBERS = {
     "тридцать": 30, "сорок": 40, "пятьдесят": 50,
 }
 
+# Английские числительные прописью + «once»/«twice» для «twice a day».
+_EN_WORD_NUMBERS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "once": 1, "twice": 2, "an": 1, "a": 1,
+}
+# «a couple of hours» — отдельной парой слов
+_EN_COUPLE_RE = re.compile(r"\b(?:a\s+)?couple\s+of?\s+(hours?|hrs?|minutes?|mins?|days?)\b", re.IGNORECASE)
+
 # «раз в <единицу>»: единица в винительном падеже ед.ч.
 _SINGLE_UNIT_TO_SECONDS = {
     "секунду": 1, "минуту": 60, "час": 3600, "день": 86400, "сутки": 86400,
     "неделю": 604800, "месяц": 2592000,
+    "second": 1, "minute": 60, "hour": 3600, "day": 86400,
+    "week": 604800, "month": 2592000,
 }
 
-# Указательные слова, после которых ожидается «N единиц»: «каждые/через N минут».
-_LEAD_WORDS_RE = re.compile(r"\b(?:каждые|каждую|каждое|каждого|через|спустя|раз\s+в|интервал[а-я]*|с\s+интервалом)\b", re.IGNORECASE)
+# Указательные слова, после которых ожидается «N единиц»: «каждые/через N минут»,
+# «in 10 minutes», «every 2 hours».
+_LEAD_WORDS_RE = re.compile(r"\b(?:каждые|каждую|каждое|каждого|через|спустя|раз\s+в|интервал[а-я]*|с\s+интервалом|every|each|in|after|once|twice)\b", re.IGNORECASE)
 
-# Паттерн «N <единиц>» — число (цифра) + единица в любой форме.
-_N_UNIT_NUM_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*([а-яё]+)", re.IGNORECASE)
+# Паттерн «N <единиц>» — число (цифра) + единица в любой форме (рус/англ).
+_N_UNIT_NUM_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*([a-zа-яё]+)", re.IGNORECASE)
 # Паттерн «числительное-прописью <единиц>».
-_WORD_N_UNIT_RE = re.compile(r"([а-яё]+)\s+([а-яё]+)", re.IGNORECASE)
+_WORD_N_UNIT_RE = re.compile(r"([a-zа-яё]+)\s+([a-zа-яё]+)", re.IGNORECASE)
 
 
 def parse_frequency(text: str, min_seconds: float = 300, max_seconds: float = 2592000) -> Optional[float]:
@@ -75,6 +99,28 @@ def parse_frequency(text: str, min_seconds: float = 300, max_seconds: float = 25
     Возвращает интервал в секундах или None.
     """
     lower = text.lower()
+
+    # ── 0. Английские «once/twice/N times a day» и «a couple of hours»
+    m = _EN_COUPLE_RE.search(lower)
+    if m:
+        unit = _UNIT_TO_SECONDS.get(m.group(1), 0)
+        if unit:
+            return _clip(unit * 2, min_seconds, max_seconds)
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s+times?\s+(?:a|an|per)\s+([a-zа-яё]+)", lower)
+    if m:
+        try:
+            times = float(m.group(1).replace(",", "."))
+            unit = _UNIT_TO_SECONDS.get(m.group(2), 0)
+            if times > 0 and unit:
+                return _clip(unit / times, min_seconds, max_seconds)
+        except ValueError:
+            pass
+    m = re.search(r"\b(once|twice)\s+(?:a|an|per)\s+([a-zа-яё]+)", lower)
+    if m and m.group(1) in _EN_WORD_NUMBERS:
+        times = _EN_WORD_NUMBERS[m.group(1)]
+        unit = _UNIT_TO_SECONDS.get(m.group(2), 0)
+        if times > 0 and unit:
+            return _clip(unit / times, min_seconds, max_seconds)
 
     # ── 1. «N раз в <единицу>»: 2 раза в день → интервал = единица / N
     m = re.search(r"(\d+(?:[.,]\d+)?)\s*раз[а-я]*\s+в\s+(секунду|минуту|час|день|сутки|неделю|месяц)", lower)
@@ -102,7 +148,8 @@ def parse_frequency(text: str, min_seconds: float = 300, max_seconds: float = 25
         if unit:
             return _clip(unit, min_seconds, max_seconds)
 
-    # ── 2b. «каждый <единица-ед.ч.>»: каждый час / каждый день / каждое утро.
+    # ── 2b. «каждый <единица-ед.ч.>»: каждый час / каждый день / каждое утро,
+    #       «every hour» / «each day» (англ).
     # ВАЖНО: идёт ДО общего поиска «N <единиц>» (шаг 3) — иначе «каждый день в 3 часа»
     # ошибочно давал 3 часа вместо суток (бралось «3 часа» раньше).
     # «утро»/«вечер» — это раз в сутки: бот работает по интервалам, а не по времени суток.
@@ -111,6 +158,11 @@ def parse_frequency(text: str, min_seconds: float = 300, max_seconds: float = 25
         if m.group(2) in ("утро", "вечер"):
             return _clip(86400, min_seconds, max_seconds)
         unit = _UNIT_TO_SECONDS.get(m.group(2)) or _SINGLE_UNIT_TO_SECONDS.get(m.group(2), 0)
+        if unit:
+            return _clip(unit, min_seconds, max_seconds)
+    m = re.search(r"\b(?:every|each)\s+(second|minute|hour|day|week|month)\b", lower)
+    if m:
+        unit = _SINGLE_UNIT_TO_SECONDS.get(m.group(1), 0)
         if unit:
             return _clip(unit, min_seconds, max_seconds)
 
@@ -143,7 +195,8 @@ def parse_frequency(text: str, min_seconds: float = 300, max_seconds: float = 25
                     pass
         return _clip(candidates_num[0], min_seconds, max_seconds)
 
-    # ── 4. «числительное-прописью <единиц>»: «каждые десять минут», «через два часа»
+    # ── 4. «числительное-прописью <единиц>»: «каждые десять минут», «через два часа»,
+    #       «in ten minutes» (англ)
     lead = _LEAD_WORDS_RE.search(lower)
     search_text = lower[lead.end():] if lead else lower
     for mm in _WORD_N_UNIT_RE.finditer(search_text):
@@ -151,14 +204,20 @@ def parse_frequency(text: str, min_seconds: float = 300, max_seconds: float = 25
         unit = _UNIT_TO_SECONDS.get(mm.group(2))
         if word in _RU_WORD_NUMBERS and unit:
             return _clip(_RU_WORD_NUMBERS[word] * unit, min_seconds, max_seconds)
+        if word in _EN_WORD_NUMBERS and unit:
+            return _clip(_EN_WORD_NUMBERS[word] * unit, min_seconds, max_seconds)
 
-    # ── 6. Отдельные слова: «полчаса», «ежечасно», «ежедневно»
+    # ── 6. Отдельные слова: «полчаса», «ежечасно», «ежедневно», «half an hour», «daily»
     if "полчаса" in lower or "пол-часа" in lower:
         return _clip(1800, min_seconds, max_seconds)
     _WORD_INTERVALS = {
         "ежечасно": 3600, "каждый час": 3600,
         "ежедневно": 86400, "ежесуточно": 86400, "каждый день": 86400,
         "еженедельно": 604800, "каждую неделю": 604800,
+        "half an hour": 1800, "an hour": 3600,
+        "hourly": 3600, "every hour": 3600,
+        "daily": 86400, "every day": 86400,
+        "weekly": 604800, "every week": 604800,
     }
     for phrase, secs in _WORD_INTERVALS.items():
         if phrase in lower:
@@ -235,7 +294,7 @@ class LearningManager:
         вместо того чтобы молча отправлять пользователю недописанный текст."""
         if not self._router:
             return None
-        response = self._router.get_response(messages, temperature=temperature, max_tokens=max_tokens, top_p=top_p)
+        response = self._side_response(messages, temperature=temperature, max_tokens=max_tokens, top_p=top_p)
         if not response:
             return response
         full = response
@@ -244,9 +303,9 @@ class LearningManager:
         while self._looks_truncated(full) and attempts < max_continuations:
             convo = convo + [
                 {"role": "assistant", "content": full},
-                {"role": "user", "content": "Ты остановился на середине фразы. Допиши строго с того места, где прервался — не повторяй уже написанное и не начинай заново."},
+                {"role": "user", "content": "You stopped mid-sentence. Continue strictly from where you left off — do not repeat what was already written and do not start over."},
             ]
-            cont = self._router.get_response(convo, temperature=temperature, max_tokens=max_tokens, top_p=top_p)
+            cont = self._side_response(convo, temperature=temperature, max_tokens=max_tokens, top_p=top_p)
             if not cont:
                 break
             full += cont
@@ -270,6 +329,7 @@ class LearningManager:
         self._task: Optional[asyncio.Task] = None
         self._sender = None
         self._router = None
+
         self._persona = None
         self._local_router = None
         self._memory = None
@@ -286,6 +346,14 @@ class LearningManager:
         self._question_msgs: Dict[str, list] = {}
         self._QUESTION_MSG_LIMIT = 20
 
+    def _side_response(self, messages, **kw):
+        """Побочный вызов LLM (уроки/квизы): fallback-цепочка основного
+        роутера МИНУС основной провайдер; веб-чат — отдельный side-чат."""
+        if not self._router:
+            return None
+        return self._router.get_response(
+            messages, exclude_provider=self._router.active_provider,
+            webchat_channel="side", **kw)
     # ── реестр сообщений-вопросов бота ──
 
     def register_question_message(self, chat_id: str, message_id: int):
@@ -538,20 +606,20 @@ class LearningManager:
         for i, (s, kind) in enumerate(candidates, 1):
             if kind == "quiz":
                 q = (s.get("quiz_pending") or {}).get("question", "")
-                options_desc.append(f"{i}. Тема «{s.get('subject', '')}» — ждём ответ на тест: {q}")
+                options_desc.append(f"{i}. Topic \"{s.get('subject', '')}\" — waiting for a quiz answer: {q}")
             else:
-                options_desc.append(f"{i}. Тема «{s.get('subject', '')}» — ждём ответ да/нет на вопрос «продолжаем обучение?»")
+                options_desc.append(f"{i}. Topic \"{s.get('subject', '')}\" — waiting for a yes/no answer to \"continue the course?\"")
 
         messages = [
             {"role": "system", "content": (
-                "Пользователь учится параллельно по нескольким темам. Определи, к какому из "
-                "перечисленных вариантов ОТНОСИТСЯ по смыслу сообщение пользователя. "
-                "Ответь СТРОГО одним числом — номером варианта (например: 2). "
-                "Если сообщение явно не про один из вариантов — ответь 0. Больше ничего не пиши."
+                "The user is studying several topics in parallel. Determine which of the "
+                "listed options the user's message RELATES to in meaning. "
+                "Answer STRICTLY with one number — the option number (for example: 2). "
+                "If the message is clearly not about any of the options — answer 0. Write nothing else."
             )},
-            {"role": "user", "content": "Варианты:\n" + "\n".join(options_desc) + f"\n\nСообщение пользователя: {user_text}"},
+            {"role": "user", "content": "Options:\n" + "\n".join(options_desc) + f"\n\nUser message: {user_text}"},
         ]
-        response = self._router.get_response(messages, temperature=0.0, max_tokens=5, top_p=1.0)
+        response = self._side_response(messages, temperature=0.0, max_tokens=5, top_p=1.0)
         idx = None
         if response:
             m = re.search(r"\d+", response)
@@ -702,10 +770,10 @@ class LearningManager:
             return ""
 
         return (
-            "У тебя может возникнуть желание напомнить о незакрытых контрольных вопросах "
-            "прошлого урока или о том, что запрос «не по теме учёбы» — ты уже делал это "
-            "недавно. НЕ повторяй это в этом ответе (никаких «который раз за сессию», "
-            "«паттерн подтверждён» и т.п.) — просто ответь по существу сообщения."
+            "You may feel the urge to remind about the unanswered review questions "
+            "from the previous lesson or that the request is \"off the study topic\" — you have already done that "
+            "recently. DO NOT repeat it in this reply (no \"how many times this session\", "
+            "\"pattern confirmed\" etc.) — just answer the message itself."
         )
 
     def get_reinforcement_hint(self, chat_id: str) -> Optional[str]:
@@ -748,19 +816,19 @@ class LearningManager:
         if session.get("course_kind") == "LANGUAGE" and session.get("learned_vocabulary"):
             pick = random.sample(session["learned_vocabulary"], k=min(2, len(session["learned_vocabulary"])))
             hint = (
-                f"У пользователя идёт курс «{subject}». Если это ляжет ЕСТЕСТВЕННО в твой "
-                f"ответ — используй в реплике 1 из этих ранее пройденных слов/фраз, к месту, "
-                f"без перевода и без пометки, что это из урока: {'; '.join(pick)}. "
-                "Если не ложится органично — просто пропусти, не притягивай за уши."
+                f"The user is taking a \"{subject}\" course. If it fits NATURALLY into your "
+                f"reply — use 1 of these previously learned words/phrases, aptly, "
+                f"without translation and without noting it is from a lesson: {'; '.join(pick)}. "
+                "If it doesn't fit organically — just skip it, don't force it."
             )
         elif session.get("covered_topics"):
             pick = random.choice(session["covered_topics"])
             hint = (
-                f"У пользователя идёт курс «{subject}», недавно проходили: «{pick}». "
-                "Если это ляжет ЕСТЕСТВЕННО в твой ответ — можешь сделать короткую отсылку "
-                "к этому понятию/метафору в своём стиле, БЕЗ объяснения, что она значит "
-                "(пользователь либо поймёт, либо просто пройдёт мимо — оба варианта ок). "
-                "Если не ложится органично — просто пропусти, не притягивай за уши."
+                f"The user is taking a \"{subject}\" course, recently covered: \"{pick}\". "
+                "If it fits NATURALLY into your reply — you may make a short reference "
+                "to this concept/metaphor in your own style, WITHOUT explaining what it means "
+                "(the user will either get it or just move past — both are fine). "
+                "If it doesn't fit organically — just skip it, don't force it."
             )
         else:
             return None
@@ -785,14 +853,14 @@ class LearningManager:
             return None
         messages = [
             {"role": "system", "content": (
-                "Пользователь отвечает на вопрос «как часто присылать уроки». Определи "
-                "интервал В СЕКУНДАХ из его ответа. Ответь СТРОГО одним целым числом секунд "
-                "и ничего больше. Если по тексту нельзя понять периодичность — ответь ровно "
+                "The user is answering the question \"how often should lessons be sent\". Determine "
+                "the interval IN SECONDS from their answer. Answer STRICTLY with a single integer "
+                "number of seconds and nothing else. If the frequency cannot be understood from the text — answer exactly "
                 "UNKNOWN."
             )},
             {"role": "user", "content": text},
         ]
-        response = self._router.get_response(messages, temperature=0.0, max_tokens=10, top_p=1.0)
+        response = self._side_response(messages, temperature=0.0, max_tokens=10, top_p=1.0)
         if not response:
             return None
         response = response.strip()
@@ -807,12 +875,17 @@ class LearningManager:
             return None
         return _clip(seconds, self.min_interval, self.max_interval)
 
-    def render_setup_reply(self, subject: str, kind: str, delay_text: str = "") -> str:
+    def render_setup_reply(self, subject: str, kind: str, delay_text: str = "",
+                           user_language: Optional[str] = None) -> str:
         """Короткая изолированная реплика персоны на этапе настройки частоты уроков
         (kind: 'confirmed' — частота распознана и обучение запущено, 'reask' — частоту
         не удалось понять). Как и render_continue_reply — БЕЗ доступа к STM/истории:
         через общий пайплайн модель на этом шаге придумывала небылицы про архитектуру бота
-        и сразу выдавала полноценный текст урока вместо короткого подтверждения настройки."""
+        и сразу выдавала полноценный текст урока вместо короткого подтверждения настройки.
+
+        user_language ('ru'/'en') — язык сообщения пользователя: в изолированный
+        вызов не попадает ни одной его реплики, поэтому без этого параметра модель
+        не знает язык и отвечает на языке персоны."""
         fallback = {
             "confirmed": f"Хорошо, начинаем! Уроки по теме «{subject}» — {delay_text}.",
             "reask": "Не понял частоту. Как часто присылать уроки — например, «раз в день» или «каждые 2 часа»?",
@@ -822,24 +895,32 @@ class LearningManager:
 
         task = {
             "confirmed": (
-                f"Пользователь выбрал частоту уроков по теме «{subject}»: {delay_text}. "
-                "Обучение только что запущено. Подтверди это ОДНОЙ короткой фразой в своём стиле."
+                f"The user chose the lesson frequency for the topic \"{subject}\": {delay_text}. "
+                "The course has just started. Confirm this with ONE short phrase in your own style."
             ),
             "reask": (
-                f"Пользователь отвечал на вопрос о частоте уроков по теме «{subject}», но "
-                "частоту не удалось распознать. Переспроси ОДНОЙ короткой фразой в своём "
-                "стиле: как часто присылать уроки (например, «раз в день», «каждые 2 часа»)."
+                f"The user was answering the question about lesson frequency for the topic \"{subject}\", but "
+                "the frequency could not be recognized. Ask again with ONE short phrase in your own "
+                "style: how often to send lessons (for example, \"once a day\", \"every 2 hours\")."
             ),
-        }.get(kind, "Ответь коротко в своём стиле.")
+        }.get(kind, "Reply briefly in your own style.")
+
+        lang_line = (
+            f"The user's language is {language_name(user_language)}. "
+            f"Reply ONLY in {language_name(user_language)}.\n"
+            if user_language else
+            "Reply in the language of the user's messages.\n"
+        )
 
         messages = [
             {"role": "system", "content": (
                 f"{self._persona_block()}\n\n---\n{task}\n"
-                "ЗАПРЕЩЕНО в этом ответе: текст урока, номер урока, контрольные вопросы, "
-                "любое учебное содержание, а также рассуждения об архитектуре и "
-                "возможностях/ограничениях бота. Только сама реакция на настройку расписания."
+                f"{lang_line}"
+                "FORBIDDEN in this reply: lesson text, lesson number, review questions, "
+                "any study content, and reasoning about the bot's architecture and "
+                "capabilities/limitations. Only the reaction to the schedule setup itself."
             )},
-            {"role": "user", "content": f"Тема: «{subject}»." if subject else "Реагируй."},
+            {"role": "user", "content": f"Topic: \"{subject}\"." if subject else "React."},
         ]
         response = self._get_response_complete(messages, temperature=0.6, max_tokens=100, top_p=0.9)
         return (response or fallback).strip()
@@ -862,11 +943,11 @@ class LearningManager:
             return fast
         result = self._llm_clean_line(
             system_prompt=(
-                "Пользователю задали вопрос «продолжаем обучение? (да/нет)». Определи его "
-                "сообщение: (а) неоднозначная попытка ответить да/нет (например, «наверное», "
-                "«не знаю», «хз») — ответь UNKNOWN; (б) сообщение вообще не про этот вопрос, "
-                "пользователь пишет/спрашивает о чём-то другом — ответь OFFTOPIC. "
-                "Ответь СТРОГО одним словом: UNKNOWN или OFFTOPIC."
+                "The user was asked \"continue the course? (yes/no)\". Classify their "
+                "message: (a) an ambiguous attempt to answer yes/no (for example, \"maybe\", "
+                "\"dunno\") — answer UNKNOWN; (b) the message is not about this question at all, "
+                "the user writes/asks about something else — answer OFFTOPIC. "
+                "Answer STRICTLY with one word: UNKNOWN or OFFTOPIC."
             ),
             user_content=text,
             max_tokens=6,
@@ -875,14 +956,16 @@ class LearningManager:
             return "OFFTOPIC"
         return "UNKNOWN"
 
-    def render_continue_reply(self, chat_id: str, decision: str, session_id: Optional[str] = None) -> str:
+    def render_continue_reply(self, chat_id: str, decision: str, session_id: Optional[str] = None,
+                              user_language: Optional[str] = None) -> str:
         """Короткая реплика персоны на решение «продолжать обучение?» — YES/NO/UNKNOWN.
         Намеренно ИЗОЛИРОВАННЫЙ вызов (без STM/истории диалога, без прочего контекста):
         когда эту реплику генерировал общий пайплайн бота (persona.prepare_messages со всей
         историей), модель, видя в контексте прошлые уроки, игнорировала инструкцию
         «не пиши урок» и заново выдавала полноценный урок вместо короткого подтверждения.
         Здесь модель физически не видит ничего, кроме темы и решения — переигрывать урок ей
-        неоткуда.
+        неоткуда. user_language ('ru'/'en') — язык сообщения пользователя: без него модель
+        не знает язык (реплик пользователя в вызове нет) и отвечает на языке персоны.
 
         session_id стоит передавать явно (полученный ДО вызова resolve_continue) — иначе,
         если у чата несколько параллельных курсов или resolve_continue уже деактивировал
@@ -898,25 +981,33 @@ class LearningManager:
 
         task = {
             "YES": (
-                "Пользователь подтвердил, что хочет продолжить обучение после паузы. "
-                "Ответь ОДНОЙ короткой фразой в своём стиле, просто подтверди продолжение."
+                "The user confirmed they want to continue the course after a pause. "
+                "Reply with ONE short phrase in your own style, just confirm the continuation."
             ),
             "NO": (
-                "Пользователь решил остановить обучение. Ответь ОДНОЙ короткой фразой "
-                "в своём стиле, подтверди остановку."
+                "The user decided to stop the course. Reply with ONE short phrase "
+                "in your own style, confirm the stop."
             ),
         }.get(decision, (
-            "Не удалось понять, хочет ли пользователь продолжать обучение или нет. "
-            "Ответь ОДНОЙ короткой фразой в своём стиле и переспроси «да» или «нет»."
+            "It was not possible to understand whether the user wants to continue the course or not. "
+            "Reply with ONE short phrase in your own style and ask again \"yes\" or \"no\"."
         ))
+
+        lang_line = (
+            f"The user's language is {language_name(user_language)}. "
+            f"Reply ONLY in {language_name(user_language)}.\n"
+            if user_language else
+            "Reply in the language of the user's messages.\n"
+        )
 
         messages = [
             {"role": "system", "content": (
                 f"{self._persona_block()}\n\n---\n{task}\n"
-                "ЗАПРЕЩЕНО в этом ответе: текст урока, номер урока, контрольные вопросы, "
-                "тему следующего урока или любое учебное содержание. Только сама реакция."
+                f"{lang_line}"
+                "FORBIDDEN in this reply: lesson text, lesson number, review questions, "
+                "the next lesson's topic or any study content. Only the reaction itself."
             )},
-            {"role": "user", "content": f"Тема обучения: «{subject}»." if subject else "Реагируй."},
+            {"role": "user", "content": f"Course topic: \"{subject}\"." if subject else "React."},
         ]
         response = self._get_response_complete(messages, temperature=0.6, max_tokens=100, top_p=0.9)
         return (response or fallback).strip()
@@ -968,6 +1059,9 @@ class LearningManager:
         router = self._local_router or self._router
         if not router:
             return None
+        # task= — только локальному роутеру (движок задачи «learning»);
+        # основному роутеру параметр незнаком
+        task_kw = {"task": "learning"} if router is self._local_router else {}
         try:
             response = router.get_response(
                 messages=[
@@ -976,6 +1070,7 @@ class LearningManager:
                 ],
                 temperature=0.0,
                 max_tokens=max_tokens,
+                **task_kw,
             )
             if not response:
                 return None
@@ -993,9 +1088,9 @@ class LearningManager:
             return raw or ""
         result = self._llm_clean_line(
             system_prompt=(
-                "Приведи тему обучения в именительный падеж, кратко (2-6 слов), без глаголов. "
-                "Например: 'китайскому' → 'китайский язык', 'программированию на python' → 'программирование на Python'. "
-                "Ответ — только тема, без кавычек и пояснений."
+                "Normalize the course subject into its base (nominative) form, briefly (2-6 words), without verbs. "
+                "For example: 'китайскому' → 'китайский язык', 'программированию на python' → 'программирование на Python'. "
+                "Keep the language of the input. The answer is only the subject, without quotes or explanations."
             ),
             user_content=raw.strip(),
         )
@@ -1010,10 +1105,11 @@ class LearningManager:
             return ""
         result = self._llm_clean_line(
             system_prompt=(
-                "Определи ОДНУ главную тему учебного текста. "
-                "Ответ — короткая фраза в именительном падеже (до 6 слов). "
-                "Например: 'Пиньинь и тоны', 'Цикл for в Python'. "
-                "Только тема, без кавычек и пояснений."
+                "Determine the ONE main topic of the study text. "
+                "The answer is a short phrase in base (nominative) form (up to 6 words), "
+                "in the language of the source text. "
+                "For example: 'Пиньинь и тоны', 'Цикл for в Python'. "
+                "Only the topic, without quotes or explanations."
             ),
             user_content=lesson_text[:1500],
             max_tokens=25,
@@ -1050,12 +1146,12 @@ class LearningManager:
             return "TOPIC"
         result = self._llm_clean_line(
             system_prompt=(
-                "Это курс изучения ЖИВОГО/иностранного языка (например, испанский, "
-                "китайский, латынь) или какая-то другая тема (включая языки "
-                "программирования, технические предметы, науки, искусства и т.п.)? "
-                "Ответь СТРОГО одним словом: LANGUAGE или TOPIC."
+                "Is this a course for learning a NATURAL/foreign language (for example, Spanish, "
+                "Chinese, Latin) or some other topic (including programming languages, "
+                "technical subjects, sciences, arts, etc.)? "
+                "Answer STRICTLY with one word: LANGUAGE or TOPIC."
             ),
-            user_content=f"Тема курса: «{subject}»",
+            user_content=f"Course subject: \"{subject}\"",
             max_tokens=6,
         )
         if result and "LANGUAGE" in result.upper():
@@ -1069,18 +1165,20 @@ class LearningManager:
         router = self._local_router or self._router
         if not lesson_text or not router:
             return []
+        task_kw = {"task": "learning"} if router is self._local_router else {}
         try:
             response = router.get_response(
                 messages=[
                     {"role": "system", "content": (
-                        "Из учебного текста выбери 2-4 самых важных новых слова/фразы урока. "
-                        "Каждое — на отдельной строке, в формате 'слово/фраза — краткий "
-                        "перевод или смысл'. Больше ничего не пиши."
+                        "From the study text, pick the 2-4 most important new words/phrases of the lesson. "
+                        "Each on its own line, in the format 'word/phrase — brief "
+                        "translation or meaning'. Write nothing else."
                     )},
                     {"role": "user", "content": lesson_text[:1500]},
                 ],
                 temperature=0.3,
                 max_tokens=150,
+                **task_kw,
             )
         except Exception as e:
             logger.debug(f"[Learning] Извлечение словаря не удалось: {e}")
@@ -1102,27 +1200,29 @@ class LearningManager:
         subject = session.get("subject", "")
         lesson_num = session.get("lesson_count", 0) + 1
         covered = session.get("covered_topics", [])
-        covered_str = ", ".join(covered[-8:]) if covered else "пока ничего"
+        covered_str = ", ".join(covered[-8:]) if covered else "nothing yet"
 
         messages = [
             {"role": "system", "content": (
-                f"Ты опытный преподаватель. Обучаешь теме «{subject}». Урок №{lesson_num}.\n"
-                f"Ранее уже пройдено: {covered_str}.\n"
-                "Дай ОДИН небольшой урок по НОВОЙ подтеме (не повторяй пройденное). "
-                "Объясняй понятно, с примерами. Это чистый учебный материал — БЕЗ действий, "
-                "БЕЗ реплик персонажа, БЕЗ курсива и звёздочек, только содержание.\n\n"
-                "Ответь СТРОГО в формате (каждое поле с новой строки):\n"
-                "TOPIC: <короткая тема урока, до 6 слов, именительный падеж>\n"
-                "QUESTIONS: <2-3 контрольных вопроса через точку с запятой>\n"
-                "VOCAB: <2-4 коротких «единицы для закрепления» через точку с запятой — "
-                "если это ЯЗЫК, давай реальные слова/фразы на изучаемом языке с кратким "
-                "переводом через « — » (например: 你好 — привет); если это НЕ язык (техника, "
-                "наука и т.п.), давай короткий яркий термин или метафору из урока, который "
-                "можно естественно упомянуть в обычном разговоре без объяснений (например: "
-                "третий ключ; сессионный ключ). Без пояснений, только сам список.>\n"
-                "LESSON:\n<полный текст урока, markdown разрешён>"
+                f"You are an experienced teacher. You teach the subject \"{subject}\". Lesson #{lesson_num}.\n"
+                f"Previously covered: {covered_str}.\n"
+                "Give ONE small lesson on a NEW subtopic (do not repeat what was covered). "
+                "Explain clearly, with examples. This is pure study material — NO actions, "
+                "NO character lines, NO italics or asterisks, only content. "
+                "Write the lesson in the language of the course subject (if the subject is in Russian, "
+                "write in Russian; if in English, write in English).\n\n"
+                "Answer STRICTLY in this format (each field on a new line):\n"
+                "TOPIC: <short lesson topic, up to 6 words, base form>\n"
+                "QUESTIONS: <2-3 review questions separated by semicolons>\n"
+                "VOCAB: <2-4 short \"reinforcement units\" separated by semicolons — "
+                "if this is a LANGUAGE, give real words/phrases in the studied language with a brief "
+                "translation after \" — \" (for example: 你好 — привет); if it is NOT a language (tech, "
+                "science, etc.), give a short vivid term or metaphor from the lesson that "
+                "can be naturally mentioned in ordinary conversation without explanations (for example: "
+                "third key; session key). No explanations, only the list itself.>\n"
+                "LESSON:\n<full lesson text, markdown allowed>"
             )},
-            {"role": "user", "content": f"Дай урок №{lesson_num} по теме «{subject}»."},
+            {"role": "user", "content": f"Give lesson #{lesson_num} on the subject \"{subject}\"."},
         ]
         response = self._get_response_complete(messages, temperature=0.6, max_tokens=2200, top_p=0.9)
         if not response or len(response.strip()) < 20:
@@ -1141,14 +1241,15 @@ class LearningManager:
         subject = session.get("subject", "")
         lesson_num = session.get("lesson_count", 0) + 1
         covered = session.get("covered_topics", [])
-        covered_str = ", ".join(covered[-8:]) if covered else "пока ничего"
+        covered_str = ", ".join(covered[-8:]) if covered else "nothing yet"
         messages = [
             {"role": "system", "content": (
-                f"Ты опытный преподаватель темы «{subject}». Урок №{lesson_num}. "
-                f"Пройдено: {covered_str}. Дай ОДИН связный урок по новой подтеме (3-6 абзацев), "
-                "с примерами. Чистый учебный текст, без действий персонажа."
+                f"You are an experienced teacher of the subject \"{subject}\". Lesson #{lesson_num}. "
+                f"Covered: {covered_str}. Give ONE coherent lesson on a new subtopic (3-6 paragraphs), "
+                "with examples. Pure study text, without character actions. "
+                "Write the lesson in the language of the course subject."
             )},
-            {"role": "user", "content": f"Дай урок №{lesson_num}."},
+            {"role": "user", "content": f"Give lesson #{lesson_num}."},
         ]
         response = self._get_response_complete(messages, temperature=0.6, max_tokens=2200, top_p=0.9)
         if not response or len(response.strip()) < 20:
@@ -1193,33 +1294,34 @@ class LearningManager:
             return None
         subject = session.get("subject", "")
         covered = session.get("covered_topics", [])
-        covered_str = ", ".join(covered[-8:]) if covered else "базовые понятия"
+        covered_str = ", ".join(covered[-8:]) if covered else "basic concepts"
 
         if simple:
             sys_prompt = (
-                f"Тема: «{subject}». Придумай ОДИН простой вопрос с кратким ответом. "
-                "Формат строго:\nВОПРОС: ...\nОТВЕТ: ...\nПОЯСНЕНИЕ: ..."
+                f"Topic: \"{subject}\". Come up with ONE simple question with a brief answer. "
+                "Strict format:\nQUESTION: ...\nANSWER: ...\nEXPLANATION: ..."
             )
-            user_msg = "Дай вопрос."
+            user_msg = "Give a question."
         else:
             sys_prompt = (
-                f"Ты преподаватель. Проверяешь знания по теме «{subject}».\n"
-                f"Пройдено: {covered_str}.\n"
-                "Придумай ОДИН проверочный вопрос по пройденному материалу. "
-                "Открытый вопрос или задача с кратким ответом (не тест с вариантами). "
-                "Ответь СТРОГО в формате (поля с новой строки):\n"
-                "QUESTION: <текст вопроса>\n"
-                "ANSWER: <короткий правильный ответ>\n"
-                "EXPLANATION: <короткое пояснение>\n"
-                "Никакого другого текста."
+                f"You are a teacher. You are testing knowledge of the subject \"{subject}\".\n"
+                f"Covered: {covered_str}.\n"
+                "Come up with ONE review question on the covered material. "
+                "An open question or a task with a short answer (not multiple choice). "
+                "Write in the language of the course subject. "
+                "Answer STRICTLY in this format (fields on separate lines):\n"
+                "QUESTION: <question text>\n"
+                "ANSWER: <short correct answer>\n"
+                "EXPLANATION: <short explanation>\n"
+                "No other text."
             )
-            user_msg = "Дай тест по теме."
+            user_msg = "Give a quiz on the topic."
 
         messages = [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_msg},
         ]
-        response = self._router.get_response(messages, temperature=0.5, max_tokens=400, top_p=0.9)
+        response = self._side_response(messages, temperature=0.5, max_tokens=400, top_p=0.9)
         if not response:
             return None
 
@@ -1248,26 +1350,27 @@ class LearningManager:
             {"role": "system", "content": (
                 f"{persona}\n\n"
                 "---\n"
-                "Ты — преподаватель, проверяешь сообщение ученика по контрольному вопросу.\n"
-                "Если сообщение — это ДЕЙСТВИТЕЛЬНО попытка ответить (пусть неверная или "
-                "неполная), оцени её.\n"
-                "Если сообщение НЕ является попыткой ответить — ученик сменил тему, задал "
-                "совсем другой вопрос или пишет о постороннем — не придумывай натянутую "
-                "оценку, используй VERDICT: ОФФТОП.\n"
-                "ВАЖНО: вопрос с ученика — это НЕ попытка ответить, даже если он про тему "
-                "теста: уточнение условия («а что ты имеешь в виду?», «а почему?», вопрос "
-                "по материалу) — VERDICT: ОФФТОП. На вопрос ученика ответит обычный диалог, "
-                "а не ты — не закрывай тест ложной оценкой.\n"
-                "Ответь СТРОГО в формате:\n"
-                "VERDICT: ВЕРНО | НЕВЕРНО | ЧАСТИЧНО | ОФФТОП\n"
-                "FEEDBACK: <короткий комментарий; для ОФФТОП можно оставить пустым>\n"
-                "Никакого другого текста."
+                "You are a teacher, checking a student's message against the review question.\n"
+                "If the message IS genuinely an attempt to answer (even a wrong or "
+                "incomplete one), evaluate it.\n"
+                "If the message is NOT an attempt to answer — the student changed the subject, asked "
+                "a completely different question or writes about something unrelated — do not invent a forced "
+                "evaluation, use VERDICT: OFFTOPIC.\n"
+                "IMPORTANT: a question FROM the student is NOT an attempt to answer, even if it is about "
+                "the quiz topic: clarifying the conditions (\"what do you mean?\", \"why?\", a question "
+                "about the material) — VERDICT: OFFTOPIC. The student's question will be answered by the normal dialogue, "
+                "not by you — do not close the quiz with a false evaluation.\n"
+                "Write the FEEDBACK in the language of the student's messages.\n"
+                "Answer STRICTLY in this format:\n"
+                "VERDICT: CORRECT | WRONG | PARTIAL | OFFTOPIC\n"
+                "FEEDBACK: <short comment; for OFFTOPIC may be left empty>\n"
+                "No other text."
             )},
             {"role": "user", "content": (
-                f"Вопрос: {quiz.get('question', '')}\n"
-                f"Правильный ответ: {quiz.get('answer', '')}\n"
-                f"Пояснение: {quiz.get('explanation', '')}\n"
-                f"Сообщение ученика: {user_answer}"
+                f"Question: {quiz.get('question', '')}\n"
+                f"Correct answer: {quiz.get('answer', '')}\n"
+                f"Explanation: {quiz.get('explanation', '')}\n"
+                f"Student's message: {user_answer}"
             )},
         ]
         response = self._get_response_complete(messages, temperature=0.3, max_tokens=500, top_p=0.9)
@@ -1296,12 +1399,13 @@ class LearningManager:
             {"role": "system", "content": (
                 f"{persona}\n\n"
                 "---\n"
-                "Ты — преподаватель, объявляешь ученику проверочный вопрос по пройденной теме. "
-                "Сообщи об этом коротко (1-2 фразы) в своём стиле, и приведи сам вопрос ДОСЛОВНО, "
-                "без изменений и без сокращений. Не давай ответ и не подсказывай. "
-                "Без эмодзи."
+                "You are a teacher, announcing a review question on the covered topic to a student. "
+                "Announce it briefly (1-2 phrases) in your own style, and quote the question itself VERBATIM, "
+                "without changes and without cuts. Do not give the answer and do not hint. "
+                "Write in the language of the user's messages. "
+                "No emoji."
             )},
-            {"role": "user", "content": f"Тема: «{subject}». Вопрос: {question}"},
+            {"role": "user", "content": f"Topic: \"{subject}\". Question: {question}"},
         ]
         try:
             response = self._get_response_complete(messages, temperature=0.5, max_tokens=350, top_p=0.9)
@@ -1323,20 +1427,21 @@ class LearningManager:
                 for i, q in enumerate(questions[:3], 1):
                     lines.append(f"{i}. {q}")
             return "\n".join(lines)
-        questions_block = "\n".join(f"{i}. {q}" for i, q in enumerate(questions[:3], 1)) if questions else "(без вопросов)"
+        questions_block = "\n".join(f"{i}. {q}" for i, q in enumerate(questions[:3], 1)) if questions else "(no questions)"
         messages = [
             {"role": "system", "content": (
                 f"{persona}\n\n"
                 "---\n"
-                "Ты — преподаватель, объявляешь тему нового урока и контрольные вопросы к нему. "
-                "Сообщи коротко (1-2 фразы) в своём стиле, какую тему затрагивает урок, "
-                "и обязательно приведи контрольные вопросы ДОСЛОВНО, без изменений и сокращений. "
-                "Без эмодзи. Формат: короткое вступление, затем блок вопросов."
+                "You are a teacher, announcing the topic of a new lesson and its review questions. "
+                "Tell briefly (1-2 phrases) in your own style which topic the lesson covers, "
+                "and be sure to quote the review questions VERBATIM, without changes or cuts. "
+                "Write in the language of the user's messages. "
+                "No emoji. Format: a short intro, then the questions block."
             )},
             {"role": "user", "content": (
-                f"Тема курса: «{subject}». "
-                f"Тема урока №{next_num}: «{topic or subject}». "
-                f"Контрольные вопросы:\n{questions_block}"
+                f"Course subject: \"{subject}\". "
+                f"Topic of lesson #{next_num}: \"{topic or subject}\". "
+                f"Review questions:\n{questions_block}"
             )},
         ]
         try:
@@ -1364,8 +1469,19 @@ class LearningManager:
         except Exception as e:
             logger.warning(f"[Learning] Не удалось сохранить урок в STM: {e}")
 
+    def _is_muted(self) -> bool:
+        """Персона заморожена (features.muted в её YAML, применяется на живую)."""
+        if self._persona is None:
+            return False
+        return bool((self._persona.persona_data.get("features") or {}).get("muted"))
+
     async def _send(self, chat_id: str, text: str, topic_id: Optional[int], is_question: bool = False) -> bool:
         if not self._sender:
+            return False
+        # Замороженная персона молчит: False — урок не засчитывается,
+        # попытка переносится на следующий интервал (курс паузится без порчи)
+        if self._is_muted():
+            logger.info(f"[Learning] Персона заморожена — отправка в {chat_id} пропущена")
             return False
         try:
             success = await self._sender.send_message(chat_id, text, topic_id=topic_id)
@@ -1394,6 +1510,10 @@ class LearningManager:
         здесь же), и fallback в _send_regular_lesson был мёртвым кодом: файл «не
         ушёл» (например, caption длиннее лимита Telegram) — и урок молча терялся."""
         if not self._sender:
+            return False
+        # Замороженная персона молчит (см. _send)
+        if self._is_muted():
+            logger.info(f"[Learning] Персона заморожена — файл урока в {chat_id} пропущен")
             return False
         try:
             success = await self._sender.send_document(
@@ -1707,20 +1827,20 @@ class LearningManager:
     def format_delay(self, delay_seconds: float) -> str:
         """Человекочитаемое описание интервала."""
         if delay_seconds < 60:
-            return f"{int(delay_seconds)} сек"
+            return f"{int(delay_seconds)} sec"
         if delay_seconds < 3600:
-            return f"{int(delay_seconds / 60)} мин"
+            return f"{int(delay_seconds / 60)} min"
         hours = delay_seconds / 3600
         if hours < 24:
             h = int(hours)
             m = int((delay_seconds - h * 3600) / 60)
-            return f"{h} ч {m} мин" if m else f"{h} ч"
+            return f"{h} h {m} min" if m else f"{h} h"
         days = delay_seconds / 86400
         if days < 7:
             d = int(days)
-            return f"{d} дн"
+            return f"{d} d"
         weeks = int(days / 7)
-        return f"{weeks} нед"
+        return f"{weeks} wk"
 
     def start(self, loop=None):
         if not loop:

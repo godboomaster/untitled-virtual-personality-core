@@ -20,6 +20,7 @@ from telegram.ext import (
 from app.bot_instance import BotInstance
 from app.core.users import register_user, get_user_display, get_user_tag
 from app.core.telegram_sender import TelegramMessageSender
+from app.core.message_pacing import send_delay as _send_delay
 from app.features.file_sender import prepare_response, cleanup_files
 from app.features.reply_context import extract_reply_context
 
@@ -57,9 +58,16 @@ async def _reply_ai(message, text: str):
         files = None
 
     # Отправляем текстовые сообщения (может быть несколько частей)
-    for part in msg_parts:
+    for i, part in enumerate(msg_parts):
         if not part or not part.strip():
             continue
+        if i > 0:
+            # Между частями — пауза «набора»: растёт с длиной следующей части
+            try:
+                await message.chat.send_action("typing")
+            except Exception:
+                pass
+            await asyncio.sleep(_send_delay(part))
         try:
             html = _md_to_html(part)
             # Сворачиваем в expandable blockquote для единообразия
@@ -89,6 +97,23 @@ async def _reply_ai(message, text: str):
         cleanup_files(files)
 
     return sent_message_ids
+
+
+async def _send_split_parts(bot, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> list:
+    """Досылка расщеплённого ответа (settings.split_messages): хвост частей,
+    оставшийся от process_message/command_reply в pending-бакете, уходит
+    отдельными сообщениями — с «печатает…» и паузой между ними, как человек,
+    шлющий несколько сообщений подряд. Возвращает list отправленных message_id
+    (регистрируются как обычные реплики бота — для reply-to-логики обучения)."""
+    sent_ids = []
+    for part in bot.pop_pending_split_messages(chat_id):
+        try:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            await asyncio.sleep(_send_delay(part))
+            sent_ids.extend(await _reply_ai(update.message, part))
+        except Exception as e:
+            logger.error(f"Ошибка досылки части расщеплённого ответа: {e}")
+    return sent_ids
 
 
 # ─── Создание handlers для конкретного BotInstance ────────
@@ -267,7 +292,8 @@ def create_handlers(bot: BotInstance) -> dict:
             name = m.get("user_name") or ("User" if role == "user" else "Bot")
             content = m["content"]
             tag = f"[{name}]" if role == "user" else "[Bot]"
-            lines.append(f"{i}. {tag} {content}")
+            time_str = f" {m['time']}" if m.get("time") else ""
+            lines.append(f"{i}.{time_str} {tag} {content}")
 
         await update.message.reply_text("\n".join(lines))
 
@@ -366,8 +392,10 @@ def create_handlers(bot: BotInstance) -> dict:
             await update.message.reply_text("Список дел не активен для этой персоны.")
             return
         chat_id = str(update.effective_chat.id)
-        todo_list = bot.todo_manager.get_list(chat_id)
-        await update.message.reply_text(todo_list or "Список дел пуст.")
+        lang = bot.chat_user_language(chat_id)
+        todo_list = bot.todo_manager.get_list(chat_id, lang=lang)
+        empty = "The todo list is empty." if lang == "en" else "Список дел пуст."
+        await update.message.reply_text(todo_list or empty)
 
     async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.reminder_manager:
@@ -445,6 +473,7 @@ def create_handlers(bot: BotInstance) -> dict:
             logger.error(f"[{persona_name}] Ошибка команды /{kind}: {e}", exc_info=True)
             response = "Произошла ошибка. Попробуйте позже."
         sent_ids = await _reply_ai(update.message, response)
+        sent_ids += await _send_split_parts(bot, update, context, chat_id)
 
         # Если команда завершилась вопросом бота (у /learn — «как часто присылать
         # уроки?»), регистрируем его message_id, чтобы reply пользователя на него
@@ -520,7 +549,7 @@ def create_handlers(bot: BotInstance) -> dict:
                 if replied_text:
                     reply_ctx = f"[{persona_name}]: {replied_text[:500]}"
                 elif replied.document:
-                    reply_ctx = f"[{persona_name}]: [Файл: {replied.document.file_name or 'без имени'}]"
+                    reply_ctx = f"[{persona_name}]: [File: {replied.document.file_name or 'unnamed'}]"
             else:
                 reply_ctx = extract_reply_context(update, context.bot.id)
 
@@ -530,6 +559,8 @@ def create_handlers(bot: BotInstance) -> dict:
         is_addressed_to_bot = is_reply_to_bot or bot.should_respond(text) or is_private
         if is_addressed_to_bot:
             bot.record_activity(chat_id)
+            # Утреннее приветствие rhythm: первое появление пользователя днём
+            bot.note_presence(chat_id)
 
         # Trigger
         if not bot.should_respond(text) and not is_reply_to_bot:
@@ -573,6 +604,8 @@ def create_handlers(bot: BotInstance) -> dict:
                 )
                 logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
                 sent_ids = await _reply_ai(update.message, response)
+                # Хвост расщеплённого ответа — отдельными сообщениями следом
+                sent_ids += await _send_split_parts(bot, update, context, chat_id)
 
                 # Если этот ответ — бот-вопрос (частота уроков/«продолжаем?»), регистрируем его
                 # message_id, чтобы потом понять, ответил ли пользователь reply-ом именно на него.
@@ -643,8 +676,8 @@ def create_handlers(bot: BotInstance) -> dict:
             await asyncio.to_thread(bot.file_db.add_file, user_id, filename, text)
 
             loaded_files = await asyncio.to_thread(bot.file_db.get_loaded_files, user_id)
-            files_note = f"Загружено файлов: {len(loaded_files)}/{bot.file_db.max_docs}"
-            message_with_file = f"Пользователь отправил файл '{filename}'. {files_note}:\n\n{text}"
+            files_note = f"Files loaded: {len(loaded_files)}/{bot.file_db.max_docs}"
+            message_with_file = f"The user sent a file '{filename}'. {files_note}:\n\n{text}"
             if caption_clean:
                 message_with_file = f"{caption_clean}\n\n{message_with_file}"
 
@@ -657,8 +690,9 @@ def create_handlers(bot: BotInstance) -> dict:
                     user_id=user_id, chat_id=chat_id,
                     user_name=user_tag
                 )
-                logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
+                logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на файл получен ({len(response)} символов)")
                 await _reply_ai(update.message, response)
+                await _send_split_parts(bot, update, context, chat_id)
             except Exception as e:
                 logger.error(f"[{persona_name}] Ошибка файла: {e}", exc_info=True)
                 await update.message.reply_text("Произошла ошибка при обработке файла.")
@@ -705,8 +739,8 @@ def create_handlers(bot: BotInstance) -> dict:
                 return
 
             message_with_image = (
-                "Пользователь отправил изображение. Его содержимое по версии "
-                f"vision-модели:\n{ocr_text}"
+                "The user sent an image. Its contents according to the "
+                f"vision model:\n{ocr_text}"
             )
             if caption_clean:
                 message_with_image = f"{caption_clean}\n\n{message_with_image}"
@@ -722,6 +756,7 @@ def create_handlers(bot: BotInstance) -> dict:
                 )
                 logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на изображение получен ({len(response)} символов)")
                 await _reply_ai(update.message, response)
+                await _send_split_parts(bot, update, context, chat_id)
             except Exception as e:
                 logger.error(f"[{persona_name}] Ошибка обработки изображения: {e}", exc_info=True)
                 await update.message.reply_text("Произошла ошибка при обработке изображения.")
@@ -849,6 +884,10 @@ def register_handlers(app: Application, bot: BotInstance):
         sender = TelegramMessageSender(bot=app.bot)
         bot.reminder_manager.set_sender(sender)
         bot.reminder_manager.set_router_persona(bot.router, bot.persona)
+        bot.reminder_manager.set_memory(bot.memory)
+
+    # Суточный ритм (утро/ночь/погода): setup_rhythm сам проверит enabled
+    bot.setup_rhythm(TelegramMessageSender(bot=app.bot))
 
     # Learning manager — sender и роутеры для генерации уроков
     if bot.learning_manager:

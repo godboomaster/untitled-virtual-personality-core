@@ -11,8 +11,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 
 COPY . .
 
-# Healthcheck намеренно НЕ задаётся на уровне образа: он привязан к порту Gradio,
-# а этот же образ запускает Telegram-ботов — они были бы вечно unhealthy.
-# Healthcheck для Gradio определён в docker-compose.yml.
+# Healthcheck намеренно НЕ задаётся на уровне образа: у Telegram-ботов нет
+# HTTP-порта для проверки — они были бы вечно unhealthy.
 
 CMD ["python", "-m", "app.main"]

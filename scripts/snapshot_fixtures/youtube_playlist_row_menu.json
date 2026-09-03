@@ -1,0 +1,11 @@
+{
+ "name": "youtube_playlist_row_menu",
+ "comment": "Скоуп-клик по элементу строки плейлиста YouTube («троеточие в sirene boss» → кнопка «Меню действий» строки). Синоним «действ» (основа) prefix-матчит «Меню действий»; элементы целевого снапшота уже отфильтрованы фразой h>=99 (шум рекомендации «Sirene's theme» отсеян на уровне JS)",
+ "goal": "троеточие в sirene boss",
+ "expect": {"idx": 2},
+ "items": [
+  {"idx": 0, "tag": "a", "role": "", "text": "8:14 Sirene Boss Theme (Poème d'Amour) | Clair Obscur: Expedition 33 Finding Pur", "ctx": "8:14 Sirene Boss Theme (Poème d'Amour) | Clair Obscur: Expedition 33 Finding Purposes 8:34 Clair Obscur: Expedition 33 (Original Soundtrack) 130 - We Lost Sandf", "aria": "", "title": "", "href": "https://www.youtube.com/watch?v=Mo8OvFEdxGA&list=RDMo8OvFEdxGA&index=1&pp=8AUB", "w": 768.0, "h": 56.0, "x": 900.0, "vw": 1500.0, "vp": true, "ed": false, "md": false, "dd": false, "sf": false, "ext": false},
+  {"idx": 1, "tag": "a", "role": "", "text": "8:14", "ctx": "8:14 Sirene Boss Theme (Poème d'Amour) | Clair Obscur: Expedition 33 Finding Purposes", "aria": "", "title": "", "href": "https://www.youtube.com/watch?v=Mo8OvFEdxGA&list=RDMo8OvFEdxGA&index=1&pp=8AUB", "w": 100.0, "h": 56.0, "x": 900.0, "vw": 1500.0, "vp": true, "ed": false, "md": false, "dd": false, "sf": false, "ext": false},
+  {"idx": 2, "tag": "button", "role": "", "text": "Меню действий", "ctx": "8:14 Sirene Boss Theme (Poème d'Amour) | Clair Obscur: Expedition 33 Finding Purposes", "aria": "Меню действий", "title": "", "href": "", "w": 40.0, "h": 40.0, "x": 1600.0, "vw": 1500.0, "vp": true, "ed": false, "md": false, "dd": false, "sf": false, "ext": false}
+ ]
+}

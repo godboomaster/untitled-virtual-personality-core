@@ -1,0 +1,11 @@
+{
+ "name": "aria_icon_button",
+ "comment": "Иконочная кнопка без текста: цель находится по aria-label (ярус 90)",
+ "goal": "корзина",
+ "expect": {"idx": 7},
+ "items": [
+  {"idx": 5, "tag": "button", "role": "", "text": "", "ctx": "", "aria": "Меню", "title": "", "href": "", "w": 40.0, "h": 40.0, "x": 1200.0, "vw": 1280.0, "vp": true, "ed": false},
+  {"idx": 7, "tag": "button", "role": "", "text": "", "ctx": "", "aria": "Корзина", "title": "", "href": "", "w": 40.0, "h": 40.0, "x": 1240.0, "vw": 1280.0, "vp": true, "ed": false},
+  {"idx": 9, "tag": "a", "role": "", "text": "Каталог", "ctx": "", "aria": "", "title": "", "href": "https://x.ru/catalog", "w": 90.0, "h": 30.0, "x": 100.0, "vw": 1280.0, "vp": true, "ed": false}
+ ]
+}

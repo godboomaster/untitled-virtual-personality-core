@@ -1,0 +1,10 @@
+{
+ "name": "synonym_avatar",
+ "comment": "Цель «аватар» против aria-label «Меню аккаунта»: словарь синонимов (_GOAL_SYNONYMS) засчитывает совпадение (ярус 70)",
+ "goal": "аватар",
+ "expect": {"idx": 4},
+ "items": [
+  {"idx": 2, "tag": "a", "role": "", "text": "Главная", "ctx": "", "aria": "", "title": "", "href": "https://x.ru/", "w": 90.0, "h": 30.0, "x": 60.0, "vw": 1280.0, "vp": true, "ed": false},
+  {"idx": 4, "tag": "button", "role": "", "text": "", "ctx": "", "aria": "Меню аккаунта", "title": "", "href": "", "w": 40.0, "h": 40.0, "x": 1230.0, "vw": 1280.0, "vp": true, "ed": false}
+ ]
+}

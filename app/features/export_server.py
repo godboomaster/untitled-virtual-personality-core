@@ -21,8 +21,8 @@ EXPORT_TOKEN = os.getenv("EXPORT_TOKEN", "")
 
 
 def _build_db_sources() -> dict:
-   # Строит маппинг динамически на основе persona-папок + gradio
-    contexts = ["connor", "arrodes", "verso", "assistant", "gradio", "default"]
+   # Строит маппинг динамически на основе persona-папок
+    contexts = ["connor", "arrodes", "verso", "assistant", "default"]
     sources = {}
     for ctx in contexts:
         paths = get_db_paths(ctx)

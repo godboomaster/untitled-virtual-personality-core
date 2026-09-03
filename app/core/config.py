@@ -8,6 +8,14 @@ _project_root = Path(__file__).parent.parent.parent
 load_dotenv(_project_root / ".env")
 load_dotenv(_project_root / ".env.config")
 
+# ─── Локальная модель (Ollama) ────────────────────────────
+# Единая модель для ВСЕХ локальных вызовов: чат-фолбэк (local_router),
+# перевод/классификация/дистилляция/кореференция (book_search,
+# intent_router). Меняется в одном месте — OLLAMA_MODEL в .env / .env.config
+# или через настройки веба. Reasoning-модели (gemma4) требуют "think": False
+# в запросах — это уже учтено во всех вызывающих сторонах.
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
+
 # ─── Провайдеры ──────────────────────────────────────────
 # Все используют OpenAI-совместимый API.
 # Если API_KEY не задан — провайдер пропускается.
@@ -120,7 +128,11 @@ class Config:
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     STM_SIZE = int(os.getenv("STM_SIZE", "500"))
     LTM_EXTRACTION_ENABLED = os.getenv("LTM_EXTRACTION_ENABLED", "true").lower() == "true"
-    LTM_MODEL_PROVIDER = os.getenv("LTM_MODEL_PROVIDER", "hf")
+    # Провайдер для побочных LLM-задач LTM (экстракция фактов и т.п.).
+    # Пусто (дефолт) — основной роутер бота по fallback-цепочке персоны
+    # МИНУС основной провайдер (exclude_provider); задан — отдельный роутер
+    # с этим провайдером основным (старое поведение).
+    LTM_MODEL_PROVIDER = os.getenv("LTM_MODEL_PROVIDER", "")
 
 
 def get_db_paths(context: str) -> dict:
@@ -131,7 +143,7 @@ def get_db_paths(context: str) -> dict:
         "connor"  -> data/connor/stm, ltm, files
         "arrodes" -> data/arrodes/stm, ltm, files
         "verso"   -> data/verso/stm, ltm, files
-        "gradio"  -> data/gradio/stm, ltm, files
+        "api_{persona}" -> data/api_{persona}/stm, ltm, files (веб/API)
         "tg"      -> data/tg/stm, ltm, files (обратная совместимость)
     """
     base = os.path.join(Config.DATA_DIR, context)
