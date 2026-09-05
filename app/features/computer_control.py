@@ -1495,6 +1495,10 @@ class ComputerControlManager:
             return any(self.needs_confirm(a) for a in action.get("items") or [])
         ov = self.risk_overrides
         if kind in ("click", "slider", "scroll", "scroll_stop"):
+            if action.get("point"):
+                # Координатный клик зонального vision-фолбэка: сигнал «что
+                # именно нажали» слабее — подтверждение всегда
+                return True
             return bool(ov.get("click", self.confirm))
         if kind in ("key", "press"):
             # Пробел/стрелки/Escape — обратимое взаимодействие со страницей;
@@ -2477,6 +2481,13 @@ class ComputerControlManager:
             if vidx is not None:
                 return url, host, items, vidx, tab_id, vmeta, None
         if idx is None:
+            # Зональный vision-фолбэк: DOM нечитаем совсем (canvas/WebGL,
+            # ARIA-скрытая разметка) — рамки вокруг всех кликабельных зон
+            # вьюпорта; выбранная зона кликается по координатам (meta["point"])
+            pnt, pmeta = self._vision_zones(goal, host, tab_id, router)
+            if pnt is not None:
+                return url, host, items, None, tab_id, pmeta, None
+        if idx is None:
             fail_kind = self._resolve_fail_kind(meta)
             # Антибот-стена: ретраи выше уже отработали, дальше — только
             # ручное прохождение проверки; честный отказ вместо «не нашёл»
@@ -2658,6 +2669,81 @@ class ComputerControlManager:
                                      "score": 0.0} for it in cands],
                      "llm_response": str(resp or "")[:200]}
 
+    def _vision_zones(self, goal: str, host: str, tab_id, router):
+        """Зональный vision-фолбэк — последний шанс, когда DOM нечитаем
+        совсем (canvas/WebGL, ARIA-скрытая разметка): рамки вокруг ВСЕХ
+        визуально кликабельных зон вьюпорта (не только кандидатов скоринга),
+        крупный canvas — сеткой 3×3. Клик по выбранной зоне — по КООРДИНАТАМ
+        (DOM-метки у зоны нет), closed-loop внутри click_at_point.
+        → ({"x","y","label"}, meta) или (None, None): фича выключена, нет
+        vision/скриншота/зон, антибот, ответ «нет»/невалиден."""
+        if not self.vision_fallback or router is None:
+            return None, None
+        try:
+            if not router.supports_vision():
+                return None, None
+        except Exception:
+            return None, None
+        from app.features import browser_actions as ba
+        # Капчу vision-кликами не «прожимаем»: антибот прячет семантику
+        # осознанно — остаётся честный отказ (каскад выше уже дал
+        # fail_reason="captcha", это страховка прямого входа)
+        try:
+            if ba.detect_antibot(host, tab_id):
+                return None, None
+        except Exception:
+            pass
+        try:
+            shot = ba.screenshot_viewport(host, tab_id)
+            boxes = ba.all_clickable_boxes(host, tab_id=tab_id)
+        except Exception as e:
+            logger.debug(f"[CompControl] Зональный vision-фолбэк недоступен: {e}")
+            return None, None
+        if not shot or not boxes:
+            return None, None
+        boxed = _draw_candidate_boxes(shot, boxes)
+        if boxed is None:
+            return None, None
+        lines = "\n".join(
+            f"{n}) {str(b.get('text') or '').strip() or f'зона {n}'}"
+            for n, b in enumerate(boxes, 1))
+        prompt = (
+            f"Задача: нажать «{goal}».\n"
+            "Скриншот страницы браузера. Красные рамки — кликабельные зоны "
+            f"1..{len(boxes)}:\n{lines}\n"
+            "Ответь ТОЛЬКО цифрой зоны, которую нужно нажать. "
+            "Если подходящей зоны нет — ответь «нет».")
+        try:
+            resp = router.get_response_with_image(prompt, boxed,
+                                                  image_mime="image/jpeg")
+        except Exception as e:
+            logger.debug(f"[CompControl] Зональный vision-фолбэк не удался: {e}")
+            return None, None
+        meta: Dict[str, object] = {
+            "path": "vision_zones",
+            "candidates": [{"idx": n,
+                            "text": str(b.get("text") or "")[:60],
+                            "score": 0.0}
+                           for n, b in enumerate(boxes[:8], 1)],
+            "llm_response": str(resp or "")[:200]}
+        m = re.fullmatch(r"\s*(\d{1,2})\s*", str(resp or ""))
+        if not m or not (1 <= int(m.group(1)) <= len(boxes)):
+            return None, meta
+        box = boxes[int(m.group(1)) - 1]
+        if _destructive_mismatch(goal, box):
+            logger.info(f"[CompControl] Зональный выбор «"
+                        f"{str(box.get('text') or '')[:30]}» ветирован "
+                        f"(деструктивный без запроса) для «{goal[:40]}»")
+            return None, meta
+        label = str(box.get("text") or "").strip() or f"зона {m.group(1)}"
+        point = {"x": float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
+                 "y": float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
+                 "label": label}
+        meta["point"] = point
+        logger.info(f"[CompControl] «{goal[:40]}» выбрано зональным vision: "
+                    f"зона {m.group(1)} «{label[:40]}»")
+        return point, meta
+
     def _element_on_other_pages(self, goal: str, cur_url: str,
                                 only_host: Optional[str] = None):
         """Кросс-страничный поиск элемента: снапшот каждой открытой страницы
@@ -2747,7 +2833,7 @@ class ComputerControlManager:
             r = self._resolve_element(f"закрыть на {close_obj}", site_word,
                                       router, chat_id=chat_id,
                                       auto_dismiss=False)
-            if r[6] is None:
+            if r[6] is None and r[3] is not None:
                 url, host, items, idx, tab_id, meta, _ = r
                 item = self._element_by_idx(items, idx) or {}
                 text = str(item.get("text") or "")
@@ -2788,7 +2874,7 @@ class ComputerControlManager:
                     r = self._resolve_element(
                         collapse_try, site_word, router, chat_id=chat_id,
                         auto_dismiss=False)
-                    if r[6] is None:
+                    if r[6] is None and r[3] is not None:
                         url2, host2, items2, idx2, tab_id2, meta2, _ = r
                         it = self._element_by_idx(items2, idx2) or {}
                         txt = str(it.get("text") or "")
@@ -2813,6 +2899,16 @@ class ComputerControlManager:
                 if act2 is not None:
                     return act2, None
             return None, err
+        point = (meta or {}).get("point")
+        if idx is None and point:
+            # Зональный vision-фолбэк: зона без DOM-метки (canvas/WebGL) —
+            # клик по координатам центра зоны (диспетчер — по action["point"])
+            act = {"kind": "click", "point": point,
+                   "element": str(point.get("label") or goal)[:80],
+                   "host": host, "value": url, "choose": meta, "goal": goal}
+            if tab_id is not None:
+                act["tab_id"] = tab_id
+            return act, None
         item = self._element_by_idx(items, idx) or {}
         text = str(item.get("text") or "")
         logger.info(f"[CompControl] Клик «{goal[:40]}» → [{idx}] {text[:40]} "
@@ -2837,6 +2933,10 @@ class ComputerControlManager:
             goal, site_word, router, chat_id=chat_id)
         if err:
             return None, err
+        if idx is None:
+            # Зональный vision-фолбэк дал координатную зону — у неё нет href
+            return None, (f"Элемент «{goal[:60]}» — не ссылка на файл, "
+                          "скачивать нечего.")
         item = self._element_by_idx(items, idx) or {}
         text = str(item.get("text") or "")
         from app.features.browser_actions import href_of_tagged
@@ -3630,36 +3730,45 @@ class ComputerControlManager:
         if action["kind"] == "click":
             from app.features import browser_actions as ba
             pre = ba.page_urls()
-            # Метки целевого снапшота — в data-vpc-gidx (независимы от
-            # data-vpc-idx общего); gidx ставит резолвер (via=goal_snapshot)
-            mark = "data-vpc-gidx" if action.get("gidx") else "data-vpc-idx"
-            try:
-                ba.click_tagged(action.get("host"), int(action["idx"]),
-                                tab_id=action.get("tab_id"), mark=mark)
-            except Exception as e:
-                from app.features.browser_actions import ClickUncertain
-                retryable = isinstance(e, ClickUncertain) \
-                    or "элемент потерян" in str(e)
-                goal = action.get("goal")
-                if not retryable or not goal:
-                    raise
-                # Между резолвом и кликом лежит подтверждение пользователя,
-                # живые страницы (карусель баннеров dodo) за эти секунды
-                # перерисовываются и метка протухает: свежий снапшот →
-                # свежий выбор → ОДИН повторный клик (как у шагов nav)
-                _, host2, items2 = ba.snapshot_elements(
-                    action.get("host"), tab_id=action.get("tab_id"))
-                idx2, _meta2 = self._choose_element(goal, items2, router)
-                if idx2 is None:
-                    raise RuntimeError(
-                        "элемент потерян — страница изменилась, "
-                        f"и «{str(goal)[:40]}» заново не нашёлся")
-                ba.click_tagged(action.get("host"), int(idx2),
-                                tab_id=action.get("tab_id"))
-                action["idx"] = int(idx2)
-                found = self._element_by_idx(items2, int(idx2))
-                if found:
-                    action["element"] = str(found.get("text") or "")[:80]
+            point = action.get("point")
+            if point is not None:
+                # Зона зонального vision-фолбэка без DOM-метки (canvas и
+                # т.п.) — клик по координатам; closed-loop в click_at_point,
+                # протухших меток нет — повтор не нужен
+                ba.click_at_point(action.get("host"), float(point["x"]),
+                                  float(point["y"]),
+                                  tab_id=action.get("tab_id"))
+            else:
+                # Метки целевого снапшота — в data-vpc-gidx (независимы от
+                # data-vpc-idx общего); gidx ставит резолвер (via=goal_snapshot)
+                mark = "data-vpc-gidx" if action.get("gidx") else "data-vpc-idx"
+                try:
+                    ba.click_tagged(action.get("host"), int(action["idx"]),
+                                    tab_id=action.get("tab_id"), mark=mark)
+                except Exception as e:
+                    from app.features.browser_actions import ClickUncertain
+                    retryable = isinstance(e, ClickUncertain) \
+                        or "элемент потерян" in str(e)
+                    goal = action.get("goal")
+                    if not retryable or not goal:
+                        raise
+                    # Между резолвом и кликом лежит подтверждение пользователя,
+                    # живые страницы (карусель баннеров dodo) за эти секунды
+                    # перерисовываются и метка протухает: свежий снапшот →
+                    # свежий выбор → ОДИН повторный клик (как у шагов nav)
+                    _, host2, items2 = ba.snapshot_elements(
+                        action.get("host"), tab_id=action.get("tab_id"))
+                    idx2, _meta2 = self._choose_element(goal, items2, router)
+                    if idx2 is None:
+                        raise RuntimeError(
+                            "элемент потерян — страница изменилась, "
+                            f"и «{str(goal)[:40]}» заново не нашёлся")
+                    ba.click_tagged(action.get("host"), int(idx2),
+                                    tab_id=action.get("tab_id"))
+                    action["idx"] = int(idx2)
+                    found = self._element_by_idx(items2, int(idx2))
+                    if found:
+                        action["element"] = str(found.get("text") or "")[:80]
             pop = ba.follow_popup(pre)
             if pop is not None:
                 # Клик открыл новое окно (вход в аккаунт Google и т.п.) —

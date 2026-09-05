@@ -3444,6 +3444,93 @@ def main():
         _ba.screenshot_viewport = _orig_sshot
         _ba.snapshot_elements = _orig_snap_v
 
+    # ── Зональный vision-фолбэк (п.2-дельта): DOM нечитаем — клик по координатам ──
+    class _ZoneRouter:
+        """get_response — «нет» (широкий резолв мимо); vision-ответы по очереди."""
+
+        def __init__(self, *resps):
+            self.resps = list(resps)
+            self.img_calls = 0
+
+        def supports_vision(self):
+            return True
+
+        def get_response(self, *a, **kw):
+            return "нет"
+
+        def get_response_with_image(self, prompt, img, image_mime=None):
+            self.img_calls += 1
+            return self.resps.pop(0) if self.resps else "нет"
+
+    _boxes = [{"x": 10.0, "y": 10.0, "w": 100.0, "h": 40.0, "text": "Играть"},
+              {"x": 10.0, "y": 60.0, "w": 100.0, "h": 40.0, "text": "Рекорды"},
+              {"x": 0.0, "y": 0.0, "w": 426.0, "h": 266.0,
+               "text": "canvas — сектор 1"}]
+    _orig_acb = getattr(_ba, "all_clickable_boxes", None)
+    _ba.all_clickable_boxes = lambda host=None, tab_id=None: list(_boxes)
+    _ba.screenshot_viewport = lambda host=None, tab_id=None: _png
+    _ba.snapshot_elements = lambda host=None, tab_id=None: (
+        "https://x.ru", "x.ru", [_it(0, "a", "Новости")])
+    _orig_pu_z = _ba.page_urls
+    _ba.page_urls = lambda: ["https://x.ru"]
+    _orig_fp_z = getattr(_ba, "follow_popup", None)
+    _ba.follow_popup = lambda pre: None
+    try:
+        m_zone = make()
+        # vision по кандидатам снапшота — «нет», по зонам — «2» → координаты
+        zr = _ZoneRouter("нет", "2")
+        act_z, err_z = m_zone.resolve_click("рекорды", None, zr,
+                                            chat_id="vz1")
+        check("зоны: выбор зоны → координатный клик (point, vision_zones)",
+              act_z is not None and act_z["kind"] == "click"
+              and act_z.get("point") == {"x": 60.0, "y": 80.0,
+                                         "label": "Рекорды"}
+              and act_z["choose"]["path"] == "vision_zones"
+              and zr.img_calls == 2)
+        # «нет» на обоих ярусах — честный отказ
+        no_z, err_z2 = m_zone.resolve_click("рекорды", None,
+                                            _ZoneRouter("нет", "нет"),
+                                            chat_id="vz2")
+        check("зоны: «нет» → честный отказ", no_z is None and bool(err_z2))
+        # Зона «Закрыть» при цели без намерения закрывать — вето
+        _boxes[1]["text"] = "Закрыть"
+        no_z2, err_z3 = m_zone.resolve_click("рекорды", None,
+                                             _ZoneRouter("нет", "2"),
+                                             chat_id="vz3")
+        check("зоны: деструктивная зона ветирована",
+              no_z2 is None and bool(err_z3))
+        _boxes[1]["text"] = "Рекорды"
+        # Исполнение: dispatch дёргает click_at_point с координатами зоны
+        # (менеджер без SpyManager._dispatch — тот только записывает вызов)
+        _cap = []
+        _orig_cap = _ba.click_at_point
+        _ba.click_at_point = lambda host, x, y, tab_id=None: (
+            _cap.append((host, x, y, tab_id)), "clicked")[1]
+        m_zone_exec = ComputerControlManager(context="t", config=dict(CFG),
+                                             base_dir=tmp / "s-zone-exec")
+        ok_z, _ = m_zone_exec.execute(act_z, "vz1")
+        _ba.click_at_point = _orig_cap
+        check("зоны: dispatch → click_at_point(центр зоны)",
+              ok_z and _cap == [("x.ru", 60.0, 80.0, None)])
+        # Координатный клик — confirm всегда (даже при click: false)
+        check("зоны: координатный клик — confirm не обходится",
+              make(cfg={**CFG, "confirm": False,
+                        "risk_overrides": {"click": False}}).needs_confirm(
+                  {"kind": "click", "point": {"x": 1, "y": 2}}))
+        # Скачивание по зоне: нет href — честный отказ, а не клик
+        no_dl_z, err_dl_z = m_zone.resolve_download(
+            "рекорды", None, _ZoneRouter("нет", "2"), chat_id="vz4")
+        check("зоны: download по координатной зоне — «не ссылка»",
+              no_dl_z is None and "не ссылка" in (err_dl_z or ""))
+    finally:
+        if _orig_acb is not None:
+            _ba.all_clickable_boxes = _orig_acb
+        if _orig_fp_z is not None:
+            _ba.follow_popup = _orig_fp_z
+        _ba.page_urls = _orig_pu_z
+        _ba.screenshot_viewport = _orig_sshot
+        _ba.snapshot_elements = _orig_snap_v
+
     # ── Shadow DOM: проход по открытым shadow root'ам в снапшоте ──
     check("снапшот: есть проход по shadow root'ам",
           "shadowRoot" in _ba._SNAPSHOT_JS and "shroots" in _ba._SNAPSHOT_JS)

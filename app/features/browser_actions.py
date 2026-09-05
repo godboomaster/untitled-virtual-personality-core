@@ -3454,8 +3454,79 @@ def _click_applescript(host_part: Optional[str], idx: int,
         "клик отправлен, но страница не изменилась — не уверен, что сработало")
 
 
+# Зональный обзор для vision-фолбэка (когда DOM-снапшот пуст/беден:
+# canvas/WebGL, ARIA-скрытая разметка): ВСЕ визуально кликабельные зоны
+# вьюпорта, включая безымянные. Крупный canvas (>40% вьюпорта) режется
+# сеткой 3×3 — иначе «кликни по врагу» в игре не адресуемо. Зоны без
+# DOM-метки кликаются по координатам (click_at_point)
+_ALL_CLICKABLE_BOXES_JS = (
+    "(function(){"
+    "var sel='button,a,[role=button],[role=link],input,textarea,select,"
+    "summary,[onclick],[tabindex]:not([tabindex=\"-1\"]),canvas,"
+    "[contenteditable]:not([contenteditable=false])';"
+    "function vis(e,r){var s=getComputedStyle(e);"
+    "return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'"
+    "&&r.width>=4&&r.height>=4&&r.bottom>0&&r.right>0"
+    "&&r.top<innerHeight&&r.left<innerWidth;}"
+    "var out=[];"
+    "document.querySelectorAll(sel).forEach(function(e){"
+    "var r=e.getBoundingClientRect();if(!vis(e,r))return;"
+    "var t=(e.innerText||e.value||e.getAttribute('aria-label')||e.title||"
+    "e.getAttribute('placeholder')||'').replace(/\\s+/g,' ').trim();"
+    "if(e.tagName==='CANVAS'&&r.width*r.height>"
+    "innerWidth*innerHeight*0.4){"
+    # Крупный canvas — сетка 3×3: зона = ячейка (клик по координатам центра)
+    "for(var gy=0;gy<3;gy++)for(var gx=0;gx<3;gx++){"
+    "out.push({x:r.left+gx*r.width/3,y:r.top+gy*r.height/3,"
+    "w:r.width/3,h:r.height/3,"
+    "text:(t||'canvas')+' — сектор '+(gy*3+gx+1)});}"
+    "return;}"
+    "out.push({x:r.left,y:r.top,w:r.width,h:r.height,text:t.slice(0,40)});"
+    "});"
+    "return JSON.stringify(out.slice(0,40));})()"
+)
+
+
+def all_clickable_boxes(host_part: Optional[str] = None,
+                        tab_id: Optional[int] = None) -> List[dict]:
+    """Все визуально кликабельные зоны вьюпорта (для зонального
+    vision-фолбэка, когда текстовый скоринг не нашёл ничего): x/y/w/h в
+    CSS-пикселях вьюпорта + короткая подпись. Пусто — бэкенд недоступен."""
+    try:
+        raw = _eval_js_any(host_part, tab_id, _ALL_CLICKABLE_BOXES_JS)
+        return [b for b in json.loads(raw or "[]") if isinstance(b, dict)]
+    except Exception:
+        return []
+
+
+def _click_point_cdp(w: "_CdpWorker", host_part: Optional[str],
+                     x: float, y: float, tab_id: Optional[int]) -> str:
+    page = w.page_for(host_part, tab_id)
+    pre = _page_state(page)
+    page.mouse.click(float(x), float(y))
+    if _poll_state_change(lambda: _page_state(page), pre):
+        return "clicked"
+    raise ClickUncertain(
+        "клик по координатам отправлен, но страница не изменилась — "
+        "не уверен, что сработало")
+
+
+def click_at_point(host_part: Optional[str], x: float, y: float,
+                   tab_id: Optional[int] = None) -> str:
+    """Клик по координатам вьюпорта (CSS px) — зона vision-фолбэка без
+    DOM-метки (canvas/WebGL). Только CDP (AppleScript-мост координатный
+    клик не умеет). Closed-loop обязателен: текстового подтверждения,
+    что нажали именно цель, у координатного клика нет."""
+    if _select_backend(tab_op=True) != "cdp":
+        raise BrowserUnavailable(
+            "клик по координатам доступен только на CDP-бэкенде")
+    return _WORKER.submit(
+        lambda w: _click_point_cdp(w, host_part, x, y, tab_id))
+
+
 def _norm_ws(s: str) -> str:
     return " ".join(str(s or "").lower().split())
+
 
 
 def fill_tagged(host_part: Optional[str], idx: int, text: str,
