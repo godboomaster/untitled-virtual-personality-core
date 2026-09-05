@@ -671,6 +671,13 @@ NAV_SETTLE_SEC = 2.0
 NAV_LOAD_TIMEOUT_SEC = 10.0
 NAV_POLL_SEC = 0.7
 
+# Органы управления страницей — в кандидаты LLM-восстановления шага
+# навигации попадают принудительно (именно они открывают скрытые разделы:
+# меню/бургер раскрывают панель, крестик закрывает незапланированный попап)
+_NAV_CTL_RE = re.compile(
+    r"меню|menu|бургер|burger|закрыт|close|войти|кабинет|назад|главн|home",
+    re.IGNORECASE)
+
 # Скоринг кандидатов (п.3/п.4): явный лидер — без LLM; иначе top-N в LLM;
 # невалидный ответ — фолбэк на лучшего, если его скор внятен
 LEADER_MIN_SCORE = 60.0    # минимум скора для детерминированного выбора
@@ -3842,10 +3849,14 @@ class ComputerControlManager:
             self._last_tab_id = tid
 
     def _navigate(self, action: dict, router=None):
-        """Многошаговая навигация — детерминированная state-machine (п.5):
-        структура шагов в коде, каждый шаг — снапшот → выбор элемента
-        (скоринг → при неоднозначности LLM) → клик → проверка эффекта →
-        следующий шаг; таймаут и честная ошибка, если застряли.
+        """Многошаговая навигация: структура шагов в коде, каждый шаг —
+        снапшот → выбор элемента (скоринг → при неоднозначности LLM) → клик →
+        проверка эффекта → следующий шаг. Шаг, не нашедшийся на общем
+        снапшоте, эскалирует: целевой снапшот/доскролл → широкий LLM-резолв →
+        vision-фолбэк → LLM-восстановление (что нажать, чтобы приблизиться,
+        или «пропустить» — шаг устарел). Устаревший шаг пропускается и без
+        LLM, когда более поздний уже явный лидер на странице. Таймаут и
+        честная ошибка, если застряли.
         Вкладка открывается отслеживаемой (стабильный id) — ни старые вкладки
         того же сайта, ни порядок окон навигации не мешают.
         Осечка — RuntimeError с честным текстом: что прошли и где встали."""
@@ -3869,7 +3880,8 @@ class ComputerControlManager:
                     "/" + _segs[0] if _segs else "")
         done: List[str] = []
         step_paths: List[str] = []
-        for step in action["steps"]:
+        steps = list(action["steps"])
+        for step_i, step in enumerate(steps):
             # Ждём страницу с кликабельными элементами: первая загрузка и
             # переходы между страницами занимают секунды — опрашиваем снапшот
             url = host = items = None
@@ -3896,16 +3908,27 @@ class ComputerControlManager:
                 action.setdefault("overlays", []).append(dismissed)
                 _, host, items = ba.snapshot_elements(tab_host, tab_id=tab_id)
             so_far = f" (прошёл: {' → '.join(done)})" if done else ""
+            # Шаг уже не нужен (страница сама ушла вперёд по плану): текущий
+            # на странице не находится совсем, а более поздний — явный лидер
+            if not (self._score_candidates(items, step)
+                    or self._score_scoped(items, step)):
+                later = self._later_step_leader(steps[step_i + 1:], items)
+                if later is not None:
+                    logger.info(f"[CompControl] Навигация: шаг «{step[:40]}» "
+                                f"устарел — на странице уже «{later[:40]}», "
+                                "пропускаю")
+                    step_paths.append(f"skip_ahead:{step[:20]}")
+                    continue
             # Клик по шагу. DOM живых сайтов перерисовывается между снапшотом
             # и кликом (меню с таймерами) — «элемент потерян» лечим одним
             # повтором: свежий снапшот → свежий выбор → повторный клик.
             # «Клик без эффекта» (closed-loop, п.6) — тоже один повтор
+            meta: Dict[str, object] = {}
             for attempt in (1, 2):
                 idx, meta = self._choose_element(step, items, router)
                 step_paths.append(str(meta.get("path") or "?"))
                 if idx is None:
-                    raise RuntimeError(
-                        f"не нашёл на странице пункт «{step}»{so_far}")
+                    break  # выбора нет — ниже эскалация резолва шага
                 try:
                     ba.click_tagged(host, int(idx), tab_id=tab_id)
                     break
@@ -3917,6 +3940,46 @@ class ComputerControlManager:
                         raise RuntimeError(f"на шаге «{step}»{so_far}: {e}")
                     time.sleep(NAV_POLL_SEC)
                     _, host, items = ba.snapshot_elements(tab_host, tab_id=tab_id)
+            if idx is None:
+                # Эскалация резолва шага — тот же каскад, что у агентного
+                # клика: целевой снапшот/доскролл → широкий LLM → vision
+                idx, meta = self._resolve_nav_step(step, host, items,
+                                                   tab_id, router)
+                step_paths.append(str(meta.get("path") or "?"))
+                if idx is not None:
+                    try:
+                        ba.click_tagged(host, int(idx), tab_id=tab_id,
+                                        mark=("data-vpc-gidx"
+                                              if meta.get("via") == "goal_snapshot"
+                                              else "data-vpc-idx"))
+                    except Exception as e:
+                        raise RuntimeError(f"на шаге «{step}»{so_far}: {e}")
+            if idx is None:
+                # Последняя эскалация: LLM смотрит живой снапшот и решает —
+                # что нажать, чтобы приблизиться к цели шага (открыть меню,
+                # закрыть попап), «пропустить» (шаг устарел) или сдаться
+                rec = self._nav_step_recover(step, steps, step_i, done,
+                                             host, items, tab_id, router)
+                if rec == "skip":
+                    step_paths.append(f"llm_skip:{step[:20]}")
+                    continue
+                if rec:
+                    ba.wait_dom_idle(tab_host or host, tab_id,
+                                     timeout_sec=NAV_SETTLE_SEC + 2.0,
+                                     min_wait=0.5)
+                    _, host, items = ba.snapshot_elements(tab_host,
+                                                          tab_id=tab_id)
+                    idx, meta = self._choose_element(step, items, router)
+                    step_paths.append(str(meta.get("path") or "?")
+                                      + ":after_recover")
+                    if idx is not None:
+                        try:
+                            ba.click_tagged(host, int(idx), tab_id=tab_id)
+                        except Exception as e:
+                            raise RuntimeError(f"на шаге «{step}»{so_far}: {e}")
+            if idx is None:
+                raise RuntimeError(
+                    f"не нашёл на странице пункт «{step}»{so_far}")
             done.append(step)
             # Переход + загрузка следующей страницы: ждём стабилизации DOM,
             # а не слепой слип — статичная страница отпускает раньше, живая
@@ -3932,6 +3995,158 @@ class ComputerControlManager:
             # Финальная страница пути — «открывшаяся страница» для следующих
             # команд («скачай на открывшейся странице …»)
             self._last_tab_id = tab_id
+
+    def _later_step_leader(self, later: List[str],
+                           items: List[dict]) -> Optional[str]:
+        """Пропуск устаревшего шага плана без LLM: текущий шаг на странице
+        не находится (проверяет вызывающий), а более поздний — уже явный
+        лидер (сайт пропустил промежуточный экран: A/B-вёрстка, автопереход
+        после логина). Возвращает текст такого шага или None."""
+        for s in later:
+            scored = self._score_candidates(items, s) \
+                or self._score_scoped(items, s)
+            if not scored:
+                continue
+            top_s = scored[0][0]
+            second_s = scored[1][0] if len(scored) > 1 else None
+            if top_s >= LEADER_MIN_SCORE and (
+                    second_s is None or top_s - second_s >= LEADER_MARGIN):
+                return s
+        return None
+
+    def _resolve_nav_step(self, step: str, host: str, items: List[dict],
+                          tab_id: Optional[int], router):
+        """Эскалация резолва шага навигации, когда общий снапшот шага не дал
+        кандидата: целевой снапшот по всему DOM (пункт мог не влезть в бюджет
+        общего) → доскролл-поиск → широкий LLM-резолв → vision-фолбэк. Тот же
+        каскад, что у агентного клика в _resolve_element, но на отслеживаемой
+        вкладке навигации. → (idx|None, meta); у находки через целевой
+        снапшот meta["via"]="goal_snapshot" — клик по меткам data-vpc-gidx."""
+        from app.features import browser_actions as _ba
+        search_goal = _goal_with_synonyms(step)
+        g_items: List[dict] = []
+        try:
+            _gu, g_items = _ba.snapshot_for_goal(host, search_goal,
+                                                 tab_id=tab_id)
+        except Exception as e:
+            logger.debug(f"[CompControl] Навигация: целевой снапшот шага "
+                         f"«{step[:40]}» не удался: {e}")
+        if not g_items:
+            try:
+                _gu, g_items = self._scroll_hunt(_ba, host, tab_id, search_goal)
+            except Exception as e:
+                logger.debug(f"[CompControl] Навигация: доскролл-поиск шага "
+                             f"«{step[:40]}» не удался: {e}")
+                g_items = []
+        if g_items:
+            g_idx, g_meta = self._choose_element(step, g_items, router)
+            if g_idx is None:
+                # Единственный отфильтрованный целевым снапшотом кандидат
+                # безопасен и без LLM (как goal_sole в _resolve_element)
+                sole = self._score_candidates(g_items, step) \
+                    or self._score_scoped(g_items, step)
+                if len(sole) == 1:
+                    g_idx = int(sole[0][1]["idx"])
+                    g_meta = {"path": "goal_sole",
+                              "candidates": [{
+                                  "idx": g_idx,
+                                  "text": str(sole[0][1].get("text") or "")[:60],
+                                  "score": round(sole[0][0], 1)}],
+                              "llm_response": None}
+            if g_idx is not None:
+                g_meta["via"] = "goal_snapshot"
+                return g_idx, g_meta
+        # Широкий LLM-резолв и vision — на общем снапшоте шага
+        widx, wmeta = self._llm_wide_pick(step, items, router)
+        if widx is not None:
+            return widx, wmeta
+        vidx, vmeta = self._visual_resolve(host, tab_id, items, step, router)
+        if vidx is not None:
+            return vidx, vmeta
+        return None, {}
+
+    def _nav_step_recover(self, step: str, steps: List[str], step_i: int,
+                          done: List[str], host: str, items: List[dict],
+                          tab_id: Optional[int], router):
+        """Сбойный шаг навигации (план разошёлся с реальностью): LLM по
+        живому снапшоту решает, что нажать, чтобы приблизиться к цели шага
+        (открыть меню, закрыть незапланированный попап), — или «пропустить»
+        (шаг устарел, страница сама ушла дальше), или «нет». → True — клик
+        восстановления выполнен (шаг повторяем снаружи); "skip" — шаг
+        пропускаем; False — честный отказ. Тот же приём, что
+        LLM-восстановление шагов сценария (ScenarioManager._llm_recover):
+        модель выбирает из реальных элементов, клик исполняет система."""
+        if router is None or not items:
+            return False
+        try:
+            scored = self._score_candidates(items, step)
+            ranked = [it for _s, it in scored]
+        except Exception:
+            ranked = list(items)
+        top = ranked[:15]
+        ctl = [it for it in items
+               if _NAV_CTL_RE.search(str(it.get("text") or ""))
+               and all(it.get("idx") != t.get("idx") for t in top)]
+        shown = (top + ctl)[:25]
+        if not shown:
+            return False
+        lines = "\n".join(
+            f"{n}) [{it.get('tag')}/{it.get('role') or '-'}] "
+            f"{str(it.get('text') or it.get('aria') or '')[:60]}"
+            for n, it in enumerate(shown, 1))
+        roadmap = []
+        for n, s in enumerate(steps):
+            mark = "✓" if n < step_i else ("✗" if n == step_i else "·")
+            roadmap.append(f"{mark} {n + 1}. {s}")
+        prompt = (
+            "Открываю страницу по шагам (✓ — уже сделано, ✗ — сломались "
+            "здесь, · — дальше):\n" + "\n".join(roadmap) + "\n\n"
+            f"На шаге ✗ нужно нажать «{step}», но такого элемента среди "
+            f"видимых на странице {host} нет.\n"
+            f"Видимые элементы страницы:\n{lines}\n"
+            "Возможно, сначала нужно открыть меню, закрыть всплывающее окно "
+            "или элемент называется иначе. Ответь ТОЛЬКО номером элемента, "
+            "который стоит нажать, чтобы приблизиться к цели шага ✗. "
+            "Если шаг ✗ уже не нужен (страница сама ушла дальше по плану) — "
+            "ответь «пропустить». Если ничего не поможет — ответь «нет».")
+        try:
+            resp = router.get_response([{"role": "user", "content": prompt}],
+                                       temperature=0.0, max_tokens=8, top_p=0.1)
+        except Exception as e:
+            logger.debug(f"[CompControl] LLM-восстановление шага недоступно: {e}")
+            return False
+        self.stats["llm_calls"] += 1
+        if (resp or "").strip().lower().startswith("пропуст"):
+            logger.info(f"[CompControl] Навигация: шаг «{step[:40]}» устарел "
+                        "по мнению LLM — пропускаю")
+            return "skip"
+        m = re.fullmatch(r"\s*(\d{1,2})\s*", resp or "")
+        if not m or not (1 <= int(m.group(1)) <= len(shown)):
+            logger.info(f"[CompControl] LLM-восстановление шага: нет "
+                        f"кандидата ({(resp or '')[:40]!r})")
+            return False
+        item = shown[int(m.group(1)) - 1]
+        if _destructive_mismatch(step, item):
+            # LLM ткнула в крестик/закрытие без такого намерения в шаге —
+            # честный отказ безопаснее разрушительного клика
+            logger.info(f"[CompControl] LLM-восстановление: выбор «"
+                        f"{str(item.get('text') or '')[:30]}» ветирован "
+                        "(деструктивный без запроса)")
+            return False
+        from app.features import browser_actions as ba
+        from app.features.browser_actions import ClickUncertain
+        logger.info(f"[CompControl] LLM-восстановление шага «{step[:40]}»: "
+                    f"жму «{str(item.get('text') or '')[:40]}»")
+        try:
+            ba.click_tagged(host, int(item["idx"]), tab_id=tab_id)
+        except ClickUncertain:
+            # «Нет видимого эффекта» — годится: JS-меню открывается без
+            # изменения DOM-отпечатка; повтор шага снаружи покажет, помогло ли
+            return True
+        except Exception as e:
+            logger.info(f"[CompControl] LLM-восстановление: клик не удался: {e}")
+            return False
+        return True
 
     def _audit(self, chat_id: str, action: dict, ok: bool, detail: str,
                error_class: Optional[str] = None,

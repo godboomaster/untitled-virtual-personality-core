@@ -608,6 +608,10 @@ def main():
     _ba.scroll_step = lambda host=None, tab_id=None: {"moved": False,
                                                       "bottom": True}
     _ba.scroll_restore = lambda host=None, tab_id=None, y=0.0: None
+    # Контейнерная фаза доскролла — тоже «некуда»: без браузера настоящий
+    # вызов упирался бы в CDP-таймаут (эскалация шагов навигации его дёргает)
+    _ba.scroll_container_step = lambda host=None, tab_id=None: {"moved": False}
+    _ba.scroll_container_restore = lambda host=None, tab_id=None, y=0.0: None
 
     _pages = [[_it(0, "a", "Студентам"), _it(1, "a", "Абитуриентам")],
               [_it(0, "a", "Новости"), _it(3, "a", "Технологии баз данных")]]
@@ -702,6 +706,117 @@ def main():
         _ba.snapshot_elements, _ba.click_tagged = _orig_snap2, _orig_ct2
         _ba.open_new_tab = _orig_open
         _cc_mod.time = _orig_tm
+
+    # Навигация, эскалация сбойного шага (п.3): пропуск устаревшего шага без
+    # LLM, целевой снапшот (gidx), LLM-восстановление (клик/«пропустить»/
+    # «нет»), вето на деструктивный выбор
+    class _SeqRouter:
+        """Ответы LLM по очереди: широкий резолв, затем восстановление."""
+
+        def __init__(self, *resps):
+            self.resps = list(resps)
+            self.calls = 0
+
+        def get_response(self, messages, **kw):
+            self.calls += 1
+            return self.resps.pop(0) if self.resps else "нет"
+
+    _orig_snap3, _orig_ct3 = _ba.snapshot_elements, _ba.click_tagged
+    _orig_fg3 = _ba.snapshot_for_goal
+    _ba.open_new_tab = lambda url: 42
+    try:
+        # A. Текущего шага нет на странице, более поздний — явный лидер:
+        # шаг пропускаем без LLM (страница сама ушла вперёд по плану)
+        _clicksA = []
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://x.ru", "x.ru", [_it(0, "a", "Новости")])
+        _ba.click_tagged = lambda host, idx, tab_id=None, mark=None: (
+            _clicksA.append((idx, mark)), "clicked")[1]
+        nav_a = {"kind": "nav", "value": "https://x.ru", "host": "x.ru",
+                 "steps": ["скрытый раздел", "новости"]}
+        mnav._navigate(nav_a)
+        check("nav эскалация: устаревший шаг пропущен (skip_ahead), "
+              "кликнут только актуальный",
+              _clicksA == [(0, None)]
+              and "skip_ahead" in str(nav_a.get("choose", {}).get("path")))
+
+        # B. Шаг не влез в общий снапшот — целевой снапшот по всему DOM,
+        # клик по меткам data-vpc-gidx
+        _clicksB = []
+        _ba.snapshot_for_goal = lambda host, goal, tab_id=None: (
+            "https://x.ru", [_it(9, "a", "Скрытый пункт")])
+        _ba.click_tagged = lambda host, idx, tab_id=None, mark=None: (
+            _clicksB.append((idx, mark)), "clicked")[1]
+        mnav._navigate({"kind": "nav", "value": "https://x.ru", "host": "x.ru",
+                        "steps": ["скрытый пункт"]})
+        check("nav эскалация: шаг нашёлся целевым снапшотом, клик по gidx",
+              _clicksB == [(9, "data-vpc-gidx")])
+        _ba.snapshot_for_goal = _orig_fg3 if _orig_fg3 else (
+            lambda host, goal, tab_id=None: ("", []))
+
+        # C. LLM-восстановление: шаг не нашёлся нигде — модель советует
+        # открыть «Меню», после клика цель появляется и шаг проходит
+        _clicksC = []
+        _pagesC = [[_it(0, "a", "Меню")],
+                   [_it(0, "a", "Меню"), _it(1, "a", "Цель")]]
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://x.ru", "x.ru", _pagesC[min(len(_clicksC), 1)])
+        _ba.click_tagged = lambda host, idx, tab_id=None, mark=None: (
+            _clicksC.append((host, idx, tab_id)), "clicked")[1]
+        _rc = _SeqRouter("нет", "1")  # широкий резолв: нет; восстановление: 1
+        nav_c = {"kind": "nav", "value": "https://x.ru", "host": "x.ru",
+                 "steps": ["цель"]}
+        mnav._navigate(nav_c, router=_rc)
+        check("nav эскалация: LLM-восстановление — клик по меню, затем шаг",
+              _clicksC == [("x.ru", 0, 42), ("x.ru", 1, 42)]
+              and "after_recover" in str(nav_c.get("choose", {}).get("path")))
+        check("nav эскалация: LLM дёрнулась дважды (wide + recover)",
+              _rc.calls == 2)
+
+        # D. «пропустить» — шаг устарел по мнению LLM, навигация завершается
+        _clicksD = []
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://x.ru", "x.ru", [_it(0, "a", "Меню")])
+        _ba.click_tagged = lambda host, idx, tab_id=None, mark=None: (
+            _clicksD.append(idx), "clicked")[1]
+        _rd = _SeqRouter("нет", "пропустить")
+        nav_d = {"kind": "nav", "value": "https://x.ru", "host": "x.ru",
+                 "steps": ["цель"]}
+        mnav._navigate(nav_d, router=_rd)
+        check("nav эскалация: «пропустить» — шаг снят без ошибки и кликов",
+              _clicksD == []
+              and "llm_skip" in str(nav_d.get("choose", {}).get("path")))
+
+        # E. «нет» — честная ошибка с прогрессом
+        _re = _SeqRouter("нет", "нет")
+        try:
+            mnav._navigate({"kind": "nav", "value": "https://x.ru",
+                            "host": "x.ru", "steps": ["цель"]}, router=_re)
+            _errE = ""
+        except RuntimeError as e:
+            _errE = str(e)
+        check("nav эскалация: LLM сдалась — честный отказ с именем шага",
+              "не нашёл на странице пункт «цель»" in _errE)
+
+        # F. Восстановление ткнуло в «Закрыть» без намерения закрывать — вето
+        _clicksF = []
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://x.ru", "x.ru", [_it(0, "button", "Закрыть")])
+        _ba.click_tagged = lambda host, idx, tab_id=None, mark=None: (
+            _clicksF.append(idx), "clicked")[1]
+        _rf = _SeqRouter("нет", "1")
+        try:
+            mnav._navigate({"kind": "nav", "value": "https://x.ru",
+                            "host": "x.ru", "steps": ["цель"]}, router=_rf)
+            _errF = ""
+        except RuntimeError as e:
+            _errF = str(e)
+        check("nav эскалация: деструктивный выбор восстановления ветирован",
+              _clicksF == [] and "цель" in _errF)
+    finally:
+        _ba.snapshot_elements, _ba.click_tagged = _orig_snap3, _orig_ct3
+        _ba.snapshot_for_goal = _orig_fg3
+        _ba.open_new_tab = _orig_open
 
     # Обычный клик: метка протухла за время подтверждения (dodo перерисовывает
     # карусель баннеров) — один повтор со свежим снапшотом и свежим выбором
