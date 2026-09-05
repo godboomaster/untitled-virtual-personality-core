@@ -149,6 +149,58 @@ def main():
     check("immediate: маркер — единственное содержимое → «Готово, …»",
           mi.process_markers("[OPEN_URL:youtube.com]", "c11")[0] == "Готово, открыл youtube.com.")
 
+    # ── 5c. Подтверждение по типу действия (risk_overrides) ──
+    RO = {"click": False, "navigate_known_domain": False,
+          "navigate_new_domain": True, "download": True,
+          "type_text": True, "type_text_safe_fields": False}
+    ro = make(cfg={**CFG, "risk_overrides": RO})
+    check("risk: клик без confirm", not ro.needs_confirm({"kind": "click", "idx": 1}))
+    check("risk: скролл — как клик", not ro.needs_confirm({"kind": "scroll"}))
+    check("risk: пробел — как клик",
+          not ro.needs_confirm({"kind": "key", "key": "Space"}))
+    check("risk: Enter — общий confirm (может отправить форму)",
+          ro.needs_confirm({"kind": "key", "key": "Enter"}))
+    check("risk: известный домен (allow_domains) без confirm",
+          not ro.needs_confirm({"kind": "url", "value": "https://youtube.com"}))
+    check("risk: nav по известному домену без confirm",
+          not ro.needs_confirm({"kind": "nav", "value": "https://youtube.com/a",
+                                "steps": ["раздел"]}))
+    check("risk: скачивание с confirm", ro.needs_confirm({"kind": "download"}))
+    check("risk: ввод в обычное поле с confirm",
+          ro.needs_confirm({"kind": "type"}))
+    check("risk: ввод в поисковое поле без confirm",
+          not ro.needs_confirm({"kind": "type", "field_safe": True}))
+    check("risk: чувствительное поле — confirm всегда",
+          ro.needs_confirm({"kind": "type", "field_sensitive": True}))
+    check("risk: multi — доминирует самое рискованное",
+          ro.needs_confirm({"kind": "multi", "items": [{"kind": "click", "idx": 1},
+                                                       {"kind": "download"}]}))
+    # Новый домен: navigate_new_domain=true требует confirm даже при confirm=False
+    rn = make(cfg={**CFG, "allow_domains": [], "confirm": False,
+                   "risk_overrides": {"navigate_new_domain": True}})
+    check("risk: новый домен — confirm поверх confirm=False",
+          rn.needs_confirm({"kind": "url", "value": "https://example.com"}))
+    rn.process_markers("[OPEN_URL:example.com]", "c12")
+    check("risk: маркер нового домена → pending, не исполнен",
+          rn.calls == [] and rn.get_pending("c12") is not None)
+    # Известный домен без confirm: маркер исполняется сразу
+    rk = make(cfg={**CFG, "risk_overrides": {"navigate_known_domain": False}})
+    rk.process_markers("[OPEN_URL:youtube.com]", "c13")
+    check("risk: известный домен → исполнено сразу",
+          rk.calls == [{"kind": "url", "value": "https://youtube.com"}]
+          and rk.get_pending("c13") is None)
+    # Без переопределений всё решает общий confirm
+    plain = make()
+    check("risk: без overrides — общий confirm",
+          plain.needs_confirm({"kind": "click", "idx": 1})
+          and plain.needs_confirm({"kind": "url", "value": "https://youtube.com"}))
+    pi = make(cfg={**CFG, "confirm": False})
+    check("risk: без overrides — confirm=False ничего не спрашивает",
+          not pi.needs_confirm({"kind": "download"})
+          and not pi.needs_confirm({"kind": "type", "field_safe": False}))
+    check("risk: чувствительное поле не обходится даже confirm=False",
+          pi.needs_confirm({"kind": "type", "field_sensitive": True}))
+
     # ── 5b. Fast-path «открой X»: парсинг и резолв ──
     from app.features.computer_control import parse_open_request
     check("parse: «открой ютуб» → «ютуб»", parse_open_request("открой ютуб") == "ютуб")
@@ -1643,7 +1695,8 @@ def main():
               no_dl is None and no_dl_err is not None and "не ссылка" in no_dl_err)
         check("формулировки download: вопрос и «Готово»",
               ms2.confirm_question(act_dl)
-              == "Скачать «Методичка по SQL» с example.edu?"
+              == ("Скачать «Методичка по SQL» с example.edu?\n"
+                  "https://example.edu/a/file_get/329640?nomenu=1")
               and ms2.describe_done(act_dl)
               == "скачал «Методичка по SQL» с example.edu")
         _dls = []

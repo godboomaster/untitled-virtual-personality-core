@@ -25,6 +25,10 @@ vision-агента): открыть сайт, открыть приложени
   features:
     computer_control:
       confirm: true             # подтверждение в чате перед исполнением
+      risk_overrides:           # подтверждение по типу действия (needs_confirm)
+        click: false            #   клик/скролл/безопасные клавиши — сразу
+        navigate_new_domain: true  # новый домен (не из sites/allow_domains)
+        type_text_safe_fields: false # поисковые поля — сразу; пароль/email/tel — всегда confirm
       allow_domains: []         # пусто = любые http(s); иначе whitelist доменов
       apps:                     # ключ → что запускать (строка или per-OS)
         safari: Safari
@@ -53,6 +57,14 @@ logger = logging.getLogger(__name__)
 MARKER_RE = re.compile(r"\[(OPEN_URL|OPEN_APP|RUN_TASK):([^\]\n]{1,300})\]")
 
 PENDING_TTL_SEC = 300
+
+# Клавиши, чьё нажатие — обратимое взаимодействие со страницей (плеер,
+# закрытие диалога); Enter/Tab/Backspace сюда не входят — могут отправить
+# форму. Используется needs_confirm: безопасные клавиши подпадают под
+# risk_overrides.click, остальные — всегда общий confirm
+_RISK_SAFE_KEYS = frozenset({
+    "Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+    "m", "Escape"})
 
 
 def config_enabled(cfg) -> bool:
@@ -1220,6 +1232,13 @@ class ComputerControlManager:
         # (слова пользователя не совпали с подписями на странице) — LLM
         # выбирает элемент из компактного списка снапшота; дешевле vision
         self.llm_wide_resolve: bool = bool(cfg.get("llm_wide_resolve", True))
+        # Подтверждение по типу действия (риск), поверх общего confirm:
+        # {click: false, navigate_known_domain: false, navigate_new_domain: true,
+        #  type_text: true, type_text_safe_fields: false, download: true}
+        # Ключа нет — действует общий confirm. Логика — needs_confirm()
+        self.risk_overrides: Dict[str, bool] = {
+            str(k).strip(): bool(v)
+            for k, v in (cfg.get("risk_overrides") or {}).items()}
         self.allow_domains: List[str] = [
             str(d).strip().lower() for d in (cfg.get("allow_domains") or []) if str(d).strip()]
         self.apps: Dict[str, object] = {
@@ -1294,7 +1313,13 @@ class ComputerControlManager:
         if any(str(v).startswith("recipe:") for v in self.tasks.values()):
             ordinal_note = ("  Также доступны номерные результаты выдачи: ключи вида "
                             "«второй результат», «третье видео» (1–10) — как RUN_TASK.\n")
-        if self.confirm:
+        # Маркерный путь — url/app/task: app/task идут по общему confirm,
+        # для url могут действовать risk_overrides (navigate_*_domain).
+        # Флоу «спроси подтверждение» в промпте нужен, если хоть какой-то
+        # маркер реально уйдёт в pending
+        confirm_flow = self.confirm or self.needs_confirm(
+            {"kind": "url", "value": "https://example.com"})
+        if confirm_flow:
             flow = (
                 "Действие НЕ выполняется сразу — пользователь должен подтвердить. "
                 "Поэтому твой видимый ответ ОБЯЗАН спрашивать подтверждение в твоём "
@@ -1369,7 +1394,7 @@ class ComputerControlManager:
                     notices.append(f"⚠️ Не могу выполнить «{target[:60]}» — нет в списке разрешённых.")
                 continue
             accepted = action
-            if self.confirm:
+            if self.needs_confirm(action):
                 self.set_pending(chat_id, action)
                 logger.info(f"[CompControl] Ожидаю подтверждения: {self.describe(action)}")
             else:
@@ -1379,7 +1404,7 @@ class ComputerControlManager:
         if not clean and accepted is not None:
             # Маркер был единственным содержимым ответа — без видимого текста
             # пользователь получит пустое сообщение; подставляем шаблон
-            clean = (self.confirm_question(accepted) if self.confirm
+            clean = (self.confirm_question(accepted) if self.needs_confirm(accepted)
                      else f"Готово, {self.describe_done(accepted)}.")
         return clean, notices
 
@@ -1435,6 +1460,53 @@ class ComputerControlManager:
             return True
         host = (urlparse(url).hostname or "").lower()
         return any(host == d or host.endswith("." + d) for d in self.allow_domains)
+
+    def _known_domain(self, url: str) -> bool:
+        """Домен явно настроен у пользователя: алиас в sites или запись в
+        allow_domains. «Открой ютуб» (алиас) — известный; домен из поисковой
+        выдачи — новый."""
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            return False
+        known = list(self.allow_domains)
+        for u in self.sites.values():
+            h = (urlparse(u).hostname or "").lower()
+            if h:
+                known.append(h)
+        return any(host == d or host.endswith("." + d) for d in known)
+
+    def needs_confirm(self, action: Optional[dict]) -> bool:
+        """Нужно ли подтверждение в чате перед исполнением действия.
+        База — общий confirm; risk_overrides переопределяют по типу действия
+        (ключа нет — действует confirm). Ввод в чувствительное поле
+        (пароль/email/tel — флаг sn снапшота) требует подтверждения всегда,
+        переопределить нельзя."""
+        if not isinstance(action, dict):
+            return self.confirm
+        kind = action.get("kind")
+        if kind == "multi":
+            return any(self.needs_confirm(a) for a in action.get("items") or [])
+        ov = self.risk_overrides
+        if kind in ("click", "slider", "scroll", "scroll_stop"):
+            return bool(ov.get("click", self.confirm))
+        if kind in ("key", "press"):
+            # Пробел/стрелки/Escape — обратимое взаимодействие со страницей;
+            # Enter/Tab/Backspace могут отправить форму — остаются на confirm
+            if kind == "press" or str(action.get("key") or "") in _RISK_SAFE_KEYS:
+                return bool(ov.get("click", self.confirm))
+            return self.confirm
+        if kind == "type":
+            if action.get("field_sensitive"):
+                return True
+            key = "type_text_safe_fields" if action.get("field_safe") else "type_text"
+            return bool(ov.get(key, ov.get("type_text", self.confirm)))
+        if kind == "download":
+            return bool(ov.get("download", self.confirm))
+        if kind in ("url", "nav"):
+            known = self._known_domain(str(action.get("value") or ""))
+            key = "navigate_known_domain" if known else "navigate_new_domain"
+            return bool(ov.get(key, self.confirm))
+        return self.confirm
 
     # ── Pending-подтверждение ────────────────────────────
 
@@ -1546,7 +1618,10 @@ class ComputerControlManager:
             return (f"Открыть {action.get('host', '')} и пройти: "
                     f"{' → '.join(action.get('steps', []))}?")
         if action["kind"] == "download":
-            return f"Скачать «{action.get('element', '')}» с {action.get('host', '')}?"
+            q = f"Скачать «{action.get('element', '')}» с {action.get('host', '')}?"
+            # Целевой URL файла — часть сути риска («что именно скачивается»)
+            u = str(action.get("url") or "")
+            return f"{q}\n{u}" if u else q
         if action["kind"] == "click":
             return f"Нажать «{action.get('element', '')}» на {action.get('host', '')}?"
         if action["kind"] == "type":
@@ -3448,6 +3523,13 @@ class ComputerControlManager:
                     f"на {host} (путь: {meta.get('path')})")
         act = {"kind": "type", "idx": int(item["idx"]), "text": text,
                "element": label, "host": host, "value": url, "choose": meta}
+        # Риск ввода (needs_confirm): чувствительное поле (пароль/email/tel —
+        # флаг sn снапшота) подтверждается всегда; поисковое (флаг q) может
+        # идти без confirm по risk_overrides.type_text_safe_fields
+        if item.get("sn"):
+            act["field_sensitive"] = True
+        elif item.get("q"):
+            act["field_safe"] = True
         if submit:
             act["submit"] = True
         if tab_id is not None:

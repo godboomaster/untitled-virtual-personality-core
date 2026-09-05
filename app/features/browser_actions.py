@@ -2149,6 +2149,9 @@ _SNAPSHOT_JS = (
     "q:(ed&&(e.type==='search'||/search|поиск/i.test((e.id||'')+' '+"
     "(e.getAttribute('class')||'')+' '+(e.getAttribute('name')||'')+' '+"
     "(e.getAttribute('placeholder')||'')))?1:0),"
+    # Чувствительное поле (пароль/email/tel): ввод туда подтверждается
+    # всегда (needs_confirm), «безопасное поле» по одной подписи не считаем
+    "sn:(ed&&/^(password|email|tel)$/.test(e.type))?1:0,"
     "x:Math.round(b.left),y:Math.round(b.top),"
     "vp:(b.bottom>0&&b.right>0&&b.top<window.innerHeight&&b.left<window.innerWidth)?1:0};}"
     # Пилюли-переключатели вида «30 см / Тонкое тесто» (dodo), оценки,
@@ -2425,6 +2428,7 @@ def _parse_snapshot(raw: str) -> Tuple[str, List[dict]]:
                 "vp": bool(it.get("vp")),
                 "ed": bool(it.get("ed")),
                 "q": bool(it.get("q")),
+                "sn": bool(it.get("sn")),
                 "md": bool(it.get("md")),
                 "dd": bool(it.get("dd")),
                 "sf": bool(it.get("sf")),
@@ -2478,6 +2482,9 @@ _FRAME_SNAPSHOT_JS = (
     "q:(ed&&(e.type==='search'||/search|поиск/i.test((e.id||'')+' '+"
     "(e.getAttribute('class')||'')+' '+(e.getAttribute('name')||'')+' '+"
     "(e.getAttribute('placeholder')||'')))?1:0),"
+    # Чувствительное поле (пароль/email/tel): ввод туда подтверждается
+    # всегда (needs_confirm), «безопасное поле» по одной подписи не считаем
+    "sn:(ed&&/^(password|email|tel)$/.test(e.type))?1:0,"
     "x:Math.round(r.left),y:Math.round(r.top),ed:ed,"
     "md:(e.closest('[role=dialog],[aria-modal=true],[class*=popup],"
     "[class*=modal],[class*=Modal],[class*=dialog],[class*=overlay]')?1:0),"
@@ -2565,6 +2572,7 @@ def _merge_frame_items(page, items: List[dict]) -> List[dict]:
                     "vp": bool(it.get("vp")) and box_vp,
                     "ed": bool(it.get("ed")),
                     "q": bool(it.get("q")),
+                    "sn": bool(it.get("sn")),
                     "md": bool(it.get("md")),
                     "dd": bool(it.get("dd")),
                     "sf": bool(it.get("sf")),

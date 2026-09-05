@@ -988,7 +988,7 @@ class BotInstance:
                         f"Готово, {self.computer_control.describe_done(cc_action)}."
                         if cc_ok else
                         f"Не удалось {self.computer_control.describe(cc_action)}: {cc_detail}.")
-                elif self.computer_control.confirm:
+                elif self.computer_control.needs_confirm(cc_action):
                     self.computer_control.set_pending(chat_id, cc_action)
                     cc_reply = self.computer_control.confirm_question(cc_action)
                 else:

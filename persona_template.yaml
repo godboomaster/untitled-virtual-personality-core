@@ -117,6 +117,15 @@ features:
   #                                #   внутри dict (так гасит веб-«Фичи», списки целы)
   #   confirm: true                #   Подтверждение в чате перед исполнением (рекомендуется)
   #   click: true                  #   Агентный клик «нажми X»; false — выключить только клики
+  #   risk_overrides:              #   Подтверждение по типу действия (поверх confirm;
+  #                                #   ключа нет — действует общий confirm):
+  #     click: false               #     клик/слайдер/скролл/безопасные клавиши — без confirm
+  #     navigate_known_domain: false  #  сайт из sites/allow_domains — без confirm
+  #     navigate_new_domain: true  #     новый домен — confirm обязателен
+  #     type_text: true            #     ввод текста — confirm...
+  #     type_text_safe_fields: false  # ...кроме поисковых полей (пароль/email/tel
+  #                                #     подтверждаются всегда, переопределить нельзя)
+  #     download: true             #     скачивание файла — confirm
   #   allow_domains: []            #   Пусто = любые http(s); иначе whitelist доменов для OPEN_URL
   #   sites:                       #   Алиасы частых сайтов: мгновенный и точный резолв «открой X»
   #     ютуб: youtube.com          #   (дальше — история браузера пользователя, затем DDG)
