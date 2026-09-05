@@ -2966,7 +2966,7 @@ def hidden_editable_labels(host_part: Optional[str] = None,
 # скролл-контейнер. На бесконечных лентах (youtube) у дна ждём подгрузки
 # до 2.5 с, лента подросла — крутим дальше, нет — done (конец листания).
 _SCROLL_START_JS = (
-    "(function(side,dir){"
+    "(function(side,dir,name){"
     "var up=dir==='up';"
     "var prev=window.__vpcScroll;"
     "if(prev&&prev.raf){cancelAnimationFrame(prev.raf);}"
@@ -2998,11 +2998,45 @@ _SCROLL_START_JS = (
     "if(a0>sm){sm=a0;sb=e0;}}"
     "if(!sb)return JSON.stringify({ok:false,bottom:false,side_missed:true});"
     "target=sb;}"
+    # Именованный контейнер («пролистай комментарии»): прокручиваемый блок,
+    # чьё имя совпадает по id/class/aria-label самого блока, предков
+    # (ytd-comments#comments) или заголовку внутри («Комментарии» в шапке
+    # панели). Приоритетнее дефолтного окна: пользователь назвал его явно
+    "if(!side&&name){"
+    "var names=name.toLowerCase().split('|');"
+    "var nm=null,nmScore=0;"
+    "var ne=document.querySelectorAll('*');"
+    "for(var ni=0;ni<ne.length;ni++){var e1=ne[ni];"
+    "if(e1===document.body||e1===document.documentElement)continue;"
+    "if(e1.scrollHeight<=e1.clientHeight+60||e1.clientHeight<150)continue;"
+    "var ov1=getComputedStyle(e1).overflowY;"
+    "if(ov1!=='auto'&&ov1!=='scroll')continue;"
+    "var r1=e1.getBoundingClientRect();"
+    "if(r1.bottom<0||r1.top>window.innerHeight)continue;"
+    "var hay=(e1.tagName||'')+' '+(e1.id||'')+' '+"
+    "(e1.getAttribute('aria-label')||'')+' '+(e1.getAttribute('class')||'');"
+    # Предки: ytd-comments — тег, а не id/class; берём tagName тоже.
+    # Заголовок панели («Комментарии») ищем от самого дальнего предка —
+    # в самом скроллере его нет (он в шапке engagement-панели)
+    "var p1=e1.parentElement,pd=0,top1=e1;"
+    "while(p1&&pd<6){hay+=' '+p1.tagName+' '+(p1.id||'')+' '+"
+    "(p1.getAttribute('aria-label')||'');top1=p1;p1=p1.parentElement;pd++;}"
+    "var hd=top1.querySelector('#header h2,h2#title,[role=heading],"
+    "h1,h2,h3,#title,#header');"
+    "if(hd)hay+=' '+(hd.innerText||'');"
+    "hay=hay.toLowerCase();"
+    "var hit=0;for(var nj=0;nj<names.length;nj++){"
+    "if(names[nj]&&hay.indexOf(names[nj])>=0)hit++;}"
+    "if(!hit)continue;"
+    "var a1=e1.clientWidth*e1.clientHeight*(1+hit);"
+    "if(a1>nmScore){nmScore=a1;nm=e1;}}"
+    "if(!nm)return JSON.stringify({ok:false,bottom:false,name_missed:true});"
+    "target=nm;}"
     # Без стороны: открытое всплывающее меню (настройки плеера YouTube,
     # dropdown) приоритетнее окна — «промотай» при открытом меню крутит
     # ЕГО, иначе меню настроек видео не листается вообще (страница под ним
     # скроллится, меню — нет)
-    "if(!side){"
+    "if(!side&&!target){"
     "var pm=document.querySelectorAll('.ytp-popup,[role=menu],"
     "[role=listbox],.ytmusic-menu,[class*=popup-menu]');"
     "for(var pi=0;pi<pm.length;pi++){var pe=pm[pi];"
@@ -3056,7 +3090,7 @@ _SCROLL_START_JS = (
     "S.raf=requestAnimationFrame(tick);}"
     "S.raf=requestAnimationFrame(tick);"
     "return JSON.stringify({ok:true,bottom:false});"
-    "})('__SIDE__','__DIR__')"
+    "})('__SIDE__','__DIR__','__NAME__')"
 )
 # «Стоп»: гасим анимацию немедленно — страница замирает на текущем месте.
 _SCROLL_STOP_JS = (
@@ -3081,25 +3115,31 @@ _SCROLL_STATUS_JS = (
 def scroll_start(host_part: Optional[str] = None,
                  tab_id: Optional[int] = None,
                  side: Optional[str] = None,
-                 direction: Optional[str] = None) -> dict:
+                 direction: Optional[str] = None,
+                 name: Optional[str] = None) -> dict:
     """Запустить авто-листание страницы (анимация живёт в самой вкладке).
     Скролл движется ступенями ~56px, а не на каждый rAF-кадр — 60
     репейнтов/с «плавного» варианта грузили GPU и роняли fps всей системы.
     Окно браузера НЕ выдёргивается на передний план (front=False): листание
     идёт в фоне, иначе периодический опрос статуса вечно перехватывал бы
     фокус у чата («стоп» некуда написать). side='left'/'right' — листается
-  внутренняя панель этой половины вьюпорта, а не окно. → {"ok", "bottom",
-    "side_missed"}; ok=False/bottom — страница уже у края (низ/верх) или
-    скроллить нечего; side_missed — прокручиваемого раздела на этой стороне
-    нет. direction='up' — листать вверх (по умолчанию вниз)."""
+  внутренняя панель этой половины вьюпорта, а не окно. name — именованный
+    контейнер («комментарии|comment»): листается названный блок (панель
+    комментариев, чат), а не страница. → {"ok", "bottom",
+    "side_missed", "name_missed"}; ok=False/bottom — страница уже у края
+    (низ/верх) или скроллить нечего; side_missed — прокручиваемого раздела
+    на этой стороне нет; name_missed — названного контейнера нет.
+    direction='up' — листать вверх (по умолчанию вниз)."""
     raw = _run_js(host_part,
                   _SCROLL_START_JS.replace("__SIDE__", side or "")
-                  .replace("__DIR__", direction or ""),
+                  .replace("__DIR__", direction or "")
+                  .replace("__NAME__", name or ""),
                   tab_id=tab_id, front=False)
     try:
         res = json.loads(raw)
         return {"ok": bool(res.get("ok")), "bottom": bool(res.get("bottom")),
-                "side_missed": bool(res.get("side_missed"))}
+                "side_missed": bool(res.get("side_missed")),
+                "name_missed": bool(res.get("name_missed"))}
     except (TypeError, ValueError, AttributeError):
         raise BrowserUnavailable(f"не разобрался ответ прокрутки: {raw[:80]}")
 

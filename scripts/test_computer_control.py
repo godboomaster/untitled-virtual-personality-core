@@ -1243,6 +1243,41 @@ def main():
     check("execute: хост последней открытой вкладки запоминается для клика",
           mh._last_host == "youtube.com")
 
+    # Скоуп-цель «троеточие в <комментарий>» (shorts): общий снапшот даёт меню
+    # ОСНОВНОГО видео (синоним «действ», скор 52), целевой снапшот находит
+    # меню комментария с меньшим скором — общий выбор без слов скоупа в
+    # контексте уступает целевому, даже проигрывая по баллам
+    _orig_snap_s2, _orig_gsnap_s2 = _ba.snapshot_elements, _ba.snapshot_for_goal
+    _ba.snapshot_elements = lambda host=None, tab_id=None: (
+        "https://www.youtube.com/shorts/x", "www.youtube.com",
+        [_it(0, "button", "Меню действий"), _it(1, "a", "Новости")])
+    _ba.snapshot_for_goal = lambda host, goal, tab_id=None: (
+        "https://www.youtube.com/shorts/x",
+        [_it(8, "button", "Меню действий", w=4.0, h=4.0,
+             ctx="@faithnee 4 недели назад He has an little sister to help")])
+    try:
+        msc = make(cfg={**CFG, "allow_domains": []})
+        act_s2, err_s2 = msc.resolve_click("троеточие в he has an little sister",
+                                           None, _FakeRouter("1"))
+        check("goal-snap: скоуп — общий выбор без слов скоупа уступает целевому",
+              err_s2 is None and act_s2["idx"] == 8
+              and act_s2.get("choose", {}).get("via") == "goal_snapshot"
+              and act_s2.get("gidx"))
+        # Контроль: общий выбор СО словами скоупа в контексте — остаётся
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://www.youtube.com/shorts/x", "www.youtube.com",
+            [_it(2, "button", "Меню действий",
+                 ctx="He has an little sister to help him smile"),
+             _it(1, "a", "Новости")])
+        act_s3, err_s3 = msc.resolve_click("троеточие в he has an little sister",
+                                           None, _FakeRouter("1"))
+        check("goal-snap: скоуп — общий выбор со словами скоупа остаётся",
+              err_s3 is None and act_s3["idx"] == 2
+              and act_s3.get("choose", {}).get("via") != "goal_snapshot")
+    finally:
+        _ba.snapshot_elements = _orig_snap_s2
+        _ba.snapshot_for_goal = _orig_gsnap_s2
+
     _orig_open3 = _ba.open_new_tab
     _ba.open_new_tab = lambda url: 4242
     try:
@@ -1459,42 +1494,49 @@ def main():
     # ── 8g. Авто-листание «промотай страницу» / «стоп» ──
     from app.features.computer_control import parse_scroll_request
     check("scroll-parse: «промотай страницу» / «листай» / сайт",
-          parse_scroll_request("промотай страницу") == ("start", None, None, None)
-          and parse_scroll_request("листай") == ("start", None, None, None)
+          parse_scroll_request("промотай страницу") == ("start", None, None, None, None)
+          and parse_scroll_request("листай") == ("start", None, None, None, None)
           and parse_scroll_request("пролистай страницу на ютубе")
-          == ("start", "ютубе", None, None)
-          and parse_scroll_request("проскролль вниз") == ("start", None, None, None))
+          == ("start", "ютубе", None, None, None)
+          and parse_scroll_request("проскролль вниз") == ("start", None, None, None, None))
     check("scroll-parse: сторона — «раздел слева» / «список справа» / сайт",
           parse_scroll_request("промотай раздел слева")
-          == ("start", None, "left", None)
+          == ("start", None, "left", None, None)
           and parse_scroll_request("пролистай список справа")
-          == ("start", None, "right", None)
-          and parse_scroll_request("проскролль слева") == ("start", None, "left", None)
+          == ("start", None, "right", None, None)
+          and parse_scroll_request("проскролль слева") == ("start", None, "left", None, None)
           and parse_scroll_request("листай раздел слева на додо")
-          == ("start", "додо", "left", None))
+          == ("start", "додо", "left", None, None))
     check("scroll-parse: прилагательное первым — «правую часть» = «часть справа»",
           parse_scroll_request("пролистай правую часть")
-          == ("start", None, "right", None)
+          == ("start", None, "right", None, None)
           and parse_scroll_request("пролистай часть справа")
-          == ("start", None, "right", None)
+          == ("start", None, "right", None, None)
           and parse_scroll_request("пролистай левую часть")
-          == ("start", None, "left", None)
+          == ("start", None, "left", None, None)
           and parse_scroll_request("промотай левую колонку")
-          == ("start", None, "left", None)
+          == ("start", None, "left", None, None)
           and parse_scroll_request("пролистай правую часть вверх на додо")
-          == ("start", "додо", "right", "up"))
+          == ("start", "додо", "right", "up", None))
     check("scroll-parse: направление — «вверх»/«выше» + сторона и сайт",
-          parse_scroll_request("промотай вверх") == ("start", None, None, "up")
+          parse_scroll_request("промотай вверх") == ("start", None, None, "up", None)
           and parse_scroll_request("пролистай раздел слева вверх")
-          == ("start", None, "left", "up")
+          == ("start", None, "left", "up", None)
           and parse_scroll_request("прокрути страницу наверх")
-          == ("start", None, None, "up")
+          == ("start", None, None, "up", None)
           and parse_scroll_request("листай справа вверх на додо")
-          == ("start", "додо", "right", "up"))
+          == ("start", "додо", "right", "up", None))
+    check("scroll-parse: именованный контейнер — «комментарии»/«чат»",
+          parse_scroll_request("пролистай комментарии")
+          == ("start", None, None, None, "комментарии")
+          and parse_scroll_request("промотай комменты на ютубе")
+          == ("start", "ютубе", None, None, "комменты")
+          and parse_scroll_request("пролистай чат")
+          == ("start", None, None, None, "чат"))
     check("scroll-parse: «стоп» / «хватит листать» / «остановись»",
-          parse_scroll_request("стоп") == ("stop", None, None, None)
-          and parse_scroll_request("хватит листать") == ("stop", None, None, None)
-          and parse_scroll_request("остановись") == ("stop", None, None, None))
+          parse_scroll_request("стоп") == ("stop", None, None, None, None)
+          and parse_scroll_request("хватит листать") == ("stop", None, None, None, None)
+          and parse_scroll_request("остановись") == ("stop", None, None, None, None))
     check("scroll-parse: не команды — None",
           parse_scroll_request("ну ладно") is None
           and parse_scroll_request("остановись, я подумаю") is None
@@ -1652,7 +1694,7 @@ def main():
     _ba.find_tab_id = lambda host: None
     _sc_calls = []
     _stop_calls = []
-    _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None: (
+    _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None, name=None: (
         _sc_calls.append(host), {"ok": True, "bottom": False})[1]
     _ba.scroll_status = lambda host=None, tab_id=None: {
         "active": True, "done": False}
@@ -1683,14 +1725,14 @@ def main():
         check("scroll: «стоп» без листания → (None, None) — уходит в диалог",
               act_st2 is None and err_st2 is None)
         # Страница уже внизу: анимация не стартует — честный отказ
-        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None: (
+        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None, name=None: (
             {"ok": False, "bottom": True})
         act_s3, err_s3 = mscr.resolve_scroll("start", None)
         ok_s3, det_s3 = mscr.execute(act_s3, "c8sc")
         check("scroll: страница уже внизу — «листать некуда»",
               not ok_s3 and "низу" in det_s3)
         # Долистал до конца сам: «стоп» после — честный отчёт о причине
-        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None: (
+        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None, name=None: (
             {"ok": True, "bottom": False})
         _seq = iter([{"active": True, "done": False}]
                     + [{"active": False, "done": True}] * 5)
@@ -1714,12 +1756,12 @@ def main():
               and "раздел слева" in mscr.describe_done(act_sl)
               and "листать раздел слева" in mscr.describe(act_sl))
         # side_missed из страницы — честный отказ исполнения
-        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None: (
+        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None, name=None: (
             {"ok": False, "bottom": False, "side_missed": True})
         ok_sm, det_sm = mscr.execute(act_sl, "c8sc3")
         check("scroll: side_missed → «не вижу раздела слева»",
               not ok_sm and "слева" in det_sm)
-        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None: (
+        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None, name=None: (
             {"ok": True, "bottom": False})
         # Направление вверх: кортеж ("start", None, "up") → dir в действии
         act_up, err_up = mscr.resolve_scroll(("start", None, "up"), None)
@@ -1734,12 +1776,12 @@ def main():
                   {"kind": "scroll", "host": "dodopizza.ru",
                    "side": "left", "dir": "up"}))
         # «уже в самом верху» — честный отказ при dir=up на верхней границе
-        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None: (
+        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None, name=None: (
             {"ok": False, "bottom": True})
         ok_up2, det_up2 = mscr.execute(act_up, "c8sc4")
         check("scroll: dir=up на верхней границе → «в самом верху»",
               not ok_up2 and "верху" in det_up2)
-        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None: (
+        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None, name=None: (
             {"ok": True, "bottom": False})
         check("scroll: формулировки вопроса и «Готово»",
               mscr.confirm_question(act_s) ==
@@ -1749,6 +1791,28 @@ def main():
               in mscr.describe_done(act_s)
               and mscr.describe_done({"kind": "scroll_stop"})
               == "остановил прокрутку")
+        # Именованный контейнер («пролистай комментарии»): действие с
+        # container, scroll_start получает имя + англ. алиас
+        _sc_names = []
+        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None, name=None: (
+            _sc_names.append(name), {"ok": True, "bottom": False})[1]
+        act_cn, err_cn = mscr.resolve_scroll(("start", None, None,
+                                              "комментарии"), None)
+        check("scroll: режим-кортеж с контейнером → container в действии",
+              err_cn is None and act_cn.get("container") == "комментарии")
+        ok_cn, _ = mscr.execute(act_cn, "c8sc5")
+        check("scroll: контейнер → scroll_start(name=«комментарии|comment»)",
+              ok_cn and _sc_names == ["комментарии|comment"])
+        check("scroll: формулировки с контейнером («листать „комментарии“»)",
+              "«комментарии»" in mscr.confirm_question(act_cn)
+              and "«комментарии»" in mscr.describe_done(act_cn))
+        mscr._scroll_stop_now()
+        # Контейнер не нашёлся на странице — честный отказ с именем
+        _ba.scroll_start = lambda host=None, tab_id=None, side=None, direction=None, name=None: (
+            {"ok": False, "bottom": False, "name_missed": True})
+        ok_nm, det_nm = mscr.execute(act_cn, "c8sc6")
+        check("scroll: name_missed → «не вижу блока „комментарии“»",
+              not ok_nm and "комментарии" in det_nm)
     finally:
         _ba.scroll_start, _ba.snapshot_elements = _orig_st, _orig_snap_s
         _ba.scroll_status, _ba.scroll_stop = _orig_stat, _orig_stop

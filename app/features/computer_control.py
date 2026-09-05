@@ -973,6 +973,15 @@ _SCROLL_START_RE = re.compile(
     r"покрути|покрутить|листай|листать|scroll)\b"
     r"(?:\s+(?:эту\s+)?(?:страниц\w+|страничк\w+|лент\w+|фид|лист|ее|её|"
     r"дальше|вниз|ниже))*"
+    # Именованный контейнер: «пролистай комментарии», «промотай чат» —
+    # листается названный блок (панель комментариев), а не страница. Слова,
+    # занятые соседними группами (сторона/направление/предлог сайта/существи-
+    # тельные стороны), исключены заглядением — иначе «раздел слева»
+    # разваливался бы на контейнер «раздел»
+    r"(?:\s+(?!вверх\b|выше\b|наверх\b|up\b|слева\b|справа\b|прав\w*\b|лев\w*\b|"
+    r"на\b|в\b|во\b|раздел\w*\b|список\w*\b|панел\w*\b|блок\w*\b|част\w*\b|"
+    r"колонк\w*\b|сторон\w*\b|половин\w*\b|меню\b)"
+    r"([a-zа-яё][\wа-яё-]*(?:\s+[a-zа-яё][\wа-яё-]*)?))?"
     # Сторона: «раздел слева» и «левый раздел» — один смысл; в обоих
     # порядках («пролистай правую часть» = «пролистай часть справа»)
     r"(?:\s+(?:(прав\w+|лев\w+)\s+(?:раздел\w*|список\w*|панел\w*|блок\w*|"
@@ -989,34 +998,49 @@ _SCROLL_STOP_RE = re.compile(
     r"(?:\s+(?:листать|прокрутку|прокручивать|скроллить|мотать|листание|"
     r"прокрутка|скролл|читать|это|уже))?\s*[.!?…]*\s*$",
     re.IGNORECASE)
+# Русское имя прокручиваемого контейнера → англ. корень для DOM-матча
+# (id/aria-label/class у зарубежных сайтов английские: ytd-comments#comments)
+_SCROLL_CONTAINER_ALIAS = {
+    "комментарии": "comment", "комментарий": "comment",
+    "комментария": "comment", "комментариев": "comment",
+    "комменты": "comment", "комментов": "comment", "коммента": "comment",
+    "чат": "chat", "чата": "chat",
+    "ответы": "replie", "ответов": "replie",
+    "описание": "description", "рекомендации": "related",
+}
+
 # Как часто дозорный поток опрашивает состояние листания в странице
 # (анимация крутится сама; поток лишь ловит конец ленты/смерть вкладки)
 _SCROLL_POLL_SEC = 0.9
 
 
-def parse_scroll_request(text: str) -> Optional[Tuple[str, Optional[str], Optional[str], Optional[str]]]:
-    """«промотай страницу (на ютубе)» → ("start", сайт|None, None, None);
+def parse_scroll_request(text: str) -> Optional[Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]]:
+    """«промотай страницу (на ютубе)» → ("start", сайт|None, None, None, None);
     «промотай раздел слева» / «пролистай левый раздел» → ("start", None,
-    "left", None); «промотай вверх» → ("start", None, None, "up");
-    «стоп»/«хватит листать» → ("stop", None, None, None).
+    "left", None, None); «промотай вверх» → ("start", None, None, "up", None);
+    «пролистай комментарии» → ("start", None, None, None, "комментарии") —
+    именованный контейнер;
+    «стоп»/«хватит листать» → ("stop", None, None, None, None).
     None — не команда листания."""
     if not text or len(text) > 60:
         return None
     t = text.strip()
     m = _SCROLL_START_RE.match(t)
     if m:
-        adj = (m.group(1) or "").strip().lower()
-        bare = (m.group(2) or "").strip().lower()
+        container = (m.group(1) or "").strip().lower() or None
+        adj = (m.group(2) or "").strip().lower()
+        bare = (m.group(3) or "").strip().lower()
         side = None
         if adj:  # «правую часть» / «левый раздел» — прилагательное первым
             side = "left" if adj.startswith("лев") else "right"
         elif bare:
             side = {"слева": "left", "справа": "right",
                     "left": "left", "right": "right"}.get(bare)
-        direction = "up" if m.group(3) else None
-        return "start", (m.group(4) or "").strip().lower() or None, side, direction
+        direction = "up" if m.group(4) else None
+        return ("start", (m.group(5) or "").strip().lower() or None,
+                side, direction, container)
     if _SCROLL_STOP_RE.match(t):
-        return "stop", None, None, None
+        return "stop", None, None, None, None
     return None
 
 
@@ -1717,7 +1741,9 @@ class ComputerControlManager:
                     f"на {action.get('host', '')}")
         if action["kind"] == "scroll":
             _what = "страницу"
-            if action.get("side"):
+            if action.get("container"):
+                _what = f"«{action['container']}»"
+            elif action.get("side"):
                 _what = ("раздел слева" if action.get("side") == "left"
                          else "раздел справа")
             if action.get("dir") == "up":
@@ -1793,7 +1819,9 @@ class ComputerControlManager:
                     f"на {action.get('host', '')}?")
         if action["kind"] == "scroll":
             _what = "страницу"
-            if action.get("side"):
+            if action.get("container"):
+                _what = f"«{action['container']}»"
+            elif action.get("side"):
                 _what = ("раздел слева" if action.get("side") == "left"
                          else "раздел справа")
             if action.get("dir") == "up":
@@ -1863,7 +1891,9 @@ class ComputerControlManager:
                     f"на {got} на {action.get('host', '')}")
         if action["kind"] == "scroll":
             _what = "страницу"
-            if action.get("side"):
+            if action.get("container"):
+                _what = f"«{action['container']}»"
+            elif action.get("side"):
                 _what = ("раздел слева" if action.get("side") == "left"
                          else "раздел справа")
             if action.get("dir") == "up":
@@ -2626,7 +2656,26 @@ class ComputerControlManager:
                     # снапшота уже отфильтрованы по тексту цели на странице,
                     # а общий лидер может быть совпадением по основе слова
                     # («соусы» → «2 соуса 89 ₽» — добавил бы лишнее в заказ)
-                    if idx is None or g_score >= (gen_top or 0.0):
+                    replace = idx is None or g_score >= (gen_top or 0.0)
+                    if not replace and m_scope \
+                            and not _SPATIAL_SCOPE_RE.match(
+                                _norm_match(m_scope.group(2))):
+                        # Скоуп-цель («троеточие в <комментарий>»): общий
+                        # выбор без слов скоупа в тексте/контексте — ложный
+                        # (меню основного видео вместо меню комментария);
+                        # целевой снапшот отфильтрован по тексту скоупа —
+                        # ему доверяем, даже если его скор ниже
+                        cur = self._element_by_idx(items, idx)
+                        sw = [w for w in re.findall(
+                            r"[a-z0-9а-яё]+", _norm_match(m_scope.group(2)))
+                            if len(w) >= 3]
+                        hay = _norm_match(" ".join([
+                            str((cur or {}).get("text") or ""),
+                            str((cur or {}).get("ctx") or ""),
+                            str((cur or {}).get("aria") or "")]))
+                        if not cur or not any(_word_in(w, hay) for w in sw):
+                            replace = True
+                    if replace:
                         g_meta["via"] = "goal_snapshot"
                         url, items, idx, meta = g_url or url, g_items, g_idx, g_meta
         if idx is None:
@@ -3325,8 +3374,21 @@ class ComputerControlManager:
         host, tab_id = action.get("host"), action.get("tab_id")
         side = action.get("side")
         direction = action.get("dir")
+        container = action.get("container")
+        name_param = None
+        if container:
+            # Русское имя + англ. корень для DOM-матча (id/aria/class у
+            # зарубежных сайтов английские: ytd-comments#comments)
+            names = [str(container).lower()]
+            alias = _SCROLL_CONTAINER_ALIAS.get(names[0])
+            if alias:
+                names.append(alias)
+            name_param = "|".join(names)
         res = ba.scroll_start(host, tab_id=tab_id, side=side,
-                              direction=direction)
+                              direction=direction, name=name_param)
+        if res.get("name_missed"):
+            raise ba.BrowserUnavailable(
+                f"не вижу на странице прокручиваемого блока «{container}»")
         if res.get("side_missed"):
             raise ba.BrowserUnavailable(
                 "не вижу прокручиваемого раздела "
@@ -3388,8 +3450,11 @@ class ComputerControlManager:
         листания — (None, None): бытовое слово уходит в обычный диалог."""
         side = None
         direction = None
+        container = None
         if isinstance(mode, tuple):
-            if len(mode) == 3:
+            if len(mode) == 4:
+                mode, side, direction, container = mode
+            elif len(mode) == 3:
                 mode, side, direction = mode
             else:
                 mode, side = mode
@@ -3416,6 +3481,8 @@ class ComputerControlManager:
             act["side"] = side
         if direction:
             act["dir"] = direction
+        if container:
+            act["container"] = container
         if tab_id is not None:
             act["tab_id"] = tab_id
         return act, None

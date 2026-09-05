@@ -846,7 +846,8 @@ class BotInstance:
                                         cc_scroll = parse_scroll_request(user_input)
                                         if cc_scroll:
                                             cc_parsed = ((cc_scroll[0], cc_scroll[2],
-                                                          cc_scroll[3]),
+                                                          cc_scroll[3],
+                                                          cc_scroll[4]),
                                                          cc_scroll[1], "scroll")
                                         else:
                                             # «убери X из корзины» / «убавь/прибавь X» —
