@@ -3531,6 +3531,71 @@ def main():
         _ba.screenshot_viewport = _orig_sshot
         _ba.snapshot_elements = _orig_snap_v
 
+    # ── LLM-ярус разбора команды (JSON-протокол вместо tool-calling) ──
+    from app.features.computer_control import intent_prompt, parse_intent_action
+    check("intent parse: валидный JSON / ограждённый / none / мусор",
+          parse_intent_action('{"action":"click","goal":"войти","site":null}')
+          == {"action": "click", "goal": "войти"}
+          and parse_intent_action('ок\n```json\n{"action":"none"}\n```')
+          == {"action": "none"}
+          and parse_intent_action("ничего") is None
+          and parse_intent_action('{"action":"hack"}') is None
+          and parse_intent_action('{"action":"click"}') is None)
+    check("intent parse: клавиша — «пробел» → Space, неизвестная отклонена",
+          parse_intent_action('{"action":"key","key":"пробел"}')
+          == {"action": "key", "key": "Space"}
+          and parse_intent_action('{"action":"key","key":"F12"}') is None)
+    check("intent parse: type требует text; search — query и site",
+          parse_intent_action('{"action":"type","text":"привет","field":"поиск"}')
+          == {"action": "type", "text": "привет", "field": "поиск"}
+          and parse_intent_action('{"action":"type","field":"поиск"}') is None
+          and parse_intent_action('{"action":"search","query":"x"}') is None)
+    check("intent prompt: перечисляет действия и none",
+          '{"action":"none"}' in intent_prompt("тест")
+          and '"action":"click"' in intent_prompt("тест"))
+
+    class _IntentRouter:
+        def __init__(self, resp): self.resp = resp
+        def get_response(self, messages, **kw): return self.resp
+
+    # none → не наша команда, резолверы не дёргаются
+    m_il = make()
+    m_il.resolve_click = lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("резолвер не должен вызываться"))
+    check("intent llm: none — резолверы не вызываются",
+          m_il.resolve_intent_llm("как дела?", _IntentRouter('{"action":"none"}'))
+          == (None, None))
+    # open → resolve_many (алиас сайта)
+    m_il2 = make(cfg={**CFG, "sites": {"ютуб": "youtube.com"}})
+    act_il, _ = m_il2.resolve_intent_llm(
+        "зайди-ка на ютубчик", _IntentRouter('{"action":"open","target":"ютуб"}'))
+    check("intent llm: open → url-действие через resolve_many",
+          act_il == {"kind": "url", "value": "https://youtube.com"})
+    # click → resolve_click с goal и site
+    seen_il = {}
+    m_il3 = make()
+    m_il3.resolve_click = lambda goal, site, router, chat_id="": (
+        seen_il.update(goal=goal, site=site),
+        ({"kind": "click", "idx": 1}, None))[1]
+    act_il3, _ = m_il3.resolve_intent_llm(
+        "тыкни там на зелёненькое", _IntentRouter(
+            '{"action":"click","goal":"зелёная кнопка","site":"додо"}'))
+    check("intent llm: click → resolve_click(goal, site)",
+          act_il3 == {"kind": "click", "idx": 1}
+          and seen_il == {"goal": "зелёная кнопка", "site": "додо"})
+    # LLM недоступна / мусорный ответ — не наше, фраза уходит в диалог
+    check("intent llm: ошибка роутера и мусор — (None, None)",
+          m_il3.resolve_intent_llm("x", None) == (None, None)
+          and m_il3.resolve_intent_llm("x", _IntentRouter("не json"))
+          == (None, None))
+    # ошибка резолвера → честная причина, а не молчание/«сыгранный» успех
+    m_il4 = make()
+    m_il4.resolve_send = lambda *a, **kw: (None, "нет полей ввода")
+    err_il4 = m_il4.resolve_intent_llm(
+        "отправляй", _IntentRouter('{"action":"send"}'))[1]
+    check("intent llm: ошибка резолвера → честная причина",
+          err_il4 == "нет полей ввода")
+
     # ── Shadow DOM: проход по открытым shadow root'ам в снапшоте ──
     check("снапшот: есть проход по shadow root'ам",
           "shadowRoot" in _ba._SNAPSHOT_JS and "shroots" in _ba._SNAPSHOT_JS)

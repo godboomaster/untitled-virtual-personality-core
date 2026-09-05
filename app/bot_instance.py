@@ -971,6 +971,26 @@ class BotInstance:
                         cc_action = self.computer_control.resolve_many(cc_names)
                     except Exception as e:
                         logger.debug(f"[CompControl] fast-path резолв не удался: {e}")
+            # LLM-ярус разбора команды (последний): ни один regex-парсер не
+            # сматчился — модель классифицирует фразу в JSON-действие
+            # (текстовый протокол, работает на любом провайдере), дальше те же
+            # резолверы и тот же confirm/allowlist, что у regex-пути.
+            # Ошибка резолва — честный отказ, как у остальных fast-path команд
+            if cc_action is None and self.computer_control.click \
+                    and len(user_input) <= 200:
+                try:
+                    cc_action, cc_err = \
+                        self.computer_control.resolve_intent_llm(
+                            user_input, self.router,
+                            chat_id=str(chat_id or ""))
+                except Exception as e:
+                    logger.debug(f"[CompControl] LLM-разбор команды не удался: {e}")
+                if cc_action is None and cc_err:
+                    self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                    self.memory.add_message("assistant", cc_err, user_id, chat_id)
+                    if self.proactive and chat_id:
+                        self.proactive.record_user_response(chat_id)
+                    return cc_err
             if cc_action:
                 logger.info(f"[CompControl] fast-path: '{user_input[:40]}' → "
                             f"{self.computer_control.describe(cc_action)}")

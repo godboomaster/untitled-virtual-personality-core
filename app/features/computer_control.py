@@ -1148,6 +1148,137 @@ def parse_page_question(text: str) -> Optional[Tuple[str, Optional[str], str]]:
     return query, site, full_query
 
 
+# ── LLM-ярус разбора команды (последний, после regex-каскада) ──
+# Текстовый JSON-протокол вместо tool-calling: работает на всех провайдерах
+# роутера, включая webchat (модель там видит только текст) и локальные
+# модели без tools=. Regex-парсеры выше — бесплатные и мгновенные; этот ярус
+# ловит формулировки, которые никто не предсказал регэкспом. Результат
+# проходит те же резолверы и тот же confirm/allowlist, что и regex-путь:
+# протокол меняет только то, КАК определено намерение, не то, что разрешено
+# исполнять.
+
+_INTENT_KEYS = frozenset({
+    "Space", "Enter", "Escape", "Tab", "Backspace",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "m"})
+
+_INTENT_JSON_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
+
+
+def intent_prompt(text: str) -> str:
+    """Промпт классификации команды управления в JSON-действие (плоский
+    объект, без вложенности — parse_intent_action его и ждёт)."""
+    return (
+        "Режим управления компьютером пользователя. Определи, какое ДЕЙСТВИЕ "
+        "просит фраза, и ответь ТОЛЬКО одним JSON-объектом, без пояснений.\n"
+        "Действия (site — название сайта/вкладки, если назван явно, иначе "
+        "null; поля без значения опускай):\n"
+        '{"action":"click","goal":"что нажать","site":null} — нажать/выбрать '
+        "элемент страницы\n"
+        '{"action":"open","target":"сайт или приложение"} — открыть сайт, '
+        "запустить программу\n"
+        '{"action":"type","text":"текст","field":"поле","site":null} — ввести '
+        "текст в поле на странице\n"
+        '{"action":"download","goal":"что скачать","site":null} — скачать '
+        "файл со страницы\n"
+        '{"action":"scroll","side":"left|right","direction":"up","stop":false}'
+        " — листать страницу/остановить листание\n"
+        '{"action":"key","key":"Space|Enter|Escape|Tab|Backspace|ArrowUp|'
+        'ArrowDown|ArrowLeft|ArrowRight"} — нажать клавишу в страницу '
+        "(пауза/плей плеера — это Space)\n"
+        '{"action":"send","site":null} — отправить набранное сообщение (Enter)\n'
+        '{"action":"close","goal":"что закрыть"} — закрыть окно/попап/блок\n'
+        '{"action":"read","mode":"last|page","site":null} — прочитать '
+        "последнее сообщение чата / страницу\n"
+        '{"action":"switch_tab","goal":"название вкладки"} — переключиться '
+        "на открытую вкладку\n"
+        '{"action":"search","query":"запрос","site":"сайт"} — поиск на '
+        "конкретном сайте\n"
+        '{"action":"none"} — это НЕ команда управления компьютером/браузером '
+        "(обычный разговор, вопрос, просьба что-то написать)\n"
+        f"Фраза: «{text}»")
+
+
+def parse_intent_action(resp: str) -> Optional[dict]:
+    """Ответ LLM-разбора команды → нормализованный dict действия или None.
+    Строго: плоский JSON, известный action, строковые поля с лимитами длины.
+    Выход модели не исполняется напрямую — дальше те же резолверы."""
+    m = _INTENT_JSON_RE.search(str(resp or ""))
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    kind = str(data.get("action") or "").strip().lower()
+    if kind == "none":
+        return {"action": "none"}
+
+    def _s(key: str, cap: int) -> Optional[str]:
+        v = data.get(key)
+        if v is None:
+            return None
+        v = " ".join(str(v).split()).strip()
+        return v[:cap] or None
+
+    out: Dict[str, object] = {"action": kind}
+    site = _s("site", 40)
+    if site:
+        out["site"] = site
+    if kind in ("click", "download", "close"):
+        goal = _s("goal", 60)
+        if not goal:
+            return None
+        out["goal"] = goal
+    elif kind == "open":
+        target = _s("target", 60)
+        if not target:
+            return None
+        out["target"] = target
+    elif kind == "type":
+        text = _s("text", 200)
+        if not text:
+            return None
+        out["text"] = text
+        field = _s("field", 60)
+        if field:
+            out["field"] = field
+    elif kind == "scroll":
+        if data.get("stop"):
+            out["stop"] = True
+        side = _s("side", 10)
+        if side in ("left", "right"):
+            out["side"] = side
+        if _s("direction", 10) == "up":
+            out["direction"] = "up"
+    elif kind == "key":
+        key = _s("key", 20)
+        if not key:
+            return None
+        key = _KEY_MAP.get(key.lower(), key)
+        if key not in _INTENT_KEYS:
+            return None
+        out["key"] = key
+    elif kind == "send":
+        pass
+    elif kind == "read":
+        out["mode"] = "page" if data.get("mode") == "page" else "last"
+    elif kind == "switch_tab":
+        goal = _s("goal", 60)
+        if not goal:
+            return None
+        out["goal"] = goal
+    elif kind == "search":
+        query = _s("query", 80)
+        if not query or not site:
+            return None
+        out["query"] = query
+    else:
+        return None
+    return out
+
+
 class ComputerControlManager:
     """Разбор маркеров, allowlist-валидация, pending-подтверждения, исполнение."""
 
@@ -1860,6 +1991,70 @@ class ComputerControlManager:
         if not actions:
             return None
         return actions[0] if len(actions) == 1 else {"kind": "multi", "items": actions}
+
+    def resolve_intent_llm(self, text: str, router, chat_id: str = ""
+                           ) -> Tuple[Optional[dict], Optional[str]]:
+        """Последний ярус разбора команды в режиме управления: ни один
+        regex-парсер не сматчился — LLM классифицирует фразу в JSON-действие
+        (протокол intent_prompt), дальше обычные резолверы и тот же
+        confirm/allowlist. (None, None) — не команда / LLM недоступна: фраза
+        уходит в обычный диалог. (None, причина) — команда распознана, но
+        исполнить не вышло: честный отказ, а не «сыгранный» успех."""
+        if router is None:
+            return None, None
+        try:
+            resp = router.get_response(
+                [{"role": "user", "content": intent_prompt(text)}],
+                temperature=0.0, max_tokens=100, top_p=0.1)
+        except Exception as e:
+            logger.debug(f"[CompControl] LLM-разбор команды недоступен: {e}")
+            return None, None
+        act = parse_intent_action(resp)
+        if not act or act["action"] == "none":
+            return None, None
+        self.stats["llm_intent"] = self.stats.get("llm_intent", 0) + 1
+        logger.info(f"[CompControl] LLM-разбор: «{text[:50]}» → "
+                    f"{act['action']}")
+        kind = act["action"]
+        site = act.get("site")
+        try:
+            if kind == "click":
+                return self.resolve_click(str(act["goal"]), site, router,
+                                          chat_id=chat_id)
+            if kind == "close":
+                return self.resolve_click(f"закрой {act['goal']}", site,
+                                          router, chat_id=chat_id)
+            if kind == "download":
+                return self.resolve_download(str(act["goal"]), site, router,
+                                             chat_id=chat_id)
+            if kind == "type":
+                body = (f"{act['text']} в поле {act['field']}"
+                        if act.get("field") else str(act["text"]))
+                return self.resolve_type(body, site, router, chat_id=chat_id)
+            if kind == "open":
+                return self.resolve_many([str(act["target"])]), None
+            if kind == "search":
+                return self.resolve_search(str(act["query"]),
+                                           str(act["site"])), None
+            if kind == "scroll":
+                mode: object = "stop" if act.get("stop") else (
+                    "start", act.get("side"), act.get("direction"))
+                return self.resolve_scroll(mode, site, router, chat_id=chat_id)
+            if kind == "key":
+                return self.resolve_key(act["key"], site, router,
+                                        chat_id=chat_id)
+            if kind == "send":
+                return self.resolve_send(None, site, router, chat_id=chat_id)
+            if kind == "read":
+                return self.resolve_read(str(act["mode"]), site,
+                                         chat_id=chat_id)
+            if kind == "switch_tab":
+                return self.resolve_tab_switch(str(act["goal"]), True,
+                                               chat_id=chat_id)
+        except Exception as e:
+            logger.debug(f"[CompControl] LLM-разбор: резолвер «{kind}» "
+                         f"не удался: {e}")
+        return None, None
 
     def resolve_search(self, query: str, site_word: str,
                        direct: bool = True) -> Optional[dict]:
