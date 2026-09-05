@@ -128,6 +128,10 @@ ADAPTERS = {
         "host": "chat.deepseek.com",
         "home": "https://chat.deepseek.com/",
         "input": "textarea",
+        # Цель поля ввода — фолбэк при протухшем CSS-селекторе (редизайн):
+        # поле ищется по подписям в общем снапшоте, без LLM
+        "input_goal": ["поле ввода сообщения", "message deepseek",
+                       "send a message"],
         "answer": [".ds-assistant-message-main-content",
                    ".ds-markdown"],
         # Своё сообщение: ds-message БЕЗ assistant-контента внутри (класса
@@ -139,6 +143,8 @@ ADAPTERS = {
         "host": "chat.qwen.ai",
         "home": "https://chat.qwen.ai/",
         "input": "textarea.message-input-textarea",
+        "input_goal": ["поле ввода сообщения", "send a message",
+                       "ask anything"],
         "answer": [".qwen-chat-message-assistant .response-message-content.phase-answer",
                    ".qwen-chat-message-assistant .chat-response-message"],
         "user": [".qwen-chat-message-user"],
@@ -156,6 +162,8 @@ ADAPTERS = {
         "host": "claude.ai",
         "home": "https://claude.ai/new",
         "input": "div[contenteditable=true]",
+        "input_goal": ["поле ввода сообщения", "reply to claude",
+                       "message"],
         # Редизайн 08.2026: .font-claude-response-body — теперь класс каждого
         # абзаца <p> внутри ответа, а не контейнер всего сообщения. Читатели
         # берут последний совпавший блок — до пользователя доходил один
@@ -174,6 +182,8 @@ ADAPTERS = {
         "host": "chat.z.ai",
         "home": "https://chat.z.ai/",
         "input": "textarea#chat-input",
+        "input_goal": ["поле ввода сообщения", "send a message",
+                       "ask anything"],
         # Контент ответа — внутренний .markdown-prose в #response-content-container;
         # снаружи лежит .thinking-chain-container («Thought Process») — вырезаем
         # exclude'ом: md() не смотрит на видимость, свёрнутая цепочка иначе
@@ -187,6 +197,7 @@ ADAPTERS = {
         "host": "chatgpt.com",
         "home": "https://chatgpt.com/",
         "input": "#prompt-textarea",
+        "input_goal": ["поле ввода сообщения", "ask anything", "message"],
         "answer": ["[data-message-author-role=assistant] .markdown",
                    "[data-message-author-role=assistant]"],
         "user": ["[data-message-author-role=user]"],
@@ -195,6 +206,8 @@ ADAPTERS = {
         "host": "kimi.ai",
         "home": "https://www.kimi.ai/",
         "input": "div.chat-input-editor",
+        "input_goal": ["поле ввода сообщения", "send a message",
+                       "ask anything"],
         # Ответ — прямой markdown-контейнер content-box; цепочка «Think»
         # лежит в .thinking-container (не direct child) — основной селектор
         # её не видит, exclude — страховка на случай сдвига вёрстки.
@@ -447,6 +460,54 @@ class WebChatLLM:
 
     # ── главный вызов ──
 
+    def _fill_send(self, ba, host: str, tab_id: int, prompt: str):
+        """Ввод + Enter в поле чата: по CSS-селектору адаптера; при промахе
+        (редизайн фронта, хэшированные классы меняются без предупреждения) —
+        поле ищется по ЦЕЛИ через общий DOM-снапшот (input_goal адаптера)
+        и заполняется по DOM-метке. Детерминированно, без LLM: web_llm сам
+        является LLM-провайдером роутера — звать модель для поиска её же
+        поля ввода было бы круговой зависимостью."""
+        try:
+            ba.chat_fill_send(host, tab_id, self.adapter["input"], prompt)
+            return
+        except Exception as e:
+            idx = self._find_input_by_goal(ba, host, tab_id)
+            if idx is None:
+                raise
+            logger.info(f"[WebChat] {self.site}: поле по селектору не "
+                        f"нашлось ({str(e)[:60]}) — ввод по цели (idx {idx})")
+            ba.chat_fill_send_tagged(host, tab_id, idx, prompt)
+
+    def _find_input_by_goal(self, ba, host: str, tab_id: int):
+        """idx поля ввода по целям адаптера (input_goal): снапшот вкладки +
+        детерминированный скоринг подписей editable-полей (как у команды
+        «введи X в поле Y», но без LLM-ярусов). Единственное видимое поле
+        страницы берётся без скоринга (у чата один композер). None — поле
+        не нашлось или целей в адаптере нет."""
+        goals = self.adapter.get("input_goal") or []
+        if isinstance(goals, str):
+            goals = [goals]
+        try:
+            _url, _host, items = ba.snapshot_elements(host, tab_id=tab_id)
+        except Exception:
+            return None
+        inputs = [it for it in items if it.get("ed")]
+        if not inputs:
+            return None
+        if goals:
+            from app.features.computer_control import (
+                ComputerControlManager as _CCM, LEADER_MIN_SCORE)
+            best = None
+            for goal in goals:
+                scored = _CCM._score_candidates(inputs, goal)
+                if scored and (best is None or scored[0][0] > best[0]):
+                    best = scored[0]
+            if best is not None and best[0] >= LEADER_MIN_SCORE:
+                return int(best[1]["idx"])
+        if len(inputs) == 1:
+            return int(inputs[0]["idx"])
+        return None
+
     def _send_verified(self, ba, host: str, tab_id: int, prompt: str):
         """chat_fill_send + подтверждение, что сообщение РЕАЛЬНО появилось
         в ленте (последний user-блок содержит наш текст). Иначе hydration-
@@ -461,11 +522,11 @@ class WebChatLLM:
         _wait_answer; None — у адаптера нет user-селекторов."""
         user_sels = self.adapter.get("user")
         if not user_sels:
-            ba.chat_fill_send(host, tab_id, self.adapter["input"], prompt)
+            self._fill_send(ba, host, tab_id, prompt)
             return None
         want = " ".join(prompt[:80].split()).lower()
         for attempt in (1, 2):
-            ba.chat_fill_send(host, tab_id, self.adapter["input"], prompt)
+            self._fill_send(ba, host, tab_id, prompt)
             deadline = time.time() + SEND_VERIFY_SEC
             while time.time() < deadline:
                 try:

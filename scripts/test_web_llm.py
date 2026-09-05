@@ -785,6 +785,56 @@ def main():
           w1 is False and w2 is False and len(probes7) == 2
           and "zai" not in rv7._vision_verdict)
 
+    # ── 15. Поле ввода по цели (input_goal): селектор протух → снапшот ──
+    _cfs15 = ba.chat_fill_send
+    _cft15 = ba.chat_fill_send_tagged
+    _snap15 = ba.snapshot_elements
+    sent_sel = []
+    sent_tagged = []
+
+    def _cfs_boom(host, tab_id, sel, text):
+        sent_sel.append(sel)
+        raise ba.BrowserUnavailable("поле чата не приняло ввод: не нашлось")
+
+    ba.chat_fill_send = _cfs_boom
+    ba.chat_fill_send_tagged = lambda host, tab_id, idx, text: (
+        sent_tagged.append(idx), "sent")[1]
+    llm15 = wl.WebChatLLM("qwen", base_dir=tmp / "q15")
+    try:
+        # Одно видимое поле — берётся без скоринга
+        ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://chat.qwen.ai", "chat.qwen.ai",
+            [{"idx": 7, "tag": "textarea", "ed": True, "text": "",
+              "aria": ""}])
+        llm15._fill_send(ba, "chat.qwen.ai", 42, "привет")
+        check("goal-фолбэк: селектор протух → ввод по метке единственного поля",
+              sent_sel and sent_tagged == [7])
+        # Поле находится скорингом по подписи среди нескольких
+        sent_tagged.clear()
+        ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://chat.qwen.ai", "chat.qwen.ai",
+            [{"idx": 3, "tag": "input", "ed": True, "text": "Поиск по чатам",
+              "aria": ""},
+             {"idx": 8, "tag": "textarea", "ed": True, "text": "",
+              "aria": "Send a Message"}])
+        llm15._fill_send(ba, "chat.qwen.ai", 42, "привет")
+        check("goal-фолбэк: поле выбрано скорингом по подписи",
+              sent_tagged == [8])
+        # Поля нет вообще — честная ошибка исходного селектора
+        ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://chat.qwen.ai", "chat.qwen.ai", [])
+        try:
+            llm15._fill_send(ba, "chat.qwen.ai", 42, "привет")
+            _raised15 = False
+        except Exception:
+            _raised15 = True
+        check("goal-фолбэк: полей нет — исходная ошибка, а не тихий промах",
+              _raised15)
+    finally:
+        ba.chat_fill_send = _cfs15
+        ba.chat_fill_send_tagged = _cft15
+        ba.snapshot_elements = _snap15
+
     ba.answer_blocks_after = _aba_orig
     ba.restart_browser = _rb_orig
     print(f"\nИтог: {ok} проверок")

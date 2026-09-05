@@ -4185,6 +4185,63 @@ def navigate_tab(url: str, host_part: Optional[str] = None,
     return _WORKER.submit(_op)
 
 
+def _chat_fill_send_loc(page, loc, text: str) -> str:
+    """Ввод в поле чата по готовому locator'у + Enter: fill (мгновенно,
+    посимвольный набор длинных промптов не тянет) с обходом управляемых
+    редакторов (Lexical откатывает fill — вставка через IME-путь), затем
+    Enter и closed-loop (поле очистилось/страница изменилась)."""
+    try:
+        loc.click(timeout=CLICK_TIMEOUT_MS)
+        loc.fill(text, timeout=CLICK_TIMEOUT_MS)
+    except Exception as e:
+        detail = str(e).split("Call log")[0].strip().split("\n")[0]
+        raise BrowserUnavailable(f"поле чата не приняло ввод: {detail[:100]}")
+    got = str(loc.evaluate(
+        "e => e.isContentEditable ? e.innerText : e.value") or "")
+    if _norm_ws(text[:200]) not in _norm_ws(got):
+        # Управляемые редакторы (Lexical — kimi.ai) откатывают fill():
+        # их состояние не из DOM, заполненное содержимое стирается
+        # при reconcile. Обход — вставка через IME-путь
+        # (Input.insertText): проходит через editing-пайплайн редактора.
+        # selectAll перед вставкой — заменить возможный частичный fill.
+        try:
+            loc.evaluate("e => { e.focus();"
+                         " document.execCommand('selectAll'); }")
+            page.keyboard.insert_text(text)
+            ins_deadline = time.time() + 2.0
+            while time.time() < ins_deadline:
+                got = str(loc.evaluate(
+                    "e => e.isContentEditable ? e.innerText : e.value") or "")
+                if _norm_ws(text[:200]) in _norm_ws(got):
+                    break
+                time.sleep(0.2)  # редактор применяет вставку асинхронно
+        except Exception as e:
+            detail = str(e).split("Call log")[0].strip().split("\n")[0]
+            raise BrowserUnavailable(
+                f"поле чата не приняло текст: {detail[:100]}")
+    # fill() может обрезать под лимит поля — сверяем по началу текста
+    if _norm_ws(text[:200]) not in _norm_ws(got):
+        raise BrowserUnavailable("поле чата не приняло текст")
+    pre = _page_state(page)
+    try:
+        loc.press("Enter", timeout=CLICK_TIMEOUT_MS)
+    except Exception as e:
+        detail = str(e).split("Call log")[0].strip().split("\n")[0]
+        raise BrowserUnavailable(f"Enter не нажался: {detail[:100]}")
+    deadline = time.time() + SUBMIT_VERIFY_SEC
+    while time.time() < deadline:
+        try:
+            cur = str(loc.evaluate(
+                "e => e.isContentEditable ? e.innerText : e.value") or "")
+        except Exception:
+            cur = ""
+        if not cur.strip() or _page_state(page) != pre:
+            return "sent"
+        time.sleep(0.25)
+    raise FillUncertain("промпт введён, Enter нажат, но поле не "
+                        "очистилось — не уверен, что ушло")
+
+
 def chat_fill_send(host_part: Optional[str], tab_id: Optional[int],
                    input_sel: str, text: str) -> str:
     """Быстрый ввод в поле чата по селектору адаптера (fill — мгновенно,
@@ -4204,56 +4261,30 @@ def chat_fill_send(host_part: Optional[str], tab_id: Optional[int],
     def _op(w):
         page = w.page_for(host_part, tab_id)
         loc = page.locator(input_sel).first
-        try:
-            loc.click(timeout=CLICK_TIMEOUT_MS)
-            loc.fill(text, timeout=CLICK_TIMEOUT_MS)
-        except Exception as e:
-            detail = str(e).split("Call log")[0].strip().split("\n")[0]
-            raise BrowserUnavailable(f"поле чата не приняло ввод: {detail[:100]}")
-        got = str(loc.evaluate(
-            "e => e.isContentEditable ? e.innerText : e.value") or "")
-        if _norm_ws(text[:200]) not in _norm_ws(got):
-            # Управляемые редакторы (Lexical — kimi.ai) откатывают fill():
-            # их состояние не из DOM, заполненное содержимое стирается
-            # при reconcile. Обход — вставка через IME-путь
-            # (Input.insertText): проходит через editing-пайплайн редактора.
-            # selectAll перед вставкой — заменить возможный частичный fill.
-            try:
-                loc.evaluate("e => { e.focus();"
-                             " document.execCommand('selectAll'); }")
-                page.keyboard.insert_text(text)
-                ins_deadline = time.time() + 2.0
-                while time.time() < ins_deadline:
-                    got = str(loc.evaluate(
-                        "e => e.isContentEditable ? e.innerText : e.value") or "")
-                    if _norm_ws(text[:200]) in _norm_ws(got):
-                        break
-                    time.sleep(0.2)  # редактор применяет вставку асинхронно
-            except Exception as e:
-                detail = str(e).split("Call log")[0].strip().split("\n")[0]
-                raise BrowserUnavailable(
-                    f"поле чата не приняло текст: {detail[:100]}")
-        # fill() может обрезать под лимит поля — сверяем по началу текста
-        if _norm_ws(text[:200]) not in _norm_ws(got):
-            raise BrowserUnavailable("поле чата не приняло текст")
-        pre = _page_state(page)
-        try:
-            loc.press("Enter", timeout=CLICK_TIMEOUT_MS)
-        except Exception as e:
-            detail = str(e).split("Call log")[0].strip().split("\n")[0]
-            raise BrowserUnavailable(f"Enter не нажался: {detail[:100]}")
-        deadline = time.time() + SUBMIT_VERIFY_SEC
-        while time.time() < deadline:
-            try:
-                cur = str(loc.evaluate(
-                    "e => e.isContentEditable ? e.innerText : e.value") or "")
-            except Exception:
-                cur = ""
-            if not cur.strip() or _page_state(page) != pre:
-                return "sent"
-            time.sleep(0.25)
-        raise FillUncertain("промпт введён, Enter нажат, но поле не "
-                            "очистилось — не уверен, что ушло")
+        return _chat_fill_send_loc(page, loc, text)
+
+    return _WORKER.submit(_op)
+
+
+def chat_fill_send_tagged(host_part: Optional[str], tab_id: Optional[int],
+                          idx: int, text: str) -> str:
+    """То же, но по DOM-метке снапшота (data-vpc-idx) вместо CSS-селектора —
+    goal-фолбэк web_llm, когда селектор адаптера протух после редизайна.
+    Только CDP (метку ставит snapshot_elements, сырой/сафари-путь её не
+    имеет)."""
+    text = str(text or "").strip()
+    if not text:
+        raise BrowserUnavailable("пустой текст — нечего отправлять")
+    if _select_backend(tab_op=True) != "cdp":
+        raise BrowserUnavailable("chat-ввод по метке работает только с CDP")
+
+    def _op(w):
+        page = w.page_for(host_part, tab_id)
+        loc, _scope = _locator_any_frame(page, idx)
+        if loc is None:
+            raise BrowserUnavailable(
+                "поле чата по метке снапшота не нашлось")
+        return _chat_fill_send_loc(page, loc, text)
 
     return _WORKER.submit(_op)
 
