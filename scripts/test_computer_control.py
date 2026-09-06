@@ -3722,10 +3722,11 @@ def main():
         check("зоны: download по координатной зоне — «не ссылка»",
               no_dl_z is None and "не ссылка" in (err_dl_z or ""))
         # Безымянная зона подписывается ближайшей подписанной (миниатюра
-        # рядом с названием видео), а не «зона N»
+        # рядом с названием видео), а не «зона N». Цель — НЕ номерная
+        # («первое видео» уйдёт в ordinal-рецепт task-словарём без element)
         _boxes.append({"x": 10.0, "y": 120.0, "w": 100.0, "h": 80.0,
                        "text": ""})
-        act_z2, _ = m_zone.resolve_click("первое видео", None,
+        act_z2, _ = m_zone.resolve_click("видео недели", None,
                                          _ZoneRouter("нет", "4"),
                                          chat_id="vz5")
         check("зоны: безымянная зона подписана соседом, а не «зона N»",
@@ -3738,11 +3739,11 @@ def main():
         _texts = [b["text"] for b in _boxes]
         for b in _boxes:
             b["text"] = ""
-        act_z3, _ = m_zone.resolve_click("первое видео", None,
+        act_z3, _ = m_zone.resolve_click("видео недели", None,
                                          _ZoneRouter("нет", "1"),
                                          chat_id="vz6")
         check("зоны: все зоны безымянные — подпись словами цели",
-              act_z3 is not None and "первое видео" in act_z3["element"])
+              act_z3 is not None and "видео недели" in act_z3["element"])
         for b, t in zip(_boxes, _texts):
             b["text"] = t
     finally:
@@ -4240,6 +4241,27 @@ def main():
     check("scroll_hunt: контейнерная фаза отработала и возвращена",
           _hunt_calls.count("cstep") == 10 and "crestore" in _hunt_calls
           and _hunt_calls[-1] == ("wrestore", 100.0))
+
+    # Свайп-лента (shorts/reels): доскролл-поиск пропускается ЦЕЛИКОМ —
+    # шаг прокрутки там листает основной контент, а не список элементов
+    # (кейс 07.09: «нажми сортировать» на странице shorts бесконечно
+    # листало видео: фаза 2 крутила #shorts-container)
+    _ba_hunt.snapshot_for_goal = lambda *a, **kw: ("", [])
+    try:
+        _hunt_calls.clear()
+        ComputerControlManager._scroll_hunt(
+            make(), _FakeBAHunt(), "youtube.com", 7, "сортировать",
+            page_url="https://www.youtube.com/shorts/abc123")
+        check("scroll_hunt: на shorts ни одного шага прокрутки",
+              not _hunt_calls)
+        _hunt_calls.clear()
+        ComputerControlManager._scroll_hunt(
+            make(), _FakeBAHunt(), "youtube.com", 7, "сортировать",
+            page_url="https://www.youtube.com/watch?v=abc123")
+        check("scroll_hunt: на обычной странице листает как раньше",
+              "wstep" in _hunt_calls and "cstep" in _hunt_calls)
+    finally:
+        _ba_hunt.snapshot_for_goal = _orig_sfg
 
     # Синоним «троеточие»: основа «действ» prefix-матчит «Меню действий»
     # YouTube (полное слово «действия» не матчило «действий»)

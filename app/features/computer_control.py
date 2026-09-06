@@ -311,6 +311,15 @@ _CLOSE_GENERIC_RE = re.compile(
     r"(?:окн\w*|окошк\w*|модал\w*|попап\w*|диалог\w*|баннер\w*|уведомлен\w*|"
     r"подсказк\w*|анкет\w*|форм\w*|это|его|её|их)\s*$", re.IGNORECASE)
 
+# Свайп-ленты (shorts/reels): шаг прокрутки тут не «показать ещё элементы
+# списка», а «перелистнуть основной контент» — крупнейший скроллящийся
+# контейнер такой страницы и ЕСТЬ лента видео. Доскролл-поиск кнопки
+# (_scroll_hunt) на ней бессмысленен (кнопки в ленте не появляются
+# прокруткой) и деструктивен: 10 контейнерных шагов = 10 перелистнутых
+# роликов, и возврат scrollTop смену видео не отменяет (кейс 07.09:
+# «нажми сортировать» на странице shorts → бесконечное листание ленты)
+_SWIPE_FEED_URL_RE = re.compile(r"/(?:shorts|reels?)/", re.IGNORECASE)
+
 # Контролы-«разрушители»: если LLM выбрала такой элемент, а в цели нет
 # намерения закрывать/удалять — почти всегда промах zero-match резолва
 # («сырный в части слева» → крестик модалки). Вето вместо клика.
@@ -2576,7 +2585,7 @@ class ComputerControlManager:
         return "low_score"
 
     def _scroll_hunt(self, _ba, host: str, tab_id: Optional[int],
-                     search_goal: str):
+                     search_goal: str, page_url: str = ""):
         """Доскролл-поиск цели для виртуализированных списков/лент: текст цели
         появляется в DOM только после прокрутки в область. Фаза 1 — до 3
         экранов ОКНА вниз; фаза 2 — крупнейший внутренний контейнер (очередь
@@ -2586,8 +2595,14 @@ class ComputerControlManager:
         вьюпорта и контейнерный шаг его не видит. Пересъёмка целевого
         снапшота после каждого шага; промах — прокрутку возвращаем, где была
         (пользователь не должен обнаружить страницу уехавшей).
+        На свайп-лентах (shorts/reels) не работаем совсем: прокрутка там
+        листает ролики, а не список элементов (см. _SWIPE_FEED_URL_RE).
         → (url, items) последнего целевого снапшота."""
         from app.features.browser_actions import snapshot_for_goal
+        if page_url and _SWIPE_FEED_URL_RE.search(page_url):
+            logger.info(f"[CompControl] «{search_goal[:40]}»: свайп-лента "
+                        f"({page_url[:60]}), доскролл-поиск пропущен")
+            return "", []
         y0 = _ba.scroll_position(host, tab_id)
         g_url, g_items = "", []
         for _ in range(3):
@@ -2693,8 +2708,9 @@ class ComputerControlManager:
             if not g_items:
                 # Виртуализированный список/бесконечная лента: цель не
                 # отрендерена, пока её не доскроллили — доскролл-поиск
+                # (на свайп-лентах сам пропускается: там он листает ролики)
                 g_url, g_items = self._scroll_hunt(_ba, host, tab_id,
-                                                   search_goal)
+                                                   search_goal, page_url=url)
             if g_items:
                 g_idx, g_meta = self._choose_element(goal, g_items, router)
                 llm_veto = str(g_meta.get("llm_response") or "")
@@ -4394,7 +4410,7 @@ class ComputerControlManager:
             deadline = time.time() + NAV_LOAD_TIMEOUT_SEC
             while time.time() < deadline:
                 try:
-                    _, host, items = ba.snapshot_elements(tab_host, tab_id=tab_id)
+                    url, host, items = ba.snapshot_elements(tab_host, tab_id=tab_id)
                     break
                 except Exception as e:
                     last_err = e
@@ -4411,7 +4427,7 @@ class ComputerControlManager:
                 dismissed = None
             if dismissed:
                 action.setdefault("overlays", []).append(dismissed)
-                _, host, items = ba.snapshot_elements(tab_host, tab_id=tab_id)
+                url, host, items = ba.snapshot_elements(tab_host, tab_id=tab_id)
             so_far = f" (прошёл: {' → '.join(done)})" if done else ""
             # Шаг уже не нужен (страница сама ушла вперёд по плану): текущий
             # на странице не находится совсем, а более поздний — явный лидер
@@ -4444,12 +4460,13 @@ class ComputerControlManager:
                     if attempt == 2 or not retryable:
                         raise RuntimeError(f"на шаге «{step}»{so_far}: {e}")
                     time.sleep(NAV_POLL_SEC)
-                    _, host, items = ba.snapshot_elements(tab_host, tab_id=tab_id)
+                    url, host, items = ba.snapshot_elements(tab_host, tab_id=tab_id)
             if idx is None:
                 # Эскалация резолва шага — тот же каскад, что у агентного
                 # клика: целевой снапшот/доскролл → широкий LLM → vision
                 idx, meta = self._resolve_nav_step(step, host, items,
-                                                   tab_id, router)
+                                                   tab_id, router,
+                                                   page_url=url or "")
                 step_paths.append(str(meta.get("path") or "?"))
                 if idx is not None:
                     try:
@@ -4520,13 +4537,16 @@ class ComputerControlManager:
         return None
 
     def _resolve_nav_step(self, step: str, host: str, items: List[dict],
-                          tab_id: Optional[int], router):
+                          tab_id: Optional[int], router,
+                          page_url: str = ""):
         """Эскалация резолва шага навигации, когда общий снапшот шага не дал
         кандидата: целевой снапшот по всему DOM (пункт мог не влезть в бюджет
         общего) → доскролл-поиск → широкий LLM-резолв → vision-фолбэк. Тот же
         каскад, что у агентного клика в _resolve_element, но на отслеживаемой
         вкладке навигации. → (idx|None, meta); у находки через целевой
-        снапшот meta["via"]="goal_snapshot" — клик по меткам data-vpc-gidx."""
+        снапшот meta["via"]="goal_snapshot" — клик по меткам data-vpc-gidx.
+        На свайп-лентах (page_url с /shorts/|/reels/) доскролл-поиск внутри
+        _scroll_hunt сам пропускается: там он листает ролики."""
         from app.features import browser_actions as _ba
         search_goal = _goal_with_synonyms(step)
         g_items: List[dict] = []
@@ -4538,7 +4558,8 @@ class ComputerControlManager:
                          f"«{step[:40]}» не удался: {e}")
         if not g_items:
             try:
-                _gu, g_items = self._scroll_hunt(_ba, host, tab_id, search_goal)
+                _gu, g_items = self._scroll_hunt(_ba, host, tab_id, search_goal,
+                                                 page_url=page_url)
             except Exception as e:
                 logger.debug(f"[CompControl] Навигация: доскролл-поиск шага "
                              f"«{step[:40]}» не удался: {e}")
