@@ -4977,6 +4977,8 @@ _MEDIA_VOLUME_JS = (
     "vs.forEach(function(e){var r=e.getBoundingClientRect();"
     "var a=r.width*r.height;if(!e.paused&&a>best){best=a;v=e;}});"
     "var op='__OP__';"
+    "if(op==='toggle'){v.paused?v.play():v.pause();"
+    "return v.paused?'paused':'playing';}"
     "if(op==='mute'){v.muted=!v.muted;return v.muted?'muted':'unmuted';}"
     "var d=parseFloat(op)||0;"
     "v.muted=false;"

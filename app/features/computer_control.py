@@ -939,7 +939,8 @@ def parse_key_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
 # Голые слова без «нажми»: «пауза», «тише», «громче» — в режиме управления
 _MEDIA_REQUESTS = [
     (re.compile(
-        r"^\s*(?:пауза|паузу|поставь\s+на\s+паузу|поставить\s+на\s+паузу|"
+        r"^\s*(?:(?:нажми|нажать|press)\s+)?"
+        r"(?:пауза|паузу|поставь\s+на\s+паузу|поставить\s+на\s+паузу|"
         r"сними\s+с\s+паузы|плей|play|"
         r"продолжи(?:ть)?(?:\s+(?:видео|воспроизведение))?)"
         r"\s*[.!…]*\s*$", re.IGNORECASE), ("Space", 1, "toggle")),
@@ -1753,6 +1754,8 @@ class ComputerControlManager:
                     f"на {action.get('host', '')}")
         if action["kind"] == "media_vol":
             op = str(action.get("op") or "")
+            if op == "toggle":
+                return f"переключить воспроизведение на {action.get('host', '')}"
             if op == "mute":
                 return f"переключить звук на {action.get('host', '')}"
             what = "убавить" if op.startswith("-") else "прибавить"
@@ -1837,6 +1840,8 @@ class ComputerControlManager:
                     f"на {action.get('host', '')}?")
         if action["kind"] == "media_vol":
             op = str(action.get("op") or "")
+            if op == "toggle":
+                return f"Переключить воспроизведение на {action.get('host', '')}?"
             if op == "mute":
                 return f"Переключить звук на {action.get('host', '')}?"
             what = "Убавить" if op.startswith("-") else "Прибавить"
@@ -1918,6 +1923,10 @@ class ComputerControlManager:
             if got_v.startswith("vol:"):
                 return (f"выставил громкость {got_v[4:]}% "
                         f"на {action.get('host', '')}")
+            if got_v == "paused":
+                return f"поставил видео на паузу на {action.get('host', '')}"
+            if got_v == "playing":
+                return f"продолжил воспроизведение на {action.get('host', '')}"
             if got_v == "muted":
                 return f"выключил звук на {action.get('host', '')}"
             if got_v == "unmuted":
@@ -3388,11 +3397,13 @@ class ComputerControlManager:
             site_word, chat_id=chat_id)
         if err:
             return None, err
-        if mkind in ("vol_down", "vol_up", "mute") and "/shorts/" in (url or ""):
-            # На shorts стрелки клавиатуры — листание видео, а не громкость
-            # (нажатие ArrowDown листало шортсы вниз), «m» там не работает:
-            # громкость крутим напрямую у <video>
-            op = {"vol_down": "-0.2", "vol_up": "0.2"}.get(mkind, "mute")
+        if mkind in ("vol_down", "vol_up", "mute", "toggle") \
+                and "/shorts/" in (url or ""):
+            # На shorts клавиатурные шорткаты обычного YouTube не работают:
+            # стрелки — листание видео, пробел листает ленту вперёд, «m» и
+            # «k» молчат. Медиа управляем напрямую у <video>
+            op = {"vol_down": "-0.2", "vol_up": "0.2",
+                  "mute": "mute", "toggle": "toggle"}[mkind]
             act = {"kind": "media_vol", "op": op, "host": host, "value": url}
             if tab_id is not None:
                 act["tab_id"] = tab_id

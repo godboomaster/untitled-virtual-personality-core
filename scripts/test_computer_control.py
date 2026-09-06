@@ -1911,11 +1911,26 @@ def main():
               ok_mv and _vol_ops == ["-0.2"]
               and m_mv_exec.describe_done(act_mv)
               == "выставил громкость 30% на www.youtube.com")
-        # «пауза» на shorts — по-прежнему клавиша (k), не media_vol
+        # «пауза» на shorts — тоже через <video> напрямую (пробел там
+        # листает ленту вперёд, «k» молчит)
+        _ba.media_volume_op = lambda host, op, tab_id=None: (
+            _vol_ops.append(op), "paused")[1]
         act_tg, _ = m_mv.resolve_key(("Space", 1, "toggle"), None, None)
-        check("shorts: play/pause — клавиша (k), без media_vol",
-              act_tg is not None and act_tg["kind"] == "key"
-              and act_tg.get("key") == "k")
+        check("shorts: play/pause → media_vol toggle (video), не клавиша",
+              act_tg is not None and act_tg["kind"] == "media_vol"
+              and act_tg.get("op") == "toggle")
+        ok_tg, _ = m_mv_exec.execute(act_tg, "c-mv2")
+        check("shorts: dispatch toggle → «поставил на паузу»",
+              ok_tg and _vol_ops[-1] == "toggle"
+              and m_mv_exec.describe_done(act_tg)
+              == "поставил видео на паузу на www.youtube.com")
+        # «нажми пауза»/«нажми плей» — медиа-команда, а не клик по странице
+        from app.features.computer_control import parse_media_request as _pmr
+        check("shorts: «нажми пауза»/«нажми плей» парсятся как toggle",
+              _pmr("нажми пауза") == ("Space", 1, "toggle")
+              and _pmr("нажми паузу") == ("Space", 1, "toggle")
+              and _pmr("нажми плей") == ("Space", 1, "toggle")
+              and _pmr("пауза") == ("Space", 1, "toggle"))
         # Обычный YouTube — стрелки как раньше
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://www.youtube.com/watch?v=1", "www.youtube.com",
@@ -1924,6 +1939,11 @@ def main():
         check("shorts: обычный YouTube — клавиша ArrowDown, как раньше",
               act_yt is not None and act_yt["kind"] == "key"
               and act_yt.get("key") == "ArrowDown")
+        # Обычный YouTube — пауза по-прежнему клавишей k
+        act_yk, _ = m_mv.resolve_key(("Space", 1, "toggle"), None, None)
+        check("shorts: обычный YouTube — пауза клавишей k",
+              act_yk is not None and act_yk["kind"] == "key"
+              and act_yk.get("key") == "k")
     finally:
         _ba.snapshot_elements = _orig_snap_mv
         if _orig_mvo is not None:
