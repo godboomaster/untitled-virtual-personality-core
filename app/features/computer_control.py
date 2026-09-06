@@ -1043,13 +1043,23 @@ def parse_scroll_request(text: str) -> Optional[Tuple[str, Optional[str], Option
         container = (m.group(1) or "").strip().lower() or None
         adj = (m.group(2) or "").strip().lower()
         bare = (m.group(3) or "").strip().lower()
+        direction = "up" if m.group(4) else None
+        if container and " " in container:
+            # Двухсловный контейнер жадно забрал слово направления/стороны
+            # («пролистай комментарии вверх» → контейнер «комментарии вверх»)
+            # — возвращаем его своей группе
+            first, last = container.rsplit(" ", 1)
+            if direction is None and last in ("вверх", "выше", "наверх", "up"):
+                direction, container = "up", first
+            elif not adj and not bare and last in (
+                    "слева", "справа", "left", "right"):
+                bare, container = last, first
         side = None
         if adj:  # «правую часть» / «левый раздел» — прилагательное первым
             side = "left" if adj.startswith("лев") else "right"
         elif bare:
             side = {"слева": "left", "справа": "right",
                     "left": "left", "right": "right"}.get(bare)
-        direction = "up" if m.group(4) else None
         return ("start", (m.group(5) or "").strip().lower() or None,
                 side, direction, container)
     if _SCROLL_STOP_RE.match(t):

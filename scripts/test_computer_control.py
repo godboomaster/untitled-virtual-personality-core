@@ -1550,6 +1550,11 @@ def main():
           == ("start", "ютубе", None, None, "комменты")
           and parse_scroll_request("пролистай чат")
           == ("start", None, None, None, "чат"))
+    check("scroll-parse: контейнер + направление — «комментарии вверх»",
+          parse_scroll_request("пролистай комментарии вверх")
+          == ("start", None, None, "up", "комментарии")
+          and parse_scroll_request("промотай комментарии наверх")
+          == ("start", None, None, "up", "комментарии"))
     check("scroll-parse: «стоп» / «хватит листать» / «остановись»",
           parse_scroll_request("стоп") == ("stop", None, None, None, None)
           and parse_scroll_request("хватит листать") == ("stop", None, None, None, None)
