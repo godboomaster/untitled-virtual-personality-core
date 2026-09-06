@@ -468,6 +468,19 @@ def main():
           ordinal_recipe("третье видео в плейлисте") == "playlist_pick:3"
           and ordinal_recipe("2 результат в выдаче") == "search_pick:2"
           and ordinal_recipe("второй диван в плейлисте") is None)
+    check("ordinal: shorts — «первое видео в shorts» / «первый шортс»",
+          ordinal_recipe("первое видео в shorts") == "shorts_pick:1"
+          and ordinal_recipe("первый шортс") == "shorts_pick:1"
+          and ordinal_recipe("третий шортс") == "shorts_pick:3"
+          and ordinal_recipe("2 шортса") == "shorts_pick:2"
+          and ordinal_recipe("третье видео в шортсах") == "shorts_pick:3")
+    # Клик-путь: номерная команда — рецепт по разметке, без снапшота/нейронки
+    m_ord = make()
+    act_o, err_o = m_ord.resolve_click("первое видео на shorts", None, None)
+    check("resolve_click: «первое видео на shorts» → recipe:shorts_pick:1",
+          err_o is None
+          and act_o == {"kind": "task", "key": "первое видео на shorts",
+                        "value": "recipe:shorts_pick:1"})
     check("resolve: «третье видео в плейлисте» → recipe:playlist_pick:3",
           ms2.resolve("третье видео в плейлисте")
           == {"kind": "task", "key": "третье видео в плейлисте",

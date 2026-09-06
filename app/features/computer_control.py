@@ -228,13 +228,18 @@ _ORDINAL_TARGET_RE = re.compile(
 # в выдаче» — скоп срезается; «плейлист» даёт отдельный рецепт
 _ORDINAL_SCOPE_RE = re.compile(
     r"\s+(?:в|во|на|in)\s+(плейлисте|плейлиста|плейлист|выдаче|поиске|списке|"
-    r"playlist|results)\s*$", re.IGNORECASE)
+    r"playlist|results|shorts|шортс\w*)\s*$", re.IGNORECASE)
 _ORDINAL_PLAYLIST_SCOPES = {"плейлисте", "плейлиста", "плейлист", "playlist"}
+_ORDINAL_SHORTS_SCOPES = {"shorts"}
+# Само слово «шортс» целью: «первый шортс» — полка shorts без скопа
+_ORDINAL_SHORTS_WORDS = {"шортс", "шортсы", "шортса", "шортсов", "shorts"}
 
 
 def ordinal_recipe(name: str) -> Optional[str]:
     """«третье видео» / «2 результат» → «search_pick:3»; со скопом плейлиста
-    («третье видео в плейлисте») → «playlist_pick:3». None — не такая команда."""
+    («третье видео в плейлисте») → «playlist_pick:3»; скоп shorts
+    («первое видео в shorts») или цель-шортс («первый шортс») →
+    «shorts_pick:1». None — не такая команда."""
     scope = None
     m = _ORDINAL_SCOPE_RE.search(name)
     if m:
@@ -245,6 +250,13 @@ def ordinal_recipe(name: str) -> Optional[str]:
         return None
     w1, w2 = words
     n = _ORDINALS.get(w1) or (int(w1) if w1.isdigit() else None)
+    if n is None:
+        return None
+    if w2 in _ORDINAL_SHORTS_WORDS \
+            or (scope is not None
+                and (scope in _ORDINAL_SHORTS_SCOPES
+                     or scope.startswith("шортс"))):
+        return f"shorts_pick:{n}"
     if n is not None and _ORDINAL_TARGET_RE.match(w2):
         if scope in _ORDINAL_PLAYLIST_SCOPES:
             return f"playlist_pick:{n}"
@@ -3131,6 +3143,12 @@ class ComputerControlManager:
                 # а не сайт; возвращаем слово в цель скоупа
                 goal = f"{goal} на {site_word}"
                 site_word = None
+        # Номерная команда («первое видео в shorts», «третий результат») —
+        # рецепт по разметке полки/выдачи: детерминированно, без скоринга и
+        # нейронки; скоуп («в shorts») ordinal_recipe срезает сам
+        oc = ordinal_recipe(" ".join(goal.split()))
+        if oc is not None:
+            return {"kind": "task", "key": goal, "value": f"recipe:{oc}"}, None
         goal_n = " ".join(goal.lower().split())
         # «нажми i»: однобуквенное имя иконки не переживает фильтр слов
         # (len>=3) — подменяем на полное («информация»)

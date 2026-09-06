@@ -166,6 +166,30 @@ RECIPES: Dict[str, Tuple[Optional[str], str]] = {
         "var a=vs[N-1]||null;"
         "if(a){a.click();'ok:opened'}else{'нет видео номер '+N}",
     ),
+    # N-е видео полки shorts на странице («первое видео в shorts», «первый
+    # шортс»): полок может быть несколько — берётся первая ВИДИМАЯ (её и
+    # имеет в виду пользователь), иначе первая в DOM. Локаль не нужна:
+    # полка определяется по ссылкам /shorts/, а не по заголовку
+    "shorts_pick": (
+        None,
+        "var N={N};"
+        "var shelves=[].slice.call(document.querySelectorAll("
+        "'ytd-rich-shelf-renderer,ytd-reel-shelf-renderer,"
+        "ytd-rich-section-renderer,[is-shorts]'));"
+        "var sh=shelves.filter(function(s){"
+        "return s.querySelector('a[href*=\"/shorts/\"]');});"
+        "if(!sh.length){'на странице нет полки shorts'}"
+        "else{"
+        "var shelf=sh[0];"
+        "for(var i=0;i<sh.length;i++){var r=sh[i].getBoundingClientRect();"
+        "if(r.bottom>0&&r.top<innerHeight){shelf=sh[i];break;}}"
+        # По одной ссылке на шортс (у пункта их две: миниатюра и заголовок)
+        "var seen={},links=[];"
+        "shelf.querySelectorAll('a[href*=\"/shorts/\"]').forEach(function(a){"
+        "var h=a.href.split('?')[0];if(!seen[h]){seen[h]=1;links.push(a);}});"
+        "var a=links[N-1]||null;"
+        "if(a){a.click();'ok:opened'}else{'в полке shorts нет видео номер '+N}}",
+    ),
     # Первый результат выдачи на АКТИВНОЙ вкладке — сайт определяется по хосту
     "search_first": (
         None,
