@@ -602,6 +602,10 @@ def main():
     _ba.dismiss_overlay = lambda host=None, tab_id=None: None
     _ba.detect_antibot = lambda host=None, tab_id=None: None
     _ba.wait_dom_idle = lambda *a, **kw: None
+    # Видимая вкладка (CDP visibilityState): по умолчанию «нет видимой» —
+    # адресация по отслеживаемой/хосту, как раньше; секция видимой вкладки
+    # перемокирует локально
+    _ba.visible_page_info = lambda: None
     # Доскролл-поиск (виртуализированные списки): по умолчанию «некуда
     # листать» — целевой снапшот не находит, поведение прежнее
     _ba.scroll_position = lambda host=None, tab_id=None: 0.0
@@ -1818,6 +1822,99 @@ def main():
         _ba.scroll_status, _ba.scroll_stop = _orig_stat, _orig_stop
         _ba.find_tab_id = _orig_ft_s
         _cc_mod._SCROLL_POLL_SEC = _orig_poll
+
+    # ── Видимая вкладка при дублях сайта (visibilityState) ──
+    _orig_snap_v2, _orig_vis_v2 = _ba.snapshot_elements, _ba.visible_page_info
+    _sn_v2 = []
+    _ba.snapshot_elements = lambda host=None, tab_id=None: (
+        _sn_v2.append((host, tab_id)),
+        ("https://www.youtube.com/watch?v=2", "www.youtube.com",
+         [_it(0, "button", "Понравилось")]))[1]
+    try:
+        m_vis2 = make(cfg={**CFG, "allow_domains": []})
+        m_vis2._last_host = "www.youtube.com"
+        m_vis2._last_tab_id = 42
+        # A. Дубль сайта: действие на ВИДИМОЙ вкладке (полный URL), не
+        # отслеживаемой — пользователь смотрит на неё
+        _ba.visible_page_info = lambda: ("https://www.youtube.com/watch?v=2",
+                                         "www.youtube.com")
+        act_v2, err_v2 = m_vis2.resolve_key("Space", None, None)
+        check("visible: дубль сайта — цель по полному URL видимой вкладки",
+              err_v2 is None
+              and _sn_v2[-1] == ("https://www.youtube.com/watch?v=2", None))
+        # B. Видимая вкладка ДРУГОГО сайта — остаёмся на отслеживаемой
+        _ba.visible_page_info = lambda: ("https://google.com", "google.com")
+        _sn_v2.clear()
+        act_v3, _ = m_vis2.resolve_key("Space", None, None)
+        check("visible: другой сайт в фокусе — отслеживаемая вкладка",
+              _sn_v2 and _sn_v2[-1] == (None, 42))
+        # C. Контекста нет — видимая вкладка (свежий base_dir: контекст
+        # не поднимается с диска, разделяемого другими менеджерами теста)
+        _ba.visible_page_info = lambda: ("https://www.youtube.com/watch?v=2",
+                                         "www.youtube.com")
+        m_vis3 = ComputerControlManager(context="t",
+                                        config={**CFG, "allow_domains": []},
+                                        base_dir=tmp / "s-vis3")
+        _sn_v2.clear()
+        act_v4, _ = m_vis3.resolve_key("Space", None, None)
+        check("visible: без контекста — видимая вкладка",
+              _sn_v2 and _sn_v2[-1] == ("https://www.youtube.com/watch?v=2",
+                                        None))
+        # D. Видимой нет (окно свёрнуто) — отслеживаемая
+        _ba.visible_page_info = lambda: None
+        _sn_v2.clear()
+        act_v5, _ = m_vis2.resolve_key("Space", None, None)
+        check("visible: нет видимой — отслеживаемая вкладка",
+              _sn_v2 and _sn_v2[-1] == (None, 42))
+    finally:
+        _ba.snapshot_elements = _orig_snap_v2
+        _ba.visible_page_info = _orig_vis_v2
+
+    # ── Громкость на shorts: стрелки там — листание, не громкость ──
+    _orig_snap_mv = _ba.snapshot_elements
+    _orig_mvo = getattr(_ba, "media_volume_op", None)
+    _vol_ops = []
+    _ba.media_volume_op = lambda host, op, tab_id=None: (
+        _vol_ops.append(op), "vol:30")[1]
+    try:
+        m_mv = make(cfg={**CFG, "allow_domains": []})
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://www.youtube.com/shorts/abc", "www.youtube.com",
+            [_it(0, "a", "Hi")])
+        act_mv, err_mv = m_mv.resolve_key(("ArrowDown", 2, "vol_down"),
+                                          None, None)
+        check("shorts: «тише» → media_vol (video.volume), не клавиша",
+              err_mv is None and act_mv["kind"] == "media_vol"
+              and act_mv.get("op") == "-0.2")
+        act_mm, _ = m_mv.resolve_key(("m", 1, "mute"), None, None)
+        check("shorts: «без звука» → media_vol mute",
+              act_mm is not None and act_mm.get("op") == "mute"
+              and "звук" in m_mv.confirm_question(act_mm))
+        # Исполнение — настоящим менеджером (SpyManager._dispatch — заглушка)
+        m_mv_exec = ComputerControlManager(context="t", config=dict(CFG),
+                                           base_dir=tmp / "s-mvol")
+        ok_mv, _ = m_mv_exec.execute(act_mv, "c-mv")
+        check("shorts: dispatch media_vol → media_volume_op, отчёт с %",
+              ok_mv and _vol_ops == ["-0.2"]
+              and m_mv_exec.describe_done(act_mv)
+              == "выставил громкость 30% на www.youtube.com")
+        # «пауза» на shorts — по-прежнему клавиша (k), не media_vol
+        act_tg, _ = m_mv.resolve_key(("Space", 1, "toggle"), None, None)
+        check("shorts: play/pause — клавиша (k), без media_vol",
+              act_tg is not None and act_tg["kind"] == "key"
+              and act_tg.get("key") == "k")
+        # Обычный YouTube — стрелки как раньше
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://www.youtube.com/watch?v=1", "www.youtube.com",
+            [_it(0, "a", "Hi")])
+        act_yt, _ = m_mv.resolve_key(("ArrowDown", 2, "vol_down"), None, None)
+        check("shorts: обычный YouTube — клавиша ArrowDown, как раньше",
+              act_yt is not None and act_yt["kind"] == "key"
+              and act_yt.get("key") == "ArrowDown")
+    finally:
+        _ba.snapshot_elements = _orig_snap_mv
+        if _orig_mvo is not None:
+            _ba.media_volume_op = _orig_mvo
 
     _clicks = []
     _orig_ct = _ba.click_tagged

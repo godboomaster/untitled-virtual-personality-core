@@ -1649,7 +1649,7 @@ class ComputerControlManager:
         if kind == "multi":
             return any(self.needs_confirm(a) for a in action.get("items") or [])
         ov = self.risk_overrides
-        if kind in ("click", "slider", "scroll", "scroll_stop"):
+        if kind in ("click", "slider", "scroll", "scroll_stop", "media_vol"):
             if action.get("point"):
                 # Координатный клик зонального vision-фолбэка: сигнал «что
                 # именно нажали» слабее — подтверждение всегда
@@ -1739,6 +1739,12 @@ class ComputerControlManager:
             return (f"перетащить слайдер «{action.get('slider_label', '')}» "
                     f"на {action.get('slider_value', '')} "
                     f"на {action.get('host', '')}")
+        if action["kind"] == "media_vol":
+            op = str(action.get("op") or "")
+            if op == "mute":
+                return f"переключить звук на {action.get('host', '')}"
+            what = "убавить" if op.startswith("-") else "прибавить"
+            return f"{what} громкость видео на {action.get('host', '')}"
         if action["kind"] == "scroll":
             _what = "страницу"
             if action.get("container"):
@@ -1817,6 +1823,12 @@ class ComputerControlManager:
             return (f"Перетащить слайдер «{action.get('slider_label', '')}» "
                     f"на {action.get('slider_value', '')} "
                     f"на {action.get('host', '')}?")
+        if action["kind"] == "media_vol":
+            op = str(action.get("op") or "")
+            if op == "mute":
+                return f"Переключить звук на {action.get('host', '')}?"
+            what = "Убавить" if op.startswith("-") else "Прибавить"
+            return f"{what} громкость видео на {action.get('host', '')}?"
         if action["kind"] == "scroll":
             _what = "страницу"
             if action.get("container"):
@@ -1889,6 +1901,16 @@ class ComputerControlManager:
             got = action.get("slider_done") or action.get("slider_value", "")
             return (f"выставил слайдер «{action.get('slider_label', '')}» "
                     f"на {got} на {action.get('host', '')}")
+        if action["kind"] == "media_vol":
+            got_v = str(action.get("vol_done") or "")
+            if got_v.startswith("vol:"):
+                return (f"выставил громкость {got_v[4:]}% "
+                        f"на {action.get('host', '')}")
+            if got_v == "muted":
+                return f"выключил звук на {action.get('host', '')}"
+            if got_v == "unmuted":
+                return f"включил звук на {action.get('host', '')}"
+            return f"изменил громкость на {action.get('host', '')}"
         if action["kind"] == "scroll":
             _what = "страницу"
             if action.get("container"):
@@ -2427,10 +2449,26 @@ class ComputerControlManager:
                 # Явный домен без алиаса («на example.edu») — целимся напрямую
                 host_part = site_word.strip().lower()
         if host_part is None and tab_id is None:
-            # Без указания места: отслеживаемая вкладка точнее хоста
-            tab_id = self._last_tab_id
-            if tab_id is None:
-                host_part = self._last_host
+            # Без указания места: дубли одного сайта решаем в пользу ВИДИМОЙ
+            # вкладки (пользователь смотрит на неё), а не отслеживаемой.
+            # Видимая вкладка ДРУГОГО сайта — остаёмся на отслеживаемой:
+            # после «открой ютуб» команда «нажми X» относится к открывшейся
+            # странице, а не к тому, что случайно в фокусе. Нет видимой —
+            # отслеживаемая точнее хоста, иначе последний хост
+            try:
+                from app.features import browser_actions as _ba
+                _vis = _ba.visible_page_info()
+            except Exception:
+                _vis = None
+            if _vis and _vis[1] and self._vis_in_context(_vis[1]):
+                # Полный URL — точный матч вкладки (при дублях того же URL
+                # видимую из них выберет page_for)
+                host_part = _vis[0]
+                self._last_host = _vis[1]
+            else:
+                tab_id = self._last_tab_id
+                if tab_id is None:
+                    host_part = self._last_host
         # Оверлей-блокер (куки-баннер, подписка, geo-попап) снимаем ДО
         # снапшота: он перекрывает контент и съедает бюджет снапшота, а его
         # контролы забирают приоритетные проходы. Цели-закрытия («закрой
@@ -2484,6 +2522,17 @@ class ComputerControlManager:
                     logger.info(f"[CompControl] Снапшот страницы не удался: {e3}")
                     return None, None, None, None, f"Не удалось: {e3}"
         return url, host, items, tab_id, None
+
+    def _vis_in_context(self, host: str) -> bool:
+        """Видимая вкладка — из того же сайтового семейства, что текущий
+        контекст (отслеживаемая вкладка / _last_host), или контекста нет
+        вовсе. www-префикс не различает."""
+        cur = self._last_host \
+            or (urlparse(self._last_url or "").hostname or "")
+        if not cur:
+            return True
+        norm = lambda h: (h or "").lower().removeprefix("www.")
+        return norm(host) == norm(cur)
 
     @staticmethod
     def _resolve_fail_kind(meta: dict) -> str:
@@ -3293,6 +3342,15 @@ class ComputerControlManager:
             site_word, chat_id=chat_id)
         if err:
             return None, err
+        if mkind in ("vol_down", "vol_up", "mute") and "/shorts/" in (url or ""):
+            # На shorts стрелки клавиатуры — листание видео, а не громкость
+            # (нажатие ArrowDown листало шортсы вниз), «m» там не работает:
+            # громкость крутим напрямую у <video>
+            op = {"vol_down": "-0.2", "vol_up": "0.2"}.get(mkind, "mute")
+            act = {"kind": "media_vol", "op": op, "host": host, "value": url}
+            if tab_id is not None:
+                act["tab_id"] = tab_id
+            return act, None
         if mkind == "toggle" and "youtube" in (host or ""):
             # На YouTube пробел капризен (первое нажатие играет, повтор не
             # ставит на паузу) — штатный шорткат k переключает стабильно
@@ -4087,6 +4145,15 @@ class ComputerControlManager:
             action["slider_done"] = ba.set_slider(
                 action.get("host"), action.get("slider_label") or "",
                 int(action.get("slider_value") or 0),
+                tab_id=action.get("tab_id"))
+            self._remember_tab(action)
+            return
+        if action["kind"] == "media_vol":
+            # Громкость <video> напрямую (shorts) — фактическая громкость/
+            # состояние мьюта — в отчёт ответа
+            from app.features import browser_actions as ba
+            action["vol_done"] = ba.media_volume_op(
+                action.get("host"), str(action.get("op") or ""),
                 tab_id=action.get("tab_id"))
             self._remember_tab(action)
             return

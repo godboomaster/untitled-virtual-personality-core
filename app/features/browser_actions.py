@@ -448,6 +448,20 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _chat_or_service_url(url: str) -> bool:
+    """Вкладка служебная (web_llm-хосты: динамический реестр + статические
+    адаптеры) или это чат самого бота (localhost:5173/8000) — не цель
+    пользовательских команд и не «видимая страница» при выборе вкладки
+    (пользователь печатает в чат — его цель всё равно не он)."""
+    try:
+        u = urlparse(url)
+        hn = (u.hostname or "").lower()
+        if not hn or is_service_host(hn):
+            return True
+        return hn in ("localhost", "127.0.0.1") and u.port in (5173, 8000)
+    except Exception:
+        return False
+
 
 class _CdpWorker:
     def __init__(self):
@@ -642,9 +656,25 @@ class _CdpWorker:
         return [p for ctx in self._browser.contexts for p in ctx.pages
                 if not p.is_closed()]
 
+    @staticmethod
+    def _visible_of(candidates) -> Optional[object]:
+        """Видимая (активная в своём окне) вкладка из кандидатов:
+        document.visibilityState === 'visible' (фоновые вкладки Chrome —
+        hidden). «Активную вкладку» CDP не сообщает, но видимость — это и
+        есть вкладка, на которую смотрит пользователь. При нескольких окнах
+        видимых несколько — берём последнюю (свежее окно)."""
+        for p in reversed(candidates):
+            try:
+                if p.evaluate("document.visibilityState") == "visible":
+                    return p
+            except Exception:
+                continue
+        return None
+
     def page_for(self, host_part: Optional[str], tab_id: Optional[int] = None):
         """Вкладка по tab_id (реестр отслеживаемых) или по подстроке URL
-        (последняя подходящая — свежая); host_part=None — крайняя открытая."""
+        (видимая из подходящих, иначе последняя — свежая); host_part=None —
+        видимая пользовательская, иначе крайняя открытая."""
         self.ensure_browser(allow_launch=False)
         if tab_id is not None:
             if tab_id in _RAW_TABS:
@@ -659,17 +689,21 @@ class _CdpWorker:
         if host_part is None:
             if not pages:
                 raise BrowserUnavailable("нет открытого окна браузера")
-            # Служебные вкладки веб-чатов — не «крайняя страница» для команд:
-            # web_llm открывает их последними, и без фильтра «последняя
-            # вкладка» указывала бы на chat.deepseek.com вместо страницы
-            # пользователя
+            # Служебные вкладки веб-чатов и вкладка чата бота — не
+            # «крайняя страница» для команд (см. также _snapshot_for)
             nonsvc = [p for p in pages
-                      if (urlparse(p.url).hostname or "").lower()
-                      not in _SERVICE_HOSTS]
-            return (nonsvc or pages)[-1]  # активную вкладку CDP не сообщает
+                      if not _chat_or_service_url(p.url)]
+            vis = self._visible_of(nonsvc)
+            if vis is not None:
+                return vis
+            return (nonsvc or pages)[-1]
         matches = [p for p in pages if host_part in (p.url or "")]
         if not matches:
             raise BrowserUnavailable(f"нет открытой вкладки {host_part}")
+        # Дубли сайта: действуем на вкладке, на которую смотрит пользователь
+        vis = self._visible_of(matches)
+        if vis is not None:
+            return vis
         return matches[-1]
 
     def new_page(self, url: str) -> int:
@@ -4138,6 +4172,29 @@ def page_urls() -> List[str]:
     return []
 
 
+def visible_page_info() -> Optional[Tuple[str, str]]:
+    """(url, host) видимой вкладки браузера (активная в своём окне:
+    document.visibilityState === 'visible'). Служебные веб-чаты и вкладка
+    чата бота — не кандидаты. None — не-CDP бэкенд, браузер недоступен,
+    окно свёрнуто (все вкладки hidden) или видимых пользовательских нет.
+    При нескольких окнах — последняя видимая (свежее окно)."""
+    if _select_backend(tab_op=True) != "cdp":
+        return None
+
+    def _op(w):
+        cands = [p for p in w._all_pages()
+                 if not _chat_or_service_url(p.url)]
+        vis = w._visible_of(cands)
+        if vis is None:
+            return None
+        return vis.url, (urlparse(vis.url).hostname or "")
+
+    try:
+        return _WORKER.submit(_op)
+    except Exception:
+        return None
+
+
 # ── Чтение текста со страницы («прочитай последнее сообщение») ──
 
 _READ_LAST_JS = (
@@ -4884,6 +4941,34 @@ _SLIDER_VERIFY_JS = (
     "e.removeAttribute('data-vpc-slider');"
     "return String(v);})()"
 )
+
+
+# Громкость <video> напрямую (shorts: стрелки клавиатуры — листание видео,
+# а не громкость; «m» там не работает). Цель — играющее/крупнейшее видео.
+_MEDIA_VOLUME_JS = (
+    "(function(){"
+    "var vs=[].slice.call(document.querySelectorAll('video'));"
+    "if(!vs.length)return 'нет видео на странице';"
+    "var v=vs[0],best=0;"
+    "vs.forEach(function(e){var r=e.getBoundingClientRect();"
+    "var a=r.width*r.height;if(!e.paused&&a>best){best=a;v=e;}});"
+    "var op='__OP__';"
+    "if(op==='mute'){v.muted=!v.muted;return v.muted?'muted':'unmuted';}"
+    "var d=parseFloat(op)||0;"
+    "v.muted=false;"
+    "var nv=Math.min(1,Math.max(0,v.volume+d));"
+    "v.volume=nv;"
+    "return 'vol:'+Math.round(nv*100);})()"
+)
+
+
+def media_volume_op(host_part: Optional[str], op: str,
+                    tab_id: Optional[int] = None) -> str:
+    """Громкость видео напрямую у <video> (на shorts стрелки клавиатуры —
+    листание видео, а не громкость): op — «-0.2»/«+0.2»/«mute».
+    → 'vol:NN' | 'muted' | 'unmuted' | текст причины («нет видео…»)."""
+    return str(_eval_js_any(host_part, tab_id,
+                            _MEDIA_VOLUME_JS.replace("__OP__", op)))
 
 
 def set_slider(host_part: Optional[str], label: str, value: int,
