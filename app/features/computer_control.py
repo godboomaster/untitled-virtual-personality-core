@@ -3028,14 +3028,42 @@ class ComputerControlManager:
                         f"{str(box.get('text') or '')[:30]}» ветирован "
                         f"(деструктивный без запроса) для «{goal[:40]}»")
             return None, meta
-        label = str(box.get("text") or "").strip() or f"зона {m.group(1)}"
+        label = str(box.get("text") or "").strip()
+        if not label:
+            # Безымянная зона: «Нажать "зона 27"?» ничего не скажет
+            # пользователю. Миниатюра рядом с названием видео — подписываем
+            # ближайшей подписанной зоной; совсем пусто — словами самой цели
+            neighbor = self._nearest_zone_label(boxes, int(m.group(1)) - 1)
+            label = (f"зона рядом с «{neighbor[:50]}»" if neighbor
+                     else f"«{goal[:40]}» (зона {m.group(1)})")
         point = {"x": float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
                  "y": float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
-                 "label": label}
+                 "label": label, "zone": int(m.group(1))}
         meta["point"] = point
         logger.info(f"[CompControl] «{goal[:40]}» выбрано зональным vision: "
                     f"зона {m.group(1)} «{label[:40]}»")
         return point, meta
+
+    @staticmethod
+    def _nearest_zone_label(boxes: List[dict], i: int) -> Optional[str]:
+        """Подпись ближайшей к boxes[i] ПОДПИСАННОЙ зоны (по центрам) —
+        чем подписать безымянную зону в вопросе подтверждения."""
+        bx = boxes[i]
+        cx = float(bx.get("x") or 0) + float(bx.get("w") or 0) / 2
+        cy = float(bx.get("y") or 0) + float(bx.get("h") or 0) / 2
+        best, bd = None, None
+        for j, b in enumerate(boxes):
+            if j == i:
+                continue
+            t = str(b.get("text") or "").strip()
+            if not t:
+                continue
+            dx = float(b.get("x") or 0) + float(b.get("w") or 0) / 2 - cx
+            dy = float(b.get("y") or 0) + float(b.get("h") or 0) / 2 - cy
+            d = dx * dx + dy * dy
+            if bd is None or d < bd:
+                best, bd = t, d
+        return best
 
     def _element_on_other_pages(self, goal: str, cur_url: str,
                                 only_host: Optional[str] = None):

@@ -3645,7 +3645,7 @@ def main():
         check("зоны: выбор зоны → координатный клик (point, vision_zones)",
               act_z is not None and act_z["kind"] == "click"
               and act_z.get("point") == {"x": 60.0, "y": 80.0,
-                                         "label": "Рекорды"}
+                                         "label": "Рекорды", "zone": 2}
               and act_z["choose"]["path"] == "vision_zones"
               and zr.img_calls == 2)
         # «нет» на обоих ярусах — честный отказ
@@ -3683,6 +3683,30 @@ def main():
             "рекорды", None, _ZoneRouter("нет", "2"), chat_id="vz4")
         check("зоны: download по координатной зоне — «не ссылка»",
               no_dl_z is None and "не ссылка" in (err_dl_z or ""))
+        # Безымянная зона подписывается ближайшей подписанной (миниатюра
+        # рядом с названием видео), а не «зона N»
+        _boxes.append({"x": 10.0, "y": 120.0, "w": 100.0, "h": 80.0,
+                       "text": ""})
+        act_z2, _ = m_zone.resolve_click("первое видео", None,
+                                         _ZoneRouter("нет", "4"),
+                                         chat_id="vz5")
+        check("зоны: безымянная зона подписана соседом, а не «зона N»",
+              act_z2 is not None
+              and act_z2["element"].startswith("зона рядом с «")
+              and "Рекорды" in act_z2["element"]
+              and act_z2["point"]["zone"] == 4)
+        _boxes.pop()
+        # Подписанных зон нет совсем — подпись словами самой цели
+        _texts = [b["text"] for b in _boxes]
+        for b in _boxes:
+            b["text"] = ""
+        act_z3, _ = m_zone.resolve_click("первое видео", None,
+                                         _ZoneRouter("нет", "1"),
+                                         chat_id="vz6")
+        check("зоны: все зоны безымянные — подпись словами цели",
+              act_z3 is not None and "первое видео" in act_z3["element"])
+        for b, t in zip(_boxes, _texts):
+            b["text"] = t
     finally:
         if _orig_acb is not None:
             _ba.all_clickable_boxes = _orig_acb
