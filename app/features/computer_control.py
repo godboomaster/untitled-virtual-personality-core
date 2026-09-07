@@ -1137,6 +1137,14 @@ _CART_REMOVE_GOAL_RE = re.compile(
 # resolve_click собирает обратно в «... на X»), «поменять гавайскую»
 _CART_EDIT_GOAL_RE = re.compile(
     r"^(?:измен\w*|поменя\w*)\s+(.+)$", re.IGNORECASE)
+# Количество товара через клик по кнопке ряда: «нажми + в двойная
+# пепперони», «нажми минус на кола» — символ/слово в начале цели клика.
+# Без этого шла общая резолвация и цепляла упоминание товара в описании
+# состава комбо (кейс 07.09: клик по «+» открывал «3 пиццы 30 или 35 см»)
+_CART_INC_GOAL_RE = re.compile(
+    r"^(?:[+＋]\s*|плюс\s+)(.+)$", re.IGNORECASE)
+_CART_DEC_GOAL_RE = re.compile(
+    r"^(?:[-−–]\s*|минус\s+)(.+)$", re.IGNORECASE)
 _CART_DEC_NUM_RE = re.compile(
     r"^\s*(?:убавь|уменьши|убери|минус)\s+(?:одну|один|1)\s+(.+?)\s*[.!?…]*\s*$",
     re.IGNORECASE)
@@ -3278,14 +3286,14 @@ class ComputerControlManager:
             goal = "закрыть"
         # Корзинный фолбэк ДО текстового резолва: «удали чикен» /
         # «нажми удалить чикен» / «закрой чикен» / «изменить состав в
-        # гавайская» при открытой корзине. Крестик товара — иконка без
-        # текста и aria, «Изменить» теряется среди одноимённых ссылок
-        # других рядов (а целевое «закрыть на чикен» и вовсе цеплялось за
-        # крестик ВСЕЙ панели — в её ctx названия товаров). cart_op
-        # находит карточку по названию и жмёт контрол по позиции. Только
-        # когда товар реально виден в корзине — иначе обычный путь
-        # (подписанные «Удалить …» вне магазина, инвентарь бота и т.п.
-        # не задеваем)
+        # гавайская» / «нажми + в двойная пепперони» при открытой корзине.
+        # Крестик товара и −/+ — иконки без текста и aria, «Изменить»
+        # теряется среди одноимённых ссылок других рядов (а целевое
+        # «закрыть на чикен» и вовсе цеплялось за крестик ВСЕЙ панели —
+        # в её ctx названия товаров). cart_op находит карточку по названию
+        # и жмёт контрол по позиции. Только когда товар реально виден в
+        # корзине — иначе обычный путь (подписанные «Удалить …» вне
+        # магазина, инвентарь бота и т.п. не задеваем)
         cart_probe = ""
         cart_op_kind = "remove"
         if close_goal and close_obj and not _CLOSE_GENERIC_RE.fullmatch(close_obj):
@@ -3293,10 +3301,19 @@ class ComputerControlManager:
         elif not close_goal:
             m_rm = _CART_REMOVE_GOAL_RE.match(goal_n)
             m_ed = None if m_rm else _CART_EDIT_GOAL_RE.match(goal_n)
+            m_qty = (None if (m_rm or m_ed)
+                     else (_CART_INC_GOAL_RE.match(goal_n)
+                           or _CART_DEC_GOAL_RE.match(goal_n)))
             if m_rm:
                 cart_probe = m_rm.group(1)
             elif m_ed:
                 cart_probe, cart_op_kind = m_ed.group(1), "edit"
+            elif m_qty:
+                cart_probe = m_qty.group(1)
+                cart_op_kind = ("decrease"
+                                if goal_n[:1] in ("-", "−", "–")
+                                or goal_n.startswith("минус")
+                                else "increase")
         if cart_probe:
             cart_act = self._cart_op_fallback(cart_probe, cart_op_kind,
                                               site_word, chat_id)
@@ -3845,10 +3862,10 @@ class ComputerControlManager:
 
     def _cart_op_fallback(self, product_raw: str, op: str,
                           site_word: Optional[str], chat_id: str = ""):
-        """Голые формы «удали X»/«закрой X»/«изменить состав в X» при
-        открытой корзине: корзинные контролы товара (×, «Изменить», −/+)
-        текстовому резолву маловидимы — cart_op находит карточку по
-        названию и жмёт контрол по позиции/тексту.
+        """Голые формы «удали X»/«закрой X»/«изменить состав в X»/
+        «+ в X» при открытой корзине: корзинные контролы товара
+        (×, «Изменить», −/+) текстовому резолву маловидимы — cart_op
+        находит карточку по названию и жмёт контрол по позиции/тексту.
         Срабатывает, только когда товар реально виден в корзине страницы;
         иначе None — идём обычными фолбэками/честным отказом (инвентарь
         бота и «удали X» вне магазина не задеваем)."""
@@ -3865,7 +3882,8 @@ class ComputerControlManager:
                 return None  # вкладка чата — корзины там нет
             if not _bac.cart_item_present(host, product, tab_id=tab_id):
                 return None
-            op_ru = {"remove": "удаление", "edit": "изменение"}.get(op, op)
+            op_ru = {"remove": "удаление", "edit": "изменение",
+                     "increase": "увеличение", "decrease": "уменьшение"}.get(op, op)
             logger.info(f"[CompControl] «{str(product_raw)[:30]}» → {op_ru} "
                         f"«{product[:40]}» в корзине на {host}")
             act = {"kind": "cart", "op": op, "product": product,

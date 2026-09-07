@@ -4329,6 +4329,26 @@ def main():
         check("корзина-фолбэк: «поменять гавайскую» → cart edit",
               a_ce2 is not None and a_ce2.get("op") == "edit"
               and a_ce2.get("product") == "гавайскую")
+        # Количество символом/словом: «нажми + в двойная пепперони» —
+        # раньше шло общим резолвом и цепляло упоминание товара в описании
+        # состава комбо (клик по «+» открывал «3 пиццы 30 или 35 см»)
+        a_cq, _ = _m_cart.resolve_click("+ в двойная пепперони", None, None,
+                                        chat_id="cr12")
+        check("корзина-фолбэк: «+ в X» → cart increase",
+              a_cq is not None and a_cq.get("kind") == "cart"
+              and a_cq.get("op") == "increase"
+              and a_cq.get("product") == "двойная пепперони")
+        a_cq2, _ = _m_cart.resolve_click("минус гавайская", None, None,
+                                         chat_id="cr13")
+        check("корзина-фолбэк: «минус X» → cart decrease",
+              a_cq2 is not None and a_cq2.get("op") == "decrease"
+              and a_cq2.get("product") == "гавайская")
+        # «нажми плюс на колу»: «на колу» спарсилось словом-сайтом —
+        # оно не алиас и возвращается в цель
+        a_cq3, _ = _m_cart.resolve_click("плюс", "колу", None, chat_id="cr14")
+        check("корзина-фолбэк: «плюс на колу» — сайт-слово вернулось в товар",
+              a_cq3 is not None and a_cq3.get("op") == "increase"
+              and a_cq3.get("product") == "колу")
         _ba.cart_item_present = lambda host=None, product="", tab_id=None: False
         no_cr, err_cr = _m_cart.resolve_click("удалить чикен", None, None,
                                               chat_id="cr3")
