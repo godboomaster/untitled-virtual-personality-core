@@ -3392,6 +3392,25 @@ def cart_op(host_part: Optional[str], product: str, op: str,
     return {"status": "ok", "qty": qty}
 
 
+def cart_item_present(host_part: Optional[str], product: str,
+                      tab_id: Optional[int] = None) -> bool:
+    """Товар виден в открытой корзине страницы (тот же искатель карточки,
+    что у cart_op — по названию и сигнатуре ряда количества). Только проба
+    наличия, кликов не делает: резолвер ею решает, уводить ли голую фразу
+    «удали X»/«закрой X» в корзинное удаление или отвечать «не нашёл»."""
+    prod = re.sub(r"[\"'\\]", "",
+                  " ".join(str(product or "").split()))[:80].strip()
+    if not prod:
+        return False
+    try:
+        ver = json.loads(_run_js(
+            host_part, _CART_VERIFY_JS.replace("__PROD__", prod),
+            tab_id=tab_id, front=False) or "{}")
+        return bool(ver.get("present"))
+    except Exception:
+        return False
+
+
 def click_tagged(host_part: Optional[str], idx: int,
                  tab_id: Optional[int] = None,
                  mark: str = "data-vpc-idx") -> str:

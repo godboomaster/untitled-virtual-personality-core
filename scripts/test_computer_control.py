@@ -4263,6 +4263,47 @@ def main():
     finally:
         _ba_hunt.snapshot_for_goal = _orig_sfg
 
+    # ── Корзинный фолбэк: «удали/закрой X» без «из корзины» (кейс 07.09) ──
+    # Крестик товара в корзине dodo — иконка без текста и aria, текстовый
+    # резолв его не видит («не нашёл элемента для "удалить чикен"»), а
+    # целевое закрытие «закрыть на чикен» цепляло крестик ВСЕЙ панели.
+    # Удаление уходит в cart_op — но только когда товар реально в корзине
+    _orig_snap_cr = _ba.snapshot_elements
+    _ba.snapshot_elements = lambda host=None, tab_id=None: (
+        "https://dodopizza.ru/x", "dodopizza.ru", _gh_items())
+    _m_cart = make()
+    try:
+        _ba.cart_item_present = lambda host=None, product="", tab_id=None: True
+        a_cr, e_cr = _m_cart.resolve_click("удалить чикен", None, None,
+                                           chat_id="cr1")
+        check("корзина-фолбэк: «удалить чикен» → cart remove",
+              a_cr is not None and a_cr.get("kind") == "cart"
+              and a_cr.get("op") == "remove"
+              and a_cr.get("product") == "чикен")
+        a_cr2, _ = _m_cart.resolve_click("закрыть чикен", None, None,
+                                         chat_id="cr2")
+        check("корзина-фолбэк: «закрыть чикен» → cart remove, не крестик панели",
+              a_cr2 is not None and a_cr2.get("kind") == "cart"
+              and a_cr2.get("op") == "remove")
+        a_cr3, _ = _m_cart.resolve_click("удалить пиццу чикен", None, None,
+                                         chat_id="cr4")
+        check("корзина-фолбэк: филлер «пиццу» срезан из названия",
+              a_cr3 is not None and a_cr3.get("product") == "чикен")
+        a_cr4, _ = _m_cart.resolve_click("удалить чикен из корзины", None,
+                                         None, chat_id="cr6")
+        check("корзина-фолбэк: хвост «из корзины» срезан",
+              a_cr4 is not None and a_cr4.get("product") == "чикен")
+        _ba.cart_item_present = lambda host=None, product="", tab_id=None: False
+        no_cr, err_cr = _m_cart.resolve_click("удалить чикен", None, None,
+                                              chat_id="cr3")
+        check("корзина-фолбэк: товара нет в корзине — честный отказ",
+              no_cr is None and bool(err_cr))
+        check("корзина-фолбэк: «удали звук» — не товар, мимо",
+              _m_cart._cart_remove_fallback("звук", None, "cr5") is None)
+    finally:
+        _ba.snapshot_elements = _orig_snap_cr
+        del _ba.cart_item_present
+
     # Синоним «троеточие»: основа «действ» prefix-матчит «Меню действий»
     # YouTube (полное слово «действия» не матчило «действий»)
     from app.features.computer_control import _goal_with_synonyms, _word_in
