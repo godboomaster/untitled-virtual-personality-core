@@ -1087,11 +1087,16 @@ _CART_REMOVE_RE = re.compile(
     r"(?:корзины|заказа)\s*[.!?…]*\s*$", re.IGNORECASE)
 # Голая форма удаления БЕЗ «из корзины»: «удали чикен», «нажми удалить
 # чикен». Парсится как обычный клик, а при промахе текстового резолва
-# уходит корзинному фолбэку resolve_click (_cart_remove_fallback) — он
+# уходит корзинному фолбэку resolve_click (_cart_op_fallback) — он
 # срабатывает, только если товар реально виден в открытой корзине
 _CART_REMOVE_GOAL_RE = re.compile(
     r"^(?:удали\w*|убери|убрать|выкинь\w*|выбрось\w*)\s+(.+)$",
     re.IGNORECASE)
+# Редактирование товара в корзине (ссылка «Изменить» в карточке):
+# «изменить состав в гавайская» (парсер клика отдаёт «в X» сайтом, и
+# resolve_click собирает обратно в «... на X»), «поменять гавайскую»
+_CART_EDIT_GOAL_RE = re.compile(
+    r"^(?:измен\w*|поменя\w*)\s+(.+)$", re.IGNORECASE)
 _CART_DEC_NUM_RE = re.compile(
     r"^\s*(?:убавь|уменьши|убери|минус)\s+(?:одну|один|1)\s+(.+?)\s*[.!?…]*\s*$",
     re.IGNORECASE)
@@ -3206,25 +3211,30 @@ class ComputerControlManager:
             # бы крестик раньше явной команды, и «закрой окно» ответило бы
             # «не нашёл» на уже закрытом попапе
             goal = "закрыть"
-        # Корзинное удаление ДО текстового резолва: «удали чикен» /
-        # «нажми удалить чикен» / «закрой чикен» при открытой корзине.
-        # Крестик товара в корзине — иконка без текста и aria, текстовый
-        # резолв его не видит вовсе (а у целевого «закрыть на чикен» ctx
-        # крестика ВСЕЙ панели содержит названия товаров — промахивался бы
-        # в закрытие корзины). cart_op находит карточку по названию и жмёт
-        # × по позиции. Только когда товар реально виден в корзине —
-        # иначе обычный путь (подписанные «Удалить …» вне магазина,
-        # инвентарь бота и т.п. не задеваем)
+        # Корзинный фолбэк ДО текстового резолва: «удали чикен» /
+        # «нажми удалить чикен» / «закрой чикен» / «изменить состав в
+        # гавайская» при открытой корзине. Крестик товара — иконка без
+        # текста и aria, «Изменить» теряется среди одноимённых ссылок
+        # других рядов (а целевое «закрыть на чикен» и вовсе цеплялось за
+        # крестик ВСЕЙ панели — в её ctx названия товаров). cart_op
+        # находит карточку по названию и жмёт контрол по позиции. Только
+        # когда товар реально виден в корзине — иначе обычный путь
+        # (подписанные «Удалить …» вне магазина, инвентарь бота и т.п.
+        # не задеваем)
         cart_probe = ""
+        cart_op_kind = "remove"
         if close_goal and close_obj and not _CLOSE_GENERIC_RE.fullmatch(close_obj):
             cart_probe = close_obj
         elif not close_goal:
             m_rm = _CART_REMOVE_GOAL_RE.match(goal_n)
+            m_ed = None if m_rm else _CART_EDIT_GOAL_RE.match(goal_n)
             if m_rm:
                 cart_probe = m_rm.group(1)
+            elif m_ed:
+                cart_probe, cart_op_kind = m_ed.group(1), "edit"
         if cart_probe:
-            cart_act = self._cart_remove_fallback(cart_probe, site_word,
-                                                  chat_id)
+            cart_act = self._cart_op_fallback(cart_probe, cart_op_kind,
+                                              site_word, chat_id)
             if cart_act is not None:
                 return cart_act, None
         if close_goal and close_obj and not _CLOSE_GENERIC_RE.fullmatch(close_obj):
@@ -3757,16 +3767,22 @@ class ComputerControlManager:
 
     # ── Корзина сайта: «убери X из корзины», «убавь/прибавь X» ──
 
-    def _cart_remove_fallback(self, product_raw: str,
-                              site_word: Optional[str], chat_id: str = ""):
-        """Голые формы «удали X»/«закрой X» при открытой корзине: корзинный
-        крестик товара — иконка без текста и aria, текстовый резолв его не
-        видит, а cart_op находит карточку по названию и жмёт × по позиции.
+    def _cart_op_fallback(self, product_raw: str, op: str,
+                          site_word: Optional[str], chat_id: str = ""):
+        """Голые формы «удали X»/«закрой X»/«изменить состав в X» при
+        открытой корзине: корзинные контролы товара (×, «Изменить», −/+)
+        текстовому резолву маловидимы — cart_op находит карточку по
+        названию и жмёт контрол по позиции/тексту.
         Срабатывает, только когда товар реально виден в корзине страницы;
         иначе None — идём обычными фолбэками/честным отказом (инвентарь
         бота и «удали X» вне магазина не задеваем)."""
         product = re.sub(r"\s+из\s+(?:корзины|заказа)\s*$", "",
                          str(product_raw or ""), flags=re.IGNORECASE)
+        if op == "edit":
+            # «изменить состав на гавайская»: ни «состав», ни предлог —
+            # не части названия товара
+            product = re.sub(r"^состав\s+", "", product)
+        product = re.sub(r"^(?:на|в|во)\s+", "", product)
         product = " ".join(
             _CART_FILLER_RE.sub(" ", product).split()).strip(" ,.;!?")
         if len(product) < 2 or _CART_NOT_PRODUCT_RE.search(product):
@@ -3781,9 +3797,10 @@ class ComputerControlManager:
                 return None  # вкладка чата — корзины там нет
             if not _bac.cart_item_present(host, product, tab_id=tab_id):
                 return None
-            logger.info(f"[CompControl] «{str(product_raw)[:30]}» → удаление "
-                        f"«{product[:40]}» из корзины на {host}")
-            act = {"kind": "cart", "op": "remove", "product": product,
+            op_ru = {"remove": "удаление", "edit": "изменение"}.get(op, op)
+            logger.info(f"[CompControl] «{str(product_raw)[:30]}» → {op_ru} "
+                        f"«{product[:40]}» в корзине на {host}")
+            act = {"kind": "cart", "op": op, "product": product,
                    "host": host}
             if tab_id is not None:
                 act["tab_id"] = tab_id

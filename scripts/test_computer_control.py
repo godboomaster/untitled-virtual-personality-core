@@ -4293,13 +4293,25 @@ def main():
                                          None, chat_id="cr6")
         check("корзина-фолбэк: хвост «из корзины» срезан",
               a_cr4 is not None and a_cr4.get("product") == "чикен")
+        a_ce, _ = _m_cart.resolve_click("изменить состав", "гавайская",
+                                        None, chat_id="cr7")
+        check("корзина-фолбэк: «изменить состав в гавайская» → cart edit",
+              a_ce is not None and a_ce.get("kind") == "cart"
+              and a_ce.get("op") == "edit"
+              and a_ce.get("product") == "гавайская")
+        a_ce2, _ = _m_cart.resolve_click("поменять гавайскую", None, None,
+                                         chat_id="cr8")
+        check("корзина-фолбэк: «поменять гавайскую» → cart edit",
+              a_ce2 is not None and a_ce2.get("op") == "edit"
+              and a_ce2.get("product") == "гавайскую")
         _ba.cart_item_present = lambda host=None, product="", tab_id=None: False
         no_cr, err_cr = _m_cart.resolve_click("удалить чикен", None, None,
                                               chat_id="cr3")
         check("корзина-фолбэк: товара нет в корзине — честный отказ",
               no_cr is None and bool(err_cr))
         check("корзина-фолбэк: «удали звук» — не товар, мимо",
-              _m_cart._cart_remove_fallback("звук", None, "cr5") is None)
+              _m_cart._cart_op_fallback("звук", "remove", None, "cr5")
+              is None)
     finally:
         _ba.snapshot_elements = _orig_snap_cr
         del _ba.cart_item_present
