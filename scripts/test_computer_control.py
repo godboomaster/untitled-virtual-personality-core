@@ -3639,6 +3639,31 @@ def main():
         boxed = _cc_mod._draw_candidate_boxes(_png, _vis_items)
         check("п.4: рамки кандидатов рисуются (JPEG на выходе)",
               boxed is not None and boxed[:2] == b"\xff\xd8")
+        # Бейджи номеров: заливка цветом рамки из палитры, коллизии
+        # разнесены, кегль растёт с шириной кадра (кейс 07.09: мелкий красный
+        # текст по видеоряду vision-модель не читала)
+        _im = _PILImage.open(_io.BytesIO(boxed)).convert("RGB")
+        _reds = _blues = 0
+        for _yy in range(0, _im.height, 3):
+            for _xx in range(0, _im.width, 3):
+                _r, _g, _b = _im.getpixel((_xx, _yy))
+                if _r > 140 and _g < 120 and _b < 120:
+                    _reds += 1
+                if _b > 140 and _r < 120 and _g < 160:
+                    _blues += 1
+        check("рамки: палитра цветов (красный и синий кандидаты)",
+              _reds > 10 and _blues > 10)
+        _buf2 = _io.BytesIO()
+        _PILImage.new("RGB", (2400, 1300), (255, 255, 255)).save(
+            _buf2, format="PNG")
+        boxed2 = _cc_mod._draw_candidate_boxes(_buf2.getvalue(), _vis_items)
+        check("рамки: широкий канвас (крупный кегль) — тоже валидный JPEG",
+              boxed2 is not None and boxed2[:2] == b"\xff\xd8")
+        # Искатель зон: подпись из предков (безымянные ×/−/+ карточки),
+        # схлопывание близнецов с одним rect (слайды баннера)
+        check("зоны: подписи из предков + дедуп близнецов в искателе",
+              "parentElement;up++" in _ba._ALL_CLICKABLE_BOXES_JS
+              and "var ded=[]" in _ba._ALL_CLICKABLE_BOXES_JS)
     finally:
         _ba.screenshot_viewport = _orig_sshot
         _ba.snapshot_elements = _orig_snap_v

@@ -3678,7 +3678,13 @@ def _click_applescript(host_part: Optional[str], idx: int,
 # canvas/WebGL, ARIA-скрытая разметка): ВСЕ визуально кликабельные зоны
 # вьюпорта, включая безымянные. Крупный canvas (>40% вьюпорта) режется
 # сеткой 3×3 — иначе «кликни по врагу» в игре не адресуемо. Зоны без
-# DOM-метки кликаются по координатам (click_at_point)
+# DOM-метки кликаются по координатам (click_at_point).
+# Подпись зоны — цепочка: свой aria/текст → alt картинки → aria потомка →
+# title/placeholder → текст РОДИТЕЛЯ (безымянные иконки ×/−/+ в карточке
+# товара, миниатюры shorts: название — соседний блок в том же контейнере);
+# собственный текст-бейдж вида «0:28» уступает подписи родителя. Близнецы
+# с совпадающим rect (два button-слайда баннера) схлопываются в одну зону,
+# мелочь <8px (точки слайдера) не даёт зон — по ней не попасть координатой
 _ALL_CLICKABLE_BOXES_JS = (
     "(function(){"
     "var sel='button,a,[role=button],[role=link],input,textarea,select,"
@@ -3686,13 +3692,26 @@ _ALL_CLICKABLE_BOXES_JS = (
     "[contenteditable]:not([contenteditable=false])';"
     "function vis(e,r){var s=getComputedStyle(e);"
     "return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'"
-    "&&r.width>=4&&r.height>=4&&r.bottom>0&&r.right>0"
+    "&&r.width>=8&&r.height>=8&&r.bottom>0&&r.right>0"
     "&&r.top<innerHeight&&r.left<innerWidth;}"
+    "function norm(s){return (s||'').replace(/\\s+/g,' ').trim();}"
+    "function nm(e){"
+    "var t=norm(e.getAttribute('aria-label'))||norm(e.innerText)||"
+    "norm(e.value);"
+    "if(/^\\d{1,2}:\\d{2}$/.test(t))t='';"
+    "if(!t){var im=e.querySelector('img');if(im)t=norm(im.alt);}"
+    "if(!t){var ca=e.querySelector('[aria-label]');"
+    "if(ca)t=norm(ca.getAttribute('aria-label'));}"
+    "if(!t)t=norm(e.title)||norm(e.getAttribute('placeholder'));"
+    "if(!t){var p=e.parentElement,up=0;"
+    "while(p&&up<4){var pt=norm(p.innerText);"
+    "if(pt.length>=3&&pt.length<=400){t=pt;break;}"
+    "p=p.parentElement;up++;}}"
+    "return t;}"
     "var out=[];"
     "document.querySelectorAll(sel).forEach(function(e){"
     "var r=e.getBoundingClientRect();if(!vis(e,r))return;"
-    "var t=(e.innerText||e.value||e.getAttribute('aria-label')||e.title||"
-    "e.getAttribute('placeholder')||'').replace(/\\s+/g,' ').trim();"
+    "var t=nm(e);"
     "if(e.tagName==='CANVAS'&&r.width*r.height>"
     "innerWidth*innerHeight*0.4){"
     # Крупный canvas — сетка 3×3: зона = ячейка (клик по координатам центра)
@@ -3703,7 +3722,13 @@ _ALL_CLICKABLE_BOXES_JS = (
     "return;}"
     "out.push({x:r.left,y:r.top,w:r.width,h:r.height,text:t.slice(0,40)});"
     "});"
-    "return JSON.stringify(out.slice(0,40));})()"
+    "var ded=[];"
+    "for(var i=0;i<out.length;i++){var b=out[i],dup=false;"
+    "for(var j=0;j<ded.length;j++){var c=ded[j];"
+    "if(Math.abs(b.x-c.x)<=4&&Math.abs(b.y-c.y)<=4&&"
+    "Math.abs(b.w-c.w)<=6&&Math.abs(b.h-c.h)<=6){dup=true;break;}}"
+    "if(!dup)ded.push(b);}"
+    "return JSON.stringify(ded.slice(0,40));})()"
 )
 
 

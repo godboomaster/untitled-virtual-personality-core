@@ -155,28 +155,68 @@ def _word_fuzzy_in(word: str, hay: str, anchored: bool) -> bool:
 
 
 def _draw_candidate_boxes(shot: bytes, cands: List[dict]) -> Optional[bytes]:
-    """Скриншот вьюпорта (jpeg) + пронумерованные красные рамки вокруг
-    кандидатов (визуальный фолбэк резолва, п.4). Координаты элементов —
-    CSS-пиксели, скриншот снят со scale='css' (1:1); масштаб по ширине
-    картинки против vw снапшота оставлен как страховка, если бэкенд
-    вернёт device-scale. На выходе тоже jpeg — в разы легче png для
-    пересылки в веб-чат/API. None — Pillow/картинка не сработали
-    (фолбэк пропускаем)."""
+    """Скриншот вьюпорта (jpeg) + пронумерованные рамки вокруг кандидатов
+    (визуальный фолбэк резолва, п.4). Рамки — из палитры (красный первым),
+    номер — в залитом бейдже цвета рамки: мелкий красный текст по видео-
+    ряду читался плохо, соседние номера сливались (кейс 07.09). Бейдж —
+    над левым верхним углом, при коллизии с уже поставленным — другой
+    угол. Координаты элементов — CSS-пиксели, скриншот снят со scale='css'
+    (1:1); масштаб по ширине картинки против vw снапшота оставлен как
+    страховка, если бэкенд вернёт device-scale. На выходе тоже jpeg — в
+    разы легче png для пересылки в веб-чат/API. None — Pillow/картинка
+    не сработали (фолбэк пропускаем)."""
     try:
         import io
-        from PIL import Image, ImageDraw
+        from PIL import Image, ImageDraw, ImageFont
         img = Image.open(io.BytesIO(shot)).convert("RGB")
         vw = next((float(it.get("vw")) for it in cands if it.get("vw")),
                   float(img.width))
         scale = img.width / vw if vw else 1.0
         d = ImageDraw.Draw(img)
+        palette = [(220, 38, 38), (37, 99, 235), (5, 150, 105),
+                   (217, 119, 6), (147, 51, 234), (219, 39, 119),
+                   (8, 145, 178), (234, 88, 12)]
+        # Кегль и толщина рамки — от ширины картинки: vision-модель даун-
+        # скейлит скриншот под своё разрешение, фиксированный мелкий шрифт
+        # на широком кадре (фоновая вкладка с большим канвасом) схлопывался
+        fs = max(18, min(42, int(img.width / 60)))
+        lw = max(3, fs // 6)
+        try:
+            font = ImageFont.load_default(size=fs)
+        except TypeError:
+            font = ImageFont.load_default()  # старый Pillow без size=
+        placed: List[tuple] = []
         for n, it in enumerate(cands, 1):
+            col = palette[(n - 1) % len(palette)]
             x = float(it.get("x") or 0) * scale
             y = float(it.get("y") or 0) * scale
             x2 = x + max(8.0, float(it.get("w") or 0)) * scale
             y2 = y + max(8.0, float(it.get("h") or 0)) * scale
-            d.rectangle([x, y, x2, y2], outline=(255, 0, 0), width=3)
-            d.text((x + 3, y + 3), str(n), fill=(255, 0, 0))
+            d.rectangle([x, y, x2, y2], outline=col, width=lw)
+            label = str(n)
+            bb = d.textbbox((0, 0), label, font=font)
+            bw, bh = (bb[2] - bb[0]) + 12, (bb[3] - bb[1]) + 8
+            spots = [(x, y - bh - 2), (x2 - bw, y - bh - 2),
+                     (x + 2, y + 2), (x2 - bw - 2, y + 2)]
+            bx = by = None
+            for sx, sy in spots:
+                if sy < 0:
+                    continue
+                hit = False
+                for pr in placed:
+                    if (sx < pr[2] and sx + bw > pr[0]
+                            and sy < pr[3] and sy + bh > pr[1]):
+                        hit = True
+                        break
+                if not hit:
+                    bx, by = sx, sy
+                    break
+            if bx is None:
+                bx, by = x + 2, y + 2
+            placed.append((bx, by, bx + bw, by + bh))
+            d.rectangle([bx, by, bx + bw, by + bh], fill=col)
+            d.text((bx + 6, by + 4), label, fill=(255, 255, 255),
+                   font=font)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=82)
         return buf.getvalue()
@@ -3016,8 +3056,9 @@ class ComputerControlManager:
             f"{n}) {str(it.get('text') or it.get('aria') or it.get('tag') or '?')[:40]}"
             for n, it in enumerate(cands, 1))
         prompt = (
-            f"Скриншот страницы браузера. Красные рамки отмечают элементы "
-            f"1..{len(cands)}:\n{lines}\n"
+            f"Скриншот страницы браузера. Цветные рамки с номерными "
+            f"бейджами отмечают элементы 1..{len(cands)} (номер — в бейдже "
+            f"цвета рамки):\n{lines}\n"
             f"Какой из них — «{goal}»? Ответь ТОЛЬКО цифрой. "
             "Если ничего не подходит — ответь «нет».")
         try:
@@ -3084,8 +3125,9 @@ class ComputerControlManager:
             for n, b in enumerate(boxes, 1))
         prompt = (
             f"Задача: нажать «{goal}».\n"
-            "Скриншот страницы браузера. Красные рамки — кликабельные зоны "
-            f"1..{len(boxes)}:\n{lines}\n"
+            "Скриншот страницы браузера. Цветные рамки с номерными "
+            "бейджами — кликабельные зоны "
+            f"1..{len(boxes)} (номер — в бейдже цвета рамки):\n{lines}\n"
             "Ответь ТОЛЬКО цифрой зоны, которую нужно нажать. "
             "Если подходящей зоны нет — ответь «нет».")
         try:
