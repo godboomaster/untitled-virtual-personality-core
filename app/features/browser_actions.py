@@ -3233,18 +3233,23 @@ def scroll_status(host_part: Optional[str] = None,
 # − и + — нижний ряд (левая/правая). Общий искатель карточки — _CART_FIND_JS;
 # клик и closed-loop проверка — разными вызовами (между ними пауза на
 # ре-рендер корзины).
-_CART_FIND_JS = (
+# Нормализация/стем/поиск слова с начала слова («айс» ≠ «гавАЙСкая») —
+# общие хелперы корзинных и редакторских (состав продукта) JS
+_VPC_NORM_JS = (
     "function __vpcN(s){return (s||'').toLowerCase().replace(/[-‐-―]/g,' ')"
     ".replace(/\\s+/g,' ').trim();}"
     "function __vpcStem(w){var pl=w.length>=7?w.length-3:(w.length>=6?w.length-2:0);"
     "return pl>=4?w.slice(0,pl):w;}"
     "function __vpcWIn(hay,w){var st=__vpcStem(w);var ws=hay.split(' ');"
     "for(var i=0;i<ws.length;i++){if(ws[i].indexOf(st)===0)return true;}return false;}"
+)
+_CART_FIND_JS = (
+    _VPC_NORM_JS
     # Карточки товара: заголовок (свой текст с первым словом названия, с
-    # начала слова — «айс» ≠ «гавАЙСкая») → ближайший предок с кнопкой и
+    # начала слова) → ближайший предок с кнопкой и
     # текстом ≤500 (выше уже вся панель корзины); все слова названия должны
     # читаться в тексте карточки (уточнение «гавайскую 20 см»)
-    "function __vpcCards(prod){"
+    + "function __vpcCards(prod){"
     "var words=__vpcN(prod).split(' ').filter(function(w){return w.length>=2;});"
     "if(!words.length)return [];"
     "var first=__vpcStem(words[0]);"
@@ -3409,6 +3414,92 @@ def cart_item_present(host_part: Optional[str], product: str,
         return bool(ver.get("present"))
     except Exception:
         return False
+
+
+# ── Редактор состава на странице/модалке продукта ──
+# Комбо-страницы dodo: у каждого выбранного товара своя ссылка «Изменить
+# состав», а имя товара живёт соседним блоком — ctx снапшота его не
+# захватывает, и скоуп-скоринг «изменить состав в гавайская» промахивался
+# в инфо-иконку (кейс 07.09). Контрол находим по тексту «изменить состав»,
+# товар — по контексту предка (до 8 уровней, первый содержательный текст).
+_COMP_EDIT_CORE_JS = (
+    "var cand=[],els=document.querySelectorAll('a,button,[role=button]'),i;"
+    "for(i=0;i<els.length;i++){"
+    "var t=__vpcN(els[i].innerText);"
+    "if(t.indexOf('изменить состав')!==0)continue;"
+    "var r=els[i].getBoundingClientRect();"
+    "if(r.width<2||r.height<2)continue;cand.push(els[i]);}"
+    "function cx(el){var p=el,up=0;while(p&&p.tagName!=='BODY'&&up<8){"
+    "var t=__vpcN(p.innerText);if(t.length>25&&t.length<=400)return t;"
+    "p=p.parentElement;up++;}return __vpcN(el.innerText);}"
+    "function hits(pr){var words=__vpcN(pr).split(' ').filter(function(w){"
+    "return w.length>=2;});var out=[],k,j;"
+    "for(k=0;k<cand.length;k++){var ct=cx(cand[k]),ok=true;"
+    "for(j=0;j<words.length;j++){if(!__vpcWIn(ct,words[j])){ok=false;break;}}"
+    "if(ok)out.push(k);}return out;}"
+    "function vlist(ix){var vs=[];for(var k=0;k<ix.length&&k<4;k++){"
+    "vs.push(cx(cand[ix[k]]).slice(0,40));}return vs;}"
+)
+
+_COMP_EDIT_FIND_JS = (
+    "(function(prod){"
+    + _VPC_NORM_JS + _COMP_EDIT_CORE_JS +
+    "if(!cand.length)return '{\"status\":\"none\"}';"
+    "if(!prod){return cand.length===1?'{\"status\":\"unique\"}':"
+    "JSON.stringify({status:'multi',variants:vlist("
+    "cand.map(function(_,k){return k;}))});}"
+    "var h=hits(prod);"
+    "if(h.length===1)return '{\"status\":\"unique\"}';"
+    "if(!h.length)return '{\"status\":\"none\"}';"
+    "return JSON.stringify({status:'multi',variants:vlist(h)});"
+    "})('__PROD__')"
+)
+
+_COMP_EDIT_CLICK_JS = (
+    "(function(prod){"
+    + _VPC_NORM_JS + _COMP_EDIT_CORE_JS +
+    "var el=null;"
+    "if(!prod){el=cand.length===1?cand[0]:null;}"
+    "else{var h=hits(prod);el=h.length===1?cand[h[0]]:null;}"
+    "if(!el)return 'err:нет единственной «Изменить состав» для «'+prod+'»';"
+    "el.click();return 'ok:clicked';"
+    "})('__PROD__')"
+)
+
+
+def _comp_edit_prod(product: str) -> str:
+    return re.sub(r"[\"'\\]", "",
+                  " ".join(str(product or "").split()))[:80].strip()
+
+
+def edit_composition_find(host_part: Optional[str], product: str,
+                          tab_id: Optional[int] = None) -> dict:
+    """Проба резолвера: есть ли на странице/в модалке продукта ровно один
+    подходящий контрол «Изменить состав» (для названного товара — в его
+    слоте). → {"status": "unique"|"none"|"multi", "variants": [...]};
+    {} — страница недоступна."""
+    try:
+        return json.loads(_run_js(
+            host_part,
+            _COMP_EDIT_FIND_JS.replace("__PROD__", _comp_edit_prod(product)),
+            tab_id=tab_id, front=False) or "{}")
+    except Exception:
+        return {}
+
+
+def edit_composition_op(host_part: Optional[str], product: str,
+                        tab_id: Optional[int] = None) -> None:
+    """Клик по единственной подходящей ссылке «Изменить состав» (слот товара
+    на странице/в модалке продукта). Промах/неоднозначность —
+    BrowserUnavailable с человеческим текстом."""
+    raw = _run_js(host_part,
+                  _COMP_EDIT_CLICK_JS.replace("__PROD__",
+                                              _comp_edit_prod(product)),
+                  tab_id=tab_id, front=False)
+    if raw.startswith("err:"):
+        raise BrowserUnavailable(raw[4:])
+    if not raw.startswith("ok:"):
+        raise BrowserUnavailable(f"не разобрался ответ страницы: {raw[:80]}")
 
 
 def click_tagged(host_part: Optional[str], idx: int,

@@ -1156,6 +1156,20 @@ def parse_cart_request(text: str) -> Optional[Tuple[str, str]]:
     return op, product
 
 
+def _cart_product_name(raw: str, op: str) -> str:
+    """Название товара из хвоста корзинной команды: срезаем «из корзины»,
+    у edit-форм — слово «состав» («изменить состав на гавайская»), предлог
+    «на/в/во» в начале и филлеры («пиццу», «товар»). Может выйти пустым —
+    «изменить состав» без уточнения."""
+    product = re.sub(r"\s+из\s+(?:корзины|заказа)\s*$", "",
+                     str(raw or ""), flags=re.IGNORECASE)
+    if op == "edit":
+        product = re.sub(r"^состав\s+", "", product)
+    product = re.sub(r"^(?:на|в|во)\s+", "", product)
+    return " ".join(
+        _CART_FILLER_RE.sub(" ", product).split()).strip(" ,.;!?")
+
+
 # ── Вопрос о содержимом секции открытой страницы ──
 # «что находится в "Добавить по вкусу"?» — бот читает текст секции со
 # страницы и подаёт его в общий LLM-поток контекстом (список формулирует
@@ -1812,6 +1826,11 @@ class ComputerControlManager:
                 action.get("op"), "изменить")
             return (f"{op_ru} «{action.get('product', '')}» "
                     f"в корзине на {action.get('host', '')}")
+        if action["kind"] == "comp_edit":
+            prod = action.get("product", "")
+            return (f"изменить состав «{prod}» на {action.get('host', '')}"
+                    if prod
+                    else f"открыть редактор состава на {action.get('host', '')}")
         if action["kind"] == "url":
             return f"открыть {action['value']}"
         if action["kind"] == "app":
@@ -1893,7 +1912,7 @@ class ComputerControlManager:
         if action["kind"] == "tab_switch":
             return (f"Перейти на вкладку "
                     f"«{action.get('element') or action.get('host', '')}»?")
-        if action["kind"] == "cart":
+        if action["kind"] in ("cart", "comp_edit"):
             q = cls.describe(action)
             return q[0].upper() + q[1:] + "?"
         if action["kind"] == "url" and action.get("search_query"):
@@ -1998,6 +2017,10 @@ class ComputerControlManager:
             if qty is None:
                 return f"{verb} «{prod}» в корзине"
             return f"{verb} «{prod}» — теперь {qty} шт. в корзине"
+        if action["kind"] == "comp_edit":
+            prod = action.get("product", "")
+            return (f"открыл редактирование состава «{prod}»" if prod
+                    else "открыл редактирование состава")
         if action["kind"] == "url" and action.get("search_query"):
             if action.get("direct"):
                 return f"открыл «{action['search_query']}» на {action['search_site']}"
@@ -3237,6 +3260,17 @@ class ComputerControlManager:
                                               site_word, chat_id)
             if cart_act is not None:
                 return cart_act, None
+            if cart_op_kind == "edit":
+                # Не корзина — страница/модалка продукта: ссылка «Изменить
+                # состав» слота (комбо), товар по контексту предка
+                comp_act, comp_err = self._comp_edit_fallback(
+                    cart_probe, site_word, chat_id)
+                if comp_act is not None:
+                    return comp_act, None
+                if comp_err:
+                    # Неоднозначность («несколько Изменить состав») —
+                    # честный вопрос лучше промаха в инфо-иконку
+                    return None, comp_err
         if close_goal and close_obj and not _CLOSE_GENERIC_RE.fullmatch(close_obj):
             # Целевое закрытие («закрой соусы к бортикам»): крестик в контексте
             # названного блока — скоуп-форма «закрыть на X» (крестик модалки
@@ -3776,15 +3810,7 @@ class ComputerControlManager:
         Срабатывает, только когда товар реально виден в корзине страницы;
         иначе None — идём обычными фолбэками/честным отказом (инвентарь
         бота и «удали X» вне магазина не задеваем)."""
-        product = re.sub(r"\s+из\s+(?:корзины|заказа)\s*$", "",
-                         str(product_raw or ""), flags=re.IGNORECASE)
-        if op == "edit":
-            # «изменить состав на гавайская»: ни «состав», ни предлог —
-            # не части названия товара
-            product = re.sub(r"^состав\s+", "", product)
-        product = re.sub(r"^(?:на|в|во)\s+", "", product)
-        product = " ".join(
-            _CART_FILLER_RE.sub(" ", product).split()).strip(" ,.;!?")
+        product = _cart_product_name(product_raw, op)
         if len(product) < 2 or _CART_NOT_PRODUCT_RE.search(product):
             return None
         try:
@@ -3808,6 +3834,47 @@ class ComputerControlManager:
         except Exception as e:
             logger.debug(f"[CompControl] Корзинный фолбэк не удался: {e}")
             return None
+
+    def _comp_edit_fallback(self, product_raw: str,
+                            site_word: Optional[str], chat_id: str = ""):
+        """«изменить состав (в/на X)» на странице/модалке продукта (комбо
+        dodo: у каждого слота своя ссылка «Изменить состав», а имя товара
+        живёт соседним блоком — ctx снапшота его не захватывает, и скоуп-
+        скоринг промахивался в инфо-иконку; кейс 07.09). Детерминированный
+        поиск: контрол — по тексту, товар — по контексту предка.
+        → (действие|None, None|уточняющий вопрос при неоднозначности).
+        None-действие без вопроса — страница не про состав, идём дальше
+        обычным резолвом."""
+        product = _cart_product_name(product_raw, "edit")
+        if product and _CART_NOT_PRODUCT_RE.search(product):
+            return None, None
+        try:
+            from app.features import browser_actions as _bac
+            url, host, _items, tab_id, err = self._snapshot_for(
+                site_word, chat_id=chat_id)
+            if err or not host:
+                return None, None
+            if urlparse(url).hostname in ("localhost", "127.0.0.1"):
+                return None, None  # вкладка чата
+            res = _bac.edit_composition_find(host, product, tab_id=tab_id)
+            st = res.get("status")
+            if st == "unique":
+                logger.info(f"[CompControl] «{str(product_raw)[:30]}» → "
+                            f"редактор состава «{product[:40]}» на {host}")
+                act = {"kind": "comp_edit", "product": product,
+                       "host": host}
+                if tab_id is not None:
+                    act["tab_id"] = tab_id
+                return act, None
+            if st == "multi":
+                vs = "; ".join(str(v) for v in (res.get("variants") or []))
+                return None, ("На странице несколько «Изменить состав»"
+                              + (f" ({vs})" if vs else "")
+                              + " — уточни, для какого товара.")
+        except Exception as e:
+            logger.debug(f"[CompControl] Поиск редактора состава не "
+                         f"удался: {e}")
+        return None, None
 
     def resolve_cart(self, parsed, site_word: Optional[str],
                      router=None, chat_id: str = "") -> Tuple[Optional[dict], Optional[str]]:
@@ -4338,6 +4405,16 @@ class ComputerControlManager:
                              action["op"], tab_id=action.get("tab_id"))
             if res.get("qty") is not None:
                 action["qty_new"] = res["qty"]
+            self._remember_tab(action)
+            return
+        if action["kind"] == "comp_edit":
+            # Редактор состава слота на странице/модалке продукта:
+            # детерминированный клик по ссылке «Изменить состав» (товар —
+            # по контексту предка; неоднозначность отсеял резолвер)
+            from app.features import browser_actions as ba
+            ba.edit_composition_op(action.get("host"),
+                                   action.get("product", ""),
+                                   tab_id=action.get("tab_id"))
             self._remember_tab(action)
             return
         if action["kind"] == "nav":

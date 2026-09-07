@@ -4312,9 +4312,58 @@ def main():
         check("корзина-фолбэк: «удали звук» — не товар, мимо",
               _m_cart._cart_op_fallback("звук", "remove", None, "cr5")
               is None)
+        # Не корзина, а страница/модалка продукта со слотами «Изменить
+        # состав» (комбо dodo): детерминированный поиск по контексту предка
+        # (кейс 07.09: раньше кликало инфо-иконку «Показать доп. информацию»)
+        _ba.edit_composition_find = lambda host=None, product="", tab_id=None: {
+            "status": "unique"}
+        a_pe, _ = _m_cart.resolve_click("изменить состав", "гавайская",
+                                        None, chat_id="cr9")
+        check("редактор состава: страница продукта → comp_edit",
+              a_pe is not None and a_pe.get("kind") == "comp_edit"
+              and a_pe.get("product") == "гавайская")
+        _ba.edit_composition_find = lambda host=None, product="", tab_id=None: {
+            "status": "multi",
+            "variants": ["пепперони фреш 25 см", "гавайская 25 см"]}
+        no_pe, err_pe = _m_cart.resolve_click("изменить состав", "гавайская",
+                                              None, chat_id="cr10")
+        check("редактор состава: неоднозначность → уточняющий вопрос",
+              no_pe is None and bool(err_pe) and "несколько" in err_pe)
+        _ba.edit_composition_find = lambda host=None, product="", tab_id=None: {
+            "status": "none"}
+        no_pe2, err_pe2 = _m_cart.resolve_click("изменить состав", "гавайская",
+                                                None, chat_id="cr11")
+        check("редактор состава: ни корзины, ни слотов — обычный резолв",
+              no_pe2 is None and bool(err_pe2))
+        check("comp_edit: describe + confirm по умолчанию",
+              "изменить состав «гавайская»" in ComputerControlManager.describe(
+                  {"kind": "comp_edit", "product": "гавайская",
+                   "host": "dodopizza.ru"})
+              and _m_cart.needs_confirm({"kind": "comp_edit",
+                                         "product": "гавайская"}) is True)
+        # Исполнение: dispatch дёргает edit_composition_op (менеджер без
+        # SpyManager._dispatch — тот только записывает вызов)
+        _cap_ce = []
+        _orig_ce = _ba.edit_composition_op
+        _ba.edit_composition_op = lambda host, product, tab_id=None: (
+            _cap_ce.append((host, product, tab_id)), None)[1]
+        m_ce = ComputerControlManager(context="t", config=dict(CFG),
+                                      base_dir=tmp / "s-cedit")
+        ok_ce, rep_ce = m_ce.execute(
+            {"kind": "comp_edit", "product": "гавайская",
+             "host": "dodopizza.ru"}, "ce1")
+        _ba.edit_composition_op = _orig_ce
+        check("comp_edit: dispatch → edit_composition_op",
+              ok_ce and _cap_ce == [("dodopizza.ru", "гавайская", None)])
+        check("comp_edit: отчёт об успехе",
+              "открыл редактирование состава «гавайская»"
+              in ComputerControlManager.describe_done(
+                  {"kind": "comp_edit", "product": "гавайская",
+                   "host": "dodopizza.ru"}))
     finally:
         _ba.snapshot_elements = _orig_snap_cr
         del _ba.cart_item_present
+        del _ba.edit_composition_find
 
     # Синоним «троеточие»: основа «действ» prefix-матчит «Меню действий»
     # YouTube (полное слово «действия» не матчило «действий»)
