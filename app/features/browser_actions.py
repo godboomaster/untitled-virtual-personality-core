@@ -3248,7 +3248,11 @@ _CART_FIND_JS = (
     # Карточки товара: заголовок (свой текст с первым словом названия, с
     # начала слова) → ближайший предок с кнопкой и
     # текстом ≤500 (выше уже вся панель корзины); все слова названия должны
-    # читаться в тексте карточки (уточнение «гавайскую 20 см»)
+    # читаться в тексте карточки (уточнение «гавайскую 20 см»). Из найденных
+    # выигрывают карточки, где все слова читаются в ЗАГОЛОВКЕ (первой строке):
+    # «двойная пепперони» — название и одиночной пиццы, и строка в описании
+    # состава комбо «3 пиццы …» — совпадение по описанию без приоритета
+    # заголовка давало ложную неоднозначность из 3 карточек (кейс 07.09)
     + "function __vpcCards(prod){"
     "var words=__vpcN(prod).split(' ').filter(function(w){return w.length>=2;});"
     "if(!words.length)return [];"
@@ -3281,7 +3285,15 @@ _CART_FIND_JS = (
     "var dup=false;"
     "for(k=0;k<out.length;k++){if(out[k]===card){dup=true;break;}}"
     "if(!dup)out.push(card);}"
-    "return out;}"
+    "var titled=[],j,fl,ok2;"
+    "for(i=0;i<out.length;i++){"
+    "var lines=(out[i].innerText||'').split('\\n');fl='';"
+    "for(j=0;j<lines.length;j++){fl=__vpcN(lines[j]);if(fl.length>=2)break;}"
+    "if(fl.length<2)continue;"
+    "ok2=true;"
+    "for(j=0;j<words.length;j++){if(!__vpcWIn(fl,words[j])){ok2=false;break;}}"
+    "if(ok2)titled.push(out[i]);}"
+    "return titled.length?titled:out;}"
     # Контролы карточки: edit — «Изменить»; remove — кнопка верхнего ряда
     # (× в правом верхнем углу); qty — нижний ряд из 2+ кнопок: левая −, правая +
     "function __vpcCtrls(card){"
