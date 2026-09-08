@@ -2272,6 +2272,33 @@ def main():
                    ctx="Цезарь с беконом 270 г Курица 419 ₽ Выбрать")],
               "выбрать на цезарь") == [])
 
+    # Отрицание «не» в подписи кандидата: «нравится» ≠ кнопка
+    # «Поставить отметку "Не нравится"» — раньше обе матчились одинаково
+    # и клик уходил на дизлайк (shorts)
+    _like_pair = [_it(0, "button", "", aria='Поставить отметку "Нравится"'),
+                  _it(1, "button", "", aria='Поставить отметку "Не нравится"')]
+    _sc = ms._score_candidates(_like_pair, "нравится")
+    check("score: «не нравится» не матчит голое «нравится»",
+          [t[1]["idx"] for t in _sc] == [0])
+    _sc = ms._score_candidates(_like_pair, "не нравится")
+    check("score: «нравится» не матчит цель «не нравится»",
+          [t[1]["idx"] for t in _sc] == [1])
+    _like_ctx = [_it(0, "button", "", aria='Поставить отметку "Нравится"',
+                    ctx="The Loudest Cane Gamerish"),
+                 _it(1, "button", "", aria='Поставить отметку "Не нравится"',
+                    ctx="The Loudest Cane Gamerish")]
+    check("score: скоуп-цель «нравится в X» выбирает лайк, не дизлайк",
+          [t[1]["idx"] for t in ms._score_scoped(
+              _like_ctx, "нравится в the loudest cane")] == [0])
+    idx_, meta_ = ms._choose_element(
+        "нравится в the loudest cane", _like_ctx, _BoomRouter())
+    check("choose: «нравится в X» — лайк без LLM",
+          idx_ == 0 and meta_["path"] == "score")
+    check("score: «не» у чужого слова не ломает совпадение",
+          [t[1]["idx"] for t in ms._score_candidates(
+              [_it(0, "a", "", aria="Не пропустить: скачать отчёт")],
+              "скачать")] == [0])
+
     # Выбор: явный лидер — без LLM; близкие кандидаты — LLM одним токеном
     _tie = lambda: [_it(0, "button", "Скачать приложение"),
                     _it(1, "button", "Скачать прайс"), _it(2, "a", "Помощь")]

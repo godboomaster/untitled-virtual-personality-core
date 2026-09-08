@@ -116,6 +116,26 @@ def _word_in(word: str, hay: str) -> bool:
         r"(?<![a-z0-9а-яё])" + re.escape(word), hay) is not None
 
 
+_NEG_WORD_RE = re.compile(r"(?<![a-z0-9а-яё])не\s+([a-z0-9а-яё]+)")
+
+
+def _negated_word_in(word: str, hay: str) -> bool:
+    """Слово в тексте под отрицанием: «не нравится»."""
+    return bool(word) and re.search(
+        r"(?<![a-z0-9а-яё])не\s+" + re.escape(word), hay) is not None
+
+
+def _strip_negated(hay: str, goal: str) -> str:
+    """Убирает из hay слова, стоящие под отрицанием «не», если в самой цели
+    отрицания нет: «нравится» ≠ кнопка «Поставить отметку "Не нравится"» —
+    без этого обе кнопки матчились одинаково и выбор уходил на дизлайк.
+    Цель сама с «не» («не нравится») — hay не трогаем: тогда голое слово
+    у кандидата отсекается отдельной проверкой в скоринге."""
+    if _NEG_WORD_RE.search(goal):
+        return hay
+    return _NEG_WORD_RE.sub("не", hay)
+
+
 def _user_page_host(host: str) -> bool:
     """Видимая вкладка — обычная пользовательская страница, а не служебная
     машинерия бота (его чат-UI на localhost, вкладки веб-LLM): те нельзя
@@ -2293,8 +2313,8 @@ class ComputerControlManager:
             text = _norm_match(it.get("text"))
             aria = _norm_match(it.get("aria"))
             title = _norm_match(it.get("title"))
-            hay = f"{text} {aria} {title}"
-            ctx = _norm_match(it.get("ctx"))
+            hay = _strip_negated(f"{text} {aria} {title}", g)
+            ctx = _strip_negated(_norm_match(it.get("ctx")), g)
             strong = [bool(_word_in(w, hay) or _word_in(_stem(w), hay)
                            or any(_word_in(s, hay)
                                   for s in _GOAL_SYNONYMS.get(w, ())))
@@ -2358,6 +2378,11 @@ class ComputerControlManager:
                 s = 40.0
             else:
                 continue
+            if any(_word_in(nw, hay) and not _negated_word_in(nw, hay)
+                   for nw in _NEG_WORD_RE.findall(g)):
+                # Цель с отрицанием («не нравится»), а у кандидата то же
+                # слово без «не» — противоположное действие, пропускаем
+                continue
             if (it.get("w") or 0) < 8 or (it.get("h") or 0) < 8:
                 s -= 15.0
             if not it.get("vp", True):
@@ -2420,8 +2445,8 @@ class ComputerControlManager:
             text = _norm_match(it.get("text"))
             aria = _norm_match(it.get("aria"))
             title = _norm_match(it.get("title"))
-            hay = f"{text} {aria} {title}"
-            ctx = _norm_match(it.get("ctx"))
+            hay = _strip_negated(f"{text} {aria} {title}", goal)
+            ctx = _strip_negated(_norm_match(it.get("ctx")), goal)
             if act and act == text:
                 s = 100.0
             elif act and (act == aria or act == title):
@@ -2431,6 +2456,10 @@ class ComputerControlManager:
             elif act and act in hay:
                 s = 50.0
             else:
+                continue
+            if any(_word_in(nw, hay) and not _negated_word_in(nw, hay)
+                   for nw in _NEG_WORD_RE.findall(goal)):
+                # Скоуп-цель с отрицанием — как в _score_candidates
                 continue
             if side:
                 # Скоуп-позиция: центр элемента в своей половине вьюпорта.
