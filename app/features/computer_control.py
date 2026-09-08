@@ -312,19 +312,25 @@ _ORDINAL_PLAYLIST_SCOPES = {"плейлисте", "плейлиста", "пле�
 _ORDINAL_SHORTS_SCOPES = {"shorts"}
 # Само слово «шортс» целью: «первый шортс» — полка shorts без скопа
 _ORDINAL_SHORTS_WORDS = {"шортс", "шортсы", "шортса", "шортсов", "shorts"}
+# Слова-прилагательные между номером и целью: «второе ПОДОБНОЕ видео» —
+# про тот же номерной результат выдачи/рекомендаций
+_ORDINAL_FILLER_RE = re.compile(
+    r"^(подобн\w*|похож\w*|рекоменд\w*|similar|related)$", re.IGNORECASE)
 
 
 def ordinal_recipe(name: str) -> Optional[str]:
     """«третье видео» / «2 результат» → «search_pick:3»; со скопом плейлиста
     («третье видео в плейлисте») → «playlist_pick:3»; скоп shorts
     («первое видео в shorts») или цель-шортс («первый шортс») →
-    «shorts_pick:1». None — не такая команда."""
+    «shorts_pick:1». Прилагательные («подобное», «похожий») между номером
+    и целью срезаются: «второе подобное видео» — тот же номерной результат.
+    None — не такая команда."""
     scope = None
     m = _ORDINAL_SCOPE_RE.search(name)
     if m:
         scope = m.group(1).lower()
         name = name[:m.start()].strip()
-    words = name.lower().split()
+    words = [w for w in name.lower().split() if not _ORDINAL_FILLER_RE.match(w)]
     if len(words) != 2:
         return None
     w1, w2 = words

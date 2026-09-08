@@ -130,23 +130,30 @@ RECIPES: Dict[str, Tuple[Optional[str], str]] = {
     ),
     # N-й результат выдачи («запусти третий результат/видео»): номер
     # подставляется в {N} из аргумента recipe:search_pick:N; вкладка — как у
-    # search_first (активная, иначе фоновая страница поиска)
+    # search_first (активная, иначе фоновая страница поиска). Отсчёт — от
+    # первого ВИДИМОГО во вьюпорте («первое видео» — первое на экране, а не
+    # в DOM докрученной страницы); за видимыми — остальные в DOM-порядке,
+    # чтобы N за пределами экрана продолжал список ниже сгиба
     "search_pick": (
         None,
         "var N={N};"
         "var h=location.hostname,p=location.pathname,a=null;"
+        "var vf=function(l){var v=[],r=[];l.forEach(function(x){"
+        "var b=x.getBoundingClientRect();"
+        "(b.width>0&&b.height>0&&b.bottom>0&&b.top<innerHeight"
+        "&&b.right>0&&b.left<innerWidth?v:r).push(x);});return v.concat(r);};"
         # youtube: заголовочные ссылки видео по всем раскладкам — выдача
         # (a#video-title), старый фид (a#video-title-link), up-next
         # (a#wc-endpoint), lockup-главная 2025 (a.ytLockupMetadataViewModelTitle);
         # селектор-список отдаёт всё в DOM-порядке, по одной ссылке на видео
         "if(h.indexOf('youtube.com')>=0){"
-        "  var vs=document.querySelectorAll('a#video-title-link,a#video-title,a#wc-endpoint,a.ytLockupMetadataViewModelTitle');a=vs[N-1]||null;"
+        "  var vs=vf([].slice.call(document.querySelectorAll('a#video-title-link,a#video-title,a#wc-endpoint,a.ytLockupMetadataViewModelTitle')));a=vs[N-1]||null;"
         "}else if(h.indexOf('kinopoisk.ru')>=0){"
         "  var as=[].slice.call(document.querySelectorAll('a[href^=\"/film/\"],a[href^=\"/series/\"]'));"
-        "  var rs=as.filter(function(x){return /^\\/(film|series)\\/\\d+\\/?$/.test(new URL(x.href).pathname)});"
+        "  var rs=vf(as.filter(function(x){return /^\\/(film|series)\\/\\d+\\/?$/.test(new URL(x.href).pathname)}));"
         "  a=rs[N-1]||null;"
         "}else if(h.indexOf('google.')>=0){"
-        "  var hs=document.querySelectorAll('#search h3');var h3=hs[N-1];a=h3?h3.closest('a'):null;"
+        "  var hs=vf([].slice.call(document.querySelectorAll('#search h3')));var h3=hs[N-1];a=h3?h3.closest('a'):null;"
         "}"
         "if(a){a.click();'ok:opened'}else{'нет результата номер '+N}",
     ),
