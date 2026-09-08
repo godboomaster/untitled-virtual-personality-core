@@ -647,12 +647,13 @@ def main():
     check("vision-webchat: адаптер без images → None до всякого браузера",
           llm_d.get_response_with_image("что на картинке?", b"png") is None)
 
-    # 14b. Happy path: paste картинки → обычная отправка/ожидание ответа
+    # 14b. Happy path: paste картинки → ожидание аплоада → отправка/ожидание
     llm_v = wl.WebChatLLM("qwen", base_dir=tmp / "vq")
-    vcalls = {"open": [], "send": [], "paste": []}
+    vcalls = {"open": [], "send": [], "paste": [], "wait": []}
     _open, _nav = ba.open_new_tab, ba.navigate_tab
     _send, _read = ba.chat_fill_send, ba.last_block_text
     _cnt, _url, _paste = ba.count_blocks, ba.tab_url, ba.chat_paste_image
+    _waitu = ba.chat_wait_uploaded
     ba.open_new_tab = lambda url, **kw: (vcalls["open"].append(url), 42)[1]
     ba.navigate_tab = lambda url, tab_id=None: None
     ba.tab_url = lambda *a, **kw: "https://chat.qwen.ai/c/vision-1"
@@ -660,6 +661,8 @@ def main():
         vcalls["send"].append(text), "sent")[1]
     ba.chat_paste_image = lambda host, tab_id, sel, img, mime="image/png": (
         vcalls["paste"].append((sel, bytes(img), mime)), True)[1]
+    ba.chat_wait_uploaded = lambda host, tab_id, sel, **kw: (
+        vcalls["wait"].append(sel), True)[1]
     counts = iter([0, 1, 1, 1, 1])
     texts = iter(["", "42", "42", "42", "42"])
     ba.count_blocks = lambda *a, **kw: next(counts)
@@ -676,6 +679,8 @@ def main():
               and vcalls["paste"][0][0] == llm_v.adapter["input"]
               and vcalls["paste"][0][1] == b"\x89PNG..."
               and len(vcalls["send"]) == 1)
+        check("vision-webchat: конец аплоада ждали между paste и отправкой",
+              vcalls["wait"] == [llm_v.adapter["input"]])
         # 14c. Paste не подтвердился сайтом → None, текст не шлём, квоту не тратим
         ba.chat_paste_image = lambda *a, **kw: False
         counts = iter([0])
@@ -683,10 +688,43 @@ def main():
         res_v2 = llm_v.get_response_with_image("ещё раз", b"\x89PNG...")
         check("vision-webchat: paste не сработал → None, текст не отправлен",
               res_v2 is None and len(vcalls["send"]) == 1)
+        check("vision-webchat: paste не сработал → аплоад не ждали",
+              len(vcalls["wait"]) == 1)
     finally:
         ba.open_new_tab, ba.navigate_tab = _open, _nav
         ba.chat_fill_send, ba.last_block_text = _send, _read
         ba.count_blocks, ba.tab_url, ba.chat_paste_image = _cnt, _url, _paste
+        ba.chat_wait_uploaded = _waitu
+
+    # 14g. _send_verified(wait_upload=True): перед повтором ждёт конца
+    # аплоада (первая отправка могла упереться в тост «files still uploading»)
+    _sv9 = wl.SEND_VERIFY_SEC
+    wl.SEND_VERIFY_SEC = 0.3
+    _cfs9, _lbt9, _cwu9 = ba.chat_fill_send, ba.last_block_text, \
+        ba.chat_wait_uploaded
+    llm10 = wl.WebChatLLM("qwen", base_dir=tmp / "q10")
+    seq10 = []
+    done10 = {"v": False}
+
+    def _send10(*a, **kw):
+        seq10.append("send")
+        if seq10.count("send") >= 2:
+            done10["v"] = True
+        return "sent"
+
+    ba.chat_fill_send = _send10
+    ba.chat_wait_uploaded = lambda *a, **kw: (seq10.append("wait"), True)[1]
+    ba.last_block_text = lambda host, tid, sels=None, **kw: (
+        "привет" if done10["v"] else "чужое")
+    try:
+        mk10 = llm10._send_verified(ba, "chat.qwen.ai", 42, "привет",
+                                    wait_upload=True)
+        check("send-verify: с картинкой перед повтором — ожидание аплоада",
+              mk10 == "привет" and seq10 == ["send", "wait", "send"])
+    finally:
+        wl.SEND_VERIFY_SEC = _sv9
+        ba.chat_fill_send, ba.last_block_text = _cfs9, _lbt9
+        ba.chat_wait_uploaded = _cwu9
 
     # 14d. Router: облака мертвы → vision уходит в веб-чат с images-флагом
     class _StubWebchatV:

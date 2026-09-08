@@ -4301,6 +4301,58 @@ def chat_paste_image(host_part: Optional[str], tab_id: Optional[int],
     return bool(_WORKER.submit(_op))
 
 
+# Ожидание окончания аплоада аттачей: у qwen и др. между появлением аттача
+# в композере и концом загрузки на сервер проходит заметное время; «отправить»
+# в это окно даёт только тост «files still uploading», а сообщение теряется.
+# Маркеры «загрузка идёт»: класс *uploading* (qwen: vision-item-container-
+# uploading), прогресс-бар. Маркера нет в первые ~2.5с — сайт без явного
+# индикатора, не блокируем отправку
+_CHAT_WAIT_UPLOADED_JS = (
+    "(function(sel,timeoutMs){"
+    "var e=document.querySelector(sel);if(!e)return 'no-field';"
+    "var BUSY='[class*=\"uploading\" i],[class*=\"upload-progress\" i],"
+    "[role=\"progressbar\"]';"
+    "var t0=Date.now(),seen=false,clean=0;"
+    "return new Promise(function(res){"
+    "(function poll(){"
+    "if(document.querySelector(BUSY)){seen=true;clean=0;}"
+    "else{clean++;"
+    "if(seen&&clean>=2){res('ready');return;}"
+    "if(!seen&&Date.now()-t0>2500){res('ready');return;}}"
+    "if(Date.now()-t0>timeoutMs){res(seen?'timeout':'ready');return;}"
+    "setTimeout(poll,300);})();});"
+    "})(%s,%d)"
+)
+
+
+def chat_wait_uploaded(host_part: Optional[str], tab_id: Optional[int],
+                       input_sel: str, timeout: float = 25.0) -> bool:
+    """Ждать окончания аплоада аттачей перед отправкой (см. JS выше).
+    True — можно слать; False — поле не найдено или аплоад висит дольше
+    timeout (вызывающий решает, слать ли с риском тоста)."""
+    js = _CHAT_WAIT_UPLOADED_JS % (json.dumps(input_sel, ensure_ascii=False),
+                                   int(timeout * 1000))
+
+    def _do(page_eval) -> bool:
+        try:
+            return str(page_eval(js)) not in ("no-field", "timeout")
+        except Exception as e:
+            logger.info(f"[BrowserActions] Ожидание аплоада не удалось: {e}")
+            return False
+
+    if tab_id is not None and tab_id in _RAW_TABS:
+        return _do(lambda j: _raw_eval(tab_id, j))
+    backend = _select_backend(tab_op=True)
+    if backend != "cdp":
+        return True  # без CDP проверить не можем — не блокируем отправку
+
+    def _op(w):
+        page = w.page_for(host_part, tab_id)
+        return _do(lambda j: page.evaluate(j))
+
+    return bool(_WORKER.submit(_op))
+
+
 def open_new_tab(url: str, background: bool = False) -> int:
     """Новая вкладка с url → стабильный id для адресации следующих команд
     («на этой странице …»). CDP: id из реестра воркера; macOS fallback:

@@ -508,7 +508,8 @@ class WebChatLLM:
             return int(inputs[0]["idx"])
         return None
 
-    def _send_verified(self, ba, host: str, tab_id: int, prompt: str):
+    def _send_verified(self, ba, host: str, tab_id: int, prompt: str,
+                       wait_upload: bool = False):
         """chat_fill_send + подтверждение, что сообщение РЕАЛЬНО появилось
         в ленте (последний user-блок содержит наш текст). Иначе hydration-
         гонка на свеженавигированной странице обнуляет контролируемое
@@ -518,6 +519,8 @@ class WebChatLLM:
         страница уже прогрета. Без user-селектора у адаптера — как раньше.
         Проверка текстовая, а не по счётчику: лента deepseek виртуализована
         (старый обмен уходит из DOM — счётчик не растёт).
+        wait_upload — отправка с картинкой: перед повтором ждём конца
+        аплоада (первая могла упереться в тост «files still uploading»).
         Возвращает marker (нормализованное начало промпта) — якорь для
         _wait_answer; None — у адаптера нет user-селекторов."""
         user_sels = self.adapter.get("user")
@@ -526,6 +529,8 @@ class WebChatLLM:
             return None
         want = " ".join(prompt[:80].split()).lower()
         for attempt in (1, 2):
+            if attempt > 1 and wait_upload:
+                ba.chat_wait_uploaded(host, tab_id, self.adapter["input"])
             self._fill_send(ba, host, tab_id, prompt)
             deadline = time.time() + SEND_VERIFY_SEC
             while time.time() < deadline:
@@ -629,6 +634,13 @@ class WebChatLLM:
                         logger.warning(f"[WebChat] {self.site}: картинка не "
                                        "прикрепилась — запрос без ответа")
                         return None
+                    # Аплоад идёт ПОСЛЕ появления аттача: «отправить» в это
+                    # окно даёт только тост «files still uploading», а
+                    # сообщение теряется — ждём маркера готовности
+                    if not ba.chat_wait_uploaded(host, tab_id,
+                                                 self.adapter["input"]):
+                        logger.info(f"[WebChat] {self.site}: аплоад не "
+                                    "подтвердился — шлём с перестраховкой")
                     if extra_image_bytes:
                         # Второй кадр (чистый скриншот без разметки) — best
                         # effort: не прикрепился — отвечаем по одной
@@ -638,7 +650,11 @@ class WebChatLLM:
                                                    mime=image_mime):
                             logger.info(f"[WebChat] {self.site}: второй кадр "
                                         "не прикрепился — идём с одним")
-                marker = self._send_verified(ba, host, tab_id, prompt)
+                        else:
+                            ba.chat_wait_uploaded(host, tab_id,
+                                                  self.adapter["input"])
+                marker = self._send_verified(ba, host, tab_id, prompt,
+                                             wait_upload=bool(image_bytes))
             except Exception as e:
                 if not fresh and self._chat_url():
                     # Сохранённый чат сломался (удалён/разлогинен) — свежий

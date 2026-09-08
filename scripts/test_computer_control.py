@@ -2538,6 +2538,28 @@ def main():
     finally:
         _ba._select_backend = _orig_sel2
 
+    # Ожидание конца аплоада аттачей веб-чата (qwen: *-uploading класс):
+    # JS-маркеры + обёртка по raw-вкладке
+    from app.features.browser_actions import _CHAT_WAIT_UPLOADED_JS
+    check("chat_wait_uploaded: JS ищет uploading/progressbar, шаблон под sel",
+          'uploading' in _CHAT_WAIT_UPLOADED_JS
+          and 'progressbar' in _CHAT_WAIT_UPLOADED_JS
+          and '%s' in _CHAT_WAIT_UPLOADED_JS)
+    _raw_saved = dict(_ba._RAW_TABS)
+    _orig_raw = _ba._raw_eval
+    try:
+        _ba._RAW_TABS[4242] = {"targetId": "x", "sessionId": "y"}
+        _ba._raw_eval = lambda tid, js: "ready" if tid == 4242 else "?"
+        check("chat_wait_uploaded: raw-вкладка ready → True",
+              _ba.chat_wait_uploaded(None, 4242, "textarea") is True)
+        _ba._raw_eval = lambda tid, js: "timeout"
+        check("chat_wait_uploaded: аплоад завис (timeout) → False",
+              _ba.chat_wait_uploaded(None, 4242, "textarea") is False)
+    finally:
+        _ba._RAW_TABS.clear()
+        _ba._RAW_TABS.update(_raw_saved)
+        _ba._raw_eval = _orig_raw
+
     # Разбор снапшота: JSON → items; мусор — человеческая ошибка
     _u, _its = _ba._parse_snapshot(json.dumps(
         {"url": "https://x.test/p", "items": [
