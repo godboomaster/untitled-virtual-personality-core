@@ -643,9 +643,26 @@ def main():
 
     # ── 14. Vision через веб-чат (get_response_with_image) ──
     # 14a. Сайт без adapter["images"] — честный None, браузер не трогаем
-    llm_d = wl.WebChatLLM("deepseek", base_dir=tmp / "vd")
+    llm_d = wl.WebChatLLM("chatgpt", base_dir=tmp / "vd")
     check("vision-webchat: адаптер без images → None до всякого браузера",
           llm_d.get_response_with_image("что на картинке?", b"png") is None)
+
+    # 14a2. deepseek: images включены; модель чата по каналу — vision-канал
+    # (картинки) → «Vision», текстовые → «Instant» (пилюли задаются при
+    # создании чата — в существующем их нет)
+    check("deepseek: images включён, режимы по каналам заданы",
+          wl.ADAPTERS["deepseek"].get("images") is True
+          and wl.ADAPTERS["deepseek"]["mode_by_channel"] == {"vision": "Vision"}
+          and wl.ADAPTERS["deepseek"]["mode_default"] == "Instant")
+    llm_mv = wl.WebChatLLM("deepseek", base_dir=tmp / "vmv", channel="vision")
+    llm_mt = wl.WebChatLLM("deepseek", base_dir=tmp / "vmt")
+    llm_mq = wl.WebChatLLM("qwen", base_dir=tmp / "vmq")
+    _mv, _mt, _mq = llm_mv._mode_js(), llm_mt._mode_js(), llm_mq._mode_js()
+    check("deepseek: vision-канал → пилюля Vision, текстовый → Instant",
+          _mv is not None and '"Vision"' in _mv
+          and _mt is not None and '"Instant"' in _mt)
+    check("qwen: mode_js без плейсхолдера — как было (Fast)",
+          _mq is not None and "%s" not in _mq and "fast" in _mq.lower())
 
     # 14b. Happy path: paste картинки → ожидание аплоада → отправка/ожидание
     llm_v = wl.WebChatLLM("qwen", base_dir=tmp / "vq")
@@ -788,14 +805,14 @@ def main():
           ans8 == "веб по приоритету персоны" and stub8.calls == 1
           and calls8 == ["kimi"])
     # 14f. Ни у кого нет images — None
-    rv3 = _stub_router(["deepseek"])
+    rv3 = _stub_router(["chatgpt"])
     rv3._vision_verdict = {}
     check("vision-router: веб-чаты без images — честный None",
           rv3.get_response_with_image("номер?", b"img") is None)
     # 14g. supports_vision: без облаков, но с картиночным веб-чатом — True
     rv4 = _stub_router(["qwen"])
     rv4._vision_verdict = {}
-    rv5 = _stub_router(["deepseek"])
+    rv5 = _stub_router(["chatgpt"])
     rv5._vision_verdict = {}
     check("vision-router: supports_vision учитывает webchat-флаг images",
           rv4.supports_vision() is True and rv5.supports_vision() is False)

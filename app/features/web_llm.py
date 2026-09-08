@@ -123,6 +123,23 @@ _QWEN_FAST_MODE_JS = (
     "})()"
 )
 
+# JS выбора модели deepseek (Instant/Expert/Vision): пилюли — div[role=radio]
+# на странице НОВОГО чата, активная с aria-checked=true (в существующем чате
+# пилюль нет — режим задаётся при создании чата). Идемпотентно: целевая уже
+# активна — ничего не делает. %s — имя режима из mode_by_channel/mode_default
+_DEEPSEEK_MODE_JS = (
+    "(function(want){"
+    "var rs=document.querySelectorAll('[role=\"radio\"]');"
+    "for(var i=0;i<rs.length;i++){var r=rs[i];"
+    "var t=(r.innerText||'').replace(/\\s+/g,' ').trim().toLowerCase();"
+    "if(t!==String(want).toLowerCase())continue;"
+    "if(r.getAttribute('aria-checked')==='true')return 'ok:'+t;"
+    "r.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));r.click();"
+    "return 'clicked:'+t;}"
+    "return 'no-pill';})"
+    "(%s)"
+)
+
 ADAPTERS = {
     "deepseek": {
         "host": "chat.deepseek.com",
@@ -138,6 +155,15 @@ ADAPTERS = {
         # «user» нет; лента виртуализована — в DOM только последний обмен,
         # поэтому подтверждение отправки текстовое, а не по счётчику).
         "user": [".ds-message:not(:has(.ds-assistant-message-main-content))"],
+        # Модель чата задаётся пилюлями Instant/Expert/Vision при СОЗДАНИИ
+        # чата (в существующем их нет): vision-канал (картинки) — Vision,
+        # текстовые каналы — Instant. Подстановка в mode_js через %s
+        "mode_js": _DEEPSEEK_MODE_JS,
+        "mode_by_channel": {"vision": "Vision"},
+        "mode_default": "Instant",
+        # Сайт принимает картинки вставкой (проверено: img[src^=blob:]
+        # в композере): vision-запросы идут в отдельный чат в режиме Vision
+        "images": True,
     },
     "qwen": {
         "host": "chat.qwen.ai",
@@ -413,6 +439,21 @@ class WebChatLLM:
         except Exception:
             return False
 
+    def _mode_js(self) -> Optional[str]:
+        """JS режима чата с подстановкой цели по каналу: у deepseek vision-
+        канал (картинки) → «Vision», текстовые — «Instant». Шаблон без %s
+        (qwen Auto→Fast) возвращается как есть."""
+        mode_js = self.adapter.get("mode_js")
+        if not mode_js:
+            return None
+        if "%s" not in mode_js:
+            return mode_js
+        target = (self.adapter.get("mode_by_channel", {}) or {}).get(
+            self.channel) or self.adapter.get("mode_default")
+        if not target:
+            return None
+        return mode_js % json.dumps(target)
+
     def _after_nav(self, ba):
         """После навигации/открытия вкладки: дождаться поля ввода (первая
         загрузка чата рендерится дольше settle-паузы — без этого отправка
@@ -423,7 +464,7 @@ class WebChatLLM:
                           timeout_sec=8.0)
         except Exception:
             pass  # closed-loop отправки сам отловит неготовность поля
-        mode_js = self.adapter.get("mode_js")
+        mode_js = self._mode_js()
         if mode_js:
             try:
                 out = ba.eval_js(None, self._tab_id, mode_js)
