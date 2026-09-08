@@ -116,6 +116,25 @@ def _word_in(word: str, hay: str) -> bool:
         r"(?<![a-z0-9а-яё])" + re.escape(word), hay) is not None
 
 
+def _user_page_host(host: str) -> bool:
+    """Видимая вкладка — обычная пользовательская страница, а не служебная
+    машинерия бота (его чат-UI на localhost, вкладки веб-LLM): те нельзя
+    захватывать молча при выборе цели команды — клики туда ломают сессии
+    самого бота."""
+    h = (host or "").lower().removeprefix("www.")
+    if not h or h in ("localhost", "127.0.0.1"):
+        return False
+    try:
+        from app.features.web_llm import ADAPTERS
+        for a in (ADAPTERS or {}).values():
+            ah = (str(a.get("host") or "")).lower().removeprefix("www.")
+            if ah and (h == ah or h.endswith("." + ah)):
+                return False
+    except Exception:
+        pass
+    return True
+
+
 def _edit_dist_leq(a: str, b: str, limit: int) -> bool:
     """Дамерау-Левенштейн ≤ limit (с ранним выходом): опечатки и перестановки
     пар соседних букв («кешбэк»↔«кэшбек» — 2 замены, «дук»↔«лук» — 1)."""
@@ -2548,7 +2567,8 @@ class ComputerControlManager:
         return next((it for it in items if it.get("idx") == idx), None)
 
     def _snapshot_for(self, site_word: Optional[str], chat_id: str = "",
-                      auto_dismiss: bool = True):
+                      auto_dismiss: bool = True,
+                      prefer_tracked: bool = False):
         """Общее для клика, скачивания и ввода: вкладка (алиас/явный домен/
         «на этой странице»/отслеживаемая/последняя/активная) и её снапшот;
         отслеживаемую, которая ещё грузится, опрашиваем до NAV_LOAD_TIMEOUT_SEC,
@@ -2574,16 +2594,21 @@ class ComputerControlManager:
         if host_part is None and tab_id is None:
             # Без указания места: дубли одного сайта решаем в пользу ВИДИМОЙ
             # вкладки (пользователь смотрит на неё), а не отслеживаемой.
-            # Видимая вкладка ДРУГОГО сайта — остаёмся на отслеживаемой:
-            # после «открой ютуб» команда «нажми X» относится к открывшейся
-            # странице, а не к тому, что случайно в фокусе. Нет видимой —
+            # Видимая вкладка ДРУГОГО сайта — тоже в пользу видимой: команда
+            # клика/ввода относится к тому, что пользователь видит («нажми
+            # три полоски» на платформе при открытом ранее ютубе, кейс
+            # 08.09). Исключения: медиа-команды (prefer_tracked — «пауза»
+            # фоновому ютубу) и служебные вкладки самого бота (чат-UI,
+            # веб-LLM — их молча захватывать нельзя). Нет видимой —
             # отслеживаемая точнее хоста, иначе последний хост
             try:
                 from app.features import browser_actions as _ba
                 _vis = _ba.visible_page_info()
             except Exception:
                 _vis = None
-            if _vis and _vis[1] and self._vis_in_context(_vis[1]):
+            if _vis and _vis[1] and (
+                    self._vis_in_context(_vis[1])
+                    or (not prefer_tracked and _user_page_host(_vis[1]))):
                 # Полный URL — точный матч вкладки (при дублях того же URL
                 # видимую из них выберет page_for)
                 host_part = _vis[0]
@@ -3607,7 +3632,11 @@ class ComputerControlManager:
         else:
             key, times, mkind = goal, 1, None
         url, host, _items, tab_id, err = self._snapshot_for(
-            site_word, chat_id=chat_id)
+            site_word, chat_id=chat_id,
+            # Медиа-команды («пауза», «тише») адресуют играющую вкладку, а
+            # не видимую: ютуб может играть фоном, пока пользователь смотрит
+            # другую страницу. Обычные клавиши/клики — по видимой
+            prefer_tracked=mkind in ("vol_down", "vol_up", "mute", "toggle"))
         if err:
             return None, err
         if mkind in ("vol_down", "vol_up", "mute", "toggle") \

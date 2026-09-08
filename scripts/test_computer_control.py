@@ -1860,11 +1860,35 @@ def main():
         check("visible: дубль сайта — цель по полному URL видимой вкладки",
               err_v2 is None
               and _sn_v2[-1] == ("https://www.youtube.com/watch?v=2", None))
-        # B. Видимая вкладка ДРУГОГО сайта — остаёмся на отслеживаемой
+        # B. Видимая вкладка ДРУГОГО сайта — клики/обычные клавиши идут в
+        # видимую (пользователь смотрит на неё: «нажми три полоски» на
+        # платформе при открытом ранее ютубе, кейс 08.09)
         _ba.visible_page_info = lambda: ("https://google.com", "google.com")
         _sn_v2.clear()
         act_v3, _ = m_vis2.resolve_key("Space", None, None)
-        check("visible: другой сайт в фокусе — отслеживаемая вкладка",
+        check("visible: другой сайт в фокусе — цель на видимой вкладке",
+              _sn_v2 and _sn_v2[-1] == ("https://google.com", None))
+        # B2. Медиа-команда («пауза») — остаёмся на отслеживаемой: ютуб
+        # может играть фоном, пока пользователь смотрит другую страницу
+        m_vis2._last_host = "www.youtube.com"
+        _sn_v2.clear()
+        act_v3m, _ = m_vis2.resolve_key(("Space", 1, "toggle"), None, None)
+        check("visible: медиа-команда — отслеживаемая (фоновой ютуб)",
+              _sn_v2 and _sn_v2[-1] == (None, 42))
+        # B3. Видимая вкладка — служебная (веб-LLM бота / чат-UI): её
+        # молча не захватываем, остаёмся на отслеживаемой
+        _ba.visible_page_info = lambda: ("https://chat.qwen.ai/c/1",
+                                         "chat.qwen.ai")
+        _sn_v2.clear()
+        m_vis2._last_host = "www.youtube.com"
+        act_v3q, _ = m_vis2.resolve_key("Space", None, None)
+        check("visible: веб-LLM вкладка бота — отслеживаемая",
+              _sn_v2 and _sn_v2[-1] == (None, 42))
+        _ba.visible_page_info = lambda: ("http://localhost:8080/chat",
+                                         "localhost")
+        _sn_v2.clear()
+        act_v3l, _ = m_vis2.resolve_key("Space", None, None)
+        check("visible: localhost (чат-UI бота) — отслеживаемая",
               _sn_v2 and _sn_v2[-1] == (None, 42))
         # C. Контекста нет — видимая вкладка (свежий base_dir: контекст
         # не поднимается с диска, разделяемого другими менеджерами теста)
