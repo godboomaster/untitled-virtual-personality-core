@@ -2928,7 +2928,57 @@ class ComputerControlManager:
             self._audit_resolve(chat_id, goal, host, reason, fail_kind,
                                 meta=meta)
             return None, None, None, None, None, meta, reason
+        if idx is not None:
+            # Сомнительный выбор (слабый ярус скора или ничья одноимённых
+            # кандидатов) — до клика вслепую спрашиваем зональный vision:
+            # общий дизамбигуатор без привязки к сайту
+            g_idx, g_meta = self._vision_gate_choice(goal, host, tab_id,
+                                                     idx, meta, router)
+            if g_idx is None and g_meta.get("point"):
+                return url, host, items, None, tab_id, g_meta, None
         return url, host, items, idx, tab_id, meta, None
+
+    def _vision_gate_choice(self, goal: str, host: str, tab_id,
+                            idx: int, meta: Dict[str, object], router):
+        """Проверка сомнительного текстового выбора зональным vision —
+        чтобы не писать детерминированный фолбэк под каждый сайт.
+        Сомнительно: слабый ярус (<55: голый контекст/подстрока/синоним —
+        клики «наугад» вроде карточки комбо по упоминанию товара в её
+        описании) или ничья одноимённых кандидатов с близким скором
+        (три «Изменить» в корзине — выбор по списку среди одинаковых
+        подписей жребий, а vision видит, какая ссылка в ряду нужного
+        товара). Vision недоступен/отказался — исходный выбор без
+        изменений. → (idx|None, meta): idx=None + meta["point"] —
+        координатный клик по выбранной зоне."""
+        if not self.vision_fallback or router is None:
+            return idx, meta
+        if not isinstance(meta, dict) \
+                or meta.get("path") not in ("score", "llm", "llm_fallback"):
+            return idx, meta
+        cands = meta.get("candidates") or []
+        top = next((float(c.get("score") or 0.0) for c in cands
+                    if c.get("idx") == idx), 0.0)
+        if top <= 0.0:
+            return idx, meta
+        chosen_txt = _norm_match(next((str(c.get("text") or "")
+                                       for c in cands
+                                       if c.get("idx") == idx), ""))
+        tied = bool(chosen_txt) and any(
+            c.get("idx") != idx
+            and _norm_match(str(c.get("text") or "")) == chosen_txt
+            and abs(float(c.get("score") or 0.0) - top) < 5.0
+            for c in cands)
+        weak = top < 55.0
+        if not (weak or tied):
+            return idx, meta
+        why = "ничья одноимённых" if tied else f"слабый скор {top:.1f}"
+        logger.info(f"[CompControl] «{goal[:40]}» выбор сомнителен ({why}) — "
+                    "проверяю зональным vision")
+        pnt, pmeta = self._vision_zones(goal, host, tab_id, router)
+        if pnt is None:
+            return idx, meta
+        pmeta["vision_gate"] = why
+        return None, pmeta
 
     def _llm_wide_pick(self, goal: str, items: List[dict], router,
                        for_field: bool = False

@@ -3780,6 +3780,92 @@ def main():
         _ba.screenshot_viewport = _orig_sshot
         _ba.snapshot_elements = _orig_snap_v
 
+    # ── Vision-гейт: сомнительный текстовый выбор → зональный vision ──
+    # Слабый ярус (<55: голый контекст — клик по карточке комбо из-за
+    # упоминания товара в её описании) или ничья одноимённых («Изменить» ×3
+    # в корзине): до клика вслепую — зональный vision как общий
+    # дизамбигуатор без привязки к сайту; отказ vision — старый выбор
+    m_gate = make()
+    _gate_calls = []
+
+    def _fake_zones(goal, host, tab_id, router):
+        _gate_calls.append(goal)
+        return ({"x": 10.0, "y": 20.0, "label": "нужная зона", "zone": 2},
+                {"path": "vision_zones",
+                 "point": {"x": 10.0, "y": 20.0, "label": "нужная зона",
+                           "zone": 2}})
+
+    def _fake_zones_none(goal, host, tab_id, router):
+        _gate_calls.append(goal)
+        return None, {"path": "vision_zones"}
+
+    _meta_weak = {"path": "score", "candidates": [
+        {"idx": 5, "text": "3 пиццы 30 или 35 см", "score": 40.0}]}
+    m_gate._vision_zones = _fake_zones
+    gi, gm = m_gate._vision_gate_choice("двойная пепперони", "x.ru", None,
+                                        5, _meta_weak, _ZoneRouter())
+    check("vision-гейт: слабый скор → координатный клик зоны",
+          gi is None and gm.get("point", {}).get("zone") == 2
+          and gm.get("vision_gate") and _gate_calls)
+    _meta_strong = {"path": "score", "candidates": [
+        {"idx": 5, "text": "Пепперони фреш", "score": 70.0}]}
+    gi2, gm2 = m_gate._vision_gate_choice("пепперони", "x.ru", None,
+                                          5, _meta_strong, _ZoneRouter())
+    check("vision-гейт: уверенный скор — vision не дёргается",
+          gi2 == 5 and gm2 is _meta_strong and len(_gate_calls) == 1)
+    _meta_tie = {"path": "llm", "candidates": [
+        {"idx": 5, "text": "Изменить", "score": 65.0},
+        {"idx": 8, "text": "Изменить", "score": 62.5},
+        {"idx": 9, "text": "Удалить", "score": 40.0}]}
+    gi3, gm3 = m_gate._vision_gate_choice("изменить в двойная пепперони",
+                                          "x.ru", None, 5, _meta_tie,
+                                          _ZoneRouter())
+    check("vision-гейт: ничья одноимённых → зональный vision",
+          gi3 is None and gm3.get("point") and len(_gate_calls) == 2)
+    _meta_gap = {"path": "score", "candidates": [
+        {"idx": 5, "text": "Изменить", "score": 75.0},
+        {"idx": 8, "text": "Изменить", "score": 62.5}]}
+    gi4, _ = m_gate._vision_gate_choice("изменить", "x.ru", None,
+                                        5, _meta_gap, _ZoneRouter())
+    check("vision-гейт: одноимённые, но отрыв ≥5 (бонусы модалки) — мимо",
+          gi4 == 5 and len(_gate_calls) == 2)
+    m_gate._vision_zones = _fake_zones_none
+    gi5, gm5 = m_gate._vision_gate_choice("двойная пепперони", "x.ru", None,
+                                          5, dict(_meta_weak,
+                                                  candidates=list(
+                                                      _meta_weak["candidates"])),
+                                          _ZoneRouter())
+    check("vision-гейт: vision отказался — исходный выбор сохранён",
+          gi5 == 5 and len(_gate_calls) == 3)
+    _meta_snap = {"path": "goal_snapshot", "candidates": [
+        {"idx": 5, "text": "x", "score": 10.0}]}
+    gi6, _ = m_gate._vision_gate_choice("x", "x.ru", None, 5, _meta_snap,
+                                        _ZoneRouter())
+    check("vision-гейт: чужие пути (goal_snapshot) не трогаем",
+          gi6 == 5 and len(_gate_calls) == 3)
+    del m_gate._vision_zones
+
+    # e2e через _resolve_element: слабый выбор (50, единственный кандидат)
+    # уходит в зональный vision вместо слепого клика
+    _orig_acb2 = getattr(_ba, "all_clickable_boxes", None)
+    _ba.all_clickable_boxes = lambda host=None, tab_id=None: list(_boxes)
+    _ba.screenshot_viewport = lambda host=None, tab_id=None: _png
+    _ba.snapshot_elements = lambda host=None, tab_id=None: (
+        "https://x.ru", "x.ru", [_it(0, "a", "Мегасоус")])
+    try:
+        # «соус» — подстрока внутри чужого слова («мегаСОУС»): ярус 50,
+        # единственный кандидат — раньше кликнули бы вслепую
+        act_g, _ = make().resolve_click(
+            "соус", None, _ZoneRouter("2"), chat_id="vg1")
+        check("vision-гейт e2e: слабый выбор → point-действие от vision",
+              act_g is not None and act_g.get("point")
+              and act_g["choose"].get("vision_gate"))
+    finally:
+        if _orig_acb2 is not None:
+            _ba.all_clickable_boxes = _orig_acb2
+        _ba.screenshot_viewport = _orig_sshot
+        _ba.snapshot_elements = _orig_snap_v
+
     # ── LLM-ярус разбора команды (JSON-протокол вместо tool-calling) ──
     from app.features.computer_control import intent_prompt, parse_intent_action
     check("intent parse: валидный JSON / ограждённый / none / мусор",
