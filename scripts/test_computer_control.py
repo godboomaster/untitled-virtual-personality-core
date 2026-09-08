@@ -3755,6 +3755,11 @@ def main():
         check("зоны: подписи из предков + дедуп близнецов в искателе",
               "parentElement;up++" in _ba._ALL_CLICKABLE_BOXES_JS
               and "var ded=[]" in _ba._ALL_CLICKABLE_BOXES_JS)
+        # Открытые меню/попапы — первыми: в DOM они последние (портал в конец
+        # body) и бюджет 40 зон съедала лента (меню «Ещё» без разметки)
+        check("зоны: пункты открытых попапов собираются первыми",
+              "popSel" in _ba._ALL_CLICKABLE_BOXES_JS
+              and "a.closest(popSel)" in _ba._ALL_CLICKABLE_BOXES_JS)
     finally:
         _ba.screenshot_viewport = _orig_sshot
         _ba.snapshot_elements = _orig_snap_v

@@ -3697,6 +3697,13 @@ _ALL_CLICKABLE_BOXES_JS = (
     "var sel='button,a,[role=button],[role=link],input,textarea,select,"
     "summary,[onclick],[tabindex]:not([tabindex=\"-1\"]),canvas,"
     "[contenteditable]:not([contenteditable=false])';"
+    # Открытые попапы/меню/диалоги: их пункты в DOM идут ПОСЛЕДНИМИ (портал в
+    # конец body) и бюджет 40 зон съедает лента раньше — меню «Ещё» на ютубе
+    # оставалось без разметки. А это то, что пользователь видит поверх прямо
+    # сейчас — собираем их первыми (стабильная сортировка: DOM-порядок внутри
+    # групп сохраняется)
+    "var popSel='[role=menu],[role=listbox],[role=dialog],[aria-modal=true],"
+    "[class*=popup],[class*=Popup],[class*=dropdown],[class*=Dropdown]';"
     "function vis(e,r){var s=getComputedStyle(e);"
     "return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'"
     "&&r.width>=8&&r.height>=8&&r.bottom>0&&r.right>0"
@@ -3716,7 +3723,10 @@ _ALL_CLICKABLE_BOXES_JS = (
     "p=p.parentElement;up++;}}"
     "return t;}"
     "var out=[];"
-    "document.querySelectorAll(sel).forEach(function(e){"
+    "var all=[].slice.call(document.querySelectorAll(sel));"
+    "all.sort(function(a,b){"
+    "return (a.closest(popSel)?0:1)-(b.closest(popSel)?0:1);});"
+    "all.forEach(function(e){"
     "var r=e.getBoundingClientRect();if(!vis(e,r))return;"
     "var t=nm(e);"
     "if(e.tagName==='CANVAS'&&r.width*r.height>"
