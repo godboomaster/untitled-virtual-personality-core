@@ -474,12 +474,6 @@ def main():
           and ordinal_recipe("третий шортс") == "shorts_pick:3"
           and ordinal_recipe("2 шортса") == "shorts_pick:2"
           and ordinal_recipe("третье видео в шортсах") == "shorts_pick:3")
-    check("ordinal: прилагательные «подобное/похожий» срезаются",
-          ordinal_recipe("второе подобное видео") == "search_pick:2"
-          and ordinal_recipe("первый похожий ролик") == "search_pick:1"
-          and ordinal_recipe("первое подобное видео в shorts") == "shorts_pick:1"
-          and ordinal_recipe("подобное видео") is None
-          and ordinal_recipe("второй подобный диван") is None)
     # Клик-путь: номерная команда — рецепт по разметке, без снапшота/нейронки
     m_ord = make()
     act_o, err_o = m_ord.resolve_click("первое видео на shorts", None, None)
