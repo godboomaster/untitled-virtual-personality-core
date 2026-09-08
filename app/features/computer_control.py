@@ -47,6 +47,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import webbrowser
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -100,13 +101,33 @@ def classify_confirmation(text: str) -> str:
     return "UNKNOWN"
 
 
+def _fold_diacritics(t: str) -> str:
+    """Снятие диакритики с ЛАТИНИЦЫ (Lumière → lumiere) и ё → е.
+    Остальную кириллицу не трогаем: NFKD разлагает и «й» (и + бреве), а
+    склейка й→и ломает основы («действие» ≠ «действий»)."""
+    out = []
+    for ch in t:
+        if ch == "ё":
+            out.append("е")
+            continue
+        d = unicodedata.normalize("NFKD", ch)
+        if len(d) >= 2 and "a" <= d[0] <= "z" \
+                and all(unicodedata.combining(c) for c in d[1:]):
+            out.append(d[0])
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _norm_match(s) -> str:
     """Нормализация для матчинга цели: дефисы/тире → пробелы, lower, сжатие
-    пробелов. «айс-ти» в команде и «Айс ти» на странице — одна и та же цель."""
+    пробелов. «айс-ти» в команде и «Айс ти» на странице — одна и та же цель.
+    Диакритика снимается: «lumiere» в команде = «Lumière» в названии видео —
+    пользователь редко повторяет акценты."""
     t = str(s or "").lower()
     for ch in ("-", "‑", "–", "—"):
         t = t.replace(ch, " ")
-    return " ".join(t.split())
+    return " ".join(_fold_diacritics(t).split())
 
 
 def _word_in(word: str, hay: str) -> bool:

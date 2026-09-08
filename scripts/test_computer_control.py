@@ -2301,6 +2301,21 @@ def main():
               [_it(0, "a", "", aria="Не пропустить: скачать отчёт")],
               "скачать")] == [0])
 
+    # Диакритика в названии: «in lumiere's name» должно находить ссылку-
+    # заголовок «In Lumière's Name …», а не автора/дату из той же карточки
+    # (иначе клик уходил на канал по ctx-ярусу)
+    from app.features.computer_control import _norm_match
+    _lum = [_it(0, "a", "In Lumière’s Name (Mime Battle Theme) - Clair Obscur"),
+            _it(1, "span", "Anton Betita",
+                ctx="In Lumière’s Name (Mime Battle Theme) - Clair Obscur"),
+            _it(2, "span", "1 год назад",
+                ctx="In Lumière’s Name (Mime Battle Theme) - Clair Obscur")]
+    check("score: диакритика — «lumiere» находит «Lumière» (заголовок видео)",
+          ms._score_candidates(_lum, "in lumiere's name")[0][1]["idx"] == 0)
+    check("norm: акценты и ё/е склеиваются",
+          _norm_match("Lumière") == "lumiere"
+          and _norm_match("Ёлка") == "елка")
+
     # Выбор: явный лидер — без LLM; близкие кандидаты — LLM одним токеном
     _tie = lambda: [_it(0, "button", "Скачать приложение"),
                     _it(1, "button", "Скачать прайс"), _it(2, "a", "Помощь")]
