@@ -698,9 +698,15 @@ class ModelRouter:
 
     def get_response_with_image(self, text_prompt: str, image_bytes: bytes,
                                 max_tokens: int = 1000, timeout: float = 90.0,
-                                image_mime: str = "image/jpeg") -> str | None:
+                                image_mime: str = "image/jpeg",
+                                extra_image: bytes | None = None
+                                ) -> str | None:
         """
         Отправляет изображение vision-модели (OpenAI-совместимый формат image_url).
+        extra_image — второй кадр в том же сообщении (чистый скриншот страницы
+        без разметки — модель видит, что закрыто рамками/бейджами). Для
+        веб-чатов вставка второго кадра — best effort: не прикрепился —
+        отвечаем по одному.
 
         Для каждого провайдера режим определяется флагом vision в конфиге:
         - "true"  — используем без проверки;
@@ -721,13 +727,16 @@ class ModelRouter:
         """
         import base64
         img_b64 = base64.b64encode(image_bytes).decode()
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": text_prompt},
-                {"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{img_b64}"}},
-            ],
-        }]
+        content = [
+            {"type": "text", "text": text_prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{img_b64}"}},
+        ]
+        if extra_image:
+            ex_b64 = base64.b64encode(extra_image).decode()
+            content.append(
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{image_mime};base64,{ex_b64}"}})
+        messages = [{"role": "user", "content": content}]
 
         tried_webchats: set[str] = set()
         # Основной провайдер — веб-чат: пробуем его первым, как в get_response
@@ -739,7 +748,8 @@ class ModelRouter:
             tried_webchats.update(sites)
             answer = self._try_webchat_image(text_prompt, image_bytes, timeout,
                                              sites=sites,
-                                             image_mime=image_mime)
+                                             image_mime=image_mime,
+                                             extra_image=extra_image)
             if answer:
                 return answer
 
@@ -756,7 +766,8 @@ class ModelRouter:
                 tried_webchats.update(sites)
                 answer = self._try_webchat_image(text_prompt, image_bytes,
                                                  timeout, sites=sites,
-                                                 image_mime=image_mime)
+                                                 image_mime=image_mime,
+                                                 extra_image=extra_image)
                 if answer:
                     return answer
                 continue
@@ -785,7 +796,8 @@ class ModelRouter:
     def _try_webchat_image(self, text_prompt: str, image_bytes: bytes,
                            timeout: float,
                            sites: list | None = None,
-                           image_mime: str = "image/jpeg") -> str | None:
+                           image_mime: str = "image/jpeg",
+                           extra_image: bytes | None = None) -> str | None:
         """Vision через веб-чат: картинка вставляется в композер синтетическим
         paste. Только сайты с adapter['images'] (приём проверен вручную).
         sites — конкретные сайты в порядке перебора; None — все включённые.
@@ -810,7 +822,7 @@ class ModelRouter:
                     self._webchats[key] = chat
                 answer = chat.get_response_with_image(
                     text_prompt, image_bytes, timeout=max(timeout, 150.0),
-                    image_mime=image_mime)
+                    image_mime=image_mime, extra_image=extra_image)
                 if answer:
                     self._last_provider = f"webchat:{site}"
                     return answer

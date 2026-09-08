@@ -571,12 +571,16 @@ class WebChatLLM:
 
     def get_response_with_image(self, prompt: str, image_bytes: bytes,
                                 timeout: float = 150.0,
-                                image_mime: str = "image/png") -> Optional[str]:
+                                image_mime: str = "image/png",
+                                extra_image: Optional[bytes] = None
+                                ) -> Optional[str]:
         """Текст + картинка (vision-фолбэк резолва): изображение вставляется
         в композер синтетическим paste, буфер обмена пользователя не
         трогаем. Только для сайтов с adapter["images"] (проверено, что сайт
         paste принимает). image_mime — реальный тип байтов (jpeg легче png
         для аплоада; имя/тип File в paste-событии ставится по нему).
+        extra_image — второй кадр (чистый скриншот без разметки для сверки):
+        best effort, не прикрепился — отвечаем по одной картинке.
         None — сайт без картинок / вставка или ответ не удались (честный
         фолбэк вызывающего)."""
         if not self.adapter.get("images") or not image_bytes:
@@ -584,13 +588,15 @@ class WebChatLLM:
         with self._lock:
             return self._get_response_locked(
                 [{"role": "user", "content": prompt}], 0.7, 2000, 0.9,
-                timeout, image_bytes=image_bytes, image_mime=image_mime)
+                timeout, image_bytes=image_bytes, image_mime=image_mime,
+                extra_image_bytes=extra_image)
 
     def _get_response_locked(self, messages: list, temperature: float,
                              max_tokens: float, top_p: float,
                              timeout: float,
                              image_bytes: Optional[bytes] = None,
-                             image_mime: str = "image/png"
+                             image_mime: str = "image/png",
+                             extra_image_bytes: Optional[bytes] = None
                              ) -> Optional[str]:
         from app.features import browser_actions as ba
         prompt = self._join_messages(messages)
@@ -623,6 +629,15 @@ class WebChatLLM:
                         logger.warning(f"[WebChat] {self.site}: картинка не "
                                        "прикрепилась — запрос без ответа")
                         return None
+                    if extra_image_bytes:
+                        # Второй кадр (чистый скриншот без разметки) — best
+                        # effort: не прикрепился — отвечаем по одной
+                        if not ba.chat_paste_image(host, tab_id,
+                                                   self.adapter["input"],
+                                                   extra_image_bytes,
+                                                   mime=image_mime):
+                            logger.info(f"[WebChat] {self.site}: второй кадр "
+                                        "не прикрепился — идём с одним")
                 marker = self._send_verified(ba, host, tab_id, prompt)
             except Exception as e:
                 if not fresh and self._chat_url():

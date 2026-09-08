@@ -3118,10 +3118,13 @@ class ComputerControlManager:
             f"бейджами отмечают элементы 1..{len(cands)} (номер — в бейдже "
             f"цвета рамки):\n{lines}\n"
             f"Какой из них — «{goal}»? Ответь ТОЛЬКО цифрой. "
-            "Если ничего не подходит — ответь «нет».")
+            "Если ничего не подходит — ответь «нет».\n"
+            "Если приложен второй скриншот — это та же страница без "
+            "разметки: сверяйся с ним, что закрыто рамками и бейджами.")
         try:
             resp = router.get_response_with_image(prompt, boxed,
-                                                  image_mime="image/jpeg")
+                                                  image_mime="image/jpeg",
+                                                  extra_image=shot)
         except Exception as e:
             logger.debug(f"[CompControl] Визуальный фолбэк не удался: {e}")
             return None, None
@@ -3187,10 +3190,13 @@ class ComputerControlManager:
             "бейджами — кликабельные зоны "
             f"1..{len(boxes)} (номер — в бейдже цвета рамки):\n{lines}\n"
             "Ответь ТОЛЬКО цифрой зоны, которую нужно нажать. "
-            "Если подходящей зоны нет — ответь «нет».")
+            "Если подходящей зоны нет — ответь «нет».\n"
+            "Если приложен второй скриншот — это та же страница без "
+            "разметки: сверяйся с ним, что закрыто рамками и бейджами.")
         try:
             resp = router.get_response_with_image(prompt, boxed,
-                                                  image_mime="image/jpeg")
+                                                  image_mime="image/jpeg",
+                                                  extra_image=shot)
         except Exception as e:
             logger.debug(f"[CompControl] Зональный vision-фолбэк не удался: {e}")
             return None, None

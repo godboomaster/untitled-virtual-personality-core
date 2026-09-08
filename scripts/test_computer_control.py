@@ -3599,7 +3599,8 @@ def main():
         def __init__(self, resp): self.resp = resp; self.img_calls = 0
         def supports_vision(self): return True
         def get_response(self, *a, **kw): return "нет"
-        def get_response_with_image(self, prompt, img, image_mime=None):
+        def get_response_with_image(self, prompt, img, image_mime=None,
+                                    extra_image=None):
             self.img_calls += 1
             return self.resp
 
@@ -3675,6 +3676,7 @@ def main():
         def __init__(self, *resps):
             self.resps = list(resps)
             self.img_calls = 0
+            self.extra = None
 
         def supports_vision(self):
             return True
@@ -3682,8 +3684,10 @@ def main():
         def get_response(self, *a, **kw):
             return "нет"
 
-        def get_response_with_image(self, prompt, img, image_mime=None):
+        def get_response_with_image(self, prompt, img, image_mime=None,
+                                    extra_image=None):
             self.img_calls += 1
+            self.extra = extra_image
             return self.resps.pop(0) if self.resps else "нет"
 
     _boxes = [{"x": 10.0, "y": 10.0, "w": 100.0, "h": 40.0, "text": "Играть"},
@@ -3711,6 +3715,10 @@ def main():
                                          "label": "Рекорды", "zone": 2}
               and act_z["choose"]["path"] == "vision_zones"
               and zr.img_calls == 2)
+        # Чистый кадр без разметки уходит вторым изображением — модель
+        # видит, что закрыто рамками/бейджами
+        check("зоны: чистый скриншот уходит вторым кадром (extra_image)",
+              zr.extra == _png)
         # «нет» на обоих ярусах — честный отказ
         no_z, err_z2 = m_zone.resolve_click("рекорды", None,
                                             _ZoneRouter("нет", "нет"),
