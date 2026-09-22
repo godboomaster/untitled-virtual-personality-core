@@ -1,0 +1,245 @@
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useI18n } from '../i18n';
+import type { ChatMessage, Persona } from '../mockData';
+import Icon from './icons';
+
+/* Голосовой режим чата: крупная аватарка персоны, общение голосом
+   (SpeechRecognition → мок-ответ → speechSynthesis) либо текстом —
+   персона в обоих случаях отвечает голосом. Полноэкранный режим
+   скрывает весь остальной интерфейс фиксированным оверлеем. */
+
+// Минимальные типы Web Speech API (в lib.dom их нет)
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+}
+interface SpeechRecognitionResultLike {
+  isFinal: boolean;
+  0: SpeechRecognitionAlternativeLike;
+}
+interface SpeechRecognitionEventLike {
+  results: ArrayLike<SpeechRecognitionResultLike>;
+}
+interface SpeechRecognitionLike {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  onresult: ((e: SpeechRecognitionEventLike) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
+function getRecognitionCtor(): SpeechRecognitionCtor | null {
+  const w = window as unknown as Record<string, unknown>;
+  return (w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null) as SpeechRecognitionCtor | null;
+}
+
+interface VoiceChatProps {
+  persona: Persona;
+  messages: ChatMessage[];
+  // Реплика оператора уходит в общую историю чата
+  onUserMessage: (text: string) => void;
+  // Мок-ответ персоны (тоже в историю, озвучивается здесь же)
+  onPersonaMessage: (text: string) => void;
+  // Возврат к классическому чату
+  onSwitchToClassic: () => void;
+}
+
+export default function VoiceChat({ persona, messages, onUserMessage, onPersonaMessage, onSwitchToClassic }: VoiceChatProps) {
+  const { lang, t } = useI18n();
+  // Как говорит оператор: голосом (микрофон) или текстом
+  const [inputMode, setInputMode] = useState<'voice' | 'text'>(() => (getRecognitionCtor() ? 'voice' : 'text'));
+  const [fullscreen, setFullscreen] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  // Живая расшифровка (промежуточные результаты распознавания)
+  const [interim, setInterim] = useState('');
+  const [draft, setDraft] = useState('');
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const micSupported = getRecognitionCtor() != null;
+
+  // Озвучка реплики персоны: голос подбирается под текущий язык интерфейса
+  const speak = (text: string) => {
+    if (!('speechSynthesis' in window)) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = lang === 'ru' ? 'ru-RU' : 'en-US';
+    const voice = window.speechSynthesis.getVoices().find((v) => v.lang.toLowerCase().startsWith(lang));
+    if (voice) utter.voice = voice;
+    setSpeaking(true);
+    utter.onend = () => setSpeaking(false);
+    utter.onerror = () => setSpeaking(false);
+    window.speechSynthesis.speak(utter);
+  };
+
+  // Отправка реплики оператора (общий путь для голоса и текста):
+  // сообщение в историю → мок-ответ персоны → озвучка ответа
+  const send = (raw: string) => {
+    const text = raw.trim();
+    if (!text) return;
+    onUserMessage(text);
+    setDraft('');
+    setInterim('');
+    const replies = t('chat.voiceMockReplies').split('|');
+    const reply = replies[Math.floor(Math.random() * replies.length)];
+    window.setTimeout(() => {
+      onPersonaMessage(reply);
+      speak(reply);
+    }, 400);
+  };
+
+  // Микрофон: старт/стоп распознавания речи
+  const toggleMic = () => {
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const Ctor = getRecognitionCtor();
+    if (!Ctor) return;
+    const rec = new Ctor();
+    rec.lang = lang === 'ru' ? 'ru-RU' : 'en-US';
+    rec.interimResults = true;
+    rec.continuous = false;
+    rec.onresult = (e) => {
+      let finalText = '';
+      let interimText = '';
+      for (let i = 0; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalText += r[0].transcript;
+        else interimText += r[0].transcript;
+      }
+      setInterim(interimText);
+      if (finalText.trim()) send(finalText);
+    };
+    rec.onend = () => {
+      setListening(false);
+      setInterim('');
+    };
+    rec.onerror = () => {
+      setListening(false);
+      setInterim('');
+    };
+    recognitionRef.current = rec;
+    setListening(true);
+    rec.start();
+  };
+
+  // Остановка синтеза/распознавания при уходе с экрана или смене персоны
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.stop();
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    };
+  }, [persona.id]);
+
+  // Последняя реплика персоны — «субтитр» под аватаркой
+  const lastBotLine = [...messages].reverse().find((m) => m.role === 'bot');
+  const statusLine = listening
+    ? t('chat.listening')
+    : speaking
+      ? t('chat.speaking', { name: persona.name })
+      : t(`status.${persona.status}`);
+
+  // Фулскрин рендерится порталом в <body> (у анимаций-предков есть transform,
+  // из-за него position: fixed скроллится вместе со страницей) + блокируем скролл
+  useEffect(() => {
+    if (!fullscreen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [fullscreen]);
+
+  const root = (
+    <div className={`voice-chat ${fullscreen ? 'voice-chat--fullscreen' : ''}`}>
+      <div className="voice-chat-topbar">
+        <div className="voice-chat-title">
+          {persona.name} · <span className="voice-chat-status">{statusLine}</span>
+        </div>
+        <div className="voice-chat-actions">
+          <button type="button" className="btn btn--ghost" title={t('chat.modeClassicTitle')} onClick={onSwitchToClassic}>
+            <Icon name="chat" size={13} />
+            {t('chat.modeClassic')}
+          </button>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            title={fullscreen ? t('chat.exitFullscreenTitle') : t('chat.fullscreenTitle')}
+            onClick={() => setFullscreen((v) => !v)}
+          >
+            <Icon name={fullscreen ? 'fullscreenExit' : 'fullscreen'} size={13} />
+            {fullscreen ? t('chat.exitFullscreen') : t('chat.fullscreen')}
+          </button>
+        </div>
+      </div>
+
+      <div className="voice-chat-stage">
+        <div
+          className={`voice-avatar ${listening ? 'voice-avatar--listening' : ''} ${speaking ? 'voice-avatar--speaking' : ''}`}
+        >
+          <img className="voice-avatar-img" src="/avatar-placeholder.png" alt={persona.name} />
+        </div>
+
+        {/* Живая расшифровка во время прослушивания, иначе последняя реплика персоны */}
+        <div className="voice-chat-line">
+          {listening ? interim || t('chat.listening') : (lastBotLine?.text ?? '')}
+        </div>
+      </div>
+
+      <div className="voice-chat-controls">
+        {/* Переключатель способа ввода оператора: голос / текст */}
+        <div className="voice-input-toggle" role="group" aria-label={t('chat.inputModeTitle')}>
+          <button
+            type="button"
+            className={inputMode === 'voice' ? 'active' : ''}
+            disabled={!micSupported}
+            title={micSupported ? t('chat.inputVoiceTitle') : t('chat.micUnsupported')}
+            onClick={() => setInputMode('voice')}
+          >
+            {t('chat.inputVoice')}
+          </button>
+          <button
+            type="button"
+            className={inputMode === 'text' ? 'active' : ''}
+            title={t('chat.inputTextTitle')}
+            onClick={() => setInputMode('text')}
+          >
+            {t('chat.inputText')}
+          </button>
+        </div>
+
+        {inputMode === 'voice' ? (
+          <button
+            type="button"
+            className={`voice-mic-btn ${listening ? 'voice-mic-btn--active' : ''}`}
+            title={listening ? t('chat.micStop') : t('chat.micStart')}
+            onClick={toggleMic}
+          >
+            {listening ? '■' : '◉'}
+          </button>
+        ) : (
+          <div className="voice-text-bar">
+            <input
+              className="chat-input"
+              type="text"
+              placeholder={t('chat.voiceInputPh', { name: persona.name })}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && send(draft)}
+            />
+            <button type="button" className="btn btn--primary" disabled={!draft.trim()} onClick={() => send(draft)}>
+              {t('chat.send')}
+            </button>
+          </div>
+        )}
+        {!micSupported && <div className="voice-chat-note">{t('chat.micUnsupported')}</div>}
+      </div>
+    </div>
+  );
+
+  return fullscreen ? createPortal(root, document.body) : root;
+}

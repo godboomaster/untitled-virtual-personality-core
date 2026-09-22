@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     VPC SKIN FILE v1 · ЭКРАН ДОСЬЕ — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ.
+
+     Это самодостаточный файл ОДНОГО экрана скина (визуальной оболочки)
+     ИИ-персоны: досье (память, дела, инициатива, обучение, файлы,
+     настройки). Скин персоны состоит из ТРЁХ ОТДЕЛЬНЫХ файлов — чат,
+     досье, комната; этот файл отвечает ТОЛЬКО за досье. Не добавляй
+     сюда разметку других экранов.
+     Файл рендерится в изолированной песочнице (sandboxed iframe).
+
+     ЖЁСТКИЕ ПРАВИЛА (нарушение = скин не пройдёт проверку при загрузке):
+
+     1. Атрибуты data-vpc="..." и data-vpc-field="..." — НЕ удалять и
+        НЕ переименовывать. По ним приложение находит, куда подставлять
+        живые данные. Элементы с этими атрибутами МОЖНО перемещать,
+        оборачивать в любые контейнеры и стилизовать как угодно —
+        лишь бы атрибуты остались.
+
+     2. Блок между маркерами VPC-BRIDGE:START / VPC-BRIDGE:END внизу
+        файла — служебный, его ПЕРЕЗАПИШЕТ приложение. Не редактировать.
+
+     3. Никаких внешних ресурсов: запрещены http/https-ссылки, CDN,
+        <link>, <script src=...>, картинки и шрифты по URL. Сеть
+        заблокирована политикой CSP. Картинки и шрифты — только inline
+        (data-URI) или рисуй чистым CSS/SVG.
+
+     4. ВСЁ ОСТАЛЬНОЕ — свободная зона: любая структура страницы,
+        любые дополнительные элементы, декор, фоны, анимации, свой JS.
+        Скин может выглядеть КАК УГОДНО непохоже на этот шаблон.
+
+     СЛОВАРЬ ТОЧЕК ЭКРАНА ДОСЬЕ.
+
+     Обязательных точек у досье нет, но оно должно содержать ВСЕ разделы
+     эталона с ПОЛНЫМ содержимым — это требование заказчика, а не
+     проверка: память (под-вкладки Буфер/Факты/Дневник), дела (todo +
+     напоминания), инициатива (параметры + текущее состояние + история),
+     обучение (активный курс + «научи меня» + история курсов), файлы,
+     настройки (генерация, LLM-провайдеры, модели, фичи, опасная зона).
+         [data-vpc-screen="dossier"]  корневой блок экрана
+         close-dossier      клик = закрыть досье (вернуться в чат)
+
+     Необязательные точки (OPTIONAL):
+
+       Скалярные слоты:
+         persona-name, persona-avatar, persona-status, persona-model,
+         ini-probability, ini-threshold, ini-max-per-day, ini-interval,
+         ini-adaptive, ini-bayes, ini-ignore-streak, ini-today, ini-mood,
+         ini-stages, ini-silence-text   (параметры и состояние
+         самоинициативы). [data-vpc="ini-silence-bar"] — полоса прогресса
+         молчания: приложение ставит ей style.width в процентах.
+
+       Кнопки:
+         clear-chat         клик = очистить диалог. Размещай ТОЛЬКО здесь,
+                            в опасной зоне (единственное место этой кнопки).
+
+       Списки (контейнер + <template>-образец одного элемента):
+         [data-vpc="stm-list"] + stm-item           поля: author, role, text, time;
+                                                    корню data-role="user|persona"
+                                                    (буфер краткосрочной памяти)
+         [data-vpc="fact-list"] + fact-item         поля: category, fact
+         [data-vpc="diary-list"] + diary-item       поля: date, text
+         [data-vpc="todo-list"] + todo-item         поля: text; корню data-done у выполненных
+         [data-vpc="reminder-list"] + reminder-item поля: time, text, repeat,
+                                                    date, clock (скрытые, для формы
+                                                    правки); корню data-active="true|false"
+         [data-vpc="initiative-list"] + initiative-item  поля: type-label, text, time, outcome
+         [data-vpc="course-list"] + course-item     поля: subject, status, lessons,
+                                                    topics, words, quiz, frequency, next,
+                                                    progress (для data-vpc-bar),
+                                                    topics-list, vocab-list, quiz-line;
+                                                    корню data-status="active|paused|finished"
+                                                    (активный учебный курс)
+         [data-vpc="course-history-list"] + course-history-item
+                                                    поля: subject, status, lessons;
+                                                    история курсов (пауза/завершённые)
+         [data-vpc="file-list"] + file-item
+                                                    поля: name, kind, size, date, description
+         [data-vpc="provider-list"] + provider-item
+                                                    поля: name, local, key-label («ключ
+                                                    задан/не задан», у локальных пусто).
+                                                    Корню клона: data-main="true|false"
+                                                    и data-backup="true|false".
+         [data-vpc="pmodel-list"] + pmodel-item     поля: name, local, model.
+                                                    Поле model — это <input
+                                                    data-vpc-field="model" data-vpc-input="model"
+                                                    data-vpc-onchange="set-model">: его правка
+                                                    меняет модель провайдера.
+         [data-vpc="feature-flag-list"] + feature-flag-item
+                                                    поля: label; корню data-enabled="true|false"
+
+       Поле с атрибутом data-vpc-bar — заполняемая полоса: приложение
+       ставит элементу style.width = значение поля в процентах (вместо
+       текста). Используется для прогресса курса.
+
+       Длинные списки можно сворачивать: контейнеру списка добавь
+       [data-vpc-limit="N"] — bridge отрисует все элементы, но пометит
+       старшие (сверх лимита) атрибутом data-extra и поставит контейнеру
+       data-collapsed. Прячь их своим CSS:
+         [data-collapsed]:not([data-expanded]) > [data-extra] { display:none }
+       Кнопка [data-vpc-expand="имя-списка"] переключает data-expanded
+       на контейнере (и на себе); она видна (hidden снимается), только
+       когда список реально свёрнут.
+
+       Счётчики: элемент [data-vpc-count="<ключ>"] получает число записей
+       списка (для todos — число невыполненных). Ключи этого экрана:
+       facts, reminders, initiatives, diary, stm, courses, courseHistory,
+       todos, files, providers, pmodels, featureFlags.
+
+     ДЕЙСТВИЯ ЗАПИСИ (OPTIONAL — скин может изменять данные персоны):
+
+       Форма: контейнер [data-vpc-form], внутри инпуты с
+       [data-vpc-input="имя_поля"] и кнопка [data-vpc-action="имя_действия"].
+       Клик по кнопке (или Enter в инпуте) отправляет действие приложению
+       со значениями полей. Доступные действия форм:
+         add-todo       поля: text
+         add-reminder   поля: date, clock, text, repeat (repeat — <select>)
+         add-fact       поля: category, fact
+         add-course     поля: subject, frequency (frequency — <select>)
+         trim-stm       поля: count — срезать N последних реплик буфера
+
+       Правка существующей записи: у формы атрибут [data-vpc-for="fact"
+       (или todo, reminder)], у элемента списка — кнопка
+       [data-vpc-item-action="edit-fact" (edit-todo, edit-reminder)].
+       Клик по ✎ заполняет инпуты формы значениями одноимённых полей
+       элемента (хосту ничего не уходит); отправка формы уходит с id
+       записи — приложение сохраняет правку вместо добавления.
+
+       Действия над элементом списка: кнопка [data-vpc-item-action="..."]
+       внутри <template> элемента. Bridge сам знает id элемента:
+         toggle-todo        (в todo-item)
+         delete-todo        (в todo-item)
+         toggle-reminder    (в reminder-item — вкл/выкл)
+         delete-reminder    (в reminder-item)
+         delete-fact        (в fact-item)
+         delete-stm         (в stm-item — удалить реплику из буфера)
+         download-file      (в file-item)
+         make-main          (в provider-item — сделать основным)
+         toggle-backup      (в provider-item — вкл/выкл «на подхвате»)
+         toggle-feature     (в feature-flag-item — вкл/выкл фичу)
+
+       Настройки генерации: инпуты [data-vpc-setting="temperature"],
+       [data-vpc-setting="maxTokens"], [data-vpc-setting="topP"],
+       [data-vpc-setting="stmSize"] — приложение подставляет значения и
+       принимает изменения (change). Параметры самоинициативы —
+       [data-vpc-setting="iniSilence"] (порог молчания, мин),
+       [data-vpc-setting="iniProbability"] (вероятность, %),
+       [data-vpc-setting="iniMaxPerDay"] (максимум в день),
+       [data-vpc-setting="iniInterval"] (интервал проверки, мин),
+       а также ЧЕКБОКСЫ [data-vpc-setting="iniAdaptive"] и
+       [data-vpc-setting="iniBayes"]: приложение выставляет им checked
+       по состоянию и принимает переключение (change). Чекбокс должен
+       быть настоящим <input type="checkbox"> — не имитируй его div'ами.
+
+     SHELL-ТЕМА КАРКАСА (OPTIONAL): пока открыт экран персоны со скином,
+     приложение перекрашивает и свой каркас — левый бар с разделами и
+     верхний топбар. Для этого в :root скина объявляются переменные
+     --vpc-shell-bg, --vpc-shell-panel, --vpc-shell-text, --vpc-shell-dim,
+     --vpc-shell-border, --vpc-shell-accent, --vpc-shell-topbar,
+     --vpc-shell-font, --vpc-shell-font-disp, --vpc-shell-font-mono,
+     --vpc-shell-radius, --vpc-shell-shadow (все необязательные,
+     значения могут ссылаться на свои переменные через var()).
+     Держи эти переменные ОДИНАКОВЫМИ во всех трёх файлах скина —
+     иначе каркас будет менять палитру при переходе между экранами.
+
+     ВКЛАДКИ: эталон делает переключение разделов и под-разделов досье
+     небольшим таб-переключателем (атрибуты data-tab / data-tab-panel /
+     data-tab-scope, JS в свободной зоне; data-tab-scope изолирует
+     вложенные группы вкладок друг от друга). Можно реализовать как
+     угодно иначе — приложению они не видны, — но ЖЁСТКИЕ требования:
+       1) неактивные панели ДОЛЖНЫ быть реально скрыты (display:none или
+          аналог) — при открытом разделе «инициатива» панели памяти,
+          дел и остальных разделов не видны;
+       2) панель под-вкладок памяти (Буфер/Факты/Дневник) находится
+          ВНУТРИ панели раздела «память» и скрывается вместе с ней —
+          она не должна оставаться видимой на других разделах;
+       3) переключатель обязан менять и активную кнопку, и видимую
+          панель (и для верхних вкладок, и для под-вкладок).
+
+     СВОЙ JS: можно, в блоке «СВОБОДНАЯ ЗОНА» внизу. Доступно событие
+     document 'vpc:state' (e.detail — весь снапшот данных) для
+     декоративных реакций. Отправлять сообщения и клики самому не нужно —
+     их обрабатывает bridge-скрипт.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<html lang="ru" data-vpc-active="dossier">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VPC Skin — Dossier</title>
+<style>
+
+  /* ══════════════ СВОБОДНАЯ ЗОНА: все стили скина ══════════════ */
+
+  :root {
+    --bg: #101014;
+    --panel: #17171d;
+    --line: #2a2a33;
+    --text: #e8e6e1;
+    --dim: #8b8894;
+    --accent: #7ee787;
+    --user-bubble: #22304a;
+    --persona-bubble: #1d1d24;
+
+    /* OPTIONAL: SHELL-ТЕМА — палитра каркаса приложения (левый бар с
+       разделами, верхний топбар) на время, пока открыт экран этой персоны.
+       Ушёл на другой раздел — каркас снова дефолтный. Значения могут
+       ссылаться на свои переменные через var() — приложение разрешит их.
+       Удалишь блок — каркас останется в дефолтной теме. */
+    --vpc-shell-bg: var(--bg);
+    --vpc-shell-panel: var(--panel);
+    --vpc-shell-text: var(--text);
+    --vpc-shell-dim: var(--dim);
+    --vpc-shell-border: var(--line);
+    --vpc-shell-accent: var(--accent);
+    --vpc-shell-font: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --vpc-shell-radius: 6px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* ОБЯЗАТЕЛЬНОЕ правило: приложение выставляет на <html> атрибут
+     data-vpc-active с именем этого экрана. Экран должен быть виден.
+     Оформить можно как угодно иначе. */
+  [data-vpc-screen] { display: none; }
+  html[data-vpc-active="dossier"] [data-vpc-screen="dossier"] { display: flex; }
+
+/* ─────────── Экран досье ─────────── */
+
+  .dossier {
+    height: 100vh;
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .dossier-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  .dossier-close {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--dim);
+    font: inherit;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .dossier-close:hover { color: var(--accent); border-color: var(--accent); }
+
+  .dossier-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+  }
+
+  .dossier-card {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    padding: 12px 14px;
+  }
+  .dossier-card-title { color: var(--dim); font-size: 12px; margin-bottom: 8px; }
+
+  .fact-item { padding: 4px 0; }
+  .fact-category { color: var(--accent); font-size: 11px; text-transform: uppercase; }
+  .reminder-item[data-active="false"] { opacity: 0.45; }
+  .reminder-time { color: var(--dim); }
+  .ini-type { color: var(--accent); font-size: 11px; }
+  .ini-time, .diary-date { color: var(--dim); font-size: 11px; }
+  .stm-author { color: var(--accent); font-size: 11px; min-width: 64px; }
+  .stm-item[data-role="user"] .stm-author { color: var(--dim); }
+  .course-status { color: var(--accent); font-size: 11px; text-transform: uppercase; }
+  .course-item[data-status="finished"] .course-status { color: var(--dim); }
+  .course-stats { color: var(--dim); font-size: 12px; margin: 4px 0; }
+  .course-stats b { color: inherit; }
+  .ini-item, .diary-item { padding: 4px 0; }
+
+  /* Под-вкладки памяти (буфер / факты / дневник) */
+  .dossier-subtabs { border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+  .dossier-subtabs .dossier-tab { font-size: 12px; padding: 6px 10px; }
+  .dossier-subpage { display: none; }
+  .dossier-subpage.page-active { display: block; }
+  /* Под-вкладки занимают всю ширину grid-страницы */
+  .dossier-page.page-active[data-tab-panel="memory"] { grid-template-columns: 1fr; }
+
+  /* Сворачиваемые списки: data-vpc-limit + кнопка data-vpc-expand */
+  [data-collapsed]:not([data-expanded]) > [data-extra] { display: none; }
+  .expand-btn {
+    background: none;
+    border: 1px dashed var(--line);
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    margin-top: 8px;
+    cursor: pointer;
+    width: 100%;
+  }
+  .expand-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .expand-btn .when-expanded { display: none; }
+  .expand-btn[data-expanded] .when-expanded { display: inline; }
+  .expand-btn[data-expanded] .when-collapsed { display: none; }
+
+  /* Прогресс-бары (курс, молчание пользователя) */
+  .progress {
+    height: 6px;
+    background: var(--line);
+    margin: 8px 0;
+    overflow: hidden;
+  }
+  .progress-fill { height: 100%; background: var(--accent); width: 0; transition: width 0.3s; }
+
+  /* Плашка неотвеченного теста */
+  .quiz-alert {
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 12px;
+    padding: 6px 10px;
+    margin: 8px 0;
+  }
+
+  /* Провайдеры: основной / на подхвате */
+  .provider-row[data-main="true"] { border-left: 2px solid var(--accent); }
+  .provider-row[data-main="true"] .provider-main-btn { display: none; }
+  .provider-row[data-backup="false"] .backup-btn { opacity: 0.35; }
+  .gen-val { color: var(--text); }
+
+  /* Флаги фич */
+  .feature-flags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .feature-flag {
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .feature-flag[data-enabled="true"] { color: var(--accent); border-color: var(--accent); }
+
+  /* Формы записи и действия над элементами */
+  .vpc-form {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .vpc-form input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 8px;
+    outline: none;
+  }
+  .vpc-form input:focus { border-color: var(--accent); }
+  .vpc-form button {
+    background: none;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .item-btn {
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--dim);
+    font: inherit;
+    font-size: 11px;
+    padding: 1px 6px;
+    cursor: pointer;
+  }
+  .item-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .item-row { display: flex; align-items: baseline; gap: 8px; }
+  .item-row .grow { flex: 1; min-width: 0; }
+
+  .file-row { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .file-meta { color: var(--dim); font-size: 11px; }
+
+  .provider-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  .provider-row input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+    outline: none;
+  }
+  .provider-local { color: var(--accent); font-size: 11px; }
+
+  .gen-grid { display: flex; gap: 12px; flex-wrap: wrap; }
+  .gen-field label { display: block; color: var(--dim); font-size: 11px; margin-bottom: 2px; }
+  .gen-field input {
+    width: 90px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font: inherit;
+    padding: 5px 8px;
+    outline: none;
+  }
+</style>
+</head>
+<body>
+
+<!-- ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ЭКРАН ДОСЬЕ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ -->
+<section class="dossier" data-vpc-screen="dossier" data-tab-scope>
+
+  <header class="dossier-head">
+    <div class="chat-avatar" data-vpc="persona-avatar">?</div>
+    <div>
+      <div class="chat-name" data-vpc="persona-name">…</div>
+      <div class="chat-sub">
+        <span data-vpc="persona-model">…</span> · <span data-vpc="persona-status">…</span>
+      </div>
+    </div>
+    <!-- OPTIONAL: клик = закрыть досье, вернуться в чат -->
+    <button type="button" class="dossier-close" data-vpc="close-dossier">✕</button>
+  </header>
+
+  <!-- OPTIONAL: вкладки досье. Переключение — JS в свободной зоне внизу
+       (атрибуты data-tab / data-tab-panel — внутренние для скина,
+       приложение их не использует). Счётчики [data-vpc-count] заполняет bridge. -->
+  <nav class="dossier-tabs">
+    <button type="button" class="dossier-tab tab-active" data-tab="memory">
+      Память · <span data-vpc-count="facts">0</span>
+    </button>
+    <button type="button" class="dossier-tab" data-tab="tasks">
+      Дела · <span data-vpc-count="todos">0</span>
+    </button>
+    <button type="button" class="dossier-tab" data-tab="initiative">Инициатива</button>
+    <button type="button" class="dossier-tab" data-tab="learning">
+      Обучение · <span data-vpc-count="courses">0</span>
+    </button>
+    <button type="button" class="dossier-tab" data-tab="files">
+      Файлы · <span data-vpc-count="files">0</span>
+    </button>
+    <button type="button" class="dossier-tab" data-tab="settings">Настройки</button>
+  </nav>
+
+  <div class="dossier-body">
+    <!-- OPTIONAL: все карточки досье можно переставлять между страницами,
+         удалять и добавлять свои -->
+
+    <!-- Память: вложенные под-вкладки (буфер / факты / дневник).
+         data-tab-scope ограничивает переключатель своей группой. -->
+    <div class="dossier-page page-active" data-tab-panel="memory" data-tab-scope>
+      <nav class="dossier-tabs dossier-subtabs">
+        <button type="button" class="dossier-tab tab-active" data-tab="stm">
+          Буфер · <span data-vpc-count="stm">0</span>
+        </button>
+        <button type="button" class="dossier-tab" data-tab="ltm">
+          Факты · <span data-vpc-count="facts">0</span>
+        </button>
+        <button type="button" class="dossier-tab" data-tab="diary">
+          Дневник · <span data-vpc-count="diary">0</span>
+        </button>
+      </nav>
+
+      <div class="dossier-subpage page-active" data-tab-panel="stm">
+        <div class="dossier-card">
+          <div class="dossier-card-title">Буфер (STM)</div>
+          <!-- OPTIONAL: data-vpc-limit="10" — показывать последние 10,
+               старшие скрыты (data-extra), кнопка data-vpc-expand раскрывает -->
+          <div data-vpc="stm-list" data-vpc-limit="10"></div>
+          <template data-vpc="stm-item">
+            <div class="stm-item item-row">
+              <span class="stm-author" data-vpc-field="author"></span>
+              <span class="grow" data-vpc-field="text"></span>
+              <span class="ini-time" data-vpc-field="time"></span>
+              <!-- OPTIONAL: клик = удалить реплику из буфера (bridge знает id) -->
+              <button type="button" class="item-btn" data-vpc-item-action="delete-stm">✕</button>
+            </div>
+          </template>
+          <!-- OPTIONAL: видна, только когда список свёрнут; подписи переключает
+               CSS по атрибуту data-expanded на кнопке -->
+          <button type="button" class="expand-btn" data-vpc-expand="stm-list" hidden>
+            <span class="when-collapsed">показать весь буфер</span>
+            <span class="when-expanded">свернуть</span>
+          </button>
+          <!-- OPTIONAL: срезка хвоста буфера (удалить последние N реплик) -->
+          <div class="vpc-form" data-vpc-form>
+            <input data-vpc-input="count" type="number" min="1" placeholder="N" />
+            <button type="button" data-vpc-action="trim-stm">удалить последние</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="dossier-subpage" data-tab-panel="ltm">
+        <div class="dossier-card">
+          <div class="dossier-card-title">Память (LTM)</div>
+          <div data-vpc="fact-list"></div>
+          <template data-vpc="fact-item">
+            <div class="fact-item">
+              <div class="item-row">
+                <span class="fact-category" data-vpc-field="category"></span>
+                <span class="grow"></span>
+                <!-- OPTIONAL: ✎ заполняет форму ниже значениями факта
+                     (data-vpc-for="fact"), отправка формы сохранит правку -->
+                <button type="button" class="item-btn" data-vpc-item-action="edit-fact">✎</button>
+                <!-- OPTIONAL: клик = удалить факт (bridge знает id) -->
+                <button type="button" class="item-btn" data-vpc-item-action="delete-fact">✕</button>
+              </div>
+              <div data-vpc-field="fact"></div>
+            </div>
+          </template>
+          <!-- OPTIONAL: форма добавления/правки факта. data-vpc-for связывает
+               её с кнопками edit-fact: при правке действие уходит с id -->
+          <div class="vpc-form" data-vpc-form data-vpc-for="fact">
+            <input data-vpc-input="category" type="text" placeholder="категория" />
+            <input data-vpc-input="fact" type="text" placeholder="факт" />
+            <button type="button" data-vpc-action="add-fact">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="dossier-subpage" data-tab-panel="diary">
+        <div class="dossier-card">
+          <div class="dossier-card-title">Дневник</div>
+          <div data-vpc="diary-list"></div>
+          <template data-vpc="diary-item">
+            <div class="diary-item">
+              <div class="diary-date" data-vpc-field="date"></div>
+              <div data-vpc-field="text"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <div class="dossier-page" data-tab-panel="tasks">
+      <div class="dossier-card">
+        <div class="dossier-card-title">Дела</div>
+        <div data-vpc="todo-list"></div>
+        <template data-vpc="todo-item">
+          <div class="todo-item item-row">
+            <!-- OPTIONAL: клик = отметить выполненным/невыполненным -->
+            <button type="button" class="item-btn" data-vpc-item-action="toggle-todo">✓</button>
+            <span class="grow" data-vpc-field="text"></span>
+            <!-- OPTIONAL: правка (заполняет форму) и удаление -->
+            <button type="button" class="item-btn" data-vpc-item-action="edit-todo">✎</button>
+            <button type="button" class="item-btn" data-vpc-item-action="delete-todo">✕</button>
+          </div>
+        </template>
+        <div class="vpc-form" data-vpc-form data-vpc-for="todo">
+          <input data-vpc-input="text" type="text" placeholder="новое дело" />
+          <button type="button" data-vpc-action="add-todo">+</button>
+        </div>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">Напоминания</div>
+        <div data-vpc="reminder-list"></div>
+        <template data-vpc="reminder-item">
+          <div class="reminder-item item-row">
+            <!-- OPTIONAL: клик = вкл/выкл напоминание -->
+            <button type="button" class="item-btn" data-vpc-item-action="toggle-reminder">◉</button>
+            <span class="reminder-time" data-vpc-field="time"></span>
+            <span class="grow" data-vpc-field="text"></span>
+            <span class="ini-time" data-vpc-field="repeat"></span>
+            <!-- Скрытые поля «когда» по частям — их читает форма правки -->
+            <span hidden data-vpc-field="date"></span>
+            <span hidden data-vpc-field="clock"></span>
+            <!-- OPTIONAL: правка (заполняет форму) и удаление -->
+            <button type="button" class="item-btn" data-vpc-item-action="edit-reminder">✎</button>
+            <button type="button" class="item-btn" data-vpc-item-action="delete-reminder">✕</button>
+          </div>
+        </template>
+        <!-- OPTIONAL: полная форма напоминания: дата, время, текст, повтор -->
+        <div class="vpc-form" data-vpc-form data-vpc-for="reminder">
+          <input data-vpc-input="date" type="text" placeholder="завтра" />
+          <input data-vpc-input="clock" type="text" placeholder="18:00" />
+          <input data-vpc-input="text" type="text" placeholder="текст напоминания" />
+          <select data-vpc-input="repeat">
+            <option>разовое</option>
+            <option>каждый час</option>
+            <option>по будням</option>
+            <option>по выходным</option>
+            <option>каждый день</option>
+          </select>
+          <button type="button" data-vpc-action="add-reminder">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="dossier-page" data-tab-panel="initiative">
+      <!-- OPTIONAL: параметры самоинициативы. Все шесть контролов
+           редактируемые (data-vpc-setting): числовые поля и чекбоксы.
+           Приложение само подставляет значения (чекбоксам ставит checked)
+           и принимает изменения (change). -->
+      <div class="dossier-card">
+        <div class="dossier-card-title">Параметры</div>
+        <div class="gen-grid">
+          <div class="gen-field">
+            <label>порог молчания, мин</label>
+            <input data-vpc-setting="iniSilence" type="number" min="15" max="720" />
+          </div>
+          <div class="gen-field">
+            <label>вероятность, %</label>
+            <input data-vpc-setting="iniProbability" type="number" min="0" max="100" />
+          </div>
+          <div class="gen-field">
+            <label>максимум в день</label>
+            <input data-vpc-setting="iniMaxPerDay" type="number" min="1" max="50" />
+          </div>
+          <div class="gen-field">
+            <label>интервал проверки, мин</label>
+            <input data-vpc-setting="iniInterval" type="number" min="5" max="1440" />
+          </div>
+          <div class="gen-field">
+            <label><input data-vpc-setting="iniAdaptive" type="checkbox" /> адаптивный порог</label>
+          </div>
+          <div class="gen-field">
+            <label><input data-vpc-setting="iniBayes" type="checkbox" /> байесовский фидбек</label>
+          </div>
+        </div>
+      </div>
+
+      <!-- OPTIONAL: текущее состояние -->
+      <div class="dossier-card">
+        <div class="dossier-card-title">Текущее состояние</div>
+        <div class="course-stats">
+          серия игнорирования: <b data-vpc="ini-ignore-streak">…</b> ·
+          инициатив сегодня: <b data-vpc="ini-today">…</b>
+        </div>
+        <div class="course-stats">настроение: <b data-vpc="ini-mood">…</b></div>
+        <div class="ini-time">шкала: <span data-vpc="ini-stages">…</span></div>
+        <!-- OPTIONAL: прогресс молчания пользователя; ширину ставит bridge -->
+        <div class="progress"><div class="progress-fill" data-vpc="ini-silence-bar"></div></div>
+        <div class="ini-time" data-vpc="ini-silence-text">…</div>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">История инициатив</div>
+        <div data-vpc="initiative-list"></div>
+        <template data-vpc="initiative-item">
+          <div class="ini-item">
+            <span class="ini-type" data-vpc-field="type-label"></span>
+            <span data-vpc-field="text"></span>
+            <div class="ini-time">
+              <span data-vpc-field="time"></span> · <span data-vpc-field="outcome"></span>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="dossier-page" data-tab-panel="learning">
+      <!-- OPTIONAL: карточка активного курса — страница курса целиком -->
+      <div class="dossier-card">
+        <div class="dossier-card-title">Активный курс</div>
+        <div data-vpc="course-list"></div>
+        <template data-vpc="course-item">
+          <!-- Корню клона выставляется data-status="active|paused|finished" -->
+          <div class="course-item">
+            <div class="item-row">
+              <span class="grow" data-vpc-field="subject"></span>
+              <span class="course-status" data-vpc-field="status"></span>
+            </div>
+            <div class="course-stats">
+              уроков: <b data-vpc-field="lessons"></b> ·
+              тем: <b data-vpc-field="topics"></b> ·
+              слов: <b data-vpc-field="words"></b> ·
+              вопросов теста: <b data-vpc-field="quiz"></b>
+            </div>
+            <!-- Прогресс курса: data-vpc-bar — ширину в % ставит bridge -->
+            <div class="progress"><div class="progress-fill" data-vpc-field="progress" data-vpc-bar></div></div>
+            <!-- Плашка неотвеченного теста; пустая — удаляется (data-vpc-optional) -->
+            <div class="quiz-alert" data-vpc-optional><span data-vpc-field="quiz-line"></span></div>
+            <div class="ini-time" data-vpc-optional>темы: <span data-vpc-field="topics-list"></span></div>
+            <div class="ini-time" data-vpc-optional>словарь: <span data-vpc-field="vocab-list"></span></div>
+            <div class="ini-time">
+              <span data-vpc-field="frequency"></span> · следующий: <span data-vpc-field="next"></span>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- OPTIONAL: отдельный раздел «научи меня» — запуск нового курса -->
+      <div class="dossier-card">
+        <div class="dossier-card-title">Научи меня</div>
+        <div class="vpc-form" data-vpc-form>
+          <input data-vpc-input="subject" type="text" placeholder="тема курса" />
+          <select data-vpc-input="frequency">
+            <option>раз в день</option>
+            <option selected>каждые 2 дня</option>
+            <option>раз в неделю</option>
+            <option>по выходным</option>
+          </select>
+          <button type="button" data-vpc-action="add-course">начать</button>
+        </div>
+      </div>
+
+      <!-- OPTIONAL: история курсов (на паузе и завершённые) -->
+      <div class="dossier-card">
+        <div class="dossier-card-title">
+          История курсов · <span data-vpc-count="courseHistory">0</span>
+        </div>
+        <div data-vpc="course-history-list"></div>
+        <template data-vpc="course-history-item">
+          <div class="item-row course-history-item">
+            <span class="grow" data-vpc-field="subject"></span>
+            <span class="course-status" data-vpc-field="status"></span>
+            <span class="ini-time"><span data-vpc-field="lessons"></span> уроков</span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="dossier-page" data-tab-panel="files">
+      <div class="dossier-card">
+        <div class="dossier-card-title">Файлы</div>
+        <div data-vpc="file-list"></div>
+        <template data-vpc="file-item">
+          <div class="file-row item-row">
+            <div class="grow">
+              <span data-vpc-field="name"></span>
+              <div class="file-meta">
+                <span data-vpc-field="kind"></span> · <span data-vpc-field="size"></span> · <span data-vpc-field="date"></span>
+              </div>
+              <div class="file-meta" data-vpc-field="description"></div>
+            </div>
+            <!-- OPTIONAL: клик = скачать файл -->
+            <button type="button" class="item-btn" data-vpc-item-action="download-file">↓</button>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="dossier-page" data-tab-panel="settings">
+      <div class="dossier-card">
+        <div class="dossier-card-title">Генерация</div>
+        <!-- OPTIONAL: приложение подставляет значения и принимает change -->
+        <div class="gen-grid">
+          <div class="gen-field">
+            <label>temperature</label>
+            <input data-vpc-setting="temperature" type="number" step="0.05" min="0" max="1" />
+          </div>
+          <div class="gen-field">
+            <label>maxTokens</label>
+            <input data-vpc-setting="maxTokens" type="number" step="64" min="64" />
+          </div>
+          <div class="gen-field">
+            <label>top_p</label>
+            <input data-vpc-setting="topP" type="number" step="0.01" min="0" max="1" />
+          </div>
+          <div class="gen-field">
+            <label>размер STM</label>
+            <input data-vpc-setting="stmSize" type="number" step="10" min="10" />
+          </div>
+        </div>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">LLM-провайдеры</div>
+        <div data-vpc="provider-list"></div>
+        <template data-vpc="provider-item">
+          <!-- Корню клона: data-main="true|false" (основной) и
+               data-backup="true|false" (на подхвате) -->
+          <div class="provider-row item-row">
+            <!-- OPTIONAL: клик = вкл/выкл «на подхвате» -->
+            <button type="button" class="item-btn backup-btn" data-vpc-item-action="toggle-backup">◉</button>
+            <span data-vpc-field="name"></span>
+            <span class="provider-local" data-vpc-field="local"></span>
+            <!-- «ключ задан» / «ключ не задан»; у локальных пусто -->
+            <span class="ini-time" data-vpc-field="key-label"></span>
+            <span class="grow"></span>
+            <!-- OPTIONAL: клик = сделать основным (скрыт у основного через CSS) -->
+            <button type="button" class="item-btn provider-main-btn" data-vpc-item-action="make-main">основной</button>
+          </div>
+        </template>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">Модели провайдеров</div>
+        <div data-vpc="pmodel-list"></div>
+        <template data-vpc="pmodel-item">
+          <div class="provider-row">
+            <span data-vpc-field="name"></span>
+            <span class="provider-local" data-vpc-field="local"></span>
+            <!-- Правка этого поля = смена модели провайдера (set-model) -->
+            <input data-vpc-field="model" data-vpc-input="model" data-vpc-onchange="set-model" type="text" spellcheck="false" />
+          </div>
+        </template>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">Фичи</div>
+        <div class="feature-flags" data-vpc="feature-flag-list"></div>
+        <template data-vpc="feature-flag-item">
+          <!-- Корню клона: data-enabled="true|false"; клик = переключить фичу -->
+          <button type="button" class="feature-flag" data-vpc-item-action="toggle-feature">
+            <span data-vpc-field="label"></span>
+          </button>
+        </template>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">Опасная зона</div>
+        <!-- OPTIONAL: клик = очистить диалог. ЕДИНСТВЕННОЕ место этой кнопки — здесь. -->
+        <button type="button" class="chat-clear" data-vpc="clear-chat">Очистить диалог</button>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ══════════════ СВОБОДНАЯ ЗОНА: декоративный JS скина ══════════════
+     Можно всё стереть или написать своё. Доступно событие 'vpc:state'
+     на document (e.detail — снапшот данных экрана). -->
+<script>
+  // Эталонный переключатель вкладок досье (атрибуты data-tab /
+  // data-tab-panel / data-tab-scope — внутренние для скина, не часть
+  // контракта). data-tab-scope ограничивает группу: вложенные под-вкладки
+  // (буфер/факты/дневник) не задевают верхние и наоборот.
+  // Делегирование на document — переживает перерисовку списков bridge'ем.
+  document.addEventListener('click', function (e) {
+    var tab = e.target.closest ? e.target.closest('[data-tab]') : null;
+    if (!tab) return;
+    var scope = tab.closest('[data-tab-scope]') || document;
+    var name = tab.getAttribute('data-tab');
+    scope.querySelectorAll('[data-tab]').forEach(function (b) {
+      if (b.closest('[data-tab-scope]') === scope) {
+        b.classList.toggle('tab-active', b === tab);
+      }
+    });
+    scope.querySelectorAll('[data-tab-panel]').forEach(function (p) {
+      if (p.closest('[data-tab-scope]') === scope) {
+        p.classList.toggle('page-active', p.getAttribute('data-tab-panel') === name);
+      }
+    });
+  });
+
+  // Пример: реакция на обновления состояния (можно удалить).
+  document.addEventListener('vpc:state', function () { /* декор */ });
+</script>
+
+<!-- ==== VPC-BRIDGE:START ====
+     Служебный блок: при загрузке скина приложение ПЕРЕЗАПИШЕТ его
+     своей эталонной версией. Не редактировать, не удалять маркеры. -->
+<script>/* bridge placeholder — will be replaced by the app */</script>
+<!-- ==== VPC-BRIDGE:END ==== -->
+
+</body>
+</html>
