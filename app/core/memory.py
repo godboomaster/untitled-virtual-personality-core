@@ -1,9 +1,16 @@
 import chromadb
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from collections import deque
 from typing import List, Dict, Optional, Tuple
+from app.core.atomic_io import atomic_write_text, load_json_safe
+from app.core.bounded_cache import BoundedCache
+from app.core.chroma_space import (
+    COLLECTION_NAMES, VECTOR_SPACE, collection_space, open_collection,
+)
 from app.core.config import Config, get_db_paths
 from app.core.router import ModelRouter
+from app.core.presence import web_presence
+from app.core import timeutil
+from app.core.st_embedder import create_st_embedder
 from app.core.memory_config import (
     build_extraction_prompt, should_ignore_message, parse_and_filter_facts,
     split_facts_text, PROMPT_SETTINGS, UPDATE_CATEGORIES, APPEND_CATEGORIES,
@@ -19,6 +26,25 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+# Сколько чатов держать в оперативных буферах STM (LRU). Вытесненный буфер
+# не теряется: при следующем обращении к чату он перечитывается из ChromaDB
+# (ShortTermMemory._load_chat_from_db).
+MAX_CACHED_CHATS = 200
+
+# Сколько пользователей держать в счётчиках батч-экстракции/консолидации.
+# Вытеснение безобидно: счётчик начнётся заново, вызов случится позже.
+MAX_COUNTER_USERS = 500
+
+# Пороги близости для точечных операций над фактами. Это cosine-distance
+# (0 = идентично, 1 = ортогонально, 2 = противоположно) — метрика коллекций
+# задана явно в app/core/chroma_space.py (VECTOR_SPACE); при дефолтной для
+# Chroma l2 на ненормированных эмбеддингах эти пороги не проходил никто.
+# «забудь про X»: перефразировка факта даёт d≈0.35, посторонний запрос к
+# неродственному факту — d≈0.9, поэтому 1.0 (почти вся шкала) удалял бы
+# первый попавшийся факт по любому запросу; 0.7 — между этими случаями
+FORGET_MAX_DISTANCE = 0.7
+UPDATE_FACT_MAX_DISTANCE = 0.3   # правка факта: промах затирает чужой факт
 
 
 def _first_sentence(text: str, max_len: int = 80) -> str:
@@ -55,31 +81,100 @@ class ShortTermMemory:
             context: Контекст — "tg", "api_{persona}" или "default".
         """
         self.max_messages = max_messages
-        self.buffers: Dict[str, deque] = {}  # {"chat_id": deque(maxlen=50)}
+        # Буферы чатов — ограниченный LRU-кеш, а не вечный dict: chat_id это
+        # каждый чат, куда бота когда-либо добавляли, а значение — до
+        # max_messages сообщений (см. app/core/bounded_cache.py)
+        self.buffers = BoundedCache(max_entries=MAX_CACHED_CHATS)
         self.context = context
         self._lock = threading.RLock()  # защита от гонки данных при многопоточности
+        # Разрешена ли подгрузка буфера чата из БД (в т.ч. после вытеснения
+        # из LRU). load_from_db=False — тесты/одноразовые прогоны без истории.
+        self._db_backed = load_from_db
 
         if db_path is None:
             db_path = get_db_paths(context)["stm"]
 
         self.client = chromadb.PersistentClient(path=db_path)
-        self.embedder = SentenceTransformerEmbeddingFunction(
-            model_name="paraphrase-multilingual-MiniLM-L12-v2"
-        )
-        self.collection = self.client.get_or_create_collection(
-            "short_term_memory",
-            embedding_function=self.embedder
-        )
+        self.embedder = create_st_embedder()
+        self.collection = open_collection(
+            self.client, COLLECTION_NAMES["stm"],
+            embedding_function=self.embedder)
 
         if load_from_db:
             self._load_from_db()
 
     def _get_buffer(self, chat_id: str) -> deque:
-        # Получить или создать буфер для чата (потокобезопасно)
+        """Буфер чата: из кеша, иначе подгружаем историю чата из ChromaDB.
+
+        Буфер мог быть вытеснен из LRU (или вообще не загружаться при старте) —
+        без подгрузки чат терял бы контекст, хотя сообщения лежат в базе.
+        Запрос к БД — вне лока, результат вставляется под локом и уступает
+        уже появившемуся буферу (параллельный add_message того же чата).
+        """
         with self._lock:
-            if chat_id not in self.buffers:
-                self.buffers[chat_id] = deque(maxlen=self.max_messages)
-            return self.buffers[chat_id]
+            buf = self.buffers.get(chat_id)
+            if buf is not None:
+                return buf
+        restored = self._load_chat_from_db(chat_id)
+        with self._lock:
+            buf = self.buffers.get(chat_id)
+            if buf is None:
+                buf = restored
+                self.buffers[chat_id] = buf
+            return buf
+
+    def _entry_from_row(self, doc: str, meta: dict) -> dict:
+        """Запись буфера из строки ChromaDB — одно определение и для полной
+        загрузки при старте, и для подгрузки одного чата."""
+        meta = meta or {}
+        msg_chat_id = meta.get("chat_id") or meta.get("user_id", "default")
+        user_name = meta.get("user_name")
+        sender_id = meta.get("sender_id")
+        if not user_name and sender_id:
+            user_name = get_user_tag(sender_id)
+        entry = {
+            "role": meta.get("role", "user"),
+            "content": doc,
+            "chat_id": msg_chat_id,
+            # в БД миллисекунды, в буфере — секунды
+            "timestamp": (meta.get("timestamp") or 0) / 1000,
+        }
+        if user_name:
+            entry["user_name"] = user_name
+        if sender_id:
+            entry["sender_id"] = sender_id
+        return entry
+
+    def _load_chat_from_db(self, chat_id: str) -> deque:
+        """История одного чата из ChromaDB (последние max_messages)."""
+        buf = deque(maxlen=self.max_messages)
+        if not self._db_backed:
+            return buf
+        try:
+            results = self.collection.get(
+                where={"chat_id": str(chat_id)},
+                include=["documents", "metadatas"],
+            )
+            if not results or not results.get("ids"):
+                # Легаси-записи писались без chat_id, только с user_id —
+                # _entry_from_row их учитывает, значит и подгрузка должна
+                results = self.collection.get(
+                    where={"user_id": str(chat_id)},
+                    include=["documents", "metadatas"],
+                )
+            if not results or not results.get("ids"):
+                return buf
+            entries = [
+                self._entry_from_row(doc, meta)
+                for doc, meta in zip(results.get("documents", []),
+                                     results.get("metadatas", []))
+            ]
+            entries.sort(key=lambda e: e["timestamp"])
+            for entry in entries[-self.max_messages:]:
+                buf.append(entry)
+        except Exception as e:
+            logger.warning(f"  [STM] Не удалось подгрузить историю чата {chat_id}: {e}")
+        return buf
 
     def _load_from_db(self):
         # Загрузить все сообщения из базы и раскидать по буферам чатов
@@ -89,38 +184,20 @@ class ShortTermMemory:
         results = self.collection.get(include=["documents", "metadatas"])
 
         if results["documents"]:
-            messages = []
-            for i, doc in enumerate(results["documents"]):
-                metadata = results["metadatas"][i] if results["metadatas"] else {}
-                msg_chat_id = metadata.get("chat_id") or metadata.get("user_id", "default")
-                timestamp = metadata.get("timestamp", 0)
-                role = metadata.get("role", "user")
-                msg_user_name = metadata.get("user_name")
-                sender_id = metadata.get("sender_id")
-                if not msg_user_name and sender_id:
-                    msg_user_name = get_user_tag(sender_id)
-                messages.append({
-                    "timestamp": timestamp,
-                    "role": role,
-                    "content": doc,
-                    "chat_id": msg_chat_id,
-                    "user_name": msg_user_name,
-                    "sender_id": sender_id,
-                })
-
-            messages.sort(key=lambda x: x["timestamp"])
+            metadatas = results.get("metadatas") or [{}] * len(results["documents"])
+            entries = [
+                self._entry_from_row(doc, meta)
+                for doc, meta in zip(results["documents"], metadatas)
+            ]
+            # По возрастанию времени: буферы LRU — позже всех тронуты самые
+            # свежие чаты, они же и останутся при вытеснении
+            entries.sort(key=lambda e: e["timestamp"])
             with self._lock:
-                for msg in messages:
-                    buf = self.buffers.get(msg["chat_id"])
+                for entry in entries:
+                    buf = self.buffers.get(entry["chat_id"])
                     if buf is None:
                         buf = deque(maxlen=self.max_messages)
-                        self.buffers[msg["chat_id"]] = buf
-                    entry = {"role": msg["role"], "content": msg["content"], "chat_id": msg["chat_id"],
-                             "timestamp": msg["timestamp"] / 1000}  # в БД миллисекунды, в буфере — секунды
-                    if msg.get("user_name"):
-                        entry["user_name"] = msg["user_name"]
-                    if msg.get("sender_id"):
-                        entry["sender_id"] = msg["sender_id"]
+                        self.buffers[entry["chat_id"]] = buf
                     buf.append(entry)
 
     def _save_to_db(self, role: str, content: str, chat_id: str = "default",
@@ -198,19 +275,24 @@ class ShortTermMemory:
         """Метка времени последнего сообщения чата на диске
         (data/{context}/last_message.json). API отдаёт её фронту для
         сортировки персон по свежести переписки; метка производная —
-        перезаписывается при каждом новом сообщении."""
+        перезаписывается при каждом новом сообщении.
+
+        Read-modify-write под self._lock (уже RLock — есть повторный вход
+        через другие locked-методы MemoryManager) и атомарная запись: без
+        лока конкурентные add_message из разных чатов (обычные потоки
+        обработки сообщений) чередовали чтение и запись и теряли чужие
+        метки; голый except molчал даже о неожиданных ошибках диска."""
         try:
             path = Path(f"data/{self.context}/last_message.json")
             path.parent.mkdir(parents=True, exist_ok=True)
-            data = {}
-            if path.is_file():
-                data = json.loads(path.read_text(encoding="utf-8")) or {}
+            with self._lock:
+                data = load_json_safe(path, default={}, label="Memory.last_message")
                 if not isinstance(data, dict):
                     data = {}
-            data[chat_key] = ts
-            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+                data[chat_key] = ts
+                atomic_write_text(path, json.dumps(data, ensure_ascii=False))
+        except Exception as e:
+            logger.warning(f"[Memory] Не удалось обновить last_message для {chat_key}: {e}")
 
     def get_messages(self, user_id: str = None, chat_id: str = None) -> List[Dict[str, str]]:
         """
@@ -314,22 +396,18 @@ class ShortTermMemory:
         Возвращает список с role, user_name, content (обрезанное до первого предложения)
         и time — «15.08 14:32» (дата + время отправки).
         """
-        from datetime import datetime
         messages = self.get_last(n, chat_id=chat_id)
         result = []
         for m in messages:
             content = m.get("content", "")
             # Берём только первое предложение
             first_sentence = _first_sentence(content)
-            time_str = ""
-            ts = m.get("timestamp")
-            if ts:
-                try:
-                    dt = datetime.fromtimestamp(float(ts))
-                    year = f".{dt.year}" if dt.year != datetime.now().year else ""
-                    time_str = dt.strftime(f"%d.%m{year} %H:%M")
-                except (TypeError, ValueError, OSError):
-                    time_str = ""
+            # Формат метки — одно определение на проект (persona._format_msg_ts:
+            # время пользователя по TIMEZONE, год только если не текущий);
+            # здесь была вторая копия того же кода на системном поясе машины.
+            # Импорт локальный — persona грузится не ради одной метки.
+            from app.core.persona import _format_msg_ts
+            time_str = _format_msg_ts(m.get("timestamp"))
             result.append({
                 "role": m.get("role", "user"),
                 "user_name": m.get("user_name"),
@@ -344,7 +422,9 @@ class ShortTermMemory:
         Возвращает количество удалённых.
         """
         with self._lock:
-            buf = self.buffers.get(chat_id)
+            # _get_buffer, а не buffers.get: буфер мог быть вытеснен из LRU,
+            # и «удали последние N» молча не сделало бы ничего
+            buf = self._get_buffer(chat_id)
             if not buf:
                 return 0
 
@@ -386,7 +466,7 @@ class ShortTermMemory:
         из ChromaDB. True — сообщение нашлось и удалено.
         """
         with self._lock:
-            buf = self.buffers.get(chat_id)
+            buf = self._get_buffer(chat_id)  # вытесненный из LRU — подгрузится
             if not buf or index < 0 or index >= len(buf):
                 return False
             entry = list(buf)[index]
@@ -435,8 +515,7 @@ class ShortTermMemory:
                     print(f"  [STM] Удалено {len(ids_to_delete)} сообщений чата {chat_id}")
             # Удаляем буфер чата
             with self._lock:
-                if chat_id in self.buffers:
-                    del self.buffers[chat_id]
+                self.buffers.pop(chat_id, None)
         else:
             with self._lock:
                 self.buffers.clear()
@@ -491,14 +570,20 @@ class LongTermMemory:
 
         self.context = context
         self.client = chromadb.PersistentClient(path=db_path)
-        self.embedder = SentenceTransformerEmbeddingFunction(
-            model_name="paraphrase-multilingual-MiniLM-L12-v2"
-        )
-        self.collection = self.client.get_or_create_collection(
-            "long_term_memory",
-            embedding_function=self.embedder
-        )
-        
+        self.embedder = create_st_embedder()
+        self.collection = open_collection(
+            self.client, COLLECTION_NAMES["ltm"],
+            embedding_function=self.embedder)
+        # Фактическая метрика коллекции: пороги forget/update_fact — под cosine.
+        # Если перенос не удался (например, диск только для чтения), об этом
+        # должно быть видно в логе, а не «забудь про X молча ничего не делает».
+        self.space = collection_space(self.collection)
+        if self.space != VECTOR_SPACE:
+            logger.warning(
+                f"[LTM] Метрика коллекции — {self.space} вместо {VECTOR_SPACE}: "
+                f"пороги схожести (forget/update_fact) рассчитаны на "
+                f"{VECTOR_SPACE}, точечные операции могут не находить факт")
+
         self.ltm_model_provider = ltm_model_provider or Config.LTM_MODEL_PROVIDER
         self.main_router = main_router
         self.exclude_provider = main_router.active_provider if main_router else None
@@ -1115,10 +1200,11 @@ class LongTermMemory:
             if not results["ids"] or not results["ids"][0]:
                 return None
 
-            # cosine distance: 0 = идентично, 2 = противоположно.
+            # cosine distance: 0 = идентично, 2 = противоположно (метрика
+            # задана явно при открытии коллекции — chroma_space.VECTOR_SPACE).
             # Выше порога — считаем, что похожего факта нет, и не трогаем память.
             distance = results["distances"][0][0] if results.get("distances") else 2.0
-            if distance > 1.0:
+            if distance > FORGET_MAX_DISTANCE:
                 return None
 
             fact_id = results["ids"][0][0]
@@ -1170,7 +1256,7 @@ class LongTermMemory:
                 if not res["ids"] or not res["ids"][0]:
                     return None
                 distance = res["distances"][0][0] if res.get("distances") else 2.0
-                if distance > 0.3:
+                if distance > UPDATE_FACT_MAX_DISTANCE:
                     return None
                 fact_id = res["ids"][0][0]
                 old_doc = res["documents"][0][0]
@@ -1247,8 +1333,11 @@ class MemoryManager:
             main_router=main_router
         )
         self.enable_ltm_extraction = enable_ltm_extraction
-        self._user_msg_counters = {}  # user_id → count (консолидация)
-        self._extract_counters = {}   # user_id → count (батч-экстракция)
+        # Счётчики — ограниченные LRU-кеши, а не вечные dict: у бота в группах
+        # user_id это каждый, кто когда-либо писал. Вытеснение безобидно:
+        # счётчик начнётся заново, экстракция/консолидация случится позже.
+        self._user_msg_counters = BoundedCache(max_entries=MAX_COUNTER_USERS)  # user_id → count (консолидация)
+        self._extract_counters = BoundedCache(max_entries=MAX_COUNTER_USERS)   # user_id → count (батч-экстракция)
         self._summary_lock = threading.RLock()
         self._counter_lock = threading.Lock()  # отдельный: summary lock держится долго
 
@@ -1290,6 +1379,12 @@ class MemoryManager:
                 self._extract_counters[user_id] = self._extract_counters.get(user_id, 0) + 1
                 count = self._extract_counters[user_id]
                 extract_due = role == "user" and count >= every
+                # Веб-вкладка ЭТОГО чата активна — экстракция ждёт: счётчик не
+                # сбрасываем, батч доберётся при сообщении в неактивности
+                # (чат другой персоны или Telegram-чат ничего не тормозит)
+                if extract_due and web_presence.is_active(
+                        self.context, chat_id or user_id):
+                    extract_due = False
                 if extract_due:
                     self._extract_counters[user_id] = 0
             if extract_due:
@@ -1312,7 +1407,13 @@ class MemoryManager:
             with self._counter_lock:
                 self._user_msg_counters[user_id] = self._user_msg_counters.get(user_id, 0) + 1
                 due = self._user_msg_counters[user_id] >= SUMMARY_SETTINGS["trigger_every"]
-            if due and self._run_summarize_async(user_id):
+            # Активная веб-вкладка ЭТОГО чата — консолидация ждёт, как при
+            # занятом lock: счётчик не сбрасываем, повторим на следующем
+            # сообщении. Консолидация идёт по user_id, но гейт — по чату, из
+            # которого пришло сообщение: смысл гейта не «персона занята», а
+            # «не тратим модель, пока человек ждёт ответа в этом чате»
+            if (due and not web_presence.is_active(self.context, chat_id or user_id)
+                    and self._run_summarize_async(user_id)):
                 # Сбрасываем счётчик только если консолидация реально запустилась
                 with self._counter_lock:
                     self._user_msg_counters[user_id] = 0

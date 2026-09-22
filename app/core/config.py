@@ -92,6 +92,10 @@ PROVIDER_CONFIGS = {
         # переопределяются через KIMI_TEMPERATURE / KIMI_TOP_P в .env.config.
         "temperature": float(os.getenv("KIMI_TEMPERATURE", "1.0")),
         "top_p": float(os.getenv("KIMI_TOP_P", "0.95")),
+        # Аккаунтный лимит Moonshot: 1 параллельный запрос — иначе 403
+        # «concurrent request limit» (кейс 19.09: фон + диалог столкнулись).
+        # Роутер занятость пропускает мгновенно, уходя по цепочке дальше.
+        "max_concurrent": 1,
     },
     "google": {
         "api_keys": _collect_api_keys("GOOGLE"),

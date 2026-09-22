@@ -19,3 +19,13 @@ fastapi
 uvicorn[standard]
 python-multipart
 playwright  # этап 3b computer_control: браузерные рецепты через CDP (без "playwright install" — цепляемся к Chrome пользователя)
+psutil  # метрики памяти: виджет режима разработчика (/api/system/memory), деградация rerank в book_search
+beautifulsoup4  # парсинг HTML в scripts/generate_summaries.py, scripts/load_book.py, scripts/inspect_epub.py
+ebooklib  # работа с EPUB-файлами (book_search, load_book)
+pydantic  # валидация моделей данных
+pillow  # обработка изображений (PIL в app/core/rich_message_formatter.py и других)
+huggingface_hub  # загрузка моделей с Hugging Face
+numpy  # численные вычисления в book_search, местное ранжирование
+rank-bm25  # BM25 ранжирование для локального поиска
+requests  # HTTP запросы
+websocket-client  # WebSocket клиент для browser_actions и других

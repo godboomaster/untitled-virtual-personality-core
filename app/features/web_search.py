@@ -3,13 +3,20 @@
 Используется когда в контексте разговора/памяти нет ответа на вопрос.
 """
 
+import inspect
+import ipaddress
 import re
+import socket
+import threading
 import logging
 from urllib.parse import urlparse
 
 import httpx
 
 from app.core.local_router import get_local_router
+from app.core.router import internet_available
+from app.core.word_stem import WORD_ENDINGS as _WORD_ENDINGS
+from app.core.word_stem import stem as _stem
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +30,98 @@ MAX_PAGE_TEXT_LEN = 3000
 PAGE_FETCH_TIMEOUT = 10
 # Сколько страниц загружать полностью (из top результатов)
 FETCH_TOP_N = 2
+# Редиректов у одной загрузки — не больше (иначе можно зациклиться/затянуть запрос)
+MAX_REDIRECTS = 5
+
+
+# Последний резолв _resolve_checked на ЭТОМ потоке (host -> ip). Позволяет
+# get_with_safe_redirects взять для соединения ровно тот адрес, что уже
+# прошёл проверку в is_safe_public_url — без второго getaddrinfo. Под
+# конкурентными потоками бота гонки нет: запись и чтение — на одном потоке,
+# между ними нет операций ввода-вывода (см. _pinned_get).
+_last_resolved = threading.local()
+
+
+def _resolve_checked(host: str) -> "ipaddress._BaseAddress | None":
+    """Резолвит host, проверяет ВСЕ адреса на публичность и возвращает
+    первый (для соединения) — или None, если резолв не удался или среди
+    адресов есть непубличный (приватный/loopback/link-local/reserved/
+    multicast/unspecified, включая IPv4-in-IPv6 вида ``::ffff:127.0.0.1``).
+
+    Единственное место, которое реально резолвит имя для SSRF-проверки —
+    результат кладётся в _last_resolved, чтобы соединение (_pinned_get)
+    использовало тот же адрес, а не резолвило host заново (иначе между
+    проверкой и коннектом DNS мог бы отдать другой ответ — rebinding)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        infos = None
+    ip = None
+    if infos:
+        ips = []
+        for info in infos:
+            raw_ip = info[4][0]
+            try:
+                ip_i = ipaddress.ip_address(raw_ip.split("%", 1)[0])  # без zone id у IPv6 link-local
+            except ValueError:
+                ips = None
+                break
+            candidates = [ip_i]
+            mapped = getattr(ip_i, "ipv4_mapped", None)  # ::ffff:10.0.0.1 → 10.0.0.1
+            if mapped is not None:
+                candidates.append(mapped)
+            if any(c.is_private or c.is_loopback or c.is_link_local
+                   or c.is_reserved or c.is_multicast or c.is_unspecified
+                   for c in candidates):
+                ips = None
+                break
+            ips.append(ip_i)
+        if ips:
+            ip = ips[0]
+    _last_resolved.host = host
+    _last_resolved.ip = ip
+    return ip
+
+
+def _cached_resolved_ip(host: str):
+    """IP из ПОСЛЕДНЕГО _resolve_checked(host) на этом потоке — или None,
+    если такого резолва не было (например, is_safe_public_url подменена
+    в тестах и реальный резолв не выполнялся)."""
+    if getattr(_last_resolved, "host", None) == host:
+        return getattr(_last_resolved, "ip", None)
+    return None
+
+
+def is_safe_public_url(url: str) -> bool:
+    """SSRF-фильтр (задача №5 аудита): True — только для http(s)-URL, чей
+    хост резолвится ИСКЛЮЧИТЕЛЬНО в публичные адреса.
+
+    URL страниц из выдачи поиска фактически приходит от третьей стороны
+    (DuckDuckGo, и содержимое найденных страниц) — без проверки
+    ``fetch_page_text`` был бы SSRF: страница/редирект на
+    ``http://169.254.169.254/...`` (облачные метаданные), ``http://localhost:PORT``
+    или адрес внутри локальной сети ушли бы обычным GET с сервера.
+
+    Резолвим ВСЕ адреса имени (getaddrinfo может вернуть и публичный, и
+    приватный A/AAAA для одного домена — «безопасно» = ни одного
+    непубличного среди всех вариантов, не «хотя бы один публичный»).
+    Покрывает IPv4 и IPv6, включая IPv4-in-IPv6 (``::ffff:127.0.0.1``).
+
+    DNS rebinding (резолв здесь и резолв на момент реального коннекта у
+    httpx расходятся) закрыт на стороне соединения: get_with_safe_redirects
+    подключается по адресу, резолвленному ЗДЕСЬ же (_resolve_checked), а не
+    резолвит host заново — второго resolve между проверкой и GET просто нет.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    return _resolve_checked(host) is not None
 
 # Lazy import — не ломает старт бота если пакет не установлен
 _DDGS = None
@@ -41,15 +140,86 @@ def _get_ddgs():
         return None
 
 
+def _pinned_get(client, url: str, host: str | None, ip):
+    """GET по адресу, уже прошедшему проверку в is_safe_public_url в ЭТОМ же
+    хопе (ip — из _cached_resolved_ip, тот же резолв, что и для проверки):
+    URL для соединения строится с хостом-IP, поэтому httpx второй раз имя не
+    резолвит — разрыв «проверили → пошли по сети другим адресом» (DNS
+    rebinding) закрыт тем, что резолв и соединение используют один ответ.
+    Host-заголовок и extensions["sni_hostname"] сохраняют для сервера и TLS
+    исходное имя — httpcore использует sni_hostname как server_hostname и
+    для SNI, и для проверки сертификата (httpcore._sync.connection.
+    HTTPConnection._connect, httpx/httpcore ≥0.24), так что сертификат
+    по-прежнему сверяется с именем хоста, а не с IP.
+
+    Если ip не резолвлен (is_safe_public_url подменена — тесты, реального
+    резолва не было) или client — тестовый фейк без keyword-параметров
+    headers/extensions (например ``def get(self, url)``) — коннект идёт как
+    раньше, по имени: пиннинг не применяется, только для него и нужны эти
+    параметры."""
+    if ip is None or host is None:
+        return client.get(url)
+    try:
+        params = inspect.signature(client.get).parameters
+    except (TypeError, ValueError):
+        params = {}
+    has_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    if not has_kwargs and not ("headers" in params and "extensions" in params):
+        return client.get(url)
+    pinned = httpx.URL(url).copy_with(host=str(ip))
+    return client.get(
+        str(pinned),
+        headers={"Host": host},
+        extensions={"sni_hostname": host},
+    )
+
+
+def get_with_safe_redirects(client, url: str):
+    """GET стороннего URL с SSRF-фильтром (is_safe_public_url) на исходном
+    адресе И на КАЖДОМ хопе редиректа — единственный обход цепочки в
+    проекте (fetch_page_text, computer_control._first_result_url).
+    Клиент обязан быть с follow_redirects=False — иначе httpx пройдёт
+    цепочку сам, без проверки хопов.
+
+    Каждый хоп резолвится РОВНО один раз (is_safe_public_url →
+    _resolve_checked): соединение (_pinned_get) идёт по адресу из этого же
+    резолва, а не по новому — см. _pinned_get про DNS rebinding.
+    → (ответ, финальный URL) или (None, причина отказа)."""
+    current = url
+    for _ in range(MAX_REDIRECTS + 1):
+        if not is_safe_public_url(current):
+            if current == url:
+                return None, f"адрес недоступен для загрузки: {current[:80]}"
+            return None, f"редирект на недоступный адрес: {current[:80]}"
+        host = urlparse(current).hostname
+        ip = _cached_resolved_ip(host) if host else None
+        resp = _pinned_get(client, current, host, ip)
+        if not getattr(resp, "is_redirect", False):
+            return resp, current
+        location = resp.headers.get("location")
+        if not location:
+            return resp, current  # редирект без Location — читаем как есть
+        current = str(httpx.URL(current).join(location))
+    return None, f"слишком много редиректов (>{MAX_REDIRECTS}): {url[:80]}"
+
+
 def fetch_page_text(url: str, max_len: int = MAX_PAGE_TEXT_LEN) -> str:
     """
     Загружает страницу и извлекает основной текст (без HTML-тегов, скриптов, стилей).
 
     Возвращает чистый текст длиной до max_len символов, или пустую строку при ошибке.
+
+    SSRF-фильтр (is_safe_public_url) — на исходном URL И на каждом хопе
+    редиректа: follow_redirects=True сам по себе не проверял, куда сервер
+    уводит запрос — публичная страница вполне может 302-нуть на
+    http://169.254.169.254/latest/meta-data/ или localhost:6379.
     """
+    if not is_safe_public_url(url):
+        logger.debug(f"[WEB_SEARCH] SSRF-фильтр: адрес недоступен для загрузки: {url[:80]}")
+        return ""
     try:
         with httpx.Client(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=PAGE_FETCH_TIMEOUT,
             headers={
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -59,7 +229,10 @@ def fetch_page_text(url: str, max_len: int = MAX_PAGE_TEXT_LEN) -> str:
                 "Accept-Language": "ru,en;q=0.9",
             },
         ) as client:
-            resp = client.get(url)
+            resp, why = get_with_safe_redirects(client, url)
+            if resp is None:
+                logger.debug(f"[WEB_SEARCH] SSRF-фильтр: {why}")
+                return ""
             resp.raise_for_status()
 
         html = resp.text
@@ -216,11 +389,14 @@ def _verify_translation(original: str, translated: str, router) -> bool:
     return True  # при ошибке — считаем ок
 
 
-def _enhance_query(query: str, history: list[dict] | None = None, persona_context: str | None = None) -> tuple[str, str | None]:
+def _enhance_query(query: str, history: list[dict] | None = None, persona_context: str | None = None,
+                   verify_translation: bool = False) -> tuple[str, str | None]:
     """
     Улучшает поисковый запрос через локальную LLM.
     Учитывает историю диалога и контекст персоны.
     Возвращает (ru_query, en_query или None).
+    verify_translation=False — перевод Google принимается без LLM-проверки
+    (экономит один вызов локальной модели на каждый поиск).
     """
     try:
         from app.core.query_enhancer import QueryEnhancer
@@ -237,6 +413,9 @@ def _enhance_query(query: str, history: list[dict] | None = None, persona_contex
     if not all(ord(c) < 128 for c in enhanced.replace(" ", "")):
         en_translated = _google_translate(enhanced)
         if en_translated:
+            if not verify_translation:
+                logger.info(f"[WEB_SEARCH] Перевод (Google): '{enhanced[:50]}' -> en='{en_translated[:50]}'")
+                return enhanced, en_translated
             router = get_local_router()
             if _verify_translation(enhanced, en_translated, router):
                 logger.info(f"[WEB_SEARCH] Перевод (Google+verify): '{enhanced[:50]}' -> en='{en_translated[:50]}'")
@@ -258,16 +437,24 @@ def search_web(
     en_query_override: str | None = None,
     history: list[dict] | None = None,
     persona_context: str | None = None,
+    verify_translation: bool = False,
 ) -> list[dict]:
     """
     Ищет запрос в DuckDuckGo и возвращает список результатов.
     Если enhance=True — улучшает запрос через LLM и делает дополнительный поиск на английском.
     Если en_query_override задан — использует его вместо LLM-перевода (для rewriter'а).
+    verify_translation=True — дополнительно проверяет Google-перевод локальной LLM.
     Для топ-результатов загружает полный текст страницы.
 
     Returns:
         [{"title": ..., "body": ..., "href": ..., "full_text": ...}, ...]
     """
+    # Офлайн: оба поиска + загрузка страниц заведомо мертвы — пропускаем сразу,
+    # иначе это до 25 с ожидания ответа и ERROR-спам от ddgs
+    if not internet_available():
+        logger.info(f"[WEB_SEARCH] Нет интернета — поиск пропущен: '{query[:60]}'")
+        return []
+
     DDGS = _get_ddgs()
     if DDGS is None:
         logger.error("[WEB_SEARCH] Пакет ddgs не установлен")
@@ -279,7 +466,9 @@ def search_web(
     if en_query_override:
         en_query = en_query_override
     elif enhance:
-        ru_query, en_query = _enhance_query(query, history=history, persona_context=persona_context)
+        ru_query, en_query = _enhance_query(
+            query, history=history, persona_context=persona_context,
+            verify_translation=verify_translation)
 
     def _run_search(q: str, limit: int) -> list[dict]:
         """Один поиск с фильтрацией по блэклисту."""
@@ -369,23 +558,12 @@ _PLATFORM_DOMAINS = {
     "grokipedia.com": "grokipedia", "pinterest.com": "pinterest",
 }
 
-# Падежные окончания для матчинга в резолве сайтов: «кутузовой» (запрос) и
-# «КУТУЗОВА» (заголовок страницы) должны совпадать. Срезаем окончание,
-# оставляя основу ≥ 4 символов — короче даёт слишком шумные совпадения.
-_WORD_ENDINGS = (
-    "ого", "его", "ому", "ему", "ыми", "ими", "ами", "ями",
-    "ая", "яя", "ое", "ее", "ой", "ей", "ый", "ий", "ых", "их",
-    "ом", "ем", "ам", "ям", "ах", "ях", "ов", "ев", "ью",
-    "а", "я", "у", "ю", "о", "е", "ы", "и", "ь", "s",
-)
-
-
-def _stem(word: str) -> str:
-    """Срез падежного окончания («кутузовой» → «кутузов»)."""
-    for e in _WORD_ENDINGS:
-        if word.endswith(e) and len(word) - len(e) >= 4:
-            return word[:-len(e)]
-    return word
+# _WORD_ENDINGS/_stem — алиасы на app.core.word_stem (см. импорт вверху
+# файла: таблица и сам стем теперь живут в отдельном stdlib-модуле, его же
+# без httpx/openai импортирует browser_actions). Имена оставлены прежними:
+# остальной проект (scenario_manager, computer_control, browser_history)
+# продолжает делать `from app.features.web_search import _stem` и не
+# замечает переезда.
 
 
 def _match_word(qw: str, tw: str, text_slug: str) -> bool:
@@ -420,6 +598,11 @@ def find_site_url(name: str, max_results: int = 10) -> str | None:
     example.edu/kaf/persons/98849 — искомое как раз на ней).
     Домены из _PLATFORM_DOMAINS пропускаем, если запрос их самих не называет."""
     from urllib.parse import urlparse
+    # Офлайн: резолв через DDG заведомо мёртв — сразу None (запрос уходит
+    # в LLM-путь, как при отсутствии результата)
+    if not internet_available():
+        logger.info(f"[WEB_SEARCH] Нет интернета — резолв сайта пропущен: '{name[:60]}'")
+        return None
     DDGS = _get_ddgs()
     if DDGS is None:
         logger.error("[WEB_SEARCH] Пакет ddgs не установлен")

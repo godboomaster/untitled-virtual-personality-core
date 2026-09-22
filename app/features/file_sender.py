@@ -59,12 +59,19 @@ LANG_EXTENSIONS = {
     "nginx": ".conf",
     "graphql": ".graphql",
     "proto": ".proto",
+    # Код-блок БЕЗ языкового тега (```\n...\n```, не ```python\n...\n```):
+    # раньше _extract_code_blocks его вообще не находил (\w+ требовал хотя
+    # бы один символ тега) — блок так и оставался в тексте как есть, не
+    # уходил файлом. Теперь распознаётся с lang="", и та же единая таблица
+    # даёт ему вменяемое расширение (иначе fallback f".{lang.lower()}" дал
+    # бы файл "code." — пустое расширение).
+    "": ".txt", "text": ".txt", "txt": ".txt", "plaintext": ".txt", "plain": ".txt",
 }
 
 
 def _extract_code_blocks(text: str) -> List[Tuple[str, str]]:
-    # Извлекает блоки кода с указанным языком
-    pattern = r'```(\w+)\n(.*?)```'
+    # Извлекает блоки кода — с языковым тегом (```python) и без него (```)
+    pattern = r'```(\w*)\n(.*?)```'
     matches = re.findall(pattern, text, flags=re.DOTALL)
     return [(lang.strip(), code.strip()) for lang, code in matches]
 
@@ -90,12 +97,33 @@ def _strip_code_blocks(text: str) -> str:
     return result
 
 
+def _cleanup_path(filepath: str):
+    # Удаляет файл и его временную директорию, если она опустела —
+    # единственная точка удаления, используется и cleanup_files(), и
+    # аварийной подчисткой при сбое записи/на середине prepare_response()
+    try:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        dirpath = os.path.dirname(filepath)
+        if os.path.exists(dirpath) and not os.listdir(dirpath):
+            os.rmdir(dirpath)
+    except Exception as e:
+        logger.warning(f"Не удалось удалить {filepath}: {e}")
+
+
 def _write_temp_file(content: str, filename: str) -> str:
-    # Записывает контент во временный файл
+    # Записывает контент во временный файл. Сбой посреди записи (диск полон,
+    # права и т.п.) не должен оставлять висеть пустую/битую tmp-директорию —
+    # единственная точка удаления (cleanup_files) до неё в этом случае не
+    # доберётся, т.к. prepare_response ещё не вернула список файлов.
     tmp_dir = tempfile.mkdtemp(prefix="virtp_")
     filepath = os.path.join(tmp_dir, filename)
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(content)
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+    except Exception:
+        _cleanup_path(filepath)
+        raise
     logger.info(f"Создан файл: {filepath} ({len(content)} символов)")
     return filepath
 
@@ -165,48 +193,57 @@ def prepare_response(text: str) -> Tuple[List[str], Optional[list]]:
 
     code_blocks = _extract_code_blocks(text)
     mostly_code = _is_mostly_code(text)
+    # Файлы, реально записанные на диск в этом вызове — если что-то из ЭТОГО
+    # списка не будет доведено до возврата (исключение на N-ом файле из M),
+    # первые N-1 не должны остаться висеть: cleanup_files() их никогда не
+    # увидит, раз prepare_response не вернула files (единственная точка
+    # удаления — см. _cleanup_path/cleanup_files ниже).
+    created: List[Tuple[str, str]] = []
 
-    # --- Случай 1: преимущественно код → файл ---
-    if code_blocks and mostly_code:
-        main_block = max(code_blocks, key=lambda b: len(b[1]))
-        lang, code = main_block
+    try:
+        # --- Случай 1: преимущественно код → файл ---
+        if code_blocks and mostly_code:
+            main_block = max(code_blocks, key=lambda b: len(b[1]))
+            lang, code = main_block
 
-        ext = _get_extension(lang)
-        filename = f"code{ext}"
-        filepath = _write_temp_file(code, filename)
-
-        description = _strip_code_blocks(text).strip()
-        if not description:
-            description = f"Вот код ({lang}):"
-
-        # Дополнительные файлы если несколько блоков
-        extra_files = []
-        idx = 1
-        for l, c in code_blocks:
-            if (l, c) == main_block:
-                continue
-            ext2 = _get_extension(l)
-            fn2 = f"code_{idx}{ext2}"
-            extra_files.append((_write_temp_file(c, fn2), fn2))
-            idx += 1
-
-        all_files = [(filepath, filename)] + extra_files
-        return [description], all_files
-
-    # --- Случай 2: есть код в смешанном ответе → код файлом, текст полностью ---
-    if code_blocks:
-        # Код — в файлы
-        code_files = []
-        for i, (lang, code) in enumerate(code_blocks):
             ext = _get_extension(lang)
-            fn = f"code_{i + 1}{ext}"
-            code_files.append((_write_temp_file(code, fn), fn))
+            filename = f"code{ext}"
+            filepath = _write_temp_file(code, filename)
+            created.append((filepath, filename))
 
-        # Текст без кода — несколькими сообщениями
-        text_only = _strip_code_blocks(text).strip()
-        messages = _split_text(text_only)
+            description = _strip_code_blocks(text).strip()
+            if not description:
+                description = f"Вот код ({lang}):" if lang else "Вот файл:"
 
-        return messages, code_files
+            # Дополнительные файлы если несколько блоков
+            idx = 1
+            for l, c in code_blocks:
+                if (l, c) == main_block:
+                    continue
+                ext2 = _get_extension(l)
+                fn2 = f"code_{idx}{ext2}"
+                fp2 = _write_temp_file(c, fn2)
+                created.append((fp2, fn2))
+                idx += 1
+
+            return [description], list(created)
+
+        # --- Случай 2: есть код в смешанном ответе → код файлом, текст полностью ---
+        if code_blocks:
+            for i, (lang, code) in enumerate(code_blocks):
+                ext = _get_extension(lang)
+                fn = f"code_{i + 1}{ext}"
+                fp = _write_temp_file(code, fn)
+                created.append((fp, fn))
+
+            # Текст без кода — несколькими сообщениями
+            text_only = _strip_code_blocks(text).strip()
+            messages = _split_text(text_only)
+
+            return messages, list(created)
+    except Exception:
+        cleanup_files(created)
+        raise
 
     # --- Случай 3: текст без кода → разбиваем на части если длинный ---
     messages = _split_text(text)
@@ -216,11 +253,4 @@ def prepare_response(text: str) -> Tuple[List[str], Optional[list]]:
 def cleanup_files(files: List[Tuple[str, str]]):
     # Удаляет временные файлы после отправки
     for filepath, _ in files:
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            dirpath = os.path.dirname(filepath)
-            if os.path.exists(dirpath) and not os.listdir(dirpath):
-                os.rmdir(dirpath)
-        except Exception as e:
-            logger.warning(f"Не удалось удалить {filepath}: {e}")
+        _cleanup_path(filepath)

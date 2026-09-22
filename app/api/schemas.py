@@ -4,9 +4,16 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from app.api.security import PersonaId, SafeId
+
+# id персоны в теле запроса валидируется здесь же, на входе в схему (422 при
+# нарушении формата) — до того, как строка вообще попадёт в бизнес-логику.
+# Это не отменяет проверку в runtime.get_persona_info/settings_api (там —
+# последний рубеж, на случай пути в обход pydantic), а дополняет её.
+
 
 class ChatRequest(BaseModel):
-    persona: str
+    persona: PersonaId
     message: str
     user_id: str = "web_user"
     chat_id: Optional[str] = None  # None → личный чат, буфер STM ключуется по user_id
@@ -27,12 +34,30 @@ class ChatResponse(BaseModel):
     # по нему отключает «реалистичную» паузу-дебаунс отправки — команды
     # управления должны уходить мгновенно
     control_mode: bool = False
+    # Скриншоты страницы из режима управления («что на странице?») — dataURL
+    images: list[str] = Field(default_factory=list)
+
+
+class PresenceRequest(BaseModel):
+    # Вкладка веб-чата видима и в фокусе — гейт фоновой активности бота
+    active: bool
+    # Чей именно чат открыт: гейт ключуется парой (персона, чат), иначе одна
+    # вкладка морозила фон всех персон и всех чатов, включая Telegram-чаты
+    # (см. app/core/presence.py). persona валидируется как id персоны —
+    # строка уходит в ключ контекста api_{persona}.
+    # Optional — старый фронт мог слать запрос вовсе без persona (до того,
+    # как гейт стали ключевать парой персона+чат); раньше это было 422 без
+    # объяснения на стороне фронта. Без persona запрос просто принимается
+    # (200), отметка не ставится — см. app/api/server.py: presence.
+    persona: Optional[PersonaId] = None
+    chat_id: str = "web_user"
 
 
 class PersonaInfo(BaseModel):
     id: str
     name: str
     description: str = ""
+    color: Optional[str] = None  # цвет метки персоны (общий календарь и т.п.)
     features: dict = Field(default_factory=dict)
     settings: dict = Field(default_factory=dict)
 
@@ -46,20 +71,20 @@ class HistoryMessage(BaseModel):
 
 
 class ClearChatRequest(BaseModel):
-    persona: str
+    persona: PersonaId
     chat_id: Optional[str] = None
     user_id: str = "web_user"
 
 
 class StmDeleteRequest(BaseModel):
-    persona: str
+    persona: PersonaId
     index: int  # позиция в буфере (порядок — как в /api/chat/history)
     chat_id: Optional[str] = None
     user_id: str = "web_user"
 
 
 class StmTrimRequest(BaseModel):
-    persona: str
+    persona: PersonaId
     count: int  # сколько последних сообщений удалить
     chat_id: Optional[str] = None
     user_id: str = "web_user"
@@ -101,6 +126,28 @@ class ReminderAddRequest(BaseModel):
     delay_seconds: float = 3600
     chat_id: str = "web_user"
     user_name: str = "web"
+
+
+class CalendarEntryCreate(BaseModel):
+    """Новая запись общего календаря."""
+    title: str
+    date: str  # YYYY-MM-DD
+    time: Optional[str] = None  # HH:MM
+    kind: str = "note"  # todo | reminder | note | event
+    persona: Optional[PersonaId] = None  # id персоны-владельца записи
+    user_name: str = "web"
+    note: str = ""
+
+
+class CalendarEntryUpdate(BaseModel):
+    """Патч записи календаря (все поля опциональны)."""
+    title: Optional[str] = None
+    date: Optional[str] = None
+    time: Optional[str] = None
+    kind: Optional[str] = None
+    persona: Optional[PersonaId] = None
+    note: Optional[str] = None
+    done: Optional[bool] = None
 
 
 class InventoryAddRequest(BaseModel):
@@ -166,6 +213,12 @@ class PersonaConfigUpdate(BaseModel):
     llm: Optional[PersonaLlmConfig] = None
 
 
+class TimezoneRequest(BaseModel):
+    """Часовой пояс пользователя (app/core/timeutil): IANA-имя зоны;
+    пустая строка — сброс на системный пояс машины."""
+    timezone: str = ""
+
+
 class LocationRequest(BaseModel):
     """Настройка местоположения пользователя (для окружения: время/погода).
 
@@ -179,7 +232,7 @@ class LocationRequest(BaseModel):
 
 class PersonaDraftSave(BaseModel):
     """Сохранение черновика новой персоны (id=None → создать новый)."""
-    id: Optional[str] = None
+    id: Optional[SafeId] = None
     name: str = ""
     form: dict = Field(default_factory=dict)  # непрозрачное состояние формы фронта
     yaml: str = ""  # снапшот сгенерированного YAML на момент сохранения

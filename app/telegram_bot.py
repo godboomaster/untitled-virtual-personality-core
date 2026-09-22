@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from typing import Optional
-from telegram import Update, BotCommand, InputFile
+from telegram import Update, BotCommand, InputFile, InputMediaPhoto
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -99,6 +99,74 @@ async def _reply_ai(message, text: str):
     return sent_message_ids
 
 
+async def _reply_with_photos(message, text: str, photos: list) -> list:
+    """Ответ + скриншоты режима управления одним сообщением, когда возможно:
+    первый кадр несёт текст ответа в подписи (лимит подписи Telegram —
+    1024 символа). Текст длиннее или отправка с подписью не удалась —
+    обычный путь: текст отдельно, кадры следом со своими подписями.
+    Два и больше кадров — альбомом media group (до 10 в группе, лимит
+    Telegram): текст — подписью первого кадра либо отдельным сообщением
+    перед альбомом.
+    Возвращает message_id отправленных (для reply-to логики обучения)."""
+    if photos and len(photos) >= 2:
+        html = _md_to_html(text) if text else ""
+        caption = html if html and len(html) <= 1024 else None
+        ids = []
+        if html and caption is None:
+            # Текст не влез в подпись — отдельным сообщением перед альбомом
+            ids = await _reply_ai(message, text)
+        for off in range(0, len(photos), 10):
+            chunk = photos[off:off + 10]
+            try:
+                media = []
+                for j, ph in enumerate(chunk):
+                    cap = caption if (off == 0 and j == 0) else None
+                    media.append(InputMediaPhoto(
+                        media=ph["data"], caption=cap,
+                        parse_mode="HTML" if cap else None))
+                sent = await message.reply_media_group(media=media)
+                if off == 0 and not ids:
+                    ids = [m.message_id for m in (sent or [])
+                           if getattr(m, "message_id", None)][:1]
+            except Exception as e:
+                logger.error(f"Альбом не ушёл ({e}) — кадры по одному")
+                for j, ph in enumerate(chunk):
+                    cap = caption if (off == 0 and j == 0) else None
+                    try:
+                        await message.reply_photo(
+                            photo=ph["data"], caption=cap,
+                            parse_mode="HTML" if cap else None)
+                    except Exception as e2:
+                        logger.error(f"Ошибка отправки скриншота: {e2}")
+        return ids
+    if photos and text:
+        html = _md_to_html(text)
+        if len(html) <= 1024:
+            try:
+                sent = await message.reply_photo(
+                    photo=photos[0]["data"], caption=html, parse_mode="HTML")
+                ids = [sent.message_id] \
+                    if getattr(sent, "message_id", None) else []
+                for ph in photos[1:]:  # остальные кадры (редко) — отдельно
+                    try:
+                        await message.reply_photo(
+                            photo=ph["data"], caption=ph.get("caption") or None)
+                    except Exception as e2:
+                        logger.error(f"Ошибка отправки скриншота: {e2}")
+                return ids
+            except Exception as e:
+                logger.error(f"Фото с подписью-ответом не ушло ({e}) — "
+                             "текст и кадр отдельно")
+    ids = await _reply_ai(message, text) if text else []
+    for ph in photos:
+        try:
+            await message.reply_photo(photo=ph["data"],
+                                      caption=ph.get("caption") or None)
+        except Exception as e:
+            logger.error(f"Ошибка отправки скриншота: {e}")
+    return ids
+
+
 async def _send_split_parts(bot, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> list:
     """Досылка расщеплённого ответа (settings.split_messages): хвост частей,
     оставшийся от process_message/command_reply в pending-бакете, уходит
@@ -114,6 +182,22 @@ async def _send_split_parts(bot, update: Update, context: ContextTypes.DEFAULT_T
         except Exception as e:
             logger.error(f"Ошибка досылки части расщеплённого ответа: {e}")
     return sent_ids
+
+
+async def _gate_update(bot: BotInstance, message, user_id: str, is_private: bool,
+                       text: str) -> bool:
+    """Общий pre_check-гейт для ЛЮБОГО входящего апдейта (текст/фото/документ/
+    будущие хендлеры) — blocked_users/allowed_dm_users/punish/rate_limit/
+    moderation. Раньше pre_check вызывался только из handle_message, и фото/
+    документ обходили блокировки и allowlist ЛС. text — то, что реально пишет
+    пользователь (для фото/документа — подпись caption, а не распознанный
+    контент). True — апдейт заблокирован, обработчик должен прекратить работу."""
+    check = await asyncio.to_thread(bot.pre_check, user_id, text, is_private)
+    if not check:
+        return False
+    if check == "MODERATION_BLOCKED":
+        await _reply_ai(message, "*Удар молнии.* Сеанс окончен.")
+    return True
 
 
 # ─── Создание handlers для конкретного BotInstance ────────
@@ -195,7 +279,7 @@ def create_handlers(bot: BotInstance) -> dict:
                 "⏰ Напоминания",
                 "/remind <что> [через N …] — напомнить",
                 "/reminders — активные напоминания",
-                "/cancel_reminder N — отменить №N",
+                "/cancel_reminder <id> — отменить (id из /reminders; можно номер)",
                 "Или просто: «напомни через час …».",
             ]
         if bot.inventory_manager:
@@ -406,7 +490,6 @@ def create_handlers(bot: BotInstance) -> dict:
         if not active:
             await update.message.reply_text("Активных напоминаний нет.")
             return
-        from datetime import datetime
         from app.features.reminder_manager import format_schedule
         lines = ["Активные напоминания:"]
         for i, r in enumerate(active):
@@ -419,27 +502,41 @@ def create_handlers(bot: BotInstance) -> dict:
                 remain = r["trigger_at"] - time.time()
                 mins = int(remain / 60)
                 when = f"через {mins} мин" if mins > 0 else f"через {int(remain)} сек"
-            lines.append(f"{i + 1}. {task}{author_text} — {when}")
+            # id рядом с номером: номер живёт только до следующего изменения
+            # списка, id — вместе с напоминанием (см. parse_reminder_ref)
+            lines.append(f"{i + 1}. [{r.get('id') or '—'}] {task}{author_text} — {when}")
         lines.append("")
-        lines.append("Чтобы отменить: /cancel_reminder N")
+        lines.append("Чтобы отменить: /cancel_reminder <id> (например "
+                     f"/cancel_reminder {active[0].get('id') or 'r1a2b3'}) "
+                     "или номер из списка")
         await update.message.reply_text("\n".join(lines))
 
     async def cancel_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.reminder_manager:
             return
         chat_id = str(update.effective_chat.id)
+        from app.features.reminder_manager import parse_reminder_ref
         if not context.args:
-            await update.message.reply_text("Использование: /cancel_reminder N (номер из /reminders)")
+            await update.message.reply_text(
+                "Использование: /cancel_reminder <id> (id из /reminders, "
+                "например r1a2b3) или номер строки списка")
             return
-        try:
-            idx = int(context.args[0]) - 1
-        except ValueError:
-            await update.message.reply_text("Нужно число — номер напоминания из /reminders.")
+        ref = parse_reminder_ref(context.args[0])
+        if ref is None:
+            await update.message.reply_text(
+                "Не понял, что отменить: нужен id из /reminders (например "
+                "r1a2b3) или номер строки.")
             return
-        if bot.reminder_manager.cancel_reminder(chat_id, idx):
-            await update.message.reply_text("Напоминание отменено.")
+        removed = bot.reminder_manager.cancel_by_ref(chat_id, ref[1])
+        if removed:
+            # Называем задачу и id: если номер указывал не на то (список
+            # успел измениться), это сразу видно
+            task = removed.get("task") or "без описания"
+            await update.message.reply_text(
+                f"Отменено: «{task}» [{removed.get('id') or '—'}].")
         else:
-            await update.message.reply_text("Напоминание с таким номером не найдено.")
+            await update.message.reply_text(
+                "Такого напоминания нет — посмотри /reminders.")
 
     async def inventory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.inventory_manager:
@@ -558,9 +655,11 @@ def create_handlers(bot: BotInstance) -> dict:
         is_private = update.effective_chat.type == "private"
         is_addressed_to_bot = is_reply_to_bot or bot.should_respond(text) or is_private
         if is_addressed_to_bot:
-            bot.record_activity(chat_id)
-            # Утреннее приветствие rhythm: первое появление пользователя днём
-            bot.note_presence(chat_id)
+            # on_user_message = note_presence (нужен разрыв ДО обновления
+            # активности) + record_activity, в этом порядке гарантированно —
+            # см. docstring on_user_message про то, почему раздельные вызовы
+            # в обратном порядке ломали утреннее приветствие rhythm.
+            bot.on_user_message(chat_id)
 
         # Trigger
         if not bot.should_respond(text) and not is_reply_to_bot:
@@ -570,10 +669,7 @@ def create_handlers(bot: BotInstance) -> dict:
         # чаты не ждут LLM, но два сообщения одного чата не перехлёстываются.
         async with _chat_lock(chat_id):
             # Pre-check (rate limit, moderation, punish) — в потоке, т.к. модерация делает синхронный HTTP-запрос
-            check = await asyncio.to_thread(bot.pre_check, user_id, text, is_private)
-            if check:
-                if check == "MODERATION_BLOCKED":
-                    await _reply_ai(update.message, "*Удар молнии.* Сеанс окончен.")
+            if await _gate_update(bot, update.message, user_id, is_private, text):
                 return
 
             # Strip trigger
@@ -603,7 +699,11 @@ def create_handlers(bot: BotInstance) -> dict:
                     reply_to_bot_message_id=reply_to_bot_message_id
                 )
                 logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
-                sent_ids = await _reply_ai(update.message, response)
+                # Скриншоты режима управления уезжают ВМЕСТЕ с ответом:
+                # первый кадр несёт текст в подписи (одно сообщение вместо
+                # «текст, следом фото»); не влезло в подпись — как раньше
+                photos = bot.pop_pending_photos(chat_id)
+                sent_ids = await _reply_with_photos(update.message, response, photos)
                 # Хвост расщеплённого ответа — отдельными сообщениями следом
                 sent_ids += await _send_split_parts(bot, update, context, chat_id)
 
@@ -646,6 +746,13 @@ def create_handlers(bot: BotInstance) -> dict:
         user = update.effective_user
         user_id = str(user.id)
         chat_id = str(update.effective_chat.id)
+        is_private = update.effective_chat.type == "private"
+        # Тот же гейт, что и у текстовых сообщений: blocked_users/allowlist ЛС/
+        # rate_limit/moderation раньше не проверялись для файлов — подпись
+        # (caption) вместо текста, содержимое файла в проверку не идёт
+        if await _gate_update(bot, update.message, user_id, is_private, caption):
+            return
+
         document = update.message.document
         # Telegram не гарантирует имя файла у документа
         filename = document.file_name or f"document_{document.file_unique_id}"
@@ -688,10 +795,16 @@ def create_handlers(bot: BotInstance) -> dict:
                 response = await asyncio.to_thread(
                     bot.process_message, message_with_file,
                     user_id=user_id, chat_id=chat_id,
-                    user_name=user_tag
+                    user_name=user_tag,
+                    # Подтверждение pending-действия (computer_control) должно
+                    # смотреть только на то, что пользователь реально написал в
+                    # подписи, а не на извлечённый из файла текст — иначе «да»
+                    # где-то в содержимом документа подтверждало бы клик/shell
+                    raw_user_text=caption_clean,
                 )
                 logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на файл получен ({len(response)} символов)")
-                await _reply_ai(update.message, response)
+                photos = bot.pop_pending_photos(chat_id)
+                await _reply_with_photos(update.message, response, photos)
                 await _send_split_parts(bot, update, context, chat_id)
             except Exception as e:
                 logger.error(f"[{persona_name}] Ошибка файла: {e}", exc_info=True)
@@ -714,6 +827,11 @@ def create_handlers(bot: BotInstance) -> dict:
         user = update.effective_user
         user_id = str(user.id)
         chat_id = str(update.effective_chat.id)
+        is_private = update.effective_chat.type == "private"
+        # Тот же гейт, что и у текстовых сообщений/документов — до скачивания
+        # и OCR, чтобы заблокированный/лимитированный не тратил ресурсы бота
+        if await _gate_update(bot, update.message, user_id, is_private, caption):
+            return
 
         photo = update.message.photo[-1]  # самый большой из предложенных размеров
         file = await context.bot.get_file(photo.file_id)
@@ -752,10 +870,14 @@ def create_handlers(bot: BotInstance) -> dict:
                 response = await asyncio.to_thread(
                     bot.process_message, message_with_image,
                     user_id=user_id, chat_id=chat_id,
-                    user_name=user_tag
+                    user_name=user_tag,
+                    # См. handle_document: подтверждение pending-действия — только
+                    # по подписи, OCR-текст изображения в неё не подмешивается
+                    raw_user_text=caption_clean,
                 )
                 logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на изображение получен ({len(response)} символов)")
-                await _reply_ai(update.message, response)
+                photos = bot.pop_pending_photos(chat_id)
+                await _reply_with_photos(update.message, response, photos)
                 await _send_split_parts(bot, update, context, chat_id)
             except Exception as e:
                 logger.error(f"[{persona_name}] Ошибка обработки изображения: {e}", exc_info=True)

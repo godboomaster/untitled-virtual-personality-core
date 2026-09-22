@@ -30,12 +30,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from app.core.bounded_cache import BoundedCache
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.persona_context import PersonaContextLayer
 from app.core.state_engine import StateEngine, INITIATIVE_THRESHOLD
 from app.core.world_engine import WorldEngine
 from app.core.offline_summarizer import OfflineSummarizer
+from app.core.presence import web_presence
+from app.core import timeutil
 from app.core.relationship import RelationshipMemory
 from app.core.language import detect_dialogue_language
 
@@ -54,6 +57,11 @@ INACTIVE_TICK_FACTOR = 6
 # или по таймеру HARVEST_INTERVAL_SEC (что раньше)
 HARVEST_INTERVAL_SEC = 600
 HARVEST_MIN_MESSAGES = 10
+
+# Сколько чатов держать в оперативных per-chat кешах движка жизни (LRU):
+# язык пользователя и планировщик урожая. Столько же, сколько буферов STM
+# (app/core/memory.py MAX_CACHED_CHATS) — по смыслу это те же живые чаты.
+MAX_CHAT_KEYS = 200
 
 # Офлайн-событие мира не генерируется посреди активного диалога (§4.3):
 # «за последние часы случилось» не должно падать в разгар переписки —
@@ -224,11 +232,15 @@ class LivingPersona:
         # Последний язык пользователя по чату ('ru'/'en'): дневник/тезисы
         # офлайн-жизни пишутся на нём. Обновляется в on_user_message —
         # суммаризатор своего доступа к STM не имеет.
-        self._chat_user_lang: Dict[str, str] = {}
+        # Здесь и ниже — BoundedCache, а не вечный dict: ключ это каждый чат,
+        # куда персону когда-либо добавляли, а процесс живёт неделями.
+        # Вытеснение безобидно: язык определится заново на следующем
+        # сообщении, счётчик урожая обнулится (урожай случится чуть позже).
+        self._chat_user_lang = BoundedCache(max_entries=MAX_CHAT_KEYS)
         # Планировщик урожая диалога: chat_id -> ts последнего вызова /
         # сообщений пользователя с последнего вызова
-        self._harvest_at: Dict[str, float] = {}
-        self._harvest_msgs: Dict[str, int] = {}
+        self._harvest_at = BoundedCache(max_entries=MAX_CHAT_KEYS)
+        self._harvest_msgs = BoundedCache(max_entries=MAX_CHAT_KEYS)
 
         self.persona_context_layer = PersonaContextLayer(
             context, router,
@@ -349,6 +361,10 @@ class LivingPersona:
         self._harvest_msgs[cid] = msgs_n
         last = self._harvest_at.get(cid, 0.0)
         now = time.time()
+        # Веб-вкладка ЭТОГО чата активна — локальный вызов ждёт: счётчики
+        # копятся, урожай случится по первому сообщению в неактивности
+        if web_presence.is_active(self.context, cid):
+            return
         if msgs_n >= HARVEST_MIN_MESSAGES or (msgs_n >= 1 and now - last >= HARVEST_INTERVAL_SEC):
             self._harvest_msgs[cid] = 0
             self._harvest_at[cid] = now
@@ -571,7 +587,8 @@ class LivingPersona:
         """Снапшот счётчиков движков в metrics_log.jsonl раз в день (§9):
         in-memory метрики обнуляются рестартом, а вопрос «работает ли жизнь
         и не спамит ли локальную модель» должен отвечаться задним числом."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        # Граница суток — по времени пользователя (TIMEZONE), не по поясу машины
+        today = timeutil.now().strftime("%Y-%m-%d")
         if self._metrics_saved_day == today:
             return
         self._metrics_saved_day = today
@@ -581,7 +598,7 @@ class LivingPersona:
             path.parent.mkdir(parents=True, exist_ok=True)
             record = {
                 "date": today,
-                "ts": datetime.now().isoformat(timespec="seconds"),
+                "ts": timeutil.now().isoformat(timespec="seconds"),
                 "living": dict(self.metrics),
                 "state_engine": dict(self.state_engine.stats),
                 "world_engine": dict(self.world_engine.stats),
@@ -682,6 +699,14 @@ class LivingPersona:
         Возвращает сигналы инициативы [(chat_id, score, reason)] — их
         планированием на loop занимается асинхронный _loop()."""
         signals: List[tuple] = []
+        # Присутствие — по чатам, а не «по персоне целиком»: чат с открытой
+        # веб-вкладкой пропускается ниже в цикле (вместе с его суммаризацией
+        # и скорингом инициативы), остальные чаты той же персоны и все её
+        # Telegram-чаты тикают как обычно. any_active — только для двух
+        # операций уровня персоны, которые по чатам не делятся (внешние
+        # стимулы мира и сценарист): их нельзя выполнить «для одного чата»,
+        # и это тяжёлые вызовы модели — при живом пользователе ждём.
+        persona_busy = web_presence.any_active(self.context)
         pc = self.persona_context()
         chats = self._known_chats()
         if not chats:
@@ -690,12 +715,17 @@ class LivingPersona:
 
         # Внешние стимулы: 1 раз/1-3 дня, жёсткий gate по world_binding (§5)
         fetch_stimulus = False
-        if (self.config.world_enabled and self.world_engine.should_fetch_stimuli()
+        if (not persona_busy and self.config.world_enabled
+                and self.world_engine.should_fetch_stimuli()
                 and self.external_stimuli_allowed()):
             fetch_stimulus = True
 
         active_chats = []
         for chat_id in chats:
+            # Пользователь сидит в веб-вкладке этого чата — тик (и вся его
+            # побочка: суммаризация, скоринг инициативы) ждёт, пока он уйдёт
+            if web_presence.is_active(self.context, chat_id):
+                continue
             if self._chat_throttled(chat_id):
                 self.metrics["ticks_throttled"] += 1
                 continue
@@ -725,8 +755,9 @@ class LivingPersona:
         # Сценарист: раз в 1-2 недели (§6). Метрика — только реальные прогоны
         # (продвинул хотя бы одну линию), иначе счётчик врал о пустых запусках
         try:
-            if self.config.world_enabled and self.summarizer.should_run_screenwriter(
-                    self.world_engine):
+            if (not persona_busy and self.config.world_enabled
+                    and self.summarizer.should_run_screenwriter(
+                        self.world_engine)):
                 advanced = self.summarizer.advance_storylines(
                     self.persona, self.world_engine)
                 if advanced:

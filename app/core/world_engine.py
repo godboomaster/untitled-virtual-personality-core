@@ -33,6 +33,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.core import timeutil
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.persona_context import _extract_json
@@ -411,6 +412,7 @@ class WorldEngine:
                     temperature=0.1,
                     max_tokens=700,
                     timeout=60.0,
+                    webchat_channel="side",
                 )
                 raw = _extract_json(response or "")
             except Exception as e:
@@ -429,6 +431,7 @@ class WorldEngine:
                     temperature=0.7,
                     max_tokens=300,
                     timeout=45.0,
+                    webchat_channel="side",
                 )
                 extra = _extract_json(response or "")
                 if extra and extra.get("storylines"):
@@ -505,6 +508,7 @@ class WorldEngine:
                 temperature=0.7,
                 max_tokens=300,
                 timeout=45.0,
+                webchat_channel="side",
             )
             data = _extract_json(response or "")
             with self._lock:
@@ -656,7 +660,7 @@ class WorldEngine:
         if not self.local.is_available(task="world_engine"):
             return None
         try:
-            hour = datetime.now().hour
+            hour = timeutil.now().hour
             daytime = ("утро" if 5 <= hour < 12 else "день" if 12 <= hour < 18
                        else "вечер" if 18 <= hour < 23 else "ночь")
 
@@ -699,7 +703,7 @@ class WorldEngine:
                     journal = self._world.get("event_journal", {}).get(str(chat_id), [])
                     recent_events = "; ".join(journal[-3:]) or "(нет)"
                     plans = "; ".join(
-                        f"{p['title']} (к {datetime.fromtimestamp(p['due_at']).strftime('%d.%m %H:%M')})"
+                        f"{p['title']} (к {timeutil.from_ts(p['due_at']).strftime('%d.%m %H:%M')})"
                         for p in self._world["plans"]
                         if p.get("status") == "pending" and p.get("due_at")) or "(нет)"
 

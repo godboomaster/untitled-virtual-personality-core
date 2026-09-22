@@ -324,6 +324,7 @@ class PersonaContextLayer:
                     temperature=0.1,
                     max_tokens=900,
                     timeout=60.0,
+                    webchat_channel="side",
                 )
                 raw = _extract_json(response or "")
             except Exception as e:

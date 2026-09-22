@@ -229,6 +229,14 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
             await app.shutdown()
         loop.run_until_complete(_stop())
         loop.close()
+        # Гасим Chrome бота последним (менеджеры в stop() могут ещё
+        # дёргать webchat): иначе он жил после выхода — окно и вкладки
+        # веб-чатов грузили систему бессрочно
+        try:
+            from app.features import browser_actions as ba
+            ba.shutdown_browser()
+        except Exception:
+            pass
 
 
 def run_api():

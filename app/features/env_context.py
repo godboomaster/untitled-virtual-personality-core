@@ -11,17 +11,25 @@ Geocoding, обратный геокодинг (geo-режим) — Nominatim (O
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
 
+from app.core import timeutil
+from app.core.atomic_io import atomic_write_text, load_json_safe
+
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).parent.parent.parent / "data" / "env_location.json"
 _CACHE_TTL = 30 * 60  # погода обновляется не чаще раза в полчаса
 _cache: dict = {"key": None, "ts": 0.0, "line": None}
+# Файл общий на процесс (не per-context) — сериализуем чтение/запись, иначе
+# одновременные set_manual_city/set_geo/set_off (веб-настройки) чередуют
+# запись и теряют друг друга.
+_LOCATION_LOCK = threading.Lock()
 
 _TIMEOUT = httpx.Timeout(8.0, connect=5.0)
 
@@ -44,15 +52,14 @@ _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 
 def load_location() -> dict:
     """Текущий конфиг местоположения. По умолчанию — выключено."""
-    try:
-        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {"mode": "off"}
+    with _LOCATION_LOCK:
+        data = load_json_safe(_CONFIG_PATH, default={"mode": "off"}, label="Env")
+    return data if isinstance(data, dict) else {"mode": "off"}
 
 
 def save_location(cfg: dict) -> dict:
-    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    with _LOCATION_LOCK:
+        atomic_write_text(_CONFIG_PATH, json.dumps(cfg, ensure_ascii=False, indent=2))
     _cache.update(key=None, ts=0.0, line=None)  # сброс кеша — конфиг изменился
     logger.info(f"[Env] Местоположение сохранено: {cfg}")
     return cfg
@@ -225,13 +232,15 @@ def fetch_forecast(cfg: dict, hours: int = 12) -> dict | None:
 def get_env_line() -> str | None:
     """Строка окружения для системного промпта.
 
-    Местоположение выключено — всё равно отдаём текущие дату/время сервера
-    (запуск локальный, время сервера = время устройства пользователя): без этого
-    персоны не знают который час и отвечают «не знаю». С местоположением —
-    добавляется погода (сеть не чаще раза в 30 минут).
+    Местоположение выключено — всё равно отдаём текущие дату/время пользователя
+    (app.core.timeutil: пояс TIMEZONE, без него — системный локальный, как
+    раньше): без этого персоны не знают который час и отвечают «не знаю».
+    С местоположением — добавляется погода (сеть не чаще раза в 30 минут).
     """
     cfg = load_location()
-    now = datetime.now()
+    # Дата/время пользователя (пояс TIMEZONE, app.core.timeutil), а не
+    # системный пояс процесса: эта строка идёт в промпт как «который час»
+    now = timeutil.now()
     time_line = f"{_WEEKDAYS[now.weekday()]}, {now:%d.%m.%Y, %H:%M}"
     if cfg.get("mode") not in ("manual", "geo") or "lat" not in cfg:
         return time_line

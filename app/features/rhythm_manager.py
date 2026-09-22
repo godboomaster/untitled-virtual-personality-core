@@ -19,7 +19,6 @@
 """
 
 import asyncio
-import json
 import logging
 import re
 import threading
@@ -29,6 +28,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.core import timeutil
+from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import detect_dialogue_language, language_name
 from app.features.env_context import _WMO_DESC, fetch_forecast, is_precip_code, load_location
 
@@ -36,7 +37,12 @@ logger = logging.getLogger(__name__)
 
 _TICK_SECONDS = 60          # шаг фонового цикла
 _WAKE_DRIFT_SECONDS = 300   # wall-clock минус monotonic ≥ 5 минут → машина спала
-_NIGHT_WINDOW_HOURS = 2     # окно срабатывания ночного nudge после bedtime_hour
+# Окно срабатывания ночного nudge после bedtime_hour — в секундах, не часах:
+# сравнение целых now.hour со целыми _NIGHT_WINDOW_HOURS (было int(hours_past)
+# > 2) на деле давало окно 00:00–02:59 (три часа) вместо документированных
+# двух — усечение минут при переходе на целые часы каждый раз добавляло
+# почти целый лишний час.
+_NIGHT_WINDOW_SECONDS = 2 * 3600
 _PRESENCE_THROTTLE = 30.0   # note_presence обрабатывается не чаще раза в 30 с на чат
 # Кулдауны погодных алертов (от последнего отправленного алерта этого типа)
 _WEATHER_COOLDOWN = {"rain": 6 * 3600, "storm": 6 * 3600, "temp": 12 * 3600}
@@ -219,31 +225,15 @@ class RhythmManager:
     # ── persistence ──
 
     def _load(self):
-        if self._file.exists():
-            try:
-                data = json.loads(self._file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    self._state = {"chats": data.get("chats") or {},
-                                   "weather": data.get("weather") or {}}
-            except Exception as e:
-                logger.warning(f"[Rhythm] Не удалось загрузить состояние: {e}")
+        data = load_json_safe(self._file, default=None, label="Rhythm")
+        if isinstance(data, dict):
+            self._state = {"chats": data.get("chats") or {},
+                           "weather": data.get("weather") or {}}
 
     def _save(self):
-        """Атомарная запись (как reminders): temp-файл + rename."""
-        import os
-        import tempfile
+        """Атомарная запись (общий helper app.core.atomic_io — tmp-файл + os.replace)."""
         try:
-            payload = json.dumps(self._state, ensure_ascii=False, indent=2)
-            fd, tmp_path = tempfile.mkstemp(dir=str(self._base_dir), suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(payload)
-                os.replace(tmp_path, self._file)
-            except Exception:
-                try:
-                    Path(tmp_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
+            atomic_write_json(self._file, self._state)
         except Exception as e:
             logger.warning(f"[Rhythm] Не удалось сохранить состояние: {e}")
 
@@ -290,6 +280,11 @@ class RhythmManager:
         return ts
 
     # ── решения (чистые, для тестов) ──
+    # Во все решения `now` приходит из app.core.timeutil.now() — стенные
+    # часы ПОЛЬЗОВАТЕЛЯ (пояс TIMEZONE), naive. Перевод в epoch — только
+    # timeutil.to_ts(now): у naive-datetime .timestamp() трактует его как
+    # системный пояс процесса, и на сервере в UTC сравнение с last_seen
+    # (реальный epoch) уезжало бы на разницу поясов.
 
     def _should_morning_greet(self, chat_state: dict, now: datetime, last_seen: float) -> bool:
         m = self.config.morning
@@ -299,7 +294,7 @@ class RhythmManager:
             return False
         if chat_state.get("morning_date") == now.date().isoformat():
             return False
-        if last_seen <= 0 or now.timestamp() - last_seen < m.min_gap_hours * 3600:
+        if last_seen <= 0 or timeutil.to_ts(now) - last_seen < m.min_gap_hours * 3600:
             return False
         return True
 
@@ -307,12 +302,21 @@ class RhythmManager:
         s = self.config.sleep
         if not (self.config.enabled and s.enabled):
             return False
-        hours_past = (now.hour - s.bedtime_hour) % 24
-        if hours_past > _NIGHT_WINDOW_HOURS:
+        # Точное время bedtime сегодня (или вчера, если оно ещё не наступило
+        # по календарной дате now) — секунды, а не усечённые целые часы:
+        # сравнение now.hour (int) со целым окном ошибочно расширяло окно
+        # почти на час (00:47 после bedtime=0 давало hours_past=0, как и
+        # 00:01 — реальная разница пряталась усечением до целого часа).
+        bedtime_today = now.replace(hour=s.bedtime_hour % 24, minute=0,
+                                    second=0, microsecond=0)
+        if bedtime_today > now:
+            bedtime_today -= timedelta(days=1)
+        seconds_past = (now - bedtime_today).total_seconds()
+        if not (0 <= seconds_past <= _NIGHT_WINDOW_SECONDS):
             return False
         if chat_state.get("night_key") == self._night_key(now, s.bedtime_hour):
             return False
-        if last_seen <= 0 or now.timestamp() - last_seen > s.active_within_minutes * 60:
+        if last_seen <= 0 or timeutil.to_ts(now) - last_seen > s.active_within_minutes * 60:
             return False
         return True
 
@@ -324,9 +328,14 @@ class RhythmManager:
 
     def _weather_alert(self, forecast: dict, wstate: dict, now: datetime):
         """Решение по прогнозу → (kind, facts) или None. kind: storm|rain|temp.
-        wstate — снапшот состояния погоды (кулдауны)."""
+        wstate — снапшот состояния погоды (кулдауны).
+
+        Времена прогноза (h["time"]) — naive-часы ТОЧКИ локации
+        (Open-Meteo с timezone=auto), now — naive-часы пользователя:
+        сравниваем как раньше, исходя из того, что локация настроена
+        там, где живёт пользователь."""
         w = self.config.weather
-        now_ts = now.timestamp()
+        now_ts = timeutil.to_ts(now)
 
         def _cooldown_ok(kind: str) -> bool:
             last = (wstate.get(kind) or {}).get("ts", 0)
@@ -413,7 +422,11 @@ class RhythmManager:
             )},
             {"role": "user", "content": user_content},
         ]
-        response = self._router.get_response(messages, temperature=0.7, max_tokens=200, top_p=0.9)
+        # Канал «proactive»: фон не делит инстанс/лок с ответом пользователю
+        # (main) — иначе зависший rhythm блокировал диалог (кейс 19.09)
+        response = self._router.get_response(messages, temperature=0.7,
+                                             max_tokens=200, top_p=0.9,
+                                             webchat_channel="proactive")
         if not response or len(response.strip()) < 5:
             return None
         return _strip_markdown(response.strip())
@@ -535,7 +548,7 @@ class RhythmManager:
         now_ts = time.time()
         if now_ts - self._presence_ts.get(chat_id, 0.0) < _PRESENCE_THROTTLE:
             return
-        now = datetime.now()
+        now = timeutil.now()
         # Решение — ДО обновления presence-метки, иначе пауза «нового дня» обнулится
         seen = self._last_seen(chat_id)
         if self._should_morning_greet(self._chat_state(chat_id), now, seen):
@@ -605,7 +618,7 @@ class RhythmManager:
             drift = (time.time() - wall_before) - (time.monotonic() - mono_before)
             woke = drift >= _WAKE_DRIFT_SECONDS
             try:
-                now = datetime.now()
+                now = timeutil.now()
                 if woke:
                     self._on_wake(now, drift / 60.0)
                 self._check_night(now)

@@ -3,18 +3,27 @@
 Пользователь просит напомнить через N времени — бот пишет через N минут.
 Хранит напоминания в data/{context}/reminders.json.
 Фоновый цикл каждые 30с проверяет наступившие и шлёт через sender.
+
+У каждого напоминания есть стабильный id («r» + hex): список показывает его,
+отмена идёт по нему (см. parse_reminder_ref / cancel_by_ref) — номер строки
+списка указывает не на то, если список изменился между показом и командой.
+
+Время — часы ПОЛЬЗОВАТЕЛЯ: единый источник app.core.timeutil (пояс TIMEZONE),
+epoch ↔ стенные часы только через timeutil.to_ts/from_ts.
 """
 
 import asyncio
-import json
 import logging
 import re
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict
 
+from app.core import timeutil
+from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import detect_language, detect_dialogue_language, language_name
 
 logger = logging.getLogger(__name__)
@@ -155,20 +164,33 @@ _ABS_HM_RE = re.compile(
 _ABS_HOUR_RE = re.compile(
     rf"\b{_ABS_PREPOSITIONS}\s+(\d{{1,2}})\s*({_AMPM})\b(?!\s*:\s*\d)", re.IGNORECASE)
 
-_ABS_WORD_TIME = {
-    "полдень": 12.0,
-    "полудня": 12.0,
-    "полудню": 12.0,
-    "полуночь": 24.0,
-    "полуночи": 24.0,
-    "полуночу": 24.0,
+# Единая таблица словесных «круглых» времён — источник для _ABS_WORD_TIME,
+# _ABS_WORD_TIME_EN и _POSTPONE_ABS_WORDS (было три независимых списка,
+# из-за чего у одной и той же расшифровки разъезжались опечатки и час:
+# здесь была опечатка "полуночь" вместо "полночь" — «напомни в полночь» не
+# находило совпадения ни по одному ключу, и полночь по-русски хранилась как
+# 24.0 час, а по-английски midnight — как 0.0, хотя это один и тот же
+# момент; consumers (_absolute_to_delay/_next_occurrence/postpone) должны
+# были помнить оба варианта. Здесь полночь везде — 0 (см. _normalize_hour).
+_ROUND_TIME_WORDS = {
+    "полдень": 12, "полудня": 12, "полудню": 12,
+    "полночь": 0, "полуночи": 0,
 }
+_ROUND_TIME_WORDS_EN = {
+    "noon": 12,
+    "midnight": 0,
+}
+_ABS_WORD_TIME = {w: float(h) for w, h in _ROUND_TIME_WORDS.items()}
 
 # Словесные формы абсолютного времени (англ.)
-_ABS_WORD_TIME_EN = {
-    "noon": 12.0,
-    "midnight": 0.0,
-}
+_ABS_WORD_TIME_EN = {w: float(h) for w, h in _ROUND_TIME_WORDS_EN.items()}
+
+
+def _normalize_hour(hour: float) -> int:
+    """Час к диапазону [0, 24): «полночь»/24:00 и 0:00 — один и тот же час,
+    единый нормализатор, чтобы _absolute_to_delay/_delay_until/parse_recurring
+    не расходились в трактовке «конца суток» каждый по-своему."""
+    return int(hour) % 24
 
 
 def _apply_ampm(hour: int, ampm: Optional[str]) -> int:
@@ -218,11 +240,11 @@ def _parse_absolute_time(text: str) -> Optional[tuple]:
 
 
 def _absolute_to_delay(hour: float, minute: int) -> Optional[float]:
-    """Вычисляет задержку от текущего времени до указанного. В секундах."""
-    from datetime import datetime
-
-    now = datetime.now()
-    target_hour = int(hour) % 24
+    """Вычисляет задержку от текущего времени до указанного. В секундах.
+    «Текущее» — время пользователя (app.core.timeutil, пояс TIMEZONE), а не
+    системный пояс процесса: «напомни в 9» — это 9 утра у человека."""
+    now = timeutil.now()
+    target_hour = _normalize_hour(hour)
     target_minute = minute
 
     # Вычисляем разницу в секундах
@@ -241,6 +263,181 @@ def _absolute_to_delay(hour: float, minute: int) -> Optional[float]:
     return float(delay)
 
 
+# ─── День и часть суток ────────────────────────────────────
+# «завтра», «послезавтра», «tomorrow», «утром», «в 8 вечера»,
+# «tomorrow morning at 8» — частые ответы на уточняющий «когда напомнить?».
+
+# День-офсет: послезавтра → +2, завтра → +1, сегодня → 0 (последнее — чтобы
+# слово «сегодня» вырезалось из текста задачи, а не слипалось с ней)
+_DAY_OFFSET_RES = [
+    (re.compile(r"\bпослезавтра\b|\bпосле\s+завтра\b|\bday\s+after\s+tomorrow\b", re.IGNORECASE), 2),
+    (re.compile(r"\bзавтра\b|\btomorrow\b", re.IGNORECASE), 1),
+    (re.compile(r"\bсегодня\b|\btoday\b", re.IGNORECASE), 0),
+]
+
+# Standalone части суток → вид (для часа по умолчанию и поправки явного)
+_DAYPART_RES = [
+    (re.compile(r"\bутром\b", re.IGNORECASE), "am"),
+    (re.compile(r"\bднём\b", re.IGNORECASE), "day"),
+    (re.compile(r"\bвечером\b", re.IGNORECASE), "evening"),
+    (re.compile(r"\bночью\b", re.IGNORECASE), "night"),
+    (re.compile(r"\b(?:in\s+the\s+|at\s+)?morning\b", re.IGNORECASE), "am"),
+    (re.compile(r"\b(?:in\s+the\s+|at\s+)?afternoon\b", re.IGNORECASE), "day"),
+    (re.compile(r"\b(?:in\s+the\s+|at\s+)?evening\b", re.IGNORECASE), "evening"),
+    (re.compile(r"\b(?:at\s+)?night\b", re.IGNORECASE), "night"),
+    (re.compile(r"\btonight\b", re.IGNORECASE), "night"),
+]
+
+# Час + родительный падеж части суток: «в 8 вечера», «8 утра», «в 8:30 вечера».
+# У часовой формы — lookbehind: «8:30 вечера» не должно матчиться как «30 вечера».
+_HOUR_MIN_DAYPART_RE = re.compile(
+    r"\b(\d{1,2})[:.](\d{2})\s*(утра|дня|вечера|ночи)\b", re.IGNORECASE)
+_HOUR_DAYPART_RE = re.compile(
+    r"(?<![:.\d])\b(\d{1,2})\s*(утра|дня|вечера|ночи)\b", re.IGNORECASE)
+
+_DAYPART_DEFAULT_HOUR = {"am": 9, "day": 15, "evening": 19, "night": 23}
+_HOUR_GEN_TO_KIND = {"утра": "am", "дня": "day", "вечера": "evening", "ночи": "night"}
+
+# Приветствия перед частью суток — не время напоминания («good morning, remind me…»)
+_DAYPART_GREETING_PREFIXES = ("good ", "добр")
+
+
+def _adjust_hour_by_daypart(hour: float, kind: str) -> float:
+    """Уточняет явный час по части суток: «8 вечера» → 20, «2 дня» → 14,
+    «12 ночи» → 0, «8 утра» → 8."""
+    h = _normalize_hour(hour)
+    if kind in ("day", "evening"):
+        return float(h + 12) if h < 12 else float(h)
+    if kind == "night":
+        if h == 12:
+            return 0.0
+        if 6 <= h < 12:
+            return float(h + 12)
+    return float(h)  # am/утром: без изменений
+
+
+def _remove_spans(text: str, spans) -> str:
+    """Вырезает совпадения из текста — чтобы извлечь задачу вокруг вставок
+    времени («напомни завтра купить шоколад в 8» → «напомни купить шоколад»)."""
+    out = []
+    prev = 0
+    for s, e in sorted(spans):
+        if s < prev:
+            s = prev
+        out.append(text[prev:s])
+        prev = max(prev, e)
+    out.append(text[prev:])
+    return " ".join("".join(out).split())
+
+
+def _clean_task_fragment(fragment: str) -> str:
+    """Чистит остаток текста после вырезания времени: убирает «напомни/remind me»,
+    обращения, разделители — остаётся текст задачи."""
+    s = fragment.strip()
+    s = re.sub(r"^(?:коннор|жабка|arrodes|connor)[,\s]+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(?:напомни|напомнить|напоминание|напомните|напомню)\b", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"\bremind\w*(?:\s+(?:me|us))?(?:\s+to)?\b", "", s, flags=re.IGNORECASE).strip()
+    # «напомни МНЕ завтра в 8 купить хлеб» — «завтра в 8» вырезаются спанами
+    # ДО вызова этой функции, «напомни» — строкой выше, а дативное «мне»
+    # (или «нам/ему/ей/им») перед задачей никто не убирал — оставалось
+    # «мне купить хлеб» (см. аналогичную чистку в parse_reminder для ветки
+    # без дня/части суток).
+    s = re.sub(r"^(?:мне|нам|ему|ей|им)\b\s*", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"^(?:please)\s+", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"^to\s+", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"^[,:\-\s]+", "", s).strip()
+    s = re.sub(r"[,:\-\s]+$", "", s).strip()
+    s = re.sub(r"[.!?]+$", "", s).strip()
+    return s
+
+
+def _delay_until(day_offset: int, hour: float, minute: int) -> Optional[float]:
+    """Секунды до (сегодня + day_offset дней) в hour:minute.
+    offset=0 — как _absolute_to_delay: на завтра, если время сегодня уже прошло."""
+    if day_offset <= 0:
+        return _absolute_to_delay(hour, minute)
+    now = timeutil.now()
+    target = datetime(now.year, now.month, now.day) + timedelta(
+        days=day_offset, hours=_normalize_hour(hour), minutes=minute)
+    delay = (target - now).total_seconds()
+    if delay < 10 or delay > 30 * 86400:
+        return None
+    return float(delay)
+
+
+def _parse_day_daypart(text: str) -> Optional[tuple]:
+    """Разбирает день и/или часть суток с явным временем или без:
+    «завтра», «утром», «завтра в 8», «в 8 вечера», «tomorrow morning at 8».
+
+    Возвращает (delay_seconds, spans) — спаны всех совпадений, чтобы
+    вырезать их из текста задачи, — или None."""
+    lower = text.lower()
+    spans = []
+    day_offset = None
+    for pattern, off in _DAY_OFFSET_RES:
+        m = pattern.search(lower)
+        if m:
+            day_offset = off
+            spans.append((m.start(), m.end()))
+            break
+
+    kind = None
+    explicit_hour = None
+    explicit_minute = 0
+
+    # Час + родительный падеж («в 8 вечера», «8 утра»)
+    hg = _HOUR_MIN_DAYPART_RE.search(lower)
+    if hg:
+        explicit_hour = float(int(hg.group(1)))
+        explicit_minute = int(hg.group(2))
+        kind = _HOUR_GEN_TO_KIND[hg.group(3).lower()]
+        spans.append((hg.start(), hg.end()))
+    else:
+        hg = _HOUR_DAYPART_RE.search(lower)
+        if hg:
+            explicit_hour = float(int(hg.group(1)))
+            kind = _HOUR_GEN_TO_KIND[hg.group(2).lower()]
+            spans.append((hg.start(), hg.end()))
+
+    # Standalone часть суток («утром», «in the morning», «at night»)
+    if kind is None:
+        for pattern, k in _DAYPART_RES:
+            m = pattern.search(lower)
+            if m:
+                # «good morning» / «добрым утром» — приветствие, не время
+                prefix = lower[max(0, m.start() - 8):m.start()]
+                if any(g in prefix for g in _DAYPART_GREETING_PREFIXES):
+                    continue
+                kind = k
+                spans.append((m.start(), m.end()))
+                break
+
+    if day_offset is None and kind is None:
+        return None
+
+    # Явное время («завтра в 8», «tomorrow morning at 8:30»)
+    if explicit_hour is None:
+        abs_time = _parse_absolute_time(text)
+        if abs_time:
+            explicit_hour, explicit_minute, abs_match = abs_time
+            spans.append((abs_match.start(), abs_match.end()))
+
+    if explicit_hour is not None and kind is not None:
+        hour = _adjust_hour_by_daypart(explicit_hour, kind)
+    elif explicit_hour is not None:
+        hour = float(int(explicit_hour) % 24)
+    elif kind is not None:
+        hour = float(_DAYPART_DEFAULT_HOUR[kind])
+    else:
+        hour = 9.0  # «завтра» без уточнений — утро
+    minute = explicit_minute if explicit_hour is not None else 0
+
+    delay = _delay_until(day_offset or 0, hour, minute)
+    if delay is None:
+        return None
+    return (delay, spans)
+
+
 def parse_reminder(text: str) -> Optional[tuple]:
     """
     Пытается распарсить запрос на напоминание.
@@ -250,8 +447,11 @@ def parse_reminder(text: str) -> Optional[tuple]:
         "напомни мне через 30 минут позвонить маме"
         "напомни через 2 часа сделать домашку"
         "через 10 мин напомни"
+        "напомни завтра утром купить шоколад"
+        "напомни в 8 вечера"
         "remind me to call mom in 30 minutes"
         "remind me at 5 pm"
+        "remind me tomorrow morning"
     """
     lower = text.lower()
 
@@ -331,6 +531,19 @@ def parse_reminder(text: str) -> Optional[tuple]:
             if word_num in _EN_WORD_NUMBERS:
                 delay_seconds = _EN_WORD_NUMBERS[word_num] * _en_unit_multiplier(m.group(2))
                 time_match_obj = m
+
+    # ── 1c. День и часть суток: «завтра», «утром», «в 8 вечера»,
+    # «tomorrow morning at 8» — своя ветка, т.к. день+время нужно
+    # склеить в одно совпадение и вырезать из задачи оба куска.
+    # Идёт ДО общего абсолютного разбора: иначе «завтра в 8» съедалось бы
+    # как «в 8», а «завтра» оставалось бы в тексте задачи.
+
+    if delay_seconds is None:
+        day_parsed = _parse_day_daypart(text)
+        if day_parsed:
+            delay_seconds, spans = day_parsed
+            task = _clean_task_fragment(_remove_spans(text, spans))
+            return (task if task else None, delay_seconds)
 
     # ── 2. Абсолютное время: "до 12", "в 11:30", "к полудню" ──
 
@@ -419,11 +632,9 @@ _POSTPONE_ABS_HOUR_RE = re.compile(
     rf"(?!\s*(?:минут[ауы]?|мин|час(?:а|ов)?|секунд[ауы]?|сек|день|дня|дней|{_EN_UNITS_RE})\b)",
     re.IGNORECASE,
 )
-# Слова: «на полдень», «на полночь», «to noon», «at midnight»
-_POSTPONE_ABS_WORDS = (
-    ("полдень", 12), ("полудня", 12), ("полночь", 0), ("полуночи", 0),
-    ("noon", 12), ("midnight", 0),
-)
+# Слова: «на полдень», «на полночь», «to noon», «at midnight» — из единой
+# таблицы _ROUND_TIME_WORDS(_EN), см. её комментарий выше про рассинхрон.
+_POSTPONE_ABS_WORDS = tuple(_ROUND_TIME_WORDS.items()) + tuple(_ROUND_TIME_WORDS_EN.items())
 
 # Слова-единицы без числа: «на полчаса», «на час», «на минуту»,
 # «for half an hour», «by an hour»
@@ -479,9 +690,14 @@ def parse_postpone(text: str) -> Optional[dict]:
         return None
 
     def _rel(seconds: float, more: Optional[str]) -> dict:
-        if seconds < 10 or seconds > 30 * 86400:
+        # seconds распознан и валиден, просто ниже разумного минимума
+        # («перенеси напоминание на 5 секунд») — раньше это отбрасывалось как
+        # {"unknown": True}, и бот переспрашивал «на какое время перенести?»,
+        # хотя пользователь время прямо назвал. Округляем вверх до минимума
+        # вместо того, чтобы путать «слишком мало» с «не разобрано».
+        if seconds <= 0 or seconds > 30 * 86400:
             return {"unknown": True}
-        return {"seconds": seconds, "relative_to_trigger": bool(more)}
+        return {"seconds": max(seconds, 10.0), "relative_to_trigger": bool(more)}
 
     # «на полчаса» / «на час» / «на минуту» (и «на ещё час»),
     # «for half an hour» / «by an hour»
@@ -630,9 +846,10 @@ def parse_recurring(text: str) -> Optional[tuple]:
     if not abs_time:
         return None  # время не указано — уточним через pending
     abs_hour, abs_minute, time_match = abs_time
-    if abs_hour >= 24:
-        return None
-    schedule["hour"] = int(abs_hour)
+    # Раньше abs_hour >= 24 отбрасывался целиком («каждый день в 24:00»,
+    # «к полуночи» → None), хотя EN "midnight" всегда давал 0 — нормализуем,
+    # а не отбрасываем: 24:00 и 0:00 — один и тот же момент.
+    schedule["hour"] = _normalize_hour(abs_hour)
     schedule["minute"] = abs_minute
 
     # Задача — текст без маркеров повторения, времени и «напомни».
@@ -652,16 +869,18 @@ def parse_recurring(text: str) -> Optional[tuple]:
 
 
 def _next_occurrence(schedule: dict, after: float) -> float:
-    """Ближайшее время срабатывания после `after` по локальному времени устройства."""
-    base = datetime.fromtimestamp(after)
+    """Ближайшее время срабатывания после `after` по времени пользователя
+    (пояс из app.core.timeutil; epoch ↔ стенные часы — только через
+    from_ts/to_ts, у naive-datetime .timestamp() дал бы системный пояс)."""
+    base = timeutil.from_ts(after)
     target = base.replace(hour=schedule["hour"], minute=schedule["minute"],
                           second=0, microsecond=0)
     if schedule["type"] == "weekly":
         days_ahead = (schedule["weekday"] - base.weekday()) % 7
         target = target + timedelta(days=days_ahead)
-    if target.timestamp() <= after:
+    if timeutil.to_ts(target) <= after:
         target = target + timedelta(days=7 if schedule["type"] == "weekly" else 1)
-    return target.timestamp()
+    return timeutil.to_ts(target)
 
 
 def format_schedule(schedule: dict) -> str:
@@ -670,6 +889,48 @@ def format_schedule(schedule: dict) -> str:
     if schedule["type"] == "weekly":
         return f"every {_WEEKDAY_NAMES[schedule['weekday']]} at {hh}"
     return f"every day at {hh}"
+
+
+# ─── Стабильный id напоминания ────────────────────────────
+# Корень дефекта «/cancel_reminder N отменил не то»: единственным именем
+# напоминания был его НОМЕР в списке get_active, а список считается заново на
+# каждый показ. Между «/reminders» и «/cancel_reminder 2» он успевает
+# измениться (одно сработало и выпало из активных, пришло новое, перенос
+# сдвинул порядок по trigger_at) — и тот же номер указывает уже на другую
+# запись. Решение: у каждого напоминания есть свой id, он рождается вместе с
+# записью, лежит в файле рядом с ней и показывается в списке.
+#
+# Формат — «r» + 5 hex. Буква в начале обязательна: иначе «/cancel_reminder 3»
+# означало бы и «третье в списке», и «напоминание с id 3» — однозначности,
+# ради которой всё и делается, не было бы.
+_RID_PREFIX = "r"
+_RID_RE = re.compile(rf"^#?({_RID_PREFIX}[0-9a-f]{{4,12}})$", re.IGNORECASE)
+
+
+def _new_rid(taken) -> str:
+    """Свежий id, не занятый среди `taken`."""
+    for _ in range(100):
+        rid = _RID_PREFIX + uuid.uuid4().hex[:5]
+        if rid not in taken:
+            return rid
+    return _RID_PREFIX + uuid.uuid4().hex[:12]  # практически недостижимо
+
+
+def parse_reminder_ref(arg: str) -> Optional[tuple]:
+    """Аргумент «/cancel_reminder …» → ("id", "r3f9a2") | ("index", 0) | None.
+
+    Единственный разборщик ссылки на напоминание: и Telegram, и веб-API
+    зовут его, а не разбирают строку каждый по-своему. id — как он показан
+    в списке (регистр и решётка не важны); число — номер строки того же
+    списка, приводится к 0-based индексу.
+    """
+    s = str(arg or "").strip()
+    m = _RID_RE.match(s)
+    if m:
+        return ("id", m.group(1).lower())
+    if re.fullmatch(r"\d{1,3}", s):
+        return ("index", int(s) - 1)
+    return None
 
 
 # ─── Менеджер ─────────────────────────────────────────────
@@ -737,33 +998,35 @@ class ReminderManager:
     # ── persistence ──
 
     def _load(self):
-        if self._file.exists():
-            try:
-                self._reminders = json.loads(self._file.read_text(encoding="utf-8"))
-            except Exception as e:
-                logger.warning(f"[Reminder] Не удалось загрузить: {e}")
-                self._reminders = []
-        else:
-            self._reminders = []
+        self._reminders = load_json_safe(self._file, default=[], label="Reminder")
+        self._ensure_ids()
+
+    def _ensure_ids(self):
+        """Миграция при чтении: записи без id (созданные до его появления) и
+        случайные дубли (ручная правка файла, восстановление из бэкапа)
+        получают свой id. Файл перезаписывается один раз — дальше id уже в нём.
+        Без этого старые напоминания остались бы адресуемыми только по номеру,
+        то есть с тем же дефектом, от которого id и заводился."""
+        taken = set()
+        changed = False
+        for r in self._reminders:
+            if not isinstance(r, dict):
+                continue
+            rid = str(r.get("id") or "")
+            if not rid or rid in taken:
+                rid = _new_rid(taken)
+                r["id"] = rid
+                changed = True
+            taken.add(rid)
+        if changed:
+            logger.info(f"[Reminder] id проставлены при загрузке "
+                        f"({len(taken)} записей в файле)")
+            self._save()
 
     def _save(self):
-        """Атомарная запись: пишем во временный файл, затем переименовываем.
-        Защищает от порчи файла (0 байт / битый JSON) при аварийном завершении процесса
-        в момент записи."""
+        """Атомарная запись (общий helper app.core.atomic_io — tmp-файл + os.replace)."""
         try:
-            import os, tempfile
-            data = json.dumps(self._reminders, ensure_ascii=False, indent=2)
-            fd, tmp_path = tempfile.mkstemp(dir=str(self._base_dir), suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(data)
-                os.replace(tmp_path, self._file)
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+            atomic_write_json(self._file, self._reminders)
         except Exception as e:
             logger.warning(f"[Reminder] Не удалось сохранить: {e}")
 
@@ -784,6 +1047,7 @@ class ReminderManager:
         """
         now = time.time()
         reminder = {
+            "id": None,  # стабильный id, выдаётся под локом (см. _new_rid)
             "chat_id": str(chat_id),
             "user_name": user_name,
             "user_id": str(user_id) if user_id else None,
@@ -798,9 +1062,14 @@ class ReminderManager:
         if schedule:
             reminder["recurrence"] = schedule
         with self._lock:
+            # id выдаём под локом — иначе два одновременных add_reminder могли
+            # бы выбрать один и тот же (проверка занятости шла бы по одному
+            # снимку списка)
+            reminder["id"] = _new_rid({str(r.get("id") or "")
+                                       for r in self._reminders})
             self._reminders.append(reminder)
             self._save()
-        logger.info(f"[Reminder] Добавлено: chat={chat_id} task='{task}' "
+        logger.info(f"[Reminder] Добавлено: id={reminder['id']} chat={chat_id} task='{task}' "
                     + (format_schedule(schedule) if schedule else f"через {delay_seconds:.0f}с"))
         return reminder
 
@@ -814,18 +1083,85 @@ class ReminderManager:
             ]
 
     def cancel_reminder(self, chat_id: str, index: int) -> bool:
-        """Удаляет напоминание по индексу (из get_active). Возвращает True если удалено."""
+        """Удаляет напоминание по индексу (0-based, из get_active) → True/False.
+        Оставлено для веб-API, который присылает номер строки списка; надёжный
+        путь — :meth:`cancel_by_ref` с id (см. parse_reminder_ref)."""
+        return self.cancel_by_ref(chat_id, int(index)) is not None
+
+    def cancel_by_ref(self, chat_id: str, ref) -> Optional[dict]:
+        """Удаляет напоминание по ссылке: id («r3f9a2», регистр и «#» не
+        важны) или 0-based индексу в get_active (для совместимости с вводом
+        номера). Возвращает удалённую запись — вызывающая сторона называет её
+        задачу в ответе, так промах адресации виден сразу, — или None.
+
+        Единственная точка удаления по ссылке: и Telegram, и веб-API, и старый
+        cancel_reminder идут через неё, поэтому «что считается ссылкой»
+        определено в одном месте.
+        """
         active = self.get_active(chat_id)
-        if index < 0 or index >= len(active):
-            return False
-        target = active[index]
+        target = None
+        if isinstance(ref, int) and not isinstance(ref, bool):
+            if 0 <= ref < len(active):
+                target = active[ref]
+        else:
+            rid = str(ref or "").strip().lstrip("#").lower()
+            if rid:
+                target = next((r for r in active
+                               if str(r.get("id") or "").lower() == rid), None)
+        if target is None:
+            return None
         with self._lock:
             try:
+                # Удаляем сам объект, а не «элемент №N»: параллельное
+                # срабатывание/добавление не может сдвинуть цель
                 self._reminders.remove(target)
-                self._save()
-                return True
             except ValueError:
-                return False
+                return None
+            self._save()
+        logger.info(f"[Reminder] Отменено: chat={chat_id} id={target.get('id')} "
+                    f"task='{target.get('task')}'")
+        return target
+
+    def postpone_by_id(self, chat_id: str, rid: str, seconds: Optional[float] = None,
+                       abs_time: Optional[tuple] = None,
+                       relative_to_trigger: bool = False) -> Optional[dict]:
+        """Переносит ровно то напоминание, чей id передан — тот же приём, что
+        cancel_by_ref для отмены (см. выше): адресация по id, а не по
+        пересчитанному заново индексу/порядку списка. Нужен, когда id
+        кандидатов уже показан пользователю (см. resolve_postpone_choice) —
+        список активных к моменту ответа мог измениться (одно сработало,
+        добавилось новое), а переносить нужно то, что видел пользователь.
+
+        Возвращает {"task", "trigger_at", "recreated": False}, как
+        postpone_reminder, либо None — такого АКТИВНОГО напоминания в этом
+        чате уже нет (отменено/сработало/id не совпал).
+        """
+        now = time.time()
+        if abs_time:
+            delay = _absolute_to_delay(abs_time[0], abs_time[1])
+            if delay is None:
+                return None
+        rid = str(rid or "").strip().lstrip("#").lower()
+        if not rid:
+            return None
+        with self._lock:
+            target = next((r for r in self._reminders
+                           if r["chat_id"] == str(chat_id) and not r.get("fired")
+                           and r["trigger_at"] > now
+                           and str(r.get("id") or "").lower() == rid), None)
+            if target is None:
+                return None
+            if abs_time:
+                new_trigger = now + delay
+            else:
+                base = target["trigger_at"] if relative_to_trigger else now
+                new_trigger = base + seconds
+            target["trigger_at"] = new_trigger
+            self._save()
+        logger.info(f"[Reminder] Перенесено по id: chat={chat_id} id={rid} "
+                    f"task='{target.get('task')}' на "
+                    f"{timeutil.from_ts(new_trigger).strftime('%d.%m %H:%M')}")
+        return {"task": target.get("task"), "trigger_at": new_trigger, "recreated": False}
 
     def postpone_reminder(self, chat_id: str, seconds: Optional[float] = None,
                           abs_time: Optional[tuple] = None,
@@ -864,7 +1200,8 @@ class ReminderManager:
 
         def _choices(items) -> list:
             return [
-                {"task": r.get("task"), "trigger_at": r["trigger_at"]}
+                {"id": r.get("id"), "task": r.get("task"),
+                 "trigger_at": r["trigger_at"]}
                 for r in sorted(items, key=lambda x: x["trigger_at"])
             ]
 
@@ -890,7 +1227,7 @@ class ReminderManager:
                 target["trigger_at"] = new_trigger
                 self._save()
             logger.info(f"[Reminder] Перенесено: chat={chat_id} task='{target.get('task')}' "
-                        f"на {datetime.fromtimestamp(new_trigger).strftime('%d.%m %H:%M')}")
+                        f"на {timeutil.from_ts(new_trigger).strftime('%d.%m %H:%M')}")
             return {"task": target.get("task"), "trigger_at": new_trigger, "recreated": False}
 
         # Активных нет — возможно, переносят уже сработавшее: пересоздаём с той же задачей
@@ -955,14 +1292,23 @@ class ReminderManager:
             entry = self._pending_remind.get(str(chat_id))
             return bool(isinstance(entry, dict) and entry.get("postpone"))
 
-    def begin_pending_postpone_choice(self, chat_id: str, seconds: Optional[float] = None,
+    def begin_pending_postpone_choice(self, chat_id: str, ids: Optional[List[str]] = None,
+                                      seconds: Optional[float] = None,
                                       abs_time: Optional[tuple] = None,
                                       relative_to_trigger: bool = False):
         """Несколько активных напоминаний и подсказки нет — ждём ответа
-        «какое именно перенести?». Сдвиг запоминаем, применим к выбранному."""
+        «какое именно перенести?». Сдвиг запоминаем, применим к выбранному.
+
+        ``ids`` — id кандидатов в том порядке, в каком список показан
+        пользователю (см. _fmt_reminder_choices в bot_instance): единый
+        источник истины для resolve_postpone_choice — список активных к
+        моменту ответа мог измениться (одно сработало, добавилось новое),
+        а «номер 2»/«последнее» должны указывать на то, что видел
+        пользователь, а не на пересчитанный заново список."""
         with self._lock:
             self._pending_remind[str(chat_id)] = {
                 "task": None, "postpone_choice": True,
+                "ids": list(ids) if ids else [],
                 "seconds": seconds, "abs": abs_time,
                 "rel": relative_to_trigger, "asked_at": time.time(),
             }
@@ -974,67 +1320,78 @@ class ReminderManager:
             return bool(isinstance(entry, dict) and entry.get("postpone_choice"))
 
     def resolve_postpone_choice(self, chat_id: str, reply: str) -> Optional[dict]:
-        """Применяет отложенный сдвиг к напоминанию, выбранному в ответе:
-        номером из списка («1», «2.»), порядковым («первое», «последнее»)
-        или словами из задачи («чай»). Список — по близости срабатывания,
-        в том же порядке, в каком его показал бот.
+        """Разбирает ответ на «какое именно напоминание перенести?» и
+        переносит ЕГО — по id, сохранённому в begin_pending_postpone_choice
+        на момент вопроса (entry["ids"]), а не по индексу в списке активных,
+        пересчитанному заново на момент ответа: список мог измениться между
+        вопросом и ответом (одно сработало, добавилось новое) — «номер 2»
+        указал бы уже не туда.
+
+        Номер/id — через parse_reminder_ref (тот же разборщик, что у
+        cancel_by_ref и веб-API); порядковые слова («первое», «последнее»)
+        — через _CHOICE_ORDINALS по списку id из вопроса; слова из задачи
+        («чай») — по текущим активным (задача могла сохраниться, даже если
+        порядок в списке сместился). Сам перенос — postpone_by_id (тот же
+        приём, что у отмены по id, задача №7 аудита): нужно то, что ВИДЕЛ
+        пользователь, а не то, что оказалось первым в пересчитанном списке.
 
         Возвращает {"task", "trigger_at", "recreated": False} | {"gone": True}
-        (активных больше нет) | None (ответ не распознан — переспросить).
-        """
+        (активных больше нет) | None (ответ не распознан, либо указанное
+        напоминание уже не активно — переспросить)."""
         with self._lock:
             entry = self._pending_remind.get(str(chat_id))
         if not (isinstance(entry, dict) and entry.get("postpone_choice")):
             return None
 
-        now = time.time()
-        with self._lock:
-            active = sorted(
-                (r for r in self._reminders
-                 if r["chat_id"] == str(chat_id) and not r.get("fired") and r["trigger_at"] > now),
-                key=lambda r: r["trigger_at"],
-            )
+        active = self.get_active(chat_id)
         if not active:
             self.clear_pending_remind(chat_id)
             return {"gone": True}
 
+        stored_ids = entry.get("ids") or []
         text = reply.strip().lower()
-        target = None
-        m = re.fullmatch(r"(\d{1,2})[.)]?", text)
-        if m:
-            idx = int(m.group(1)) - 1
-            if 0 <= idx < len(active):
-                target = active[idx]
-        if target is None:
+        target_id = None
+
+        ref = parse_reminder_ref(text.rstrip(".)"))
+        if ref:
+            kind, val = ref
+            if kind == "id":
+                target_id = val
+            elif kind == "index":
+                pool = stored_ids or [r.get("id") for r in
+                                      sorted(active, key=lambda r: r["trigger_at"])]
+                if 0 <= val < len(pool):
+                    target_id = pool[val]
+        if target_id is None:
+            pool = stored_ids or [r.get("id") for r in
+                                  sorted(active, key=lambda r: r["trigger_at"])]
             for word, idx in _CHOICE_ORDINALS.items():
                 if re.search(rf"\b{word}\b", text):
-                    target = active[idx] if idx < len(active) else None
+                    try:
+                        target_id = pool[idx]
+                    except IndexError:
+                        pass
                     break
-        if target is None:
+        if target_id is None:
             matched = [r for r in active if _task_matches(text, r.get("task"))]
             if len(matched) == 1:
-                target = matched[0]
-        if target is None:
+                target_id = matched[0].get("id")
+        if target_id is None:
             return None
 
-        abs_time = entry.get("abs")
-        if abs_time:
-            delay = _absolute_to_delay(abs_time[0], abs_time[1])
-            if delay is None:
-                self.clear_pending_remind(chat_id)
-                return {"gone": True}
-            new_trigger = now + delay
-        else:
-            base = target["trigger_at"] if entry.get("rel") else now
-            new_trigger = base + entry["seconds"]
-        with self._lock:
-            target["trigger_at"] = new_trigger
-            self._save()
-            self._pending_remind.pop(str(chat_id), None)
-        logger.info(f"[Reminder] Перенесено по выбору: chat={chat_id} "
-                    f"task='{target.get('task')}' "
-                    f"на {datetime.fromtimestamp(new_trigger).strftime('%d.%m %H:%M')}")
-        return {"task": target.get("task"), "trigger_at": new_trigger, "recreated": False}
+        result = self.postpone_by_id(
+            chat_id, target_id, seconds=entry.get("seconds"),
+            abs_time=entry.get("abs"), relative_to_trigger=bool(entry.get("rel")),
+        )
+        if result is None:
+            # То самое напоминание, что видел пользователь, уже не активно
+            # (сработало/отменено между вопросом и ответом) — переспрашиваем,
+            # а не молча двигаем что-то другое под тем же номером
+            return None
+        self.clear_pending_remind(chat_id)
+        logger.info(f"[Reminder] Перенесено по выбору: chat={chat_id} id={target_id} "
+                    f"task='{result.get('task')}'")
+        return result
 
     def _cleanup_fired(self):
         """Удаляет сработавшие напоминания старше 24ч."""
@@ -1088,14 +1445,16 @@ class ReminderManager:
             else:
                 text = f"reminder: {task}" if task else "time's up! You asked for a reminder."
 
-        # Кто попросил: тегаем через @username, иначе просто называем по имени.
-        # LLM-текст обычно уже обращается по имени — не дублируем приставку.
+        # Кто попросил: в группах тегаем через @username; имя — только
+        # настоящее: заглушку «User» в личке не печатаем (кейс 17.09:
+        # «User, Смотрю в сторону пользователя…»). И не дублируем приставку,
+        # если LLM уже обратился по имени в начале текста.
         prefix = None
         if reminder.get("username"):
             prefix = f"@{reminder['username']}"
-        elif user_name:
+        elif user_name and user_name.strip().lower() not in ("user", "пользователь"):
             prefix = user_name
-        if prefix and not text.lstrip().lower().startswith(prefix.lstrip("@").lower()):
+        if prefix and prefix.lstrip("@").lower() not in text.lstrip()[:120].lower():
             text = f"{prefix}, {text}"
 
         try:
@@ -1147,16 +1506,23 @@ class ReminderManager:
                     living_block = f"\n\n{state_ctx}"
             except Exception:
                 pass
+        # Обращение по имени: заглушку «User» в промпт не подставляем —
+        # модель переносит её в текст дословно (кейс 17.09)
+        addr = user_name.strip()
+        if addr.lower() in ("user", "пользователь"):
+            addr = ""
+        if not addr:
+            addr = "the user" if lang == "English" else "пользователя"
         if task:
             user_content = (
-                f"Remind {user_name}: {task}" if lang == "English"
-                else f"Напомни {user_name}: {task}"
+                f"Remind {addr}: {task}" if lang == "English"
+                else f"Напомни {addr}: {task}"
             )
         else:
             user_content = (
-                f"Remind {user_name} — they asked for a reminder but didn't specify what for."
+                f"Remind {addr} — they asked for a reminder but didn't specify what for."
                 if lang == "English"
-                else f"Напомни {user_name} — пользователь просил напомнить, но не уточнил о чём."
+                else f"Напомни {addr} — пользователь просил напомнить, но не уточнил о чём."
             )
 
         messages = [
@@ -1173,7 +1539,11 @@ class ReminderManager:
             {"role": "user", "content": user_content},
         ]
 
-        response = self._router.get_response(messages, temperature=0.7, max_tokens=200, top_p=0.9)
+        # Канал «proactive»: фон не делит инстанс/лок с ответом пользователю
+        # (main) — иначе зависшее напоминание блокировало диалог (кейс 19.09)
+        response = self._router.get_response(messages, temperature=0.7,
+                                             max_tokens=200, top_p=0.9,
+                                             webchat_channel="proactive")
         if not response or len(response.strip()) < 5:
             return None
         return response.strip()

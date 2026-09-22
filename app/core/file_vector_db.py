@@ -5,14 +5,37 @@
 """
 
 import chromadb
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+import functools
+from app.core.bounded_cache import BoundedCache
+from app.core.chroma_space import COLLECTION_NAMES, open_collection
 from app.core.config import Config, get_db_paths
+from app.core.st_embedder import create_st_embedder
 import logging
+import threading
 import time
 
 logger = logging.getLogger(__name__)
 
 MAX_DOCS_DEFAULT = 3
+# Сколько пользователей помнить в _loaded_docs (последний загруженный файл) —
+# вечный dict тут был чистой утечкой
+MAX_LOADED_DOCS_USERS = 500
+
+
+def _locked(method):
+    """Выполнить метод под ``self._lock`` — одним RLock на инстанс.
+
+    Один декоратор на все операции вместо ручного ``with`` в каждом методе:
+    иначе новый метод легко забыть закрыть локом, а именно так и появлялись
+    гонки (см. комментарий в ``__init__``). RLock — вложенные вызовы
+    (``add_file`` → ``_delete_full_doc``) берут тот же лок повторно.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
 
 class FileVectorDB:
     def __init__(self, db_path: str = None, context: str = "default", max_docs: int = None):
@@ -30,25 +53,31 @@ class FileVectorDB:
 
         self.context = context
         self.client = chromadb.PersistentClient(path=db_path)
-        self.embedder = SentenceTransformerEmbeddingFunction(
-            model_name="paraphrase-multilingual-MiniLM-L12-v2"
-        )
-        self.collection = self.client.get_or_create_collection(
-            "file_documents",
-            embedding_function=self.embedder
-        )
+        self.embedder = create_st_embedder()
+        # Метрика коллекций задана явно и в одном месте (chroma_space)
+        self.collection = open_collection(
+            self.client, COLLECTION_NAMES["files"],
+            embedding_function=self.embedder)
         # Коллекция для полных текстов документов
-        self.full_docs = self.client.get_or_create_collection(
-            "file_full_docs",
-            embedding_function=self.embedder
-        )
-        self._loaded_docs: dict[str, str] = {}  # user_id -> filename
+        self.full_docs = open_collection(
+            self.client, COLLECTION_NAMES["full_docs"],
+            embedding_function=self.embedder)
+        self._loaded_docs = BoundedCache(max_entries=MAX_LOADED_DOCS_USERS)  # user_id -> filename
+        # Все операции здесь — read-modify-write по двум коллекциям
+        # (get список → delete лишнего → add нового). Без лока параллельные
+        # add_file/remove_file/reset из разных потоков (загрузка файла в TG и
+        # запрос из веб-API) работали по устаревшему списку ids: один поток
+        # удалял чанки, которые другой только что записал, или лимит max_docs
+        # обходился, и в базе оставались документы сверх лимита. RLock —
+        # публичные методы вызывают приватные, которые тоже берут лок.
+        self._lock = threading.RLock()
 
+    @_locked
     def add_file(self, user_id: str, filename: str, content: str):
-        
+
         # Добавить файл в базу. Если уже есть максимальное количество — удаляет самый старый.
         # Если файл с таким именем уже есть — удаляем все чанки
-        
+
         user_docs = self.collection.get(where={"user_id": user_id})
         if user_docs and user_docs["ids"]:
             existing_ids = [
@@ -127,6 +156,7 @@ class FileVectorDB:
         self._loaded_docs[user_id] = filename
         logger.info(f"  [FileDB] Добавлен {filename} для {user_id} ({len(chunks)} чанков, полный текст {len(content)} символов)")
 
+    @_locked
     def search(self, user_id: str, query: str, limit: int = 5) -> list[str]:
         # Поиск по файлам пользователя.
         user_docs = self.collection.get(where={"user_id": user_id})
@@ -144,6 +174,7 @@ class FileVectorDB:
 
         return results["documents"][0][:limit]
 
+    @_locked
     def _assemble_full_doc(self, user_id: str, filename: str) -> str | None:
         # Собирает полный документ из частей
         all_parts = self.full_docs.get(where={"user_id": user_id})
@@ -161,6 +192,7 @@ class FileVectorDB:
         parts.sort(key=lambda x: x[0])
         return "".join(doc for _, doc in parts)
 
+    @_locked
     def get_full_document(self, user_id: str, filename: str = None) -> str | None:
         """
         Возвращает полный текст документа.
@@ -189,6 +221,7 @@ class FileVectorDB:
             latest_file = max(files, key=files.get)
             return self._assemble_full_doc(user_id, latest_file)
 
+    @_locked
     def get_loaded_files(self, user_id: str) -> list[str]:
         # Получить список загруженных файлов пользователя.
         user_docs = self.collection.get(where={"user_id": user_id})
@@ -202,6 +235,7 @@ class FileVectorDB:
                 filenames.add(meta["filename"])
         return list(filenames)
 
+    @_locked
     def list_files_detailed(self, user_id: str) -> list[dict]:
         """Список файлов с метаданными: имя, размер полного текста (символов), дата загрузки."""
         docs = self.full_docs.get(where={"user_id": user_id})
@@ -218,6 +252,7 @@ class FileVectorDB:
                 }
         return sorted(out.values(), key=lambda d: d["timestamp"])
 
+    @_locked
     def remove_file(self, user_id: str, filename: str) -> bool:
         """Удалить один файл пользователя (чанки + полный текст). False — файла не было."""
         user_docs = self.collection.get(where={"user_id": user_id})
@@ -232,6 +267,7 @@ class FileVectorDB:
         logger.info(f"  [FileDB] Удалён файл {filename} для {user_id}")
         return True
 
+    @_locked
     def _delete_full_doc(self, user_id: str, filename: str):
         # Удаляет все части полного текста документа
         all_parts = self.full_docs.get(where={"user_id": user_id})
@@ -244,6 +280,7 @@ class FileVectorDB:
         if ids_to_delete:
             self.full_docs.delete(ids=ids_to_delete)
 
+    @_locked
     def reset(self, user_id: str = None):
         """
         Сбросить базу файлов.
@@ -257,8 +294,7 @@ class FileVectorDB:
                 full = self.full_docs.get(where={"user_id": user_id})
                 if full and full["ids"]:
                     self.full_docs.delete(ids=full["ids"])
-                if user_id in self._loaded_docs:
-                    del self._loaded_docs[user_id]
+                self._loaded_docs.pop(user_id, None)
                 logger.info(f"  [FileDB] Сброшены файлы для {user_id}")
         else:
             all_docs = self.collection.get()

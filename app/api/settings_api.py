@@ -19,6 +19,15 @@ from pathlib import Path
 
 import yaml
 
+from app.api.security import (
+    PERSONA_ID_RE,
+    atomic_write_text,
+    persist_env as _security_persist_env,
+    remove_env as _security_remove_env,
+    safe_join,
+    validate_env_value,
+    yaml_write_lock,
+)
 from app.core.config import (
     OLLAMA_MODEL,
     PROVIDER_CONFIGS,
@@ -38,18 +47,13 @@ _ENV_PATH = Path(__file__).parent.parent.parent / ".env"
 
 
 def _persist_env(var: str, value: str):
-    """Записать переменную в .env: заменить существующую строку или дописать."""
-    lines = []
-    if _ENV_PATH.exists():
-        lines = _ENV_PATH.read_text(encoding="utf-8").splitlines()
-    prefix = f"{var}="
-    for i, line in enumerate(lines):
-        if line.startswith(prefix) or line.startswith(f"{var} ="):
-            lines[i] = f"{var}={value}"
-            break
-    else:
-        lines.append(f"{var}={value}")
-    _ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    """Записать переменную в .env: заменить существующую строку или дописать.
+
+    Атомарно (tmp + os.replace, права файла сохраняются) и под общим локом —
+    см. app/api/security.persist_env. Значение с \\r/\\n/NUL или var не из
+    [A-Z0-9_] отклоняется ValueError-ом (раньше \\n в значении дописывал в
+    .env произвольную вторую строку, применявшуюся при следующем рестарте)."""
+    _security_persist_env(_ENV_PATH, var, value)
     os.environ[var] = value
 
 
@@ -173,6 +177,43 @@ def set_webchat(sites) -> dict:
             "webchat_sites": norm}
 
 
+def test_webchat(site) -> dict:
+    """Проба веб-чата из общих настроек: одно слово «test» в stateless-канал
+    probe (свежий чат — постоянный чат сайта и его лимиты не трогаем).
+    ok=True — сайт ответил (с latency и превью); иначе честная причина:
+    карантин (с временем восстановления), недоступность браузера, таймаут."""
+    import time as _time
+    from app.core import timeutil
+    from app.features import web_llm
+    site = str(site or "").strip().lower()
+    if site not in web_llm.ADAPTERS:
+        return {"ok": False, "error": f"неизвестный веб-чат «{site or '—'}»"}
+    q = (web_llm.quarantine_status() or {}).get(site)
+    if q:
+        until = float(q.get("until") or 0)
+        # timeutil.from_ts, а не time.localtime: карантин истекает по
+        # времени пользователя, а не системного пояса процесса
+        when = timeutil.from_ts(until).strftime("%H:%M") if until \
+            else "позже"
+        reason = str(q.get("reason") or "блокировка")[:80]
+        return {"ok": False, "error": f"в карантине до {when}: {reason}"}
+    chat = web_llm.WebChatLLM(site, context="settings_probe", channel="probe",
+                              quota_per_hour=None)
+    t0 = _time.monotonic()
+    try:
+        resp = chat.get_response([{"role": "user", "content": "test"}],
+                                 timeout=90.0, lock_timeout=10.0)
+    except Exception as e:
+        logger.info(f"[Settings] проба веб-чата {site} упала: {e}")
+        return {"ok": False, "error": str(e)[:150]}
+    dt = _time.monotonic() - t0
+    if resp and resp.strip():
+        logger.info(f"[Settings] проба веб-чата {site}: ok за {dt:.1f}с")
+        return {"ok": True, "latency_sec": round(dt, 1),
+                "preview": " ".join(resp.split())[:80]}
+    return {"ok": False, "error": f"нет ответа за {int(dt)}с"}
+
+
 def local_status() -> dict:
     """Свежая проверка локальной Ollama (кнопка «Проверить доступность»).
 
@@ -219,6 +260,10 @@ def set_provider_model(provider: str, model: str) -> dict:
     model = model.strip()
     if not model:
         return {"ok": False, "detail": "Пустое имя модели"}
+    try:
+        validate_env_value(model)
+    except ValueError as e:
+        return {"ok": False, "detail": f"Некорректное имя модели: {e}"}
 
     if provider == "local":
         _persist_env("OLLAMA_MODEL", model)
@@ -251,6 +296,10 @@ def add_provider_key(provider: str, key: str) -> dict:
     key = key.strip()
     if not key:
         return {"ok": False, "detail": "Пустой ключ"}
+    try:
+        validate_env_value(key)
+    except ValueError as e:
+        return {"ok": False, "detail": f"Некорректный ключ: {e}"}
 
     prefix = provider.upper()
     existing = _collect_api_keys(prefix)
@@ -298,14 +347,8 @@ def _key_vars(provider: str) -> list[str]:
 
 
 def _remove_env(var: str):
-    """Удалить переменную из .env и из окружения процесса."""
-    if _ENV_PATH.exists():
-        lines = _ENV_PATH.read_text(encoding="utf-8").splitlines()
-        lines = [
-            line for line in lines
-            if not (line.startswith(f"{var}=") or line.startswith(f"{var} ="))
-        ]
-        _ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    """Удалить переменную из .env и из окружения процесса (атомарно, под локом)."""
+    _security_remove_env(_ENV_PATH, var)
     os.environ.pop(var, None)
 
 
@@ -339,6 +382,62 @@ def set_active_provider(provider: str) -> dict:
     return {"ok": True, "active": provider}
 
 
+# ── Часовой пояс пользователя (TIMEZONE, см. app/core/timeutil) ────────
+# По образцу /api/settings/location: настройка глобальная, персист в .env +
+# живой процесс через _persist_env/_remove_env, действует сразу — timeutil
+# читает TIMEZONE из окружения на каждый вызов, пересоздавать менеджеров не
+# нужно.
+
+def _system_tz_label() -> str:
+    """Человеко-читаемая метка системного пояса для UI, когда TIMEZONE не
+    задан (или задан, но не распознан) — IANA-имени системного пояса без
+    сторонних зависимостей не достать, поэтому берём то, что отдаёт aware-
+    datetime: сокращение ("MSK") или смещение от UTC как запасной вариант."""
+    from datetime import datetime
+    try:
+        local = datetime.now().astimezone()
+        return local.tzname() or str(local.utcoffset())
+    except Exception:
+        return "system"
+
+
+def get_timezone() -> dict:
+    """Текущий часовой пояс: timezone — сырое значение TIMEZONE из окружения
+    ("" — не задано), effective — фактически используемый пояс, source —
+    откуда он взят ("env" — TIMEZONE распознан, "system" — не задан или имя
+    не распознано, работает системный локальный пояс)."""
+    from app.core import timeutil
+    configured = timeutil.tz_name()
+    if timeutil.tz() is not None:
+        return {"timezone": configured, "effective": configured, "source": "env"}
+    return {"timezone": configured, "effective": _system_tz_label(), "source": "system"}
+
+
+def set_timezone(value: str) -> dict:
+    """Сохранить часовой пояс пользователя: пусто — сброс на системный
+    (TIMEZONE удаляется из .env), иначе имя зоны IANA, проверенное через
+    zoneinfo.ZoneInfo — невалидное не попадает ни в .env, ни в окружение
+    живого процесса (в отличие от timeutil.tz(), который битое имя на чтении
+    просто игнорирует — здесь его нужно отклонить ДО записи)."""
+    value = (value or "").strip()
+    if not value:
+        _remove_env("TIMEZONE")
+        return {"ok": True, **get_timezone()}
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        return {"ok": False, "detail": "zoneinfo недоступен на этом Python"}
+    try:
+        ZoneInfo(value)
+    except Exception as e:
+        return {"ok": False, "detail": f"Неизвестный часовой пояс «{value}»: {e}"}
+    try:
+        _persist_env("TIMEZONE", value)
+    except ValueError as e:
+        return {"ok": False, "detail": f"Некорректное имя пояса: {e}"}
+    return {"ok": True, **get_timezone()}
+
+
 def _apply_llm_to_bot(persona: str, llm_cfg: dict):
     """Применить секцию llm к живому роутеру бота (без перезапуска)."""
     from app.api.runtime import registry
@@ -346,7 +445,11 @@ def _apply_llm_to_bot(persona: str, llm_cfg: dict):
     if bot is not None:
         bot.router.set_persona_llm(llm_cfg.get("primary"), llm_cfg.get("fallback"),
                                    llm_cfg.get("models"),
-                                   webchat_limits=llm_cfg.get("webchat_limits"))
+                                   webchat_limits=llm_cfg.get("webchat_limits"),
+                                   webchat_modes=llm_cfg.get("webchat_mode"),
+                                   answer_provider=llm_cfg.get("answer_provider"),
+                                   cc_provider=llm_cfg.get("cc_provider"),
+                                   vision_provider=llm_cfg.get("vision_provider"))
 
 
 def _apply_computer_control_live(bot, cc_cfg):
@@ -355,6 +458,12 @@ def _apply_computer_control_live(bot, cc_cfg):
     Выключение — false/пусто или dict с enabled: false (списки сохраняются).
     Pending-подтверждения и статистика переживают обновление."""
     from app.features.computer_control import ComputerControlManager, config_enabled
+    # allowed_users читаем независимо от enabled — сохраняется, как и прочие
+    # allowlist'ы фичи, даже пока сам режим временно выключен
+    bot._cc_allowed_users = {
+        str(u).strip() for u in (cc_cfg.get("allowed_users", []) if isinstance(cc_cfg, dict) else [])
+        if str(u).strip()
+    }
     if config_enabled(cc_cfg):
         if getattr(bot, "computer_control", None) is not None:
             bot.computer_control.update_config(cc_cfg if isinstance(cc_cfg, dict) else {})
@@ -395,8 +504,8 @@ def _clean_initiative_hours(value) -> str | None:
 def get_persona_proactive(persona: str) -> dict | None:
     """Параметры features.proactive из YAML персоны (для GET /initiative,
     когда живого менеджера нет — проактивность выключена). None — персоны нет."""
-    path = _PERSONAS_DIR / f"{persona}.yaml"
-    if not path.is_file():
+    path = _persona_yaml_path(persona)
+    if path is None or not path.is_file():
         return None
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not data.get("system_prompt"):
@@ -572,49 +681,54 @@ def update_persona_proactive(persona: str, patch: dict) -> dict | None:
     enabled=true активирует цикл на живую. None — персоны нет;
     {"ok": False, detail} — некорректный патч.
     """
-    path = _PERSONAS_DIR / f"{persona}.yaml"
-    if not path.is_file():
-        return None
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not data.get("system_prompt"):
+    path = _persona_yaml_path(persona)
+    if path is None or not path.is_file():
         return None
 
-    features = data.get("features") or {}
-    proactive = features.get("proactive")
-    if not isinstance(proactive, dict):
-        proactive = {}
+    # Лок на весь read-modify-write: без него конкурентная правка (например,
+    # автосохранение формы) могла перечитать данные до записи другого запроса
+    # и затереть его правку своей — атомарность самой записи (tmp+os.replace)
+    # этого не решает, нужна сериализация всего цикла целиком.
+    with yaml_write_lock:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not data.get("system_prompt"):
+            return None
 
-    cleaned = {}
-    for key, value in patch.items():
-        if key == "initiative_hours":
-            # Окно времени самоинициативы: "HH:MM-HH:MM" / dict / пусто (снять)
+        features = data.get("features") or {}
+        proactive = features.get("proactive")
+        if not isinstance(proactive, dict):
+            proactive = {}
+
+        cleaned = {}
+        for key, value in patch.items():
+            if key == "initiative_hours":
+                # Окно времени самоинициативы: "HH:MM-HH:MM" / dict / пусто (снять)
+                try:
+                    cleaned[key] = _clean_initiative_hours(value)
+                except ValueError as e:
+                    return {"ok": False, "detail": str(e)}
+                continue
+            spec = _PROACTIVE_FIELDS.get(key)
+            if spec is None:
+                continue
+            typ, lo, hi = spec
             try:
-                cleaned[key] = _clean_initiative_hours(value)
-            except ValueError as e:
-                return {"ok": False, "detail": str(e)}
-            continue
-        spec = _PROACTIVE_FIELDS.get(key)
-        if spec is None:
-            continue
-        typ, lo, hi = spec
-        try:
-            if typ is bool:
-                cleaned[key] = bool(value)
-            else:
-                v = typ(value)
-                cleaned[key] = max(lo, min(hi, v)) if lo is not None else v
-        except (TypeError, ValueError):
-            return {"ok": False, "detail": f"Некорректное значение {key}: {value!r}"}
-    if not cleaned:
-        return {"ok": False, "detail": "Пустой патч"}
+                if typ is bool:
+                    cleaned[key] = bool(value)
+                else:
+                    v = typ(value)
+                    cleaned[key] = max(lo, min(hi, v)) if lo is not None else v
+            except (TypeError, ValueError):
+                return {"ok": False, "detail": f"Некорректное значение {key}: {value!r}"}
+        if not cleaned:
+            return {"ok": False, "detail": "Пустой патч"}
 
-    proactive.update(cleaned)
-    features["proactive"] = proactive
-    data["features"] = features
-    path.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120),
-        encoding="utf-8",
-    )
+        proactive.update(cleaned)
+        features["proactive"] = proactive
+        data["features"] = features
+        atomic_write_text(
+            path, yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120)
+        )
 
     # Живой бот: конфиг читается циклом на каждой итерации — применяется сразу;
     # включение активирует цикл без рестарта, выключение — останавливает
@@ -633,8 +747,22 @@ def update_persona_proactive(persona: str, patch: dict) -> dict | None:
 _PERSONAS_DIR = Path(__file__).parent.parent / "personas"
 
 
+def _persona_yaml_path(persona: str) -> Path | None:
+    """Путь к YAML персоны, если имя прошло проверку и путь не выходит за
+    пределы app/personas/ — иначе None (везде ниже это уже означает «персоны
+    нет», как и отсутствующий файл). Общая точка для всех мест этого модуля,
+    где persona раньше подставлялась в Path(...) без проверки формата вовсе
+    (get_persona_config/update_persona_config/save_persona_yaml/
+    duplicate_persona и т.д. — их вызывают эндпоинты БЕЗ предварительного
+    _get_bot()/list_personas(), так что до задачи №6 traversal-имя доходило
+    сюда напрямую и читало/писало произвольный существующий файл)."""
+    return safe_join(_PERSONAS_DIR, persona, ".yaml")
+
+
 def get_persona_config(persona: str) -> dict | None:
-    path = _PERSONAS_DIR / f"{persona}.yaml"
+    path = _persona_yaml_path(persona)
+    if path is None:
+        return None
     if not path.is_file():
         return None
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -649,6 +777,11 @@ def get_persona_config(persona: str) -> dict | None:
             "primary": llm.get("primary"),  # None — используется глобальный активный
             "fallback": llm.get("fallback") or [],
             "models": llm.get("models") or {},  # свои модели по провайдерам
+            # Провайдеры по назначению: текст ответа / решения управления /
+            # vision-фолбэк (None — обычная цепочка)
+            "answer_provider": llm.get("answer_provider"),
+            "cc_provider": llm.get("cc_provider"),
+            "vision_provider": llm.get("vision_provider"),
             # лимиты веб-чатов: {сайт: {enabled, per_hour}}; нет сайта — дефолт 40/ч
             "webchat_limits": llm.get("webchat_limits") or {},
         },
@@ -674,93 +807,105 @@ def update_persona_config(persona: str, settings: dict | None,
     Комментарии в YAML при записи теряются (safe_dump) — данные сохраняются.
     Возвращает {"restart_required": bool} или None, если персоны нет.
     """
-    path = _PERSONAS_DIR / f"{persona}.yaml"
-    if not path.is_file():
-        return None
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not data.get("system_prompt"):
+    path = _persona_yaml_path(persona)
+    if path is None:
         return None
 
-    if settings:
-        merged = data.get("settings") or {}
-        merged.update(settings)
-        data["settings"] = merged
-    if stm_size is not None:
-        data["stm_size"] = stm_size
-    restart_required = False
-    mute_ruins_mood = False
-    if features:
-        merged_f = data.get("features") or {}
-        for k, v in features.items():
-            # reminder/todo/inventory (как и proactive/muted/light_context/
-            # computer_control) применяются на живую — рестарт не нужен
-            if (k not in _LIVE_FEATURE_KEYS
-                    and merged_f.get(k) != v):
-                restart_required = True
-            if k == "muted" and v is True and merged_f.get(k) is not True:
-                mute_ruins_mood = True  # свежая заморозка — рушим настроение ниже
-            merged_f[k] = v
-        data["features"] = merged_f
-    if llm is not None:
-        # Секция llm: primary=None → снять закрепление (глобальный активный),
-        # пустой fallback → убрать персональный приоритет
-        merged_l = data.get("llm") or {}
-        if "primary" in llm:
-            if llm["primary"]:
-                merged_l["primary"] = llm["primary"]
-            else:
-                merged_l.pop("primary", None)
-        if llm.get("fallback") is not None:
-            if llm["fallback"]:
-                merged_l["fallback"] = llm["fallback"]
-            else:
-                merged_l.pop("fallback", None)
-        if llm.get("models") is not None:
-            # Персональные модели: {provider: model}; пустое значение снимает override
-            merged_m = merged_l.get("models") or {}
-            for k, v in llm["models"].items():
-                if k not in PROVIDER_CONFIGS:
-                    continue
-                if v and str(v).strip():
-                    merged_m[k] = str(v).strip()
-                else:
-                    merged_m.pop(k, None)
-            if merged_m:
-                merged_l["models"] = merged_m
-            else:
-                merged_l.pop("models", None)
-        if llm.get("webchat_limits") is not None:
-            # Лимиты веб-чатов: {сайт: {enabled, per_hour}}. enabled:false —
-            # лимит снят; per_hour 1..500; мусорная запись сбрасывает к дефолту
-            from app.features.web_llm import ADAPTERS as _WC_ADAPTERS
-            merged_w = merged_l.get("webchat_limits") or {}
-            for site, cfg in llm["webchat_limits"].items():
-                if site not in _WC_ADAPTERS or not isinstance(cfg, dict):
-                    continue
-                if not cfg.get("enabled", True):
-                    merged_w[site] = {"enabled": False}
-                    continue
-                try:
-                    ph = int(cfg.get("per_hour") or 0)
-                except (TypeError, ValueError):
-                    ph = 0
-                if 0 < ph <= 500:
-                    merged_w[site] = {"enabled": True, "per_hour": ph}
-                else:
-                    merged_w.pop(site, None)
-            if merged_w:
-                merged_l["webchat_limits"] = merged_w
-            else:
-                merged_l.pop("webchat_limits", None)
-        if merged_l:
-            data["llm"] = merged_l
-        else:
-            data.pop("llm", None)
+    # Лок на весь read-modify-write (см. update_persona_proactive) —
+    # без него конкурентная правка теряется при перезаписи.
+    with yaml_write_lock:
+        if not path.is_file():
+            return None
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not data.get("system_prompt"):
+            return None
 
-    path.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120),
-        encoding="utf-8",
-    )
+        if settings:
+            merged = data.get("settings") or {}
+            merged.update(settings)
+            data["settings"] = merged
+        if stm_size is not None:
+            data["stm_size"] = stm_size
+        restart_required = False
+        mute_ruins_mood = False
+        if features:
+            merged_f = data.get("features") or {}
+            for k, v in features.items():
+                # reminder/todo/inventory (как и proactive/muted/light_context/
+                # computer_control) применяются на живую — рестарт не нужен
+                if (k not in _LIVE_FEATURE_KEYS
+                        and merged_f.get(k) != v):
+                    restart_required = True
+                if k == "muted" and v is True and merged_f.get(k) is not True:
+                    mute_ruins_mood = True  # свежая заморозка — рушим настроение ниже
+                merged_f[k] = v
+            data["features"] = merged_f
+        if llm is not None:
+            # Секция llm: primary=None → снять закрепление (глобальный активный),
+            # пустой fallback → убрать персональный приоритет
+            merged_l = data.get("llm") or {}
+            if "primary" in llm:
+                if llm["primary"]:
+                    merged_l["primary"] = llm["primary"]
+                else:
+                    merged_l.pop("primary", None)
+            # Провайдеры по назначению: пустая строка/None — снять (цепочка)
+            for key in ("answer_provider", "cc_provider", "vision_provider"):
+                if key in llm:
+                    if llm[key]:
+                        merged_l[key] = llm[key]
+                    else:
+                        merged_l.pop(key, None)
+            if llm.get("fallback") is not None:
+                if llm["fallback"]:
+                    merged_l["fallback"] = llm["fallback"]
+                else:
+                    merged_l.pop("fallback", None)
+            if llm.get("models") is not None:
+                # Персональные модели: {provider: model}; пустое значение снимает override
+                merged_m = merged_l.get("models") or {}
+                for k, v in llm["models"].items():
+                    if k not in PROVIDER_CONFIGS:
+                        continue
+                    if v and str(v).strip():
+                        merged_m[k] = str(v).strip()
+                    else:
+                        merged_m.pop(k, None)
+                if merged_m:
+                    merged_l["models"] = merged_m
+                else:
+                    merged_l.pop("models", None)
+            if llm.get("webchat_limits") is not None:
+                # Лимиты веб-чатов: {сайт: {enabled, per_hour}}. enabled:false —
+                # лимит снят; per_hour 1..500; мусорная запись сбрасывает к дефолту
+                from app.features.web_llm import ADAPTERS as _WC_ADAPTERS
+                merged_w = merged_l.get("webchat_limits") or {}
+                for site, cfg in llm["webchat_limits"].items():
+                    if site not in _WC_ADAPTERS or not isinstance(cfg, dict):
+                        continue
+                    if not cfg.get("enabled", True):
+                        merged_w[site] = {"enabled": False}
+                        continue
+                    try:
+                        ph = int(cfg.get("per_hour") or 0)
+                    except (TypeError, ValueError):
+                        ph = 0
+                    if 0 < ph <= 500:
+                        merged_w[site] = {"enabled": True, "per_hour": ph}
+                    else:
+                        merged_w.pop(site, None)
+                if merged_w:
+                    merged_l["webchat_limits"] = merged_w
+                else:
+                    merged_l.pop("webchat_limits", None)
+            if merged_l:
+                data["llm"] = merged_l
+            else:
+                data.pop("llm", None)
+
+        atomic_write_text(
+            path, yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120)
+        )
 
     # Живой бот: генерация, stm_size, провайдеры и проактивность применяем
     # сразу, остальные features — после рестарта
@@ -797,8 +942,8 @@ def save_persona_yaml(persona: str, raw: str) -> dict | None:
     None — персоны нет; {"ok": False, "detail"} — YAML невалиден;
     {"ok": True, "restart_required"} — записано.
     """
-    path = _PERSONAS_DIR / f"{persona}.yaml"
-    if not path.is_file():
+    path = _persona_yaml_path(persona)
+    if path is None or not path.is_file():
         return None
     try:
         data = yaml.safe_load(raw)
@@ -808,7 +953,8 @@ def save_persona_yaml(persona: str, raw: str) -> dict | None:
     if not isinstance(data, dict) or not data.get("system_prompt"):
         return {"ok": False, "detail": "YAML должен быть объектом с непустым system_prompt"}
 
-    path.write_text(raw, encoding="utf-8")
+    with yaml_write_lock:
+        atomic_write_text(path, raw)
 
     # Живой бот: применяем то же, что и update_persona_config
     from app.api.runtime import registry
@@ -830,10 +976,10 @@ def save_persona_yaml(persona: str, raw: str) -> dict | None:
 
 
 # ── Создание / удаление / дублирование персон ──
-
+#
 # Допустимый id персоны = имя YAML-файла (фронт шлёт его же в API-вызовах,
-# поэтому файл обязан совпадать с полем id)
-_PERSONA_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+# поэтому файл обязан совпадать с полем id) — формат единый на весь модуль,
+# см. app/api/security.PERSONA_ID_RE.
 
 
 def create_persona(raw: str) -> dict:
@@ -850,13 +996,26 @@ def create_persona(raw: str) -> dict:
     if not isinstance(data, dict) or not data.get("system_prompt"):
         return {"ok": False, "detail": "YAML должен быть объектом с непустым system_prompt"}
     persona_id = str(data.get("id") or "").strip()
-    if not persona_id or not _PERSONA_ID_RE.match(persona_id):
+    if not persona_id or not PERSONA_ID_RE.match(persona_id):
         return {"ok": False, "detail": "Поле id обязательно: латиница, цифры, _ и - (до 64 символов)"}
-    path = _PERSONAS_DIR / f"{persona_id}.yaml"
-    if path.exists():
-        return {"ok": False, "conflict": True, "detail": f"Персона '{persona_id}' уже существует"}
-    path.write_text(raw, encoding="utf-8")
+    path = safe_join(_PERSONAS_DIR, persona_id, ".yaml")
+    if path is None:
+        return {"ok": False, "detail": "Поле id обязательно: латиница, цифры, _ и - (до 64 символов)"}
+    with yaml_write_lock:
+        if path.exists():
+            return {"ok": False, "conflict": True, "detail": f"Персона '{persona_id}' уже существует"}
+        atomic_write_text(path, raw)
     logger.info(f"[api] Создана персона {persona_id}")
+    # Банк flavor-реплик для CC-команд (Google AI Mode): фоновая генерация
+    # сразу при создании персоны, если у неё включён computer_control
+    try:
+        from app.features.computer_control import config_enabled as _cc_on
+        if _cc_on((data.get("features") or {}).get("computer_control", False)):
+            from app.features import flavor_text
+            flavor_text.ensure_flavor_bank(
+                context=persona_id, system_prompt=str(data["system_prompt"]))
+    except Exception as _fe:
+        logger.debug(f"[api] flavor-банк для {persona_id} не запущен: {_fe}")
     return {"ok": True, "persona": persona_id}
 
 
@@ -868,8 +1027,11 @@ def delete_persona(persona: str) -> bool:
     from app.api.runtime import list_personas, registry
     if persona not in list_personas():  # защита и от traversal, и от удаления служебных yaml
         return False
+    path = _persona_yaml_path(persona)
+    if path is None:  # не должно случиться после проверки выше — доп. рубеж
+        return False
     registry.evict(persona)
-    (_PERSONAS_DIR / f"{persona}.yaml").unlink()
+    path.unlink()
     logger.info(f"[api] Удалена персона {persona}")
     return True
 
@@ -880,30 +1042,41 @@ def duplicate_persona(persona: str) -> dict | None:
     Правятся только верхнеуровневые id:/name: — остальной текст (включая
     комментарии) копируется как есть.
     """
-    src = _PERSONAS_DIR / f"{persona}.yaml"
-    if not src.is_file():
+    src = _persona_yaml_path(persona)
+    if src is None or not src.is_file():
         return None
-    raw = src.read_text(encoding="utf-8")
 
-    n = 1
-    while True:
-        new_id = f"{persona}_copy" if n == 1 else f"{persona}_copy{n}"
-        if not (_PERSONAS_DIR / f"{new_id}.yaml").exists():
-            break
-        n += 1
+    with yaml_write_lock:
+        raw = src.read_text(encoding="utf-8")
 
-    data = yaml.safe_load(raw) or {}
-    new_name = f"{data.get('name') or persona} (копия)"
+        n = 1
+        dest = None
+        while n <= 1000:  # разумный потолок — не крутиться вечно на патологии
+            new_id = f"{persona}_copy" if n == 1 else f"{persona}_copy{n}"
+            candidate = safe_join(_PERSONAS_DIR, new_id, ".yaml")
+            if candidate is None:
+                # new_id вышел за формат id (например, persona у самого предела
+                # длины) — короче не станет, дальше пробовать бессмысленно
+                return {"ok": False, "detail": "Не удалось подобрать id для копии"}
+            if not candidate.exists():
+                dest = candidate
+                break
+            n += 1
+        if dest is None:
+            return {"ok": False, "detail": "Не удалось подобрать id для копии"}
 
-    def set_field(text: str, key: str, line: str) -> str:
-        pattern = rf"(?m)^{key}:.*$"
-        if re.search(pattern, text):
-            return re.sub(pattern, lambda _m: line, text, count=1)
-        return line + "\n" + text
+        data = yaml.safe_load(raw) or {}
+        new_name = f"{data.get('name') or persona} (копия)"
 
-    out = set_field(raw, "id", f"id: {new_id}")
-    escaped = new_name.replace("\\", "\\\\").replace('"', '\\"')
-    out = set_field(out, "name", f'name: "{escaped}"')
-    (_PERSONAS_DIR / f"{new_id}.yaml").write_text(out, encoding="utf-8")
+        def set_field(text: str, key: str, line: str) -> str:
+            pattern = rf"(?m)^{key}:.*$"
+            if re.search(pattern, text):
+                return re.sub(pattern, lambda _m: line, text, count=1)
+            return line + "\n" + text
+
+        out = set_field(raw, "id", f"id: {new_id}")
+        escaped = new_name.replace("\\", "\\\\").replace('"', '\\"')
+        out = set_field(out, "name", f'name: "{escaped}"')
+        atomic_write_text(dest, out)
     logger.info(f"[api] Персона {persona} продублирована в {new_id}")
     return {"ok": True, "persona": new_id}

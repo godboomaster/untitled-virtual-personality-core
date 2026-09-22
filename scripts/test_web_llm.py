@@ -6,14 +6,39 @@ extract_json, интеграция webchat-токенов в ModelRouter.
 Запуск: python -m scripts.test_web_llm"""
 
 import json
+import multiprocessing
+import os
 import sys
 import tempfile
+import threading
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+
+def _mp_quota_worker(base_dir: str, site: str, channel: str, n: int):
+    """Воркер ОТДЕЛЬНОГО ПРОЦЕССА (multiprocessing, не потока) — хвост задачи
+    №7 аудита: threading.Lock (_STATE_FILE_LOCKS) сериализует запись
+    web_llm_state.json только внутри одного процесса, а несколько процессов
+    персон на общий data/ иначе теряли параллельный инкремент квоты
+    (read-modify-write без общесистемного лока). Модульная функция — не
+    замыкание внутри main(): multiprocessing (spawn, дефолт на macOS)
+    подгружает воркер через pickle по имени, замыкания так не передаются."""
+    from app.features import web_llm as _wl
+    inst = _wl.WebChatLLM(site, base_dir=Path(base_dir), channel=channel)
+    for _ in range(n):
+        inst._quota_bump()
 
 
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="webllm_data_"))
     ok = 0
+    # Тест не должен зависеть от живой сети: internet_available() — TCP-пробы
+    # 1.1.1.1:443/8.8.8.8:53, которые в песочнице/за файрволом молчат, и тогда
+    # webchat-ветка роутера и резолв сайтов честно «офлайн» → ложные FAIL
+    import app.core.router as _net_router
+    _net_router.internet_available = lambda: True
+    _net_router._net_ok, _net_router._net_checked = True, float("inf")
 
     def check(name, cond):
         nonlocal ok
@@ -46,8 +71,7 @@ def main():
           and wl.extract_json("никакого json") is None
           and wl.extract_json("") is None)
 
-    # Пейсинг/опрос в тестах глушим глобально
-    wl.MIN_INTERVAL_SEC = 0
+    # Опрос в тестах глушим глобально (пейсинг из рантайма убран)
     wl.POLL_SEC = 0
 
     # Якорное чтение (answer_blocks_after) по умолчанию «не находит якорь» —
@@ -59,14 +83,20 @@ def main():
     _rb_orig = ba.restart_browser
     restarts = []
     ba.restart_browser = lambda reason="", **kw: restarts.append(reason) or True
+    # Перезагрузка вкладки — первая ступень лечения залипшей отправки
+    # (перезапуск всего Chrome — только если reload недавно был и не помог)
+    _rl_orig = ba.reload_tab
+    reloads = []
+    ba.reload_tab = lambda tab_id=None, **kw: reloads.append(tab_id) or ("", "")
 
     # ── 3. Состояние per-site: квота (окно per_hour × QUOTA_WINDOW_HOURS),
     #       изоляция сайтов, миграция формата ──
+    # Квота opt-in: дефолт снят, поэтому лимит задаём явно
     today = wl.time.strftime("%Y-%m-%d")
-    llm = wl.WebChatLLM("qwen", base_dir=tmp / "q1")
+    llm = wl.WebChatLLM("qwen", base_dir=tmp / "q1", quota_per_hour=40)
     (tmp / "q1" / "web_llm_state.json").write_text(json.dumps(
         {"sites": {"qwen": {"window_start": wl.time.time(),
-                            "count": wl.QUOTA_PER_HOUR * wl.QUOTA_WINDOW_HOURS,
+                            "count": 40 * wl.QUOTA_WINDOW_HOURS,
                             "last_ts": 0}}}),
         encoding="utf-8")
     called = []
@@ -89,7 +119,7 @@ def main():
     llm_cap = wl.WebChatLLM("qwen", base_dir=tmp / "qcap", quota_per_hour=2)
     check("quota: ёмкость окна = per_hour × окно",
           llm_cap._quota_capacity() == 2 * wl.QUOTA_WINDOW_HOURS)
-    # Снятый лимит (None): счётчик не мешает, остаётся только пейсинг
+    # Снятый лимит (None, дефолт): счётчик не мешает
     llm_free = wl.WebChatLLM("qwen", base_dir=tmp / "q1", quota_per_hour=None)
     check("quota: снятый лимит — ёмкость бесконечна, вызов разрешён",
           llm_free._quota_capacity() is None and llm_free._quota_check())
@@ -166,12 +196,80 @@ def main():
               "вкладки; прошлый ответ не засчитан (ждали блок > baseline)",
               res3 == "ок" and calls["nav"] == []
               and len(calls["open"]) == 1 and len(calls["send"]) == 2)
-        check("happy: текст ответа читается с сохранением markdown-разметки",
-              bool(md_flags) and all(f is True for f in md_flags))
+        check("happy: тики опроса — plain-текст (дёшево), markdown "
+              "снимается один раз в конце, по стабилизации",
+              md_flags == [False] * 4 + [True] + [False] * 3 + [True])
     finally:
         ba.open_new_tab, ba.navigate_tab = _open, _nav
         ba.chat_fill_send, ba.last_block_text = _send, _read
         ba.count_blocks, ba.tab_url = _cnt, _url
+
+    # ── 4b. Канал side (фоновые задачи): полная стабилизация STABLE_POLLS ──
+    llm2s = wl.WebChatLLM("qwen", base_dir=tmp / "q2s", channel="side")
+    sent_s, md_s = [], []
+    _o4, _n4 = ba.open_new_tab, ba.navigate_tab
+    _s4, _r4, _c4, _u4 = (ba.chat_fill_send, ba.last_block_text,
+                          ba.count_blocks, ba.tab_url)
+    ba.open_new_tab = lambda url, **kw: 43
+    ba.navigate_tab = lambda *a, **kw: None
+    ba.tab_url = lambda *a, **kw: "https://chat.qwen.ai/c/side-1"
+    ba.chat_fill_send = lambda host, tab_id, sel, text: (
+        sent_s.append(text), "sent")[1]
+    counts_s = iter([0, 1, 1, 1, 1, 1, 1])
+    texts_s = iter(["", "Чер", "Черновик", "Черновик", "Черновик"])
+    ba.count_blocks = lambda *a, **kw: next(counts_s)
+
+    def _lbt_side(host, tid, sels=None, **kw):
+        if sels and list(sels) == (llm2s.adapter.get("user") or []):
+            return sent_s[-1] if sent_s else ""
+        md_s.append(kw.get("markdown"))
+        return next(texts_s)
+    ba.last_block_text = _lbt_side
+    try:
+        res_s = llm2s.get_response([{"role": "user", "content": "черновик"}])
+        check("side: фоновый канал — полные STABLE_POLLS замера "
+              "стабильности (markdown после 2 одинаковых подряд)",
+              res_s == "Черновик" and md_s == [False] * 5 + [True])
+    finally:
+        ba.open_new_tab, ba.navigate_tab = _o4, _n4
+        ba.chat_fill_send, ba.last_block_text = _s4, _r4
+        ba.count_blocks, ba.tab_url = _c4, _u4
+
+    # ── 4c. done_selector (kimi): main берёт ответ сразу по маркеру
+    #       завершения — ноль стабилизационных тиков ──
+    llm_k = wl.WebChatLLM("kimi", base_dir=tmp / "k1")
+    sent_k, aba_k = [], []
+    _o5, _n5 = ba.open_new_tab, ba.navigate_tab
+    _s5, _r5, _c5, _u5 = (ba.chat_fill_send, ba.last_block_text,
+                          ba.count_blocks, ba.tab_url)
+    _a5 = ba.answer_blocks_after
+    ba.open_new_tab = lambda url, **kw: 44
+    ba.navigate_tab = lambda *a, **kw: None
+    ba.tab_url = lambda *a, **kw: "https://www.kimi.ai/chat/k-1"
+    ba.chat_fill_send = lambda host, tab_id, sel, text: (
+        sent_k.append(text), "sent")[1]
+    ba.count_blocks = lambda *a, **kw: 0
+
+    def _lbt_kimi(host, tid, sels=None, **kw):
+        if sels and list(sels) == (llm_k.adapter.get("user") or []):
+            return sent_k[-1] if sent_k else ""
+        return ""
+
+    def _aba_kimi(host, tid, user_sels, ans_sels, marker, **kw):
+        aba_k.append(kw.get("markdown"))
+        return (1, "готово-md" if kw.get("markdown") else "готово", True)
+    ba.last_block_text = _lbt_kimi
+    ba.answer_blocks_after = _aba_kimi
+    try:
+        res_k = llm_k.get_response([{"role": "user", "content": "привет"}])
+        check("done_selector: main-канал — ответ сразу по маркеру конца "
+              "генерации (1 plain-тик + 1 markdown, без стабилизации)",
+              res_k == "готово-md" and aba_k == [False, True])
+    finally:
+        ba.open_new_tab, ba.navigate_tab = _o5, _n5
+        ba.chat_fill_send, ba.last_block_text = _s5, _r5
+        ba.count_blocks, ba.tab_url = _c5, _u5
+        ba.answer_blocks_after = _a5
 
     # ── 5. Тишина по таймауту → None (фолбэк вызывающего) ──
     llm3 = wl.WebChatLLM("deepseek", base_dir=tmp / "q3")
@@ -189,9 +287,9 @@ def main():
                                  timeout=0.01)
         check("timeout: ответа нет — None, а не выдумка",
               res4 is None)
-        check("stuck: сообщение не появилось в ленте → перезапуск браузера",
-              len(restarts) == 1
-              and "не появилось в ленте" in restarts[0])
+        check("stuck: сообщение не появилось в ленте → перезагрузка вкладки "
+              "(перезапуск браузера — только если reload не помог)",
+              reloads == [42] and not restarts and llm3._tab_id == 42)
     finally:
         ba.chat_fill_send, ba.last_block_text = _cfs2, _lbt2
         ba.count_blocks, ba.tab_url, ba.open_new_tab = _cnt2, _url2, _open2
@@ -233,12 +331,15 @@ def main():
         raise ba.BrowserUnavailable("поле чата не приняло ввод")
     ba.chat_fill_send = _boom_send
     try:
+        # reload был недавно (уже лечил залипание) — сразу эскалация на
+        # перезапуск браузера
+        llm4._last_tab_reload_ts = wl.time.time()
         check("send fail: BrowserUnavailable → None",
               llm4.get_response([{"role": "user", "content": "hi"}],
                                 timeout=0.01) is None)
-        check("stuck: поле не очистилось → перезапуск браузера, вкладка забыта",
-              len(restarts) == 2
-              and "поле чата не приняло ввод" in restarts[1]
+        check("stuck: reload не помог → перезапуск браузера, вкладка забыта",
+              len(restarts) == 1
+              and "поле чата не приняло ввод" in restarts[0]
               and llm4._tab_id is None)
     finally:
         ba.chat_fill_send, ba.open_new_tab = _cfs3, _open3
@@ -405,14 +506,101 @@ def main():
         res9 = llm9.get_response([{"role": "user", "content": "hi"}])
         check("send-verify: сообщение не попало в ленту за 2 попытки → None сразу",
               res9 is None and flow8["send"] == 2)
-        check("stuck: двойной промах ленты (кейс 26.08) → перезапуск браузера",
-              len(restarts) == 3
-              and "не появилось в ленте" in restarts[2])
+        check("stuck: двойной промах ленты (кейс 26.08) → перезагрузка "
+              "вкладки (без перезапуска браузера)",
+              reloads[-1] == 42 and len(restarts) == 1)
     finally:
         wl.SEND_VERIFY_SEC, wl.POLL_SEC = _sv, _pl
         ba.open_new_tab = _open8
         ba.chat_fill_send, ba.last_block_text = _cfs8, _lbt8
         ba.count_blocks, ba.tab_url, ba.eval_js = _cnt8, _url8, _ev8
+
+    # ── 6g. Карантин: антибот-челлендж → автопопытка → карантин сайта,
+    #       дальнейшие вызовы пропускаются мгновенно; ручное снятие ──
+    wl.clear_quarantine("qwen")
+    _da, _ac = ba.detect_antibot, ba.try_challenge_autoclick
+    _oq, _uq = ba.open_new_tab, ba.tab_url
+    ba.detect_antibot = lambda *a, **kw: "widget: iframe[src*=challenges.cloudflare]"
+    ba.try_challenge_autoclick = lambda *a, **kw: False  # чекбокс не прошли
+    ba.open_new_tab = lambda url, **kw: 42
+    ba.tab_url = lambda *a, **kw: "https://chat.qwen.ai/c/q1"
+    llm_q1 = wl.WebChatLLM("qwen", base_dir=tmp / "qq1")
+    try:
+        res_q = llm_q1.get_response([{"role": "user", "content": "hi"}])
+        check("quarantine: челлендж → None, сайт в карантине, alert в очереди",
+              res_q is None and wl.site_quarantined("qwen")
+              and any(a["site"] == "qwen" for a in wl.pop_quarantine_alerts()))
+        check("quarantine: вызов в карантине — мгновенный None",
+              llm_q1.get_response([{"role": "user", "content": "hi"}]) is None)
+        # Автоклик помог (челлендж ушёл) — карантина нет
+        ba.detect_antibot = lambda *a, **kw: None
+        wl.clear_quarantine("qwen")
+        llm_q2 = wl.WebChatLLM("qwen", base_dir=tmp / "qq2")
+        llm_q2._tab_id = 42
+        check("quarantine: чистая страница — карантина нет, вкладка жива",
+              llm_q2._challenge_check(ba, 42) is False
+              and not wl.site_quarantined("qwen"))
+        # Замер антибота проводится СТРОГО: обёртка не имеет права глушить
+        # ошибку в None — «не смогли посмотреть» ≠ «посмотрели, чисто»
+        _strict_flags = []
+        def _da_strict(host=None, tab_id=None, strict=False):
+            _strict_flags.append(strict)
+            return None
+        ba.detect_antibot = _da_strict
+        llm_q2._challenge_check(ba, 42)
+        check("quarantine: _challenge_check замеряет строго (strict=True)",
+              _strict_flags == [True])
+        # Сбой замера: карантин НЕ снимается (раньше detect_antibot отдавал
+        # None на любой ошибке — и карантин снимался вслепую)
+        wl.quarantine_site("qwen", "widget: turnstile")
+        wl.pop_quarantine_alerts()
+        def _da_boom(host=None, tab_id=None, strict=False):
+            raise ba.BrowserUnavailable("антибот-проверка не выполнена")
+        ba.detect_antibot = _da_boom
+        _ends = []
+        _orig_end = ba.end_rescue_pool_h
+        ba.end_rescue_pool_h = lambda: _ends.append(1)
+        try:
+            ch_unknown = llm_q2._challenge_check(ba, 42)
+        finally:
+            ba.end_rescue_pool_h = _orig_end
+        check("quarantine: сбой замера ≠ «чисто» — карантин остаётся",
+              ch_unknown is False and wl.site_quarantined("qwen")
+              and not _ends)
+        # Положительное подтверждение чистоты — карантин снимается
+        ba.detect_antibot = _da_strict
+        llm_q2._challenge_check(ba, 42)
+        check("quarantine: чистота подтверждена замером — карантин снят",
+              not wl.site_quarantined("qwen"))
+
+        # Отпускание вкладки закрывает её в браузере, а не только забывает
+        _closed = []
+        _orig_close = ba.close_background_tab
+        ba.close_background_tab = lambda t: (_closed.append(t), True)[1]
+        try:
+            llm_q2._tab_id = 1000007
+            llm_q2._drop_tab(ba, "тест")
+            check("вкладка: _drop_tab закрывает фоновую вкладку и забывает id",
+                  _closed == [1000007] and llm_q2._tab_id is None)
+            # reload не помог — вкладка закрывается, а не бросается
+            _closed.clear()
+            llm_q2._tab_id = 1000008
+            llm_q2._last_tab_reload_ts = 0.0
+            _orig_reload = ba.reload_tab
+            ba.reload_tab = lambda *a, **kw: (_ for _ in ()).throw(
+                ba.BrowserUnavailable("вкладка не перезагрузилась"))
+            try:
+                llm_q2._restart_stuck_browser(ba, "тест")
+            finally:
+                ba.reload_tab = _orig_reload
+            check("вкладка: неудачный reload закрывает вкладку (не копим сирот)",
+                  _closed == [1000008] and llm_q2._tab_id is None)
+        finally:
+            ba.close_background_tab = _orig_close
+    finally:
+        ba.detect_antibot, ba.try_challenge_autoclick = _da, _ac
+        ba.open_new_tab, ba.tab_url = _oq, _uq
+        wl.clear_quarantine("qwen")
 
     # ── 6f. Кейс 22.08: «реформулировка вместо ответа». Страница чата
     #       непрогрета: baseline=0, хотя в ленте уже лежит СТАРЫЙ завершённый
@@ -493,6 +681,9 @@ def main():
         r._webchats = {}
         r.webchat_limits = {}
         r._last_key_index = {}
+        r.answer_provider = None
+        r.cc_provider = None
+        r.vision_provider = None
         return r
 
     r = _stub_router(["qwen", "deepseek"])
@@ -607,6 +798,12 @@ def main():
           llm_s._chat_url() == "https://chat.qwen.ai/c/side"
           and llm_m._chat_url() == "https://chat.qwen.ai/c/main")
 
+    # ── 11a. Стейтless-канал «cc»: чат не запоминается ──
+    llm_cc = wl.WebChatLLM("qwen", base_dir=tmp / "ch", channel="cc")
+    check("cc: stateless-флаг и свой ключ состояния; main/side не тронуты",
+          llm_cc.stateless is True and llm_cc._state_key == "qwen#cc"
+          and llm_m.stateless is False and llm_s.stateless is False)
+
     # ── 11b. Роутер: webchat_channel="side" — отдельный экземпляр ──
     r3 = _stub_router(["qwen"])
     r3.active_provider = "webchat"
@@ -617,6 +814,27 @@ def main():
     check("router: webchat_channel=side — отдельный side-чат, main не создан",
           ans == "side ответ" and side_stub.calls == 1
           and "qwen" not in r3._webchats)
+
+    # ── 11c. force_provider: назначенный провайдер вне цепочки ──
+    r5 = _stub_router(["qwen", "deepseek"])
+    r5.active_provider = "webchat"  # forced-ветка раньше основного webchat
+    r5._webchats = {"deepseek": _StubWebchat("deepseek", "назначенный")}
+    ans = r5.get_response([{"role": "user", "content": "x"}],
+                          force_provider="webchat:deepseek")
+    check("force_provider: назначенный сайт отвечает первым, вне позиции",
+          ans == "назначенный" and r5._webchats["deepseek"].calls == 1)
+    r5._webchats["deepseek"]._answer = None  # назначенный молчит
+    r5._webchats["qwen"] = _StubWebchat("qwen", "цепочка")
+    ans = r5.get_response([{"role": "user", "content": "x"}],
+                          force_provider="webchat:deepseek")
+    check("force_provider: молчание назначенного — fallback по цепочке",
+          ans == "цепочка")
+    r6 = _stub_router(["qwen"])
+    r6.set_persona_llm(None, answer_provider="webchat:qwen",
+                       cc_provider="local", vision_provider="неттакого")
+    check("router: answer/cc/vision_provider из llm-секции (мусор — в цепочку)",
+          r6.answer_provider == "webchat:qwen" and r6.cc_provider == "local"
+          and r6.vision_provider is None)
 
     # ── 12. Лимиты веб-чатов персоны (llm.webchat_limits) ──
     r4 = _stub_router(["qwen"])
@@ -804,15 +1022,15 @@ def main():
     check("vision-router: fallback персоны соблюдён (webchat раньше groq)",
           ans8 == "веб по приоритету персоны" and stub8.calls == 1
           and calls8 == ["kimi"])
-    # 14f. Ни у кого нет images — None
-    rv3 = _stub_router(["chatgpt"])
+    # 14f. Сайт без флага images — None
+    rv3 = _stub_router(["kimi"])
     rv3._vision_verdict = {}
     check("vision-router: веб-чаты без images — честный None",
           rv3.get_response_with_image("номер?", b"img") is None)
     # 14g. supports_vision: без облаков, но с картиночным веб-чатом — True
     rv4 = _stub_router(["qwen"])
     rv4._vision_verdict = {}
-    rv5 = _stub_router(["chatgpt"])
+    rv5 = _stub_router(["kimi"])
     rv5._vision_verdict = {}
     check("vision-router: supports_vision учитывает webchat-флаг images",
           rv4.supports_vision() is True and rv5.supports_vision() is False)
@@ -889,6 +1107,270 @@ def main():
         ba.chat_fill_send = _cfs15
         ba.chat_fill_send_tagged = _cft15
         ba.snapshot_elements = _snap15
+
+    # ── 16. Rate-limit: паттерны, парсинг TTL, карантин с таймером ──
+    check("ratelimit-res: «out of free messages», «message limit», русский лимит",
+          any(rx.search("You're out of free messages. Try again in 5 hours.")
+              for rx in wl._RATE_LIMIT_RES)
+          and any(rx.search("You've reached your message limit")
+                  for rx in wl._RATE_LIMIT_RES)
+          and any(rx.search("Your message limit will reset at 3:00 PM")
+                  for rx in wl._RATE_LIMIT_RES)
+          and any(rx.search("Лимит сообщений исчерпан, восстановится через 3 часа")
+                  for rx in wl._RATE_LIMIT_RES))
+    check("ratelimit-res: обычный ответ не ловится",
+          not any(rx.search("Открыл ютуб, как просили") for rx in wl._RATE_LIMIT_RES)
+          and not any(rx.search("Попробуй снова через минуту")
+                      for rx in wl._RATE_LIMIT_RES))
+    check("reset-ttl: «через N часов/минут», «in N hours»",
+          wl._parse_reset_ttl("лимит восстановится через 5 часов") == 18000.0
+          and wl._parse_reset_ttl("try again in 2 hours") == 7200.0
+          and wl._parse_reset_ttl("через 45 минут") == 2700.0)
+    _ttl_t = wl._parse_reset_ttl("Your message limit will reset at 3:00 PM")
+    check("reset-ttl: «resets at 3:00 PM» — секунды до сегодня/завтра",
+          _ttl_t is not None and 0 < _ttl_t <= 86400)
+    check("reset-ttl: время не указано — None (дефолт у caller'а)",
+          wl._parse_reset_ttl("out of free messages") is None)
+    # Карантин с кастомным TTL и kind
+    wl.quarantine_site("testsite", "лимит сообщений", ttl=7200, kind="ratelimit")
+    _q = wl._SITE_QUARANTINE.get("testsite")
+    _alerts = wl.pop_quarantine_alerts()
+    check("quarantine: TTL из лимита + kind=ratelimit + алерт с until",
+          bool(_q) and abs(_q["until"] - (wl.time.time() + 7200)) < 5
+          and _q["kind"] == "ratelimit"
+          and any(a.get("site") == "testsite" and a.get("kind") == "ratelimit"
+                  and a.get("until") for a in _alerts))
+    check("quarantine: сайт мгновенно пропускается цепочкой",
+          wl.site_quarantined("testsite"))
+    wl.clear_quarantine("testsite")
+    check("quarantine: снятие", not wl.site_quarantined("testsite"))
+
+    # ── 17. Vision: max_images и переполнение (trim/followup) ──
+    # google: max_images=1 — второй кадр не прикрепляется вовсе
+    g17 = wl.WebChatLLM("google", base_dir=tmp / "g17")
+    _seen17 = []
+    g17._get_response_locked = lambda messages, t, mt, tp, to, **kw: (
+        _seen17.append(kw.get("extra_image_bytes")), "ответ")[1]
+    _r17 = g17.get_response_with_image("что тут?", b"img", extra_image=b"extra")
+    check("max_images=1 (google): второй кадр не уходит, ответ получен",
+          _r17 == "ответ" and _seen17 == [None])
+    # trim: сайт отверг число кадров вопреки конфигу — повтор с одним
+    d17 = wl.WebChatLLM("deepseek", base_dir=tmp / "d17")
+    _calls17 = []
+
+    def _locked_trim(messages, t, mt, tp, to, **kw):
+        _calls17.append(kw.get("extra_image_bytes"))
+        if kw.get("extra_image_bytes") is not None:
+            raise wl._TooManyImages("too many images")
+        return "ответ"
+
+    d17._get_response_locked = _locked_trim
+    _r17b = d17.get_response_with_image("что тут?", b"img", extra_image=b"extra")
+    check("overflow trim: переполнение → повтор с одним кадром",
+          _r17b == "ответ" and _calls17 == [b"extra", None])
+    # followup: оставшийся кадр — вторым сообщением, финал — уточнённый ответ
+    q17 = wl.WebChatLLM("qwen", base_dir=tmp / "q17")
+    q17.adapter = {**q17.adapter, "max_images": 1, "image_overflow": "followup"}
+    _calls17b = []
+
+    def _locked_followup(messages, t, mt, tp, to, **kw):
+        _calls17b.append((messages[0]["content"], kw.get("image_bytes"),
+                          kw.get("extra_image_bytes")))
+        return "ответ-2" if len(_calls17b) == 2 else "ответ-1"
+
+    q17._get_response_locked = _locked_followup
+    _r17c = q17.get_response_with_image("что тут?", b"img", extra_image=b"extra")
+    check("overflow followup: второй кадр отдельным сообщением, финал уточнённый",
+          _r17c == "ответ-2" and len(_calls17b) == 2
+          and _calls17b[0][2] is None and _calls17b[1][1] == b"extra")
+
+    # ── 18. lock_timeout: пользовательский путь не ждёт занятый инстанс ──
+    c18 = wl.WebChatLLM("google", base_dir=tmp / "c18", channel="cc")
+    c18._lock.acquire()  # занят долгой фоновой задачей (генерация банка)
+    _t0 = wl.time.time()
+    _r18 = c18.get_response([{"role": "user", "content": "x"}],
+                            lock_timeout=0.2)
+    _dt18 = wl.time.time() - _t0
+    check("lock_timeout: занятый лок — быстрый None (фолбэк вызывающего)",
+          _r18 is None and _dt18 < 5)
+    c18._lock.release()
+    c18._get_response_locked = lambda *a, **kw: "ответ"
+    check("lock_timeout: свободный лок — обычный ответ",
+          c18.get_response([{"role": "user", "content": "x"}],
+                           lock_timeout=0.2) == "ответ")
+    c18b = wl.WebChatLLM("google", base_dir=tmp / "c18b", channel="main")
+    c18b._get_response_locked = lambda *a, **kw: "ок"
+    check("без lock_timeout — семантика прежняя (блокирующий лок)",
+          c18b.get_response([{"role": "user", "content": "x"}]) == "ок")
+
+    # ── 19. Аудит №7: сигнал сайта (rate limit/картинки/ошибка) только из
+    #       баннера/error_scope сайта, НЕ из текста ответа модели ──
+    _cnt19, _lbt19, _ev19 = ba.count_blocks, ba.last_block_text, ba.eval_js
+    try:
+        # 19a. Длинный реалистичный ответ, где МОДЕЛЬ САМА обсуждает лимиты
+        # сообщений/картинок чужих сервисов (пользователь спросил про
+        # лимиты) — раньше «message limit»/«usage limit»/«too many images»
+        # в этой прозе резали готовый ответ и слали ЭТОТ сайт в часовой
+        # карантин (аудит: _RATE_LIMIT_RES/_TOO_MANY_IMAGES_RES сверялись
+        # с cur_norm — текстом самого ответа).
+        long_answer = (
+            "Лимиты бесплатных тарифов у чат-сервисов разные: у одних "
+            "message limit считается числом сообщений в сутки, у других — "
+            "usage limit по токенам. При загрузке нескольких фотографий "
+            "сайт может показать «too many images» или предупредить про "
+            "лимит сообщений — это тема моего ответа, а не отказ этого "
+            "чата прямо сейчас. Free-тарифы обычно ограничивают и число "
+            "картинок за раз, и суточный лимит запросов — уточняйте в "
+            "настройках аккаунта конкретного сервиса, который вас "
+            "интересует, сроки сброса там же."
+        )
+        check("19a: тестовый ответ действительно содержит слова из "
+              "паттернов rate-limit/too-many-images (тест не тривиален)",
+              len(long_answer) > wl._SITE_SIGNAL_MAX_LEN
+              and any(rx.search(long_answer) for rx in wl._RATE_LIMIT_RES)
+              and any(rx.search(long_answer) for rx in wl._TOO_MANY_IMAGES_RES))
+        ba.eval_js = lambda *a, **kw: ""       # ни баннера, ни error_scope
+        ba.count_blocks = lambda *a, **kw: 1   # новый блок (baseline=0)
+        ba.last_block_text = lambda host, tid, sels=None, **kw: long_answer
+        llm19a = wl.WebChatLLM("claude", base_dir=tmp / "rl19a")
+        res19a = llm19a._wait_answer("claude.ai", 1, timeout=5, had_image=True)
+        check("19a: проза про лимиты чужих сервисов — не rate-limit, не "
+              "картиночный отказ, ответ доходит целиком, карантина нет",
+              res19a == long_answer and not wl.site_quarantined("claude"))
+
+        # 19b. Настоящий баннер сайта (сканер страницы, НЕ текст ответа —
+        # сайт ничего не ответил, cur_norm пуст) — карантин ДЕЙСТВИТЕЛЬНО
+        # ставится, TTL парсится из текста баннера. Заодно проверяет фикс
+        # частоты пробника: banner_js сканит раз в BANNER_PROBE_EVERY
+        # тиков, а порогу нужны 2 замера ПОДРЯД — без форсирования
+        # непрерывного пробника после первого совпадения (rl_seen/im_seen
+        # в условии пробника) два подряд замера никогда бы не набрались.
+        banner_real = "You've reached your message limit. Try again in 2 hours."
+        ba.eval_js = lambda *a, **kw: banner_real
+        ba.count_blocks = lambda *a, **kw: 0   # сайт вообще не ответил
+        ba.last_block_text = lambda *a, **kw: ""
+        llm19b = wl.WebChatLLM("claude", base_dir=tmp / "rl19b")
+        raised19b = None
+        try:
+            llm19b._wait_answer("claude.ai", 1, timeout=5)
+        except wl._ChatRateLimited as e:
+            raised19b = e
+        check("19b: настоящий баннер лимита сообщений — рейзит "
+              "_ChatRateLimited с распарсенным TTL (2 часа)",
+              raised19b is not None and raised19b.ttl is not None
+              and abs(raised19b.ttl - 7200) < 5)
+
+        # 19c. Сайты БЕЗ error_scope, у которых баннер рендерится ВНУТРИ
+        # answer-блока (deepseek «Length limit reached…» — без content-
+        # классов): короткий блок, целиком похожий на баннер, — по-прежнему
+        # детектится (allow_answer_text), в отличие от 19a, где похожий
+        # текст тонет в длинном настоящем ответе.
+        short_refusal = "Length limit reached. Please start a new chat."
+        ba.eval_js = lambda *a, **kw: ""
+        ba.count_blocks = lambda *a, **kw: 1
+        ba.last_block_text = lambda host, tid, sels=None, **kw: short_refusal
+        llm19c = wl.WebChatLLM("deepseek", base_dir=tmp / "rl19c")
+        raised19c = None
+        try:
+            llm19c._wait_answer("chat.deepseek.com", 1, timeout=5)
+        except wl._ChatBroken as e:
+            raised19c = e
+        check("19c: короткий баннер сайта внутри answer-блока (deepseek) — "
+              "всё ещё детектится (структурно короткий, не длинный ответ)",
+              raised19c is not None and "length limit" in str(raised19c).lower())
+    finally:
+        ba.count_blocks, ba.last_block_text, ba.eval_js = _cnt19, _lbt19, _ev19
+
+    # 19d. web_llm_state.json — общий на контекст файл: два РАЗНЫХ инстанса
+    # WebChatLLM (как бот + память со своими ModelRouter, см. комментарий у
+    # _STATE_FILE_LOCKS) конкурентно пишут РАЗНЫЕ каналы одного сайта —
+    # раньше read-modify-write под разными per-instance локами терял ключ
+    # (chat_url/счётчик квоты) того канала, что сохранился НЕ последним.
+    base19d = tmp / "state19d"
+    a19d = wl.WebChatLLM("qwen", base_dir=base19d, channel="main")
+    b19d = wl.WebChatLLM("qwen", base_dir=base19d, channel="side")
+    barrier19d = threading.Barrier(2)
+
+    def _writer19d(inst, url):
+        barrier19d.wait()
+        for _ in range(25):
+            inst._save_state({"chat_url": url})
+            inst._quota_bump()
+
+    t1 = threading.Thread(target=_writer19d, args=(a19d, "https://x/main"))
+    t2 = threading.Thread(target=_writer19d, args=(b19d, "https://x/side"))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    st19d = json.loads((base19d / "web_llm_state.json").read_text(encoding="utf-8"))
+    sites19d = st19d.get("sites", {})
+    check("19d: конкурентная запись двух каналов одного сайта не теряет "
+          "chat_url ни одного из них",
+          sites19d.get("qwen", {}).get("chat_url") == "https://x/main"
+          and sites19d.get("qwen#side", {}).get("chat_url") == "https://x/side")
+    check("19d: конкурентный инкремент счётчика квоты не теряет апдейты "
+          "(25+25, а не меньше из-за гонки read-modify-write)",
+          sites19d.get("qwen", {}).get("count") == 25
+          and sites19d.get("qwen#side", {}).get("count") == 25)
+
+    # ── 19e. Хвост №7: межпроцессный file_lock ──
+    # Два НЕЗАВИСИМЫХ ПРОЦЕССА (multiprocessing, не потока — threading.Lock
+    # процесса A не виден процессу B) параллельно инкрементируют квоту ОДНОГО
+    # и того же сайта+канала в общем web_llm_state.json. Без file_lock
+    # (atomic_io, fcntl/msvcrt) часть из 2×N инкрементов терялась бы —
+    # ровно та же гонка read-modify-write, что и в 19d, но между процессами,
+    # где _STATE_FILE_LOCKS (threading, только для своего процесса) не спасает.
+    base19e = tmp / "state19e"
+    n19e = 30
+    p1 = multiprocessing.Process(target=_mp_quota_worker,
+                                 args=(str(base19e), "qwen", "main", n19e))
+    p2 = multiprocessing.Process(target=_mp_quota_worker,
+                                 args=(str(base19e), "qwen", "main", n19e))
+    p1.start(); p2.start()
+    p1.join(60); p2.join(60)
+    st19e = json.loads((base19e / "web_llm_state.json").read_text(encoding="utf-8"))
+    count19e = st19e.get("sites", {}).get("qwen", {}).get("count")
+    check("19e: file_lock — два ПРОЦЕССА инкрементируют квоту одного канала "
+          "без потерь (2×30, а не меньше)",
+          p1.exitcode == 0 and p2.exitcode == 0 and count19e == 2 * n19e)
+
+    # ── 19f. Хвост №7: время сайта → timeutil (TIMEZONE), не системный пояс ──
+    # _parse_reset_ttl («resets at HH:MM») теперь считает через timeutil.now()
+    # /to_ts() — часы САЙТА (открытого в браузере пользователя) это часы
+    # ПОЛЬЗОВАТЕЛЯ из TIMEZONE, а не системный пояс машины бота (было
+    # time.localtime/time.mktime). Проверяем на двух РАЗНЫХ поясах: TTL
+    # совпадает с прямым расчётом через zoneinfo для КАЖДОГО из них — то
+    # есть функция действительно читает TIMEZONE, а не игнорирует его.
+    _orig_timezone_env = os.environ.get("TIMEZONE")
+    try:
+        # Строка «resets at HH:MM» несёт только час:минуту (без секунд) —
+        # «ожидаемое» TTL тоже считаем от цели с обнулёнными секундами,
+        # иначе секунды/микросекунды момента запуска теста сами дают
+        # расхождение с функцией (она их из HH:MM получить не может).
+        os.environ["TIMEZONE"] = "UTC"
+        now_utc = datetime.now(ZoneInfo("UTC"))
+        target_utc = (now_utc + timedelta(minutes=12)).replace(
+            second=0, microsecond=0)
+        ttl_utc = wl._parse_reset_ttl(
+            f"resets at {target_utc.hour:02d}:{target_utc.minute:02d}")
+        expected_utc = (target_utc - now_utc).total_seconds()
+        check("19f: TIMEZONE=UTC — TTL «resets at HH:MM» совпадает с "
+              "прямым расчётом по zoneinfo (±5с)",
+              ttl_utc is not None and abs(ttl_utc - expected_utc) < 5)
+
+        os.environ["TIMEZONE"] = "Etc/GMT-3"  # UTC+3 (знак у Etc/GMT инвертирован)
+        now_msk = datetime.now(ZoneInfo("Etc/GMT-3"))
+        target_msk = (now_msk + timedelta(minutes=12)).replace(
+            second=0, microsecond=0)
+        ttl_msk = wl._parse_reset_ttl(
+            f"resets at {target_msk.hour:02d}:{target_msk.minute:02d}")
+        expected_msk = (target_msk - now_msk).total_seconds()
+        check("19f: TIMEZONE=Etc/GMT-3 — тот же разбор пересчитан по ДРУГОМУ "
+              "поясу (±5с), не системным временем машины",
+              ttl_msk is not None and abs(ttl_msk - expected_msk) < 5)
+    finally:
+        if _orig_timezone_env is None:
+            os.environ.pop("TIMEZONE", None)
+        else:
+            os.environ["TIMEZONE"] = _orig_timezone_env
 
     ba.answer_blocks_after = _aba_orig
     ba.restart_browser = _rb_orig

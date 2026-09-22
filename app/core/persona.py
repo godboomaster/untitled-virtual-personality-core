@@ -1,24 +1,24 @@
 import time
-from datetime import datetime
 
 import yaml
 from pathlib import Path
 from typing import Optional, List, Dict
 
+from app.core import timeutil
 from app.core.language import detect_dialogue_language, response_language_note
 
 
 def _format_msg_ts(ts) -> str:
     """Метка времени сообщения для LLM: «15.08 14:32» (+год, если не текущий).
-    Пустая строка — если метки нет/битая. Локальное время сервера (как и
-    везде: напоминания, env_context)."""
+    Пустая строка — если метки нет/битая. Время пользователя (TIMEZONE) —
+    как и везде: напоминания, env_context."""
     if not ts:
         return ""
     try:
-        dt = datetime.fromtimestamp(float(ts))
+        dt = timeutil.from_ts(float(ts))
     except (TypeError, ValueError, OSError, OverflowError):
         return ""
-    year = f".{dt.year}" if dt.year != datetime.now().year else ""
+    year = f".{dt.year}" if dt.year != timeutil.today().year else ""
     return dt.strftime(f"%d.%m{year} %H:%M")
 
 

@@ -1,5 +1,8 @@
 import os
 import logging
+import socket
+import threading
+import time
 from openai import OpenAI
 from app.core.config import PROVIDER_CONFIGS, get_available_providers
 
@@ -21,13 +24,54 @@ def _parse_webchat_sites() -> list[str]:
         from app.features.web_llm import ADAPTERS
         known = set(ADAPTERS)
     except Exception:
-        known = {"deepseek", "qwen", "claude", "zai", "chatgpt"}
+        known = {"deepseek", "qwen", "claude", "zai", "chatgpt", "kimi",
+                 "google"}
     out: list[str] = []
     for tok in raw.split(","):
         site = tok.strip().lower()
         if site and site in known and site not in out:
             out.append(site)
     return out
+
+
+# ── Детект офлайна ──
+# Без интернета облачная цепочка и веб-чаты заведомо мертвы, а до local
+# цепочка идёт минуты таймаутов — probe сырых IP раз в 30 с, офлайн →
+# локальная модель (Ollama) пробуется первой.
+_NET_CHECK_TTL_SEC = 30.0
+_NET_PROBE_TIMEOUT_SEC = 1.5
+_NET_PROBE_HOSTS = (("1.1.1.1", 443), ("8.8.8.8", 53))  # IP-литералы, без DNS
+_net_lock = threading.Lock()
+_net_ok: bool | None = None
+_net_checked = 0.0
+
+# Сколько пользовательский (main) вызов веб-чата ждёт лок занятого чата,
+# прежде чем уйти в burst (разовый свежий чат): секунды. Дольше ждать —
+# значит задерживать ответ пользователю из-за чужой генерации.
+BURST_LOCK_WAIT_SEC = 3.0
+
+
+def internet_available() -> bool:
+    """Есть ли интернет: TCP-probe пары надёжных IP, кэш на 30 с (процесс).
+    Ложное «офлайн» безопасно: если local не ответила, обычная цепочка всё
+    равно идёт дальше — меняется только её приоритет."""
+    global _net_ok, _net_checked
+    with _net_lock:
+        if (_net_ok is not None
+                and time.monotonic() - _net_checked < _NET_CHECK_TTL_SEC):
+            return _net_ok
+    ok = False
+    for host, port in _NET_PROBE_HOSTS:
+        try:
+            socket.create_connection((host, port),
+                                     timeout=_NET_PROBE_TIMEOUT_SEC).close()
+            ok = True
+            break
+        except OSError:
+            continue
+    with _net_lock:
+        _net_ok, _net_checked = ok, time.monotonic()
+    return ok
 
 
 class ModelRouter:
@@ -39,10 +83,20 @@ class ModelRouter:
         self.available = get_available_providers()
         self.active_provider = provider or os.getenv("ACTIVE_PROVIDER")
         self._last_key_index: dict[str, int] = {}
+        # Семафоры параллельности API-провайдеров (max_concurrent в конфиге,
+        # напр. kimi=1 — аккаунтный лимит Moonshot): занят → мгновенный
+        # фолбэк по цепочке, без 403 «concurrent request limit» (кейс 19.09:
+        # фоновая задача и ответ пользователю столкнулись на одном ключе)
+        self._provider_sems: dict[str, threading.BoundedSemaphore] = {}
         # Персональный override из YAML персоны (секция llm): закреплённый
         # основной провайдер (глобальная смена active его не трогает),
         # приоритет fallback-цепочки и свои модели по провайдерам.
         self.pinned_provider: str | None = None
+        # Провайдеры по назначению (llm.answer_provider/cc_provider/
+        # vision_provider в YAML персоны): None — обычная цепочка
+        self.answer_provider: str | None = None  # текст ответа пользователю
+        self.cc_provider: str | None = None      # решения режима управления
+        self.vision_provider: str | None = None  # vision-фолбэк (картинки)
         self.fallback_order: list[str] | None = None
         self.model_overrides: dict[str, str] = {}
         # Веб-чаты как провайдеры без ключей (WEBCHAT_SITES=qwen,deepseek —
@@ -52,8 +106,11 @@ class ModelRouter:
         self.webchat_sites: list[str] = _parse_webchat_sites()
         self._webchats: dict = {}  # site -> ленивый web_llm.WebChatLLM
         # Лимиты веб-чатов персоны (llm.webchat_limits): {сайт: per_hour|None}
-        # None — лимит снят; сайта нет в dict — дефолт web_llm.QUOTA_PER_HOUR
+        # None — лимит снят; сайта нет в dict — без лимита (дефолт)
         self.webchat_limits: dict = {}
+        # Режим браузера для сайта (llm.webchat_mode): headless|hidden|headed
+        # (web_extended: headless → пул H, hidden/headed → пул V)
+        self.webchat_modes: dict = {}
 
         if not self.available:
             # Нет ни одного облачного ключа. Явно включённые веб-чаты
@@ -128,9 +185,40 @@ class ModelRouter:
             return self.model_overrides[provider]
         return (self.available.get(provider) or {}).get("model", "")
 
+    def _provider_sem(self, provider: str, cfg: dict):
+        """Семафор параллельности провайдера (max_concurrent в конфиге);
+        None — без лимита. Ленивое создание, потокобезопасность не нужна:
+        худший случай гонки — два семафора, оба с лимитом (безопасно)."""
+        limit = cfg.get("max_concurrent")
+        if not limit:
+            return None
+        sem = self._provider_sems.get(provider)
+        if sem is None:
+            sem = threading.BoundedSemaphore(int(limit))
+            self._provider_sems[provider] = sem
+        return sem
+
     def _call_with_keys(self, provider: str, cfg: dict, messages: list,
                         temperature: float, max_tokens: int, top_p: float,
                         timeout: float) -> str | None:
+        # Провайдер с лимитом параллельности занят (фон/другой чат) — не ждём
+        # и не ловим 403 concurrent: мгновенный фолбэк по цепочке
+        sem = self._provider_sem(provider, cfg)
+        if sem is not None and not sem.acquire(blocking=False):
+            logger.info(f"{provider.upper()}: занят параллельным запросом — "
+                        "пропуск (фолбэк по цепочке)")
+            return None
+        try:
+            return self._call_with_keys_locked(provider, cfg, messages,
+                                               temperature, max_tokens, top_p,
+                                               timeout)
+        finally:
+            if sem is not None:
+                sem.release()
+
+    def _call_with_keys_locked(self, provider: str, cfg: dict, messages: list,
+                               temperature: float, max_tokens: int, top_p: float,
+                               timeout: float) -> str | None:
         
         # Пробует все ключи провайдера по очереди. Возвращает ответ или None.
         keys = cfg["api_keys"]
@@ -201,11 +289,15 @@ class ModelRouter:
     def get_response(self, messages, temperature: float = 0.7,
                      max_tokens: int = 2000, top_p: float = 0.9,
                      exclude_provider: str = None, timeout: float = 60.0,
-                     webchat_channel: str = "main") -> str | None:
+                     webchat_channel: str = "main",
+                     force_provider: str = None) -> str | None:
         """Возвращает ответ модели или None, если все провайдеры недоступны.
 
         Вызывающий код ОБЯЗАН проверять результат на None/пустоту — строка-заглушка
         больше не возвращается, чтобы ошибку нельзя было принять за ответ модели.
+
+        force_provider — провайдер по назначению (llm.answer_provider/
+        cc_provider): одна попытка ВНЕ цепочки, неудача — обычная цепочка.
         """
         provider_order = self._get_full_order()
 
@@ -216,6 +308,32 @@ class ModelRouter:
                                   if not (isinstance(p, str) and p.startswith("webchat"))]
             else:
                 provider_order = [p for p in provider_order if p != exclude_provider]
+
+        # Провайдер по назначению (текст ответа / решения управления): сначала
+        # он, цепочка ниже — fallback. Не дублируем, если он же исключён.
+        if force_provider and force_provider != exclude_provider \
+                and internet_available():
+            answer = self._call_forced(force_provider, messages, temperature,
+                                       max_tokens, top_p, timeout, webchat_channel)
+            if answer:
+                return answer
+            logger.info(f"[Router] назначенный провайдер {force_provider} "
+                        "не ответил — обычная цепочка")
+
+        # Нет интернета — веб-чаты и облако заведомо мертвы: сразу локальная
+        # модель (Ollama), без минут таймаутов по мёртвым провайдерам. Не
+        # ответила/не установлена — идём по обычной цепочке (вдруг probe солгал).
+        tried_local = False
+        if exclude_provider != "local" and not internet_available():
+            tried_local = True
+            answer = self._try_local(messages, temperature, max_tokens, top_p, timeout)
+            if answer:
+                logger.warning("Нет интернета — ответ локальной модели "
+                               f"{getattr(self, '_last_local_model', '?')} сразу "
+                               "(облачная цепочка пропущена)")
+                return answer
+            logger.error("Нет интернета и локальная модель недоступна — "
+                         "пробуем обычную цепочку")
 
         # Основной провайдер — веб-чат (аккаунт пользователя в Chrome):
         # пробуем его первым, цепочка ниже — fallback. 'webchat' — все сайты
@@ -241,7 +359,6 @@ class ModelRouter:
 
         # Основной провайдер — локальная модель (глобально или закреплена за
         # персоной): пробуем её первой, облачная цепочка ниже — fallback.
-        tried_local = False
         if self.active_provider == "local" and exclude_provider != "local":
             tried_local = True
             answer = self._try_local(messages, temperature, max_tokens, top_p, timeout)
@@ -288,11 +405,14 @@ class ModelRouter:
     def get_response_stream(self, messages, on_token, temperature: float = 0.7,
                             max_tokens: int = 2000, top_p: float = 0.9,
                             exclude_provider: str = None, timeout: float = 60.0,
-                            webchat_channel: str = "main") -> str | None:
+                            webchat_channel: str = "main",
+                            force_provider: str = None) -> str | None:
         """Стриминговый вариант get_response: токены уходят в on_token(delta) по мере
         генерации, возвращается полный текст. Fallback на другой ключ/провайдер —
         только до первого токена; обрыв посередине — возвращаем накопленное.
-        Локальный fallback (Ollama) не стримится — отдаётся одним куском."""
+        Локальный fallback (Ollama) не стримится — отдаётся одним куском.
+        force_provider — провайдер по назначению: одна попытка вне цепочки
+        (веб-чат/локальный отдают одним куском), неудача — обычная цепочка."""
         provider_order = self._get_full_order()
 
         if exclude_provider and len(provider_order) > 1:
@@ -302,8 +422,33 @@ class ModelRouter:
             else:
                 provider_order = [p for p in provider_order if p != exclude_provider]
 
-        # Основной провайдер — локальная модель: первая попытка, облачные — fallback
+        # Провайдер по назначению: сначала он, цепочка — fallback
+        if force_provider and force_provider != exclude_provider \
+                and internet_available():
+            answer = self._call_forced(force_provider, messages, temperature,
+                                       max_tokens, top_p, timeout,
+                                       webchat_channel, on_token=on_token)
+            if answer:
+                return answer
+            logger.info(f"[Router] назначенный провайдер {force_provider} "
+                        "не ответил — обычная цепочка")
+
+        # Нет интернета — сразу локальная модель (Ollama), облачная цепочка
+        # заведомо мертва. Не ответила — идём по обычной цепочке (вдруг probe
+        # солгал). Локальная не стримится — ответ одним куском через on_token.
         tried_local = False
+        if exclude_provider != "local" and not internet_available():
+            tried_local = True
+            answer = self._try_local(messages, temperature, max_tokens, top_p, timeout, on_token)
+            if answer:
+                logger.warning("Нет интернета — ответ локальной модели "
+                               f"{getattr(self, '_last_local_model', '?')} сразу "
+                               "(облачная цепочка пропущена)")
+                return answer
+            logger.error("Нет интернета и локальная модель недоступна — "
+                         "пробуем обычную цепочку")
+
+        # Основной провайдер — локальная модель: первая попытка, облачные — fallback
         if self.active_provider == "local" and exclude_provider != "local":
             tried_local = True
             answer = self._try_local(messages, temperature, max_tokens, top_p, timeout, on_token)
@@ -373,6 +518,25 @@ class ModelRouter:
                           temperature: float, max_tokens: int, top_p: float,
                           timeout: float) -> str | None:
         """Стримит ответ первого ответившего ключа провайдера. None — все ключи упали."""
+        # Лимит параллельности провайдера (max_concurrent): занят — мгновенный
+        # фолбэк, как в _call_with_keys (без 403 concurrent и ожидания)
+        sem = self._provider_sem(provider, cfg)
+        if sem is not None and not sem.acquire(blocking=False):
+            logger.info(f"{provider.upper()}: занят параллельным запросом — "
+                        "пропуск (фолбэк по цепочке)")
+            return None
+        try:
+            return self._stream_with_keys_locked(provider, cfg, messages,
+                                                 on_token, temperature,
+                                                 max_tokens, top_p, timeout)
+        finally:
+            if sem is not None:
+                sem.release()
+
+    def _stream_with_keys_locked(self, provider: str, cfg: dict, messages: list,
+                                 on_token, temperature: float, max_tokens: int,
+                                 top_p: float, timeout: float) -> str | None:
+        """Стримит ответ первого ответившего ключа провайдера. None — все ключи упали."""
         keys = cfg["api_keys"]
         last_idx = self._last_key_index.get(provider, 0)
         model = self.model_overrides.get(provider) or cfg["model"]
@@ -438,8 +602,8 @@ class ModelRouter:
         return out
 
     def _webchat_quota_for(self, site: str):
-        """Лимит вызовов/час для сайта: персональный override (None — снят)
-        или дефолт web_llm.QUOTA_PER_HOUR."""
+        """Лимит вызовов/час для сайта из llm.webchat_limits; без записи —
+        без лимита (дефолт web_llm.QUOTA_PER_HOUR = None)."""
         from app.features.web_llm import QUOTA_PER_HOUR
         return self.webchat_limits.get(site, QUOTA_PER_HOUR)
 
@@ -452,13 +616,30 @@ class ModelRouter:
             except Exception:
                 pass
 
+    def _webchat_pool_for(self, site: str) -> str | None:
+        """Пул браузера для сайта из llm.webchat_mode: headless → 'h',
+        hidden/headed → 'v'; без записи — None (дефолт WebChatLLM)."""
+        mode = str((self.webchat_modes or {}).get(site) or "").lower()
+        if mode == "headless":
+            return "h"
+        if mode in ("hidden", "headed"):
+            return "v"
+        return None
+
     def _try_webchat(self, messages, temperature: float, max_tokens: int,
                      top_p: float, timeout: float,
                      sites: list | None = None, channel: str = "main") -> str | None:
         """Попытка ответа через веб-чат (аккаунт пользователя в Chrome).
         sites — конкретные сайты в порядке перебора; None — все включённые.
         channel — «main» (ответы) или «side» (побочные задачи): разные чаты.
-        None — выключен/недоступен/таймаут: цепочка идёт дальше."""
+        None — выключен/недоступен/таймаут: цепочка идёт дальше.
+
+        Канал main — пользовательский путь: лок инстанса ждём недолго
+        (BURST_LOCK_WAIT_SEC). Занят (другая генерация, в т.ч. второй чат
+        пользователя) — НЕ ждём: уходим в burst-инстанс (канал «burst»,
+        разовый свежий чат с тем же полным контекстом — _join_messages и
+        так шлёт его целиком, память сайта не нужна). Burst не кэшируется:
+        свой свежий лок, чужую очередь не ждёт никогда."""
         try:
             from app.features.web_llm import WebChatLLM
         except Exception:
@@ -469,12 +650,27 @@ class ModelRouter:
                 chat = self._webchats.get(key)
                 if chat is None:
                     chat = WebChatLLM(site, context=self.context, channel=channel,
-                                      quota_per_hour=self._webchat_quota_for(site))
+                                      quota_per_hour=self._webchat_quota_for(site),
+                                      browser_pool=self._webchat_pool_for(site))
                     self._webchats[key] = chat
                 # Веб-чат медленный (стриминг + опрос DOM): минимум 150 сек
+                eff_timeout = max(timeout, 150.0)
                 answer = chat.get_response(
                     messages, temperature=temperature, max_tokens=max_tokens,
-                    top_p=top_p, timeout=max(timeout, 150.0))
+                    top_p=top_p, timeout=eff_timeout,
+                    lock_timeout=(BURST_LOCK_WAIT_SEC
+                                  if channel == "main" else None))
+                if not answer and channel == "main" \
+                        and getattr(chat, "last_call_lock_miss", False):
+                    logger.info(f"[WebChat] {site}: основной чат занят — "
+                                "отвечаю из свежего чата (burst)")
+                    burst = WebChatLLM(
+                        site, context=self.context, channel="burst",
+                        quota_per_hour=self._webchat_quota_for(site),
+                        browser_pool=self._webchat_pool_for(site))
+                    answer = burst.get_response(
+                        messages, temperature=temperature,
+                        max_tokens=max_tokens, top_p=top_p, timeout=eff_timeout)
                 if answer:
                     self._last_provider = f"webchat:{site}"
                     return answer
@@ -482,9 +678,91 @@ class ModelRouter:
                 logger.warning(f"[WebChat] {site}: вызов не сработал: {e}")
         return None
 
+    def _call_forced(self, provider: str, messages, temperature: float,
+                     max_tokens: int, top_p: float, timeout: float,
+                     webchat_channel: str = "main", on_token=None) -> str | None:
+        """Одна попытка по назначенному провайдеру (llm.answer_provider/
+        cc_provider) ВНЕ цепочки. None — провайдер недоступен/не ответил
+        (caller идёт по обычной цепочке — fallback). on_token задан —
+        стрим-вариант (веб-чат/локальный отдают одним куском, как в
+        get_response_stream)."""
+        try:
+            if provider == "local":
+                return self._try_local(messages, temperature, max_tokens, top_p,
+                                       timeout, on_token)
+            if provider == "webchat" or str(provider).startswith("webchat:"):
+                sites = self.webchat_sites if provider == "webchat" \
+                    else [provider.split(":", 1)[1]]
+                answer = self._try_webchat(messages, temperature, max_tokens,
+                                           top_p, timeout, sites, webchat_channel)
+                if answer and on_token is not None:
+                    on_token(answer)
+                return answer
+            if provider in self.available:
+                cfg = self.available[provider]
+                if on_token is not None:
+                    return self._stream_with_keys(provider, cfg, messages, on_token,
+                                                  temperature, max_tokens, top_p,
+                                                  timeout)
+                return self._call_with_keys(provider, cfg, messages, temperature,
+                                            max_tokens, top_p, timeout)
+        except Exception as e:
+            logger.warning(f"[Router] назначенный провайдер {provider}: {e}")
+        return None
+
+    def _call_forced_vision(self, provider: str, text_prompt: str,
+                            image_bytes: bytes, timeout: float,
+                            image_mime: str, extra_image) -> str | None:
+        """Назначенный vision-провайдер (llm.vision_provider): webchat:<сайт>
+        с adapter['images'] или облачный с vision != false (auto — с автопробой,
+        как в основной цепочке). None — недоступен: caller идёт по цепочке."""
+        import base64
+        try:
+            if provider == "local":
+                return None  # vision в локальном роутере нет
+            if provider == "webchat" or str(provider).startswith("webchat:"):
+                sites = self.webchat_sites if provider == "webchat" \
+                    else [provider.split(":", 1)[1]]
+                return self._try_webchat_image(text_prompt, image_bytes, timeout,
+                                               sites=sites, image_mime=image_mime,
+                                               extra_image=extra_image)
+            if provider in self.available:
+                cfg = self.available[provider]
+                mode = str(cfg.get("vision", "auto")).lower()
+                if mode == "false":
+                    return None
+                if mode == "auto":
+                    verdict = self._vision_verdict.get(provider)
+                    if verdict is None:
+                        verdict = self._probe_vision(provider, cfg)
+                    if not verdict:
+                        return None
+                img_b64 = base64.b64encode(image_bytes).decode()
+                content = [
+                    {"type": "text", "text": text_prompt},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:{image_mime};base64,{img_b64}"}},
+                ]
+                if extra_image:
+                    content.append(
+                        {"type": "image_url",
+                         "image_url": {"url": f"data:{image_mime};base64,"
+                                       + base64.b64encode(extra_image).decode()}})
+                return self._call_with_keys(
+                    provider, cfg, [{"role": "user", "content": content}],
+                    temperature=0.2, max_tokens=1000, top_p=0.9,
+                    timeout=timeout)
+        except Exception as e:
+            logger.warning(f"[Router] назначенный vision-провайдер {provider}: {e}")
+        return None
+
     def set_persona_llm(self, primary: str | None, fallback: list[str] | None = None,
                         models: dict | None = None, webchat: str | None = None,
-                        webchat_limits: dict | None = None):
+                        webchat_limits: dict | None = None,
+                        webchat_modes: dict | None = None,
+                        answer_provider: str | None = None,
+                        cc_provider: str | None = None,
+                        vision_provider: str | None = None):
         """Персональный override провайдеров (YAML персоны, секция llm).
 
         primary — основной провайдер персоны ('local', 'webchat' (все сайты),
@@ -495,8 +773,21 @@ class ModelRouter:
         models — свои модели по провайдерам; webchat — сайт веб-чата
         (deepseek|qwen|claude), None — оставить как есть (env WEBCHAT_SITES).
         webchat_limits — {сайт: {"enabled": bool, "per_hour": int}}: лимит
-        вызовов в час на сайт; enabled:false — снять; None — как есть."""
+        вызовов в час на сайт; enabled:false — снять; None — как есть.
+        webchat_modes — {сайт: headless|hidden|headed}: в каком пуле Chrome
+        держать вкладку сайта (web_extended); None — дефолты."""
         from app.features.web_llm import ADAPTERS as _WC_ADAPTERS
+
+        if webchat_modes is not None:
+            modes = {}
+            for site, mode in (webchat_modes or {}).items():
+                m = str(mode).strip().lower()
+                if site in _WC_ADAPTERS and m in ("headless", "hidden", "headed"):
+                    modes[site] = m
+                else:
+                    logger.warning(f"[Router] webchat_mode: пропуск {site!r}={mode!r} "
+                                   f"(нет такого сайта/режима)")
+            self.webchat_modes = modes
 
         if webchat_limits is not None:
             self.webchat_limits = self._norm_webchat_limits(webchat_limits)
@@ -517,6 +808,19 @@ class ModelRouter:
             if isinstance(p, str) and p.startswith("webchat:"):
                 return p if p.split(":", 1)[1] in _WC_ADAPTERS else None
             return p if p in PROVIDER_CONFIGS or p == "local" else None
+
+        # Провайдеры по назначению (кейс 18.09): answer — текст ответа
+        # пользователю, cc — внутренние решения режима управления (разбор
+        # команды, резолв элементов страницы), vision — картинки.
+        # None/неизвестный токен — обычная цепочка.
+        for attr, val in (("answer_provider", answer_provider),
+                          ("cc_provider", cc_provider),
+                          ("vision_provider", vision_provider)):
+            tok = _norm_token(val) if val else None
+            if val and not tok:
+                logger.warning(f"[Router] llm.{attr}: неизвестный провайдер "
+                               f"{val!r} — обычная цепочка")
+            setattr(self, attr, tok)
 
         if fallback:
             norm: list[str] = []
@@ -699,7 +1003,8 @@ class ModelRouter:
     def get_response_with_image(self, text_prompt: str, image_bytes: bytes,
                                 max_tokens: int = 1000, timeout: float = 90.0,
                                 image_mime: str = "image/jpeg",
-                                extra_image: bytes | None = None
+                                extra_image: bytes | None = None,
+                                force_provider: str = None
                                 ) -> str | None:
         """
         Отправляет изображение vision-модели (OpenAI-совместимый формат image_url).
@@ -737,6 +1042,17 @@ class ModelRouter:
                 {"type": "image_url",
                  "image_url": {"url": f"data:{image_mime};base64,{ex_b64}"}})
         messages = [{"role": "user", "content": content}]
+
+        # Назначенный vision-провайдер (llm.vision_provider): одна попытка
+        # вне цепочки, неудача — обычная цепочка
+        if force_provider:
+            answer = self._call_forced_vision(force_provider, text_prompt,
+                                              image_bytes, timeout, image_mime,
+                                              extra_image)
+            if answer:
+                return answer
+            logger.info(f"[Router] назначенный vision-провайдер "
+                        f"{force_provider} не ответил — обычная цепочка")
 
         tried_webchats: set[str] = set()
         # Основной провайдер — веб-чат: пробуем его первым, как в get_response
@@ -818,7 +1134,8 @@ class ModelRouter:
                 if chat is None:
                     chat = WebChatLLM(site, context=self.context,
                                       channel="vision",
-                                      quota_per_hour=self._webchat_quota_for(site))
+                                      quota_per_hour=self._webchat_quota_for(site),
+                                      browser_pool=self._webchat_pool_for(site))
                     self._webchats[key] = chat
                 answer = chat.get_response_with_image(
                     text_prompt, image_bytes, timeout=max(timeout, 150.0),

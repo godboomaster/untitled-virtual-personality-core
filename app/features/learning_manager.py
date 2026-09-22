@@ -10,7 +10,6 @@
 """
 
 import asyncio
-import json
 import logging
 import re
 import threading
@@ -19,7 +18,11 @@ import uuid
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import language_name
+# Общий классификатор ответов «да/нет» — одно определение на проект
+# (см. комментарий у classify_continue_answer ниже)
+from app.features.computer_control import classify_confirmation
 
 logger = logging.getLogger(__name__)
 
@@ -237,18 +240,41 @@ def _clip(value: float, lo: float, hi: float) -> float:
 
 # ─── Ответ «да/нет» на «продолжать обучение?» ───────────────
 
-_POSITIVE_RE = re.compile(r"\b(?:да|давай|продолж\w*|хочу|ок|ok|yes|конечно|поехали|угу)\b", re.IGNORECASE)
-_NEGATIVE_RE = re.compile(r"\b(?:нет|не\s+надо|хватит|стоп|останов\w*|no|не\s+хочу|отстань)\b", re.IGNORECASE)
+# Ответ «да/нет» разбирает ОБЩИЙ классификатор подтверждений
+# (computer_control.classify_confirmation): клаузный разбор, «отрицание
+# побеждает», «сомнение = UNKNOWN», гейты по «?» и длине.
+#
+# Корень дефекта (тот же, что в задаче №1 аудита, где его уже вылечили для
+# подтверждений действий): здесь лежали два независимых re.search по всему
+# тексту — «есть ли где-то да-слово» / «есть ли где-то нет-слово». Порядок
+# «сначала NO, потом YES» спасал только явное «нет»: «не, давай не будем
+# продолжать» не попадало ни в одну фразу _NEGATIVE_RE, зато содержало
+# «давай»/«продолжать» → курс продолжался против воли человека. Второй копии
+# клаузной логики здесь нет — вместо неё словарь именно про обучение сводится
+# к словам, которые общий классификатор уже знает (одно определение на проект).
+_LEARN_SYNONYMS = (
+    # «продолжай/продолжим/продолжать» = согласие; под «не» общий классификатор
+    # сам превратит клаузу в NO («не будем продолжать»)
+    (re.compile(r"(?<![a-zа-яё])продолж\w*", re.IGNORECASE), "давай"),
+    # «хочу» в общем словаре — слово-желание (ответ только под отрицанием:
+    # «не хочу» = NO); на вопрос «продолжаем?» голое «хочу» — это «да»,
+    # а «не хочу» после подстановки остаётся отказом («не да»)
+    (re.compile(r"(?<![a-zа-яё])хочу(?![a-zа-яё])", re.IGNORECASE), "да"),
+    # «хватит/прекрати/останови/отстань/надоело» = «стоп»
+    (re.compile(r"(?<![a-zа-яё])(?:хватит|прекрат\w*|останов\w*|отстань|"
+                r"надоел\w*)(?![a-zа-яё])", re.IGNORECASE), "стоп"),
+)
 
 
 def classify_continue_answer(text: str) -> str:
     """Определяет ответ пользователя на «продолжать обучение?».
     Возвращает 'YES' | 'NO' | 'UNKNOWN'."""
-    if _NEGATIVE_RE.search(text):
-        return "NO"
-    if _POSITIVE_RE.search(text):
-        return "YES"
-    return "UNKNOWN"
+    if not text:
+        return "UNKNOWN"
+    norm = text
+    for rx, word in _LEARN_SYNONYMS:
+        norm = rx.sub(word, norm)
+    return classify_confirmation(norm)
 
 
 # ─── Менеджер ───────────────────────────────────────────────
@@ -337,8 +363,12 @@ class LearningManager:
         self._sessions: List[dict] = []
         self._load()
 
-        # Состояние диалога «как часто?» — in-memory (теряется на рестарте, это ок)
-        self._setup_state: Dict[str, dict] = {}
+        # Состояние диалога «как часто?» — in-memory (теряется на рестарте, это ок).
+        # chat_id -> user_id -> state: раньше ключом был только chat_id — в
+        # групповом чате второй /learn (от другого пользователя) молча
+        # затирал setup первого, и ответ о периодичности от ЛЮБОГО участника
+        # уходил в чужой курс (см. begin_setup/get_setup_state/clear_setup).
+        self._setup_state: Dict[str, Dict[str, dict]] = {}
 
         # Реестр message_id → признак, что это сообщение бота было вопросом (частота уроков /
         # «продолжаем?» / тест). Нужен, чтобы понять, отвечает ли пользователь reply-ом именно
@@ -395,19 +425,10 @@ class LearningManager:
     # ── persistence ──
 
     def _load(self):
-        if self._file.exists():
-            try:
-                self._sessions = json.loads(self._file.read_text(encoding="utf-8"))
-            except Exception as e:
-                logger.warning(f"[Learning] Не удалось загрузить: {e}")
-                self._sessions = []
-        else:
-            self._sessions = []
+        self._sessions = load_json_safe(self._file, default=[], label="Learning")
 
     def _save(self):
-        """Атомарная запись: пишем во временный файл, затем переименовываем.
-        Защищает от порчи файла (0 байт / битый JSON) при аварийном завершении процесса
-        в момент записи — иначе _load молча вернёт пустой список и все сессии «исчезнут».
+        """Атомарная запись (общий helper app.core.atomic_io — tmp-файл + os.replace).
         Заодно вычищает давно остановленные сессии — иначе learning.json растёт бесконечно."""
         # Неактивные сессии старше TTL выкидываем (точного stopped_at не храним,
         # created_at для мёртвой истории достаточно).
@@ -417,28 +438,16 @@ class LearningManager:
             if s.get("active") or s.get("created_at", 0) >= cutoff
         ]
         try:
-            import os, tempfile
-            data = json.dumps(self._sessions, ensure_ascii=False, indent=2)
-            fd, tmp_path = tempfile.mkstemp(dir=str(self._base_dir), suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(data)
-                os.replace(tmp_path, self._file)
-            except Exception:
-                # Если переименование не удалось — чистим временный файл
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+            atomic_write_json(self._file, self._sessions)
         except Exception as e:
             logger.warning(f"[Learning] Не удалось сохранить: {e}")
 
     # ── setup-диалог (как часто?) ──
 
     def begin_setup(self, chat_id: str, subject: str, user_id: str, user_name: str):
+        chat_id, user_id = str(chat_id), str(user_id)
         with self._lock:
-            self._setup_state[str(chat_id)] = {
+            self._setup_state.setdefault(chat_id, {})[user_id] = {
                 "subject": subject,
                 "user_id": user_id,
                 "user_name": user_name,
@@ -451,33 +460,99 @@ class LearningManager:
     # с временнОй лексикой спустя дни неожиданно создаст курс
     SETUP_TTL_SECONDS = 3600
 
-    def get_setup_state(self, chat_id: str) -> Optional[dict]:
+    def get_setup_state(self, chat_id: str, user_id: Optional[str] = None) -> Optional[dict]:
+        """user_id указан — состояние именно этого пользователя (правильный
+        путь в групповом чате с несколькими параллельными /learn). Не указан
+        (старые вызовы) — единственный ожидающий в чате, а если их несколько
+        параллельно — самый свежий вопрос, для обратной совместимости."""
+        chat_id = str(chat_id)
         with self._lock:
-            state = self._setup_state.get(str(chat_id))
-            if state and time.time() - state.get("asked_at", 0) > self.SETUP_TTL_SECONDS:
-                self._setup_state.pop(str(chat_id), None)
+            bucket = self._setup_state.get(chat_id)
+            if not bucket:
                 return None
-            return state
+            now = time.time()
+            expired = [uid for uid, st in bucket.items()
+                      if now - st.get("asked_at", 0) > self.SETUP_TTL_SECONDS]
+            for uid in expired:
+                bucket.pop(uid, None)
+            if not bucket:
+                self._setup_state.pop(chat_id, None)
+                return None
+            if user_id is not None:
+                return bucket.get(str(user_id))
+            if len(bucket) == 1:
+                return next(iter(bucket.values()))
+            return max(bucket.values(), key=lambda st: st.get("asked_at", 0))
 
-    def clear_setup(self, chat_id: str):
+    def clear_setup(self, chat_id: str, user_id: Optional[str] = None, *,
+                    all_users: bool = False):
+        """Снимает ожидающий вопрос «как часто?». all_users=True — все
+        ожидающие чата (стирание памяти чата, см. clear_chat); иначе один
+        участник (user_id) или легаси-путь «единственный ожидающий»."""
         with self._lock:
-            self._setup_state.pop(str(chat_id), None)
+            self._clear_setup_locked(str(chat_id), user_id, all_users)
+
+    def _clear_setup_locked(self, chat_id: str, user_id: Optional[str],
+                            all_users: bool):
+        """Тело clear_setup под уже взятым self._lock — чтобы clear_chat
+        чистил сессии и setup одной транзакцией, а не двумя (Lock не
+        реентрантный, повторный вход из-под лока был бы дедлоком)."""
+        bucket = self._setup_state.get(chat_id)
+        if not bucket:
+            return
+        if all_users:
+            bucket.clear()
+        elif user_id is not None:
+            bucket.pop(str(user_id), None)
+        elif len(bucket) == 1:
+            # Легаси-вызов без user_id: чистим, только если ожидающий
+            # ровно один — иначе можно случайно стереть чужой setup
+            bucket.clear()
+        if not bucket:
+            self._setup_state.pop(chat_id, None)
+
+    def clear_chat(self, chat_id: str) -> int:
+        """Полностью убирает обучение чата: сессии (активные и остановленные),
+        ВСЕ ожидающие setup «как часто?» (в группе их может быть несколько —
+        по одному на участника) и реестр открытых вопросов уроков. Возвращает
+        число удалённых сессий.
+
+        Публичная точка для стирания памяти чата (app/api/memory_wipe):
+        раньше тот руками лез в приватные mgr._sessions / mgr._setup_state /
+        mgr._question_msgs под mgr._lock, и любое изменение внутреннего
+        устройства (например появление per-user бакета setup) молча оставляло
+        в менеджере мусор от «стёртого» чата. Здесь — одно определение
+        «что значит стереть обучение чата», всё под одним локом."""
+        ck = str(chat_id)
+        with self._lock:
+            before = len(self._sessions)
+            self._sessions = [s for s in self._sessions
+                              if str(s.get("chat_id")) != ck]
+            removed = before - len(self._sessions)
+            self._clear_setup_locked(ck, None, True)
+            self._question_msgs.pop(ck, None)
+            self._save()
+        return removed
 
     # ── API сессий ──
 
-    def commit_session(self, chat_id: str, interval_seconds: float, topic_id: Optional[int] = None) -> Optional[dict]:
+    def commit_session(self, chat_id: str, interval_seconds: float, topic_id: Optional[int] = None,
+                       user_id: Optional[str] = None) -> Optional[dict]:
         """Создаёт активную сессию из setup-состояния. Возвращает сессию или None.
 
         Несколько параллельных курсов на один chat_id — норма: если пользователь уже
         учит тему А и просит «научи меня Б», сессия по Б добавляется, а не заменяет А.
         Заменяется (пересоздаётся) только сессия с ТОЙ ЖЕ темой — чтобы повторное
         «научи меня X», пока X уже идёт, не плодило дубликаты одного курса.
+
+        user_id — чей setup коммитим (групповой чат с параллельными /learn от
+        разных участников); без него — легаси-путь через get_setup_state.
         """
         chat_id = str(chat_id)
-        setup = self.get_setup_state(chat_id)
+        setup = self.get_setup_state(chat_id, user_id)
         if not setup:
             return None
-        self.clear_setup(chat_id)
+        self.clear_setup(chat_id, user_id)
 
         interval = max(self.min_interval, min(self.max_interval, interval_seconds))
         now = time.time()
@@ -1843,6 +1918,14 @@ class LearningManager:
         return f"{weeks} wk"
 
     def start(self, loop=None):
+        """Запускает фоновую задачу. Идемпотентна: повторный вызов (например,
+        живое включение фичи поверх уже запущенного цикла) — no-op, как у
+        ReminderManager.start(). Раньше повторный вызов плодил второй
+        параллельный _loop() поверх того же состояния — дублирующиеся
+        уроки/квизы и потерянная ссылка на первую задачу (её никто не
+        отменял)."""
+        if self._running:
+            return
         if not loop:
             try:
                 loop = asyncio.get_running_loop()

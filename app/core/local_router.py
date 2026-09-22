@@ -2,7 +2,6 @@
 Локальный LLM роутер через Ollama.
 
 Используется для лёгких бинарных классификаций:
-- need_search: SEARCH / SKIP
 - self_memory: SKIP / NOTE
 - proactive: МОЛЧУ / мысль
 
@@ -21,6 +20,7 @@
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -37,7 +37,6 @@ DEFAULT_TIMEOUT = 15.0
 # Все задачи локального движка (полный список потребителей Ollama).
 # Значение — ollama_only: задача технически не может уйти в веб-чат.
 LOCAL_TASKS: dict[str, bool] = {
-    "need_search": False,          # нужен ли веб-поиск (features/need_search)
     "query_rewrite": False,        # рерайтер/улучшатель поисковых запросов
     "book_search": False,          # книжный RAG: перевод, distill, сплит, кореферентность
     "self_memory": False,          # заметки в личный дневник
@@ -315,6 +314,10 @@ class LocalLLMRouter:
                 "model": self.model,
                 "messages": messages,
                 "stream": False,
+                # Сколько держать модель в памяти после ответа. Служебные
+                # вызовы редкие — при дефолтных 5m модель (~2.6 ГБ) висит в
+                # RAM почти постоянно; 2m даёт ей реально выгружаться.
+                "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "2m"),
                 # Рассуждающие модели (gemma4 и т.п.) иначе тратят весь
                 # num_predict на thinking, и content возвращается пустым —
                 # классификаторы получают None. Для служебных вызовов
@@ -428,6 +431,8 @@ class LocalLLMRouter:
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt, "images": [img_b64]}],
                 "stream": False,
+                # См. get_response: короткий keep_alive, чтобы модель выгружалась
+                "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "2m"),
                 # См. get_response: reasoning-модели съедают num_predict на thinking
                 "think": False,
                 "options": {
@@ -453,10 +458,20 @@ class LocalLLMRouter:
 
 # Глобальный singleton (ленивая инициализация)
 _local_router: Optional[LocalLLMRouter] = None
+# Double-checked locking: без лока конкурентные первые вызовы из разных
+# потоков (self_memory/proactive/query_rewrite и т.д. — все дергают
+# get_local_router() лениво) могли одновременно пройти проверку
+# `_local_router is None` и создать несколько LocalLLMRouter (лишние
+# httpx.Client + запрос /api/tags к Ollama на каждый), последний из которых
+# молча побеждает — остальные потоки продолжали бы работать со своим
+# «потерянным» экземпляром, если бы успели прочитать ссылку раньше замены.
+_local_router_lock = threading.Lock()
 
 
 def get_local_router() -> LocalLLMRouter:
     global _local_router
     if _local_router is None:
-        _local_router = LocalLLMRouter()
+        with _local_router_lock:
+            if _local_router is None:
+                _local_router = LocalLLMRouter()
     return _local_router

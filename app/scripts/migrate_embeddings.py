@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
+from app.core.chroma_space import open_collection
+
 # Новая мультиязычная модель (понимает 50+ языков, включая русский)
 NEW_EMBEDDER = SentenceTransformerEmbeddingFunction(
     model_name="paraphrase-multilingual-MiniLM-L12-v2"
@@ -60,9 +62,11 @@ def migrate_collection(db_path: str, collection_name: str):
     if count == 0:
         print(f"  [SKIP] Коллекция пуста (0 записей)")
         client.delete_collection(collection_name)
-        new_collection = client.get_or_create_collection(
-            collection_name,
-            embedding_function=NEW_EMBEDDER
+        # open_collection, а не get_or_create_collection: без явной hnsw:space
+        # Chroma создаёт коллекцию в l2, а пороги схожести в memory.py
+        # подобраны под cosine (см. app/core/chroma_space.py)
+        new_collection = open_collection(
+            client, collection_name, embedding_function=NEW_EMBEDDER
         )
         return
 
@@ -92,10 +96,10 @@ def migrate_collection(db_path: str, collection_name: str):
     client.delete_collection(collection_name)
     print(f"  [DEL] Старая коллекция удалена")
 
-    # 4. Создаём новую с новым эмбеддером
-    new_collection = client.get_or_create_collection(
-        collection_name,
-        embedding_function=NEW_EMBEDDER
+    # 4. Создаём новую с новым эмбеддером (open_collection — с явной
+    # hnsw:space=cosine, см. app/core/chroma_space.py)
+    new_collection = open_collection(
+        client, collection_name, embedding_function=NEW_EMBEDDER
     )
     print(f"  [NEW] Коллекция создана с multilingual embedder")
 

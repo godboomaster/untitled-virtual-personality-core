@@ -3,13 +3,14 @@
 Один файл на контекст (персону), не на чат.
 """
 
-import json
 import logging
 import re
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from app.core import timeutil
+from app.core.atomic_io import atomic_write_json, load_json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ class InventoryItem:
                  expires: Optional[str] = None):
         self.name = name
         self.description = description
-        self.acquired = acquired or datetime.now().strftime("%Y-%m-%d")
+        self.acquired = acquired or timeutil.today().strftime("%Y-%m-%d")
         self.source = source
         self.tags = tags or []
         self.expires = expires  # ISO date или None
@@ -29,7 +30,7 @@ class InventoryItem:
         if not self.expires:
             return False
         try:
-            return datetime.now().strftime("%Y-%m-%d") > self.expires
+            return timeutil.today().strftime("%Y-%m-%d") > self.expires
         except Exception:
             return False
 
@@ -73,22 +74,13 @@ class InventoryManager:
         self._load()
 
     def _load(self):
-        if self._file.exists():
-            try:
-                with open(self._file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self._items = [InventoryItem.from_dict(i) for i in data.get("items", [])]
-            except Exception as e:
-                logger.warning(f"[Inventory] Не удалось загрузить {self._file}: {e}")
-                self._items = []
+        data = load_json_safe(self._file, default={}, label="Inventory")
+        items = data.get("items", []) if isinstance(data, dict) else []
+        self._items = [InventoryItem.from_dict(i) for i in items]
 
     def _save(self):
         try:
-            with open(self._file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {"items": [i.to_dict() for i in self._items]},
-                    f, ensure_ascii=False, indent=2
-                )
+            atomic_write_json(self._file, {"items": [i.to_dict() for i in self._items]})
         except Exception as e:
             logger.warning(f"[Inventory] Не удалось сохранить {self._file}: {e}")
 
@@ -161,22 +153,32 @@ class InventoryManager:
             return [item for item in self._items if item.is_expired()]
 
     def get_context_block(self) -> Optional[str]:
-        """Возвращает форматированный блок для system prompt."""
-        if not self._items:
+        """Возвращает форматированный блок для system prompt.
+
+        Итерация self._items — под локом: без него сборка системного промпта
+        (частый читатель) и add_item/remove_item из другого потока (HTTP-
+        обработчик /inventory) могли пересечься на живом списке и уронить
+        RuntimeError "list changed size during iteration"."""
+        with self._lock:
+            items = list(self._items)
+        if not items:
             return None
         lines = ["Your inventory:"]
-        for item in self._items:
+        for item in items:
             desc = f" — {item.description}" if item.description else ""
             exp = " [expired]" if item.is_expired() else ""
             lines.append(f"  • {item.name}{desc}{exp}")
         return "\n".join(lines)
 
     def get_list_text(self) -> str:
-        """Возвращает текст для команды /inventory."""
-        if not self._items:
+        """Возвращает текст для команды /inventory (снимок списка под локом —
+        см. get_context_block про гонку с add_item/remove_item)."""
+        with self._lock:
+            items = list(self._items)
+        if not items:
             return "Инвентарь пуст."
         lines = ["Инвентарь:"]
-        for i, item in enumerate(self._items, 1):
+        for i, item in enumerate(items, 1):
             desc = f" — {item.description}" if item.description else ""
             src = f" (источник: {item.source})" if item.source else ""
             lines.append(f"{i}. {item.name}{desc}{src}")

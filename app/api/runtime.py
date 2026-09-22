@@ -8,18 +8,40 @@ ChromaDB) и кешируются по имени персоны. Память �
 
 import asyncio
 import threading
+import zlib
 from pathlib import Path
 
 import yaml
 
+from app.api.security import safe_join
 from app.bot_instance import BotInstance
 
 PERSONAS_DIR = Path(__file__).parent.parent / "personas"
 
+# Палитра меток персон (общий календарь): приглушённые тона, различимые
+# и на светлой, и на тёмной теме. Используется, когда в YAML персоны
+# нет явного поля color.
+_COLOR_PALETTE = [
+    "#e0683a", "#3f8cff", "#3fae6b", "#b06fd6",
+    "#c9a227", "#38b6a5", "#d64f6e", "#7a9a3a",
+]
+
+
+def persona_color(name: str, data: dict) -> str:
+    """Цвет метки персоны: явный color из YAML, иначе стабильный по имени
+    выбор из палитры (crc32 — в отличие от hash(), не зависит от процесса)."""
+    explicit = data.get("color")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    return _COLOR_PALETTE[zlib.crc32(name.encode("utf-8")) % len(_COLOR_PALETTE)]
+
 
 def _load_persona_yaml(name: str) -> dict | None:
-    path = PERSONAS_DIR / f"{name}.yaml"
-    if not path.is_file():
+    # Последний рубеж: чем бы ни был name (тело запроса, query, вызов из
+    # другого модуля) — невалидное имя (traversal, "/", пусто, не тот
+    # алфавит) физически не долетает до Path(...). См. app/api/security.py
+    path = safe_join(PERSONAS_DIR, name, ".yaml")
+    if path is None or not path.is_file():
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -54,6 +76,7 @@ def get_persona_info(name: str) -> dict | None:
         "id": name,
         "name": data.get("name", name),
         "description": data.get("description", ""),
+        "color": persona_color(name, data),
         "features": data.get("features") or {},
         "settings": data.get("settings") or {},
     }

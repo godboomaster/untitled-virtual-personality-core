@@ -29,6 +29,7 @@ from typing import Dict, List, Optional
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.persona_context import _extract_json
+from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +85,45 @@ class RelationshipMemory:
         self.primitive = primitive
         self.local = get_local_router()
         self._lock = threading.RLock()
+        # Ретенция на живущем процессе (аудит): дозор — не чаще раза в
+        # RETENTION_TICK_HOURS перезапускать прореживание из add_extracted
+        # (см. _maybe_prune_stale)
+        self._retention_timer = RetentionTimer()
 
         db = get_db_paths(context)
         base = Path(db["stm"]).parent / "living"
         base.mkdir(parents=True, exist_ok=True)
         self._file = base / "relationship.json"
         self._chats: Dict[str, dict] = self._load()
+
+        # Ретенция (app.core.retention, задача аудита): разовый чат
+        # (человек написал раз и не вернулся) не должен копить историю
+        # отношений вечно. Прогоняем сразу при загрузке.
+        if self._prune_stale_chats():
+            self._save()
+
+    def _prune_stale_chats(self) -> list:
+        """last_seen — last_message_at (пишется на каждое сообщение
+        пользователя, см. record_message): метки нет (легаси-запись до
+        ретенции, либо запись создана иным путём без record_message) — НЕ
+        трогаем, пока следующее сообщение её не проставит."""
+        return prune_stale(
+            self._chats, lambda chat_id, rec: (rec or {}).get("last_message_at"),
+            CHAT_RETENTION_DAYS, label="Relationship",
+        )
+
+    def _maybe_prune_stale(self):
+        """Повтор ретенции на живущем процессе (аудит): зовётся из
+        add_extracted — урожай диалога идёт раз в HARVEST_MIN_MESSAGES
+        реплик/по таймеру (LivingPersona._harvest_dialogue), НЕ на каждое
+        сообщение (для этого — record_message, туда прунинг не вешаем).
+        Дозор гасит частоту до раза в RETENTION_TICK_HOURS."""
+        if not self._retention_timer.due():
+            return
+        with self._lock:
+            removed = self._prune_stale_chats()
+        if removed:
+            self._save()
 
     def _load(self) -> dict:
         if self._file.exists():
@@ -161,6 +195,9 @@ class RelationshipMemory:
         """Применить извлечённые из диалога моменты/темы/позиции (дедуп,
         лимиты). Вызывается и из extract_moments, и из общего урожая
         диалога (LivingPersona._harvest_dialogue). primitive — мимо."""
+        # Дозор ретенции — здесь, а не в record_message: этот путь идёт раз
+        # в несколько сообщений/по таймеру, а не на каждое (см. _maybe_prune_stale)
+        self._maybe_prune_stale()
         if self.primitive:
             return 0
         added = 0

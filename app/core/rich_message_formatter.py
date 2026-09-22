@@ -18,7 +18,58 @@ Rich Message Formatter — конвертация Markdown в Rich HTML/Markdown
 """
 
 import re
-from typing import Optional
+from typing import List, Optional, Tuple
+
+_CODE_BLOCK_RE = re.compile(r'```(\w*)\n?(.*?)```', re.DOTALL)
+_INLINE_CODE_RE = re.compile(r'`([^`]+)`')
+
+
+def _escape_html(text: str) -> str:
+    """Экранирование HTML-сущностей — единственное определение на модуль."""
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def _stash_code(text: str) -> Tuple[str, List[str], List[str]]:
+    """Вырезать код-блоки и инлайн-код в плейсхолдеры, ЭКРАНИРУЯ содержимое.
+
+    Экранирование кода тем же ``_escape_html``, что и остальной текст, —
+    один путь на модуль. Раньше ``markdown_to_rich_html`` прятало код до
+    экранирования и восстанавливало после, поэтому содержимое ``<pre>``
+    уходило в Telegram как есть: любой ``<`` в примере кода ломал разбор
+    HTML (сообщение не отправлялось), а ``<b>`` или ``<a href=...>`` из
+    текста модели исполнялись как разметка. В ``to_current_html`` это же
+    экранирование уже было — здесь оно стало общим для обоих путей.
+    """
+    code_blocks: List[str] = []
+    inline_codes: List[str] = []
+
+    def _save_block(m):
+        lang = m.group(1)
+        code = _escape_html(m.group(2))
+        placeholder = f'\x00BLOCK{len(code_blocks)}\x00'
+        if lang:
+            code_blocks.append(f'<pre><code class="language-{lang}">{code}</code></pre>')
+        else:
+            code_blocks.append(f'<pre>{code}</pre>')
+        return placeholder
+
+    def _save_inline(m):
+        placeholder = f'\x00INLINE{len(inline_codes)}\x00'
+        inline_codes.append(f'<code>{_escape_html(m.group(1))}</code>')
+        return placeholder
+
+    text = _CODE_BLOCK_RE.sub(_save_block, text)
+    text = _INLINE_CODE_RE.sub(_save_inline, text)
+    return text, code_blocks, inline_codes
+
+
+def _restore_code(text: str, code_blocks: List[str], inline_codes: List[str]) -> str:
+    """Вернуть на место плейсхолдеры кода (после всей остальной разметки)."""
+    for i, code in enumerate(inline_codes):
+        text = text.replace(f'\x00INLINE{i}\x00', code)
+    for i, block in enumerate(code_blocks):
+        text = text.replace(f'\x00BLOCK{i}\x00', block)
+    return text
 
 
 class RichMessageFormatter:
@@ -35,33 +86,11 @@ class RichMessageFormatter:
         if not text:
             return text
 
-        code_blocks = []
-        inline_codes = []
-
-        # Сохраняем блоки кода ```lang\ncode```
-        def _save_block(m):
-            lang = m.group(1)
-            code = m.group(2)
-            placeholder = f'\x00BLOCK{len(code_blocks)}\x00'
-            if lang:
-                code_blocks.append(f'<pre><code class="language-{lang}">{code}</code></pre>')
-            else:
-                code_blocks.append(f'<pre>{code}</pre>')
-            return placeholder
-
-        text = re.sub(r'```(\w*)\n?(.*?)```', _save_block, text, flags=re.DOTALL)
-
-        # Сохраняем inline-код `code`
-        def _save_inline(m):
-            code = m.group(1)
-            placeholder = f'\x00INLINE{len(inline_codes)}\x00'
-            inline_codes.append(f'<code>{code}</code>')
-            return placeholder
-
-        text = re.sub(r'`([^`]+)`', _save_inline, text)
+        # Прячем код в плейсхолдеры (с экранированием внутри — общий путь)
+        text, code_blocks, inline_codes = _stash_code(text)
 
         # Экранируем HTML-сущности в оставшемся тексте
-        text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        text = _escape_html(text)
 
         # Жирный: **text** → <b>text</b>
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
@@ -134,13 +163,8 @@ class RichMessageFormatter:
         # Сноски: [^id] — пока не поддерживаем в HTML, убираем
         text = re.sub(r'\[\^[^\]]+\]', '', text)
 
-        # Восстанавливаем inline-код
-        for i, code in enumerate(inline_codes):
-            text = text.replace(f'\x00INLINE{i}\x00', code)
-
-        # Восстанавливаем блоки кода
-        for i, block in enumerate(code_blocks):
-            text = text.replace(f'\x00BLOCK{i}\x00', block)
+        # Возвращаем код на место
+        text = _restore_code(text, code_blocks, inline_codes)
 
         return text.strip()
 
@@ -171,30 +195,10 @@ class RichMessageFormatter:
         if not text:
             return text
 
-        code_blocks = []
-        inline_codes = []
+        # Тот же общий путь, что и в markdown_to_rich_html
+        text, code_blocks, inline_codes = _stash_code(text)
 
-        def _save_block(m):
-            lang = m.group(1)
-            code = m.group(2).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            placeholder = f'\x00BLOCK{len(code_blocks)}\x00'
-            if lang:
-                code_blocks.append(f'<pre><code class="language-{lang}">{code}</code></pre>')
-            else:
-                code_blocks.append(f'<pre>{code}</pre>')
-            return placeholder
-
-        text = re.sub(r'```(\w*)\n?(.*?)```', _save_block, text, flags=re.DOTALL)
-
-        def _save_inline(m):
-            code = m.group(1).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            placeholder = f'\x00INLINE{len(inline_codes)}\x00'
-            inline_codes.append(f'<code>{code}</code>')
-            return placeholder
-
-        text = re.sub(r'`([^`]+)`', _save_inline, text)
-
-        text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        text = _escape_html(text)
 
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
         text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
@@ -217,11 +221,8 @@ class RichMessageFormatter:
         # Ссылки
         text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
 
-        # Восстанавливаем код
-        for i, code in enumerate(inline_codes):
-            text = text.replace(f'\x00INLINE{i}\x00', code)
-        for i, block in enumerate(code_blocks):
-            text = text.replace(f'\x00BLOCK{i}\x00', block)
+        # Возвращаем код на место
+        text = _restore_code(text, code_blocks, inline_codes)
 
         return text.strip()
 

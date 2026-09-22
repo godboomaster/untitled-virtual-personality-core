@@ -9,16 +9,17 @@
 
 import json
 import logging
-import os
 import re
 import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from app.core import timeutil
+from app.core.atomic_io import atomic_write_json, load_json_safe
+from app.core.bounded_cache import BoundedCache
 from app.core.local_router import get_local_router
 
 logger = logging.getLogger(__name__)
@@ -210,11 +211,16 @@ class ChatDossier:
         self._local_router = get_local_router()
         # Уже обработанные сообщения (chat_id → маркеры): analyze_chat идёт по
         # последним 50 сообщениям каждые 5 входящих — без дедупликации старые
-        # сообщения экстрактились заново на каждом цикле (спам LLM-вызовами)
-        self._facts_seen: Dict[str, set] = {}
+        # сообщения экстрактились заново на каждом цикле (спам LLM-вызовами).
+        # BoundedCache, а не dict (аудит, задача №7 хвост): в отличие от
+        # self._profiles это НЕ персистентные данные — не сохраняются
+        # в _save()/_load(), только для дедупликации в рамках жизни процесса,
+        # поэтому вечный рост на каждый новый chat_id нечем оправдать, а
+        # вытеснение безобидно (сообщение просто переэкстрактится заново).
+        self._facts_seen: BoundedCache = BoundedCache(max_entries=2000)
         # Водяной знак: бэклог STM (сообщения ДО старта процесса) в экстракцию
         # не берём вообще — факты нужны только из свежих сообщений
-        self._facts_watermark: Dict[str, float] = {}
+        self._facts_watermark: BoundedCache = BoundedCache(max_entries=2000)
         self._started_at = time.time()
         self._load()
 
@@ -231,11 +237,12 @@ class ChatDossier:
         return None
 
     def _load(self):
-        """Загружает досье с диска."""
-        if self._file.exists():
+        """Загружает досье с диска. Полностью битый файл — warning + .corrupt-
+        копия (общий helper), затем пустое досье; один битый ПРОФИЛЬ внутри
+        иначе валидного файла — своя изоляция ниже (не роняет остальные)."""
+        data = load_json_safe(self._file, default={}, label="Dossier")
+        if isinstance(data, dict) and data:
             try:
-                with open(self._file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
                 for chat_id, profile_data in data.items():
                     try:
                         # Десериализуем user_facts
@@ -304,10 +311,7 @@ class ChatDossier:
                         "last_updated": profile.last_updated,
                         "message_count": profile.message_count,
                     }
-                tmp_file = self._file.with_suffix(".tmp")
-                with open(tmp_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                os.replace(tmp_file, self._file)
+                atomic_write_json(self._file, data)
             except Exception as e:
                 logger.warning(f"[Dossier] Не удалось сохранить: {e}")
 
@@ -557,56 +561,72 @@ class ChatDossier:
         profile.topics = profile.topics[-30:]
 
     def get_profile(self, chat_id: str) -> Optional[ChatProfile]:
-        """Возвращает профиль чата."""
-        return self._profiles.get(chat_id)
+        """Возвращает профиль чата (сам объект, не копию — см. docstring
+        get_profile_snapshot про то, почему для веб-UI/промпта нужен снимок,
+        а не этот метод)."""
+        with self._lock:
+            return self._profiles.get(chat_id)
 
     def get_interests_text(self, chat_id: str) -> str:
-        """Возвращает текст с интересами для промпта."""
-        profile = self._profiles.get(chat_id)
-        if not profile or not profile.interests:
-            return ""
-        interests = ", ".join(i.value for i in profile.interests[:8])
+        """Возвращает текст с интересами для промпта.
+
+        Под локом: без него чтение profile.interests могло пересечься с
+        _analyze_chat_impl, мутирующим тот же список из фонового потока
+        (analyze_chat держит self._lock на всё время анализа) — "dictionary/
+        list changed size during iteration" при сборке системного промпта."""
+        with self._lock:
+            profile = self._profiles.get(chat_id)
+            if not profile or not profile.interests:
+                return ""
+            interests = ", ".join(i.value for i in profile.interests[:8])
         return f"\n\nUser interests (mentioned in conversations): {interests}"
 
     def get_top_interest(self, chat_id: str) -> Optional[str]:
-        """Возвращает главный интерес для поиска фактов."""
-        profile = self._profiles.get(chat_id)
-        if not profile or not profile.interests:
-            return None
-        return profile.interests[0].value
+        """Возвращает главный интерес для поиска фактов (под локом — см.
+        get_interests_text)."""
+        with self._lock:
+            profile = self._profiles.get(chat_id)
+            if not profile or not profile.interests:
+                return None
+            return profile.interests[0].value
 
     def record_fact(self, chat_id: str, fact: str):
         """Записывает факт который уже был рассказан."""
-        profile = self._profiles.get(chat_id)
-        if not profile:
-            return
-        profile.facts_shared.append(fact[:200])  # обрезаем для хранения
-        if len(profile.facts_shared) > 20:
-            profile.facts_shared = profile.facts_shared[-20:]
-        self._save()
+        with self._lock:
+            profile = self._profiles.get(chat_id)
+            if not profile:
+                return
+            profile.facts_shared.append(fact[:200])  # обрезаем для хранения
+            if len(profile.facts_shared) > 20:
+                profile.facts_shared = profile.facts_shared[-20:]
+            self._save()
 
     def record_event(self, chat_id: str, event: str):
         """Записывает событие от бота (напр., rhythm: отправлено утреннее
         приветствие / погодное предупреждение) — персона видит его в контексте
         досье и не повторяется. С меткой времени, последние 20."""
-        profile = self._profiles.get(chat_id)
-        if not profile:
-            profile = ChatProfile(chat_id=chat_id)
-            self._profiles[chat_id] = profile
-        ts = datetime.now().strftime("%d.%m.%Y %H:%M")
-        profile.events.append(f"[{ts}] {event[:200]}")
-        if len(profile.events) > 20:
-            profile.events = profile.events[-20:]
-        self._save()
+        with self._lock:
+            profile = self._profiles.get(chat_id)
+            if not profile:
+                profile = ChatProfile(chat_id=chat_id)
+                self._profiles[chat_id] = profile
+            ts = timeutil.now().strftime("%d.%m.%Y %H:%M")
+            profile.events.append(f"[{ts}] {event[:200]}")
+            if len(profile.events) > 20:
+                profile.events = profile.events[-20:]
+            self._save()
 
     def was_fact_shared(self, chat_id: str, fact: str) -> bool:
         """Проверялся ли похожий факт ранее."""
-        profile = self._profiles.get(chat_id)
-        if not profile or not profile.facts_shared:
-            return False
-        # Простая проверка по ключевым словам
+        with self._lock:
+            profile = self._profiles.get(chat_id)
+            if not profile or not profile.facts_shared:
+                return False
+            recent_facts = list(profile.facts_shared[-5:])
+        # Простая проверка по ключевым словам — вне лока: только чтение
+        # локальной копии, extract_words не трогает состояние досье
         fact_words = set(self._extract_words(fact))
-        for old_fact in profile.facts_shared[-5:]:
+        for old_fact in recent_facts:
             old_words = set(self._extract_words(old_fact))
             if fact_words & old_words:
                 return True
@@ -692,14 +712,15 @@ class ChatDossier:
 
     def add_personality_note(self, chat_id: str, note: str):
         """Добавляет наблюдение о пользователе."""
-        profile = self._profiles.get(chat_id)
-        if not profile:
-            profile = ChatProfile(chat_id=chat_id)
-            self._profiles[chat_id] = profile
-        profile.personality_notes.append(note[:200])
-        if len(profile.personality_notes) > 10:
-            profile.personality_notes = profile.personality_notes[-10:]
-        self._save()
+        with self._lock:
+            profile = self._profiles.get(chat_id)
+            if not profile:
+                profile = ChatProfile(chat_id=chat_id)
+                self._profiles[chat_id] = profile
+            profile.personality_notes.append(note[:200])
+            if len(profile.personality_notes) > 10:
+                profile.personality_notes = profile.personality_notes[-10:]
+            self._save()
 
     def get_profile_snapshot(self, chat_id: str, user_id: str = None) -> dict:
         """Снимок профиля чата для веб-UI и контекста ответа: интересы, темы,
@@ -726,7 +747,16 @@ class ChatDossier:
             }
 
     def get_context_block(self, chat_id: str) -> str:
-        """Возвращает полный блок контекста для промпта."""
+        """Возвращает полный блок контекста для промпта.
+
+        Всё чтение — под локом (см. get_interests_text про гонку с фоновым
+        analyze_chat): это самый частый читатель профиля (собирается на
+        каждый ответ персоны), и без лока именно здесь ловилось
+        "dictionary changed size during iteration" из аудита."""
+        with self._lock:
+            return self._context_block_locked(chat_id)
+
+    def _context_block_locked(self, chat_id: str) -> str:
         profile = self._profiles.get(chat_id)
         if not profile:
             return ""

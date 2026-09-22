@@ -22,19 +22,21 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import random
 import re
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from app.core import timeutil
+from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.interfaces import MessageSender
 from app.core.language import detect_dialogue_language, language_name
+from app.core.presence import web_presence
+from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 from app.features.chat_dossier import ChatDossier
 from app.core.local_router import get_local_router
 
@@ -70,6 +72,18 @@ def _looks_like_payload(text: str) -> bool:
         return isinstance(json.loads(t), (dict, list))
     except (ValueError, TypeError):
         return False  # текст, просто начинающийся со скобки, — допустимо
+
+
+def _looks_like_token(text: str) -> bool:
+    """Одно слово КАПСОМ без пунктуации и пробелов — модель вернула
+    служебный ярлык/кальку протокольного SILENCE («СЛЕДОВАНИЕ»,
+    «CONTINUATION», «READY»), а не мысль. Кейс 17.09: qwen-fast отвечал
+    «СЛЕДОВАНИЕ» на рефлексию continuation — прошло все фильтры (не
+    SILENCE, не короткое, не JSON) и улетело пользователю."""
+    t = text.strip()
+    if not t or " " in t:
+        return False
+    return len(t) >= 4 and t.isalpha() and t.isupper()
 
 
 class InitiativeType(Enum):
@@ -222,7 +236,12 @@ class ProactiveMessaging:
         # Состояние
         self._running = False
         self._task = None
-        self._lock = threading.Lock()
+        # RLock: ignore_streak/feedback/history/stats мутируются и из
+        # асинхронного цикла инициатив, и из HTTP-обработчиков (веб-настройки,
+        # сброс диалога) без единого лока (задача №9 аудита) — методы этой
+        # группы вызывают друг друга (_update_probability → _increment/
+        # _reset_ignore_streak), обычный Lock на этом месте дедлокнулся бы.
+        self._lock = threading.RLock()
 
         # Статистика по чатам: chat_id -> {count: int, date: str}
         self._daily_stats: Dict[str, dict] = {}
@@ -266,34 +285,28 @@ class ProactiveMessaging:
         self._load_ignore_streak()
 
     def _side_response(self, messages, **kw):
-        """Побочный вызов LLM (текст инициативы): fallback-цепочка основного
-        роутера МИНУС основной провайдер; веб-чат — отдельный канал
-        «proactive» (свой постоянный чат). Общий «side»-чат делят строго-
+        """Вызов LLM (текст инициативы): ПОЛНАЯ цепочка основного роутера,
+        начиная с primary (основной провайдер НЕ исключается — инициативы
+        пишет основная модель); веб-чат — отдельный канал «proactive»
+        (свой постоянный чат). Общий «side»-чат делят строго-
         форматные задачи (досье/LTM «Answer ONLY with JSON») — накопленная
         история там праймит модель, и на свободный промпт инициативы она
         отвечала чужим форматом (JSON досье уходил пользователю)."""
         return self.router.get_response(
-            messages, exclude_provider=self.router.active_provider,
-            webchat_channel="proactive", **kw)
+            messages, webchat_channel="proactive", **kw)
     def _load_ignore_streak(self):
-        if self._ignore_file.exists():
-            try:
-                with open(self._ignore_file, "r", encoding="utf-8") as f:
-                    self._ignore_streak = json.load(f)
-            except Exception as e:
-                logger.warning(f"[Proactive] Не удалось загрузить ignore streak: {e}")
-                self._ignore_streak = {}
+        self._ignore_streak = load_json_safe(self._ignore_file, default={}, label="Proactive.ignore_streak")
 
     def _save_ignore_streak(self):
         try:
-            with open(self._ignore_file, "w", encoding="utf-8") as f:
-                json.dump(self._ignore_streak, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self._ignore_file, self._ignore_streak)
         except Exception as e:
             logger.warning(f"[Proactive] Не удалось сохранить ignore streak: {e}")
 
     def _get_ignore_streak(self, chat_id: str) -> int:
         """Возвращает текущий streak проигнорированных инициатив."""
-        return getattr(self, "_ignore_streak", {}).get(chat_id, 0)
+        with self._lock:
+            return getattr(self, "_ignore_streak", {}).get(chat_id, 0)
 
     def _apply_living_mood(self, chat_id: str, delta: float, tag: str):
         """Сдвиг mood в StateEngine — при живой персоне настроение живёт там
@@ -309,12 +322,13 @@ class ProactiveMessaging:
 
     def _increment_ignore_streak(self, chat_id: str):
         """Увеличивает счетчик игнора."""
-        self._ignore_streak[chat_id] = self._ignore_streak.get(chat_id, 0) + 1
-        self._save_ignore_streak()
-        logger.info(f"[Proactive] Ignore streak {chat_id}: {self._ignore_streak[chat_id]}")
+        with self._lock:
+            self._ignore_streak[chat_id] = self._ignore_streak.get(chat_id, 0) + 1
+            streak = self._ignore_streak[chat_id]
+            self._save_ignore_streak()
+        logger.info(f"[Proactive] Ignore streak {chat_id}: {streak}")
         # Обида от игнора — это настроение персоны, а не только счётчик:
         # толкаем valence вниз, ближайший тик плавно вернёт к baseline
-        streak = self._ignore_streak[chat_id]
         if streak >= 10:
             delta, tag = -0.25, "глубокая обида"
         elif streak >= 7:
@@ -330,21 +344,24 @@ class ProactiveMessaging:
 
     def _reset_ignore_streak(self, chat_id: str):
         """Сбрасывает счетчик игнора (пользователь ответил)."""
-        if chat_id in self._ignore_streak:
-            old = self._ignore_streak[chat_id]
+        with self._lock:
+            old = self._ignore_streak.get(chat_id)
+            if old is None:
+                return
             self._ignore_streak[chat_id] = 0
             self._save_ignore_streak()
-            # Ответ после серии игноров — маленькое облегчение в mood
-            if old >= 3:
-                self._apply_living_mood(chat_id, 0.15, "облегчение")
-            logger.info(f"[Proactive] Ignore streak {chat_id} сброшен (было: {old})")
+        # Ответ после серии игноров — маленькое облегчение в mood
+        if old >= 3:
+            self._apply_living_mood(chat_id, 0.15, "облегчение")
+        logger.info(f"[Proactive] Ignore streak {chat_id} сброшен (было: {old})")
 
     def ruin_mood(self, chat_id: str):
         """Заморозка персоны рушит её настроение: streak сразу в максимум обиды
         (10 — верхний порог в _get_emotional_state). Сбросится, когда пользователь
         ответит на инициативу после разморозки."""
-        self._ignore_streak[chat_id] = 10
-        self._save_ignore_streak()
+        with self._lock:
+            self._ignore_streak[chat_id] = 10
+            self._save_ignore_streak()
         self._apply_living_mood(chat_id, -0.5, "глубокая обида")
         logger.info(f"[Proactive] Настроение в чате {chat_id} испорчено заморозкой (streak=10)")
 
@@ -426,31 +443,27 @@ class ProactiveMessaging:
         return f"\nThe user has ignored your last {streak} initiative(s)."
 
     def _load_feedback(self):
-        if self._feedback_file.exists():
-            try:
-                with open(self._feedback_file, "r", encoding="utf-8") as f:
-                    self._feedback = json.load(f)
-            except Exception as e:
-                logger.warning(f"[Proactive] Не удалось загрузить feedback: {e}")
-                self._feedback = {}
+        self._feedback = load_json_safe(self._feedback_file, default={}, label="Proactive.feedback")
 
     def _save_feedback(self):
         try:
-            with open(self._feedback_file, "w", encoding="utf-8") as f:
-                json.dump(self._feedback, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self._feedback_file, self._feedback)
         except Exception as e:
             logger.warning(f"[Proactive] Не удалось сохранить feedback: {e}")
 
     def _get_feedback(self, chat_id: str) -> dict:
-        """Возвращает или создает feedback-запись для чата."""
-        if chat_id not in self._feedback:
-            self._feedback[chat_id] = {
-                "successes": 0,      # инициативы с ответом
-                "failures": 0,       # инициативы без ответа
-                "probability": self.config.initiative_probability,
-                "last_updated": time.time(),
-            }
-        return self._feedback[chat_id]
+        """Возвращает или создает feedback-запись для чата (сама запись —
+        общий изменяемый dict, вызывающий код мутирует её дальше под тем же
+        self._lock — см. _update_probability)."""
+        with self._lock:
+            if chat_id not in self._feedback:
+                self._feedback[chat_id] = {
+                    "successes": 0,      # инициативы с ответом
+                    "failures": 0,       # инициативы без ответа
+                    "probability": self.config.initiative_probability,
+                    "last_updated": time.time(),
+                }
+            return self._feedback[chat_id]
 
     def _update_probability(self, chat_id: str, got_response: bool,
                             initiative_type: Optional[str] = None):
@@ -460,42 +473,52 @@ class ProactiveMessaging:
         Также обновляет ignore streak.
         initiative_type — тип отвеченной/проигнорированной инициативы:
         накапливаем вовлечённость в разрезе типов (фаза 3.2).
+
+        Целиком под self._lock (RLock — _reset/_increment_ignore_streak ниже
+        сами берут тот же лок): без него параллельные ответы пользователя в
+        разных чатах (или фоновый цикл инициатив + HTTP-обработчик feedback)
+        чередовали read-modify-write над fb и теряли инкременты счётчиков.
         """
         if not self.config.feedback_enabled:
             return
 
-        fb = self._get_feedback(chat_id)
+        with self._lock:
+            fb = self._get_feedback(chat_id)
+            if got_response:
+                fb["successes"] += 1
+            else:
+                fb["failures"] += 1
+
+            # Вовлечённость по типам: что реально работает (советы/жизнь/темы)
+            if initiative_type:
+                by_type = fb.setdefault("by_type", {})
+                t = by_type.setdefault(str(initiative_type),
+                                       {"successes": 0, "failures": 0})
+                t["successes" if got_response else "failures"] += 1
+
+            total = fb["successes"] + fb["failures"]
+            if total > 0:
+                # Байесовская оценка: успехи / (успехи + неудачи), сглаженная
+                # Используем beta-распределение с priors (1, 1)
+                alpha = fb["successes"] + 1
+                beta_param = fb["failures"] + 1
+                # Ожидание Beta(alpha, beta)
+                expected = alpha / (alpha + beta_param)
+
+                # Масштабируем в диапазон [min, max]
+                p_range = self.config.max_probability - self.config.min_probability
+                new_prob = self.config.min_probability + expected * p_range
+
+                fb["probability"] = round(new_prob, 3)
+                fb["last_updated"] = time.time()
+
+        # Ignore streak — своя персистентность и mood-эффект, вне feedback-лока
+        # выше не нужен (методы сами берут self._lock; RLock допускает вложенность,
+        # здесь просто чтобы _apply_living_mood не звал прочие модули под локом)
         if got_response:
-            fb["successes"] += 1
             self._reset_ignore_streak(chat_id)
         else:
-            fb["failures"] += 1
             self._increment_ignore_streak(chat_id)
-
-        # Вовлечённость по типам: что реально работает (советы/жизнь/темы)
-        if initiative_type:
-            by_type = fb.setdefault("by_type", {})
-            t = by_type.setdefault(str(initiative_type),
-                                   {"successes": 0, "failures": 0})
-            t["successes" if got_response else "failures"] += 1
-
-        total = fb["successes"] + fb["failures"]
-        if total == 0:
-            return
-
-        # Байесовская оценка: успехи / (успехи + неудачи), сглаженная
-        # Используем beta-распределение с priors (1, 1)
-        alpha = fb["successes"] + 1
-        beta_param = fb["failures"] + 1
-        # Ожидание Beta(alpha, beta)
-        expected = alpha / (alpha + beta_param)
-
-        # Масштабируем в диапазон [min, max]
-        p_range = self.config.max_probability - self.config.min_probability
-        new_prob = self.config.min_probability + expected * p_range
-
-        fb["probability"] = round(new_prob, 3)
-        fb["last_updated"] = time.time()
 
         logger.info(
             f"[Proactive] Feedback {chat_id}: ответ={got_response}, "
@@ -504,6 +527,49 @@ class ProactiveMessaging:
         )
         self._save_feedback()
 
+    # ── метки инициатив (всё под self._lock — см. RLock в __init__) ──
+    # Хвост задачи №9: _last_initiative_time/_last_initiative_type/
+    # _multi_turn_state правились и читались напрямую из шести разных мест —
+    # фонового цикла инициатив, сигнала состояния и потока обработки
+    # сообщения. Теперь доступ к ним идёт только через эти методы, так что
+    # «отметить отправку» и «зачесть ответ» — атомарные операции, а не три
+    # независимые записи, между которыми другой поток видит полуправду.
+
+    def _get_last_initiative_time(self, chat_id: str) -> float:
+        with self._lock:
+            return self._last_initiative_time.get(chat_id, 0)
+
+    def _mark_initiative_sent(self, chat_id: str, initiative_type=None,
+                              multi_turn_message: Optional[str] = None):
+        """Инициатива ушла: время, тип и (если включён multi-turn) состояние
+        ожидания ответа — одним снимком."""
+        with self._lock:
+            if multi_turn_message is not None and self.config.multi_turn_enabled:
+                self._multi_turn_state[chat_id] = {
+                    "waiting": True,
+                    "initiative_msg": multi_turn_message,
+                    "timestamp": time.time(),
+                    "type": initiative_type.value if initiative_type else None,
+                }
+            self._last_initiative_time[chat_id] = time.time()
+            if initiative_type:
+                self._last_initiative_type[chat_id] = initiative_type.value
+
+    def _multi_turn_snapshot(self, chat_id: str) -> Optional[dict]:
+        """Копия multi-turn состояния чата (или None). Копия, а не сам dict:
+        решение принимается по согласованному снимку, даже если параллельно
+        придёт ответ пользователя."""
+        with self._lock:
+            state = self._multi_turn_state.get(chat_id)
+            return dict(state) if state else None
+
+    def _clear_multi_turn_wait(self, chat_id: str):
+        """Снимает ожидание ответа (таймаут multi-turn)."""
+        with self._lock:
+            state = self._multi_turn_state.get(chat_id)
+            if state:
+                state["waiting"] = False
+
     def record_user_response(self, chat_id: str):
         """Вызывается при входящем сообщении пользователя.
 
@@ -511,16 +577,22 @@ class ProactiveMessaging:
         недавно (30 мин, как таймаут multi-turn) — иначе обычные сообщения
         раздувают successes и вероятность дрейфует к максимуму.
         """
-        last_initiative = self._last_initiative_time.get(chat_id, 0)
-        if last_initiative and time.time() - last_initiative < 1800:
-            self._update_probability(
-                chat_id, got_response=True,
-                initiative_type=self._last_initiative_type.pop(chat_id, None))
-            # Снимаем метку: следующие обычные сообщения не засчитываются повторно
-            self._last_initiative_time[chat_id] = 0
-        # Сбрасываем multi-turn состояние
-        if chat_id in self._multi_turn_state:
-            self._multi_turn_state[chat_id]["waiting"] = False
+        # Проверка «инициатива была недавно?», зачёт ответа и снятие метки —
+        # одной операцией под локом (RLock: _update_probability берёт его же).
+        # Врозь два одновременных сообщения пользователя засчитывали одну
+        # инициативу дважды: оба читали непустую метку раньше, чем первый её
+        # обнулил, и вероятность дрейфовала вверх.
+        with self._lock:
+            last_initiative = self._last_initiative_time.get(chat_id, 0)
+            if last_initiative and time.time() - last_initiative < 1800:
+                self._update_probability(
+                    chat_id, got_response=True,
+                    initiative_type=self._last_initiative_type.pop(chat_id, None))
+                # Метку снимаем: следующие обычные сообщения не засчитываются повторно
+                self._last_initiative_time[chat_id] = 0
+            # Сбрасываем multi-turn состояние
+            if chat_id in self._multi_turn_state:
+                self._multi_turn_state[chat_id]["waiting"] = False
         # Анализируем сообщения для досье
         self.record_incoming_message(chat_id)
 
@@ -538,9 +610,17 @@ class ProactiveMessaging:
             return
         # Анализируем на 1-м, 6-м, 11-м... сообщении (раз в 5 сообщений).
         # Счётчик не сбрасываем — со сбросом условие срабатывало на каждое сообщение.
-        counter = self._dossier_analysis_counter.get(chat_id, 0) + 1
-        self._dossier_analysis_counter[chat_id] = counter
+        # Инкремент счётчика — под локом: без него два сообщения, пришедшие
+        # одновременно, читали одно и то же значение, и «каждое пятое»
+        # сообщение либо анализировалось дважды, либо пропускалось
+        with self._lock:
+            counter = self._dossier_analysis_counter.get(chat_id, 0) + 1
+            self._dossier_analysis_counter[chat_id] = counter
         if counter % 5 != 1:
+            return
+        # Побочный LLM-анализ не тратим, пока веб-вкладка ЭТОГО чата активна —
+        # счётчик не трогаем, сработает на следующем «первом» сообщении пятёрки
+        if web_presence.is_active(self.context, chat_id):
             return
         # Анализ — LLM-вызовы side-цепочки (десятки секунд, через веб-чат —
         # минуты). Синхронно он задерживал возврат уже готового ответа
@@ -760,6 +840,11 @@ class ProactiveMessaging:
             if _looks_like_payload(response):
                 logger.info("[Proactive] LLM вернул служебный JSON вместо сообщения — пропуск")
                 return None
+            if not self._primitive and _looks_like_token(response):
+                # Однословные сигналы (звук/жест) — норма примитивного режима
+                logger.info(f"[Proactive] LLM вернул служебный ярлык "
+                            f"({response!r}) вместо мысли — пропуск")
+                return None
 
             return response
 
@@ -841,8 +926,9 @@ class ProactiveMessaging:
         """Возвращает текущую вероятность с учетом feedback."""
         if not self.config.feedback_enabled:
             return self.config.initiative_probability
-        fb = self._get_feedback(chat_id)
-        return fb["probability"]
+        with self._lock:
+            fb = self._get_feedback(chat_id)
+            return fb["probability"]
 
     def _advice_candidates(self, chat_id: str) -> List[dict]:
         """Активные сюжетные линии персоны — материал для инициативы
@@ -859,9 +945,11 @@ class ProactiveMessaging:
         """Вовлечённость по типам инициатив (фаза 3.2): Байесовское ожидание
         успеха (s+1)/(s+f+2) из proactive_feedback.by_type. Типов без
         статистики в выдаче нет — для них работает дефолт 0.5."""
-        fb = self._feedback.get(chat_id) or {}
+        with self._lock:
+            fb = self._feedback.get(chat_id) or {}
+            by_type = dict(fb.get("by_type") or {})
         out: Dict[str, float] = {}
-        for t, s in (fb.get("by_type") or {}).items():
+        for t, s in by_type.items():
             try:
                 succ = int(s.get("successes", 0))
                 fail = int(s.get("failures", 0))
@@ -892,7 +980,8 @@ class ProactiveMessaging:
         if not self.config.type_balance:
             return random.choice(allowed)
 
-        history = self._initiative_history.get(chat_id, [])
+        with self._lock:
+            history = list(self._initiative_history.get(chat_id, []))
         type_counts = {t: 0 for t in allowed}
         for item in history:
             item_type = item.get("type")
@@ -912,57 +1001,53 @@ class ProactiveMessaging:
         return random.choices(allowed, weights=weights, k=1)[0]
 
     def _load_history(self):
-        if self._history_file.exists():
-            try:
-                with open(self._history_file, "r", encoding="utf-8") as f:
-                    self._initiative_history = json.load(f)
-            except Exception as e:
-                logger.warning(f"[Proactive] Не удалось загрузить историю инициатив: {e}")
-                self._initiative_history = {}
+        self._initiative_history = load_json_safe(self._history_file, default={}, label="Proactive.history")
 
     def _save_history(self):
         try:
-            with open(self._history_file, "w", encoding="utf-8") as f:
-                json.dump(self._initiative_history, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self._history_file, self._initiative_history)
         except Exception as e:
             logger.warning(f"[Proactive] Не удалось сохранить историю инициатив: {e}")
 
     def _add_to_history(self, chat_id: str, message: str, initiative_type: Optional[InitiativeType] = None):
         """Добавляет инициативу в историю чата."""
-        if chat_id not in self._initiative_history:
-            self._initiative_history[chat_id] = []
         entry = {
             "message": message,
             "timestamp": time.time(),
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "date": timeutil.now().strftime("%Y-%m-%d %H:%M"),
         }
         if initiative_type:
             entry["type"] = initiative_type.value
-        self._initiative_history[chat_id].append(entry)
-        # Ограничиваем размер истории
-        max_size = self.config.initiative_history_size
-        if len(self._initiative_history[chat_id]) > max_size:
-            self._initiative_history[chat_id] = self._initiative_history[chat_id][-max_size:]
-        self._save_history()
+        with self._lock:
+            bucket = self._initiative_history.setdefault(chat_id, [])
+            bucket.append(entry)
+            # Ограничиваем размер истории
+            max_size = self.config.initiative_history_size
+            if len(bucket) > max_size:
+                self._initiative_history[chat_id] = bucket[-max_size:]
+            self._save_history()
 
     def clear_history(self, chat_id: str) -> List[dict]:
         """Удаляет историю инициатив чата (полный сброс диалога).
         Возвращает удалённые записи — для снапшота корзины."""
-        removed = self._initiative_history.pop(chat_id, [])
-        if removed:
-            self._save_history()
+        with self._lock:
+            removed = self._initiative_history.pop(chat_id, [])
+            if removed:
+                self._save_history()
         return removed
 
     def restore_history(self, chat_id: str, entries: List[dict]):
         """Возвращает историю инициатив из снапшота корзины."""
         if not entries:
             return
-        self._initiative_history[chat_id] = list(entries)
-        self._save_history()
+        with self._lock:
+            self._initiative_history[chat_id] = list(entries)
+            self._save_history()
 
     def _get_recent_initiatives_text(self, chat_id: str, n: int = 5) -> str:
         """Возвращает текст последних N инициатив для промпта."""
-        history = self._initiative_history.get(chat_id, [])
+        with self._lock:
+            history = list(self._initiative_history.get(chat_id, []))
         if not history:
             return ""
         recent = history[-n:]
@@ -993,7 +1078,8 @@ class ProactiveMessaging:
         Проверяет, похоже ли сообщение на недавние инициативы.
         Возвращает True если похоже (дубликат).
         """
-        history = self._initiative_history.get(chat_id, [])
+        with self._lock:
+            history = list(self._initiative_history.get(chat_id, []))
         if not history:
             return False
 
@@ -1018,7 +1104,8 @@ class ProactiveMessaging:
 
     def _get_forbidden_topics_text(self, chat_id: str) -> str:
         """Возвращает список запрещенных тем для промпта."""
-        history = self._initiative_history.get(chat_id, [])
+        with self._lock:
+            history = list(self._initiative_history.get(chat_id, []))
         if not history:
             return ""
 
@@ -1077,52 +1164,52 @@ class ProactiveMessaging:
         return threshold
 
     def _load_stats(self):
-        if self._stats_file.exists():
-            try:
-                with open(self._stats_file, "r", encoding="utf-8") as f:
-                    self._daily_stats = json.load(f)
-            except Exception as e:
-                logger.warning(f"[Proactive] Не удалось загрузить статистику: {e}")
-                self._daily_stats = {}
+        self._daily_stats = load_json_safe(self._stats_file, default={}, label="Proactive.stats")
 
     def _save_stats(self):
         try:
-            with open(self._stats_file, "w", encoding="utf-8") as f:
-                json.dump(self._daily_stats, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self._stats_file, self._daily_stats)
         except Exception as e:
             logger.warning(f"[Proactive] Не удалось сохранить статистику: {e}")
 
     def _get_today(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d")
+        """Сегодня по часам ПОЛЬЗОВАТЕЛЯ (app.core.timeutil, пояс TIMEZONE):
+        от этой даты зависит дневной лимит инициатив — по системному поясу
+        он обнулялся бы не в полночь пользователя, а посреди его дня."""
+        return timeutil.today().isoformat()
 
     def _get_daily_count(self, chat_id: str) -> int:
         today = self._get_today()
-        stats = self._daily_stats.get(chat_id, {})
-        if stats.get("date") != today:
-            return 0
-        return stats.get("count", 0)
+        with self._lock:
+            stats = self._daily_stats.get(chat_id, {})
+            if stats.get("date") != today:
+                return 0
+            return stats.get("count", 0)
 
     def _increment_daily_count(self, chat_id: str):
         today = self._get_today()
-        if chat_id not in self._daily_stats or self._daily_stats[chat_id].get("date") != today:
-            self._daily_stats[chat_id] = {"date": today, "count": 0}
-        self._daily_stats[chat_id]["count"] += 1
-        self._save_stats()
+        with self._lock:
+            if chat_id not in self._daily_stats or self._daily_stats[chat_id].get("date") != today:
+                self._daily_stats[chat_id] = {"date": today, "count": 0}
+            self._daily_stats[chat_id]["count"] += 1
+            self._save_stats()
 
     def pop_daily_stats(self, chat_id: str) -> Optional[dict]:
         """Удаляет дневной счётчик инициатив чата (полный сброс диалога).
         Возвращает удалённую запись {date, count} — для снапшота корзины."""
-        removed = self._daily_stats.pop(chat_id, None)
-        if removed is not None:
-            self._save_stats()
+        with self._lock:
+            removed = self._daily_stats.pop(chat_id, None)
+            if removed is not None:
+                self._save_stats()
         return removed
 
     def restore_daily_stats(self, chat_id: str, entry: dict):
         """Возвращает дневной счётчик инициатив из снапшота корзины."""
         if not entry:
             return
-        self._daily_stats[chat_id] = dict(entry)
-        self._save_stats()
+        with self._lock:
+            self._daily_stats[chat_id] = dict(entry)
+            self._save_stats()
 
     def _build_monolog_prompt(
         self,
@@ -1400,6 +1487,13 @@ class ProactiveMessaging:
                 logger.info("[Proactive] LLM вернул служебный JSON вместо сообщения — пропуск")
                 return None
 
+            # Одно слово КАПСОМ — служебный ярлык (калька SILENCE), не мысль;
+            # однословные сигналы разрешены только примитивным существам
+            if not self._primitive and _looks_like_token(response):
+                logger.info(f"[Proactive] LLM вернул служебный ярлык "
+                            f"({response!r}) вместо мысли — пропуск")
+                return None
+
             return response
 
         except Exception as e:
@@ -1409,7 +1503,11 @@ class ProactiveMessaging:
     def _in_initiative_hours(self, now: Optional[float] = None) -> bool:
         """Разрешено ли сейчас время самоинициативы. Окно задаёт ПОЛЬЗОВАТЕЛЬ
         (config.initiative_hours) — движок сам момент не выбирает. Переход
-        через полночь поддерживается: 22:00-08:00. Пусто/битое — всегда можно."""
+        через полночь поддерживается: 22:00-08:00. Пусто/битое — всегда можно.
+
+        Часы — ПОЛЬЗОВАТЕЛЯ (app.core.timeutil, пояс TIMEZONE): было
+        time.localtime(), то есть пояс процесса — «не писать с 22 до 9»
+        соблюдалось по часам сервера, а не человека."""
         hours = self.config.initiative_hours
         if not hours:
             return True
@@ -1418,8 +1516,8 @@ class ProactiveMessaging:
                 h, m = s.split(":")
                 return int(h) * 60 + int(m)
 
-            lt = time.localtime(now if now is not None else time.time())
-            cur = lt.tm_hour * 60 + lt.tm_min
+            lt = timeutil.from_ts(now if now is not None else time.time())
+            cur = lt.hour * 60 + lt.minute
             start, end = to_min(hours[0]), to_min(hours[1])
             if start <= end:
                 return start <= cur < end
@@ -1435,6 +1533,10 @@ class ProactiveMessaging:
         Не гарантирует отправку — только отсекает заведомо бессмысленный
         скоринг, чтобы движок жизни не тратил локальный вызов каждый тик
         (например, всю ночь вне окна самоинициативы)."""
+        # Веб-вкладка ЭТОГО чата активна — инициатива ждёт, пока пользователь
+        # уйдёт (в другом чате/у другой персоны инициатива не задерживается)
+        if web_presence.is_active(self.context, chat_id):
+            return False
         if not self.config.enabled:
             return False
         if not self._in_initiative_hours():
@@ -1454,13 +1556,17 @@ class ProactiveMessaging:
         if (self._get_ignore_streak(chat_id) >= 7
                 and silence_minutes < self.config.silence_threshold_minutes):
             return False
-        last_initiative = self._last_initiative_time.get(chat_id, 0)
+        last_initiative = self._get_last_initiative_time(chat_id)
         if time.time() - last_initiative < self.config.check_interval_minutes * 60:
             return False
         return True
 
     def _should_send_initiative(self, chat_id: str) -> bool:
         """Проверяет все условия перед отправкой."""
+        # Веб-вкладка ЭТОГО чата активна — инициатива ждёт, пока пользователь уйдёт
+        if web_presence.is_active(self.context, chat_id):
+            return False
+
         # Замороженная персона (features.muted) не пишет ничего, включая инициативы
         if (self.persona.persona_data.get("features") or {}).get("muted"):
             return False
@@ -1491,7 +1597,7 @@ class ProactiveMessaging:
             return False
 
         # Проверяем время с последней инициативы
-        last_initiative = self._last_initiative_time.get(chat_id, 0)
+        last_initiative = self._get_last_initiative_time(chat_id)
         if time.time() - last_initiative < self.config.check_interval_minutes * 60:
             return False
 
@@ -1499,6 +1605,11 @@ class ProactiveMessaging:
 
     async def _check_all_chats(self):
         """Проверяет все активные чаты и отправляет инициативы."""
+        # Ретенция на живущем процессе (аудит): цикл инициатив — регулярный,
+        # но не на каждое сообщение путь, дозор внутри сам гасит частоту
+        if self.activity_tracker:
+            self.activity_tracker.maybe_prune()
+
         # Получаем список известных чатов (сохраняется между перезапусками)
         active_chats = self.memory.stm.buffers.keys()
         
@@ -1522,9 +1633,9 @@ class ProactiveMessaging:
                     continue
 
                 # Проверяем multi-turn состояние
-                if self.config.multi_turn_enabled and chat_id in self._multi_turn_state:
-                    state = self._multi_turn_state[chat_id]
-                    if state.get("waiting"):
+                if self.config.multi_turn_enabled:
+                    state = self._multi_turn_snapshot(chat_id)
+                    if state and state.get("waiting"):
                         # Ждем ответа на предыдущую инициативу
                         # Проверяем, не истек ли таймаут (30 мин)
                         if time.time() - state["timestamp"] < 1800:
@@ -1536,7 +1647,7 @@ class ProactiveMessaging:
                             self._update_probability(
                                 chat_id, got_response=False,
                                 initiative_type=state.get("type"))
-                            state["waiting"] = False
+                            self._clear_multi_turn_wait(chat_id)
 
                 # Выбираем тип инициативы
                 initiative_type = self._select_initiative_type(chat_id)
@@ -1596,6 +1707,15 @@ class ProactiveMessaging:
                 success = await self._sender.send_message(chat_id, message, topic_id=topic_id)
 
                 if success:
+                    # Метки «инициатива ушла» (время, тип, multi-turn) — одним
+                    # снимком под локом и СРАЗУ после отправки, до долгих
+                    # шагов ниже (self_memory.tick — это LLM, десятки секунд):
+                    # ответ пользователя, пришедший в это окно, должен видеть
+                    # уже выставленные метки, иначе он не засчитывается, а
+                    # multi-turn потом встаёт в ожидание ответа, который уже был
+                    self._mark_initiative_sent(chat_id, initiative_type,
+                                               multi_turn_message=message)
+
                     # Сохраняем в историю инициатив (дедупликация + тип)
                     self._add_to_history(chat_id, message, initiative_type)
 
@@ -1607,21 +1727,9 @@ class ProactiveMessaging:
                         stm_messages = self.memory.stm.get_last(10, chat_id=chat_id)
                         await asyncio.to_thread(self.self_memory.tick, stm_messages, chat_id, message)
 
-                    # Multi-turn: ставим состояние ожидания
-                    if self.config.multi_turn_enabled:
-                        self._multi_turn_state[chat_id] = {
-                            "waiting": True,
-                            "initiative_msg": message,
-                            "timestamp": time.time(),
-                            "type": initiative_type.value if initiative_type else None,
-                        }
-
                     # Streak обновляется через _update_probability при таймауте/ответе
                     # Не инкрементим здесь -- иначе дубликаты и быстрые повторы попадут в streak
 
-                    self._last_initiative_time[chat_id] = time.time()
-                    if initiative_type:
-                        self._last_initiative_type[chat_id] = initiative_type.value
                     self._increment_daily_count(chat_id)
 
             except Exception as e:
@@ -1633,6 +1741,10 @@ class ProactiveMessaging:
         Не заменяет существующие гейты (muted, дневной лимит, интервалы) —
         только генерация уже «оплачена» скорингом, поэтому вероятностный
         бросок не повторяется. Отправка — через обычный пайплайн."""
+        # Веб-вкладка ЭТОГО чата активна — сигнал ждёт, пока пользователь уйдёт
+        if web_presence.is_active(self.context, chat_id):
+            logger.info("[Proactive] Сигнал состояния при активной вкладке — молчим")
+            return
         # Время самоинициативы задаёт пользователь: вне окна движок жизни
         # тоже не пишет сам (момент выбирает не движок, а окно пользователя)
         if not self._in_initiative_hours():
@@ -1657,7 +1769,7 @@ class ProactiveMessaging:
             if (self._get_ignore_streak(chat_id) >= 7
                     and silence_minutes < self.config.silence_threshold_minutes):
                 return
-            last_initiative = self._last_initiative_time.get(chat_id, 0)
+            last_initiative = self._get_last_initiative_time(chat_id)
             if time.time() - last_initiative < self.config.check_interval_minutes * 60:
                 return
 
@@ -1691,13 +1803,13 @@ class ProactiveMessaging:
             message = _strip_markdown(message)
             success = await self._sender.send_message(chat_id, message, topic_id=topic_id)
             if success:
+                # Метки — сразу после отправки, до долгих шагов (см. _check_all_chats)
+                self._mark_initiative_sent(chat_id, InitiativeType.STATE_CHANGE)
                 self._add_to_history(chat_id, message, InitiativeType.STATE_CHANGE)
                 self.memory.add_message("assistant", message, user_id=chat_id, chat_id=chat_id)
                 if self.self_memory:
                     stm_messages = self.memory.stm.get_last(10, chat_id=chat_id)
                     await asyncio.to_thread(self.self_memory.tick, stm_messages, chat_id, message)
-                self._last_initiative_time[chat_id] = time.time()
-                self._last_initiative_type[chat_id] = InitiativeType.STATE_CHANGE.value
                 self._increment_daily_count(chat_id)
                 # Факты жизни прозвучали — отмечаем consumed
                 if self.living:
@@ -1747,6 +1859,27 @@ class ProactiveMessaging:
                 await self._check_all_chats()
             except Exception as e:
                 logger.error(f"[Proactive] Ошибка в цикле: {e}")
+
+            # Пополнение flavor-банка реплик CC (разнообразие): раз в цикл и
+            # только когда пользователь давно неактивен по всем чатам — ботом
+            # никто не пользуется, фоновый веб-чат никому не мешает
+            try:
+                from app.features import flavor_text
+                _idle = True
+                _chats = (set(self.activity_tracker.get_known_chats())
+                          if self.activity_tracker else set())
+                for _cid in _chats:
+                    if time.time() - self.get_last_message_time(_cid) < \
+                            self.config.silence_threshold_minutes * 60:
+                        _idle = False
+                        break
+                if _idle:
+                    await asyncio.to_thread(
+                        flavor_text.maybe_topup_flavor_bank,
+                        self.context, self.persona.system_prompt, self.router,
+                        True)
+            except Exception as _fe:
+                logger.debug(f"[Proactive] пополнение flavor-банка: {_fe}")
 
             # Ждём до следующей проверки. Интервал перечитываем из конфига —
             # его могут поменять через API на живую, без перезапуска цикла.
@@ -1802,34 +1935,74 @@ class ChatActivityTracker:
         self._known_chats: set = set()
         self._chat_topics: Dict[str, int] = {}  # chat_id -> topic_id
         self._lock = threading.Lock()
+        # Ретенция на живущем процессе (аудит): дозор — не чаще раза в
+        # RETENTION_TICK_HOURS перезапускать прореживание из maybe_prune,
+        # который зовёт ProactiveMessaging из цикла инициатив (_check_all_chats),
+        # а не из record_activity (на каждое сообщение)
+        self._retention_timer = RetentionTimer()
         self._context = context
         self._chats_file = Path(f"data/{context}/known_chats.json")
         self._chats_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_known_chats()
 
     def _load_known_chats(self):
-        if self._chats_file.exists():
-            try:
-                with open(self._chats_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self._known_chats = set(data.get("chats", []))
-                    # Восстанавливаем last_activity
-                    for chat_id, timestamp in data.get("activity", {}).items():
-                        self._last_activity[chat_id] = timestamp
-                    # Восстанавливаем топики
-                    for chat_id, topic_id in data.get("topics", {}).items():
-                        self._chat_topics[chat_id] = topic_id
-            except Exception as e:
-                logger.warning(f"[ActivityTracker] Не удалось загрузить чаты: {e}")
+        data = load_json_safe(self._chats_file, default={}, label="ActivityTracker")
+        if isinstance(data, dict):
+            self._known_chats = set(data.get("chats", []))
+            # Восстанавливаем last_activity
+            for chat_id, timestamp in (data.get("activity") or {}).items():
+                self._last_activity[chat_id] = timestamp
+            # Восстанавливаем топики
+            for chat_id, topic_id in (data.get("topics") or {}).items():
+                self._chat_topics[chat_id] = topic_id
+        # Ретенция (app.core.retention, задача аудита): чат давно молчит —
+        # запись о нём (активность/топик/членство в known) не нужна вечно.
+        # Прогоняем сразу при загрузке, чтобы разовые чаты не таскались
+        # тиком (_tick_all в living_persona ходит по known_chats) годами.
+        if self._prune_stale_chats():
+            self._save_known_chats()
+
+    def _prune_stale_chats(self) -> list:
+        """last_seen — _last_activity (обновляется на каждое сообщение, см.
+        record_activity): метки нет (легаси-запись до ретенции) — НЕ
+        трогаем, пока следующее сообщение её не проставит.
+
+        Три поля прореживаются СОГЛАСОВАННО одним и тем же набором
+        удалённых ключей — иначе, например, topic_id ушедшего в ретенцию
+        чата остался бы висеть в _chat_topics сам по себе, а _known_chats
+        помнил бы чат, у которого уже нет ни activity, ни топика."""
+        removed = prune_stale(
+            self._last_activity, lambda chat_id, ts: ts,
+            CHAT_RETENTION_DAYS, label="ActivityTracker",
+        )
+        for chat_id in removed:
+            self._known_chats.discard(chat_id)
+            self._chat_topics.pop(chat_id, None)
+        return removed
+
+    def maybe_prune(self):
+        """Повтор ретенции на живущем процессе (аудит: раньше прунились
+        только при загрузке — процесс месяцами не перезапускается, разовые
+        чаты копятся между рестартами бессрочно). Зовётся из цикла
+        инициатив ProactiveMessaging._check_all_chats (раз в
+        check_interval_minutes), НЕ из record_activity — туда прунинг не
+        вешаем, там оно на каждое входящее сообщение. Дозор гасит частоту
+        до раза в RETENTION_TICK_HOURS; лок держим только на мутацию
+        словарей, save — уже вне лока."""
+        if not self._retention_timer.due():
+            return
+        with self._lock:
+            removed = self._prune_stale_chats()
+        if removed:
+            self._save_known_chats()
 
     def _save_known_chats(self):
         try:
-            with open(self._chats_file, "w", encoding="utf-8") as f:
-                json.dump({
-                    "chats": list(self._known_chats),
-                    "activity": self._last_activity,
-                    "topics": self._chat_topics,
-                }, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self._chats_file, {
+                "chats": list(self._known_chats),
+                "activity": self._last_activity,
+                "topics": self._chat_topics,
+            })
         except Exception as e:
             logger.warning(f"[ActivityTracker] Не удалось сохранить чаты: {e}")
 

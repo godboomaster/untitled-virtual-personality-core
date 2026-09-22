@@ -5,14 +5,24 @@ Rate limiter — ограничение сообщений на пользова
 
 import os
 import time
-from collections import defaultdict
+
+from app.core.bounded_cache import BoundedCache
 
 
 RATE_LIMIT_DEFAULT = int(os.getenv("RATE_LIMIT_DEFAULT", "6"))
 RATE_WINDOW = int(os.getenv("RATE_WINDOW", "3600"))
 
-_user_requests: dict[str, list[float]] = defaultdict(list)
-_punish_blocked: dict[str, float] = {}  # user_id -> block_until timestamp
+# BoundedCache, а не обычный dict (аудит, задача №7 хвост): раньше это были
+# вечные словари, растущие на каждого нового user_id (Telegram-группа/веб) —
+# процесс живёт неделями и не подчищает ни разбаненных, ни просто неактивных.
+# Вытеснение LRU безобидно: у _user_requests это просто сброс счётчика
+# (лимит отмерится заново), у _punish_blocked — потеря бана раньше срока,
+# что не хуже вытесненного наказания для пользователя, который и так не
+# писал 5000 чужих сообщений подряд.
+_MAX_TRACKED_USERS = 5000
+
+_user_requests = BoundedCache(max_entries=_MAX_TRACKED_USERS)  # user_id -> [timestamp, ...]
+_punish_blocked = BoundedCache(max_entries=_MAX_TRACKED_USERS)  # user_id -> block_until timestamp
 
 
 def block_user(user_id: str, duration: int = None):
@@ -50,11 +60,12 @@ def check_rate_limit(user_id: str, individual_limits: dict = None) -> bool:
     if is_blocked(user_id):
         return False
     now = time.time()
-    timestamps = _user_requests[user_id]
-    _user_requests[user_id] = [t for t in timestamps if now - t < RATE_WINDOW]
-    if len(_user_requests[user_id]) >= limit:
+    timestamps = [t for t in _user_requests.get(user_id, []) if now - t < RATE_WINDOW]
+    if len(timestamps) >= limit:
+        _user_requests[user_id] = timestamps
         return False
-    _user_requests[user_id].append(now)
+    timestamps.append(now)
+    _user_requests[user_id] = timestamps
     return True
 
 

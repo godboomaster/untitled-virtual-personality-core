@@ -28,8 +28,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from app.core import timeutil
+from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
+from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +138,7 @@ STATE_TICK_PROMPT_PRIMITIVE = """Ты — движок простого физи
 
 
 def _daytime() -> str:
-    h = datetime.now().hour
+    h = timeutil.now().hour
     if 5 <= h < 12:
         return "утро"
     if 12 <= h < 18:
@@ -146,7 +149,11 @@ def _daytime() -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    # timeutil.now(), а не datetime.now(): значение позже обратно переводится
+    # в epoch через timeutil.to_ts (см. _prune_log/entries_since) — писать и
+    # читать нужно одним и тем же поясом, иначе naive .timestamp() молча
+    # съедет на разницу между TIMEZONE и системным поясом.
+    return timeutil.now().isoformat(timespec="seconds")
 
 
 class StateEngine:
@@ -168,6 +175,10 @@ class StateEngine:
         self._lock = threading.RLock()
         # Счётчики для наблюдаемости (in-memory, снапшот — get_state_for_ui)
         self.stats = {"ticks_gemma": 0, "ticks_heuristic": 0}
+        # Ретенция на живущем процессе (аудит): дозор — не чаще раза в
+        # RETENTION_TICK_HOURS перезапускать прореживание из tick()/
+        # tick_and_score() (см. _maybe_prune_stale)
+        self._retention_timer = RetentionTimer()
 
         db = get_db_paths(context)
         base = Path(db["stm"]).parent / "living"
@@ -175,39 +186,62 @@ class StateEngine:
         self._state_file = base / "state.json"
         self._log_file = base / "offline_log.json"
 
-        self._states: Dict[str, dict] = self._load_json(self._state_file, {"chats": {}})["chats"]
-        log_data = self._load_json(self._log_file, {"entries": [], "next_id": 1})
+        self._states: Dict[str, dict] = load_json_safe(
+            self._state_file, {"chats": {}}, label="StateEngine")["chats"]
+        log_data = load_json_safe(
+            self._log_file, {"entries": [], "next_id": 1}, label="StateEngine")
         self._log: List[dict] = log_data["entries"]
         self._next_id: int = log_data["next_id"]
 
-    # ── Хранение ─────────────────────────────────────────
+        # Ретенция (app.core.retention, задача аудита): чат давно неактивен —
+        # состояние для него не нужно хранить вечно. Прогоняем сразу при
+        # загрузке, чтобы разовые/заброшенные чаты не таскались тиком
+        # (_tick_all — по объединению _states.keys() и known_chats) годами.
+        if self._prune_stale_states():
+            self._save_state()
 
-    @staticmethod
-    def _load_json(path: Path, default: dict) -> dict:
-        if path.exists():
+    def _prune_stale_states(self) -> list:
+        """last_seen — updated_at состояния (тот же маркер, что рефрешат
+        tick/apply_mood_impact): метки нет (легаси-запись, созданная до
+        ретенции) — НЕ трогаем, пока следующая запись её не проставит."""
+        def _seen(chat_id, state):
+            ts = state.get("updated_at") if isinstance(state, dict) else None
+            if not ts:
+                return None
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"[StateEngine] Битый файл {path}: {e}")
-        return default
+                return timeutil.to_ts(datetime.fromisoformat(ts))
+            except (ValueError, TypeError):
+                return None
+        return prune_stale(self._states, _seen, CHAT_RETENTION_DAYS, label="StateEngine")
+
+    def _maybe_prune_stale(self):
+        """Повтор ретенции на живущем процессе (аудит: раньше прунились
+        только при загрузке — процесс месяцами не перезапускается, разовые
+        чаты копятся между рестартами бессрочно). Зовётся из tick()/
+        tick_and_score() — периодического тик-цикла living_persona, НЕ из
+        обработчика входящего сообщения. Дозор гасит частоту до раза в
+        RETENTION_TICK_HOURS; лок держим только на мутацию словаря, save —
+        уже вне лока."""
+        if not self._retention_timer.due():
+            return
+        with self._lock:
+            removed = self._prune_stale_states()
+        if removed:
+            self._save_state()
+
+    # ── Хранение (общий helper app.core.atomic_io — задача №9 аудита:
+    # битый файл раньше тихо проглатывался в default без следа в логе,
+    # запись была tmp+replace без fsync) ─────────────────────────────
 
     def _save_state(self):
         try:
-            tmp = self._state_file.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"chats": self._states}, f, ensure_ascii=False, indent=2)
-            tmp.replace(self._state_file)
+            atomic_write_json(self._state_file, {"chats": self._states})
         except Exception as e:
             logger.error(f"[StateEngine] Ошибка сохранения state: {e}")
 
     def _save_log(self):
         try:
-            tmp = self._log_file.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"entries": self._log, "next_id": self._next_id},
-                          f, ensure_ascii=False, indent=2)
-            tmp.replace(self._log_file)
+            atomic_write_json(self._log_file, {"entries": self._log, "next_id": self._next_id})
         except Exception as e:
             logger.error(f"[StateEngine] Ошибка сохранения offline_log: {e}")
 
@@ -269,7 +303,7 @@ class StateEngine:
         fresh = []
         for e in self._log:
             try:
-                ts = datetime.fromisoformat(e["timestamp"]).timestamp()
+                ts = timeutil.to_ts(datetime.fromisoformat(e["timestamp"]))
             except (ValueError, TypeError):
                 ts = time.time()
             if e.get("consumed") and ts < cutoff:
@@ -313,7 +347,7 @@ class StateEngine:
                 if e["chat_id"] != str(chat_id) or e.get("consumed"):
                     continue
                 try:
-                    ts = datetime.fromisoformat(e["timestamp"]).timestamp()
+                    ts = timeutil.to_ts(datetime.fromisoformat(e["timestamp"]))
                 except (ValueError, TypeError):
                     continue
                 if ts >= since_ts:
@@ -338,8 +372,10 @@ class StateEngine:
         )
         if new_state is None:
             new_state = self._heuristic_tick(prev, persona_context)
-        return self._commit_tick(chat_id, prev, new_state, persona_context,
-                                 known_places=known_places)
+        result = self._commit_tick(chat_id, prev, new_state, persona_context,
+                                   known_places=known_places)
+        self._maybe_prune_stale()
+        return result
 
     def tick_and_score(self, chat_id: str, persona_context: dict,
                        storylines: Optional[List] = None,
@@ -389,6 +425,7 @@ class StateEngine:
         if score is None:
             score = self._heuristic_score(chat_id, silence_hours,
                                           since_initiative_hours)
+        self._maybe_prune_stale()
         return state, score
 
     @staticmethod
@@ -466,7 +503,7 @@ class StateEngine:
             return STATE_TICK_PROMPT_PRIMITIVE.format(
                 state=json.dumps(prev, ensure_ascii=False),
                 daytime=_daytime(),
-                weekday=_WEEKDAYS_RU[datetime.now().weekday()],
+                weekday=_WEEKDAYS_RU[timeutil.now().weekday()],
                 personality_summary=(persona_context or {}).get("personality_summary", "")[:300],
                 storylines=surroundings,
                 last_world_fact=last_world_fact or "(нет)",
@@ -474,7 +511,7 @@ class StateEngine:
         return STATE_TICK_PROMPT.format(
             state=json.dumps(prev, ensure_ascii=False),
             daytime=_daytime(),
-            weekday=_WEEKDAYS_RU[datetime.now().weekday()],
+            weekday=_WEEKDAYS_RU[timeutil.now().weekday()],
             routine=((persona_context or {}).get("daily_routine") or {}).get(
                 _daytime(), "—"),
             personality_summary=(persona_context or {}).get("personality_summary", ""),
@@ -532,7 +569,7 @@ class StateEngine:
     def _heuristic_tick(self, prev: dict, persona_context: dict) -> dict:
         """Дрейф без LLM: энергия по времени суток, mood — к baseline.
         Распорядок (фаза C): ночью не-primitive почти всегда спит."""
-        hour = datetime.now().hour
+        hour = timeutil.now().hour
         energy = prev["energy"]
         pastime = prev["pastime"]
         if 7 <= hour < 23:

@@ -137,6 +137,25 @@ def main():
           not rm._should_night_nudge({}, datetime(2026, 8, 26, 3, 10), active))
     check("night: 01:59 ещё в окне → да",
           rm._should_night_nudge({}, datetime(2026, 8, 26, 1, 59), active))
+
+    # Точная граница окна (задача №9 аудита): раньше час считался целыми
+    # часами (int(now.hour - bedtime) > 2), что реально давало окно
+    # 00:00–02:59 (три часа) вместо документированных двух — 02:30
+    # ошибочно попадал внутрь окна. Теперь окно — секунды, ровно 2ч.
+    def _active_near(now, minutes_ago=5):
+        return now.timestamp() - minutes_ago * 60
+
+    n_edge = datetime(2026, 8, 26, 2, 0)
+    check("night: ровно 02:00:00 (граница 2ч) — ещё внутри окна",
+          rm._should_night_nudge({}, n_edge, _active_near(n_edge)))
+    n_past_edge = datetime(2026, 8, 26, 2, 0, 1)
+    check("night: 02:00:01 — на секунду позже границы → нет",
+          not rm._should_night_nudge({}, n_past_edge, _active_near(n_past_edge)))
+    n_230 = datetime(2026, 8, 26, 2, 30)
+    check("night: 02:30 — раньше усечение до целого часа ошибочно давало "
+          "«ещё в окне» (3-часовое окно); теперь чётко вне 2ч окна → нет",
+          not rm._should_night_nudge({}, n_230, _active_near(n_230)))
+
     check("night: ключ ночи для bedtime 0 (00:30 авг 26) = 2026-08-26",
           RhythmManager._night_key(night, 0) == "2026-08-26")
     check("night: ключ ночи для bedtime 23 (23:30 авг 25) = 2026-08-25",
@@ -285,6 +304,37 @@ def main():
                         memory=FakeMemory(), activity_tracker=tracker5, sender=FakeSender())
     asyncio.run(rm5._do_morning("c3", now, tracker5.get_last_activity("c3")))
     check("dossier: без досье — не падает", len(rm5._chat_state("c3")) > 0)
+
+    # ── 10. Часовой пояс пользователя (задача №7 аудита) ──
+    # Гейты получают `now` из app.core.timeutil (стенные часы пользователя), а
+    # разницу с last_seen считают через timeutil.to_ts. Раньше тут было
+    # datetime.now() + now.timestamp(): на машине с чужим поясом окно утра
+    # проверялось по её часам, а пауза «с прошлого появления» уезжала на
+    # разницу поясов (могла стать отрицательной — приветствие не приходило
+    # никогда или приходило каждый тик).
+    from app.core import timeutil
+
+    rm_tz = RhythmManager(context="rhythm_tz_ctx", config=RhythmConfig.from_dict(True))
+    wall = datetime(2026, 8, 25, 8, 0)  # 08:00 по часам ПОЛЬЗОВАТЕЛЯ (в окне)
+    for zone in ("Asia/Tokyo", "America/Los_Angeles"):
+        os.environ["TIMEZONE"] = zone
+        seen_long = timeutil.to_ts(wall) - 5 * 3600   # не видели 5 ч (> min_gap 4)
+        seen_short = timeutil.to_ts(wall) - 2 * 3600  # видели 2 ч назад
+        check(f"tz: пауза 5 ч по часам пользователя → приветствие [{zone}]",
+              rm_tz._should_morning_greet({}, wall, seen_long))
+        check(f"tz: пауза 2 ч → нет приветствия [{zone}]",
+              not rm_tz._should_morning_greet({}, wall, seen_short))
+        night_wall = datetime(2026, 8, 26, 0, 20)
+        check(f"tz: ночной nudge — активность 20 мин назад по часам "
+              f"пользователя [{zone}]",
+              rm_tz._should_night_nudge({}, night_wall,
+                                        timeutil.to_ts(night_wall) - 20 * 60))
+        check(f"tz: ночной nudge — активность 5 ч назад → нет [{zone}]",
+              not rm_tz._should_night_nudge({}, night_wall,
+                                            timeutil.to_ts(night_wall) - 5 * 3600))
+    os.environ.pop("TIMEZONE", None)
+    check("tz: без TIMEZONE поведение прежнее (системный пояс)",
+          rm_tz._should_morning_greet({}, wall, wall.timestamp() - 5 * 3600))
 
     print()
     print(f"Проверок: {ok}, провалов: {failures}")

@@ -7,21 +7,19 @@
 """
 
 import json
-import re
 import time
 import uuid
 from pathlib import Path
 
-DRAFTS_DIR = Path(__file__).parent.parent.parent / "data" / "persona_drafts"
+from app.api.security import safe_join
 
-# Допустимый id черновика (защита от path traversal)
-_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+DRAFTS_DIR = Path(__file__).parent.parent.parent / "data" / "persona_drafts"
 
 
 def _path(draft_id: str) -> Path | None:
-    if not _ID_RE.match(draft_id):
-        return None
-    return DRAFTS_DIR / f"{draft_id}.json"
+    # Формат id черновика тот же, что и у id персоны (см. app/api/security) —
+    # общая точка защиты от path traversal вместо своего regex здесь.
+    return safe_join(DRAFTS_DIR, draft_id, ".json")
 
 
 def list_drafts() -> list[dict]:

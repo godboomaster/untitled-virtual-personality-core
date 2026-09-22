@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
+from app.core import timeutil
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.persona_context import _extract_json
@@ -115,7 +116,7 @@ class OfflineSummarizer:
     # ── Дневная суммаризация (§6) ─────────────────────────
 
     def should_run_daily(self, chat_id: str, unconsumed_count: int) -> bool:
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = timeutil.today().strftime("%Y-%m-%d")
         with self._lock:
             last = self._state["last_daily"].get(str(chat_id))
         return last != today or unconsumed_count >= DAILY_SUMMARY_TRIGGER * 2
@@ -135,7 +136,7 @@ class OfflineSummarizer:
             return None
 
         episode = self._theses_to_episode(theses, persona, user_language)
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = timeutil.today().strftime("%Y-%m-%d")
         with self._lock:
             self._state["last_daily"][str(chat_id)] = today
             self._save()
@@ -278,7 +279,7 @@ class OfflineSummarizer:
         last = self._state.get("last_screenwriter")
         if last:
             try:
-                if (datetime.now() - datetime.fromisoformat(last)).days < 10:
+                if (timeutil.now() - datetime.fromisoformat(last)).days < 10:
                     return False
             except ValueError:
                 pass
@@ -315,7 +316,7 @@ class OfflineSummarizer:
         if not data or not data.get("updates"):
             return 0
 
-        now_iso = datetime.now().isoformat(timespec="seconds")
+        now_iso = timeutil.now().isoformat(timespec="seconds")
         updated = 0
         with world_engine._lock:
             from app.core.world_engine import _titles_similar

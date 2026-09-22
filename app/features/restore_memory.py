@@ -10,47 +10,79 @@
 """
 
 import os
+import re
 import sys
 import json
-import glob
 import logging
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import chromadb
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+from app.core.chroma_space import COLLECTION_NAMES, open_collection
 from app.core.config import Config, get_db_paths
+from app.core.st_embedder import create_st_embedder
 
 logger = logging.getLogger(__name__)
 
+# Виды баз, которые вообще умеем восстанавливать (имена коллекций — в
+# app/core/chroma_space.COLLECTION_NAMES, одно определение на проект)
+RESTORE_KINDS = ("stm", "ltm", "files")
 
-def _build_restore_map() -> dict:
-    """Строит маппинг динамически на основе persona-папок."""
-    contexts = ["connor", "arrodes", "verso", "assistant", "default"]
-    mapping = {}
-    for ctx in contexts:
-        paths = get_db_paths(ctx)
-        mapping[f"{ctx}_stm"] = (paths["stm"], "short_term_memory")
-        mapping[f"{ctx}_ltm"] = (paths["ltm"], "long_term_memory")
-        mapping[f"{ctx}_files"] = (paths["files"], "file_documents")
-    return mapping
+# Имя дампа: {контекст}_{вид}_{метка времени}.json, например
+# api_arrodes_ltm_20260503_221535.json. Контекст — нежадно, чтобы вид
+# отделился по первому же вхождению _stm_/_ltm_/_files_.
+_EXPORT_RE = re.compile(
+    r"^(?P<ctx>.+?)_(?P<kind>" + "|".join(RESTORE_KINDS) + r")_(?P<stamp>.+)\.json$")
 
-RESTORE_MAP = _build_restore_map()
+# Контекст попадает в путь к базе (data/{ctx}/stm), а берётся из имени файла
+# в каталоге дампов — пускаем только безопасные имена: буквы/цифры (в том
+# числе не латиница), _ . -, без ".." и без разделителей путей
+_CTX_RE = re.compile(r"^(?!.*\.\.)\w[\w.\-]*$", re.UNICODE)
 
 
-def find_latest_export(export_dir: str) -> dict:
-    # Находит последние JSON-файлы для каждой базы.
+def find_latest_export(export_dir: str,
+                       contexts: Optional[List[str]] = None) -> Dict[str, Tuple[str, str, str]]:
+    """Последний дамп по каждой (контекст, вид) из фактических файлов каталога.
+
+    Раньше вместо этого был жёстко прошитый RESTORE_MAP на пять персон
+    ("connor", "arrodes", "verso", "assistant", "default"): дампы веб-персон
+    (data/api_*) и любой новой персоны молча не восстанавливались, а
+    переименование персоны требовало правки константы. Теперь набор целей
+    вычисляется из имён файлов в каталоге дампов, а путь к базе — из конфига
+    (get_db_paths), так что достаточно положить дамп рядом с остальными.
+
+    Args:
+        export_dir: каталог дампов (memory_export/).
+        contexts: если задан — восстанавливать только эти контексты.
+
+    Returns:
+        {"{ctx}_{kind}": (путь_к_json, путь_к_базе, имя_коллекции)}
+    """
     if not os.path.isdir(export_dir):
         return {}
 
-    latest = {}
-    for db_name in RESTORE_MAP:
-        # Ищем файлы вида: tg_ltm_20260503_221535.json
-        pattern = os.path.join(export_dir, f"{db_name}_*.json")
-        files = sorted(glob.glob(pattern))
-        if files:
-            latest[db_name] = files[-1]  # Последний по алфавиту = самый свежий
+    allowed = set(contexts) if contexts else None
+    best: Dict[str, Tuple[str, str]] = {}  # db_name → (метка времени, файл)
+    for name in sorted(os.listdir(export_dir)):
+        m = _EXPORT_RE.match(name)
+        if not m:
+            continue
+        ctx, kind, stamp = m.group("ctx"), m.group("kind"), m.group("stamp")
+        if not _CTX_RE.match(ctx):
+            logger.warning(f"  [Restore] Пропускаю {name}: подозрительное имя контекста")
+            continue
+        if allowed is not None and ctx not in allowed:
+            continue
+        db_name = f"{ctx}_{kind}"
+        # Метка времени в имени — YYYYmmdd_HHMMSS, сравнение строк = по времени
+        if db_name not in best or stamp > best[db_name][0]:
+            best[db_name] = (stamp, os.path.join(export_dir, name))
 
+    latest: Dict[str, Tuple[str, str, str]] = {}
+    for db_name, (_stamp, path) in best.items():
+        ctx, _, kind = db_name.rpartition("_")
+        latest[db_name] = (path, get_db_paths(ctx)[kind], COLLECTION_NAMES[kind])
     return latest
 
 
@@ -61,13 +93,11 @@ def restore_collection(db_path: str, collection_name: str, json_path: str) -> in
     Пропускает если коллекция уже не пуста.
     """
     client = chromadb.PersistentClient(path=db_path)
-    embedder = SentenceTransformerEmbeddingFunction(
-        model_name="paraphrase-multilingual-MiniLM-L12-v2"
-    )
-    collection = client.get_or_create_collection(
-        collection_name,
-        embedding_function=embedder
-    )
+    # Эмбеддер и метрика — как у рабочих коллекций (единая точка открытия),
+    # иначе восстановленная база получала дефолтную l2 и «забудь про X»
+    # переставало находить факты
+    collection = open_collection(
+        client, collection_name, embedding_function=create_st_embedder())
 
     # Не трогаем если уже есть данные
     if collection.count() > 0:
@@ -121,10 +151,13 @@ def restore_collection(db_path: str, collection_name: str, json_path: str) -> in
     return len(ids)
 
 
-def restore_all(export_dir: str = None) -> dict:
+def restore_all(export_dir: str = None, contexts: List[str] = None) -> dict:
     """
     Восстанавливает все базы из последних дампов.
     Возвращает словарь {db_name: количество_загруженных}.
+
+    contexts — необязательный фильтр по контекстам (по умолчанию — все, чьи
+    дампы найдены в каталоге).
     """
     if export_dir is None:
         # memory_export/ лежит в корне проекта (app/features/ -> app/ -> корень)
@@ -137,7 +170,7 @@ def restore_all(export_dir: str = None) -> dict:
         logger.info(f"  [Restore] Директория {export_dir} не найдена, пропускаем")
         return {}
 
-    latest_files = find_latest_export(export_dir)
+    latest_files = find_latest_export(export_dir, contexts=contexts)
     if not latest_files:
         logger.info(f"  [Restore] Нет файлов для восстановления в {export_dir}")
         return {}
@@ -145,11 +178,7 @@ def restore_all(export_dir: str = None) -> dict:
     logger.info(f"  [Restore] Найдено {len(latest_files)} баз для восстановления")
 
     results = {}
-    for db_name, json_path in latest_files.items():
-        if db_name not in RESTORE_MAP:
-            continue
-
-        db_path, collection_name = RESTORE_MAP[db_name]
+    for db_name, (json_path, db_path, collection_name) in latest_files.items():
         try:
             count = restore_collection(db_path, collection_name, json_path)
             results[db_name] = count

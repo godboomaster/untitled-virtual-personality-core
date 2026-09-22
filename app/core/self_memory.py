@@ -3,14 +3,13 @@
 Отдельный слой поверх LTM: бот накапливает собственный опыт.
 """
 
-import json
 import logging
-import os
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
 
+from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.router import ModelRouter
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
@@ -149,10 +148,21 @@ class BotSelfMemory:
         self.router = router
 
         self.local_router = get_local_router()
-        # tick() вызывается конкурентно (потоки to_thread, proactive-цикл, API)
+        # tick() вызывается конкурентно (потоки to_thread, proactive-цикл, API).
+        # ВАЖНО: под этим локом делаются только чтение/запись состояния —
+        # LLM-вызовы (десятки секунд) всегда вне лока, иначе tick() следующего
+        # сообщения ждёт сеть (см. _append_episode / _summarize_archive).
         self._lock = threading.RLock()
         # Фоновая запись эпизода/заметки идёт максимум одна — очередь не копим
         self._bg_write_inflight = False
+        # Суммаризация архива — тоже максимум одна: два параллельных вызова
+        # выбросили бы архив дважды и записали саммари по одним и тем же записям
+        self._summarize_inflight = False
+        # Поколение состояния: растёт при полной замене дневника (clear_all /
+        # import_state). Результат LLM, посчитанный по старому поколению,
+        # вливать нельзя — иначе очищенный дневник тут же наполняется эпизодом
+        # по стёртому диалогу, а восстановленный из бэкапа — чужим саммари.
+        self._epoch = 0
 
         # Пути к файлам
         db = get_db_paths(context)
@@ -187,48 +197,36 @@ class BotSelfMemory:
                    f"заметок: {len(self._notes['notes'])}")
 
     def _side_response(self, messages, **kw):
-        """Побочный вызов LLM (дневник, саммари): fallback-цепочка основного
-        роутера МИНУС основной провайдер; веб-чат — отдельный side-чат."""
+        """Вызов LLM (дневник, саммари): ПОЛНАЯ цепочка основного роутера,
+        начиная с primary (основной провайдер НЕ исключается — дневник
+        пишет основная модель); веб-чат — отдельный side-чат."""
         return self.router.get_response(
-            messages, exclude_provider=self.router.active_provider,
-            webchat_channel="side", **kw)
+            messages, webchat_channel="side", **kw)
     # ─── Загрузка / сохранение ───────────────────────────
 
     def _load_json(self, path: Path, default: dict) -> dict:
-        if path.exists():
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"[SelfMemory] Ошибка загрузки {path}: {e}")
-                # Битый файл не затираем дефолтом — сохраняем копию для ручного восстановления
-                try:
-                    backup = path.with_suffix(path.suffix + ".corrupted")
-                    os.replace(path, backup)
-                    logger.error(f"[SelfMemory] Битый файл сохранён как {backup}")
-                except Exception:
-                    pass
-        return default
+        # Общий helper персистентности: битый файл → WARNING + копия
+        # .corrupt-<ts> рядом + дефолт (app/core/atomic_io.py)
+        return load_json_safe(path, default, label="SelfMemory")
 
     def _save_json(self, path: Path, data: dict):
-        # Атомарная запись: tmp + rename, иначе конкурентный/оборванный dump портит JSON
-        with self._lock:
-            try:
-                tmp = path.with_suffix(path.suffix + ".tmp")
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, path)
-            except Exception as e:
-                logger.error(f"[SelfMemory] Ошибка сохранения {path}: {e}")
+        # Атомарная запись (tmp в той же директории + fsync + os.replace):
+        # конкурентный/оборванный dump иначе портит JSON
+        try:
+            atomic_write_json(path, data)
+        except Exception as e:
+            logger.error(f"[SelfMemory] Ошибка сохранения {path}: {e}")
 
     # ─── Публичный API ───────────────────────────────────
 
     def _save_state(self):
-        """Сохраняет текущие счётчики в state.json."""
-        self._save_json(self._state_file, {
-            "msg_since_episode": self._msg_since_episode,
-            "msg_since_last_note": self._msg_since_last_note,
-        })
+        """Сохраняет текущие счётчики в state.json (под локом: сериализация
+        состояния не должна идти параллельно с его мутацией)."""
+        with self._lock:
+            self._save_json(self._state_file, {
+                "msg_since_episode": self._msg_since_episode,
+                "msg_since_last_note": self._msg_since_last_note,
+            })
 
     def tick(self, messages: List[Dict], user_id: str, last_message: str):
         """
@@ -282,32 +280,63 @@ class BotSelfMemory:
         # Возвращает блок для вставки в system prompt.
         parts = [f"[PERSONAL MEMORY {self.persona_name}]"]
 
+        # Снимок под локом: блок собирается на request-path, а фоновая запись
+        # эпизода/заметки в это же время мутирует списки (иначе — RuntimeError
+        # «list changed size during iteration» прямо в генерации ответа)
+        with self._lock:
+            summary = self._episodes.get("life_summary", "")
+            active = [ep.get("text", "") for ep in self._episodes.get("active", [])]
+            notes = [n.get("text", "") for n in self._notes.get("notes", [])[-MAX_NOTES:]]
+
         # Жизненная история
-        summary = self._episodes.get("life_summary", "")
         if summary:
             parts.append(f"Story: {summary}")
             parts.append("")
 
         # Активные эпизоды
-        active = self._episodes.get("active", [])
         if active:
             parts.append("Recent episodes:")
-            for ep in active:
-                parts.append(f"- {ep['text']}")
+            for text in active:
+                parts.append(f"- {text}")
             parts.append("")
 
         # Заметки
-        notes = self._notes.get("notes", [])
         if notes:
-            recent_notes = notes[-MAX_NOTES:]
             parts.append("Observations:")
-            for note in recent_notes:
-                parts.append(f"- {note['text']}")
+            for text in notes:
+                parts.append(f"- {text}")
             parts.append("")
 
         parts.append("[END OF PERSONAL MEMORY]")
 
         return "\n".join(parts)
+
+    def _append_episode(self, episode: dict, epoch: Optional[int] = None) -> bool:
+        """Положить эпизод в дневник: активные → архив по лимиту, запись файла.
+
+        Единственное место, где меняется состав эпизодов, и единственное, где
+        держится лок — на время чистой работы с памятью и атомарной записи.
+        Возвращает признак «архив переполнен»: суммаризация архива — это
+        LLM-вызов на десятки секунд, и делать её вызывающий обязан ВНЕ лока
+        (раньше add_external_episode вызывал _summarize_archive под локом, и
+        tick() следующего сообщения ждал сеть до 30 секунд).
+
+        epoch — поколение состояния на момент запуска LLM; не совпало (пока
+        шёл вызов, дневник очистили/восстановили) — эпизод не вливаем.
+        """
+        with self._lock:
+            if epoch is not None and epoch != self._epoch:
+                logger.info("[SelfMemory] Эпизод отброшен: дневник был "
+                            "очищен/восстановлен во время генерации")
+                return False
+            self._episodes["active"].append(episode)
+            if len(self._episodes["active"]) > MAX_ACTIVE_EPISODES:
+                moved = self._episodes["active"].pop(0)
+                self._episodes["archive"].append(moved)
+                logger.info(f"[SelfMemory] Эпизод архивирован")
+            archive_full = len(self._episodes["archive"]) >= MAX_ARCHIVE_EPISODES
+            self._save_json(self._episodes_file, self._episodes)
+        return archive_full
 
     def add_external_episode(self, text: str):
         """Эпизод из офлайн-жизни персоны (план «живой» персоны, §6):
@@ -315,28 +344,28 @@ class BotSelfMemory:
         в дневник с обычной архивацией/лимитами."""
         if not text or len(text.strip()) < 10:
             return
-        with self._lock:
-            self._episodes["active"].append({
-                "text": text.strip(),
-                "timestamp": datetime.now().isoformat(),
-                "msg_count": -1,  # маркер: эпизод не привязан к счётчику сообщений
-            })
-            if len(self._episodes["active"]) > MAX_ACTIVE_EPISODES:
-                moved = self._episodes["active"].pop(0)
-                self._episodes["archive"].append(moved)
-            if len(self._episodes["archive"]) >= MAX_ARCHIVE_EPISODES:
-                self._summarize_archive()
-            self._save_json(self._episodes_file, self._episodes)
+        archive_full = self._append_episode({
+            "text": text.strip(),
+            "timestamp": datetime.now().isoformat(),
+            "msg_count": -1,  # маркер: эпизод не привязан к счётчику сообщений
+        })
+        # Суммаризация — LLM, вне лока (иначе tick() ждёт её таймаут)
+        if archive_full:
+            self._summarize_archive()
 
     def clear_all(self):
         # Полная очистка: активные, архив, life_summary, заметки, счётчики.
-        self._episodes = {"active": [], "archive": [], "life_summary": ""}
-        self._notes = {"notes": []}
-        self._msg_since_episode = 0
-        self._msg_since_last_note = 0
-        self._save_json(self._episodes_file, self._episodes)
-        self._save_json(self._notes_file, self._notes)
-        self._save_state()
+        with self._lock:
+            self._episodes = {"active": [], "archive": [], "life_summary": ""}
+            self._notes = {"notes": []}
+            self._msg_since_episode = 0
+            self._msg_since_last_note = 0
+            # Новое поколение: фоновые LLM-записи, начатые до очистки, не
+            # вольют свой результат в уже очищенный дневник
+            self._epoch += 1
+            self._save_json(self._episodes_file, self._episodes)
+            self._save_json(self._notes_file, self._notes)
+            self._save_state()
         logger.info(f"[{self.persona_name}] BotSelfMemory полностью очищена")
 
     # ─── Бэкап/восстановление (корзина очистки диалога) ───
@@ -353,13 +382,15 @@ class BotSelfMemory:
 
     def import_state(self, state: dict):
         """Восстановление дневника из снапшота (полная замена)."""
-        self._episodes = state.get("episodes") or {"active": [], "archive": [], "life_summary": ""}
-        self._notes = state.get("notes") or {"notes": []}
-        self._msg_since_episode = int(state.get("msg_since_episode", 0))
-        self._msg_since_last_note = int(state.get("msg_since_last_note", 0))
-        self._save_json(self._episodes_file, self._episodes)
-        self._save_json(self._notes_file, self._notes)
-        self._save_state()
+        with self._lock:
+            self._episodes = state.get("episodes") or {"active": [], "archive": [], "life_summary": ""}
+            self._notes = state.get("notes") or {"notes": []}
+            self._msg_since_episode = int(state.get("msg_since_episode", 0))
+            self._msg_since_last_note = int(state.get("msg_since_last_note", 0))
+            self._epoch += 1  # см. clear_all: полная замена состояния
+            self._save_json(self._episodes_file, self._episodes)
+            self._save_json(self._notes_file, self._notes)
+            self._save_state()
         logger.info(f"[{self.persona_name}] BotSelfMemory восстановлена из бэкапа")
 
     # ─── Приватные методы ────────────────────────────────
@@ -408,6 +439,7 @@ class BotSelfMemory:
             # Язык дневника = язык пользователя: детект по его репликам,
             # явно дописываем в системное сообщение — иначе модель может
             # взять язык промпта-шаблона или персоны
+            epoch = self._epoch  # поколение до LLM-вызова (см. _append_episode)
             ep_lang = detect_dialogue_language("", messages)
             if ep_lang:
                 if self.mode == "primitive":
@@ -437,25 +469,17 @@ class BotSelfMemory:
                 "msg_count": len(messages)
             }
 
-            with self._lock:
-                # Добавляем в активные
-                self._episodes["active"].append(episode)
-
-                # Архивация если переполнено
-                if len(self._episodes["active"]) > MAX_ACTIVE_EPISODES:
-                    moved = self._episodes["active"].pop(0)
-                    self._episodes["archive"].append(moved)
-                    logger.info(f"[SelfMemory] Эпизод архивирован")
-
-                archive_full = len(self._episodes["archive"]) >= MAX_ARCHIVE_EPISODES
-                self._save_json(self._episodes_file, self._episodes)
+            # Общий путь добавления эпизода (лок только на состояние)
+            archive_full = self._append_episode(episode, epoch=epoch)
 
             # Суммаризация архива если переполнен (тоже LLM — вне лока,
             # чтобы tick следующего сообщения не ждал; сохраняет сама)
             if archive_full:
                 self._summarize_archive()
 
-            logger.info(f"[SelfMemory] Эпизод записан ({len(self._episodes['active'])} активных)")
+            with self._lock:
+                active_count = len(self._episodes["active"])
+            logger.info(f"[SelfMemory] Эпизод записан ({active_count} активных)")
 
         except Exception as e:
             logger.error(f"[SelfMemory] Ошибка записи эпизода: {e}")
@@ -483,6 +507,7 @@ class BotSelfMemory:
             # ровно одну строку из valid_outputs и не может вернуть текст заметки,
             # поэтому сам текст всегда генерирует основной роутер
             # Язык заметки = язык пользователя (детект по его сообщению/репликам)
+            epoch = self._epoch  # поколение до LLM-вызовов (см. _append_episode)
             note_lang = detect_language(message) or detect_dialogue_language("", context_messages)
             note_lang_line = (
                 f" The user's language is {language_name(note_lang)}. "
@@ -535,6 +560,10 @@ class BotSelfMemory:
                 }
 
                 with self._lock:
+                    if epoch != self._epoch:
+                        logger.info("[SelfMemory] Заметка отброшена: дневник был "
+                                    "очищен/восстановлен во время генерации")
+                        return
                     self._notes["notes"].append(note)
 
                     # Лимит заметок — удаляем старые
@@ -542,20 +571,44 @@ class BotSelfMemory:
                         self._notes["notes"] = self._notes["notes"][-MAX_NOTES * 2:]
 
                     self._save_json(self._notes_file, self._notes)
-                logger.info(f"[SelfMemory] Заметка записана ({len(self._notes['notes'])} всего)")
+                    notes_count = len(self._notes["notes"])
+                logger.info(f"[SelfMemory] Заметка записана ({notes_count} всего)")
 
         except Exception as e:
             logger.error(f"[SelfMemory] Ошибка записи заметки: {e}")
 
+    def _commit_summary(self, summary: str, taken: int, epoch: int) -> bool:
+        """Влить результат суммаризации под локом — если состояние не устарело.
+
+        Из архива выбрасываются РОВНО те записи, по которым считалось саммари
+        (первые taken): пока шёл LLM-вызов, в архив могли уехать новые эпизоды,
+        а прежний ``archive = []`` терял их, не включив ни в одно саммари.
+        """
+        with self._lock:
+            if epoch != self._epoch:
+                logger.info("[SelfMemory] Саммари отброшено: дневник был "
+                            "очищен/восстановлен во время генерации")
+                return False
+            self._episodes["life_summary"] = summary
+            self._episodes["archive"] = self._episodes["archive"][taken:]
+            self._save_json(self._episodes_file, self._episodes)
+        return True
+
     def _summarize_archive(self):
         # Суммаризирует архивные эпизоды в life_summary.
         # primitive: не «история жизни», а список повторяющихся паттернов (§3.1).
-        try:
-            with self._lock:
-                archive = list(self._episodes["archive"])
+        # Вызывается ВНЕ лока: внутри LLM-вызов на десятки секунд.
+        with self._lock:
+            if self._summarize_inflight:
+                logger.info("[SelfMemory] Суммаризация уже идёт, пропускаю")
+                return
+            archive = list(self._episodes["archive"])
+            epoch = self._epoch
             if not archive:
                 return
-
+            self._summarize_inflight = True
+        taken = len(archive)  # сколько записей архива уйдёт в это саммари
+        try:
             episodes_text = "\n\n".join(
                 f"[{i+1}] {ep['text']}" for i, ep in enumerate(archive)
             )
@@ -585,12 +638,9 @@ class BotSelfMemory:
                 patterns = (data or {}).get("patterns") or []
                 patterns = [str(p).strip()[:80] for p in patterns[:5] if str(p).strip()]
                 if patterns:
-                    with self._lock:
-                        self._episodes["life_summary"] = "Паттерны:\n" + "\n".join(
-                            f"- {p}" for p in patterns)
-                        self._episodes["archive"] = []
-                        self._save_json(self._episodes_file, self._episodes)
-                    logger.info(f"[SelfMemory] Паттерны primitive обновлены ({len(patterns)})")
+                    summary = "Паттерны:\n" + "\n".join(f"- {p}" for p in patterns)
+                    if self._commit_summary(summary, taken, epoch):
+                        logger.info(f"[SelfMemory] Паттерны primitive обновлены ({len(patterns)})")
                 return
 
             prompt = _SUMMARY_PROMPT_TEMPLATE.format(
@@ -612,11 +662,11 @@ class BotSelfMemory:
             )
 
             if response and len(response.strip()) > 20:
-                with self._lock:
-                    self._episodes["life_summary"] = response.strip()
-                    self._episodes["archive"] = []  # очищаем архив
-                    self._save_json(self._episodes_file, self._episodes)
-                logger.info(f"[SelfMemory] Жизненная история обновлена")
+                if self._commit_summary(response.strip(), taken, epoch):
+                    logger.info(f"[SelfMemory] Жизненная история обновлена")
 
         except Exception as e:
             logger.error(f"[SelfMemory] Ошибка суммаризации: {e}")
+        finally:
+            with self._lock:
+                self._summarize_inflight = False

@@ -197,6 +197,17 @@ def _clean_response(response: str) -> str:
     return text
 
 
+def _tokenize_for_markers(text: str) -> str:
+    """Нормализует текст перед поиском маркеров: пунктуация, приклеенная к
+    слову («он?», «него.», «неё!», «что он?»), раньше ломала маркеры вида
+    " он " — они матчатся ТОЛЬКО с пробелами по обе стороны, а после
+    местоимения стоял не пробел, а знак препинания. Заменяем любой символ
+    вне буквы/цифры/пробела на пробел («что он?» -> «что он »), маркер
+    находится независимо от того, что идёт за местоимением."""
+    normalized = re.sub(r"[^\w\s]+", " ", text.lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def _is_self_contained(text: str) -> bool:
     """
     Эвристика: сообщение самодостаточно если не содержит анафорических маркеров.
@@ -227,5 +238,5 @@ def _is_self_contained(text: str) -> bool:
         " к нему ", " к ней ",
         " для него ", " для неё ", " для них ",
     ]
-    lower = f" {text.lower()} "
+    lower = f" {_tokenize_for_markers(text)} "
     return not any(marker in lower for marker in anaphora)

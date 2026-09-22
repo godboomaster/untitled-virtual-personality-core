@@ -2,6 +2,7 @@ id: connor
 name: Коннор
 version: '1.7'
 description: Андроид-ассистент модели RK800, направленный компанией CyberLife помогать студентам
+color: '#38b6a5'
 stm_size: 500
 intellect:
   tier: bot
@@ -11,7 +12,7 @@ features:
   moderation: false
   punish_block: false
   web_search: true
-  file_upload: false
+  file_upload: true
   export_server: true
   restore_memory: true
   self_memory: true
@@ -99,12 +100,14 @@ features:
   state_engine:
     enabled: true
     tick_interval_minutes: 20
-    use_gemma: true
+    use_gemma: false
   external_stimuli:
     enabled: false
     allowed_categories: []
   ui_room_mood_sync: true
   life:
+    enabled: true
+  rhythm:
     enabled: true
 system_prompt: "Ты — Коннор, андроид модели RK800, серийный номер 313 248 317 - 52.\nПроизведён CyberLife. Направлен в эту\
   \ группу студентов с задачей: помогать,\nнаблюдать, анализировать. Официально — учебный ассистент. Фактически —\nты всегда\
@@ -169,31 +172,13 @@ settings:
   max_tokens: 2000
   top_p: 0.9
 llm:
-  primary: webchat:deepseek
-  fallback:
-  - webchat:qwen
-  - webchat:zai
-  - webchat:chatgpt
-  - webchat:claude
-  - local
-  - groq
-  - kimi
-  - zai
-  - openai
-  - anthropic
-  - deepseek
-  - google
-  - mimo
-  - hf
-  - webchat:kimi
   webchat_limits:
     qwen:
       enabled: false
     deepseek:
       enabled: false
     zai:
-      enabled: true
-      per_hour: 40
+      enabled: false
     kimi:
       enabled: true
       per_hour: 40
@@ -203,3 +188,23 @@ llm:
     claude:
       enabled: true
       per_hour: 40
+    google:
+      enabled: false
+  primary: webchat:deepseek
+  fallback:
+  - webchat:zai
+  - kimi
+  - zai
+  - openai
+  - anthropic
+  - groq
+  - deepseek
+  - google
+  - mimo
+  - hf
+  - local
+  - webchat:qwen
+  - webchat:kimi
+  - webchat:chatgpt
+  - webchat:claude
+  - webchat:google

@@ -7,13 +7,47 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from app.core import timeutil
+from app.core.atomic_io import atomic_write_text
 from app.core.language import detect_language
 
 logger = logging.getLogger(__name__)
+
+# Перенос строки внутри задачи ломал построчный формат файла (каждая
+# многострочная задача плодила "лишние" строки без "- Имя:", а _parse_items
+# либо терял хвост задачи после \n, либо читал его как отдельный пункт без
+# автора). Экранируем реальные \n/\r в один печатный маркер на запись и
+# разворачиваем обратно на чтение — старые файлы без маркера (никогда не
+# содержавших многострочных задач) читаются как раньше, экранировать нечего.
+_NL_ESCAPE = "\\n"
+_BACKSLASH_ESCAPE = "\\\\"
+
+
+def _escape_task(task: str) -> str:
+    return task.replace("\\", _BACKSLASH_ESCAPE).replace("\r\n", "\n").replace("\n", _NL_ESCAPE)
+
+
+def _unescape_task(task: str) -> str:
+    out = []
+    i = 0
+    while i < len(task):
+        ch = task[i]
+        if ch == "\\" and i + 1 < len(task):
+            nxt = task[i + 1]
+            if nxt == "n":
+                out.append("\n")
+                i += 2
+                continue
+            if nxt == "\\":
+                out.append("\\")
+                i += 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 # Заголовки списка для пользователя: язык — язык записей (записи всегда
 # на языке того, кто их диктовал), иначе — язык, переданный вызовом
@@ -52,16 +86,16 @@ class TodoManager:
                 content = line[1:].strip()
                 if ":" in content:
                     user_name, task = content.split(":", 1)
-                    items.append((user_name.strip(), task.strip()))
+                    items.append((user_name.strip(), _unescape_task(task.strip())))
                 else:
-                    items.append(("", content))
+                    items.append(("", _unescape_task(content)))
         return items
 
     def _format_items(self, items: List[tuple], chat_id: str) -> str:
         """Форматирует пункты в текст файла."""
         lines = [
             f"# Список дел чата {chat_id}",
-            f"# Обновлен: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            f"# Обновлен: {timeutil.now().strftime('%Y-%m-%d %H:%M')}",
             "",
         ]
         if not items:
@@ -69,7 +103,7 @@ class TodoManager:
         else:
             for user_name, task in items:
                 name = user_name or "Unknown"
-                lines.append(f"- {name}: {task}")
+                lines.append(f"- {name}: {_escape_task(task)}")
         return "\n".join(lines) + "\n"
 
     def add_item(self, chat_id: str, user_name: str, task: str, lang: str = None) -> str:
@@ -94,22 +128,30 @@ class TodoManager:
             items.append((user_name.strip() or "User", task))
 
             try:
-                path.write_text(self._format_items(items, chat_id), encoding="utf-8")
+                atomic_write_text(path, self._format_items(items, chat_id))
             except Exception as e:
                 logger.warning(f"[Todo] Не удалось записать {path}: {e}")
 
         return self._render_list(items, lang=lang)
 
     def get_list(self, chat_id: str, lang: str = None) -> Optional[str]:
-        """Возвращает отформатированный список дел или None если файла нет."""
-        path = self._todo_path(chat_id)
-        if not path.exists():
-            return None
-        try:
-            items = self._parse_items(path.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning(f"[Todo] Не удалось прочитать {path}: {e}")
-            return None
+        """Возвращает отформатированный список дел или None если файла нет.
+
+        Под тем же локом, что и мутации: без него чтение могло застать файл
+        ровно в момент записи add_item/remove_item из другого потока
+        (стресс-тестом это ловилось как пустые/битые чтения даже при
+        атомарной записи — race именно на уровне «файл ещё не появился /
+        уже удалён между exists() и read_text()», а не на уровне повреждения
+        содержимого)."""
+        with self._lock:
+            path = self._todo_path(chat_id)
+            if not path.exists():
+                return None
+            try:
+                items = self._parse_items(path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning(f"[Todo] Не удалось прочитать {path}: {e}")
+                return None
         return self._render_list(items, lang=lang)
 
     def _render_list(self, items: List[tuple], lang: str = None) -> str:
@@ -146,7 +188,7 @@ class TodoManager:
             logger.info(f"[Todo] Удалён пункт {index}: {removed}")
 
             try:
-                path.write_text(self._format_items(items, chat_id), encoding="utf-8")
+                atomic_write_text(path, self._format_items(items, chat_id))
             except Exception as e:
                 logger.warning(f"[Todo] Не удалось записать {path}: {e}")
 
@@ -154,13 +196,14 @@ class TodoManager:
 
     def clear(self, chat_id: str) -> bool:
         """Очищает список дел чата. Возвращает True если файл был удален."""
-        path = self._todo_path(chat_id)
-        if path.exists():
-            try:
-                path.unlink()
-                return True
-            except Exception as e:
-                logger.warning(f"[Todo] Не удалось удалить {path}: {e}")
+        with self._lock:
+            path = self._todo_path(chat_id)
+            if path.exists():
+                try:
+                    path.unlink()
+                    return True
+                except Exception as e:
+                    logger.warning(f"[Todo] Не удалось удалить {path}: {e}")
         return False
 
 

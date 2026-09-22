@@ -50,6 +50,9 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from app.core import timeutil
+from app.core.atomic_io import atomic_write_json, load_json_safe
+
 logger = logging.getLogger(__name__)
 
 # Окно трассы для записи: «сюжет» — это действия за последние полчаса
@@ -60,10 +63,47 @@ MIN_TRACE_ACTIONS = 3
 # не часть воспроизводимого сюжета; multi/nav в трассе не расчленяются)
 _TRACE_KINDS = ("url", "click", "type", "send")
 
-# Оплата — граница сценария: эти шаги отрезаются и заменяются handoff
+# Оплата — граница сценария: эти шаги отрезаются и заменяются handoff.
+# Корни закрыты ЯВНЫМИ словоформами (тот же приём, что у _CLOSE_VERB_RE в
+# computer_control, задача №3):
+#   * открытый «карт[аоые]» ловил «карточку» («добавить карточку товара»,
+#     «карточка заказа») и «картошку» — сценарий обрывался handoff'ом на
+#     полпути, ещё до корзины, а бот говорил пользователю «дальше оплата»;
+#   * голое «\bмир\b» ловило любое слово «мир» в тексте кнопки («Мир
+#     новостей», «мир»). Платёжная система «Мир» опознаётся как «Мир Pay»/
+#     «mirpay» и по слову «карта» рядом с ней — отдельного «мир» не нужно.
 _PAYMENT_RE = re.compile(
-    r"оплат|карт[аоые]|visa|mastercard|\bpay\b|apple\s?pay|google\s?pay|"
-    r"сбербанк|тинькофф|\bмир\b", re.IGNORECASE)
+    # платёж как действие/предмет
+    r"оплат\w*|оплач\w*|\bплат[еёи]ж\w*|\bплатить\b|\bзаплат\w*|"
+    # бренды и способы оплаты
+    r"visa|mastercard|maestro|\bpay\b|apple\s?pay|google\s?pay|samsung\s?pay|"
+    r"\bmir\s?pay\b|\bmirpay\b|сбербанк|\bсбп\b|тинькофф|альфа-?банк|"
+    r"\bcheckout\b|\bcvv\b|\bcvc\b|"
+    # формы слова «карта» (но не «карточка», «картинка», «картошка»)
+    r"\bкарт(?:а|ы|е|у|ой|ою|ам|ами|ах)\b", re.IGNORECASE)
+
+# «Карта» бывает и географической. Это единственное исключение, и задано оно
+# явным списком сочетаний, а не смягчением правила выше: в спорном случае шаг
+# ЛУЧШЕ отрезать (деньги — всегда за человеком), поэтому одиночное «карта»
+# остаётся платёжным.
+_MAP_SENSE_RE = re.compile(
+    r"\bкарт(?:а|ы|е|у|ой|ою|ам|ами|ах)\s+"
+    r"(?:сайта|города|метро|мира|местности|проезда|памяти|"
+    r"маршрут\w*|окрестност\w*)\b", re.IGNORECASE)
+
+
+def _is_payment(text: str) -> bool:
+    """Про оплату ли этот текст (цель клика, подпись поля, значение).
+    Единственная точка решения «это платёжный шаг» — и при обрезке сценария,
+    и при сверке числа шагов с трассой (раньше `_PAYMENT_RE.search` звался
+    в двух местах напрямую, и любое уточнение правила пришлось бы вносить
+    дважды)."""
+    s = str(text or "")
+    # Географическую карту вычёркиваем и смотрим, осталось ли платёжное:
+    # «карта города» — нет, «карта города и оплата картой» — да
+    s = _MAP_SENSE_RE.sub(" ", s)
+    return bool(_PAYMENT_RE.search(s))
+
 
 # «запомни/запиши/сохрани (этот) сценарий (как/под названием) X»
 _SAVE_RE = re.compile(
@@ -123,7 +163,17 @@ class ScenarioManager:
         self.base_dir = base_dir or Path(f"data/{context}")
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._file = self.base_dir / "scenarios.json"
-        self._lock = threading.Lock()
+        # RLock — один лок менеджера на ВСЁ его изменяемое состояние:
+        # библиотеку сценариев (record_reply/build_from_trace держат лок на
+        # время _save()) и in-memory словари ниже (_runs/_recording/_offered).
+        # Последние правились без лока (хвост задачи №9): Telegram-поллинг,
+        # HTTP-обработчики веба и фоновые потоки зовут эти методы
+        # одновременно, и «проверил-и-записал» (идёт ли запись, предлагали ли
+        # уже, есть ли прогон) разъезжалось на два разных потока — двойной
+        # старт записи, два предложения на одно окно, KeyError на снятом
+        # прогоне. Реентерабельность нужна, потому что locked-методы зовут
+        # друг друга (record_reply → build_from_trace).
+        self._lock = threading.RLock()
         self._scenarios: Dict[str, dict] = self._load()
         # Активные прогоны: chat_id → {name, steps, pos, slots, awaiting, failed}
         self._runs: Dict[str, dict] = {}
@@ -137,25 +187,48 @@ class ScenarioManager:
     # ── Хранилище ──────────────────────────────────────────
 
     def _load(self) -> Dict[str, dict]:
-        try:
-            data = json.loads(self._file.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return {str(k): v for k, v in data.items()
-                        if isinstance(v, dict) and isinstance(v.get("steps"), list)}
-        except Exception:
-            pass
-        return {}
+        # Раньше — голый except Exception: pass: битый scenarios.json (обрыв
+        # процесса посреди записи, до перехода на atomic_write_json) тихо
+        # обнулял ВСЮ библиотеку сценариев, и это ничем не отражалось в логах —
+        # пользователь узнавал о пропаже только когда «закажи пиццу» переставало
+        # работать. Теперь — как остальные менеджеры: warning + .corrupt-копия.
+        data = load_json_safe(self._file, default={}, label="Scenarios")
+        if not isinstance(data, dict):
+            return {}
+        out: Dict[str, dict] = {}
+        for k, v in data.items():
+            if not (isinstance(v, dict) and isinstance(v.get("steps"), list)):
+                continue
+            # Тот же валидатор, что на записи: сценарий с неисполнимым шагом
+            # (например, ввод в поле без подписи — такие попадали в файл из
+            # rule-based фолбэка до этой проверки) не поднимаем молча, чтобы
+            # он не ломался посреди прогона; в лог — имя и причина.
+            steps = self._validate_steps(v.get("steps"))
+            if steps is None:
+                logger.warning(f"[Scenarios] «{k}» пропущен при загрузке: шаги не "
+                               "проходят валидацию (запиши сценарий заново)")
+                continue
+            out[str(k)] = {**v, "steps": steps}
+        return out
 
     def _save(self):
         try:
-            self._file.write_text(
-                json.dumps(self._scenarios, ensure_ascii=False, indent=2),
-                encoding="utf-8")
+            atomic_write_json(self._file, self._scenarios)
         except Exception as e:
             logger.warning(f"[Scenarios] scenarios.json не записан: {e}")
 
     def list_names(self) -> List[str]:
-        return sorted(self._scenarios)
+        with self._lock:
+            return sorted(self._scenarios)
+
+    def _phrase(self, key: str, template: str, **values) -> str:
+        """Служебная реплика голосом персоны (flavor-банк), при пустом
+        банке — честный шаблон."""
+        try:
+            from app.features import flavor_text
+            return flavor_text.phrase(self.context, key, template, **values)
+        except Exception:
+            return template
 
     # ── Парсеры команд ─────────────────────────────────────
 
@@ -185,30 +258,44 @@ class ScenarioManager:
     # ── Явная запись (скобки «начни записывать»…«сохрани») ──
 
     def recording(self, chat_id) -> bool:
-        return str(chat_id) in self._recording
+        with self._lock:
+            return str(chat_id) in self._recording
 
     def record_start(self, chat_id, name: str = "") -> str:
         chat_id = str(chat_id)
-        rec = self._recording.get(chat_id)
+        # Проверка «уже пишу?» и установка метки — одной операцией под локом,
+        # иначе два «начни записывать» подряд заводят запись дважды и первая
+        # (с её since) теряется
+        with self._lock:
+            rec = self._recording.get(chat_id)
+            if rec is None:
+                self._recording[chat_id] = {"since": time.time(),
+                                            "name": str(name or "")}
         if rec is not None:
-            since = time.strftime("%H:%M", time.localtime(rec["since"]))
-            return (f"Уже записываю (с {since}). Когда закончишь — скажи "
-                    "«сохрани сценарий», передумал — «отмени запись».")
-        self._recording[chat_id] = {"since": time.time(),
-                                    "name": str(name or "")}
+            since = timeutil.from_ts(rec["since"]).strftime("%H:%M")
+            return self._phrase(
+                "scenario_record_already",
+                f"Уже записываю (с {since}). Когда закончишь — скажи "
+                "«сохрани сценарий», передумал — «отмени запись».",
+                since=since)
         logger.info(f"[Scenarios] Запись началась (chat {chat_id}, "
                     f"имя {name!r})")
-        return ("Записываю сценарий. Делай действия как обычно — «открой …», "
-                "«нажми …», «введи …» — всё пойдёт в запись. Закончить: "
-                "«сохрани сценарий» (можно сразу с названием). Отменить: "
-                "«отмени запись».")
+        return self._phrase(
+            "scenario_record_start",
+            "Записываю сценарий. Делай действия как обычно — «открой …», "
+            "«нажми …», «введи …» — всё пойдёт в запись. Закончить: "
+            "«сохрани сценарий» (можно сразу с названием). Отменить: "
+            "«отмени запись».")
 
     def record_stop(self, chat_id) -> str:
-        rec = self._recording.pop(str(chat_id), None)
+        with self._lock:
+            rec = self._recording.pop(str(chat_id), None)
         if rec is None:
-            return "Запись не шла — нечего отменять."
+            return self._phrase("scenario_record_cancel_none",
+                                "Запись не шла — нечего отменять.")
         logger.info(f"[Scenarios] Запись отменена (chat {chat_id})")
-        return "Запись отменена — ничего не сохранил."
+        return self._phrase("scenario_record_cancel",
+                            "Запись отменена — ничего не сохранил.")
 
     @staticmethod
     def parse_cancel(text: str) -> bool:
@@ -224,7 +311,12 @@ class ScenarioManager:
         from app.features.web_search import _stem
         msg_stems = {_stem(w) for w in msg.split() if len(w) >= 3}
         best = None
-        for name, sc in self._scenarios.items():
+        # Снимок под локом — сама проверка кандидатов идёт по копии, не
+        # держим лок на время работы _stem/regex (иначе запись нового
+        # сценария из другого чата ждала бы дольше, чем нужно)
+        with self._lock:
+            scenarios_snapshot = list(self._scenarios.items())
+        for name, sc in scenarios_snapshot:
             keys = [name] + [str(a) for a in (sc.get("aliases") or [])]
             for key in keys:
                 k = _norm(key)
@@ -341,8 +433,8 @@ class ScenarioManager:
         # оплаты — их заменяет handoff); иначе — rule-based фолбэк.
         pay_in_trace = sum(
             1 for r in trace
-            if _PAYMENT_RE.search(str(r.get("element") or "")
-                                  + " " + str(r.get("text") or "")))
+            if _is_payment(str(r.get("element") or "")
+                           + " " + str(r.get("text") or "")))
         n_exec = sum(1 for s in steps
                      if s["op"] in ("open", "click", "type", "send"))
         if n_exec < len(trace) - pay_in_trace:
@@ -368,7 +460,12 @@ class ScenarioManager:
     @staticmethod
     def _validate_steps(raw) -> Optional[List[dict]]:
         """Строгая схема шагов; каждый {слот} должен быть определён ask-шагом
-        раньше использования. None — схема не сошлась."""
+        раньше использования. None — схема не сошлась.
+
+        ЕДИНСТВЕННЫЙ валидатор шага в модуле: через него проходит и вывод LLM,
+        и rule-based фолбэк, и то, что читается из scenarios.json (см. _load).
+        Раньше проверялся только LLM-вывод, поэтому неисполнимый шаг мог
+        попасть в файл из фолбэка или остаться там от прежних версий."""
         if not isinstance(raw, list) or not raw:
             return None
         steps: List[dict] = []
@@ -394,6 +491,13 @@ class ScenarioManager:
             elif op == "type":
                 field = str(s.get("field") or "").strip()
                 value = str(s.get("value") or "")
+                # Пустая подпись поля делает шаг неисполнимым: resolve_type
+                # получает «текст в поле » и ищет поле без имени — при
+                # воспроизведении это гарантированный «не нашёл поле «»»
+                # посреди сценария. Отсекаем на записи и на загрузке, а не
+                # в момент прогона у пользователя.
+                if not field:
+                    return None
                 for slot in _SLOT_RE.findall(field + value):
                     if slot not in known_slots:
                         return None
@@ -453,7 +557,7 @@ class ScenarioManager:
         for s in steps:
             hay = " ".join(str(s.get(k) or "")
                            for k in ("target", "field", "value"))
-            if s["op"] in ("click", "type") and _PAYMENT_RE.search(hay):
+            if s["op"] in ("click", "type") and _is_payment(hay):
                 out.append({"op": "handoff",
                             "message": "Дальше оплата — это уже за тобой, "
                                        "я к деньгам не прикасаюсь."})
@@ -479,7 +583,17 @@ class ScenarioManager:
                           "Проведи меня по сюжету — и запишем.")
         built = self._llm_generalize(trace, name, router)
         if built is None:
-            built = {"aliases": [], "steps": self._rule_steps(trace)}
+            # Фолбэк проходит ТОТ ЖЕ валидатор, что и вывод LLM (раньше шёл в
+            # файл без проверок — так туда и попадали шаги «ввести в поле «»»)
+            rule = self._validate_steps(self._rule_steps(trace))
+            if rule is None:
+                logger.info(f"[Scenarios] «{name}»: rule-based шаги не прошли "
+                            "валидацию (скорее всего ввод в поле без подписи)")
+                return None, ("Из этой трассы сценарий не собрать: в ней есть "
+                              "ввод текста в поле без подписи — при "
+                              "воспроизведении такое поле не найти. Пройди "
+                              "путь ещё раз, называя поля.")
+            built = {"aliases": [], "steps": rule}
             logger.info(f"[Scenarios] «{name}»: rule-based запись "
                         f"({len(built['steps'])} шагов)")
         steps = self._strip_payment(built["steps"])
@@ -501,12 +615,15 @@ class ScenarioManager:
         При активной записи («начни записывать сценарий») — трасса с момента
         старта, имя по умолчанию из стартовой команды; после сохранения
         запись снимается."""
-        rec = self._recording.get(str(chat_id))
+        with self._lock:
+            rec = self._recording.get(str(chat_id))
         if rec is not None and not name:
             name = str(rec.get("name") or "")
         if not name:
-            return ("Как назвать сценарий? Скажи так: «сохрани сценарий "
-                    "заказ пиццы».")
+            return self._phrase(
+                "scenario_save_ask_name",
+                "Как назвать сценарий? Скажи так: «сохрани сценарий "
+                "заказ пиццы».")
         scenario, err = self.build_from_trace(
             chat_id, name, router, since=rec.get("since") if rec else None)
         if err:
@@ -514,18 +631,26 @@ class ScenarioManager:
                 return (err + " Запись продолжается — добавь действий и "
                         "скажи «сохрани сценарий» ещё раз.")
             return err
-        self._recording.pop(str(chat_id), None)
+        with self._lock:
+            self._recording.pop(str(chat_id), None)
         asks = [s["question"] for s in scenario["steps"] if s["op"] == "ask"]
         tail = (" По ходу спрошу: " + " ".join(f"«{q}»" for q in asks) \
                 if asks else "")
-        return (f"Записал сценарий «{scenario['name']}» — "
-                f"{len(scenario['steps'])} шагов.{tail} "
-                f"Теперь просто скажи «{scenario['name']}».")
+        # Хвост с вопросами слотов — данные, не голос: добавляем к банковской
+        # фразе как есть
+        return (self._phrase(
+                    "scenario_saved",
+                    f"Записал сценарий «{scenario['name']}» — "
+                    f"{len(scenario['steps'])} шагов. Теперь просто скажи "
+                    f"«{scenario['name']}».",
+                    name=scenario["name"], steps=len(scenario["steps"]))
+                + tail)
 
     # ── Воспроизведение (state machine per chat) ───────────
 
     def active(self, chat_id) -> bool:
-        return str(chat_id) in self._runs
+        with self._lock:
+            return str(chat_id) in self._runs
 
     def _subst(self, text: str, slots: Dict[str, str]) -> str:
         return _SLOT_RE.sub(
@@ -533,24 +658,35 @@ class ScenarioManager:
 
     def start(self, name: str, chat_id, router) -> str:
         """Запуск сценария: первый батч шагов до первой паузы."""
-        sc = self._scenarios.get(name)
+        with self._lock:
+            sc = self._scenarios.get(name)
         if sc is None:
-            return f"Сценария «{name}» у меня нет."
+            return self._phrase("scenario_not_found",
+                                f"Сценария «{name}» у меня нет.", name=name)
         run = {"name": name, "steps": sc["steps"], "pos": 0, "slots": {},
                "awaiting": None, "failed": False}
-        self._runs[str(chat_id)] = run
-        lines = [f"Погнали — «{name}» ({len(sc['steps'])} шагов). "
-                 "Скажи «отмена», если передумаешь."]
+        with self._lock:
+            self._runs[str(chat_id)] = run
+        lines = [self._phrase(
+            "scenario_started",
+            f"Погнали — «{name}» ({len(sc['steps'])} шагов). "
+            "Скажи «отмена», если передумаешь.",
+            name=name, steps=len(sc["steps"]))]
+        # _advance исполняет шаги (браузер, LLM — десятки секунд) — лок на это
+        # время НЕ держим: он защищает словари менеджера, а сам прогон
+        # принадлежит одному чату
         lines += self._advance(run, chat_id, router)
         if run["pos"] >= len(run["steps"]) and not run["awaiting"]:
-            self._runs.pop(str(chat_id), None)
+            with self._lock:
+                self._runs.pop(str(chat_id), None)
         return "\n".join(lines)
 
     def feed(self, chat_id, user_input: str, router) -> Optional[str]:
         """Ответ пользователя внутри прогона: слот, повтор/пропуск после
         сбоя, либо «не понял». None — «сообщение не наше»: прогон уже снят,
         фраза должна уйти в обычный диалог (антизалипание)."""
-        run = self._runs.get(str(chat_id))
+        with self._lock:
+            run = self._runs.get(str(chat_id))
         if run is None:
             return None
         msg = str(user_input or "").strip()
@@ -577,24 +713,33 @@ class ScenarioManager:
                 run["unhandled"] = run.get("unhandled", 0) + 1
                 if run["unhandled"] >= 2:
                     name = run["name"]
-                    self._runs.pop(str(chat_id), None)
+                    with self._lock:
+                        self._runs.pop(str(chat_id), None)
                     logger.info(f"[Scenarios] «{name}» снят: 2 нераспознанных "
                                 "сообщения подряд на сбойном шаге")
                     return None
-                return ("Стою на сбойном шаге. Скажи «повтори», "
-                        "«дальше» (пропустить) или «отмена».")
+                return self._phrase(
+                    "scenario_stuck",
+                    "Стою на сбойном шаге. Скажи «повтори», "
+                    "«дальше» (пропустить) или «отмена».")
         else:
             # Прогон ждёт только при awaiting/failed; иначе — не наше
             return None
         lines = self._advance(run, chat_id, router)
         if run["pos"] >= len(run["steps"]) and not run["awaiting"]:
-            self._runs.pop(str(chat_id), None)
+            with self._lock:
+                self._runs.pop(str(chat_id), None)
         return "\n".join(lines) or "Продолжаю."
 
     def cancel(self, chat_id) -> str:
-        run = self._runs.pop(str(chat_id), None)
-        return (f"Сценарий «{run['name']}» отменён." if run
-                else "Нечего отменять — сценарий не запущен.")
+        with self._lock:
+            run = self._runs.pop(str(chat_id), None)
+        if run:
+            return self._phrase("scenario_run_cancel",
+                                f"Сценарий «{run['name']}» отменён.",
+                                name=run["name"])
+        return self._phrase("scenario_run_cancel_none",
+                            "Нечего отменять — сценарий не запущен.")
 
     def _exec_step(self, step: dict, run: dict, chat_id, router
                    ) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -676,7 +821,7 @@ class ScenarioManager:
         # управления страницей (меню/бургер/закрыть/войти) — именно они
         # открывают скрытые разделы, и без них модель слепа
         try:
-            scored = self.cc._score_candidates(items, goal)
+            scored = self.cc._score_candidates(items, goal, host=host)
             ranked = [it for _s, it in scored]
         except Exception:
             ranked = list(items)
@@ -746,8 +891,12 @@ class ScenarioManager:
                 act = {"kind": "url", "value": step["url"]}
             elif op == "click":
                 target = self._subst(step.get("target"), slots)
+                # Сценарий работает на отслеживаемой вкладке — это общее
+                # правило адресации (окно браузера живёт само по себе,
+                # за взглядом пользователя ничего не переключаем)
                 act, err = self.cc.resolve_click(
-                    target, step.get("host") or None, router, chat_id=str(chat_id))
+                    target, step.get("host") or None, router,
+                    chat_id=str(chat_id))
                 if act is None:
                     return False, err or f"не нашёл «{target}» на странице", None
             elif op == "type":
@@ -818,7 +967,9 @@ class ScenarioManager:
         sig = [(kind_map.get(r.get("kind")),
                 _norm(r.get("element") or r.get("value") or ""))
                for r in trace]
-        for sc in self._scenarios.values():
+        with self._lock:
+            scenarios_snapshot = list(self._scenarios.values())
+        for sc in scenarios_snapshot:
             sc_sig = [(s["op"], _norm(s.get("target") or s.get("url") or ""))
                       for s in sc["steps"] if s["op"] in kind_map.values()]
             if sc_sig and sc_sig == sig:
@@ -831,7 +982,7 @@ class ScenarioManager:
         окно ещё не предлагали."""
         if not chat_id or self.cc is None:
             return None
-        if str(chat_id) in self._recording:
+        if self.recording(chat_id):
             # Идёт явная запись — пользователь уже знает про сценарии
             return None
         msg = str(user_input or "").strip()
@@ -844,14 +995,20 @@ class ScenarioManager:
         if len(trace) < MIN_TRACE_ACTIONS:
             return None
         marker = float(trace[-1].get("ts") or 0)
-        if self._offered.get(str(chat_id), 0) >= marker:
-            return None
         try:
             if self._trace_known(trace):
                 return None
         except Exception:
             pass
-        self._offered[str(chat_id)] = marker
-        return ("Кстати, у нас вышел целый сюжет — могу запомнить его как "
-                "сценарий и в следующий раз пройти сам. Скажи «запомни "
-                "сценарий …» и название.")
+        # Проверка «на это окно уже предлагали?» и отметка — одной операцией:
+        # две реплики «спасибо» подряд из разных потоков давали два
+        # предложения на одно и то же окно трассы
+        with self._lock:
+            if self._offered.get(str(chat_id), 0) >= marker:
+                return None
+            self._offered[str(chat_id)] = marker
+        return self._phrase(
+            "scenario_offer",
+            "Кстати, у нас вышел целый сюжет — могу запомнить его как "
+            "сценарий и в следующий раз пройти сам. Скажи «запомни "
+            "сценарий …» и название.")
