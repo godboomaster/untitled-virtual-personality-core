@@ -693,8 +693,9 @@ def create_handlers(bot: BotInstance) -> dict:
             # в обратном порядке ломали утреннее приветствие rhythm.
             bot.on_user_message(chat_id)
 
-        # Trigger
-        if not bot.should_respond(text) and not is_reply_to_bot:
+        # Trigger: в группе — слово-триггер или reply боту; в личке — всегда
+        # (как обещает /help; кто может писать в ЛС — allowlist в pre_check)
+        if not is_addressed_to_bot:
             return
 
         # Дальше — конвейер ответа. Сериализуем по чату: slash-команды и другие
@@ -777,7 +778,9 @@ def create_handlers(bot: BotInstance) -> dict:
             if replied.from_user and replied.from_user.id == context.bot.id:
                 is_reply_to_bot = True
 
-        if not bot.should_respond(caption) and not is_reply_to_bot:
+        # Как у текста: в личке триггер не нужен
+        is_private = update.effective_chat.type == "private"
+        if not (is_private or is_reply_to_bot or bot.should_respond(caption)):
             return
 
         user = update.effective_user
@@ -790,7 +793,6 @@ def create_handlers(bot: BotInstance) -> dict:
         # текста), ход держится до конца доставки ответа.
         bot.on_user_message(chat_id)
         async with bot.user_turn_async(chat_id):
-            is_private = update.effective_chat.type == "private"
             # Тот же гейт, что и у текстовых сообщений: blocked_users/allowlist ЛС/
             # rate_limit/moderation раньше не проверялись для файлов — подпись
             # (caption) вместо текста, содержимое файла в проверку не идёт
@@ -875,7 +877,9 @@ def create_handlers(bot: BotInstance) -> dict:
             if replied.from_user and replied.from_user.id == context.bot.id:
                 is_reply_to_bot = True
 
-        if not bot.should_respond(caption) and not is_reply_to_bot:
+        # Как у текста: в личке триггер не нужен
+        is_private = update.effective_chat.type == "private"
+        if not (is_private or is_reply_to_bot or bot.should_respond(caption)):
             return
 
         user = update.effective_user
@@ -888,7 +892,6 @@ def create_handlers(bot: BotInstance) -> dict:
         # текста), ход держится до конца доставки ответа.
         bot.on_user_message(chat_id)
         async with bot.user_turn_async(chat_id):
-            is_private = update.effective_chat.type == "private"
             # Тот же гейт, что и у текстовых сообщений/документов — до скачивания
             # и OCR, чтобы заблокированный/лимитированный не тратил ресурсы бота
             if await _gate_update(bot, update.message, user_id, is_private, caption):

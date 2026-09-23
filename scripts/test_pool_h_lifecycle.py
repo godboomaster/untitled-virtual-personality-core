@@ -15,7 +15,12 @@ docs/concurrency-issues-2026-09-23.md, «Осталось»): Chrome пула H 
      (RawCallTimeout), перезапуск — POOL_H_RESTART_WAIT_SEC (пропуск без
      убийства); локи после отказа отпущены;
   4. реентерабельность внутри процесса (смена режима в ленивом старте →
-     teardown → запуск) без самоблокировки на втором fd.
+     teardown → запуск) без самоблокировки на втором fd;
+  5. ФС без flock — только внутрипроцессный лок;
+  6. выключение процесса бота гасит общий Chrome H только ПОСЛЕДНИМ
+     пользователем (разделяемый flock <профиль>.bot-users.lock): живой сосед —
+     Chrome жив; сосед упал (SIGKILL) — его регистрацию снимает ядро; без
+     учёта (нет flock) — гасим, как раньше.
 
 Настоящий Chrome не запускается и не убивается: «Chrome» — спящий python-
 подпроцесс с --user-data-dir=<tmp-профиль> в командной строке и симлинком
@@ -128,7 +133,7 @@ def _setup(udd: str, log_path: str, who: str, no_flock: bool = False):
     ba._launch_pool_h_chrome_locked = _fake_launch_locked
     ba._kill_chrome_on_profile = _logged_kill
     if no_flock:
-        ba._pool_h_life_open = lambda deadline: None
+        ba._pool_life_open = lambda pool, deadline: None
     return ba
 
 
@@ -136,7 +141,7 @@ def _mp_restarter(udd, log_path, seen_pid, in_window, no_flock, q):
     """Процесс Y: перезапуск пула H. Browser.close «гасит» Chrome (порт
     мёртв), затем окно WINDOW_SEC до убийства по профилю."""
     ba = _setup(udd, log_path, "Y", no_flock)
-    ba._POOL_H_SEEN_PID = seen_pid
+    ba._POOL_SEEN_PID["h"] = seen_pid
 
     def _fake_close():
         pid = ba._pool_h_chrome_pid()
@@ -182,6 +187,20 @@ def _mp_try_life(udd, log_path, q):
             q.put(True)
     except ba.RawCallTimeout:
         q.put(False)
+
+
+def _mp_user(udd, log_path, ready, release, q):
+    """Процесс-пользователь Chrome пула H: подключился (регистрация — в
+    _raw_call), ждёт команды: "shutdown" — своё выключение (как выход бота),
+    "exit" — просто выйти; SIGKILL от теста — падение."""
+    ba = _setup(udd, log_path, "U")
+    ba._close_pool_h_graceful = lambda: None
+    ba._raw_call("Browser.getVersion", pool="h", timeout=10)
+    ready.set()
+    cmd = release.get(timeout=60)
+    if cmd == "shutdown":
+        ba._shutdown_pool_h("тест")
+        q.put(("U", ba._pool_h_chrome_pid()))
 
 
 def _race(tmp: Path, name: str, no_flock: bool):
@@ -265,12 +284,12 @@ def main():
         dead.wait()
         fresh = _spawn_chrome(udd)
         spawned.append(fresh)
-        ba._POOL_H_SEEN_PID = dead.pid  # мы видели Chrome, которого уже нет
+        ba._POOL_SEEN_PID["h"] = dead.pid  # мы видели Chrome, которого уже нет
         r = ba.restart_browser("тест", cooldown_sec=0, pool="h")
         check("stale: Chrome сменён соседом — перезапуск его не убивает",
               r is True and _alive(fresh)
               and not any(e[0] == "kill-start" for e in _read_log(log_path)))
-        ba._POOL_H_SEEN_PID = fresh  # а тот, что видели, — убивается
+        ba._POOL_SEEN_PID["h"] = fresh  # а тот, что видели, — убивается
         r = ba.restart_browser("тест", cooldown_sec=0, pool="h")
         time.sleep(0.2)
         check("stale: Chrome, в котором залипли, перезапуск убивает",
@@ -307,7 +326,7 @@ def main():
             saved_wait = ba.POOL_H_RESTART_WAIT_SEC
             ba.POOL_H_RESTART_WAIT_SEC = 0.5
             try:
-                ba._POOL_H_SEEN_PID = live
+                ba._POOL_SEEN_PID["h"] = live
                 t0 = time.monotonic()
                 r = ba.restart_browser("тест", cooldown_sec=0, pool="h")
                 dt = time.monotonic() - t0
@@ -320,8 +339,8 @@ def main():
             if lk:
                 ba._RAW_LOCKS["h"].release()
             check("после отказа локи отпущены (_RAW_LOCKS[H], глубина 0)",
-                  lk and ba._POOL_H_LIFE["depth"] == 0
-                  and ba._POOL_H_LIFE["fh"] is None)
+                  lk and ba._POOL_LIFE["h"]["depth"] == 0
+                  and ba._POOL_LIFE["h"]["fh"] is None)
         finally:
             release.set()
             holder.join(10)
@@ -373,13 +392,127 @@ def main():
             t0 = time.monotonic()
             try:
                 with ba._pool_h_lifecycle(time.monotonic() + 1.0):
-                    entered = ba._POOL_H_LIFE["fh"] is None
+                    entered = ba._POOL_LIFE["h"]["fh"] is None
             except ba.RawCallTimeout:
                 entered = False
         finally:
             fcntl.flock = real_flock
         check("ФС без flock: секция входится сразу, только внутрипроцессно",
               entered and time.monotonic() - t0 < 0.5)
+
+        # ── 6. Выключение процесса гасит Chrome H только ПОСЛЕДНИМ
+        # пользователем (<профиль>.bot-users.lock, разделяемый flock) ──
+        udd = str(tmp / "users" / "profile")
+        os.makedirs(udd)
+        log_path = str(tmp / "users" / "events.log")
+        ba = _setup(udd, log_path, "P")
+        ba._close_pool_h_graceful = lambda: None
+        live = _spawn_chrome(udd)
+        spawned.append(live)
+
+        def _kills():
+            return [e for e in _read_log(log_path) if e[0] == "kill-start"]
+
+        def _connect_main():
+            ba._RAW_CLIENTS["h"] = None
+            ba._raw_call("Browser.getVersion", pool="h", timeout=5)
+
+        ctx = multiprocessing.get_context("spawn")
+        ready, cmdq, q = ctx.Event(), ctx.Queue(), ctx.Queue()
+        pu = ctx.Process(target=_mp_user,
+                         args=(udd, log_path, ready, cmdq, q))
+        pu.start()
+        try:
+            ready.wait(20)
+            _connect_main()
+            fh = ba._POOL_USERS["h"]
+            check("пользователь зарегистрирован при подключении; fd не "
+                  "наследуется (Chrome его не удержит)",
+                  bool(fh) and os.get_inheritable(fh.fileno()) is False
+                  and ba._pool_users_path("h").endswith(
+                      "profile.bot-users.lock")
+                  and ba._pool_users_path("h").startswith(str(tmp)))
+            ba._shutdown_pool_h("тест")
+            check("выключение при живом соседе-пользователе: Chrome H жив, "
+                  "свои вкладки/сокет/регистрация сброшены",
+                  _alive(live) and not _kills()
+                  and ba._RAW_CLIENTS["h"] is None
+                  and ba._POOL_USERS["h"] is None)
+            # Сосед падает (SIGKILL): ядро снимает его flock — «вечного
+            # пользователя» нет, следующее выключение гасит Chrome
+            os.kill(pu.pid, signal.SIGKILL)
+            pu.join(10)
+            _connect_main()
+            ba._shutdown_pool_h("тест")
+            time.sleep(0.2)
+            check("сосед упал (SIGKILL) — выключение последнего гасит Chrome H",
+                  not _alive(live) and len(_kills()) == 1
+                  and ba._POOL_USERS["h"] is None)
+        finally:
+            if pu.is_alive():
+                pu.kill()
+            pu.join(5)
+
+        # Наоборот: выходит СОСЕД, а этот процесс ещё пользуется Chrome
+        live2 = _spawn_chrome(udd)
+        spawned.append(live2)
+        _connect_main()
+        ready, cmdq, q = ctx.Event(), ctx.Queue(), ctx.Queue()
+        pu = ctx.Process(target=_mp_user,
+                         args=(udd, log_path, ready, cmdq, q))
+        pu.start()
+        try:
+            ready.wait(20)
+            cmdq.put("shutdown")
+            k, v = q.get(timeout=30)
+            pu.join(10)
+            check("выход соседа не гасит Chrome H, которым пользуется этот "
+                  "процесс", _alive(live2) and v == live2
+                  and len(_kills()) == 1)
+        finally:
+            if pu.is_alive():
+                pu.kill()
+            pu.join(5)
+        ba._shutdown_pool_h("тест")
+        time.sleep(0.2)
+        check("затем выключение последнего пользователя гасит Chrome H",
+              not _alive(live2) and len(_kills()) == 2)
+
+        # Без пользователей вовсе (процесс Chrome не трогал, а тот жив —
+        # осиротел после падения бота): гасим, как раньше
+        live3 = _spawn_chrome(udd)
+        spawned.append(live3)
+        ba._shutdown_pool_h("тест")
+        time.sleep(0.2)
+        check("осиротевший Chrome H (пользователей нет) выключение гасит",
+              not _alive(live3))
+
+        # ФС без flock / нет разделяемых локов (msvcrt): учёт недоступен —
+        # прежнее поведение (гасим), даже если сосед держит регистрацию
+        live4 = _spawn_chrome(udd)
+        spawned.append(live4)
+        ready, cmdq, q = ctx.Event(), ctx.Queue(), ctx.Queue()
+        pu = ctx.Process(target=_mp_user,
+                         args=(udd, log_path, ready, cmdq, q))
+        pu.start()
+        try:
+            ready.wait(20)
+            fcntl.flock = _nosup
+            try:
+                _connect_main()
+                unsup = ba._POOL_USERS["h"] is False
+                ba._shutdown_pool_h("тест")
+            finally:
+                fcntl.flock = real_flock
+            time.sleep(0.2)
+            check("учёт пользователей недоступен — выключение гасит, как "
+                  "раньше (регистрация помечена недоступной, без ретраев)",
+                  unsup and not _alive(live4))
+        finally:
+            cmdq.put("exit")
+            pu.join(10)
+            if pu.is_alive():
+                pu.kill()
     finally:
         for pid in spawned:
             if isinstance(pid, int):

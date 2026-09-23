@@ -487,6 +487,26 @@ def main():
               and stm(42)[-2][0] == "user" and "кот на диване" in stm(42)[-2][1]
               and stm(42)[-1] == ("assistant", "Это кот."))
 
+        # ── 5б. ЛС без триггера — отвечает (как обещает /help); группа — нет ──
+        print("\n── 5б. ЛС без триггера ──")
+        n0, o0 = len(req.calls), len(opened)
+        llm["answer"] = "Слушаю."
+        await process(msg_update(text="как дела"))
+        check("ЛС без триггера: текст — ответ доставлен, STM user как есть",
+              any("Слушаю." in (t or "") for t in sent_texts(n0))
+              and stm(42)[-2:] == [("user", "как дела"), ("assistant", "Слушаю.")]
+              and len(opened) - o0 == 1 and no_leaks() and not errors)
+        n0, o0 = len(req.calls), len(opened)
+        llm["answer"] = "Снова кот."
+        await process(msg_update(photo=photo))
+        check("ЛС без подписи: фото — обработано, ответ доставлен",
+              any("Снова кот." in (t or "") for t in sent_texts(n0))
+              and len(opened) - o0 == 1 and no_leaks() and not errors)
+        n0, o0 = len(req.calls), len(opened)
+        await process(msg_update(cid=-100, kind="group", photo=photo))
+        check("группа без триггера: фото — молчит, хода не открывали",
+              not req.calls[n0:] and len(opened) == o0 and not errors)
+
         # ── 6. Фото-ответ со скриншотами: один кадр и альбом ──
         n0 = len(req.calls)
         llm["photos"] = [{"data": b"shot1", "caption": "Так выглядит страница (x.com)"}]

@@ -8575,5 +8575,25 @@ console.log(%s);
     return 0 if ok > 0 else 1
 
 
+def _with_temp_browser_locks(fn):
+    """Лок-файлы Chrome пулов (<профиль>.bot-lifecycle.lock/.bot-users.lock)
+    — во временный каталог на весь прогон: тест ходит в сырой пул V (и
+    воркер) с конфигом по умолчанию, и иначе создавал/держал лок-файлы рядом
+    с НАСТОЯЩИМИ профилями — теми же, что у живого бота."""
+    import app.features.browser_actions as _ba_locks
+    d = tempfile.mkdtemp(prefix="browser_locks_")
+    saved = (_ba_locks._pool_h_life_path, _ba_locks._pool_v_life_path)
+    _ba_locks._pool_h_life_path = lambda: os.path.join(
+        d, "h" + _ba_locks._LIFE_SUFFIX)
+    _ba_locks._pool_v_life_path = lambda: os.path.join(
+        d, "v" + _ba_locks._LIFE_SUFFIX)
+    try:
+        return fn()
+    finally:
+        _ba_locks._pool_h_life_path, _ba_locks._pool_v_life_path = saved
+        for pool in ("h", "v"):
+            _ba_locks._pool_user_release(pool)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_with_temp_browser_locks(main))
