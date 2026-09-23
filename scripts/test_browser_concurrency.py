@@ -19,6 +19,7 @@
 import json
 import queue
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -452,6 +453,7 @@ def main():
     import collections
     saved6 = dict(rawcdp=ba._RawCdp, ensure=ba._ensure_pool_h_browser,
                   url=ba._pool_h_cdp_url, sweep=ba._sweep_orphan_tabs,
+                  life=ba._pool_h_life_path,
                   clients=dict(ba._RAW_CLIENTS), tabs=dict(ba._RAW_TABS))
     attaches = collections.Counter()
     valid = {}
@@ -482,6 +484,10 @@ def main():
         ba._ensure_pool_h_browser = lambda: None
         ba._pool_h_cdp_url = lambda: "http://fake"
         ba._sweep_orphan_tabs = lambda c, p: None
+        # Не реальный лок-файл профиля: иначе тест делит его с живым ботом
+        _life6 = tempfile.NamedTemporaryFile(suffix=".bot-lifecycle.lock",
+                                             delete=False).name
+        ba._pool_h_life_path = lambda: _life6
         ba._RAW_TABS.clear()
         first = _factory()
         ba._RAW_CLIENTS["h"] = first
@@ -517,6 +523,7 @@ def main():
         ba._ensure_pool_h_browser = saved6["ensure"]
         ba._pool_h_cdp_url = saved6["url"]
         ba._sweep_orphan_tabs = saved6["sweep"]
+        ba._pool_h_life_path = saved6["life"]
         ba._RAW_CLIENTS.clear()
         ba._RAW_CLIENTS.update(saved6["clients"])
         ba._RAW_TABS.clear()

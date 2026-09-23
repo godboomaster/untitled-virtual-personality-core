@@ -1,0 +1,396 @@
+"""Межпроцессный жизненный цикл Chrome пула H (хвост отчёта
+docs/concurrency-issues-2026-09-23.md, «Осталось»): Chrome пула H общий для
+всех процессов бота, и перезапуск в одном процессе (закрытие → убийство по
+профилю) не должен убивать Chrome, который в это окно лениво поднял другой
+процесс — независимо от того, основные у того вызовы или только фоновые.
+
+Проверяется:
+  1. гонка на ДВУХ процессах: Y перезапускает Chrome, X в окне между
+     закрытием и убийством ловит «Chrome не жив» и стартует лениво — старт X
+     ждёт конца перезапуска Y, Chrome X остаётся жив. Контроль: без
+     межпроцессного лока тот же сценарий убивает Chrome X (тест ловит гонку);
+  2. последовательная форма: решение «перезапустить», принятое для старого
+     Chrome, не убивает свежий Chrome, уже поднятый соседом;
+  3. ожидание чужого лока ограничено: _raw_call — бюджетом вызова
+     (RawCallTimeout), перезапуск — POOL_H_RESTART_WAIT_SEC (пропуск без
+     убийства); локи после отказа отпущены;
+  4. реентерабельность внутри процесса (смена режима в ленивом старте →
+     teardown → запуск) без самоблокировки на втором fd.
+
+Настоящий Chrome не запускается и не убивается: «Chrome» — спящий python-
+подпроцесс с --user-data-dir=<tmp-профиль> в командной строке и симлинком
+SingletonLock, как у настоящего; убийство — настоящее _kill_chrome_on_profile.
+Запуск: python3 -m scripts.test_pool_h_lifecycle
+"""
+
+import multiprocessing
+import os
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+WINDOW_SEC = 1.0   # окно «Chrome закрыт, ещё не добит» у перезапуска
+LAUNCH_SEC = 0.3   # сколько «поднимается» фейковый Chrome
+
+
+def _log(log_path: str, *parts):
+    with open(log_path, "a") as f:
+        f.write(" ".join(str(p) for p in parts) + "\n")
+
+
+def _read_log(log_path: str):
+    try:
+        with open(log_path) as f:
+            return [ln.split() for ln in f.read().splitlines() if ln]
+    except OSError:
+        return []
+
+
+def _spawn_chrome(udd: str) -> int:
+    """Фейковый Chrome на профиле: процесс с --user-data-dir в cmdline +
+    SingletonLock «host-pid» (атомарная подмена симлинка)."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)",
+         f"--user-data-dir={udd}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+    tmp = os.path.join(udd, f".sl-{proc.pid}")
+    os.symlink(f"{socket.gethostname()}-{proc.pid}", tmp)
+    os.replace(tmp, os.path.join(udd, "SingletonLock"))
+    # Жнец: иначе убитый «Chrome» висит зомби у родителя, и _pid_alive
+    # считает его живым до SIGKILL по грейсу (тест медленнее, смысл тот же)
+    threading.Thread(target=proc.wait, daemon=True).start()
+    return proc.pid
+
+
+def _alive(pid) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except OSError:
+        return False
+    # зомби (ребёнок этого процесса) — мёртв
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                             capture_output=True, text=True, timeout=5).stdout
+        return bool(out.strip()) and not out.strip().startswith("Z")
+    except Exception:
+        return True
+
+
+class _FakeClient:
+    def call(self, method, params=None, session_id=None, timeout=None):
+        return {}
+
+    def close(self):
+        pass
+
+
+def _setup(udd: str, log_path: str, who: str, no_flock: bool = False):
+    """Подмены браузерного слоя на фейки — ДО любого вызова (реальный
+    профиль и реальный Chrome не трогаются никогда)."""
+    import app.features.browser_actions as ba
+    ba._pool_h_profile = lambda: udd
+    ba._is_default_browser_profile = lambda u: False
+    ba._RawCdp = lambda url=None: _FakeClient()
+    ba._sweep_orphan_tabs = lambda c, p: None
+    ba._POOL_H_RUNNING_MODE = None
+    ba._POOL_H_PROC = None
+
+    def _fake_alive():
+        pid = ba._pool_h_chrome_pid()
+        return bool(pid) and _alive(pid) and not os.path.exists(
+            os.path.join(udd, f"closed-{pid}"))
+
+    def _fake_launch_locked():
+        _log(log_path, "launch-start", who, time.time())
+        time.sleep(LAUNCH_SEC)
+        pid = _spawn_chrome(udd)
+        _log(log_path, "launch-end", who, time.time(), pid)
+
+    real_kill = ba._kill_chrome_on_profile
+
+    def _logged_kill(proc, u, grace_sec=10.0):
+        _log(log_path, "kill-start", who, time.time(), ba._pool_h_chrome_pid())
+        out = real_kill(proc, u, grace_sec=grace_sec)
+        _log(log_path, "kill-end", who, time.time())
+        return out
+
+    ba._pool_h_alive = _fake_alive
+    ba._launch_pool_h_chrome_locked = _fake_launch_locked
+    ba._kill_chrome_on_profile = _logged_kill
+    if no_flock:
+        ba._pool_h_life_open = lambda deadline: None
+    return ba
+
+
+def _mp_restarter(udd, log_path, seen_pid, in_window, no_flock, q):
+    """Процесс Y: перезапуск пула H. Browser.close «гасит» Chrome (порт
+    мёртв), затем окно WINDOW_SEC до убийства по профилю."""
+    ba = _setup(udd, log_path, "Y", no_flock)
+    ba._POOL_H_SEEN_PID = seen_pid
+
+    def _fake_close():
+        pid = ba._pool_h_chrome_pid()
+        open(os.path.join(udd, f"closed-{pid}"), "w").close()
+        try:
+            os.kill(pid, signal.SIGTERM)  # Chrome вышел по Browser.close
+        except OSError:
+            pass
+        _log(log_path, "close", "Y", time.time(), pid)
+        in_window.set()
+        time.sleep(WINDOW_SEC)
+
+    ba._close_pool_h_graceful = _fake_close
+    try:
+        q.put(("Y", ba.restart_browser("тест", cooldown_sec=0, pool="h")))
+    except Exception as e:
+        q.put(("Y", f"err {e!r}"))
+
+
+def _mp_lazy(udd, log_path, go, no_flock, q):
+    """Процесс X: только фоновый вызов — лениво поднимает Chrome пула H."""
+    ba = _setup(udd, log_path, "X", no_flock)
+    go.wait(10)
+    try:
+        ba._raw_call("Browser.getVersion", pool="h", timeout=10)
+        q.put(("X", ba._pool_h_chrome_pid()))
+    except Exception as e:
+        q.put(("X", f"err {e!r}"))
+
+
+def _mp_hold_life(udd, log_path, ready, release):
+    """Держит лок жизненного цикла пула H (будто запускает Chrome)."""
+    ba = _setup(udd, log_path, "H")
+    with ba._pool_h_lifecycle():
+        ready.set()
+        release.wait(30)
+
+
+def _mp_try_life(udd, log_path, q):
+    ba = _setup(udd, log_path, "T")
+    try:
+        with ba._pool_h_lifecycle(time.monotonic() + 1.0):
+            q.put(True)
+    except ba.RawCallTimeout:
+        q.put(False)
+
+
+def _race(tmp: Path, name: str, no_flock: bool):
+    """Сценарий 1 → (Y-результат, X-результат, лог, pid1)."""
+    udd = str(tmp / name / "profile")
+    os.makedirs(udd)
+    log_path = str(tmp / name / "events.log")
+    pid1 = _spawn_chrome(udd)
+    ctx = multiprocessing.get_context("spawn")
+    q = ctx.Queue()
+    in_window = ctx.Event()
+    py = ctx.Process(target=_mp_restarter,
+                     args=(udd, log_path, pid1, in_window, no_flock, q))
+    px = ctx.Process(target=_mp_lazy,
+                     args=(udd, log_path, in_window, no_flock, q))
+    px.start()
+    py.start()
+    res = {}
+    for _ in range(2):
+        try:
+            k, v = q.get(timeout=40)
+            res[k] = v
+        except Exception:
+            break
+    py.join(10)
+    px.join(10)
+    return res, _read_log(log_path), pid1
+
+
+def main():
+    ok = 0
+
+    def check(name, cond):
+        nonlocal ok
+        print(f"  [{'OK' if cond else 'FAIL'}] {name}")
+        ok = ok + 1 if cond else ok - 100
+
+    if sys.platform == "win32":
+        print("  [SKIP] posix-only (SingletonLock/fcntl)")
+        return 0
+
+    tmp = Path(tempfile.mkdtemp(prefix="pool_h_life_"))
+    spawned = []
+    try:
+        # ── 1. Гонка двух процессов: перезапуск Y против ленивого старта X ──
+        res, log, pid1 = _race(tmp, "race", no_flock=False)
+        pid2 = res.get("X")
+        spawned += [pid1, pid2]
+        kill_end = [float(e[2]) for e in log if e[0] == "kill-end"]
+        x_launch = [float(e[2]) for e in log
+                    if e[0] == "launch-start" and e[1] == "X"]
+        killed_x = [e for e in log if e[0] == "kill-start"
+                    and len(e) > 3 and e[3] == str(pid2)]
+        check("2 процесса: перезапуск Y прошёл (True)", res.get("Y") is True)
+        check("2 процесса: ленивый старт X (только фоновый вызов) ждёт конца "
+              "перезапуска Y — запуск после убийства",
+              len(x_launch) == 1 and kill_end
+              and x_launch[0] >= kill_end[0])
+        check("2 процесса: Chrome, поднятый X, жив (перезапуск Y его не убил)",
+              isinstance(pid2, int) and _alive(pid2) and not killed_x)
+        check("2 процесса: старый Chrome убит", not _alive(pid1))
+
+        # Контроль: без межпроцессного лока тот же сценарий воспроизводит
+        # гонку — значит, проверка выше ловит именно её
+        res_c, log_c, pid1c = _race(tmp, "control", no_flock=True)
+        pid2c = res_c.get("X")
+        spawned += [pid1c, pid2c]
+        killed_c = [e for e in log_c if e[0] == "kill-start"
+                    and len(e) > 3 and e[3] == str(pid2c)]
+        check("контроль: без flock перезапуск Y убивает свежий Chrome X "
+              "(гонка воспроизводится)",
+              isinstance(pid2c, int) and bool(killed_c) and not _alive(pid2c))
+
+        # ── 2. Решение о перезапуске для старого Chrome не убивает свежий ──
+        udd = str(tmp / "stale" / "profile")
+        os.makedirs(udd)
+        log_path = str(tmp / "stale" / "events.log")
+        ba = _setup(udd, log_path, "P")
+        ba._close_pool_h_graceful = lambda: None
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        fresh = _spawn_chrome(udd)
+        spawned.append(fresh)
+        ba._POOL_H_SEEN_PID = dead.pid  # мы видели Chrome, которого уже нет
+        r = ba.restart_browser("тест", cooldown_sec=0, pool="h")
+        check("stale: Chrome сменён соседом — перезапуск его не убивает",
+              r is True and _alive(fresh)
+              and not any(e[0] == "kill-start" for e in _read_log(log_path)))
+        ba._POOL_H_SEEN_PID = fresh  # а тот, что видели, — убивается
+        r = ba.restart_browser("тест", cooldown_sec=0, pool="h")
+        time.sleep(0.2)
+        check("stale: Chrome, в котором залипли, перезапуск убивает",
+              r is True and not _alive(fresh))
+
+        # ── 3. Ожидание чужого лока ограничено ──
+        udd = str(tmp / "busy" / "profile")
+        os.makedirs(udd)
+        log_path = str(tmp / "busy" / "events.log")
+        ba = _setup(udd, log_path, "P")
+        ba._close_pool_h_graceful = lambda: None
+        live = _spawn_chrome(udd)
+        spawned.append(live)
+        ctx = multiprocessing.get_context("spawn")
+        ready, release = ctx.Event(), ctx.Event()
+        holder = ctx.Process(target=_mp_hold_life,
+                             args=(udd, log_path, ready, release))
+        holder.start()
+        try:
+            ready.wait(20)
+            ba._RAW_CLIENTS["h"] = None
+            t0 = time.monotonic()
+            err = None
+            try:
+                ba._raw_call("Browser.getVersion", pool="h", timeout=0.6)
+            except Exception as e:
+                err = e
+            dt = time.monotonic() - t0
+            check("занято другим процессом: _raw_call — RawCallTimeout в "
+                  "бюджет вызова, без запуска Chrome",
+                  isinstance(err, ba.RawCallTimeout) and 0.5 <= dt < 1.5
+                  and not any(e[0] == "launch-start"
+                              for e in _read_log(log_path)))
+            saved_wait = ba.POOL_H_RESTART_WAIT_SEC
+            ba.POOL_H_RESTART_WAIT_SEC = 0.5
+            try:
+                ba._POOL_H_SEEN_PID = live
+                t0 = time.monotonic()
+                r = ba.restart_browser("тест", cooldown_sec=0, pool="h")
+                dt = time.monotonic() - t0
+            finally:
+                ba.POOL_H_RESTART_WAIT_SEC = saved_wait
+            check("занято другим процессом: перезапуск пропущен за "
+                  "POOL_H_RESTART_WAIT_SEC, Chrome не тронут",
+                  r is False and dt < 1.5 and _alive(live))
+            lk = ba._RAW_LOCKS["h"].acquire(blocking=False)
+            if lk:
+                ba._RAW_LOCKS["h"].release()
+            check("после отказа локи отпущены (_RAW_LOCKS[H], глубина 0)",
+                  lk and ba._POOL_H_LIFE["depth"] == 0
+                  and ba._POOL_H_LIFE["fh"] is None)
+        finally:
+            release.set()
+            holder.join(10)
+
+        # ── 4. Реентерабельность внутри процесса ──
+        done = threading.Event()
+
+        def _nested():
+            with ba._pool_h_lifecycle(time.monotonic() + 2):
+                with ba._pool_h_lifecycle(time.monotonic() + 2):
+                    ba._ensure_pool_h_browser()  # жив → no-op
+            done.set()
+
+        tn = threading.Thread(target=_nested, daemon=True)
+        tn.start()
+        check("реентерабельность: вложенный захват не блокирует сам себя",
+              done.wait(3))
+        # Смена режима (rescue off) в ленивом старте: teardown + запуск под
+        # тем же захватом, без повторного ожидания flock
+        ba._POOL_H_RUNNING_MODE = "headed"
+        ba._RAW_CLIENTS["h"] = None
+        t0 = time.monotonic()
+        ba._raw_call("Browser.getVersion", pool="h", timeout=5)
+        new_pid = ba._pool_h_chrome_pid()
+        spawned.append(new_pid)
+        check("смена режима в ленивом старте: teardown + запуск под одним "
+              "захватом, старый Chrome убит, новый жив",
+              time.monotonic() - t0 < 5 and not _alive(live)
+              and new_pid != live and _alive(new_pid))
+        q = ctx.Queue()
+        pt = ctx.Process(target=_mp_try_life, args=(udd, log_path, q))
+        pt.start()
+        got = q.get(timeout=20)
+        pt.join(10)
+        check("после выхода из секции лок свободен для другого процесса",
+              got is True)
+
+        # ── 5. ФС без flock (ENOTSUP) — фолбэк на внутрипроцессный, а не
+        # «занято» с RawCallTimeout на каждом захвате ──
+        import errno
+        import fcntl
+        real_flock = fcntl.flock
+
+        def _nosup(fd, op):
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+        fcntl.flock = _nosup
+        try:
+            t0 = time.monotonic()
+            try:
+                with ba._pool_h_lifecycle(time.monotonic() + 1.0):
+                    entered = ba._POOL_H_LIFE["fh"] is None
+            except ba.RawCallTimeout:
+                entered = False
+        finally:
+            fcntl.flock = real_flock
+        check("ФС без flock: секция входится сразу, только внутрипроцессно",
+              entered and time.monotonic() - t0 < 0.5)
+    finally:
+        for pid in spawned:
+            if isinstance(pid, int):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+    print(f"\nИтог: {ok} проверок")
+    return 0 if ok > 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

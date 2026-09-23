@@ -64,6 +64,12 @@ def main():
     _n_on = len(_rounds)
     _net_router._net_checked = 0.0  # кэш истёк — проба снова, сеть вернулась
     _back = _real_internet_available()
+    # Устаревший «онлайн» отдаётся сразу, проба — в фоновом потоке: ждём её
+    # конца, иначе счётчик серий гоняется с потоком, а его вердикт
+    # (_net_checked = now) перетирает float("inf") ниже
+    _pending = _net_router._net_refresh_done
+    if _pending is not None:
+        _pending.wait(5)
     _net_router._probe_round = _orig_probe
     _net_router._net_ok, _net_router._net_checked = True, float("inf")
     check("probe: офлайн — после двух пустых серий подряд",

@@ -55,9 +55,26 @@ _NET_PROBE_ROUNDS = 2            # серий подряд без ответа =
 # за 1.2 с) — проба ждала 2×2×3 = 12 с и выносила ложное «офлайн»: поиск
 # пропускался, цепочка уходила к локальной модели
 _NET_PROBE_HOSTS = (("77.88.8.8", 443), ("1.1.1.1", 443), ("8.8.8.8", 53))
+# Путь ответа пробу НЕ ждёт (stale-while-revalidate): истёкший кэш отдаёт
+# последний вердикт сразу, а проба идёт одним фоновым потоком на процесс
+# (параллельные вызовы её не дублируют). Раньше истёкший кэш «офлайн» (10 с)
+# стоил ответу до 2 серий × 3 хоста × 3 с = 18 с синхронных проб.
+# Ждём коротко только:
+# - самый первый вызов без вердикта — до _NET_FIRST_WAIT_SEC, дальше
+#   считаем «онлайн» (ложный онлайн = прежняя цепочка, ложный офлайн хуже);
+# - вызов, запустивший пробу при устаревшем «офлайн», — до
+#   _NET_STALE_OFFLINE_WAIT_SEC: вернувшаяся сеть отвечает первым же
+#   хостом за десятки мс, и ответ сразу идёт в облако, а не в локальную
+#   модель; сеть ещё лежит — отдаём «офлайн» по кэшу.
+_NET_FIRST_WAIT_SEC = 2.0
+_NET_STALE_OFFLINE_WAIT_SEC = 0.5
+# Сетевая ошибка облака — повод перепроверить досрочно, но не чаще раза
+# в столько секунд (сама по себе ошибка ≠ офлайн: слабая сеть, сбой API)
+_NET_SUSPECT_MIN_AGE_SEC = 3.0
 _net_lock = threading.Lock()
 _net_ok: bool | None = None
 _net_checked = 0.0
+_net_refresh_done: threading.Event | None = None  # идёт фоновая проба
 
 # Сколько пользовательский (main) вызов веб-чата ждёт лок занятого чата,
 # прежде чем уйти в burst (разовый свежий чат): секунды. Дольше ждать —
@@ -85,27 +102,98 @@ def note_internet_ok() -> None:
         _net_ok, _net_checked = True, time.monotonic()
 
 
+def _refresh_async() -> tuple[threading.Event, bool]:
+    """Запустить фоновую пробу, если она ещё не идёт. Возвращает событие её
+    конца и признак «запустил именно этот вызов». Вердикт — как раньше:
+    хоть одна серия с ответом — онлайн, _NET_PROBE_ROUNDS пустых подряд —
+    офлайн."""
+    global _net_refresh_done
+    with _net_lock:
+        if _net_refresh_done is not None:
+            return _net_refresh_done, False
+        done = _net_refresh_done = threading.Event()
+    probe = _probe_round  # снимок: подмена в тестах не утекает в поток
+    started = time.monotonic()
+
+    def run():
+        global _net_ok, _net_checked, _net_refresh_done
+        ok: bool | None = None
+        try:
+            ok = False
+            for _ in range(_NET_PROBE_ROUNDS):
+                if probe():
+                    ok = True
+                    break
+        except Exception as e:
+            ok = None  # сбой самой пробы — вердикт не меняем
+            logger.debug(f"[Router] проба интернета упала: {e}")
+        finally:
+            with _net_lock:
+                # note_internet_ok() во время пробы — факт свежее её «офлайн»
+                confirmed = _net_ok is True and _net_checked >= started
+                if ok is not None and not (ok is False and confirmed):
+                    _net_ok, _net_checked = ok, time.monotonic()
+                _net_refresh_done = None
+            done.set()
+
+    try:
+        threading.Thread(target=run, name="net-probe", daemon=True).start()
+    except Exception:
+        with _net_lock:
+            _net_refresh_done = None
+        done.set()
+    return done, True
+
+
+def note_internet_suspect() -> None:
+    """Облако не достучалось по сети (connect/timeout) — перепроверить
+    интернет досрочно, в фоне. Вердикт «офлайн» ставит только проба (две
+    пустые серии): одна сетевая ошибка на слабом Wi-Fi ≠ офлайн."""
+    with _net_lock:
+        fresh = (_net_ok is not None
+                 and time.monotonic() - _net_checked < _NET_SUSPECT_MIN_AGE_SEC)
+    if not fresh:
+        _refresh_async()
+
+
+def _is_network_error(e: BaseException) -> bool:
+    """Ошибка транспорта (нет соединения/таймаут), а не ответ API."""
+    try:
+        from openai import APIConnectionError  # APITimeoutError — подкласс
+        if isinstance(e, APIConnectionError):
+            return True
+    except Exception:
+        pass
+    return isinstance(e, (OSError, TimeoutError))
+
+
 def internet_available() -> bool:
     """Есть ли интернет: TCP-probe пары надёжных IP с кэшем (процесс):
     «онлайн» — 30 с, «офлайн» — 10 с. Ложное «офлайн» безопасно для
     ответа (если local не ответила, обычная цепочка всё равно идёт дальше —
     меняется только её приоритет), но вредно для качества (решения режима
     управления уходят слабой локальной модели), поэтому офлайн
-    признаётся только после двух подряд пустых серий."""
-    global _net_ok, _net_checked
+    признаётся только после двух подряд пустых серий.
+    Вызов не блокируется на пробе: истёкший кэш — последний вердикт сразу
+    + одна фоновая проба на процесс; короткое ожидание только у первого
+    вызова без вердикта (≤ _NET_FIRST_WAIT_SEC, затем «онлайн») и у
+    запустившего пробу при устаревшем «офлайн» (≤ _NET_STALE_OFFLINE_WAIT_SEC)."""
     with _net_lock:
-        if _net_ok is not None:
-            ttl = _NET_CHECK_TTL_SEC if _net_ok else _NET_OFFLINE_TTL_SEC
-            if time.monotonic() - _net_checked < ttl:
-                return _net_ok
-    ok = False
-    for _ in range(_NET_PROBE_ROUNDS):
-        if _probe_round():
-            ok = True
-            break
+        ok, checked = _net_ok, _net_checked
+    if ok is not None:
+        ttl = _NET_CHECK_TTL_SEC if ok else _NET_OFFLINE_TTL_SEC
+        if time.monotonic() - checked < ttl:
+            return ok
+        done, mine = _refresh_async()
+        if not ok and mine:
+            done.wait(_NET_STALE_OFFLINE_WAIT_SEC)
+            with _net_lock:
+                return bool(_net_ok)
+        return ok
+    done, _ = _refresh_async()
+    done.wait(_NET_FIRST_WAIT_SEC)
     with _net_lock:
-        _net_ok, _net_checked = ok, time.monotonic()
-    return ok
+        return True if _net_ok is None else _net_ok
 
 
 # Бюджет одного ожидания занятых сайтов во ВТОРОМ заходе фона (вся цепочка
@@ -348,6 +436,8 @@ class ModelRouter:
                 logger.warning(
                     f"{provider.upper()} key={idx + 1}/{len(keys)} ({model}) ошибка: {e}"
                 )
+                if _is_network_error(e):
+                    note_internet_suspect()  # досрочная фоновая проба
 
         return None
 
@@ -702,6 +792,8 @@ class ModelRouter:
                 logger.warning(
                     f"{provider.upper()} key={idx + 1}/{len(keys)} ({model}) stream ошибка: {e}"
                 )
+                if _is_network_error(e):
+                    note_internet_suspect()
                 if parts:
                     # Обрыв посередине стрима — лучше недописанный ответ, чем None
                     return "".join(parts)

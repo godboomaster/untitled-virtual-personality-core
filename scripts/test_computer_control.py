@@ -2734,6 +2734,16 @@ def main():
     # ── visible_page_info: AppleScript-бэкенд — активная вкладка окна ──
     _orig_sb = _ba._select_backend
     _orig_os = _ba._osascript
+    # Герметично: _front_window_url сверяет ответ моста с экземплярами
+    # браузера (_as_browser_pids — System Events по живым процессам) и
+    # вкладками пула (_bot_page_urls — HTTP /json/list отладочных портов).
+    # Без фейков при запущенных личном Chrome + Chrome бота фейковый URL
+    # «не из пула» → мост молчит и тест падает в зависимости от машины.
+    # По умолчанию — один экземпляр (сверки нет)
+    _orig_pids = _ba._as_browser_pids
+    _orig_bot_urls = _ba._bot_page_urls
+    _ba._as_browser_pids = lambda app=None: [101]
+    _ba._bot_page_urls = lambda: ()
     try:
         _ba._select_backend = lambda tab_op=True: "applescript"
         _ba._osascript = lambda script, browser="chrome": \
@@ -2748,6 +2758,21 @@ def main():
         _ba._osascript = lambda script, browser="chrome": "missing value"
         check("visible applescript: нет окна — None",
               _real_visible_page_info() is None)
+        # Два экземпляра (Chrome бота + личный): переднее окно не из вкладок
+        # пула — это личный браузер, его вкладку за видимую не выдаём
+        _ba._as_browser_pids = lambda app=None: [101, 202]
+        _ba._bot_page_urls = lambda: ("https://www.youtube.com/results?q=x",)
+        _ba._osascript = lambda script, browser="chrome": \
+            "https://school.example.com/\n"
+        check("visible applescript: 2 экземпляра, окно не из пула — None",
+              _real_visible_page_info() is None)
+        # …а совпало со вкладкой пула (query у SPA другой) — это наш браузер
+        _ba._bot_page_urls = lambda: ("https://school.example.com/?s=1",)
+        check("visible applescript: 2 экземпляра, окно из пула — оно",
+              _real_visible_page_info() == ("https://school.example.com/",
+                                            "school.example.com"))
+        _ba._as_browser_pids = lambda app=None: [101]
+        _ba._bot_page_urls = lambda: ()
         # CDP-бэкенд на macOS — тоже активная вкладка окна: visibilityState
         # врёт (Chrome отдаёт visible всем вкладкам окна, кейс 10.09 —
         # «нажми три полоски» уходило на youtube вместо платформы)
@@ -2791,6 +2816,8 @@ def main():
     finally:
         _ba._select_backend = _orig_sb
         _ba._osascript = _orig_os
+        _ba._as_browser_pids = _orig_pids
+        _ba._bot_page_urls = _orig_bot_urls
 
     # ── page_for: устаревший полный URL (OAuth state/nonce) → origin ──
     check("_origin_of: URL → scheme://host, хост-фрагмент → None",

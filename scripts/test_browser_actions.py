@@ -170,7 +170,8 @@ def main():
                  lock=ba._check_profile_lock, copy=ba._ensure_v_profile_copy,
                  ms=ba._enable_memory_saver, zoom=ba._wipe_saved_zoom_levels,
                  tmo=ba.BROWSER_LAUNCH_TIMEOUT_SEC, hide=ba._hide_pool_window,
-                 halive=ba._pool_h_alive, hmask=ba._headless_mask_flags)
+                 halive=ba._pool_h_alive, hmask=ba._headless_mask_flags,
+                 life=ba._pool_h_life_path)
     try:
         ba._kill_chrome_on_profile = lambda proc, udd, grace_sec=10.0: (
             kills.append((getattr(proc, "pid", None), udd, grace_sec)), True)[1]
@@ -262,6 +263,10 @@ def main():
         ba._pool_h_alive = lambda: False
         ba._headless_mask_flags = lambda exe: ["--headless=new"]
         ba._POOL_H_PROC = None
+        # Не реальный лок-файл профиля: иначе тест делит его с живым ботом
+        _life = tempfile.NamedTemporaryFile(suffix=".bot-lifecycle.lock",
+                                            delete=False).name
+        ba._pool_h_life_path = lambda: _life
         h_raised = ""
         try:
             ba._launch_pool_h_chrome()
@@ -278,6 +283,7 @@ def main():
         ba._enable_memory_saver = _orig["ms"]
         ba._wipe_saved_zoom_levels = _orig["zoom"]
         ba.BROWSER_LAUNCH_TIMEOUT_SEC = _orig["tmo"]
+        ba._pool_h_life_path = _orig["life"]
         ba._hide_pool_window = _orig["hide"]
         ba._pool_h_alive = _orig["halive"]
         ba._headless_mask_flags = _orig["hmask"]

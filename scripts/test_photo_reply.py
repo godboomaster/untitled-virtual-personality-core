@@ -8,13 +8,30 @@ from types import SimpleNamespace
 
 
 class FakeMessage:
-    def __init__(self):
+    """album_ok=False — reply_media_group падает (фолбэк по одному кадру);
+    html_caption_ok=False — падает любой reply_photo с parse_mode=HTML
+    (подпись-ответ не прошла разбор Telegram)."""
+
+    def __init__(self, album_ok=True, html_caption_ok=True):
         self.calls = []
+        self.album_ok = album_ok
+        self.html_caption_ok = html_caption_ok
         self.chat = SimpleNamespace(send_action=lambda *a, **kw: asyncio.sleep(0))
 
     async def reply_photo(self, photo=None, caption=None, parse_mode=None):
+        if parse_mode == "HTML" and not self.html_caption_ok:
+            raise RuntimeError("Bad Request: can't parse entities")
         self.calls.append(("photo", photo, caption, parse_mode))
         return SimpleNamespace(message_id=len(self.calls))
+
+    async def reply_media_group(self, media=None):
+        if not self.album_ok:
+            raise RuntimeError("Bad Request: album failed")
+        # InputMediaPhoto заворачивает bytes в InputFile — сравниваем содержимое
+        self.calls.append(("album", [
+            (getattr(m.media, "input_file_content", m.media), m.caption, m.parse_mode)
+            for m in media]))
+        return [SimpleNamespace(message_id=200 + i) for i in range(len(media))]
 
     async def reply_text(self, text, parse_mode=None):
         self.calls.append(("text", text, parse_mode))
@@ -43,14 +60,51 @@ def main():
           and "Готово, открыл ютуб." in (m.calls[0][2] or "")
           and m.calls[0][3] == "HTML" and ids)
 
-    # 2. Два кадра: первый несёт ответ, второй — отдельно со своей подписью
+    # 2. Два кадра — альбомом (media group, коммит 2b23c71): ответ подписью
+    # первого кадра, второй — со своей подписью. Раньше тест ждал два
+    # отдельных reply_photo — он написан до альбомов, а FakeMessage без
+    # reply_media_group проверял только фолбэк, где подпись второго кадра
+    # терялась (дефект, исправлен)
     m = FakeMessage()
-    asyncio.run(tb._reply_with_photos(m, "Вот страница.", PH))
+    ids = asyncio.run(tb._reply_with_photos(m, "Вот страница.", PH))
+    album = m.calls[0][1] if m.calls and m.calls[0][0] == "album" else []
+    check("два кадра: одним альбомом, ответ на первом, второй со своей подписью",
+          len(m.calls) == 1 and len(album) == 2
+          and album[0][0] == b"jpeg1" and "Вот страница." in (album[0][1] or "")
+          and album[0][2] == "HTML"
+          and album[1] == (b"jpeg2", "второй кадр", None)
+          and ids == [200])
+
+    # 2b. Альбом не ушёл — кадры по одному, подписи те же
+    m = FakeMessage(album_ok=False)
+    ids = asyncio.run(tb._reply_with_photos(m, "Вот страница.", PH))
     kinds = [c[0] for c in m.calls]
-    check("два кадра: ответ на первом, второй отдельным",
+    check("два кадра, альбом упал: по одному, ответ на первом, второй со своей подписью",
           kinds == ["photo", "photo"]
-          and "Вот страница." in (m.calls[0][2] or "")
-          and m.calls[1][2] == "второй кадр")
+          and "Вот страница." in (m.calls[0][2] or "") and m.calls[0][3] == "HTML"
+          and m.calls[1][2] == "второй кадр" and m.calls[1][3] is None
+          and ids == [1])
+
+    # 2c. Альбом и подпись-ответ не проходят — ответ не теряется: текстом,
+    # кадры со своими подписями
+    m = FakeMessage(album_ok=False, html_caption_ok=False)
+    ids = asyncio.run(tb._reply_with_photos(m, "Вот страница.", PH))
+    kinds = [c[0] for c in m.calls]
+    texts = [c for c in m.calls if c[0] == "text"]
+    check("альбом и HTML-подпись упали: ответ текстом, оба кадра со своими подписями",
+          kinds.count("photo") == 2 and len(texts) == 1
+          and "Вот страница." in texts[0][1] and ids
+          and [c[2] for c in m.calls if c[0] == "photo"]
+          == ["Так выглядит страница (x.com)", "второй кадр"])
+
+    # 2d. Длинный ответ + два кадра: текст отдельно, альбом без ответа
+    m = FakeMessage()
+    asyncio.run(tb._reply_with_photos(m, "Текст ответа. " * 200, PH))
+    kinds = [c[0] for c in m.calls]
+    album = m.calls[-1][1] if kinds and kinds[-1] == "album" else []
+    check("длинный + два кадра: текст отдельно, альбом со своими подписями",
+          kinds[0] == "text" and kinds[-1] == "album"
+          and [a[1] for a in album] == ["Так выглядит страница (x.com)", "второй кадр"])
 
     # 3. Длинный ответ (>1024 после HTML) → текст отдельно, кадр со своей подписью
     m = FakeMessage()

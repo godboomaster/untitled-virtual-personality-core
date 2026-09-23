@@ -106,7 +106,8 @@ async def _reply_with_photos(message, text: str, photos: list) -> list:
     обычный путь: текст отдельно, кадры следом со своими подписями.
     Два и больше кадров — альбомом media group (до 10 в группе, лимит
     Telegram): текст — подписью первого кадра либо отдельным сообщением
-    перед альбомом.
+    перед альбомом; остальные кадры альбома — со своими подписями, как и
+    при отправке по одному.
     Возвращает message_id отправленных (для reply-to логики обучения)."""
     if photos and len(photos) >= 2:
         html = _md_to_html(text) if text else ""
@@ -115,15 +116,24 @@ async def _reply_with_photos(message, text: str, photos: list) -> list:
         if html and caption is None:
             # Текст не влез в подпись — отдельным сообщением перед альбомом
             ids = await _reply_ai(message, text)
+
+        def _frame_caption(off: int, j: int, ph: dict):
+            """(подпись, parse_mode) кадра: первый кадр несёт ответ (HTML),
+            остальные — свою подпись («Так выглядит страница (host)»,
+            «Край страницы …») обычным текстом. Раньше в альбоме и в его
+            фолбэке по одному подписи кадров терялись."""
+            if off == 0 and j == 0 and caption:
+                return caption, "HTML"
+            return (ph.get("caption") or None), None
+
         for off in range(0, len(photos), 10):
             chunk = photos[off:off + 10]
             try:
                 media = []
                 for j, ph in enumerate(chunk):
-                    cap = caption if (off == 0 and j == 0) else None
+                    cap, pm = _frame_caption(off, j, ph)
                     media.append(InputMediaPhoto(
-                        media=ph["data"], caption=cap,
-                        parse_mode="HTML" if cap else None))
+                        media=ph["data"], caption=cap, parse_mode=pm))
                 sent = await message.reply_media_group(media=media)
                 if off == 0 and not ids:
                     ids = [m.message_id for m in (sent or [])
@@ -131,13 +141,26 @@ async def _reply_with_photos(message, text: str, photos: list) -> list:
             except Exception as e:
                 logger.error(f"Альбом не ушёл ({e}) — кадры по одному")
                 for j, ph in enumerate(chunk):
-                    cap = caption if (off == 0 and j == 0) else None
+                    cap, pm = _frame_caption(off, j, ph)
                     try:
-                        await message.reply_photo(
-                            photo=ph["data"], caption=cap,
-                            parse_mode="HTML" if cap else None)
+                        sent = await message.reply_photo(
+                            photo=ph["data"], caption=cap, parse_mode=pm)
+                        if off == 0 and not ids and getattr(sent, "message_id", None):
+                            ids = [sent.message_id]
                     except Exception as e2:
                         logger.error(f"Ошибка отправки скриншота: {e2}")
+                        if pm == "HTML":
+                            # Ответ ехал подписью этого кадра (альбом мог
+                            # упасть на той же подписи) — не теряем его:
+                            # текст отдельно, кадр со своей подписью, как
+                            # в пути одного кадра
+                            ids = await _reply_ai(message, text) or ids
+                            try:
+                                await message.reply_photo(
+                                    photo=ph["data"],
+                                    caption=ph.get("caption") or None)
+                            except Exception as e3:
+                                logger.error(f"Ошибка отправки скриншота: {e3}")
         return ids
     if photos and text:
         html = _md_to_html(text)
@@ -788,20 +811,30 @@ def create_handlers(bot: BotInstance) -> dict:
 
             # Та же per-chat сериализация, что и для текстовых сообщений
             async with _chat_lock(chat_id):
-                file = await context.bot.get_file(document.file_id)
-                file_bytes = await file.download_as_bytearray()
+                # Сбой Bot API/сети при скачивании раньше улетал из обработчика
+                # в лог PTB — пользователь не получал ничего
+                try:
+                    file = await context.bot.get_file(document.file_id)
+                    file_bytes = await file.download_as_bytearray()
+                except Exception as e:
+                    logger.error(f"[{persona_name}] Не удалось скачать файл {filename}: {e}")
+                    await update.message.reply_text("Не удалось скачать файл из Telegram. Попробуй ещё раз.")
+                    return
 
                 await update.message.reply_text("Читаю файл...")
 
                 # markitdown и ChromaDB+эмбеддинги — тяжёлые синхронные вызовы, в поток
                 from app.core.file_reader import extract_text
-                text = await asyncio.to_thread(extract_text, bytes(file_bytes), filename)
-
-                if text.startswith(("Ошибка", "Формат", "Не удалось", "Библиотека")):
-                    await update.message.reply_text(text)
+                try:
+                    text = await asyncio.to_thread(extract_text, bytes(file_bytes), filename)
+                    if text.startswith(("Ошибка", "Формат", "Не удалось", "Библиотека")):
+                        await update.message.reply_text(text)
+                        return
+                    await asyncio.to_thread(bot.file_db.add_file, user_id, filename, text)
+                except Exception as e:
+                    logger.error(f"[{persona_name}] Ошибка чтения файла {filename}: {e}", exc_info=True)
+                    await update.message.reply_text("Произошла ошибка при обработке файла.")
                     return
-
-                await asyncio.to_thread(bot.file_db.add_file, user_id, filename, text)
 
                 loaded_files = await asyncio.to_thread(bot.file_db.get_loaded_files, user_id)
                 files_note = f"Files loaded: {len(loaded_files)}/{bot.file_db.max_docs}"
@@ -862,8 +895,16 @@ def create_handlers(bot: BotInstance) -> dict:
                 return
 
             photo = update.message.photo[-1]  # самый большой из предложенных размеров
-            file = await context.bot.get_file(photo.file_id)
-            image_bytes = bytes(await file.download_as_bytearray())
+            # Сбой Bot API/сети при скачивании раньше улетал из обработчика
+            # в лог PTB — пользователь не получал ничего
+            try:
+                file = await context.bot.get_file(photo.file_id)
+                image_bytes = bytes(await file.download_as_bytearray())
+            except Exception as e:
+                logger.error(f"[{persona_name}] Не удалось скачать изображение: {e}")
+                await update.message.reply_text(
+                    "Не удалось скачать изображение из Telegram. Попробуй ещё раз.")
+                return
 
             caption_clean = bot.strip_trigger(caption)
 
@@ -872,7 +913,12 @@ def create_handlers(bot: BotInstance) -> dict:
             # Та же per-chat сериализация, что и для текстовых сообщений
             async with _chat_lock(chat_id):
                 # Каскад: vision-провайдер основного роутера → локальная gemma
-                ocr_text = await asyncio.to_thread(bot.describe_image, image_bytes, caption_clean)
+                try:
+                    ocr_text = await asyncio.to_thread(bot.describe_image, image_bytes, caption_clean)
+                except Exception as e:
+                    # Сбой vision-провайдера — к локальной модели, а не молча в лог PTB
+                    logger.error(f"[{persona_name}] describe_image: {e}", exc_info=True)
+                    ocr_text = None
                 if not ocr_text:
                     if not bot._local_router or not bot._local_router.is_available():
                         await update.message.reply_text(
@@ -1044,46 +1090,54 @@ def register_handlers(app: Application, bot: BotInstance):
         sender = TelegramMessageSender(bot=app.bot)
         bot.setup_learning(sender)
 
-    app.add_handler(CommandHandler("start", h["start"]))
-    app.add_handler(CommandHandler("help", h["help"]))
-    app.add_handler(CommandHandler("stats", h["stats"]))
-    app.add_handler(CommandHandler("erase", h["erase"]))
-    app.add_handler(CommandHandler("last", h["last"]))
-    app.add_handler(CommandHandler("reset", h["reset"]))
-    app.add_handler(CommandHandler("forget", h["forget"]))
-    app.add_handler(CommandHandler("context", h["context"]))
-    app.add_handler(CommandHandler("relations", h["relations"]))
-    app.add_handler(CommandHandler("resetall", h["resetall"]))
-    app.add_handler(CommandHandler("ltm_privacy", h["ltm_privacy"]))
-    app.add_handler(CommandHandler("ltm_export", h["ltm_export"]))
+    # Только НОВЫЕ сообщения. В PTB 20+ MessageHandler по умолчанию ловит и
+    # edited_message/channel_post, CommandHandler — edited_message, а main.py
+    # поллит allowed_updates=Update.ALL_TYPES: правка сообщения с триггером или
+    # команды (и пост канала) приходили сюда с update.message = None и падали
+    # AttributeError в обработчиках. Правка — не новая реплика: не отвечаем
+    # повторно (так было и в PTB 13, где правки по умолчанию не доставлялись)
+    _NEW = filters.UpdateType.MESSAGE
+
+    app.add_handler(CommandHandler("start", h["start"], filters=_NEW))
+    app.add_handler(CommandHandler("help", h["help"], filters=_NEW))
+    app.add_handler(CommandHandler("stats", h["stats"], filters=_NEW))
+    app.add_handler(CommandHandler("erase", h["erase"], filters=_NEW))
+    app.add_handler(CommandHandler("last", h["last"], filters=_NEW))
+    app.add_handler(CommandHandler("reset", h["reset"], filters=_NEW))
+    app.add_handler(CommandHandler("forget", h["forget"], filters=_NEW))
+    app.add_handler(CommandHandler("context", h["context"], filters=_NEW))
+    app.add_handler(CommandHandler("relations", h["relations"], filters=_NEW))
+    app.add_handler(CommandHandler("resetall", h["resetall"], filters=_NEW))
+    app.add_handler(CommandHandler("ltm_privacy", h["ltm_privacy"], filters=_NEW))
+    app.add_handler(CommandHandler("ltm_export", h["ltm_export"], filters=_NEW))
 
     if h.get("reset_diary"):
-        app.add_handler(CommandHandler("reset_diary", h["reset_diary"]))
+        app.add_handler(CommandHandler("reset_diary", h["reset_diary"], filters=_NEW))
 
     if h.get("files"):
-        app.add_handler(CommandHandler("files", h["files"]))
+        app.add_handler(CommandHandler("files", h["files"], filters=_NEW))
     if h.get("reset_files"):
-        app.add_handler(CommandHandler("reset_files", h["reset_files"]))
+        app.add_handler(CommandHandler("reset_files", h["reset_files"], filters=_NEW))
     if h.get("ratelimits"):
-        app.add_handler(CommandHandler("ratelimits", h["ratelimits"]))
+        app.add_handler(CommandHandler("ratelimits", h["ratelimits"], filters=_NEW))
     if h.get("web"):
-        app.add_handler(CommandHandler("web", h["web"]))
+        app.add_handler(CommandHandler("web", h["web"], filters=_NEW))
     if h.get("todo"):
-        app.add_handler(CommandHandler("todo", h["todo"]))
+        app.add_handler(CommandHandler("todo", h["todo"], filters=_NEW))
     if h.get("reminders"):
-        app.add_handler(CommandHandler("reminders", h["reminders"]))
+        app.add_handler(CommandHandler("reminders", h["reminders"], filters=_NEW))
     if h.get("cancel_reminder"):
-        app.add_handler(CommandHandler("cancel_reminder", h["cancel_reminder"]))
+        app.add_handler(CommandHandler("cancel_reminder", h["cancel_reminder"], filters=_NEW))
     if h.get("inventory"):
-        app.add_handler(CommandHandler("inventory", h["inventory"]))
+        app.add_handler(CommandHandler("inventory", h["inventory"], filters=_NEW))
     if h.get("remind"):
-        app.add_handler(CommandHandler("remind", h["remind"]))
+        app.add_handler(CommandHandler("remind", h["remind"], filters=_NEW))
     if h.get("add_todo"):
-        app.add_handler(CommandHandler("add_todo", h["add_todo"]))
+        app.add_handler(CommandHandler("add_todo", h["add_todo"], filters=_NEW))
     if h.get("add_inventory"):
-        app.add_handler(CommandHandler("add_inventory", h["add_inventory"]))
+        app.add_handler(CommandHandler("add_inventory", h["add_inventory"], filters=_NEW))
     if h.get("learn"):
-        app.add_handler(CommandHandler("learn", h["learn"]))
+        app.add_handler(CommandHandler("learn", h["learn"], filters=_NEW))
 
     # Debug
     async def debug_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1096,13 +1150,13 @@ def register_handlers(app: Application, bot: BotInstance):
     app.add_handler(MessageHandler(filters.ALL, debug_all), group=-1)
 
     # Messages
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, h["handle_message"]))
+    app.add_handler(MessageHandler(_NEW & filters.TEXT & ~filters.COMMAND, h["handle_message"]))
 
     # Documents
     if h.get("handle_document"):
-        app.add_handler(MessageHandler(filters.Document.ALL, h["handle_document"]))
+        app.add_handler(MessageHandler(_NEW & filters.Document.ALL, h["handle_document"]))
 
     # Photos (OCR через локальную vision-модель)
-    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, h["handle_photo"]))
+    app.add_handler(MessageHandler(_NEW & filters.PHOTO & ~filters.COMMAND, h["handle_photo"]))
 
     return app

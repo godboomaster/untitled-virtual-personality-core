@@ -40,6 +40,7 @@ import threading
 import time
 import weakref
 from collections import Counter
+from contextlib import contextmanager
 from typing import Dict, List, NamedTuple, Optional, Tuple
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
@@ -1819,18 +1820,45 @@ def _shutdown_pool_h(reason: str):
             os.path.join(udd, "SingletonLock")):
         return
     logger.info(f"[BrowserActions] Завершение пула H ({reason})")
-    _teardown_pool_h(grace_sec=10.0)
+    try:
+        _teardown_pool_h(grace_sec=10.0)
+    except RawCallTimeout as e:
+        logger.info(f"[BrowserActions] Завершение пула H пропущено: {e}")
 
 
-def _teardown_pool_h(grace_sec: float = 3.0):
+def _note_pool_h_seen_pid():
+    global _POOL_H_SEEN_PID
+    _POOL_H_SEEN_PID = _pool_h_chrome_pid()
+
+
+def _teardown_pool_h(grace_sec: float = 3.0,
+                     expect_pid: Optional[int] = None,
+                     deadline: Optional[float] = None) -> bool:
     """Закрыть Chrome пула H: Browser.close → сброс вкладок/сокета → добить
     процесс. ЦЕЛИКОМ под локом пула: иначе в окне между сбросом и убийством
     поток ответа (обрыв сокета → переподключение) лениво поднимал свой
     Chrome, а перезапуск тут же убивал его по профилю — вместе со свежей
     вкладкой ответа. Под локом ленивый старт ждёт (в счёт бюджета вызова)
-    и поднимает Chrome уже ПОСЛЕ перезапуска."""
-    global _POOL_H_PROC
-    with _RAW_LOCKS[_POOL_H]:
+    и поднимает Chrome уже ПОСЛЕ перезапуска. Лок — _pool_h_lifecycle:
+    к _RAW_LOCKS[H] добавлен межпроцессный flock, т.е. то же относится к
+    ленивому старту ДРУГИХ процессов бота (Chrome пула общий). Чужой
+    запуск/перезапуск дольше POOL_H_LIFECYCLE_WAIT_SEC — RawCallTimeout,
+    Chrome не трогаем (иначе убили бы свежий Chrome соседа).
+    expect_pid — pid Chrome, который собирались лечить (перезапуск): если
+    профиль уже держит ДРУГОЙ Chrome (его поднял сосед после смерти
+    нашего), убивать нечего — только сброс своего реестра/сокета (они
+    смотрели в умерший Chrome), → False. Иначе → True.
+    deadline — monotonic-потолок ожидания лока (None — POOL_H_LIFECYCLE_WAIT_SEC)."""
+    global _POOL_H_PROC, _POOL_H_SEEN_PID
+    with _pool_h_lifecycle(deadline):
+        cur = _pool_h_chrome_pid() if expect_pid is not None else None
+        if cur is not None and cur != expect_pid and _pid_alive(cur):
+            logger.info(f"[BrowserActions] Пул H: Chrome уже сменён другим "
+                        f"процессом бота (pid {expect_pid} → {cur}) — свежий "
+                        "не убиваю, только сбрасываю свои вкладки")
+            _reset_raw_pool(_POOL_H)
+            _POOL_H_SEEN_PID = None
+            return False
         # Реестр и поколение — ДО закрытия: Browser.close + ожидание процесса
         # идут до ~10с, и в этом окне идущий вызов уже ловит обрыв/таймаут.
         # Если вкладка к этому моменту ещё числится живой, web_llm
@@ -1843,6 +1871,8 @@ def _teardown_pool_h(grace_sec: float = 3.0):
         if not _is_default_browser_profile(udd):
             _kill_chrome_on_profile(_POOL_H_PROC, udd, grace_sec=grace_sec)
         _POOL_H_PROC = None
+        _POOL_H_SEEN_PID = None
+        return True
 
 
 def restart_browser(reason: str = "",
@@ -1873,7 +1903,18 @@ def restart_browser(reason: str = "",
     logger.warning(f"[BrowserActions] Перезапуск браузера бота, пул "
                    f"{pool.upper()}{f' ({reason})' if reason else ''}")
     if pool == _POOL_H:
-        _teardown_pool_h(grace_sec=3.0)
+        try:
+            # Ждём чужой цикл недолго: перезапуск зовут из вызова, который
+            # уже залип, и его фолбэк (burst/следующий провайдер) ждёт тоже
+            if not _teardown_pool_h(
+                    grace_sec=3.0, expect_pid=_POOL_H_SEEN_PID,
+                    deadline=time.monotonic() + POOL_H_RESTART_WAIT_SEC):
+                return True  # Chrome уже свежий (поднял сосед)
+        except RawCallTimeout as e:
+            # Другой процесс бота держит жизненный цикл пула (запускает или
+            # сам перезапускает Chrome) — его Chrome свежий, не убиваем
+            logger.info(f"[BrowserActions] Перезапуск пула H пропущен: {e}")
+            return False
         return True  # поднимется лениво на следующем вызове
     _reset_raw_pool(_POOL_V)
     udd = _pool_v_profile()
@@ -7045,7 +7086,9 @@ _POOL_V = "v"
 # лока, см. _RawCdp) — иначе одна зависшая вкладка на 20с останавливала все
 # вкладки пула. Перезапуск пула H держит его ЦЕЛИКОМ (закрыть → сбросить →
 # убить процесс): ленивый старт из _raw_call ждёт конца перезапуска, а не
-# поднимает свой Chrome, который перезапуск тут же убил бы.
+# поднимает свой Chrome, который перезапуск тут же убил бы. Это только
+# внутри процесса; между процессами бота то же обеспечивает flock
+# _pool_h_lifecycle (берётся ПОД этим локом).
 # RLock, а не Lock: ленивый старт пула H идёт под этим же локом и при смене
 # режима (rescue on/off) дёргает _reset_raw_pool — на обычном Lock это
 # вешало поток намертво
@@ -7056,6 +7099,157 @@ _RAW_CLIENTS: Dict[str, object] = {_POOL_H: None, _POOL_V: None}
 # raw_pool_generation
 _RAW_POOL_GEN: Dict[str, int] = {_POOL_H: 0, _POOL_V: 0}
 _POOL_H_PROC: Optional[subprocess.Popen] = None  # Chrome пула H (V гоняет _WORKER)
+
+# ── Межпроцессный лок жизненного цикла Chrome пула H ──
+# Chrome пула H ОДИН на профиль и общий для всех процессов бота, а
+# _RAW_LOCKS — лок только своего процесса. Гонка (хвост отчёта 23.09):
+# процесс Y перезапускает Chrome (Browser.close → убийство по профилю →
+# удаление Singleton*), а процесс X в это же окно ловит обрыв сокета и
+# лениво поднимает свой Chrome — Y берёт pid из SingletonLock и убивает уже
+# СВЕЖИЙ Chrome X (или сносит его Singleton-файлы). Межпроцессный flock
+# перезапуска в web_llm (_begin_restart) это не ловил: его разделяемую
+# сторону держат только ОСНОВНЫЕ вызовы, а фоновые и ленивый старт — нет.
+# Корень — жизненный цикл процесса Chrome на профиле (проверка «жив?» →
+# запуск → ожидание порта; закрытие → убийство → уборка лок-файлов) не был
+# критической секцией между процессами. Теперь это ЭКСКЛЮЗИВНЫЙ flock на
+# файле рядом с профилем: его держат ленивый старт/подключение (_raw_call),
+# teardown (перезапуск, выключение, смена режима) и rescue — целиком. Ленивый
+# старт, дождавшийся лока, заново проверяет живость и либо подключается к
+# Chrome соседа, либо поднимает свой уже ПОСЛЕ чужого убийства.
+# Порядок: [flock «идущих вызовов» web_llm] → _RAW_LOCKS[H] → этот flock;
+# под ним — только короткие внутрипроцессные (_RAW_TABS_LOCK), ни одного
+# межпроцессного и ни одного ожидания воркера. Внутри процесса реентерабелен счётчиком
+# глубины (защищён самим _RAW_LOCKS[H]): flock на ВТОРОМ fd того же файла
+# конфликтовал бы с собственным первым (смена режима в ленивом старте →
+# teardown). Ожидание — с коротким ретраем LOCK_NB до дедлайна (в счёт
+# бюджета вызова), не вечное. fd не наследуется Chrome (Python открывает
+# fd non-inheritable, Popen close_fds) — иначе запущенный под локом Chrome
+# держал бы его вечно. Нет fcntl/msvcrt или файл не открыть — только
+# внутрипроцессная часть (как раньше).
+POOL_H_LIFECYCLE_WAIT_SEC = 30.0  # потолок ожидания вне вызова (teardown/rescue)
+POOL_H_RESTART_WAIT_SEC = 10.0    # restart_browser(H): зовут с пути залипшего вызова
+_POOL_H_LIFE_RETRY_SEC = 0.1
+_POOL_H_LIFE = {"fh": None, "depth": 0}  # трогать только под _RAW_LOCKS[H]
+# pid Chrome пула H, к которому ЭТОТ процесс подключился (SingletonLock в
+# момент подключения; None — неизвестно/Windows). Перезапуск лечит именно
+# тот Chrome, в котором залипла наша вкладка: если к моменту взятия лока его
+# уже сменил другой процесс (убил и поднял свой), свежий Chrome соседа не
+# трогаем — иначе решение «перезапустить», принятое до чужого запуска,
+# убивало бы его запуск уже ПОСЛЕ лока (последовательная форма той же гонки).
+_POOL_H_SEEN_PID: Optional[int] = None
+
+
+def _pool_h_chrome_pid() -> Optional[int]:
+    """pid Chrome, держащего профиль пула H (SingletonLock «host-pid»,
+    posix). None — лока нет или не прочитать (на Windows — всегда)."""
+    if sys.platform == "win32":
+        return None
+    try:
+        link = os.readlink(os.path.join(_pool_h_profile(), "SingletonLock"))
+        return int(link.rsplit("-", 1)[-1])
+    except (OSError, ValueError):
+        return None
+
+
+def _pool_h_life_path() -> str:
+    """Файл лока — СОСЕД профиля (не внутри: каталог профиля — Chrome'а):
+    лок привязан к тому, что убивается по профилю."""
+    udd = os.path.abspath(os.path.expanduser(_pool_h_profile()))
+    return udd.rstrip("/\\") + ".bot-lifecycle.lock"
+
+
+def _pool_h_life_try(fh) -> bool:
+    """Одна неблокирующая попытка эксклюзивного лока. ImportError — нет ни
+    fcntl, ни msvcrt (межпроцессная часть недоступна)."""
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt  # ImportError уходит вызывающему
+        try:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False  # занято другим процессом
+    # Прочие OSError (ENOTSUP/ENOLCK — ФС без flock) уходят вызывающему:
+    # это «межпроцессная часть недоступна», а не «занято» — иначе ретрай до
+    # дедлайна и RawCallTimeout на КАЖДОМ ленивом старте/перезапуске
+
+
+def _pool_h_life_open(deadline: float):
+    """Открыть файл и взять эксклюзивный лок до deadline (monotonic).
+    → fh (держит лок до close) | None (межпроцессная часть недоступна).
+    Не дождались — RawCallTimeout (пул занят другим процессом)."""
+    fh = None
+    try:
+        path = _pool_h_life_path()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        fh = open(path, "a+")
+        while not _pool_h_life_try(fh):
+            if time.monotonic() >= deadline:
+                fh.close()
+                raise RawCallTimeout(
+                    "пул H: Chrome запускает/перезапускает другой процесс "
+                    "бота — не дождались")
+            time.sleep(_POOL_H_LIFE_RETRY_SEC)
+        return fh
+    except RawCallTimeout:
+        raise
+    except (ImportError, OSError) as e:
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+        logger.debug(f"[BrowserActions] Межпроцессный лок пула H недоступен "
+                     f"({e}) — только внутрипроцессный")
+        return None
+
+
+def _pool_h_life_close(fh) -> None:
+    try:
+        import msvcrt
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    except Exception:
+        pass
+    try:
+        fh.close()  # закрытие fd снимает flock
+    except Exception:
+        pass
+
+
+@contextmanager
+def _pool_h_lifecycle(deadline: Optional[float] = None):
+    """Критическая секция жизненного цикла Chrome пула H: _RAW_LOCKS[H]
+    (реентерабельный) + межпроцессный flock (см. выше). deadline —
+    monotonic-потолок ОБОИХ ожиданий (None — POOL_H_LIFECYCLE_WAIT_SEC).
+    Отдаёт секунды, ушедшие на ожидание; не дождались — RawCallTimeout."""
+    if deadline is None:
+        deadline = time.monotonic() + POOL_H_LIFECYCLE_WAIT_SEC
+    t0 = time.monotonic()
+    lock = _RAW_LOCKS[_POOL_H]
+    if not lock.acquire(timeout=max(0.0, deadline - t0)):
+        raise RawCallTimeout("пул H занят (подключение/перезапуск браузера)")
+    try:
+        if _POOL_H_LIFE["depth"] == 0:
+            _POOL_H_LIFE["fh"] = _pool_h_life_open(deadline)
+        _POOL_H_LIFE["depth"] += 1
+        try:
+            yield time.monotonic() - t0
+        finally:
+            _POOL_H_LIFE["depth"] -= 1
+            if _POOL_H_LIFE["depth"] == 0:
+                fh, _POOL_H_LIFE["fh"] = _POOL_H_LIFE["fh"], None
+                if fh is not None:
+                    _pool_h_life_close(fh)
+    finally:
+        lock.release()
 
 
 def _pool_h_cdp_url() -> str:
@@ -7319,10 +7513,24 @@ def _raw_call(method: str, params: Optional[dict] = None,
         cl = _RAW_CLIENTS[pool]
         if cl is None:
             if pool == _POOL_H:
-                _ensure_pool_h_browser()
-            cl = _RawCdp(_pool_h_cdp_url() if pool == _POOL_H else None)
-            _RAW_CLIENTS[pool] = cl
-            _sweep_orphan_tabs(cl, pool)
+                # Проверка живости → (запуск) → подключение — одной
+                # критической секцией и МЕЖДУ процессами: иначе перезапуск
+                # соседнего процесса убивал поднятый здесь Chrome (см.
+                # _pool_h_lifecycle). Ожидание чужого запуска/перезапуска —
+                # в счёт бюджета, собственный запуск — нет (как выше)
+                with _pool_h_lifecycle(deadline) as w:
+                    waited += w
+                    _ensure_pool_h_browser()
+                    _note_pool_h_seen_pid()
+                    cl = _RawCdp(_pool_h_cdp_url())
+                    _RAW_CLIENTS[pool] = cl
+                # Уборка сирот — CDP-вызовы (до 20с каждый на залипшем
+                # Chrome): уже вне межпроцессного лока, только под своим
+                _sweep_orphan_tabs(cl, pool)
+            else:
+                cl = _RawCdp(None)
+                _RAW_CLIENTS[pool] = cl
+                _sweep_orphan_tabs(cl, pool)
     finally:
         lock.release()
     # Ожидание лока — в счёт бюджета; собственное подключение/запуск Chrome —
@@ -7542,7 +7750,10 @@ def _headless_mask_flags(exe: str) -> List[str]:
 
 def _ensure_pool_h_browser():
     """Chrome пула H жив и в нужном режиме (ленивый старт при первом
-    обращении; rescue: видимый режим ≠ штатный → перезапуск)."""
+    обращении; rescue: видимый режим ≠ штатный → перезапуск). Вызывать под
+    _pool_h_lifecycle (так делает _raw_call): проверка живости и запуск —
+    одна межпроцессная критическая секция, иначе «не жив» могло оказаться
+    окном чужого перезапуска."""
     if _pool_h_alive():
         if _POOL_H_RUNNING_MODE is None or \
                 _POOL_H_RUNNING_MODE == _pool_h_desired_mode():
@@ -7560,7 +7771,13 @@ def _launch_pool_h_chrome():
     """Запуск Chrome пула H в нужном режиме: headless=new (штатно),
     hidden (headed со скрытым окном — запас против антибот-детекта) или
     headed (rescue: пользователь решает капчу). Пониженный приоритет,
-    Memory Saver, свой порт/профиль."""
+    Memory Saver, свой порт/профиль. Всегда под _pool_h_lifecycle
+    (реентерабелен: из _raw_call/rescue — без повторного ожидания)."""
+    with _pool_h_lifecycle():
+        _launch_pool_h_chrome_locked()
+
+
+def _launch_pool_h_chrome_locked():
     global _POOL_H_PROC, _POOL_H_RUNNING_MODE
     exe = _resolve_executable()
     if not exe:
@@ -7817,9 +8034,10 @@ def rescue_pool_h(duration_min: float = POOL_H_RESCUE_MIN) -> bool:
     logger.warning(f"[BrowserActions] Rescue пула H на {int(duration_min)} мин — "
                    "перезапуск в видимом режиме")
     try:
-        # Убить и поднять — одним захватом лока пула: ленивый старт соседа
-        # не вклинится между ними со своим (headless) Chrome
-        with _RAW_LOCKS[_POOL_H]:
+        # Убить и поднять — одним захватом лока жизненного цикла: ленивый
+        # старт соседа (потока или другого процесса бота) не вклинится между
+        # ними со своим (headless) Chrome
+        with _pool_h_lifecycle():
             _teardown_pool_h(grace_sec=3.0)
             _launch_pool_h_chrome()
         return True
