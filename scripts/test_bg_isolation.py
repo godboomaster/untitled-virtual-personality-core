@@ -104,7 +104,9 @@ def main():
               and len([c for c in FakeOk.instances if c.channel == "main"]) == 1
               and not [c for c in FakeOk.instances if c.channel == "burst"])
 
-        # Не-main канал: без burst и без lock_timeout (фон может ждать)
+        # Фоновый канал: без burst; lock_timeout — короткий бюджет очереди
+        # сайта (min(timeout вызывающего, BG_QUEUE_WAIT_SEC)): занятость =
+        # переход к следующему провайдеру, а не бессрочное ожидание
         wl.WebChatLLM = FakeChat
         r3 = rt.ModelRouter()
         r3.webchat_sites = ["deepseek"]
@@ -113,9 +115,9 @@ def main():
                                0.7, 100, 0.9, 10.0, sites=["deepseek"],
                                channel="side")
         sides = [c for c in FakeChat.instances if c.channel == "side"]
-        check("канал side: без burst, lock_timeout=None",
+        check("канал side: без burst, lock_timeout = короткий бюджет очереди",
               ans3 == "ответ из side" and len(sides) == 1
-              and sides[0].lock_timeouts == [None]
+              and sides[0].lock_timeouts == [min(10.0, wl.BG_QUEUE_WAIT_SEC)]
               and not [c for c in FakeChat.instances if c.channel == "burst"])
 
         # Burst тоже молчит → None (цепочка идёт дальше)

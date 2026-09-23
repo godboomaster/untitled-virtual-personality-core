@@ -198,11 +198,13 @@ WEB SEARCH RESULTS:
 {web_context}
 
 SOURCE PRIORITY:
-1. If the answer is in memory (LTM facts) or uploaded files — use those, ignore the web search.
-2. If memory and files do not contain the answer — use the web search data.
-3. Do not mention internet sources if the answer came from memory/files.
-4. If you use web search data — answer in the user's language, cite sources when appropriate.
-5. If the question concerns personal feelings, use data from self memory.
+1. If the question is about you yourself — what you did, how you are, your day, your feelings, \
+your plans — answer ONLY from your own life: current state, personal memory, the conversation. \
+Ignore the web search entirely.
+2. If the answer is in memory (LTM facts) or uploaded files — use those, ignore the web search.
+3. If memory and files do not contain the answer — use the web search data.
+4. Do not mention internet sources if the answer came from memory/files.
+5. If you use web search data — answer in the user's language, cite sources when appropriate.
 """
 
         # Добавляем идентификацию специального пользователя

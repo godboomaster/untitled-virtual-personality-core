@@ -164,7 +164,18 @@ def set_webchat(sites) -> dict:
     from app.api.runtime import registry
     for bot in registry._bots.values():
         bot.router.webchat_sites = list(norm)
-        bot.router._webchats = {}  # экземпляры пересоздадутся на следующем вызове
+        # Экземпляры пересоздадутся на следующем вызове; reset_webchats, а не
+        # `_webchats = {}`: выбывшие инстансы закрывают свои вкладки (идущий
+        # вызов — по его завершении), иначе те жили в пуле до конца процесса
+        bot.router.reset_webchats()
+        # Отдельный роутер LTM (LTM_MODEL_PROVIDER) — те же сайты и сброс,
+        # иначе фон памяти продолжал бы ходить в выключенный веб-чат
+        ltm_router = getattr(getattr(getattr(bot, "memory", None), "ltm", None),
+                             "llm_router", None)
+        if ltm_router is not None and ltm_router is not bot.router \
+                and hasattr(ltm_router, "reset_webchats"):
+            ltm_router.webchat_sites = list(norm)
+            ltm_router.reset_webchats()
     # Задачи локального движка не могут остаться на выключенном веб-чате —
     # возвращаем их на Ollama (иначе вызовы молча ходили бы в никуда)
     if not norm:

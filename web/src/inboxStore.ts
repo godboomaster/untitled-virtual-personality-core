@@ -21,6 +21,11 @@ let unread: Record<string, number> = {}; // persona id → сколько неп
 let generating: Record<string, boolean> = {}; // persona id → сейчас генерирует ответ
 let lastTs: Record<string, number> = {}; // persona id → ts последнего сообщения в чате
 let controlMode: Record<string, boolean> = {}; // persona id → режим управления (computer control)
+// persona id → last_ts СЕРВЕРА как есть (без локальных touchActivity): метка
+// последнего сообщения STM, тот же float, что timestamp реплики в истории.
+// lastTs выше для сортировки смешивает её с часами браузера — сравнивать
+// со временем истории можно только эту
+let serverLastTs: Record<string, number> = {};
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 
@@ -33,7 +38,7 @@ export function useInbox() {
       listeners.delete(force);
     };
   }, []);
-  return { messages, unread, generating, lastTs, controlMode };
+  return { messages, unread, generating, lastTs, serverLastTs, controlMode };
 }
 
 /** Обновить флаг режима управления (из ответа /api/chat или поллинга inbox):
@@ -59,6 +64,42 @@ export function setGenerating(persona: string, value: boolean) {
   emit();
 }
 
+/** Текущий серверный last_ts персоны (для замыканий, где значение из
+ * рендера уже устарело) */
+export function getServerLastTs(persona: string): number {
+  return serverLastTs[persona] ?? 0;
+}
+
+/* Быстрый опрос: пока в открытом чате персона генерирует ответ, её inbox
+   опрашивается каждые FAST_POLL_MS, а не раз в 15 с — поздний ответ
+   (сервер дописал STM после перезагрузки страницы) появляется за секунды.
+   Ускоряется только одна персона (открытого чата), остальные — обычный тик. */
+const FAST_POLL_MS = 3000;
+let fastPersona: string | null = null;
+let fastTimer: ReturnType<typeof setInterval> | null = null;
+// Опрос одной персоны — выставляет живой поллер (useInboxPolling), пока он поднят
+let pollOne: ((id: string) => void) | null = null;
+
+function armFastPoll() {
+  if (fastTimer) clearInterval(fastTimer);
+  fastTimer = null;
+  const id = fastPersona;
+  if (!id || !pollOne) return;
+  fastTimer = setInterval(() => pollOne?.(id), FAST_POLL_MS);
+}
+
+/** Включить/выключить быстрый опрос персоны (null — выключить) */
+export function setFastPoll(persona: string | null) {
+  if (fastPersona === persona) return;
+  fastPersona = persona;
+  armFastPoll();
+}
+
+/** Опросить inbox персоны вне расписания (возврат фокуса, конец/обрыв стрима) */
+export function pollInboxNow(persona: string) {
+  pollOne?.(persona);
+}
+
 /** Отметить персону прочитанной (её чат сейчас открыт) */
 export function markRead(persona: string) {
   if (!unread[persona]) return;
@@ -82,46 +123,60 @@ export function useInboxPolling(apiOnline: boolean, personas: Persona[]) {
   useEffect(() => {
     if (!apiOnline || !ids) return;
     let stop = false;
-    const poll = () => {
+    const pollId = (id: string) => {
       // focused — heartbeat активности вкладки: гейт фоновой работы бота.
       // Только для персоны ОТКРЫТОГО чата: поллер опрашивает всех, и общий
       // флаг отмечал бы присутствие сразу у всех персон (см. presence.ts)
       const focusedId = tabActive() ? getFocusedPersona() : null;
-      ids.split(',').forEach((id) => {
-        api
-          .getInbox(id, id === focusedId)
-          .then((r) => {
-            if (stop) return;
-            // Флаг «печатает» с бэкенда (генерация переживает перезагрузку страницы)
-            const gen = r.generating === true;
-            if ((generating[id] ?? false) !== gen) {
-              generating = { ...generating, [id]: gen };
-              emit();
-            }
-            // Режим управления — гасит дебаунс-паузу отправки в чате
-            if (typeof r.control_mode === 'boolean') setControlMode(id, r.control_mode);
-            // Свежесть переписки с бэкенда (сортировка списка персон)
-            if (r.last_ts) touchActivity(id, r.last_ts);
-            if (r.messages.length === 0) return;
-            const items: InboxItem[] = r.messages.map((m, i) => ({ id: Date.now() + i, text: m.text, ts: m.ts }));
-            messages = { ...messages, [id]: [...(messages[id] ?? []), ...items] };
-            unread = { ...unread, [id]: (unread[id] ?? 0) + items.length };
+      api
+        .getInbox(id, id === focusedId)
+        .then((r) => {
+          if (stop) return;
+          // Флаг «печатает» с бэкенда (генерация переживает перезагрузку страницы)
+          const gen = r.generating === true;
+          if ((generating[id] ?? false) !== gen) {
+            generating = { ...generating, [id]: gen };
             emit();
-            // Уведомление о фоновых сообщениях (системное + звук), когда вкладка
-            // не в фокусе; одно на персону за тик — по последнему тексту, чтобы
-            // не проигрывать звук подряд на каждое сообщение пачки
-            const personaName = personas.find((p) => p.id === id)?.name ?? id;
-            const last = items[items.length - 1];
-            notifyBotMessage(id, personaName, last.text, last.ts);
-          })
-          .catch(() => {});
-      });
+          }
+          // Режим управления — гасит дебаунс-паузу отправки в чате
+          if (typeof r.control_mode === 'boolean') setControlMode(id, r.control_mode);
+          // Серверная метка последнего сообщения — по ней чат догружает
+          // историю, если STM дописан позже, чем её прочитали (поздний ответ)
+          const srv = typeof r.last_ts === 'number' ? r.last_ts : 0;
+          if ((serverLastTs[id] ?? 0) !== srv) {
+            serverLastTs = { ...serverLastTs, [id]: srv };
+            emit();
+          }
+          // Свежесть переписки с бэкенда (сортировка списка персон)
+          if (r.last_ts) touchActivity(id, r.last_ts);
+          if (r.messages.length === 0) return;
+          const items: InboxItem[] = r.messages.map((m, i) => ({ id: Date.now() + i, text: m.text, ts: m.ts }));
+          messages = { ...messages, [id]: [...(messages[id] ?? []), ...items] };
+          unread = { ...unread, [id]: (unread[id] ?? 0) + items.length };
+          emit();
+          // Уведомление о фоновых сообщениях (системное + звук), когда вкладка
+          // не в фокусе; одно на персону за тик — по последнему тексту, чтобы
+          // не проигрывать звук подряд на каждое сообщение пачки
+          const personaName = personas.find((p) => p.id === id)?.name ?? id;
+          const last = items[items.length - 1];
+          notifyBotMessage(id, personaName, last.text, last.ts);
+        })
+        .catch(() => {});
     };
+    const known = new Set(ids.split(','));
+    const poll = () => known.forEach(pollId);
+    // Внеплановый/быстрый опрос — только известных поллеру персон
+    pollOne = (id) => {
+      if (known.has(id)) pollId(id);
+    };
+    armFastPoll();
     poll();
     const timer = setInterval(poll, 15000);
     return () => {
       stop = true;
       clearInterval(timer);
+      pollOne = null;
+      armFastPoll(); // pollOne снят — таймер быстрого опроса гасится
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiOnline, ids]);

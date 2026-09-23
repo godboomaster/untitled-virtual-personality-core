@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, useMockData } from '../i18n';
 import type { ChatMessage, InventoryItem, LearningSession, LtmFact, Reminder, TodoItem } from '../mockData';
-import { api, streamChat } from '../api';
+import { api, streamChat, StreamInterruptedError } from '../api';
 import type { ApiHistoryMessage, InitiativeData } from '../api';
 import { useApiOnline, useApiPersonaLlm, useApiProviders } from '../apiData';
-import { markRead, pruneInbox, setControlMode, setGenerating, touchActivity, useInbox } from '../inboxStore';
+import {
+  getServerLastTs, markRead, pollInboxNow, pruneInbox, setControlMode, setFastPoll, setGenerating, touchActivity, useInbox,
+} from '../inboxStore';
 import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
 import { consumeChatPersonaRequest, useChatPersonaRequest } from '../chatNavStore';
@@ -20,6 +22,18 @@ import { usePersonaSkin } from '../skins/skinStore';
 import { usePersonaOverlay } from '../skins/overlayStore';
 import { buildChatPayload } from '../skins/payloads';
 import { useShellTheme } from '../skins/shellTheme';
+
+// Допуск сравнения серверных меток: last_ts и timestamp реплики STM — один и
+// тот же float (memory.add_message), но после рестарта буфер читается из БД
+const TS_EPS = 0.001;
+// Сколько после НАШЕГО завершённого стрима рост серверного last_ts считается
+// «своим» (реплики уже в локальной ленте): поллер может показать его и через
+// тик после конца стрима
+const ABSORB_MS = 30000;
+// Самая свежая серверная метка в истории STM (локальные пузыри сюда не идут:
+// их ts — часы браузера, с серверными не сравнимы)
+const newestTs = (list: ChatMessage[] | undefined) =>
+  (list ?? []).reduce((mx, m) => Math.max(mx, m.ts ?? 0), 0);
 
 export default function Chat() {
   const { lang, t } = useI18n();
@@ -151,31 +165,55 @@ export default function Chat() {
     ts: m.timestamp ?? undefined,
   });
 
+  // Догрузка поздних ответов по серверному last_ts (см. checkFreshness ниже).
+  // absorbed — last_ts, отнесённые к нашему завершённому обмену (ответ уже в
+  // локальной ленте; перечитка заменила бы пузыри STM-копиями — мерцание)
+  const absorbed = useRef<Record<string, number>>({});
+  const absorbUntil = useRef<Record<string, number>>({});
+  // last_ts, под который историю уже перечитывали: если STM его так и не
+  // содержит (реплику удалили в досье, очистка), повторно не дёргаем
+  const reloadedFor = useRef<Record<string, number>>({});
+  // Оборванный стрим: id его пузырей и серверная метка на момент отправки —
+  // пузыри снимаются, когда ответ появится в перечитанной истории
+  const recovering = useRef<Record<string, { ids: number[]; since: number }>>({});
+
+  // Стрим обрывался, а ответ сервер дописал в STM — пузыри с пометкой
+  // обрыва больше не нужны (в истории есть реплика бота свежее отправки)
+  const dropRecovered = (id: string, msgs: ApiHistoryMessage[]) => {
+    const rec = recovering.current[id];
+    if (!rec || !msgs.some((m) => m.role !== 'user' && (m.timestamp ?? 0) > rec.since + TS_EPS)) return;
+    delete recovering.current[id];
+    const drop = new Set(rec.ids);
+    setSentByPersona((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((m) => !drop.has(m.id)) }));
+  };
+
   // Перечитать историю после правок STM в досье (удаление реплик).
   // STM — источник правды. dropLocal (явные правки в досье) — сбросить и
   // локальные копии сессии; иначе (фоновая догенерация) локальные оставляем:
   // их дубли с STM отсекаются при сборке ленты (по тексту+ts), а ещё не
   // попавшие в STM остаются видимыми — лента не моргает и не ждёт
   // перерисовки всей истории. Из inbox-стора вычищаем то, что попало в STM.
-  const reloadHistory = (id: string, dropLocal = false) => {
+  // Промис — удалась ли перечитка (checkFreshness снимает гард при сбое)
+  const reloadHistory = (id: string, dropLocal = false): Promise<boolean> =>
     api
       .getHistory(id)
       .then((msgs) => {
         setHistoryByPersona((prev) => ({ ...prev, [id]: msgs.map(toChatMessage) }));
         pruneInbox(id, new Set(msgs.map((m) => m.content)));
+        dropRecovered(id, msgs);
         if (dropLocal) {
           setSentByPersona((prev) => ({
             ...prev,
             [id]: (prev[id] ?? []).filter((m) => m.image || (m.images && m.images.length > 0)),
           }));
         }
+        return true;
       })
-      .catch(() => {});
-  };
+      .catch(() => false);
 
   // Фоновые сообщения (напоминания, инициативы) прилетают в глобальный
   // inbox-стор (поллер в App); здесь только гасим непрочитанные открытой персоны
-  const { messages: inboxMessages, unread, generating, lastTs } = useInbox();
+  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs } = useInbox();
   useEffect(() => {
     markRead(persona.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -194,6 +232,8 @@ export default function Chat() {
   const waiting = waitingByPersona[persona.id] === true;
   const streamMsgId = streamMsgIdByPersona[persona.id] ?? null;
   const typing = waiting || remoteGenerating;
+  // Локальный стрим этой персоны ещё идёт — догрузку истории откладываем
+  const inFlight = waiting || streamMsgId != null;
 
   // Живое «печатает»: если ответ дольше ~5с, статус прерывается на «онлайн»
   // и возвращается — как у собеседника, который остановился и продолжил.
@@ -247,12 +287,95 @@ export default function Chat() {
     if (was && !remoteGenerating) {
       if (localExchange.current[persona.id]) {
         localExchange.current[persona.id] = false;
+      } else if (Date.now() < (absorbUntil.current[persona.id] ?? 0)) {
+        // Только что завершился наш обмен, а поллер (внеплановый опрос в
+        // конце стрима) успел ещё раз увидеть generating=true — ответ уже в
+        // ленте, перечитка дала бы мерцание
       } else {
         reloadHistory(persona.id);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remoteGenerating, persona.id]);
+
+  // ── Догрузка поздних ответов по серверному last_ts ──
+  // Сервер штампует last_ts каждой репликой STM (и user, и assistant) тем же
+  // float, что timestamp реплики в /api/chat/history. История читается раз на
+  // персону за сессию — если ответ лёг в STM ПОСЛЕ её чтения (перезагрузка
+  // страницы посреди генерации), флаг generating мог и не поймать это.
+  // Правило: last_ts открытой персоны новее самой свежей реплики истории
+  // (и не «наш» — см. absorbed) → перечитываем историю. Флага generating
+  // для этого не нужно. Refs (absorbed/absorbUntil/reloadedFor) — выше,
+  // у reloadHistory.
+
+  // Окно «своего» обмена: рост last_ts в течение ABSORB_MS после нашего
+  // стрима — наши же реплики. По всем персонам (пользователь мог уйти в
+  // другой чат, пока тикал поллер); эффект объявлен ДО проверки свежести —
+  // в одном коммите отрабатывает первым
+  useEffect(() => {
+    const now = Date.now();
+    for (const [id, until] of Object.entries(absorbUntil.current)) {
+      if (now >= until) {
+        delete absorbUntil.current[id];
+        continue;
+      }
+      absorbed.current[id] = Math.max(absorbed.current[id] ?? 0, serverLastTs[id] ?? 0);
+    }
+  }, [serverLastTs]);
+
+  const checkFreshness = (id: string) => {
+    if (!apiOnline) return;
+    const hist = historyByPersona[id];
+    if (!hist) return; // первичная загрузка ещё не пришла — она и так свежая
+    if (waitingByPersona[id] === true || (streamMsgIdByPersona[id] ?? null) != null) return;
+    const srv = serverLastTs[id] ?? 0;
+    const known = Math.max(newestTs(hist), absorbed.current[id] ?? 0);
+    if (srv <= known + TS_EPS) return;
+    if (reloadedFor.current[id] === srv) return; // уже перечитывали под эту метку
+    reloadedFor.current[id] = srv;
+    reloadHistory(id).then((ok) => {
+      // Сеть моргнула — метку не «сжигаем»: следующая сверка (тик поллера,
+      // возврат во вкладку) повторит перечитку
+      if (!ok && reloadedFor.current[id] === srv) delete reloadedFor.current[id];
+    });
+  };
+  const srvTs = serverLastTs[persona.id] ?? 0;
+  const histForPersona = historyByPersona[persona.id];
+  useEffect(() => {
+    checkFreshness(persona.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiOnline, persona.id, srvTs, histForPersona, inFlight]);
+
+  // Возврат во вкладку: таймеры фоновой вкладки браузер душит, last_ts мог
+  // устареть — опрашиваем inbox открытой персоны сразу (эффект выше сверит
+  // метку) и сверяемся с тем, что уже известно
+  const checkFreshnessRef = useRef(checkFreshness);
+  useEffect(() => {
+    checkFreshnessRef.current = checkFreshness;
+  });
+  useEffect(() => {
+    if (!apiOnline) return;
+    const id = persona.id;
+    const onBack = () => {
+      if (document.visibilityState !== 'visible') return;
+      pollInboxNow(id);
+      checkFreshnessRef.current(id);
+    };
+    window.addEventListener('focus', onBack);
+    document.addEventListener('visibilitychange', onBack);
+    return () => {
+      window.removeEventListener('focus', onBack);
+      document.removeEventListener('visibilitychange', onBack);
+    };
+  }, [apiOnline, persona.id]);
+
+  // Сервер генерирует ответ открытой персоны, а локального стрима нет
+  // (перезагрузка страницы, обрыв) — inbox этой персоны опрашивается раз в 3 с,
+  // чтобы поздний ответ появился за секунды, а не через 15-секундный тик
+  useEffect(() => {
+    setFastPoll(remoteGenerating && !inFlight ? persona.id : null);
+  }, [remoteGenerating, inFlight, persona.id]);
+  useEffect(() => () => setFastPoll(null), []);
 
   // Список персон по свежести переписки: последняя активная — наверху
   // (персоны без метки свежести остаются в исходном порядке — сортировка
@@ -271,6 +394,7 @@ export default function Chat() {
         setHistoryByPersona((prev) => ({ ...prev, [id]: msgs.map(toChatMessage) }));
         // Инициатива/напоминание пишется и в STM, и в inbox — вычищаем дубли из стора
         pruneInbox(id, new Set(msgs.map((m) => m.content)));
+        dropRecovered(id, msgs);
       })
       .catch(() => {});
     return () => {
@@ -570,6 +694,12 @@ export default function Chat() {
   const startGeneration = (pid: string, personaName: string, text: string,
                            replyContext?: string, image?: string | null) => {
     localExchange.current[pid] = true; // своя генерация — перечитку истории пропустим
+    // Новый обмен закрывает окно поглощения прошлого: его метки теперь
+    // прикрывает «in flight», а после конца стрима окно откроется заново
+    delete absorbUntil.current[pid];
+    // Серверная метка до отправки: реплика бота новее неё — ответ на это сообщение
+    const sentSince = Math.max(newestTs(historyByPersona[pid]), getServerLastTs(pid));
+    let interrupted = false;
     setUserMsgsStatus(pid, ['queued'], 'sent'); // ушло на бэкенд
     setWaitingByPersona((prev) => ({ ...prev, [pid]: true }));
     // Пузырь ответа растёт по мере стриминга; бэкенд шлёт порции уже
@@ -615,6 +745,14 @@ export default function Chat() {
       },
     )
       .then((res) => {
+        // Обмен целиком у нас: рост last_ts от этих реплик — «свой», историю
+        // под него не перечитываем (иначе пузыри заменятся STM-копиями).
+        // Реплики уже в STM (сервер пишет их до отправки токенов) — опрашиваем
+        // inbox сразу, чтобы метка попала в окно поглощения
+        delete recovering.current[pid];
+        absorbed.current[pid] = Math.max(absorbed.current[pid] ?? 0, getServerLastTs(pid));
+        absorbUntil.current[pid] = Date.now() + ABSORB_MS;
+        pollInboxNow(pid);
         upsertBot(bubbleIds[0], res.reply);
         // Ответ пришёл — нашу серию реплик бот «прочитал»
         setUserMsgsStatus(pid, ['queued', 'sent'], 'read');
@@ -639,11 +777,34 @@ export default function Chat() {
         // Ответ догенерировался, а вкладка уже не в фокусе — уведомляем (как в мессенджерах)
         notifyBotMessage(pid, personaName, res.reply);
       })
-      .catch((e) => upsertBot(bubbleIds[0], `⚠ ${e instanceof Error ? e.message : String(e)}`))
+      .catch((e) => {
+        if (e instanceof StreamInterruptedError) {
+          // Обрыв стрима — не ошибка генерации: сервер, скорее всего, допишет
+          // ответ в STM. Обмен больше не «свой» (edge generating true→false
+          // должен перечитать историю), пузыри помечены к замене — их
+          // снимет reloadHistory, как только ответ появится в истории.
+          // Перечитку запускают last_ts/generating (эффекты выше), как
+          // только снимется «in flight» в finally
+          interrupted = true;
+          localExchange.current[pid] = false;
+          recovering.current[pid] = { ids: [...bubbleIds], since: sentSince };
+          upsertBot(bubbleIds[bubbleIds.length - 1],
+            `${bubbleTexts[bubbleTexts.length - 1]}${bubbleTexts[bubbleTexts.length - 1] ? '\n\n' : ''}⚠ ${t('chat.streamInterrupted')}`);
+          return;
+        }
+        // Настоящая ошибка сервера (event.error, HTTP-статус) — текст оставляем
+        upsertBot(bubbleIds[0], `⚠ ${e instanceof Error ? e.message : String(e)}`);
+      })
       .finally(() => {
         setWaitingByPersona((prev) => ({ ...prev, [pid]: false }));
         setStreamMsgIdByPersona((prev) => ({ ...prev, [pid]: null }));
-        setGenerating(pid, false); // «печатает» гасим сразу, не дожидаясь поллера
+        if (interrupted) {
+          // Флаг «печатает» не гасим вслепую: генерация на сервере, возможно,
+          // ещё идёт — берём свежие generating/last_ts с бэкенда сразу
+          pollInboxNow(pid);
+        } else {
+          setGenerating(pid, false); // «печатает» гасим сразу, не дожидаясь поллера
+        }
         setStmEpoch((e) => e + 1);
       });
   };

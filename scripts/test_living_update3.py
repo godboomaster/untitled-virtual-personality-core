@@ -57,6 +57,14 @@ def main():
         persona_data={"features": {"proactive": {"enabled": True}}},
     )
     p = pm.ProactiveMessaging.__new__(pm.ProactiveMessaging)  # без __init__
+    # context нужен гейту присутствия веб-вкладки (web_presence по ключу
+    # персона+чат) — первая проверка _should_send_initiative
+    p.context = "living_update3_test"
+    # Метки инициатив/ignore streak читаются под RLock (задача №9 аудита)
+    import threading as _threading
+    p._lock = _threading.RLock()
+    p._ignore_streak = {}
+    p._primitive = False  # уровень интеллекта (§3.2): обычная персона
     p.persona = persona
     p.config = PC(enabled=True, initiative_hours=("09:00", "22:00"))
 

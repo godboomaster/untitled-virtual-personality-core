@@ -46,6 +46,11 @@ _NIGHT_WINDOW_SECONDS = 2 * 3600
 _PRESENCE_THROTTLE = 30.0   # note_presence обрабатывается не чаще раза в 30 с на чат
 # Кулдауны погодных алертов (от последнего отправленного алерта этого типа)
 _WEATHER_COOLDOWN = {"rain": 6 * 3600, "storm": 6 * 3600, "temp": 12 * 3600}
+# Сообщение ритма отложено: идёт ход пользователя (app/core/turn_gate.py).
+# Цикл не ждёт — повтор на следующем тике (_retry_deferred)
+_DEFERRED = "deferred"
+# Отложенное погодное предупреждение живёт не дольше этого (прогноз устаревает)
+_WEATHER_DEFER_TTL = 3600
 
 
 def _strip_markdown(text: str) -> str:
@@ -185,7 +190,7 @@ class RhythmManager:
     def __init__(self, context: str, config,
                  router=None, persona=None, memory=None,
                  activity_tracker=None, sender=None, muted_check=None,
-                 dossier=None):
+                 dossier=None, turn_gate=None):
         self.context = context
         self.config = config if isinstance(config, RhythmConfig) else RhythmConfig.from_dict(config)
         self._router = router
@@ -195,6 +200,9 @@ class RhythmManager:
         self._sender = sender
         self._muted_check = muted_check
         self._dossier = dossier  # ChatDossier — отметки событий (config.dossier)
+        # Гейт хода пользователя (общий с BotInstance): сообщение ритма не
+        # пишется в STM и не уходит посреди идущего хода — см. _send
+        self._turn_gate = turn_gate
 
         self._base_dir = Path(f"data/{context}")
         self._base_dir.mkdir(parents=True, exist_ok=True)
@@ -206,6 +214,12 @@ class RhythmManager:
         self._aio_loop: Optional[asyncio.AbstractEventLoop] = None
         self._presence_ts: Dict[str, float] = {}   # chat_id → последнее появление (in-memory)
         self._busy: set = set()                    # (chat_id, kind) — защита от дублей
+        # Отложенные из-за хода пользователя (см. _send → _DEFERRED):
+        # утро — chat_id → last_seen триггера (presence повторно не сработает:
+        # пауза «нового дня» уже обнулена); погода — (chat_id, kind) →
+        # (text, lang, ts). Ночь не копим: _check_night сам повторит тиком
+        self._deferred_morning: Dict[str, float] = {}
+        self._deferred_weather: Dict[tuple, tuple] = {}
         self._next_weather_ts = 0.0
 
         # {"chats": {chat_id: {morning_date, night_key}},
@@ -436,7 +450,21 @@ class RhythmManager:
     def _muted(self) -> bool:
         return bool(self._muted_check and self._muted_check())
 
-    async def _send(self, chat_id: str, text: str, kind: str, lang: str = "Russian") -> bool:
+    def _turn_busy(self, chat_id: str) -> bool:
+        return self._turn_gate is not None and self._turn_gate.busy(str(chat_id))
+
+    async def _send(self, chat_id: str, text: str, kind: str, lang: str = "Russian"):
+        """True — доставлено; False — сбой; _DEFERRED — идёт ход пользователя.
+
+        Утро срабатывает ровно при появлении пользователя (поллинг inbox,
+        сообщение в TG), ночь — только при его активности: коллизия с живым
+        обменом почти гарантирована. Раньше сообщение уходило и писалось в
+        STM без проверок — посреди хода, между репликой и ответом. Теперь
+        запись в STM — атомарно с проверкой «хода нет» под локом гейта; ход
+        идёт — сообщение откладывается (текст от диалога не зависит: реплика
+        его не отменяет, оно встанет после ответа) без ожидания в цикле, чтобы
+        не держать остальные чаты. Доставка — после записи; не доставлено —
+        запись откатывается по идентичности."""
         if self._sender is None:
             return False
         topic_id = None
@@ -445,24 +473,38 @@ class RhythmManager:
                 topic_id = self._tracker.get_topic(str(chat_id))
             except Exception:
                 pass
+        gate = self._turn_gate
+        entry = None
+        if gate is not None:
+            res = await asyncio.to_thread(gate.commit_message, self._memory, chat_id, text)
+            if res.status == "busy":
+                logger.info(f"[Rhythm] {kind} → chat {chat_id}: идёт ход пользователя — "
+                            "отложено до следующего тика")
+                return _DEFERRED
+            entry = res.entry
         try:
             ok = await self._sender.send_message(chat_id, text, topic_id=topic_id)
         except Exception as e:
             logger.error(f"[Rhythm] Ошибка отправки в {chat_id}: {e}")
+            ok = False
+        if not ok:
+            # Пользователь сообщения не увидел — в истории его быть не должно
+            if entry is not None:
+                await asyncio.to_thread(gate.rollback_message, self._memory, chat_id, entry)
             return False
-        if ok:
-            logger.info(f"[Rhythm] {kind} → chat {chat_id}: {text[:60]}")
-            # Логируем в STM — картина в буфере и в чате одна (как reminders)
-            if self._memory is not None:
-                try:
-                    await asyncio.to_thread(
-                        self._memory.add_message, "assistant", text,
-                        user_id=chat_id, chat_id=chat_id,
-                    )
-                except Exception as e:
-                    logger.warning(f"[Rhythm] Не удалось записать в STM: {e}")
-            self._note_dossier(chat_id, kind, lang)
-        return bool(ok)
+        logger.info(f"[Rhythm] {kind} → chat {chat_id}: {text[:60]}")
+        # Логируем в STM — картина в буфере и в чате одна (как reminders).
+        # С гейтом запись уже сделана выше, до доставки (атомарно с проверкой)
+        if gate is None and self._memory is not None:
+            try:
+                await asyncio.to_thread(
+                    self._memory.add_message, "assistant", text,
+                    user_id=chat_id, chat_id=chat_id,
+                )
+            except Exception as e:
+                logger.warning(f"[Rhythm] Не удалось записать в STM: {e}")
+        self._note_dossier(chat_id, kind, lang)
+        return True
 
     def _note_dossier(self, chat_id: str, kind: str, lang: str):
         """Отметить событие ритма в досье чата — персона видит его в контексте
@@ -500,6 +542,11 @@ class RhythmManager:
                 # Замороженная персона молчит, приветствие сгорает (как напоминания)
                 self._mark(chat_id, morning_date=now.date().isoformat())
                 return
+            if self._turn_busy(chat_id):
+                # Ход пользователя (в TG утро запускает само его сообщение) —
+                # не генерируем впустую, повтор тиком после ответа
+                self._deferred_morning[str(chat_id)] = last_seen
+                return
             lang = self._lang(chat_id)
             text = None
             try:
@@ -508,8 +555,11 @@ class RhythmManager:
             except Exception as e:
                 logger.warning(f"[Rhythm] LLM генерация утра не удалась: {e}")
             text = text or _FALLBACK[("morning", lang)]
-            if await self._send(chat_id, text, "morning", lang):
+            res = await self._send(chat_id, text, "morning", lang)
+            if res is True:
                 self._mark(chat_id, morning_date=now.date().isoformat())
+            elif res == _DEFERRED:
+                self._deferred_morning[str(chat_id)] = last_seen
         finally:
             self._busy.discard(key)
 
@@ -524,6 +574,8 @@ class RhythmManager:
             if self._muted():
                 self._mark(chat_id, night_key=self._night_key(now, self.config.sleep.bedtime_hour))
                 return
+            if self._turn_busy(chat_id):
+                return  # идёт ход — _check_night повторит следующим тиком
             lang = self._lang(chat_id)
             text = None
             try:
@@ -532,7 +584,9 @@ class RhythmManager:
             except Exception as e:
                 logger.warning(f"[Rhythm] LLM генерация ночи не удалась: {e}")
             text = text or _FALLBACK[("night", lang)]
-            if await self._send(chat_id, text, "night", lang):
+            # _DEFERRED (ход начался за время генерации) — не отмечаем:
+            # _check_night повторит следующим тиком в своём окне
+            if await self._send(chat_id, text, "night", lang) is True:
                 self._mark(chat_id, night_key=self._night_key(now, self.config.sleep.bedtime_hour))
         finally:
             self._busy.discard(key)
@@ -561,6 +615,26 @@ class RhythmManager:
             seen = self._last_seen(chat_id)
             if self._should_morning_greet(self._chat_state(chat_id), now, seen):
                 self._schedule(self._do_morning(chat_id, now, seen))
+
+    async def _retry_deferred(self, now: datetime):
+        """Повтор сообщений, отложенных из-за хода пользователя: утро — через
+        обычный _do_morning (его гейты перепроверят окно/дату/«уже было»),
+        погода — готовым текстом, пока не устарела. Чат всё ещё занят —
+        ждёт следующего тика."""
+        for chat_id, seen in list(self._deferred_morning.items()):
+            if self._turn_busy(chat_id):
+                continue
+            self._deferred_morning.pop(chat_id, None)
+            self._schedule(self._do_morning(chat_id, now, seen))
+        for (chat_id, kind), (text, lang, ts) in list(self._deferred_weather.items()):
+            if time.time() - ts > _WEATHER_DEFER_TTL:
+                self._deferred_weather.pop((chat_id, kind), None)
+                continue
+            if self._turn_busy(chat_id) or self._muted():
+                continue
+            res = await self._send(chat_id, text, kind, lang)
+            if res != _DEFERRED:
+                self._deferred_weather.pop((chat_id, kind), None)
 
     def _check_night(self, now: datetime):
         if not (self.config.enabled and self.config.sleep.enabled):
@@ -601,8 +675,12 @@ class RhythmManager:
             except Exception as e:
                 logger.warning(f"[Rhythm] LLM генерация погоды ({kind}) не удалась: {e}")
             text = text or _FALLBACK[(kind, lang)]
-            if await self._send(chat_id, text, kind, lang):
+            res = await self._send(chat_id, text, kind, lang)
+            if res is True:
                 any_sent = True
+            elif res == _DEFERRED:
+                # Чат занят ходом — предупреждение дошлём тиком после ответа
+                self._deferred_weather[(str(chat_id), kind)] = (text, lang, time.time())
         # Отмечаем только реальную отправку: сбой сети → повтор через интервал
         if any_sent:
             self._mark_weather(kind)
@@ -621,6 +699,7 @@ class RhythmManager:
                 now = timeutil.now()
                 if woke:
                     self._on_wake(now, drift / 60.0)
+                await self._retry_deferred(now)
                 self._check_night(now)
                 if (self.config.enabled and self.config.weather.enabled
                         and time.time() >= self._next_weather_ts):

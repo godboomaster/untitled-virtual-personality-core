@@ -268,9 +268,13 @@ def main():
     print("\n── 4. Сбой пайплайна process_message ──")
     bot_src = Path("app/bot_instance.py").read_text(encoding="utf-8")
     tree = ast.parse(bot_src)
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "process_message")
-    naked = [t for t in ast.walk(fn)
+    # process_message — тонкая обёртка (лог START/END), сам пайплайн — в
+    # _process_message_impl: проверяем обе
+    fns = [n for n in ast.walk(tree)
+           if isinstance(n, ast.FunctionDef)
+           and n.name in ("process_message", "_process_message_impl")]
+    check("пайплайн process_message найден", len(fns) == 2)
+    naked = [t for fn in fns for t in ast.walk(fn)
              if isinstance(t, ast.Try) and t.finalbody and not t.handlers]
     check("у пайплайна нет try/finally без except", not naked)
 

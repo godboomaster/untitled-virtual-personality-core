@@ -547,8 +547,11 @@ def create_handlers(bot: BotInstance) -> dict:
 
     # ── слэш-команды как второй способ записи (ответ через LLM в образе персоны) ──
 
-    async def _run_command(update: Update, kind: str, usage: str, manager_attr: str):
-        """Общий каркас: проверяет менеджера, парсит аргументы, вызывает _dispatch_command, отвечает."""
+    async def _run_command(update: Update, kind: str, usage: str, manager_attr: str,
+                           context: ContextTypes.DEFAULT_TYPE = None):
+        """Общий каркас: проверяет менеджера, парсит аргументы, вызывает _dispatch_command, отвечает.
+        context нужен досылке split-частей (_send_split_parts) — раньше он сюда
+        не передавался, и имя context падало NameError после ответа на команду."""
         if not getattr(bot, manager_attr):
             await update.message.reply_text("Эта функция не активна для данной персоны.")
             return
@@ -562,6 +565,12 @@ def create_handlers(bot: BotInstance) -> dict:
         if not args:
             await update.message.reply_text(usage)
             return
+        # Команда — тоже ход пользователя, до конца доставки ответа
+        async with bot.user_turn_async(chat_id):
+            await _run_command_in_turn(update, context, kind, chat_id, user_id,
+                                       user_name, args)
+
+    async def _run_command_in_turn(update, context, kind, chat_id, user_id, user_name, args):
         try:
             response = await asyncio.to_thread(
                 bot._dispatch_command, kind, args, chat_id, user_id, user_name
@@ -582,19 +591,19 @@ def create_handlers(bot: BotInstance) -> dict:
 
     async def remind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _run_command(update, "remind",
-                           "Использование: /remind <что напомнить> [через N ...]", "reminder_manager")
+                           "Использование: /remind <что напомнить> [через N ...]", "reminder_manager", context)
 
     async def add_todo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _run_command(update, "todo",
-                           "Использование: /add_todo <задача>", "todo_manager")
+                           "Использование: /add_todo <задача>", "todo_manager", context)
 
     async def add_inventory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _run_command(update, "inventory",
-                           "Использование: /add_inventory <название предмета>[: описание]", "inventory_manager")
+                           "Использование: /add_inventory <название предмета>[: описание]", "inventory_manager", context)
 
     async def learn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _run_command(update, "learn",
-                           "Использование: /learn <тема>", "learning_manager")
+                           "Использование: /learn <тема>", "learning_manager", context)
 
     # Per-chat блокировки: сообщения ОДНОГО чата обрабатываются последовательно,
     # но разные чаты и slash-команды — параллельно (приложение запущено с
@@ -667,7 +676,12 @@ def create_handlers(bot: BotInstance) -> dict:
 
         # Дальше — конвейер ответа. Сериализуем по чату: slash-команды и другие
         # чаты не ждут LLM, но два сообщения одного чата не перехлёстываются.
-        async with _chat_lock(chat_id):
+        # Ход пользователя (app/core/turn_gate.py) открыт с получения
+        # сообщения — до модерации, ожидания лока чата и генерации — и до
+        # конца доставки (части split с паузами, скриншоты, списки): фоновая
+        # инициатива/напоминание не встают ни перед репликой, ни между
+        # частями ответа; process_message в потоке подхватывает этот ход
+        async with bot.user_turn_async(chat_id), _chat_lock(chat_id):
             # Pre-check (rate limit, moderation, punish) — в потоке, т.к. модерация делает синхронный HTTP-запрос
             if await _gate_update(bot, update.message, user_id, is_private, text):
                 return
@@ -746,69 +760,76 @@ def create_handlers(bot: BotInstance) -> dict:
         user = update.effective_user
         user_id = str(user.id)
         chat_id = str(update.effective_chat.id)
-        is_private = update.effective_chat.type == "private"
-        # Тот же гейт, что и у текстовых сообщений: blocked_users/allowlist ЛС/
-        # rate_limit/moderation раньше не проверялись для файлов — подпись
-        # (caption) вместо текста, содержимое файла в проверку не идёт
-        if await _gate_update(bot, update.message, user_id, is_private, caption):
-            return
-
-        document = update.message.document
-        # Telegram не гарантирует имя файла у документа
-        filename = document.file_name or f"document_{document.file_unique_id}"
-
-        caption_clean = bot.strip_trigger(caption)
-
-        if document.file_size and document.file_size > bot.max_file_size:
-            await update.message.reply_text(f"Файл слишком большой (макс. {bot.max_file_size // 1024 // 1024} МБ)")
-            return
-
-        logger.info(f"[{persona_name}] Файл от {user_id}: {filename}")
-
-        # Та же per-chat сериализация, что и для текстовых сообщений
-        async with _chat_lock(chat_id):
-            file = await context.bot.get_file(document.file_id)
-            file_bytes = await file.download_as_bytearray()
-
-            await update.message.reply_text("Читаю файл...")
-
-            # markitdown и ChromaDB+эмбеддинги — тяжёлые синхронные вызовы, в поток
-            from app.core.file_reader import extract_text
-            text = await asyncio.to_thread(extract_text, bytes(file_bytes), filename)
-
-            if text.startswith(("Ошибка", "Формат", "Не удалось", "Библиотека")):
-                await update.message.reply_text(text)
+        # Ход пользователя (app/core/turn_gate.py) — с ПОЛУЧЕНИЯ сообщения:
+        # скачивание и распознавание (vision/файл — десятки секунд) раньше шли
+        # до хода, и инициатива успевала встать перед репликой и потом
+        # засчитаться ответом на неё. Активность — тоже при получении (как у
+        # текста), ход держится до конца доставки ответа.
+        bot.on_user_message(chat_id)
+        async with bot.user_turn_async(chat_id):
+            is_private = update.effective_chat.type == "private"
+            # Тот же гейт, что и у текстовых сообщений: blocked_users/allowlist ЛС/
+            # rate_limit/moderation раньше не проверялись для файлов — подпись
+            # (caption) вместо текста, содержимое файла в проверку не идёт
+            if await _gate_update(bot, update.message, user_id, is_private, caption):
                 return
 
-            await asyncio.to_thread(bot.file_db.add_file, user_id, filename, text)
+            document = update.message.document
+            # Telegram не гарантирует имя файла у документа
+            filename = document.file_name or f"document_{document.file_unique_id}"
 
-            loaded_files = await asyncio.to_thread(bot.file_db.get_loaded_files, user_id)
-            files_note = f"Files loaded: {len(loaded_files)}/{bot.file_db.max_docs}"
-            message_with_file = f"The user sent a file '{filename}'. {files_note}:\n\n{text}"
-            if caption_clean:
-                message_with_file = f"{caption_clean}\n\n{message_with_file}"
+            caption_clean = bot.strip_trigger(caption)
 
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            if document.file_size and document.file_size > bot.max_file_size:
+                await update.message.reply_text(f"Файл слишком большой (макс. {bot.max_file_size // 1024 // 1024} МБ)")
+                return
 
-            try:
-                user_tag = get_user_tag(user_id)
-                response = await asyncio.to_thread(
-                    bot.process_message, message_with_file,
-                    user_id=user_id, chat_id=chat_id,
-                    user_name=user_tag,
-                    # Подтверждение pending-действия (computer_control) должно
-                    # смотреть только на то, что пользователь реально написал в
-                    # подписи, а не на извлечённый из файла текст — иначе «да»
-                    # где-то в содержимом документа подтверждало бы клик/shell
-                    raw_user_text=caption_clean,
-                )
-                logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на файл получен ({len(response)} символов)")
-                photos = bot.pop_pending_photos(chat_id)
-                await _reply_with_photos(update.message, response, photos)
-                await _send_split_parts(bot, update, context, chat_id)
-            except Exception as e:
-                logger.error(f"[{persona_name}] Ошибка файла: {e}", exc_info=True)
-                await update.message.reply_text("Произошла ошибка при обработке файла.")
+            logger.info(f"[{persona_name}] Файл от {user_id}: {filename}")
+
+            # Та же per-chat сериализация, что и для текстовых сообщений
+            async with _chat_lock(chat_id):
+                file = await context.bot.get_file(document.file_id)
+                file_bytes = await file.download_as_bytearray()
+
+                await update.message.reply_text("Читаю файл...")
+
+                # markitdown и ChromaDB+эмбеддинги — тяжёлые синхронные вызовы, в поток
+                from app.core.file_reader import extract_text
+                text = await asyncio.to_thread(extract_text, bytes(file_bytes), filename)
+
+                if text.startswith(("Ошибка", "Формат", "Не удалось", "Библиотека")):
+                    await update.message.reply_text(text)
+                    return
+
+                await asyncio.to_thread(bot.file_db.add_file, user_id, filename, text)
+
+                loaded_files = await asyncio.to_thread(bot.file_db.get_loaded_files, user_id)
+                files_note = f"Files loaded: {len(loaded_files)}/{bot.file_db.max_docs}"
+                message_with_file = f"The user sent a file '{filename}'. {files_note}:\n\n{text}"
+                if caption_clean:
+                    message_with_file = f"{caption_clean}\n\n{message_with_file}"
+
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+                try:
+                    user_tag = get_user_tag(user_id)
+                    response = await asyncio.to_thread(
+                        bot.process_message, message_with_file,
+                        user_id=user_id, chat_id=chat_id,
+                        user_name=user_tag,
+                        # Подтверждение pending-действия (computer_control) должно
+                        # смотреть только на то, что пользователь реально написал в
+                        # подписи, а не на извлечённый из файла текст — иначе «да»
+                        # где-то в содержимом документа подтверждало бы клик/shell
+                        raw_user_text=caption_clean,
+                    )
+                    logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на файл получен ({len(response)} символов)")
+                    photos = bot.pop_pending_photos(chat_id)
+                    await _reply_with_photos(update.message, response, photos)
+                    await _send_split_parts(bot, update, context, chat_id)
+                except Exception as e:
+                    logger.error(f"[{persona_name}] Ошибка файла: {e}", exc_info=True)
+                    await update.message.reply_text("Произошла ошибка при обработке файла.")
 
     async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """OCR/описание изображения через локальную vision-модель (gemma в Ollama)."""
@@ -827,61 +848,68 @@ def create_handlers(bot: BotInstance) -> dict:
         user = update.effective_user
         user_id = str(user.id)
         chat_id = str(update.effective_chat.id)
-        is_private = update.effective_chat.type == "private"
-        # Тот же гейт, что и у текстовых сообщений/документов — до скачивания
-        # и OCR, чтобы заблокированный/лимитированный не тратил ресурсы бота
-        if await _gate_update(bot, update.message, user_id, is_private, caption):
-            return
-
-        photo = update.message.photo[-1]  # самый большой из предложенных размеров
-        file = await context.bot.get_file(photo.file_id)
-        image_bytes = bytes(await file.download_as_bytearray())
-
-        caption_clean = bot.strip_trigger(caption)
-
-        await update.message.reply_text("Смотрю на изображение...")
-
-        # Та же per-chat сериализация, что и для текстовых сообщений
-        async with _chat_lock(chat_id):
-            # Каскад: vision-провайдер основного роутера → локальная gemma
-            ocr_text = await asyncio.to_thread(bot.describe_image, image_bytes, caption_clean)
-            if not ocr_text:
-                if not bot._local_router or not bot._local_router.is_available():
-                    await update.message.reply_text(
-                        "Сейчас не могу обработать изображение — ни одна vision-модель недоступна."
-                    )
-                    return
-                ocr_text = await asyncio.to_thread(bot._local_router.ocr_image, image_bytes, caption_clean)
-            if not ocr_text:
-                await update.message.reply_text("Не удалось прочитать изображение.")
+        # Ход пользователя (app/core/turn_gate.py) — с ПОЛУЧЕНИЯ сообщения:
+        # скачивание и распознавание (vision/файл — десятки секунд) раньше шли
+        # до хода, и инициатива успевала встать перед репликой и потом
+        # засчитаться ответом на неё. Активность — тоже при получении (как у
+        # текста), ход держится до конца доставки ответа.
+        bot.on_user_message(chat_id)
+        async with bot.user_turn_async(chat_id):
+            is_private = update.effective_chat.type == "private"
+            # Тот же гейт, что и у текстовых сообщений/документов — до скачивания
+            # и OCR, чтобы заблокированный/лимитированный не тратил ресурсы бота
+            if await _gate_update(bot, update.message, user_id, is_private, caption):
                 return
 
-            message_with_image = (
-                "The user sent an image. Its contents according to the "
-                f"vision model:\n{ocr_text}"
-            )
-            if caption_clean:
-                message_with_image = f"{caption_clean}\n\n{message_with_image}"
+            photo = update.message.photo[-1]  # самый большой из предложенных размеров
+            file = await context.bot.get_file(photo.file_id)
+            image_bytes = bytes(await file.download_as_bytearray())
 
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            caption_clean = bot.strip_trigger(caption)
 
-            try:
-                user_tag = get_user_tag(user_id)
-                response = await asyncio.to_thread(
-                    bot.process_message, message_with_image,
-                    user_id=user_id, chat_id=chat_id,
-                    user_name=user_tag,
-                    # См. handle_document: подтверждение pending-действия — только
-                    # по подписи, OCR-текст изображения в неё не подмешивается
-                    raw_user_text=caption_clean,
+            await update.message.reply_text("Смотрю на изображение...")
+
+            # Та же per-chat сериализация, что и для текстовых сообщений
+            async with _chat_lock(chat_id):
+                # Каскад: vision-провайдер основного роутера → локальная gemma
+                ocr_text = await asyncio.to_thread(bot.describe_image, image_bytes, caption_clean)
+                if not ocr_text:
+                    if not bot._local_router or not bot._local_router.is_available():
+                        await update.message.reply_text(
+                            "Сейчас не могу обработать изображение — ни одна vision-модель недоступна."
+                        )
+                        return
+                    ocr_text = await asyncio.to_thread(bot._local_router.ocr_image, image_bytes, caption_clean)
+                if not ocr_text:
+                    await update.message.reply_text("Не удалось прочитать изображение.")
+                    return
+
+                message_with_image = (
+                    "The user sent an image. Its contents according to the "
+                    f"vision model:\n{ocr_text}"
                 )
-                logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на изображение получен ({len(response)} символов)")
-                photos = bot.pop_pending_photos(chat_id)
-                await _reply_with_photos(update.message, response, photos)
-                await _send_split_parts(bot, update, context, chat_id)
-            except Exception as e:
-                logger.error(f"[{persona_name}] Ошибка обработки изображения: {e}", exc_info=True)
-                await update.message.reply_text("Произошла ошибка при обработке изображения.")
+                if caption_clean:
+                    message_with_image = f"{caption_clean}\n\n{message_with_image}"
+
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+                try:
+                    user_tag = get_user_tag(user_id)
+                    response = await asyncio.to_thread(
+                        bot.process_message, message_with_image,
+                        user_id=user_id, chat_id=chat_id,
+                        user_name=user_tag,
+                        # См. handle_document: подтверждение pending-действия — только
+                        # по подписи, OCR-текст изображения в неё не подмешивается
+                        raw_user_text=caption_clean,
+                    )
+                    logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на изображение получен ({len(response)} символов)")
+                    photos = bot.pop_pending_photos(chat_id)
+                    await _reply_with_photos(update.message, response, photos)
+                    await _send_split_parts(bot, update, context, chat_id)
+                except Exception as e:
+                    logger.error(f"[{persona_name}] Ошибка обработки изображения: {e}", exc_info=True)
+                    await update.message.reply_text("Произошла ошибка при обработке изображения.")
 
     async def reset_diary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.self_memory:

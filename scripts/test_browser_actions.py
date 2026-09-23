@@ -820,6 +820,28 @@ def main():
         check("снапшот (node): шаблоны с M синтаксически валидны",
               _bad_tpl == [])
 
+    # Признак перекрытия cov (кейс 22.09, dodo: каталог под попапом при
+    # непойманном бэкдропе) — одно определение vpcCov в обоих шаблонах,
+    # эмиссия из vpcInfo/info, парсер отдаёт bool с дефолтом «не перекрыт»
+    _cov_defs = [_re.search(r"function vpcCov\(e\)\{.*?return 0;\}", _t)
+                 for _t in (_snap_tpl, _goal_tpl)]
+    check("cov: vpcCov определён в обоих шаблонах и копии идентичны",
+          all(_cov_defs)
+          and _cov_defs[0].group(0) == _cov_defs[1].group(0)
+          and _snap_tpl.count("function vpcCov(") == 1
+          and _goal_tpl.count("function vpcCov(") == 1)
+    check("cov: поле эмитится из vpcInfo общего и info целевого снапшота",
+          "cov:vpcCov(e)" in _snap_tpl and "cov:vpcCov(e)" in _goal_tpl
+          and "if(tp&&tp!==e&&!e.contains(tp)&&!tp.contains(e))cov=1;}" in _goal_tpl)
+    _cov_items = [{"idx": 7, "tag": "a", "text": "Под попапом", "w": 100,
+                   "h": 20, "vp": 1, "cov": 1},
+                  {"idx": 8, "tag": "label", "text": "Пункт попапа", "w": 100,
+                   "h": 20, "vp": 1, "md": 1}]
+    _, _cov_parsed = ba._parse_snapshot(json.dumps(
+        {"url": "https://x.ru/", "items": _cov_items}))
+    check("cov: парсер — bool, без ключа считается не перекрытым",
+          [it.get("cov") for it in _cov_parsed] == [True, False])
+
     print("\n── 14. Стем слова — одно определение на проект ──")
 
     check("стем: целевой снапшот подключает общий _VPC_NORM_JS",
@@ -1269,6 +1291,87 @@ def main():
     check("поколения: id вкладок общие на все поколения (не переиспользуются)",
           wkg2._next_tab_id > _tid_fresh
           and "self._next_tab_id = 1  # общий на все поколения" in SRC)
+
+    # ── 17. Кейс 22.09: «антибот-проверку выполнить не удалось (JS во
+    #       вкладке упал)» на каждой странице deepseek без всякой капчи.
+    #       Корень: селектор iframe[src*=challenges.cloudflare] невалиден
+    #       (точка в незакавыченном значении атрибута) — querySelectorAll
+    #       кидал SyntaxError, детект антибота не работал нигде: в strict-
+    #       режиме шум в логе и «карантин не трогаю», в best-effort
+    #       (computer_control) — молчаливое «чисто». Плюс сама ошибка
+    #       прятала причину: голое «JS во вкладке упал» без текста ──
+    import re as _re
+    _css_ident = _re.compile(r"^-?[A-Za-z_][\w-]*$")
+    _attr_sel = _re.compile(r"\[([\w-]+)(?:[*^$~|]?=)([^\]]+)\]")
+
+    def _bad_attr_values(js):
+        bad = []
+        for m in _attr_sel.finditer(js):
+            v = m.group(2).strip()
+            if v[:1] in "\"'" or _css_ident.match(v):
+                continue
+            bad.append(m.group(0))
+        return bad
+
+    check("антибот: регресс-детектор ловит незакавыченную точку в селекторе",
+          _bad_attr_values("iframe[src*=challenges.cloudflare]")
+          == ["[src*=challenges.cloudflare]"]
+          and _bad_attr_values("iframe[src*=\"challenges.cloudflare\"]"
+                               "[class*=CheckboxCaptcha]") == [])
+    for _jsname in ("_ANTIBOT_JS", "_CHALLENGE_BOX_JS"):
+        check(f"антибот: {_jsname} — все значения атрибутов в селекторах "
+              "валидны (точка только в кавычках)",
+              _bad_attr_values(getattr(ba, _jsname)) == []
+              and 'challenges.cloudflare' in getattr(ba, _jsname))
+
+    _raw_saved17 = dict(ba._RAW_TABS)
+    _orig_call17 = ba._raw_tab_call
+    try:
+        ba._RAW_TABS[171717] = {"targetId": "T17", "sessionId": "S17",
+                                "pool": "h"}
+        _calls17 = []
+
+        def _boom17(tid, method, params=None, timeout=None):
+            _calls17.append(method)
+            return {"result": {"type": "undefined"},
+                    "exceptionDetails": {
+                        "text": "Uncaught", "exception": {
+                            "description": "SyntaxError: Failed to execute "
+                            "'querySelectorAll' on 'Document': "
+                            "'iframe[src*=challenges.cloudflare]' is not a "
+                            "valid selector.\n    at <anonymous>:1:10"}}}
+        ba._raw_tab_call = _boom17
+        try:
+            ba._raw_eval(171717, "1+1")
+            _msg17 = ""
+        except ba.BrowserUnavailable as e:
+            _msg17 = str(e)
+        check("raw_eval: текст исключения страницы попадает в ошибку "
+              "(первая строка description, без стека)",
+              _msg17.startswith("JS во вкладке упал: SyntaxError")
+              and "not a valid selector" in _msg17
+              and "\n" not in _msg17 and "at <anonymous>" not in _msg17
+              and len(_calls17) == 2)
+        check("raw_eval: вкладка после исключения страницы не выброшена",
+              171717 in ba._RAW_TABS)
+        try:
+            ba.detect_antibot(None, 171717, strict=True)
+            _msg17b = ""
+        except ba.BrowserUnavailable as e:
+            _msg17b = str(e)
+        check("detect_antibot strict: причина сбоя замера видна в сообщении",
+              _msg17b.startswith("антибот-проверка не выполнена: JS во вкладке "
+                                 "упал: SyntaxError")
+              and "not a valid selector" in _msg17b)
+        check("cdp_exception_text: без description берётся text протокола, "
+              "пустые details не роняют",
+              ba._cdp_exception_text({"text": "Uncaught"}) == "Uncaught"
+              and ba._cdp_exception_text({}) == "без текста"
+              and ba._cdp_exception_text(None) == "без текста")
+    finally:
+        ba._raw_tab_call = _orig_call17
+        ba._RAW_TABS.clear()
+        ba._RAW_TABS.update(_raw_saved17)
 
     shutil.rmtree(tmp, ignore_errors=True)
     print(f"\nИтог: {ok} проверок")

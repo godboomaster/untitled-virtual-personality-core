@@ -204,7 +204,12 @@ class ChatDossier:
     def __init__(self, context: str = "default", router=None):
         self.context = context
         self._profiles: Dict[str, ChatProfile] = {}
-        self._lock = threading.RLock()  # analyze_chat идёт из рабочих потоков конкурентно
+        # Лок данных досье: держится только на чтение/запись _profiles и
+        # кэшей, НИКОГДА поверх вызова LLM (см. analyze_chat)
+        self._lock = threading.RLock()
+        # Чаты, по которым анализ уже идёт (под self._lock): второй анализ
+        # того же чата во время первого — пропуск, а не параллельная гонка
+        self._analyzing: set = set()
         self._file = Path(f"data/{context}/chat_dossier.json")
         self._file.parent.mkdir(parents=True, exist_ok=True)
         self._router = router  # основной роутер бота (побочные — fallback минус primary)
@@ -236,6 +241,112 @@ class ChatDossier:
             return self._local_router.get_response(messages, task="dossier", **kw)
         return None
 
+    # Ключ водяного знака экстракции в экспорте профиля (export_profile).
+    # С подчёркиванием — не поле ChatProfile: _profile_from_dict его
+    # пропускает, файл досье его не хранит.
+    _WATERMARK_KEY = "_facts_watermark"
+
+    @staticmethod
+    def _profile_to_dict(profile: ChatProfile) -> dict:
+        """Сериализация одного профиля — формат файла chat_dossier.json.
+        Списки копируются: результат можно отдавать наружу из-под лока, не
+        разделяя изменяемые объекты с живым профилем."""
+        return {
+            "chat_id": profile.chat_id,
+            "interests": [i.to_dict() for i in profile.interests],
+            "topics": [t.to_dict() for t in profile.topics],
+            "facts_shared": list(profile.facts_shared),
+            "personality_notes": list(profile.personality_notes),
+            "user_facts": {
+                uid: {
+                    "user_id": uf.user_id,
+                    "facts": list(uf.facts),
+                    "last_updated": uf.last_updated,
+                }
+                for uid, uf in profile.user_facts.items()
+            },
+            "events": list(profile.events),
+            "last_updated": profile.last_updated,
+            "message_count": profile.message_count,
+        }
+
+    @staticmethod
+    def _profile_from_dict(data: dict, chat_id: str = "") -> ChatProfile:
+        """Десериализация одного профиля (формат _profile_to_dict, плюс
+        старый: интересы/темы строками). Вход не мутирует; неизвестные ключи
+        (служебные ключи экспорта, поля будущих версий) пропускает — иначе
+        ChatProfile(**...) падал на них и профиль терялся целиком. Бросает
+        исключение на битых данных — вызывающий решает, что с ним делать."""
+        def _items(raw) -> List[AttributedItem]:
+            out = []
+            for item in raw or []:
+                if isinstance(item, dict):
+                    out.append(AttributedItem.from_dict(item))
+                elif isinstance(item, str):
+                    out.append(AttributedItem.from_legacy(item))
+            return out
+
+        user_facts = {}
+        for uid, uf_data in (data.get("user_facts") or {}).items():
+            user_facts[uid] = UserFacts(
+                user_id=uf_data.get("user_id", uid),
+                facts=list(uf_data.get("facts", [])),
+                last_updated=uf_data.get("last_updated", 0.0),
+            )
+        plain = {k: data[k] for k in ("facts_shared", "personality_notes",
+                                      "events", "last_updated", "message_count")
+                 if k in data}
+        for k in ("facts_shared", "personality_notes", "events"):
+            if k in plain:
+                plain[k] = list(plain[k])
+        return ChatProfile(
+            chat_id=data.get("chat_id") or chat_id,
+            interests=_items(data.get("interests")),
+            topics=_items(data.get("topics")),
+            user_facts=user_facts,
+            **plain,
+        )
+
+    def export_profile(self, chat_id: str) -> Optional[dict]:
+        """Снимок профиля чата для бэкапа (корзина /api/chat/clear,
+        app/api/memory_wipe): формат файла досье + водяной знак экстракции
+        фактов под _WATERMARK_KEY. None — профиля нет.
+
+        Знак в бэкапе — нижняя граница для import_profile; сам по себе он
+        повторную экстракцию не предотвращает: restore STM (server.py, через
+        memory.add_message) пишет сообщения с НОВЫМИ метками time.time(),
+        они новее любого знака из бэкапа. Поэтому import_profile ставит знак
+        не ниже момента восстановления (см. там). _facts_seen в бэкап не
+        берём: множество кортежей не JSON, а знак его заменяет."""
+        with self._lock:
+            profile = self._profiles.get(chat_id)
+            if profile is None:
+                return None
+            data = self._profile_to_dict(profile)
+            wm = self._facts_watermark.get(chat_id)
+            if wm is not None:
+                data[self._WATERMARK_KEY] = wm
+            return data
+
+    def import_profile(self, chat_id: str, data: dict):
+        """Восстановление профиля из export_profile (или из записи файла
+        досье — фолбэк-бэкап без живого менеджера). Заменяет текущий
+        профиль НОВЫМ объектом: идущий в этот момент analyze_chat увидит
+        подмену в фазе слияния и свой результат отбросит (см. фазу 3).
+
+        Водяной знак — max(знак из бэкапа, сейчас): restore STM в server.py
+        идёт РАНЬШЕ срезов памяти и через memory.add_message, т.е. с новыми
+        метками time.time(). Знак из бэкапа (старше) пропустил бы всю
+        восстановленную переписку в LLM-экстракцию заново, а её факты уже
+        лежат в восстановленном профиле."""
+        profile = self._profile_from_dict(data, chat_id=chat_id)
+        with self._lock:
+            self._profiles[chat_id] = profile
+            wm = data.get(self._WATERMARK_KEY)
+            wm = float(wm) if isinstance(wm, (int, float)) else 0.0
+            self._facts_watermark[chat_id] = max(wm, time.time())
+            self._save()
+
     def _load(self):
         """Загружает досье с диска. Полностью битый файл — warning + .corrupt-
         копия (общий helper), затем пустое досье; один битый ПРОФИЛЬ внутри
@@ -245,39 +356,8 @@ class ChatDossier:
             try:
                 for chat_id, profile_data in data.items():
                     try:
-                        # Десериализуем user_facts
-                        user_facts_raw = profile_data.pop("user_facts", {})
-                        user_facts = {}
-                        for uid, uf_data in user_facts_raw.items():
-                            user_facts[uid] = UserFacts(
-                                user_id=uf_data.get("user_id", uid),
-                                facts=uf_data.get("facts", []),
-                                last_updated=uf_data.get("last_updated", 0.0),
-                            )
-
-                        # Десериализуем interests (новый формат dict или старый формат str)
-                        raw_interests = profile_data.pop("interests", [])
-                        interests = []
-                        for item in raw_interests:
-                            if isinstance(item, dict):
-                                interests.append(AttributedItem.from_dict(item))
-                            elif isinstance(item, str):
-                                interests.append(AttributedItem.from_legacy(item))
-
-                        # Десериализуем topics
-                        raw_topics = profile_data.pop("topics", [])
-                        topics = []
-                        for item in raw_topics:
-                            if isinstance(item, dict):
-                                topics.append(AttributedItem.from_dict(item))
-                            elif isinstance(item, str):
-                                topics.append(AttributedItem.from_legacy(item))
-
-                        profile = ChatProfile(**profile_data)
-                        profile.user_facts = user_facts
-                        profile.interests = interests
-                        profile.topics = topics
-                        self._profiles[chat_id] = profile
+                        self._profiles[chat_id] = self._profile_from_dict(
+                            profile_data, chat_id=chat_id)
                     except Exception as e:
                         # Один битый профиль не должен обнулять досье всех чатов
                         logger.warning(f"[Dossier] Пропущен битый профиль чата {chat_id}: {e}")
@@ -292,25 +372,7 @@ class ChatDossier:
             try:
                 data = {}
                 for chat_id, profile in list(self._profiles.items()):
-                    # Сериализуем user_facts
-                    user_facts_data = {}
-                    for uid, uf in profile.user_facts.items():
-                        user_facts_data[uid] = {
-                            "user_id": uf.user_id,
-                            "facts": uf.facts,
-                            "last_updated": uf.last_updated,
-                        }
-                    data[chat_id] = {
-                        "chat_id": profile.chat_id,
-                        "interests": [i.to_dict() for i in profile.interests],
-                        "topics": [t.to_dict() for t in profile.topics],
-                        "facts_shared": profile.facts_shared,
-                        "personality_notes": profile.personality_notes,
-                        "user_facts": user_facts_data,
-                        "events": profile.events,
-                        "last_updated": profile.last_updated,
-                        "message_count": profile.message_count,
-                    }
+                    data[chat_id] = self._profile_to_dict(profile)
                 atomic_write_json(self._file, data)
             except Exception as e:
                 logger.warning(f"[Dossier] Не удалось сохранить: {e}")
@@ -335,73 +397,132 @@ class ChatDossier:
     _ANALYZE_COOLDOWN = 300  # минимум 5 минут между анализами одного чата
 
     def analyze_chat(self, chat_id: str, messages: List[dict]):
-        """Потокобезопасная обёртка — вызывается из рабочих потоков конкурентно."""
+        """Потокобезопасная обёртка — вызывается из рабочих потоков конкурентно.
+
+        Раньше весь анализ шёл под self._lock, включая LLM-вызовы side-цепочки
+        (через веб-чат — минуты в общей очереди фоновых вызовов). Лок один на
+        персону, и на всё это время вставали ответ пользователю
+        (get_profile_snapshot при сборке контекста) и RhythmManager._note_dossier
+        → record_event — корутина общего фонового loop, т.е. ритм, напоминания
+        и инициативы ВСЕХ персон процесса. Теперь под локом только снимок входа
+        и слияние результата (см. _analyze_chat_impl), LLM — без лока.
+
+        Раз лок больше не сериализует анализы, два анализа одного чата
+        сериализует флаг _analyzing: второй дублировал бы LLM-вызовы и сливал
+        бы те же интересы/факты поверх первого. Второй — пропуск, не ожидание:
+        его сообщения — те же последние N из STM, первый их уже разбирает."""
         with self._lock:
+            if chat_id in self._analyzing:
+                logger.info(f"[Dossier] Анализ чата {chat_id} уже идёт — пропуск")
+                return
+            self._analyzing.add(chat_id)
+        try:
             self._analyze_chat_impl(chat_id, messages)
+        finally:
+            with self._lock:
+                self._analyzing.discard(chat_id)
 
     def _analyze_chat_impl(self, chat_id: str, messages: List[dict]):
         """
         Анализирует сообщения чата через LLM и обновляет профиль.
         Вызывается периодически или при накоплении N сообщений.
+
+        Три фазы: (1) под локом — троттлинг, профиль, разбор сообщений и
+        дедуп-кэши; (2) без лока — LLM-вызовы, только над локальными данными;
+        (3) под локом — слияние результата в АКТУАЛЬНЫЙ профиль. Слияние идёт
+        в живой объект, а не записью снимка «до»: за минуты LLM в тот же
+        профиль могли дописать record_event/record_fact/add_personality_note —
+        снимок их бы затёр.
         """
         if not messages:
             return
 
-        # Throttle: не анализируем чаще раза в 5 минут
-        _existing = self._profiles.get(chat_id)
-        if _existing and (time.time() - _existing.last_updated) < self._ANALYZE_COOLDOWN:
-            return
+        # ── Фаза 1: снимок входа (под локом) ──
+        with self._lock:
+            # Throttle: не анализируем чаще раза в 5 минут
+            _existing = self._profiles.get(chat_id)
+            if _existing and (time.time() - _existing.last_updated) < self._ANALYZE_COOLDOWN:
+                return
 
-        profile = self._profiles.get(chat_id)
-        if not profile:
-            profile = ChatProfile(chat_id=chat_id)
-            self._profiles[chat_id] = profile
+            profile = self._profiles.get(chat_id)
+            if not profile:
+                profile = ChatProfile(chat_id=chat_id)
+                self._profiles[chat_id] = profile
 
-        # Группируем сообщения по user_id чтобы знать кто что написал
-        # { user_id -> [content, ...] }
-        # Водяной знак экстракции фактов: старше него — не трогаем
-        watermark = self._facts_watermark.get(chat_id, self._started_at)
-        by_user: Dict[str, List[str]] = {}
-        new_facts: Dict[str, List[str]] = {}  # новые сообщения для пакетной экстракции
-        for msg in messages:
-            if msg.get("role") == "user":
+            # Группируем сообщения по user_id чтобы знать кто что написал
+            # { user_id -> [content, ...] }
+            # Водяной знак экстракции фактов: старше него — не трогаем
+            watermark = self._facts_watermark.get(chat_id, self._started_at)
+            by_user: Dict[str, List[str]] = {}
+            new_facts: Dict[str, List[str]] = {}  # новые сообщения для пакетной экстракции
+            for msg in messages:
+                if msg.get("role") == "user":
 
-                content = msg.get("content", "")
-                sender_id = (
-                    msg.get("sender_id") or
-                    msg.get("user_id") or
-                    msg.get("from_id") or
-                    msg.get("user_name") or
-                    "unknown"
-                )
-                sender_id = str(sender_id).strip() if sender_id else "unknown"
-                if len(content) > 10:
-                    by_user.setdefault(sender_id, []).append(content[:500])
-                msg_ts = float(msg.get("timestamp") or 0)
-                if (msg_ts > watermark and len(content) >= 15
-                        and not content.startswith("/")):
-                    # Дедуп: одно и то же сообщение не уходит в экстракцию дважды
-                    seen = self._facts_seen.setdefault(chat_id, set())
-                    marker = (sender_id, content[:200])
-                    if marker not in seen:
-                        seen.add(marker)
-                        if len(seen) > 500:
-                            self._facts_seen[chat_id] = set(list(seen)[-250:])
-                        new_facts.setdefault(sender_id, []).append(content)
-        self._facts_watermark[chat_id] = time.time()
+                    content = msg.get("content", "")
+                    sender_id = (
+                        msg.get("sender_id") or
+                        msg.get("user_id") or
+                        msg.get("from_id") or
+                        msg.get("user_name") or
+                        "unknown"
+                    )
+                    sender_id = str(sender_id).strip() if sender_id else "unknown"
+                    if len(content) > 10:
+                        by_user.setdefault(sender_id, []).append(content[:500])
+                    msg_ts = float(msg.get("timestamp") or 0)
+                    if (msg_ts > watermark and len(content) >= 15
+                            and not content.startswith("/")):
+                        # Дедуп: одно и то же сообщение не уходит в экстракцию дважды
+                        seen = self._facts_seen.setdefault(chat_id, set())
+                        marker = (sender_id, content[:200])
+                        if marker not in seen:
+                            seen.add(marker)
+                            if len(seen) > 500:
+                                self._facts_seen[chat_id] = set(list(seen)[-250:])
+                            new_facts.setdefault(sender_id, []).append(content)
+            self._facts_watermark[chat_id] = time.time()
+            user_msg_count = len([m for m in messages if m.get("role") == "user"])
+
+        # ── Фаза 2: LLM (БЕЗ лока) ──
         # Пакетная экстракция фактов: ОДИН вызов на все новые сообщения
         # отправителя за цикл (раньше — вызов на каждое сообщение)
+        extracted: Dict[str, List[str]] = {}
         for sender_id, contents in new_facts.items():
-            self._extract_user_facts(chat_id, sender_id, contents)
+            facts = self._extract_user_facts(chat_id, sender_id, contents)
+            if facts:
+                extracted[sender_id] = facts
+        # Анализируем каждого пользователя отдельно (интересы/топики с его user_id)
+        analyses: Dict[str, Optional[dict]] = {
+            sender_id: self._analyze_with_llm(user_messages)
+            for sender_id, user_messages in by_user.items()
+        }
 
-        if not by_user:
-            return
+        # ── Фаза 3: слияние в актуальный профиль (под локом) ──
+        with self._lock:
+            # Профиль за время LLM вытерли (memory_wipe: pop из _profiles) или
+            # заменили другим объектом (restore / вытирание + новый
+            # record_event) — результат относится к досье, которого больше
+            # нет. Искать/создавать профиль заново по chat_id (как делал
+            # прежний _extract_user_facts) — воскрешать вытертые данные или
+            # подмешивать их в новое досье; сверка по идентичности объекта из
+            # фазы 1 — это и есть «поколение» досье чата.
+            if self._profiles.get(chat_id) is not profile:
+                logger.info(f"[Dossier] Досье чата {chat_id} очищено во время "
+                            f"анализа — результат отброшен")
+                return
 
-        # Анализируем каждого пользователя отдельно и добавляем интересы/топики с его user_id
-        any_llm_success = False
-        for sender_id, user_messages in by_user.items():
-            llm_analysis = self._analyze_with_llm(user_messages)
-            if llm_analysis:
+            for sender_id, facts in extracted.items():
+                self._merge_user_facts(profile, sender_id, facts)
+
+            if not by_user:
+                if extracted:
+                    self._save()
+                return
+
+            any_llm_success = False
+            for sender_id, llm_analysis in analyses.items():
+                if not llm_analysis:
+                    continue
                 any_llm_success = True
                 existing_interests = {i.value for i in profile.interests}
                 for interest in llm_analysis.get("interests", []):
@@ -449,31 +570,49 @@ class ChatDossier:
 
                 # personal_facts идут в user_facts[sender_id], а НЕ в facts_shared
                 personal_facts = llm_analysis.get("personal_facts", []) or llm_analysis.get("facts_to_remember", [])
-                if personal_facts:
-                    if sender_id not in profile.user_facts:
-                        profile.user_facts[sender_id] = UserFacts(user_id=sender_id)
-                    uf = profile.user_facts[sender_id]
-                    for fact in personal_facts:
-                        fact = fact.strip()
-                        if not fact or len(fact) < 3 or len(fact) > 150:
-                            continue
-                        fact_lower = fact.lower()
-                        if self._JUNK_RE.search(fact_lower):
-                            continue
-                        if not any(fact_lower == f.lower() for f in uf.facts):
-                            uf.facts.append(fact)
-                    uf.facts = uf.facts[-20:]
-                    uf.last_updated = time.time()
+                good = []
+                for fact in personal_facts:
+                    fact = fact.strip()
+                    if not fact or len(fact) < 3 or len(fact) > 150:
+                        continue
+                    if self._JUNK_RE.search(fact.lower()):
+                        continue
+                    good.append(fact)
+                self._merge_user_facts(profile, sender_id, good)
 
-        if not any_llm_success:
-            # Fallback: старый метод подсчета слов (без атрибуции)
-            self._analyze_with_words(chat_id, messages, profile)
+            if not any_llm_success:
+                # Fallback: старый метод подсчета слов (без атрибуции)
+                self._analyze_with_words(chat_id, messages, profile)
 
-        profile.message_count += len([m for m in messages if m.get("role") == "user"])
-        profile.last_updated = time.time()
+            # Инкремент, а не присваивание — счётчик мог измениться за время LLM
+            profile.message_count += user_msg_count
+            profile.last_updated = time.time()
 
-        self._save()
-        logger.info(f"[Dossier] Профиль {chat_id} обновлен: интересы={profile.interests[:5]}")
+            self._save()
+            logger.info(f"[Dossier] Профиль {chat_id} обновлен: интересы={profile.interests[:5]}")
+
+    @staticmethod
+    def _merge_user_facts(profile: ChatProfile, user_id: str, facts: List[str]):
+        """Сливает уже отфильтрованные факты в user_facts[user_id] профиля
+        (вызывать под self._lock). Дубли сверяются с АКТУАЛЬНЫМ списком на
+        момент слияния, а не на момент старта анализа."""
+        if not facts:
+            return
+        uf = profile.user_facts.get(user_id)
+        if uf is None:
+            uf = profile.user_facts[user_id] = UserFacts(user_id=user_id)
+        known = {f.lower() for f in uf.facts}
+        added = False
+        for fact in facts:
+            if fact.lower() in known:
+                continue
+            uf.facts.append(fact)
+            known.add(fact.lower())
+            added = True
+        if added:
+            # Ограничиваем до 20 фактов на пользователя
+            uf.facts = uf.facts[-20:]
+            uf.last_updated = time.time()
 
     def _analyze_with_llm(self, user_messages: List[str]) -> Optional[dict]:
         """Анализирует сообщения через LLM (fallback-цепочка без основного)."""
@@ -572,8 +711,9 @@ class ChatDossier:
 
         Под локом: без него чтение profile.interests могло пересечься с
         _analyze_chat_impl, мутирующим тот же список из фонового потока
-        (analyze_chat держит self._lock на всё время анализа) — "dictionary/
-        list changed size during iteration" при сборке системного промпта."""
+        (фаза слияния — под self._lock; LLM-вызовы анализа лок не держат,
+        так что ожидание здесь короткое) — "dictionary/list changed size
+        during iteration" при сборке системного промпта."""
         with self._lock:
             profile = self._profiles.get(chat_id)
             if not profile or not profile.interests:
@@ -632,14 +772,18 @@ class ChatDossier:
                 return True
         return False
 
-    def _extract_user_facts(self, chat_id: str, user_id: str, contents: List[str]):
+    def _extract_user_facts(self, chat_id: str, user_id: str, contents: List[str]) -> List[str]:
         """Извлекает факты о пользователе ПАКЕТОМ: один LLM-вызов на все
-        новые сообщения цикла анализа (раньше — вызов на каждое сообщение)."""
+        новые сообщения цикла анализа (раньше — вызов на каждое сообщение).
+
+        Только LLM и разбор ответа — состояние досье НЕ трогает и лок не
+        берёт (идёт в фазе 2 analyze_chat, без лока); возвращает
+        отфильтрованные факты, в профиль их сливает _merge_user_facts."""
         if self._router is None and (not self._local_router
                                      or not self._local_router.is_available()):
-            return
+            return []
         if not contents:
-            return
+            return []
 
         block = "\n".join(f"Message: {c[:500]}" for c in contents[-10:])
         prompt = (
@@ -661,19 +805,9 @@ class ChatDossier:
             )
 
             if not response or response.strip().upper() == "NONE":
-                return
+                return []
 
-            profile = self._profiles.get(chat_id)
-            if not profile:
-                profile = ChatProfile(chat_id=chat_id)
-                self._profiles[chat_id] = profile
-
-            # Получаем или создаем UserFacts для этого пользователя
-            if user_id not in profile.user_facts:
-                profile.user_facts[user_id] = UserFacts(user_id=user_id)
-
-            user_facts = profile.user_facts[user_id]
-
+            facts: List[str] = []
             # Парсим факты из ответа
             for line in response.strip().split("\n"):
                 line = line.strip()
@@ -690,25 +824,15 @@ class ChatDossier:
                     continue
 
                 # Фильтруем мусор от LLM
-                val_lower = val.lower()
-                if self._JUNK_RE.search(val_lower):
+                if self._JUNK_RE.search(val.lower()):
                     continue
 
-                # Проверяем дубликаты
-                if any(val_lower == f.lower() for f in user_facts.facts):
-                    continue
-
-                user_facts.facts.append(val)
-                user_facts.last_updated = time.time()
-
-            # Ограничиваем до 20 фактов на пользователя
-            if len(user_facts.facts) > 20:
-                user_facts.facts = user_facts.facts[-20:]
-
-            self._save()
+                facts.append(val)
+            return facts
 
         except Exception as e:
             logger.debug(f"[Dossier] Ошибка извлечения фактов пользователя {user_id}: {e}")
+            return []
 
     def add_personality_note(self, chat_id: str, note: str):
         """Добавляет наблюдение о пользователе."""

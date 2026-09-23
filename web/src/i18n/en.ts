@@ -188,6 +188,7 @@ const en = {
   'chat.trendWorsening': 'worsening',
   'chat.trendImproving': 'improving',
   'chat.trendStable': 'stable',
+  'chat.streamInterrupted': 'Connection dropped before the reply finished — waiting for the server and loading it from history',
 
   // ===== Room =====
   'room.subtitle': "Persona's personal space: avatar, inventory and life without the operator",

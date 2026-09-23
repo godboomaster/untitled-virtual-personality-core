@@ -4,9 +4,11 @@
 import json
 import shutil
 import threading
+import time
 from pathlib import Path
 
 from app.api import memory_wipe as mw
+from app.features.chat_dossier import AttributedItem, ChatDossier
 
 PERSONA = "wipe_test"
 CTX = f"api_{PERSONA}"
@@ -74,16 +76,21 @@ class FakeLearningMgr(_FakeMgr):
             self._save()
 
 
-class FakeDossier(_FakeMgr):
-    def __init__(self):
-        super().__init__()
-        self._profiles = {CK: {"interests": ["ngtu"]}, "other": {"x": 1}}
-        self._facts_seen = {CK: {"a"}, "other": {"b"}}
-        self._facts_watermark = {CK: 5}
-        self._save()
-
-    def _save(self):
-        wjson("chat_dossier.json", self._profiles)
+def make_dossier():
+    """Настоящий ChatDossier (без роутера — LLM не зовётся): фейк с dict в
+    _profiles маскировал баг — у живого менеджера там ChatProfile, и бэкап
+    досье молча выходил пустым, а restore клал dict вместо профиля."""
+    d = ChatDossier(context=CTX)
+    d.record_event(CK, "утреннее приветствие")
+    d.add_personality_note(CK, "любит кофе")
+    with d._lock:
+        d._profiles[CK].interests.append(AttributedItem(value="ngtu", user_id="u1"))
+        d._facts_seen[CK] = {("u1", "a")}
+        d._facts_watermark[CK] = 12345.0
+    d.record_event("other", "чужое событие")
+    with d._lock:
+        d._facts_seen["other"] = {("u2", "b")}
+    return d
 
 
 class FakeRhythm(_FakeMgr):
@@ -199,7 +206,7 @@ class FakeBot:
             return
         self.reminder_manager = FakeReminderMgr()
         self.learning_manager = FakeLearningMgr()
-        self._chat_dossier = FakeDossier()
+        self._chat_dossier = make_dossier()
         self.rhythm = FakeRhythm()
         self.proactive = FakeProactive()
         self.living = FakeLiving()
@@ -217,6 +224,9 @@ assert set(stores) == {"todo", "reminders", "dossier", "learning",
                        "proactive_feedback", "ignore_streak", "rhythm",
                        "living"}, set(stores)
 assert stores["living"]["world"]["npcs"][0]["name"] == "Хэнк"
+assert stores["dossier"]["interests"][0]["value"] == "ngtu", stores["dossier"]
+assert stores["dossier"]["_facts_watermark"] == 12345.0
+json.dumps(stores)  # снапшот корзины — JSON: срез досье сериализуем
 print("collect: ok", sorted(stores))
 
 mw.wipe_stores(bot, PERSONA, CK)
@@ -225,7 +235,11 @@ assert bot.reminder_manager._reminders == [{"id": 2, "chat_id": "other", "text":
 assert bot.reminder_manager.pending_cleared == [CK]
 assert bot.learning_manager._sessions == [{"chat_id": "other", "topic": "чужая"}]
 assert bot.learning_manager._setup_state == {} and bot.learning_manager._question_msgs == {}
-assert CK not in bot._chat_dossier._profiles and CK not in bot._chat_dossier._facts_seen
+dz = bot._chat_dossier
+assert CK not in dz._profiles and CK not in dz._facts_seen and CK not in dz._facts_watermark
+assert "other" in dz._profiles and "other" in dz._facts_seen
+assert dz.get_profile_snapshot(CK)["interests"] == [] and dz.get_context_block(CK) == ""
+assert CK not in rjson("chat_dossier.json") and "other" in rjson("chat_dossier.json")
 assert CK not in bot.proactive._feedback and CK not in bot.proactive._ignore_streak
 assert CK not in bot.rhythm._state["chats"] and CK not in bot.rhythm._presence_ts
 lv = bot.living
@@ -242,11 +256,24 @@ assert rjson("living/world.json")["next_id"] == 1
 assert not (BASE / f"todo/{CK}/todo.txt").exists()
 print("wipe (менеджеры): ok — память и файлы синхронно чисты, чужое цело")
 
+t_restore = time.time()
 mw.restore_stores(bot, PERSONA, CK, stores)
 assert any(r.get("chat_id") == CK for r in bot.reminder_manager._reminders)
 assert any(s.get("chat_id") == CK and s.get("topic") == "английский"
            for s in bot.learning_manager._sessions)
-assert bot._chat_dossier._profiles[CK]["interests"] == ["ngtu"]
+snap = dz.get_profile_snapshot(CK)
+assert snap["interests"] == ["ngtu"] and snap["personality_notes"] == ["любит кофе"], snap
+block = dz.get_context_block(CK)
+assert "ngtu" in block and "утреннее приветствие" in block, block
+# Знак экстракции — не ниже момента restore: STM восстанавливается раньше
+# срезов и с новыми метками time.time() — иначе повторная LLM-экстракция
+assert dz._facts_watermark.get(CK) >= t_restore, dz._facts_watermark.get(CK)
+dz.record_event(CK, "после restore")  # профиль — рабочий ChatProfile, не dict
+on_disk = rjson("chat_dossier.json")
+assert CK in on_disk and "_facts_watermark" not in on_disk[CK]
+dz2 = ChatDossier(context=CTX)  # файл после restore читается без потерь
+assert dz2.get_profile_snapshot(CK)["interests"] == ["ngtu"]
+assert "после restore" in dz2.get_context_block(CK)
 assert bot.proactive._feedback[CK]["successes"] == 9
 assert bot.proactive._ignore_streak[CK] == 3
 assert bot.rhythm._state["chats"][CK]["morning_date"] == "2026-09-17"
@@ -260,6 +287,12 @@ assert lv._seeded_this_run is True
 assert lv.persona_context_layer._cache["hash"] == "h1"
 assert bot.inventory_manager._items == [{"name": "кофе"}]
 assert (BASE / f"todo/{CK}/todo.txt").read_text(encoding="utf-8").strip() == "- Элиас: выгулять пса"
+# Поведенчески: сообщения, восстановленные в STM до среза досье (метки
+# раньше t_restore), в экстракцию фактов не ставятся — дедуп-кэш пуст
+restored_msgs = [{"role": "user", "sender_id": "u1", "timestamp": t_restore - 0.5,
+                  "content": "Меня зовут Элиас, я живу в �городе"}]
+dz.analyze_chat(CK, restored_msgs)
+assert not dz._facts_seen.get(CK), dz._facts_seen.get(CK)
 print("restore (менеджеры): ok — всё вернулось")
 
 # ── 2. файловый фолбэк: бот без менеджеров ──
@@ -295,6 +328,12 @@ assert rjson("living/world.json")["npcs"] == []
 assert not (BASE / "living/persona_context.json").exists()
 assert rjson("inventory.json") == {"items": []}
 mw.restore_stores(bot2, PERSONA, CK, stores2)
+assert rjson("chat_dossier.json")[CK]["interests"] == ["ngtu"]
+# Срез досье, снятый с живого менеджера, восстанавливается и файловым
+# фолбэком: служебный водяной знак в файл не попадает, профиль читается
+mw.restore_stores(bot2, PERSONA, CK, {"dossier": stores["dossier"]})
+assert "_facts_watermark" not in rjson("chat_dossier.json")[CK]
+assert ChatDossier(context=CTX).get_profile_snapshot(CK)["interests"] == ["ngtu"]
 assert rjson("reminders/reminders.json")[1]["text"] == "врач"
 assert rjson("living/world.json")["npcs"][0]["name"] == "Хэнк"
 assert rjson("inventory.json")["items"] == [{"name": "кофе"}]

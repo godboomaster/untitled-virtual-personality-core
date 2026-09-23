@@ -6,9 +6,11 @@ BotInstance — один бот с конкретной персоной и на
 import re
 import os
 import json
+import threading
 import time
 import yaml
 import logging
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -23,6 +25,7 @@ from app.core.file_reader import extract_text, MAX_FILE_SIZE_DEFAULT
 from app.core.interfaces import MessageSender
 from app.core.presence import web_presence
 from app.core import timeutil
+from app.core.turn_gate import ChatTurnGate, begin_turn_async
 from app.core.users import get_username
 from app.features.todo_manager import (
     TodoManager, is_todo_request, extract_task,
@@ -56,8 +59,15 @@ from app.features.computer_control import (
     parse_tab_list_query, parse_tab_op, parse_tab_switch, parse_type_request,
     parse_zoom_request, _MORE_PHOTOS_RE)
 from app.features.scenario_manager import ScenarioManager
+from app.features.search_gate import search_skip_reason
 
 logger = logging.getLogger(__name__)
+
+# Ленивое создание гейта хода у ботов, собранных без __init__ (тестовые
+# заготовки): два потока не должны создать два разных гейта
+_TURN_GATE_INIT_LOCK = threading.Lock()
+# Якорь STM хода не удалось снять (ошибка чтения STM) — хвост хода неизвестен
+_NO_ANCHOR = object()
 
 # Сколько последних реплик передавать в query rewriter для разрешения кореференций
 # кореференций - местоимения и указательные слова, которые ссылаются на что-то из предыдущего контекста
@@ -198,6 +208,12 @@ class BotInstance:
         self.context = context or persona_name
         self.persona = PersonaLayer(persona_name=persona_name)
 
+        # Гейт «ход пользователя ↔ фоновое сообщение» (app/core/turn_gate.py):
+        # общий для API и Telegram — фоновые инициативы/ритм/напоминания/уроки
+        # по нему видят, что в чате идёт живой обмен, и не пишут в STM посреди
+        # хода. Создаётся первым: менеджеры ниже получают его при создании
+        self.turn_gate = ChatTurnGate()
+
         # Список дел/инвентарь для отправки отдельным сообщением после основного ответа.
         # Per-chat (dict по chat_id): process_message крутится конкурентно в потоках для
         # разных чатов, и общий атрибут давал гонки — список одного чата мог уехать в другой.
@@ -267,6 +283,7 @@ class BotInstance:
         self.reminder_manager: Optional[ReminderManager] = None
         if self.features.get("reminder", False):
             self.reminder_manager = ReminderManager(context=self.context)
+            self.reminder_manager.set_turn_gate(self.turn_gate)
             # §3.5 плана уровней: primitive — минимальная вербализация напоминаний
             self.reminder_manager.set_intellect_tier(self.intellect.tier)
             logger.info(f"  [{persona_name}] Reminder manager включён")
@@ -319,6 +336,7 @@ class BotInstance:
             learning_on = bool(learning_cfg) and learning_cfg.get("enabled", True)
         if learning_on:
             self.learning_manager = LearningManager(context=self.context, config=learning_cfg)
+            self.learning_manager.set_turn_gate(self.turn_gate)
             logger.info(f"  [{persona_name}] Learning manager включён")
 
         # Router (создаём до Memory, чтобы передать в LTM)
@@ -527,6 +545,8 @@ class BotInstance:
         if self.features.get("reminder", False):
             if self.reminder_manager is None:
                 self.reminder_manager = ReminderManager(context=self.context)
+                # getattr: вызывается и на заготовках бота (тесты живого переключения)
+                self.reminder_manager.set_turn_gate(getattr(self, "turn_gate", None))
                 self.reminder_manager.set_intellect_tier(self.intellect.tier)
                 logger.info(f"  [{self.persona_name}] Reminder manager включён (live)")
         elif self.reminder_manager is not None:
@@ -562,6 +582,40 @@ class BotInstance:
             if lower.startswith(trigger):
                 return True
         return False
+
+    def _web_race_enabled(self) -> bool:
+        """Поиск гонкой AI Mode + DDG. features.web_search_ai_mode: явный
+        true/false; не задан — авто: основной провайдер персоны — веб-чат
+        (браузерный пул и так поднят, AI Mode живёт в нём же)."""
+        flag = self.features.get("web_search_ai_mode")
+        if isinstance(flag, bool):
+            return flag
+        primary = str(getattr(self.router, "pinned_provider", None)
+                      or getattr(self.router, "active_provider", None) or "")
+        return primary.startswith("webchat")
+
+    def _race_search(self, search_args: tuple) -> list:
+        """Одна нога — AI Mode (канал search), другая — тот же DDG-поиск,
+        но только сниппеты. AI Mode в карантине — обычный поиск целиком."""
+        from app.features import web_search_race as race
+        if not race.ai_mode_available():
+            return self._search_web(*search_args)
+        return race.race_search(
+            search_args[0], context=self.context,
+            ddg_search=lambda q: self._search_web(q, *search_args[1:],
+                                                  fetch_pages=False))
+
+    def _address_names(self) -> set:
+        """Как к персоне обращаются: trigger_words + id + имя из YAML."""
+        # getattr — бот мог быть собран без __init__ (тестовые заготовки)
+        names = set(getattr(self, "trigger_words", ()) or ())
+        if getattr(self, "persona_name", None):
+            names.add(self.persona_name)
+        display = (getattr(getattr(self, "persona", None), "persona_data", None)
+                   or {}).get("name")
+        if display:
+            names.add(str(display))
+        return names
 
     def strip_trigger(self, text: str) -> str:
         lower = text.strip().lower()
@@ -673,12 +727,20 @@ class BotInstance:
         часть пишется в STM отдельным сообщением (история совпадает с тем, что
         видит пользователь), а возвращается только первая часть — хвост ждёт
         в _pending_split_messages, его платформа досылает следом."""
+        # Отметка в кадре хода «ответ на ТЕКУЩУЮ реплику записан» — ПОСЛЕ
+        # записи (упала — отметки нет, реплика-ошибка ещё нужна): по ней
+        # _pipeline_failure_reply отличает ответ от чужой записи ассистента
+        frame = self._get_turn_gate().current_frame(self.stm_key(chat_id, user_id))
         parts = self.split_reply_parts(answer)
         if len(parts) <= 1:
             self.memory.add_message("assistant", answer, user_id, chat_id)
+            if frame is not None:
+                frame["answer_saved"] = True
             return answer
         for part in parts:
             self.memory.add_message("assistant", part, user_id, chat_id)
+        if frame is not None:
+            frame["answer_saved"] = True
         self._pending_split_messages[str(chat_id)] = parts[1:]
         return parts[0]
 
@@ -752,12 +814,146 @@ class BotInstance:
             "Напоминания, список дел, инвентарь и обучение снова "
             "работают.")
 
+    def _get_turn_gate(self) -> ChatTurnGate:
+        gate = self.__dict__.get("turn_gate")
+        if gate is None:
+            with _TURN_GATE_INIT_LOCK:
+                gate = self.__dict__.get("turn_gate")
+                if gate is None:
+                    gate = self.turn_gate = ChatTurnGate()
+        return gate
+
+    @staticmethod
+    def stm_key(chat_id, user_id) -> str:
+        """Ключ чата в STM — то же правило, что у MemoryManager.add_message
+        (chat_id, иначе user_id): ход пользователя и правки STM должны
+        ключеваться так же, как реально пишется история (пустой chat_id —
+        отдельный ключ "", а не user_id)."""
+        return str(chat_id if chat_id is not None else user_id)
+
+    def _set_stm_anchor(self, frame: dict):
+        """Якорь STM хода — последняя запись до первой записи этого хода:
+        по нему _turn_stm_tail отличает записи ЭТОГО хода от чужих
+        (_pipeline_failure_reply, правка STM картинки на сервере). Ставится
+        при первом синхронном входе (process_message/_generate сервера), а
+        не при получении сообщения: пока обработчик ждал лок чата, в STM
+        писал предыдущий ход того же чата."""
+        if "stm_anchor" in frame:
+            return
+        try:
+            msgs = self.memory.stm.get_messages(chat_id=frame["key"])
+            frame["stm_anchor"] = msgs[-1] if msgs else None
+        except Exception:
+            frame["stm_anchor"] = _NO_ANCHOR
+
+    @contextmanager
+    def user_turn(self, chat_key):
+        """Ход пользователя в чате chat_key (ключ STM — см. stm_key).
+
+        Пока ход открыт, фоновые сообщения (инициатива, рефлексия, сигнал
+        состояния, утро/ночь/погода, напоминания, уроки) в STM этого чата не
+        коммитятся — см. ChatTurnGate. Реентерабелен: ход, открытый выше по
+        контексту (обработчик Telegram/сервера — contextvars переезжают в
+        asyncio.to_thread), подхватывается, новой реплики не заводит."""
+        with self._get_turn_gate().user_turn(chat_key) as frame:
+            self._set_stm_anchor(frame)
+            yield frame
+
+    def begin_user_turn(self, chat_key) -> dict:
+        """Открыть ход при ПОЛУЧЕНИИ сообщения (до распознавания фото/файла,
+        до модерации) — синхронно, с event loop через asyncio.to_thread или
+        user_turn_async. Закрывать end_user_turn в finally."""
+        return self._get_turn_gate().begin_turn(chat_key)
+
+    async def begin_user_turn_async(self, chat_key) -> dict:
+        """begin_user_turn с event loop (в потоке; отмена ожидающего не
+        оставляет открытый ход)."""
+        return await begin_turn_async(self._get_turn_gate(), chat_key)
+
+    def end_user_turn(self, frame: dict):
+        """Обработчик закончил (ответ доставлен или ошибка/разрыв). Ход
+        закроется, когда выйдет и рабочий поток генерации, если он ещё жив."""
+        self._get_turn_gate().release(frame)
+
+    @contextmanager
+    def adopt_turn(self, frame: dict):
+        """Присоединиться к открытому ходу в этом контексте (рабочий поток
+        генерации сервера, куда кадр передан явно)."""
+        with self._get_turn_gate().adopt(frame):
+            self._set_stm_anchor(frame)
+            yield frame
+
+    @asynccontextmanager
+    async def user_turn_async(self, chat_key):
+        """Ход пользователя для корутины-обработчика (Telegram): открыт от
+        получения сообщения до конца ДОСТАВКИ ответа (split-части с паузами,
+        скриншоты) — фоновое сообщение не встаёт между частями ответа.
+        asyncio.to_thread внутри подхватывает ход через contextvars."""
+        gate = self._get_turn_gate()
+        frame = await begin_turn_async(gate, chat_key)
+        try:
+            with gate.adopt(frame):
+                yield frame
+        finally:
+            gate.release(frame)
+
+    def _turn_stm_tail(self, chat_key) -> Optional[List[Dict]]:
+        """Записи STM, сделанные ТЕКУЩИМ ходом пользователя (кадр хода из
+        текущего контекста; всё после якоря), или None — хода нет / якорь потерян (буфер
+        перечитан из БД или вытеснен лимитом). Сравнение по идентичности:
+        get_messages отдаёт сами dict'ы буфера."""
+        frame = self._get_turn_gate().current_frame(chat_key)
+        if not frame or frame.get("stm_anchor", _NO_ANCHOR) is _NO_ANCHOR:
+            return None
+        anchor = frame["stm_anchor"]
+        try:
+            msgs = self.memory.stm.get_messages(chat_id=str(chat_key))
+        except Exception:
+            return None
+        if anchor is None:
+            return list(msgs)
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i] is anchor:
+                return list(msgs[i + 1:])
+        return None
+
     def process_message(self, user_input: str, user_id: str = "default",
                         chat_id: str = None, user_name: str = None,
                         reply_context: str = None,
                         reply_to_bot_message_id: Optional[int] = None,
                         on_token=None,
                         raw_user_text: Optional[str] = None) -> str:
+        """Обработка сообщения; парная к START строка END — в логе видно,
+        дошла ли генерация до конца и сколько заняла (раньше по логу нельзя
+        было отличить «ответ сгенерирован, но не доставлен» от «завис»)."""
+        t0 = time.monotonic()
+        try:
+            # Ход пользователя открыт ДО записи его реплики в STM и закрыт
+            # после записи ответа: фоновая инициатива/ритм в этом окне в STM
+            # не пишут (см. user_turn) — порядок user → ответ не рвётся
+            with self.user_turn(self.stm_key(chat_id, user_id)):
+                reply = self._process_message_impl(
+                    user_input, user_id=user_id, chat_id=chat_id, user_name=user_name,
+                    reply_context=reply_context,
+                    reply_to_bot_message_id=reply_to_bot_message_id,
+                    on_token=on_token, raw_user_text=raw_user_text,
+                )
+        except BaseException:
+            logger.info(f"[BotInstance] process_message END (исключение): "
+                        f"{time.monotonic() - t0:.1f}s | chat_id={chat_id}")
+            raise
+        logger.info(
+            f"[BotInstance] process_message END: {time.monotonic() - t0:.1f}s | "
+            f"ответ {len(reply) if isinstance(reply, str) else 'нет'} симв. | chat_id={chat_id}"
+        )
+        return reply
+
+    def _process_message_impl(self, user_input: str, user_id: str = "default",
+                              chat_id: str = None, user_name: str = None,
+                              reply_context: str = None,
+                              reply_to_bot_message_id: Optional[int] = None,
+                              on_token=None,
+                              raw_user_text: Optional[str] = None) -> str:
         from app.features import side_tasks
 
         # Что пользователь реально НАПИСАЛ (текст сообщения/подпись), в отличие
@@ -1486,19 +1682,31 @@ class BotInstance:
         web_future = None
         # При прочитанной секции страницы веб-поиск не нужен: ответ целиком
         # в живом тексте секции, выдача DDG только сместит фокус ответа
+        # Гейт уместности: обращение по имени, реплика-связка или вопрос о
+        # самой персоне («что сегодня делал?») внешних данных не требуют —
+        # раньше поиск шёл на каждое сообщение, «коннор?» гуглилось как имя,
+        # а выдача по SOURCE PRIORITY перебивала дневник персоны
+        search_skip = search_skip_reason(user_input, self._address_names())
+        if search_skip and getattr(self, "_web_search_enabled", False):
+            logger.info(f"[BotInstance] веб-поиск пропущен ({search_skip}): '{user_input[:60]}'")
         if (self._web_search_enabled and chat_id not in self._web_search_disabled_chats
                 and not self._is_docs_only_request(user_input)
+                and search_skip is None
                 and page_section_note is None):
             # Собираем контекст персоны для QueryEnhancer
             persona_context = self._get_persona_context_for_search()
             # Берём последние 6 сообщений для контекста
             history_for_search = self.memory.stm.get_last(6, chat_id=chat_id)
-            web_future = self._web_pool.submit(
-                self._search_web, ru_rewritten, 5,
-                side_tasks.search_enhance_enabled(self), None,
-                history_for_search, persona_context,
-                side_tasks.translate_verify_enabled(self),
-            )
+            search_args = (ru_rewritten, 5,
+                           side_tasks.search_enhance_enabled(self), None,
+                           history_for_search, persona_context,
+                           side_tasks.translate_verify_enabled(self))
+            if self._web_race_enabled():
+                # Гонка AI Mode + DDG-сниппеты (web_search_race): ~5 с
+                # вместо 16-23 с у DDG с загрузкой страниц
+                web_future = self._web_pool.submit(self._race_search, search_args)
+            else:
+                web_future = self._web_pool.submit(self._search_web, *search_args)
 
         try:
             # В STM сохраняем переписанную русскую версию (с разрешёнными местоимениями)
@@ -2582,9 +2790,26 @@ class BotInstance:
                 "Извини, у меня что-то сломалось при обработке сообщения. "
                 "Попробуй ещё раз — или сформулируй иначе.")
         try:
-            last = self.memory.stm.get_last(1, chat_id=chat_id or user_id)
-            if not last or last[-1].get("role") != "assistant":
-                self._save_assistant_reply(text, user_id, chat_id)
+            # «Ответ уже есть» — именно на ТЕКУЩУЮ реплику: в этом ходе
+            # отработал _save_assistant_reply (отметка в кадре хода). Раньше
+            # смотрели «последняя запись STM — assistant», и чужая запись
+            # ассистента в хвосте (инициатива, напоминание) или ответ на
+            # прошлую реплику (сбой до записи текущей) выдавались за ответ.
+            key = self.stm_key(chat_id, user_id)
+            frame = self._get_turn_gate().current_frame(key)
+            if frame is not None:
+                tail = self._turn_stm_tail(key)
+                # Реплика этого хода в STM не попала (сбой раньше записи) —
+                # «вопроса без ответа» нет, одиночная ошибка историю не чинит.
+                # Якорь потерян (tail None) — считаем, что реплика записана
+                user_written = tail is None or any(
+                    m.get("role") == "user" for m in tail)
+                if user_written and not frame.get("answer_saved"):
+                    self._save_assistant_reply(text, user_id, chat_id)
+            else:
+                last = self.memory.stm.get_last(1, chat_id=key)
+                if not last or last[-1].get("role") != "assistant":
+                    self._save_assistant_reply(text, user_id, chat_id)
         except Exception as e:
             logger.error(f"[BotInstance] Реплика-ошибка не записана в STM: {e}")
         return text
@@ -3490,12 +3715,13 @@ class BotInstance:
 
     def clear_all_memory(self):
         self.memory.clear_stm()
+        # Через LTM, а не collection.delete напрямую: clear_all поднимает общую
+        # эпоху очистки — идущая фоновая экстракция/консолидация увидит её и
+        # не допишет факты в только что очищенную память
         try:
-            results = self.memory.ltm.collection.get()
-            if results and results["ids"]:
-                self.memory.ltm.collection.delete(ids=results["ids"])
-        except Exception:
-            pass
+            self.memory.ltm.clear_all()
+        except Exception as e:
+            logger.warning(f"[{self.persona_name}] Очистка LTM не удалась: {e}")
 
     def toggle_web_search(self, chat_id: str) -> bool:
         # Переключает web_search для чата. Возвращает новое состояние (True=включён).
@@ -3572,6 +3798,7 @@ class BotInstance:
             self_memory=self.self_memory,
             living=self.living,
             intellect=self.intellect,
+            turn_gate=self._get_turn_gate(),
         )
         # Создаем досье на чат (общий экземпляр с rhythm — один файл на бота)
         from app.features.chat_dossier import ChatDossier
@@ -3628,6 +3855,7 @@ class BotInstance:
             sender=sender,
             muted_check=lambda: bool((self.features or {}).get("muted")),
             dossier=self._chat_dossier,
+            turn_gate=self._get_turn_gate(),
         )
         logger.info(f"  [{self.persona_name}] Rhythm инициализирован с sender")
 
@@ -3689,6 +3917,16 @@ class BotInstance:
         return desc, expires
 
     def command_reply(
+        self, context_note: str, note_kind: str,
+        chat_id: str, user_id: str, user_name: str, user_input: str,
+    ) -> str:
+        """Ответ на слэш-команду — тоже ход пользователя (пишет в STM пару
+        «команда → ответ»): фоновые сообщения между ними не встают."""
+        with self.user_turn(self.stm_key(chat_id, user_id)):
+            return self._command_reply_impl(
+                context_note, note_kind, chat_id, user_id, user_name, user_input)
+
+    def _command_reply_impl(
         self, context_note: str, note_kind: str,
         chat_id: str, user_id: str, user_name: str, user_input: str,
     ) -> str:

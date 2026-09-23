@@ -438,9 +438,12 @@ def search_web(
     history: list[dict] | None = None,
     persona_context: str | None = None,
     verify_translation: bool = False,
+    fetch_pages: bool = True,
 ) -> list[dict]:
     """
     Ищет запрос в DuckDuckGo и возвращает список результатов.
+    fetch_pages=False — только сниппеты, без загрузки страниц (до 2×10 с):
+    так идёт нога DDG в гонке с AI Mode (web_search_race).
     Если enhance=True — улучшает запрос через LLM и делает дополнительный поиск на английском.
     Если en_query_override задан — использует его вместо LLM-перевода (для rewriter'а).
     verify_translation=True — дополнительно проверяет Google-перевод локальной LLM.
@@ -527,7 +530,7 @@ def search_web(
         r["full_text"] = ""
 
     # Загружаем полный текст для топ-результатов
-    for r in merged[:FETCH_TOP_N]:
+    for r in (merged[:FETCH_TOP_N] if fetch_pages else []):
         url = r.get("href", "")
         if url and _is_fetchable_url(url):
             full = fetch_page_text(url)

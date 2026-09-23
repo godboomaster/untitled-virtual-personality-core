@@ -57,6 +57,10 @@ LOCAL_TASKS: dict[str, bool] = {
     "ocr": True,                   # текст с картинок — только Ollama (vision)
 }
 
+# Бюджет ожидания очереди фона веб-чата (канал side) для локальных задач:
+# занято дольше — откат на Ollama (см. get_response). Как у main перед burst
+LOCAL_WEBCHAT_QUEUE_WAIT_SEC = 3.0
+
 # Выбор пользователя: {task: {"backend": "ollama"|"webchat", "site": ...}}
 _TASKS_FILE = Path("data/local_backends.json")
 
@@ -192,7 +196,15 @@ class LocalLLMRouter:
         tasks.update(changed)
         _save_task_config(tasks)
         self._task_cfg = tasks
+        # Выбывшие инстансы закрывают свои вкладки (идущий вызов — по его
+        # завершении, см. WebChatLLM.retire), а не остаются жить в пуле
+        old = list(self._webchats.values())
         self._webchats.clear()
+        for chat in old:
+            try:
+                chat.retire()
+            except Exception:
+                pass
         logger.info(f"[LocalLLM] Веб-чаты выключены — задачи на Ollama: "
                     f"{', '.join(sorted(changed))}")
 
@@ -212,8 +224,10 @@ class LocalLLMRouter:
             target = site if site in sites else sites[0]
             chat = self._webchats.get(target)
             if chat is None:
-                chat = WebChatLLM(target, channel="side")
-                self._webchats[target] = chat
+                # setdefault атомарен: два первых параллельных вызова не
+                # создают два инстанса (две вкладки на одном side-чате)
+                chat = self._webchats.setdefault(
+                    target, WebChatLLM(target, channel="side"))
             return chat
         except Exception as e:
             logger.debug(f"[LocalLLM] Веб-чат для локальных задач недоступен: {e}")
@@ -275,6 +289,7 @@ class LocalLLMRouter:
         top_p: float = 0.9,
         timeout: Optional[float] = None,
         task: Optional[str] = None,
+        queue_wait: Optional[float] = None,
     ) -> Optional[str]:
         """
         Отправляет запрос к локальной модели.
@@ -284,6 +299,14 @@ class LocalLLMRouter:
         и сайт) берётся из выбора пользователя для этой задачи. webchat —
         сначала веб-чат (канал side), его неудача мягко откатывает на
         Ollama; ollama — только Ollama, как раньше.
+
+        queue_wait — сколько ждать очередь фона сайта веб-чата (сек); None —
+        LOCAL_WEBCHAT_QUEUE_WAIT_SEC. Канал side фоновый: без бюджета вызов
+        стоял бы в очереди сайта до BG_GATE_TIMEOUT_SEC (600 с), хотя
+        локальные задачи — короткие служебные вызовы, многие прямо на пути
+        ответа (query_rewrite, intent_router, rule_extract, learning_intent,
+        help_detect…), и у них есть откат на Ollama. Фоновой задаче без
+        отката, которой важнее дождаться, — передать queue_wait явно.
         """
         backend, site = self._resolve_task(task)
         if backend == "webchat":
@@ -293,7 +316,9 @@ class LocalLLMRouter:
                     # Веб-чат медленный (стриминг + опрос DOM) — минимум как у роутера
                     answer = chat.get_response(
                         messages, temperature=temperature, max_tokens=max_tokens,
-                        top_p=top_p, timeout=max(timeout or 0.0, 150.0))
+                        top_p=top_p, timeout=max(timeout or 0.0, 150.0),
+                        lock_timeout=(LOCAL_WEBCHAT_QUEUE_WAIT_SEC
+                                      if queue_wait is None else queue_wait))
                     if answer:
                         return answer.strip()
                     logger.warning(

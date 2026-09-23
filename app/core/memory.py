@@ -46,6 +46,27 @@ MAX_COUNTER_USERS = 500
 FORGET_MAX_DISTANCE = 0.7
 UPDATE_FACT_MAX_DISTANCE = 0.3   # правка факта: промах затирает чужой факт
 
+# Источник миллисекундных id записей STM/LTM. id вида stm_{chat}_{ms} и
+# {user}_fact_{ms} повторялись, если две записи попадали в одну миллисекунду
+# (ответ, разбитый на части; сохранение факта рядом с консолидацией), а
+# Chroma молча игнорирует add с уже существующим id — вторая запись пропадала
+# без ошибки. Счётчик монотонный: не меньше текущего времени и строго больше
+# прошлого значения — формат id и сортировка по времени те же.
+_ID_MS_LOCK = threading.Lock()
+_last_id_ms = 0
+
+
+def _unique_ms() -> int:
+    global _last_id_ms
+    with _ID_MS_LOCK:
+        _last_id_ms = max(int(time.time() * 1000), _last_id_ms + 1)
+        return _last_id_ms
+
+
+# summarize_user: консолидация отменена, потому что факты пользователя
+# поменяли за время её LLM-вызова (forget, правка) — попытку не теряем
+SUMMARY_CONFLICT = -2
+
 
 def _first_sentence(text: str, max_len: int = 80) -> str:
     """Обрезать текст до первого предложения. Если длиннее max_len — добавить ..."""
@@ -202,8 +223,9 @@ class ShortTermMemory:
 
     def _save_to_db(self, role: str, content: str, chat_id: str = "default",
                     user_name: str = None, sender_id: str = None):
-        # Сохранить сообщение в базу данных.
-        timestamp = int(time.time() * 1000)
+        # Сохранить сообщение в базу данных. Метка — уникальная миллисекунда
+        # (_unique_ms): она же id записи, совпадение id = потеря сообщения
+        timestamp = _unique_ms()
         metadata = {"role": role, "timestamp": timestamp, "chat_id": chat_id}
         if user_name:
             metadata["user_name"] = user_name
@@ -495,6 +517,43 @@ class ShortTermMemory:
             logger.warning(f"  [STM] delete_message ChromaDB error: {e}")
         return True
 
+    def remove_entry(self, chat_id: str, entry: dict) -> bool:
+        """Удалить из буфера чата ИМЕННО эту запись (по идентичности dict'а,
+        поиск и удаление — под одним self._lock) и её копию из ChromaDB.
+
+        Для отката фонового сообщения, которое не удалось доставить
+        (app/core/turn_gate.py): delete_message по индексу снапшота при
+        полном deque (maxlen) или конкурентной записи удалял чужую реплику,
+        а поиск по тексту — старую запись с тем же шаблонным текстом."""
+        with self._lock:
+            buf = self._get_buffer(chat_id)
+            for i in range(len(buf) - 1, -1, -1):
+                if buf[i] is entry:
+                    del buf[i]
+                    break
+            else:
+                return False
+        try:
+            results = self.collection.get(
+                where={"chat_id": chat_id},
+                include=["documents", "metadatas"]
+            )
+            if results and results["ids"]:
+                target_ms = round(entry.get("timestamp", 0) * 1000)
+                candidates = [
+                    (rid, abs(int(meta.get("timestamp", 0)) - target_ms))
+                    for rid, doc, meta in zip(
+                        results["ids"], results["documents"], results.get("metadatas", [])
+                    )
+                    if doc == entry["content"]
+                ]
+                if candidates:
+                    rid = min(candidates, key=lambda x: x[1])[0]
+                    self.collection.delete(ids=[rid])
+        except Exception as e:
+            logger.warning(f"  [STM] remove_entry ChromaDB error: {e}")
+        return True
+
     def clear(self, chat_id: str = None):
         """
         Очистить буфер.
@@ -602,9 +661,26 @@ class LongTermMemory:
         if self.exclude_provider:
             print(f"  [LTM] Пропускает провайдер основной модели: {self.exclude_provider}")
 
-        # Сериализует save_facts и summarize_user: read-modify-write по фактам
-        # не атомарен, параллельные фоновые задачи иначе плодят дубли/теряют факты
+        # Сериализует изменения фактов (save_facts, запись консолидации,
+        # forget/update_fact, clear): read-modify-write по фактам не атомарен,
+        # параллельные фоновые задачи иначе плодят дубли/теряют факты. Под ним
+        # же читают search/get_* — многошаговая запись (удалить + добавить)
+        # не видна читателю наполовину. Поэтому лок НИКОГДА не держится поверх
+        # вызова LLM (до 150 с у веб-чата): иначе ответ пользователю ждал бы
+        # фоновую задачу на чтении фактов.
         self._facts_lock = threading.RLock()
+        # Эпохи очистки: clear(user_id) увеличивает эпоху пользователя,
+        # clear_all() — общую. Фоновая задача запоминает эпоху до LLM-вызова
+        # и при записи сверяет: сменилась — результат относится к стёртой
+        # памяти и отбрасывается (иначе экстракция/консолидация, начатые до
+        # очистки, воскрешали факты после неё). Под _facts_lock.
+        self._epochs: Dict[str, int] = {}
+        self._epoch_all = 0
+        # Очередь фоновых задач на пользователя (экстракция, консолидация):
+        # user_id → задачи, ждущие завершения текущей. Запись в словаре есть,
+        # пока у пользователя что-то выполняется. См. _submit_serial.
+        self._serial: Dict[str, deque] = {}
+        self._serial_lock = threading.Lock()
 
         # Режимы приватности LTM per user: "smart" (по умолчанию) | "strict"
         self._privacy_file = Path(db_path).parent / "ltm_privacy.json"
@@ -617,6 +693,68 @@ class LongTermMemory:
         if self.main_router is not None:
             return self.main_router.active_provider
         return self.exclude_provider
+
+    def _epoch(self, user_id) -> Tuple[int, int]:
+        """Текущая эпоха очистки фактов пользователя (см. _epochs)."""
+        with self._facts_lock:
+            return self._epoch_all, self._epochs.get(str(user_id), 0)
+
+    def _epoch_stale(self, user_id, epoch) -> bool:
+        return epoch is not None and self._epoch(user_id) != epoch
+
+    def _submit_serial(self, user_id, fn, on_cancel=None) -> bool:
+        """Фоновая задача пользователя — строго после предыдущих его задач.
+
+        add_message ставит экстракцию и консолидацию одним вызовом; в общем
+        пуле они шли параллельно: консолидация снимала снимок фактов сразу,
+        экстракция за время её LLM-вызова делала UPDATE/слияние — снятый
+        факт исчезал, и консолидация отменялась (каждый раз заново). По
+        очереди консолидация видит факты уже после экстракции.
+
+        on_cancel — если задача так и не выполнится (пул остановлен).
+        False — пул не принял задачу сразу (on_cancel уже вызван).
+        """
+        key = str(user_id)
+        with self._serial_lock:
+            queue = self._serial.get(key)
+            if queue is not None:
+                queue.append((fn, on_cancel))
+                return True
+            self._serial[key] = deque()
+        return self._run_serial(key, fn, on_cancel)
+
+    def _run_serial(self, key: str, fn, on_cancel) -> bool:
+        try:
+            future = self._get_executor().submit(fn)
+        except Exception as e:
+            print(f"  [LTM] Пул не принял фоновую задачу: {e}")
+            if on_cancel:
+                on_cancel()
+            self._serial_next(key)
+            return False
+
+        def _done(f):
+            # Отменённый future (shutdown пула) — fn не выполнялась;
+            # f.exception() на нём бросает CancelledError
+            if f.cancelled():
+                if on_cancel:
+                    on_cancel()
+            elif f.exception():
+                # ThreadPoolExecutor молча глотает исключения
+                print(f"  [LTM] ОШИБКА фоновой задачи: {f.exception()}")
+            self._serial_next(key)
+
+        future.add_done_callback(_done)
+        return True
+
+    def _serial_next(self, key: str):
+        with self._serial_lock:
+            queue = self._serial.get(key)
+            if not queue:
+                self._serial.pop(key, None)
+                return
+            fn, on_cancel = queue.popleft()
+        self._run_serial(key, fn, on_cancel)
 
     # ─── Приватность LTM ─────────────────────────────────
 
@@ -680,6 +818,11 @@ class LongTermMemory:
         Не блокирует основной поток.
         origin_chat — чат, где факт был рассказан (для скоупа приватности).
         """
+        # Эпоха — в момент постановки, а не старта задачи: задача может ждать
+        # свободный поток пула, и очистка за это время не должна «пропустить»
+        # факты из сообщений, сказанных до неё
+        epoch = self._epoch(user_id)
+
         def _extract_and_save():
             try:
                 facts_raw = self.extract_facts(user_message, stm_context)
@@ -692,10 +835,13 @@ class LongTermMemory:
                             if not v.lower().startswith(("no ", "no_", "not ", "unknown", "n/a", "нет", "не "))
                             and not v.startswith("[NO_")  # фильтруем [NO_FACTS], [NO_PETS] и т.д.
                         }
+                        saved = 0
                         for category, value in safe_facts.items():
                             fact_text = f"{category}: {value}"
-                            self.save_facts(fact_text, user_id, origin_chat=origin_chat, user_name=user_name)
-                        print(f"  [LTM] Сохранено фактов: {len(safe_facts)}")
+                            if self.save_facts(fact_text, user_id, origin_chat=origin_chat,
+                                               user_name=user_name, epoch=epoch):
+                                saved += 1
+                        print(f"  [LTM] Сохранено фактов: {saved}")
                     else:
                         print(f"  [LTM] Факты отфильтрованы (пустые значения)")
                 else:
@@ -706,16 +852,9 @@ class LongTermMemory:
                 import traceback
                 traceback.print_exc()
 
-        executor = self._get_executor()
-        future = executor.submit(_extract_and_save)
-
-        # Дополнительный колбэк — ловит ошибки которые прошли мимо try/except
-        def _log_future_error(f):
-            exc = f.exception()
-            if exc:
-                print(f"  [LTM] ОШИБКА future: {exc}")
-
-        future.add_done_callback(_log_future_error)
+        # По очереди с другими фоновыми задачами пользователя (_submit_serial);
+        # ошибки мимо try/except логирует её done-колбэк
+        self._submit_serial(user_id, _extract_and_save)
         print(f"  [LTM] Extraction запущен в фоне: '{user_message[:40]}...'")
     
     def extract_facts(self, user_message: str, stm_context: str = None) -> Optional[str]:
@@ -790,33 +929,32 @@ class LongTermMemory:
             return None
     
     def save_facts(self, facts_text: str, user_id: str = "default", origin_chat: str = None,
-                   user_name: str = None):
-        """Потокобезопасная обёртка над _save_facts_impl."""
-        with self._facts_lock:
-            self._save_facts_impl(facts_text, user_id, origin_chat, user_name)
+                   user_name: str = None, epoch: Tuple[int, int] = None) -> bool:
+        """Потокобезопасная обёртка над _save_facts_impl.
 
-    def _save_facts_impl(self, facts_text: str, user_id: str = "default", origin_chat: str = None,
-                         user_name: str = None):
+        LLM-слияния APPEND-категорий считаются заранее, вне _facts_lock
+        (_plan_merges): под локом только чтение и запись базы.
+        epoch — эпоха очистки на момент, когда факты были услышаны (фоновая
+        экстракция); если память с тех пор очистили — факты не пишутся.
+        False — запись отброшена по эпохе.
         """
-        Сохраняет извлечённые факты в векторную базу.
-
-        origin_chat — чат, где факт был рассказан. Хранится в metadata и
-        определяет приватность: непубличный факт виден только там (и в личке).
-        
-        Логика:
-        - Полный дубликат → пропуск
-        - UPDATE-категория (City, Age и т.д.) → замена старого значения
-        - APPEND-категория (Hobby, Food и т.д.) → умное слияние через LLM
-        - Новая категория → обычное сохранение
-        """
-        # Резка по границам категорий, не по запятым: значение может само
-        # содержать запятые («Food: pizza, pasta»)
         facts_list = split_facts_text(facts_text)
+        # Эпоха — и до планирования (не звать LLM-слияние ради стёртой
+        # памяти), и под локом (очистка могла случиться во время слияния)
+        merges = {} if self._epoch_stale(user_id, epoch) else self._plan_merges(facts_list, user_id)
+        with self._facts_lock:
+            if self._epoch_stale(user_id, epoch):
+                print(f"  [LTM] Память {user_id} очищена во время экстракции — "
+                      f"факты отброшены: '{facts_text[:50]}'")
+                return False
+            self._save_facts_impl(facts_list, user_id, origin_chat, user_name, merges)
+            return True
 
-        # Загружаем существующие факты: полные документы + разбор по категориям
-        existing_docs = set()       # полные строки для проверки дубликатов
-        existing_by_cat = {}        # category → (chroma_id, value)
-
+    def _load_existing(self, user_id: str) -> Tuple[set, Dict[str, Tuple[str, str]]]:
+        """Существующие факты пользователя: полные строки (для дубликатов) и
+        первый факт каждой категории — category → (chroma_id, value)."""
+        existing_docs = set()
+        existing_by_cat = {}
         if self.collection.count() > 0:
             results = self.collection.get(
                 where={"user_id": user_id},
@@ -832,9 +970,57 @@ class LongTermMemory:
                         cat_key = cat.strip()
                         if cat_key not in existing_by_cat:
                             existing_by_cat[cat_key] = (results["ids"][idx], val.strip())
+        return existing_docs, existing_by_cat
+
+    def _plan_merges(self, facts_list: List[str], user_id: str) -> Dict[Tuple[str, str, str], Optional[str]]:
+        """Слияния APPEND-категорий (возможно, через LLM) — до захвата
+        _facts_lock. Ключ — (категория, старое значение, новое значение):
+        если к записи старое значение в базе успело смениться, план не
+        подойдёт и _save_facts_impl сольёт без LLM."""
+        wanted = []
+        for fact in facts_list:
+            cat, sep, val = fact.strip().partition(":")
+            if sep and cat.strip() in APPEND_CATEGORIES:
+                wanted.append((cat.strip(), val.strip(), fact.strip().lower()))
+        if not wanted:
+            return {}
+        with self._facts_lock:
+            existing_docs, existing_by_cat = self._load_existing(user_id)
+        plan = {}
+        for cat, new_val, fact_lower in wanted:
+            if fact_lower in existing_docs or cat not in existing_by_cat:
+                continue
+            old_val = existing_by_cat[cat][1]
+            key = (cat, old_val, new_val)
+            if key not in plan:
+                plan[key] = self._merge_append_fact(cat, old_val, new_val)
+        return plan
+
+    def _save_facts_impl(self, facts_list: List[str], user_id: str = "default", origin_chat: str = None,
+                         user_name: str = None, merges: Dict = None):
+        """
+        Сохраняет извлечённые факты в векторную базу.
+
+        origin_chat — чат, где факт был рассказан. Хранится в metadata и
+        определяет приватность: непубличный факт виден только там (и в личке).
+        
+        Логика:
+        - Полный дубликат → пропуск
+        - UPDATE-категория (City, Age и т.д.) → замена старого значения
+        - APPEND-категория (Hobby, Food и т.д.) → умное слияние через LLM
+        - Новая категория → обычное сохранение
+
+        facts_list — уже нарезанный текст (split_facts_text режет по границам
+        категорий, не по запятым: значение может само содержать запятые).
+        merges — заранее посчитанные слияния (_plan_merges). Вызывается под
+        _facts_lock, поэтому LLM здесь не зовётся.
+        """
+        merges = merges or {}
+        # Существующие факты: полные документы + разбор по категориям
+        existing_docs, existing_by_cat = self._load_existing(user_id)
 
         added = 0
-        for i, fact in enumerate(facts_list):
+        for fact in facts_list:
             fact_stripped = fact.strip()
 
             # 1. Полный дубликат
@@ -860,26 +1046,29 @@ class LongTermMemory:
                     print(f"  [LTM] UPDATE {cat_key}: '{old_val}' → '{new_val}'")
 
                 elif cat_key in APPEND_CATEGORIES:
-                    # Умное слияние через LLM
-                    merged = self._merge_append_fact(cat_key, old_val, new_val)
+                    # Умное слияние (LLM) посчитано до лока; старое значение
+                    # успело смениться — плана нет, сливаем без LLM
+                    key = (cat_key, old_val, new_val)
+                    merged = merges.get(key)
+                    if not merged:
+                        # Плана нет (старое значение сменилось) или LLM не
+                        # ответил — объединение без LLM. Раньше при неудаче
+                        # старый факт удалялся и сохранялось только новое
+                        # значение: накопленное молча терялось
+                        merged = self._merge_append_fact(cat_key, old_val, new_val,
+                                                         allow_llm=False)
                     self.collection.delete(ids=[old_id])
-
                     if merged:
                         fact_stripped = f"{cat_key}: {merged}"
-                        print(f"  [LTM] MERGE {cat_key}: '{old_val}' + '{new_val}' → '{merged}'")
-                    else:
-                        # Слияние не удалось — сохраняем как есть
-                        print(f"  [LTM] MERGE не удался для {cat_key}, сохраняю как есть")
+                    print(f"  [LTM] MERGE {cat_key}: '{old_val}' + '{new_val}' → '{merged}'")
                 else:
                     # Категория без явного типа — сохраняем обе (старый подход)
                     pass
 
-                # Обновляем маппинг категории на новый факт
-                existing_by_cat[cat_key] = ("_pending_", new_val)
-
             # 3. Сохраняем факт (новый или обновлённый/слитый)
+            fact_id = f"{user_id}_fact_{_unique_ms()}"
             self.collection.add(
-                ids=[f"{user_id}_fact_{int(time.time() * 1000) + i}"],
+                ids=[fact_id],
                 documents=[fact_stripped],
                 metadatas=[{
                     "user_id": user_id,
@@ -891,15 +1080,24 @@ class LongTermMemory:
                 }]
             )
             existing_docs.add(fact_stripped.lower())
+            # Маппинг категории — на только что записанный факт (реальный id
+            # и итоговое значение): второй факт той же категории в этом же
+            # вызове заменит/сольёт его. Раньше здесь был id "_pending_" —
+            # delete по нему ничего не удалял, и в базе оставались оба
+            if cat_key:
+                existing_by_cat[cat_key] = (fact_id, fact_stripped.partition(":")[2].strip())
             added += 1
 
         if added > 0:
             print(f"  [LTM] Сохранено {added} фактов (из {len(facts_list)})")
 
-    def _merge_append_fact(self, category: str, existing: str, new_value: str) -> Optional[str]:
+    def _merge_append_fact(self, category: str, existing: str, new_value: str,
+                           allow_llm: bool = True) -> Optional[str]:
         """
         Гибридное слияние фактов APPEND-категории.
         Сначала пробует ручное объединение, если сложно — вызывает LLM.
+        allow_llm=False — под _facts_lock: вместо LLM объединение без
+        повторов (регистр не важен, порядок сохраняется).
         """
         # 1. Быстрое ручное объединение
         existing_items = [item.strip().lower() for item in existing.split(",")]
@@ -911,7 +1109,15 @@ class LongTermMemory:
             return ", ".join(sorted(all_items))
         
         # 3. Если есть подозрение на дубликаты или сложный случай — LLM
-        return self._merge_with_llm(category, existing, new_value)
+        if allow_llm:
+            return self._merge_with_llm(category, existing, new_value)
+        seen, items = set(), []
+        for item in existing.split(",") + new_value.split(","):
+            item = item.strip()
+            if item and item.lower() not in seen:
+                seen.add(item.lower())
+                items.append(item)
+        return ", ".join(items) or None
 
     def _merge_with_llm(self, category: str, existing: str, new_value: str) -> Optional[str]:
         """
@@ -951,19 +1157,30 @@ class LongTermMemory:
             return None
 
     def summarize_user(self, user_id: str = "default") -> int:
-        """Потокобезопасная обёртка: консолидация не должна пересекаться с save_facts."""
-        with self._facts_lock:
-            return self._summarize_user_impl(user_id)
-
-    def _summarize_user_impl(self, user_id: str = "default") -> int:
         """
         Периодическая консолидация LTM для пользователя.
         LLM получает все факты, чистит противоречия и дубликаты,
-        затем старые факты удаляются и записываются чистые.
-        
-        Returns: количество фактов после консолидации, или -1 при ошибке.
+        затем старые факты заменяются чистыми.
+
+        Раньше весь метод шёл под _facts_lock вместе с LLM-вызовом (до 150 с
+        у веб-чата), а замена была «clear + поштучный add» — читатель между
+        ними видел неполный набор (пропадали правила Rule из промпта). Теперь:
+        снимок фактов — под локом, LLM и эмбеддинги — вне лока, замена —
+        одним шагом под локом, и только если за время LLM-вызова память не
+        очищали (эпоха) и снятые факты не удаляли/не меняли. Факты, которые
+        экстракция добавила за это время, остаются рядом с чистыми.
+
+        Returns: количество фактов после консолидации, -1 при ошибке/очистке,
+        SUMMARY_CONFLICT — отменена из-за правки фактов (стоит повторить).
         """
-        all_facts = self.get_all_facts(user_id)
+        with self._facts_lock:
+            epoch = self._epoch(user_id)
+            snap = self.collection.get(where={"user_id": user_id},
+                                       include=["documents", "metadatas"])
+        snap_ids = list(snap.get("ids") or [])
+        snap_docs = snap.get("documents") or []
+        snap_metas = snap.get("metadatas") or [{}] * len(snap_docs)
+        all_facts = list(snap_docs)
         if len(all_facts) < 2:
             print(f"  [LTM SUM] Слишком мало фактов ({len(all_facts)}), консолидация не нужна")
             return len(all_facts)
@@ -1022,38 +1239,62 @@ class LongTermMemory:
                 print(f"  [LTM SUM] Подозрительно мало фактов ({len(new_facts)} из {len(all_facts)}), консолидация отменена")
                 return -1
 
-            # Сохраняем метаданные старых фактов: после перезаписи нужно восстановить
-            # origin_chat/category/user_name, иначе приватность фактов слетит
+            # Метаданные старых фактов (из снимка): после перезаписи нужно
+            # восстановить origin_chat/category/user_name, иначе приватность слетит
             old_meta_by_text = {}
             old_meta_by_cat = {}
-            old_rows = self.collection.get(where={"user_id": user_id}, include=["documents", "metadatas"])
-            for doc, meta in zip(old_rows.get("documents", []), old_rows.get("metadatas", [])):
+            for doc, meta in zip(snap_docs, snap_metas):
                 meta = meta or {}
                 old_meta_by_text[doc.strip()] = meta
                 cat = meta.get("category") or (doc.partition(":")[0].strip() if ":" in doc else "")
                 if cat and cat not in old_meta_by_cat:
                     old_meta_by_cat[cat] = meta
 
-            # Удаляем все старые факты пользователя
-            self.clear(user_id)
-
-            # Записываем чистые
-            for i, fact in enumerate(new_facts):
+            new_metas = []
+            for fact in new_facts:
                 cat = fact.partition(":")[0].strip() if ":" in fact else ""
                 old = old_meta_by_text.get(fact.strip()) or old_meta_by_cat.get(cat) or {}
-                self.collection.add(
-                    ids=[f"{user_id}_fact_{int(time.time() * 1000) + i}"],
-                    documents=[fact],
-                    metadatas=[{
-                        "user_id": user_id,
-                        "type": "long_term",
-                        "origin_chat": old.get("origin_chat", ""),
-                        "category": cat,
-                        "user_name": old.get("user_name", ""),
-                    }]
-                )
+                new_metas.append({
+                    "user_id": user_id,
+                    "type": "long_term",
+                    "origin_chat": old.get("origin_chat", ""),
+                    "category": cat,
+                    "user_name": old.get("user_name", ""),
+                })
+            # Эмбеддинги — вне лока (иначе add считал бы их под ним, и
+            # читатели ждали бы модель); не вышло — посчитает сама коллекция
+            try:
+                embeddings = self.embedder(new_facts)
+            except Exception as e:
+                logger.warning(f"[LTM SUM] Эмбеддинги вне лока не посчитаны: {e}")
+                embeddings = None
 
-            print(f"  [LTM SUM] Консолидация: {len(all_facts)} → {len(new_facts)} фактов")
+            with self._facts_lock:
+                if self._epoch(user_id) != epoch:
+                    print(f"  [LTM SUM] Память {user_id} очищена во время консолидации — результат отброшен")
+                    return -1
+                cur_ids = set(self.collection.get(where={"user_id": user_id},
+                                                  include=[])["ids"])
+                if not set(snap_ids) <= cur_ids:
+                    # Снятый факт за время LLM-вызова удалили (forget, правка,
+                    # UPDATE/слияние экстракции) — чистый набор его ещё
+                    # содержит и воскресил бы. Отменяем, повторим в следующий раз
+                    print(f"  [LTM SUM] Факты {user_id} изменились во время консолидации — отменена")
+                    return SUMMARY_CONFLICT
+                kept = len(cur_ids) - len(snap_ids)
+                # Сначала чистые, потом удаление старых: сбой между шагами
+                # оставит дубли, а не пустую память. Читатели под тем же локом
+                # промежуточного состояния не видят.
+                self.collection.add(
+                    ids=[f"{user_id}_fact_{_unique_ms()}" for _ in new_facts],
+                    documents=new_facts,
+                    metadatas=new_metas,
+                    **({"embeddings": embeddings} if embeddings is not None else {}),
+                )
+                self.collection.delete(ids=snap_ids)
+
+            print(f"  [LTM SUM] Консолидация: {len(all_facts)} → {len(new_facts)} фактов"
+                  + (f" (+{kept} добавлено за время консолидации)" if kept else ""))
             for f in new_facts:
                 print(f"    {f}")
             return len(new_facts)
@@ -1066,90 +1307,94 @@ class LongTermMemory:
 
     def search(self, query: str, user_id: str = "default", limit: int = 5, chat_id: str = None) -> List[str]:
         """Семантический поиск фактов с учётом приватности (chat_id — текущий чат)."""
-        if self.collection.count() == 0:
-            return []
+        with self._facts_lock:
+            if self.collection.count() == 0:
+                return []
 
-        # В группе часть фактов отфильтруется по приватности — берём с запасом
-        is_group = chat_id is not None and str(chat_id) != str(user_id)
-        n_results = limit * 4 if is_group else limit
+            # В группе часть фактов отфильтруется по приватности — берём с запасом
+            is_group = chat_id is not None and str(chat_id) != str(user_id)
+            n_results = limit * 4 if is_group else limit
 
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=n_results,
-            where={"user_id": user_id}
-        )
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                where={"user_id": user_id}
+            )
 
-        if not results["documents"]:
-            return []
+            if not results["documents"]:
+                return []
 
-        docs = results["documents"][0]
-        metas = results["metadatas"][0] if results.get("metadatas") else [{}] * len(docs)
+            docs = results["documents"][0]
+            metas = results["metadatas"][0] if results.get("metadatas") else [{}] * len(docs)
 
-        if not is_group:
-            return docs
+            if not is_group:
+                return docs
 
-        filtered = []
-        for doc, meta in zip(docs, metas):
-            if self._fact_visible(meta, doc, user_id, chat_id):
-                filtered.append(doc)
-            if len(filtered) >= limit:
-                break
-        return filtered
+            filtered = []
+            for doc, meta in zip(docs, metas):
+                if self._fact_visible(meta, doc, user_id, chat_id):
+                    filtered.append(doc)
+                if len(filtered) >= limit:
+                    break
+            return filtered
 
     def get_all_facts(self, user_id: str = "default", chat_id: str = None) -> List[str]:
         """Все факты пользователя. Если задан chat_id — только видимые в этом чате."""
-        if self.collection.count() == 0:
-            return []
+        with self._facts_lock:
+            if self.collection.count() == 0:
+                return []
 
-        results = self.collection.get()
-        if results and results["ids"]:
-            return [
-                doc for doc, meta in zip(results.get("documents", []), results.get("metadatas", []))
-                if meta.get("user_id") == user_id
-                and self._fact_visible(meta, doc, user_id, chat_id)
-            ]
-        return []
+            results = self.collection.get()
+            if results and results["ids"]:
+                return [
+                    doc for doc, meta in zip(results.get("documents", []), results.get("metadatas", []))
+                    if meta.get("user_id") == user_id
+                    and self._fact_visible(meta, doc, user_id, chat_id)
+                ]
+            return []
     
     def get_facts_by_category(self, user_id: str, category: str, chat_id: str = None) -> List[str]:
         """Факты пользователя одной категории (с учётом приватности)."""
-        if self.collection.count() == 0:
-            return []
+        with self._facts_lock:
+            if self.collection.count() == 0:
+                return []
 
-        results = self.collection.get(where={"user_id": user_id})
-        if not results or not results["ids"]:
-            return []
+            results = self.collection.get(where={"user_id": user_id})
+            if not results or not results["ids"]:
+                return []
 
-        out = []
-        for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
-            meta = meta or {}
-            cat = meta.get("category") or (doc.partition(":")[0].strip() if ":" in doc else "")
-            if cat != category:
-                continue
-            if self._fact_visible(meta, doc, user_id, chat_id):
-                out.append(doc)
-        return out
+            out = []
+            for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
+                meta = meta or {}
+                cat = meta.get("category") or (doc.partition(":")[0].strip() if ":" in doc else "")
+                if cat != category:
+                    continue
+                if self._fact_visible(meta, doc, user_id, chat_id):
+                    out.append(doc)
+            return out
 
     def get_all_facts_with_meta(self, user_id: str = "default") -> List[Dict]:
         """Все факты пользователя с метаданными (для экспорта). Без фильтра приватности."""
-        if self.collection.count() == 0:
-            return []
+        with self._facts_lock:
+            if self.collection.count() == 0:
+                return []
 
-        results = self.collection.get()
-        if not results or not results["ids"]:
-            return []
+            results = self.collection.get()
+            if not results or not results["ids"]:
+                return []
 
-        facts = []
-        for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
-            meta = meta or {}
-            if meta.get("user_id") != user_id:
-                continue
-            category = meta.get("category") or (doc.partition(":")[0].strip() if ":" in doc else "")
-            facts.append({
-                "fact": doc,
-                "category": category,
-                "origin_chat": meta.get("origin_chat", ""),
-            })
-        return facts
+            facts = []
+            for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
+                meta = meta or {}
+                if meta.get("user_id") != user_id:
+                    continue
+                category = meta.get("category") or (doc.partition(":")[0].strip() if ":" in doc else "")
+                facts.append({
+                    "fact": doc,
+                    "category": category,
+                    "origin_chat": meta.get("origin_chat", ""),
+                })
+            return facts
 
     def get_chat_facts(self, chat_id: str, exclude_user_id: str = None, limit: int = 50) -> List[Dict]:
         """Факты ВСЕХ пользователей, узнанные в этом чате (origin_chat == chat_id).
@@ -1157,30 +1402,31 @@ class LongTermMemory:
         Это публичные для чата данные: сказанное здесь при всех можно обсуждать
         здесь со всеми. Факты из личных чатов сюда не попадают никогда.
         """
-        if self.collection.count() == 0:
-            return []
+        with self._facts_lock:
+            if self.collection.count() == 0:
+                return []
 
-        results = self.collection.get(
-            where={"origin_chat": str(chat_id)},
-            include=["documents", "metadatas"],
-        )
-        if not results or not results["ids"]:
-            return []
+            results = self.collection.get(
+                where={"origin_chat": str(chat_id)},
+                include=["documents", "metadatas"],
+            )
+            if not results or not results["ids"]:
+                return []
 
-        facts = []
-        for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
-            meta = meta or {}
-            if exclude_user_id is not None and meta.get("user_id") == str(exclude_user_id):
-                continue
-            facts.append({
-                "fact": doc,
-                "category": meta.get("category", ""),
-                "user_id": meta.get("user_id", ""),
-                "user_name": meta.get("user_name", ""),
-            })
-            if len(facts) >= limit:
-                break
-        return facts
+            facts = []
+            for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
+                meta = meta or {}
+                if exclude_user_id is not None and meta.get("user_id") == str(exclude_user_id):
+                    continue
+                facts.append({
+                    "fact": doc,
+                    "category": meta.get("category", ""),
+                    "user_id": meta.get("user_id", ""),
+                    "user_name": meta.get("user_name", ""),
+                })
+                if len(facts) >= limit:
+                    break
+            return facts
 
     def forget(self, query: str, user_id: str = "default") -> Optional[str]:
         """
@@ -1271,7 +1517,7 @@ class LongTermMemory:
                 cat_raw, _, _ = new_text.partition(":")
                 cat_key = cat_raw.strip()
             self.collection.add(
-                ids=[f"{user_id}_fact_{int(time.time() * 1000)}"],
+                ids=[f"{user_id}_fact_{_unique_ms()}"],
                 documents=[new_text],
                 metadatas=[{
                     "user_id": user_id,
@@ -1285,23 +1531,38 @@ class LongTermMemory:
             return old_doc
 
     def clear(self, user_id: str = "default"):
-        try:
-            # Получаем все записи и фильтруем по user_id вручную
-            results = self.collection.get()
-            if results and results["ids"]:
-                ids_to_delete = [
-                    rid for rid, meta in zip(results["ids"], results.get("metadatas", []))
-                    if meta.get("user_id") == user_id
-                ]
-                if ids_to_delete:
-                    self.collection.delete(ids=ids_to_delete)
-                    print(f"  [LTM] Удалено {len(ids_to_delete)} фактов пользователя {user_id}")
+        """Стереть факты пользователя. Под _facts_lock и с новой эпохой:
+        идущие экстракция/консолидация (они начались до очистки) при записи
+        увидят смену эпохи и отбросят результат, а не воскресят факты."""
+        with self._facts_lock:
+            self._epochs[str(user_id)] = self._epochs.get(str(user_id), 0) + 1
+            try:
+                # Получаем все записи и фильтруем по user_id вручную
+                results = self.collection.get()
+                if results and results["ids"]:
+                    ids_to_delete = [
+                        rid for rid, meta in zip(results["ids"], results.get("metadatas", []))
+                        if meta.get("user_id") == user_id
+                    ]
+                    if ids_to_delete:
+                        self.collection.delete(ids=ids_to_delete)
+                        print(f"  [LTM] Удалено {len(ids_to_delete)} фактов пользователя {user_id}")
+                    else:
+                        print(f"  [LTM] Нет фактов для пользователя {user_id}")
                 else:
-                    print(f"  [LTM] Нет фактов для пользователя {user_id}")
-            else:
-                print(f"  [LTM] Коллекция пуста")
-        except Exception as e:
-            print(f"  [LTM] Ошибка при очистке LTM: {e}")
+                    print(f"  [LTM] Коллекция пуста")
+            except Exception as e:
+                print(f"  [LTM] Ошибка при очистке LTM: {e}")
+
+    def clear_all(self):
+        """Стереть факты всех пользователей — как clear(), с общей эпохой:
+        удаление мимо LTM (collection.delete напрямую) фоновые задачи не
+        заметили бы и дописали факты в пустую память."""
+        with self._facts_lock:
+            self._epoch_all += 1
+            results = self.collection.get(include=[])
+            if results and results["ids"]:
+                self.collection.delete(ids=results["ids"])
 
 
 class MemoryManager:
@@ -1338,8 +1599,9 @@ class MemoryManager:
         # счётчик начнётся заново, экстракция/консолидация случится позже.
         self._user_msg_counters = BoundedCache(max_entries=MAX_COUNTER_USERS)  # user_id → count (консолидация)
         self._extract_counters = BoundedCache(max_entries=MAX_COUNTER_USERS)   # user_id → count (батч-экстракция)
-        self._summary_lock = threading.RLock()
-        self._counter_lock = threading.Lock()  # отдельный: summary lock держится долго
+        self._counter_lock = threading.Lock()
+        # «Консолидация идёт» — флаг под _counter_lock (см. _run_summarize_async)
+        self._summary_running = False
 
     # Пакетная LTM-экстракция: каждые N сообщений диалога (user+assistant) —
     # один вызов на пачку новых N (обычный режим — 15, light — 6, под размер
@@ -1412,28 +1674,58 @@ class MemoryManager:
             # сообщении. Консолидация идёт по user_id, но гейт — по чату, из
             # которого пришло сообщение: смысл гейта не «персона занята», а
             # «не тратим модель, пока человек ждёт ответа в этом чате»
-            if (due and not web_presence.is_active(self.context, chat_id or user_id)
-                    and self._run_summarize_async(user_id)):
-                # Сбрасываем счётчик только если консолидация реально запустилась
-                with self._counter_lock:
-                    self._user_msg_counters[user_id] = 0
+            # Счётчик сбрасывает сам _run_summarize_async — только если
+            # консолидация реально поставлена (до постановки: иначе быстрая
+            # задача вернула бы счётчик к порогу, а сброс здесь его затёр)
+            if due and not web_presence.is_active(self.context, chat_id or user_id):
+                self._run_summarize_async(user_id)
 
     def _run_summarize_async(self, user_id: str) -> bool:
         # Запускает консолидацию LTM в фоне, с защитой от параллельного запуска.
         # Возвращает True, если задача поставлена в пул.
-        if not self._summary_lock.acquire(blocking=False):
-            print("  [LTM SUM] Пропуск — консолидация уже запущена")
-            return False
+        # Защита — флаг под коротким локом, а не лок на всё время задачи:
+        # раньше RLock захватывался в потоке запроса, а release() звался в
+        # потоке пула — RLock принадлежит захватившему потоку, release бросал
+        # RuntimeError, лок навсегда оставался занятым, и после первой
+        # консолидации все следующие пропускались. Флаг снимает любой поток.
+        with self._counter_lock:
+            if self._summary_running:
+                print("  [LTM SUM] Пропуск — консолидация уже запущена")
+                return False
+            self._summary_running = True
+            prev_count = self._user_msg_counters.get(user_id, 0)
+            self._user_msg_counters[user_id] = 0
+
+        def _finish():
+            with self._counter_lock:
+                self._summary_running = False
+
+        def _cancelled():
+            # Задача так и не выполнится (пул не принял / остановлен):
+            # снять флаг — иначе консолидация заблокирована навсегда — и
+            # вернуть счётчик, чтобы попытка не потерялась
+            with self._counter_lock:
+                self._summary_running = False
+                self._user_msg_counters[user_id] = max(
+                    self._user_msg_counters.get(user_id, 0), prev_count)
 
         def _do():
             try:
-                self.ltm.summarize_user(user_id)
+                if self.ltm.summarize_user(user_id) == SUMMARY_CONFLICT:
+                    # Отменена из-за правки фактов — счётчик обратно к порогу:
+                    # повтор на следующем сообщении, а не через trigger_every
+                    with self._counter_lock:
+                        self._user_msg_counters[user_id] = max(
+                            self._user_msg_counters.get(user_id, 0),
+                            SUMMARY_SETTINGS["trigger_every"] - 1)
             finally:
-                self._summary_lock.release()
+                _finish()
 
-        executor = self.ltm._get_executor()
-        future = executor.submit(_do)
-        future.add_done_callback(lambda f: f.exception() and print(f"  [LTM SUM] ОШИБКА: {f.exception()}"))
+        # В очередь пользователя — после экстракции, поставленной этим же
+        # add_message (иначе её UPDATE/слияние отменяли консолидацию)
+        if not self.ltm._submit_serial(user_id, _do, on_cancel=_cancelled):
+            print(f"  [LTM SUM] Не удалось запустить консолидацию для {user_id}")
+            return False
         print(f"  [LTM SUM] Консолидация запущена в фоне для {user_id}")
         return True
 

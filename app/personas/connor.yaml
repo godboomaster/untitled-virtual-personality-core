@@ -192,18 +192,18 @@ llm:
       enabled: false
   primary: webchat:deepseek
   fallback:
+  - webchat:qwen
   - webchat:zai
   - kimi
   - zai
   - openai
-  - anthropic
   - groq
+  - anthropic
   - deepseek
   - google
   - mimo
   - hf
   - local
-  - webchat:qwen
   - webchat:kimi
   - webchat:chatgpt
   - webchat:claude

@@ -26,6 +26,14 @@ from app.features.computer_control import classify_confirmation
 
 logger = logging.getLogger(__name__)
 
+# Итоги доставки помимо True/False (app/core/turn_gate.py): идёт ход
+# пользователя — отложено, повтор через _DEFER_RETRY_SECONDS (не сбой: урок
+# не засчитывается, на текст вместо файла не откатываемся); курс остановлен/
+# сменился в том самом ходе — не доставляем, состояние сессии не трогаем
+_DEFERRED = "deferred"
+_CANCELLED = "cancelled"
+_DEFER_RETRY_SECONDS = 60
+
 
 # ─── Парсинг частоты уроков ──────────────────────────────────
 
@@ -314,13 +322,15 @@ class LearningManager:
     def _get_response_complete(
         self, messages: list, *, temperature: float, max_tokens: int,
         top_p: float = 0.9, max_continuations: int = 2,
+        user_path: bool = False,
     ) -> Optional[str]:
         """Обёртка над router.get_response: если ответ похож на обрезанный посреди фразы
         (не хватило max_tokens), просит модель дописать с того же места и склеивает —
         вместо того чтобы молча отправлять пользователю недописанный текст."""
         if not self._router:
             return None
-        response = self._side_response(messages, temperature=temperature, max_tokens=max_tokens, top_p=top_p)
+        response = self._side_response(messages, temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+                                       user_path=user_path)
         if not response:
             return response
         full = response
@@ -331,7 +341,8 @@ class LearningManager:
                 {"role": "assistant", "content": full},
                 {"role": "user", "content": "You stopped mid-sentence. Continue strictly from where you left off — do not repeat what was already written and do not start over."},
             ]
-            cont = self._side_response(convo, temperature=temperature, max_tokens=max_tokens, top_p=top_p)
+            cont = self._side_response(convo, temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+                                       user_path=user_path)
             if not cont:
                 break
             full += cont
@@ -359,6 +370,9 @@ class LearningManager:
         self._persona = None
         self._local_router = None
         self._memory = None
+        # Гейт хода пользователя (общий с BotInstance): урок не пишется в STM
+        # и не уходит посреди идущего хода — см. _deliver
+        self._turn_gate = None
 
         self._sessions: List[dict] = []
         self._load()
@@ -378,7 +392,12 @@ class LearningManager:
 
     def _side_response(self, messages, **kw):
         """Побочный вызов LLM (уроки/квизы): fallback-цепочка основного
-        роутера МИНУС основной провайдер; веб-чат — отдельный side-чат."""
+        роутера МИНУС основной провайдер; веб-чат — отдельный side-чат.
+        user_path=True (в kw) — вызов синхронно на пути ответа пользователю
+        (разбор настройки/продолжения курса, проверка ответа на тест):
+        роутер вместо постоянного фонового side-чата берёт разовый канал —
+        без фоновой очереди сайта, пола ожидания 150 с и второго долгого
+        захода (см. ModelRouter.get_response)."""
         if not self._router:
             return None
         return self._router.get_response(
@@ -421,6 +440,10 @@ class LearningManager:
     def set_memory(self, memory):
         """Передаёт MemoryManager, чтобы сохранять уроки в STM (контекст для последующих вопросов)."""
         self._memory = memory
+
+    def set_turn_gate(self, gate):
+        """Передаёт ChatTurnGate бота (app/core/turn_gate.py)."""
+        self._turn_gate = gate
 
     # ── persistence ──
 
@@ -694,7 +717,8 @@ class LearningManager:
             )},
             {"role": "user", "content": "Options:\n" + "\n".join(options_desc) + f"\n\nUser message: {user_text}"},
         ]
-        response = self._side_response(messages, temperature=0.0, max_tokens=5, top_p=1.0)
+        response = self._side_response(messages, temperature=0.0, max_tokens=5, top_p=1.0,
+                                       user_path=True)
         idx = None
         if response:
             m = re.search(r"\d+", response)
@@ -935,7 +959,8 @@ class LearningManager:
             )},
             {"role": "user", "content": text},
         ]
-        response = self._side_response(messages, temperature=0.0, max_tokens=10, top_p=1.0)
+        response = self._side_response(messages, temperature=0.0, max_tokens=10, top_p=1.0,
+                                       user_path=True)
         if not response:
             return None
         response = response.strip()
@@ -997,7 +1022,8 @@ class LearningManager:
             )},
             {"role": "user", "content": f"Topic: \"{subject}\"." if subject else "React."},
         ]
-        response = self._get_response_complete(messages, temperature=0.6, max_tokens=100, top_p=0.9)
+        response = self._get_response_complete(messages, temperature=0.6, max_tokens=100, top_p=0.9,
+                                               user_path=True)
         return (response or fallback).strip()
 
     def classify_continue_answer_smart(self, text: str) -> str:
@@ -1084,7 +1110,8 @@ class LearningManager:
             )},
             {"role": "user", "content": f"Course topic: \"{subject}\"." if subject else "React."},
         ]
-        response = self._get_response_complete(messages, temperature=0.6, max_tokens=100, top_p=0.9)
+        response = self._get_response_complete(messages, temperature=0.6, max_tokens=100, top_p=0.9,
+                                               user_path=True)
         return (response or fallback).strip()
 
     def submit_quiz_answer(self, chat_id: str, answer_text: str, session_id: Optional[str] = None,
@@ -1448,7 +1475,8 @@ class LearningManager:
                 f"Student's message: {user_answer}"
             )},
         ]
-        response = self._get_response_complete(messages, temperature=0.3, max_tokens=500, top_p=0.9)
+        response = self._get_response_complete(messages, temperature=0.3, max_tokens=500, top_p=0.9,
+                                               user_path=True)
         if not response:
             return False, f"Правильный ответ был: {quiz.get('answer', '?')}."
         v = re.search(r"VERDICT:\s*(.+?)(?:\n\s*FEEDBACK:|$)", response, re.IGNORECASE | re.DOTALL)
@@ -1550,7 +1578,61 @@ class LearningManager:
             return False
         return bool((self._persona.persona_data.get("features") or {}).get("muted"))
 
-    async def _send(self, chat_id: str, text: str, topic_id: Optional[int], is_question: bool = False) -> bool:
+    def _session_live(self, chat_id: str, session_id: Optional[str]) -> bool:
+        """Курс всё ещё ждёт этот урок: сессия та же, активна и не ждёт
+        ответа на «продолжаем?». Зовётся под локом гейта хода перед записью
+        в STM — в только что закончившемся ходе курс могли остановить."""
+        if not session_id:
+            return True
+        s = self.get_session(chat_id, session_id=session_id)
+        return bool(s and s.get("active") and not s.get("asked_continue"))
+
+    async def _deliver(self, chat_id: str, stm_text: str, send,
+                       session_id: Optional[str] = None, question: bool = False):
+        """Запись в STM + доставка (send — корутина-фабрика → успех).
+        → True / False (сбой) / _DEFERRED (идёт ход) / _CANCELLED.
+
+        Урок/тест/«продолжаем?» идут по расписанию и раньше могли лечь в STM
+        посреди хода пользователя — между его репликой и ответом — и уйти
+        поверх живого обмена. Запись в STM — атомарно с проверкой «хода нет и
+        курс в силе» под локом гейта; ход идёт — _DEFERRED сразу (цикл не
+        ждёт, повтор тиком). Не доставлено — запись откатывается по
+        идентичности. question — вопрос «продолжаем?» (asked_continue для
+        него ещё не выставлен, проверяем только, что сессия активна)."""
+        entry = None
+        gate = self._turn_gate
+        if gate is not None:
+            if question:
+                still = lambda: bool((self.get_session(chat_id, session_id=session_id) or {}).get("active")) \
+                    if session_id else True
+            else:
+                still = lambda: self._session_live(chat_id, session_id)
+            res = await asyncio.to_thread(
+                gate.commit_message, self._memory, chat_id, stm_text, None, still)
+            if res.status == "busy":
+                logger.info(f"[Learning] Идёт ход пользователя в {chat_id} — отложено")
+                return _DEFERRED
+            if res.status == "cancelled":
+                logger.info(f"[Learning] Курс {session_id} остановлен/сменился за время "
+                            "хода пользователя — не отправляем")
+                return _CANCELLED
+            entry = res.entry
+        try:
+            success = await send()
+        except Exception as e:
+            logger.error(f"[Learning] Ошибка отправки в {chat_id}: {e}")
+            success = False
+        if not success:
+            if entry is not None:
+                await asyncio.to_thread(gate.rollback_message, self._memory, chat_id, entry)
+            return False
+        if gate is None:
+            self._save_to_stm(chat_id, stm_text)
+        return True
+
+    async def _send(self, chat_id: str, text: str, topic_id: Optional[int],
+                    is_question: bool = False, session_id: Optional[str] = None,
+                    continue_question: bool = False):
         if not self._sender:
             return False
         # Замороженная персона молчит: False — урок не засчитывается,
@@ -1559,10 +1641,14 @@ class LearningManager:
             logger.info(f"[Learning] Персона заморожена — отправка в {chat_id} пропущена")
             return False
         try:
-            success = await self._sender.send_message(chat_id, text, topic_id=topic_id)
+            success = await self._deliver(
+                chat_id, text,
+                lambda: self._sender.send_message(chat_id, text, topic_id=topic_id),
+                session_id=session_id, question=continue_question)
+            if success is not True:
+                return success
             logger.info(f"[Learning] Отправлено в чат {chat_id}: {text[:60]}")
             if success:
-                self._save_to_stm(chat_id, text)
                 # Вопросы (тест, «продолжаем?») регистрируем, чтобы потом понять,
                 # ответил ли пользователь reply-ом именно на них. message_id берём
                 # по ЭТОМУ чату — общий атрибут sender'а при конкурентных отправках
@@ -1578,7 +1664,8 @@ class LearningManager:
             return False
 
     async def _send_document(self, chat_id: str, file_path: str, filename: str,
-                             caption: str, topic_id: Optional[int]) -> bool:
+                             caption: str, topic_id: Optional[int],
+                             session_id: Optional[str] = None):
         """Отправляет md-файл урока. Подпись сохраняется в STM.
         Возвращает успех True/False — по False вызывающий код делает fallback на
         отправку текстом. Раньше успех наружу не возвращался (исключения гасились
@@ -1591,19 +1678,20 @@ class LearningManager:
             logger.info(f"[Learning] Персона заморожена — файл урока в {chat_id} пропущен")
             return False
         try:
-            success = await self._sender.send_document(
-                chat_id, file_path, filename, caption=caption, topic_id=topic_id
-            )
-            logger.info(f"[Learning] Файл урока отправлен в чат {chat_id}: {filename}")
-            if success:
-                # ВАЖНО: не пишем в STM служебную пометку вида "[Урок во вложении: ...]" —
-                # LLM читает историю как свои собственные прошлые реплики и при случае
-                # (например, отвечая на «продолжаем?») дословно повторяет такой текст
-                # пользователю, включая квадратные скобки — выглядит как «файл не прикрепился».
-                # Сохраняем только подпись — этого достаточно, чтобы модель знала тему/вопросы
-                # последнего урока для последующего контекста.
-                self._save_to_stm(chat_id, caption)
-            return bool(success)
+            # ВАЖНО: не пишем в STM служебную пометку вида "[Урок во вложении: ...]" —
+            # LLM читает историю как свои собственные прошлые реплики и при случае
+            # (например, отвечая на «продолжаем?») дословно повторяет такой текст
+            # пользователю, включая квадратные скобки — выглядит как «файл не прикрепился».
+            # Сохраняем только подпись — этого достаточно, чтобы модель знала тему/вопросы
+            # последнего урока для последующего контекста.
+            success = await self._deliver(
+                chat_id, caption,
+                lambda: self._sender.send_document(
+                    chat_id, file_path, filename, caption=caption, topic_id=topic_id),
+                session_id=session_id)
+            if success is True:
+                logger.info(f"[Learning] Файл урока отправлен в чат {chat_id}: {filename}")
+            return success
         except Exception as e:
             logger.error(f"[Learning] Ошибка отправки файла в {chat_id}: {e}")
             return False
@@ -1646,7 +1734,13 @@ class LearningManager:
                     logger.warning(f"[Learning] Повторная генерация теста не удалась: {e}")
             if quiz:
                 text = await asyncio.to_thread(self._render_quiz_announcement, subject, quiz["question"])
-                sent = await self._send(chat_id, text, topic_id, is_question=True)
+                sent = await self._send(chat_id, text, topic_id, is_question=True,
+                                        session_id=session.get("session_id"))
+                if sent == _CANCELLED:
+                    return
+                if sent == _DEFERRED:
+                    self._defer_session(session)
+                    return
                 if sent:
                     # Тест выставляем ТОЛЬКО после доставки анонса — иначе при сбое
                     # отправки пользователь, не видевший вопроса, отвечал бы вслепую
@@ -1745,7 +1839,9 @@ class LearningManager:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
                 f.write(md_content)
                 tmp_path = f.name
-            sent = await self._send_document(chat_id, tmp_path, filename, caption=chat_msg, topic_id=topic_id)
+            sent = await self._send_document(chat_id, tmp_path, filename, caption=chat_msg,
+                                             topic_id=topic_id,
+                                             session_id=session.get("session_id"))
         except Exception as e:
             logger.error(f"[Learning] Ошибка отправки md-файла: {e}")
         finally:
@@ -1754,13 +1850,27 @@ class LearningManager:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+        if sent == _CANCELLED:
+            return
+        if sent == _DEFERRED:
+            # Ход пользователя — не сбой доставки: не откатываемся на текст,
+            # урок целиком повторим тиком после ответа
+            self._defer_session(session)
+            return
         if not sent:
             # Файл не ушёл (сеть, лимит caption, ошибка Telegram) — отдаём урок текстом.
-            # Длинный текст sender разобьёт на части сам (лимит сообщения Telegram 4096).
+            # Подпись и тело — ОДНИМ сообщением (одна запись в STM, одна
+            # доставка): раньше две отправки подряд могли разойтись — подпись
+            # ушла, а тело отложено/не доставлено. Длинный текст sender
+            # разобьёт на части сам (лимит сообщения Telegram 4096).
             logger.info(f"[Learning] Файл не доставлен, отправляю урок текстом (chat={chat_id})")
-            sent_caption = await self._send(chat_id, chat_msg, topic_id)
-            sent_body = await self._send(chat_id, lesson["lesson"], topic_id)
-            sent = sent_caption and sent_body
+            sent = await self._send(chat_id, f"{chat_msg}\n\n{lesson['lesson']}", topic_id,
+                                    session_id=session.get("session_id"))
+            if sent == _CANCELLED:
+                return
+            if sent == _DEFERRED:
+                self._defer_session(session)
+                return
 
         # Состояние обновляем ТОЛЬКО после успешной доставки. Раньше оно сохранялось
         # ДО отправки — и при сбое урок считался пройденным (lesson_count вырос, тема
@@ -1787,6 +1897,14 @@ class LearningManager:
                 next_lesson_at=time.time() + session["interval_seconds"],
             )
 
+    def _defer_session(self, session: dict):
+        """Отправка отложена ходом пользователя: повтор через минуту, урок не
+        засчитан (сентинел +86400 из _loop снимаем)."""
+        self._set_session(
+            session["chat_id"], session_id=session.get("session_id"),
+            next_lesson_at=time.time() + _DEFER_RETRY_SECONDS,
+        )
+
     async def _send_continue_question(self, session: dict):
         chat_id = session["chat_id"]
         topic_id = session.get("topic_id")
@@ -1794,7 +1912,14 @@ class LearningManager:
             f"{session.get('user_name', '')}, по теме «{session.get('subject', '')}» "
             "я давно не получаю ответов. Продолжаем обучение? (да/нет)"
         )
-        sent = await self._send(chat_id, text, topic_id, is_question=True)
+        sent = await self._send(chat_id, text, topic_id, is_question=True,
+                                session_id=session.get("session_id"),
+                                continue_question=True)
+        if sent == _CANCELLED:
+            return
+        if sent == _DEFERRED:
+            self._defer_session(session)
+            return
         if sent:
             # Вопрос «продолжаем?» — теперь единственный живой вопрос курса: висящий
             # тест (quiz_pending) закрываем, иначе ответ «да/нет» уходил в проверку
@@ -1852,6 +1977,13 @@ class LearningManager:
                     try:
                         if s.get("_action") == "stop":
                             logger.info(f"[Learning] Остановка по молчанию: chat={s['chat_id']} session={s.get('session_id')}")
+                            continue
+                        # Идёт ход пользователя в этом чате — урок ждёт минуту:
+                        # ни молчания (человек как раз пишет), ни генерации впустую
+                        if self._turn_gate is not None and self._turn_gate.busy(s["chat_id"]):
+                            logger.info(f"[Learning] Идёт ход пользователя в {s['chat_id']} — "
+                                        "урок отложен")
+                            self._defer_session(s)
                             continue
                         # Считаем молчание: для реальной сессии (не копии) инкрементируем.
                         # Целимся по session_id — при нескольких параллельных курсах одного чата

@@ -5,6 +5,7 @@ import threading
 import time
 from openai import OpenAI
 from app.core.config import PROVIDER_CONFIGS, get_available_providers
+from app.core.thread_local_attr import ThreadLocalAttr
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +37,24 @@ def _parse_webchat_sites() -> list[str]:
 
 # ── Детект офлайна ──
 # Без интернета облачная цепочка и веб-чаты заведомо мертвы, а до local
-# цепочка идёт минуты таймаутов — probe сырых IP раз в 30 с, офлайн →
-# локальная модель (Ollama) пробуется первой.
-_NET_CHECK_TTL_SEC = 30.0
-_NET_PROBE_TIMEOUT_SEC = 1.5
-_NET_PROBE_HOSTS = (("1.1.1.1", 443), ("8.8.8.8", 53))  # IP-литералы, без DNS
+# цепочка идёт минуты таймаутов — probe сырых IP, офлайн → локальная модель
+# (Ollama) пробуется первой.
+# Слабая сеть ≠ офлайн (кейс 22.09: Wi-Fi с потерями, SYN к 1.1.1.1 не
+# уложился в 1.5 с — «Нет интернета», 30 с все решения режима управления
+# принимала локальная gemma, и клики уходили мимо). Поэтому: таймаут
+# длиннее, вердикт «офлайн» — только после ДВУХ подряд неудачных серий
+# (гистерезис), кэш «офлайн» короткий (сеть мигает — быстро вернуться),
+# а любой успешный ответ облака/веб-чата подтверждает онлайн без пробы
+# (note_internet_ok).
+_NET_CHECK_TTL_SEC = 30.0        # кэш вердикта «онлайн»
+_NET_OFFLINE_TTL_SEC = 10.0      # кэш вердикта «офлайн»
+_NET_PROBE_TIMEOUT_SEC = 3.0
+_NET_PROBE_ROUNDS = 2            # серий подряд без ответа = офлайн
+# IP-литералы, без DNS. Яндекс DNS — первым: провайдеры в РФ режут прямые
+# TCP к 1.1.1.1/8.8.8.8 (замер 23.09: оба таймаут, а HTTP до Google идёт
+# за 1.2 с) — проба ждала 2×2×3 = 12 с и выносила ложное «офлайн»: поиск
+# пропускался, цепочка уходила к локальной модели
+_NET_PROBE_HOSTS = (("77.88.8.8", 443), ("1.1.1.1", 443), ("8.8.8.8", 53))
 _net_lock = threading.Lock()
 _net_ok: bool | None = None
 _net_checked = 0.0
@@ -51,30 +65,79 @@ _net_checked = 0.0
 BURST_LOCK_WAIT_SEC = 3.0
 
 
-def internet_available() -> bool:
-    """Есть ли интернет: TCP-probe пары надёжных IP, кэш на 30 с (процесс).
-    Ложное «офлайн» безопасно: если local не ответила, обычная цепочка всё
-    равно идёт дальше — меняется только её приоритет."""
-    global _net_ok, _net_checked
-    with _net_lock:
-        if (_net_ok is not None
-                and time.monotonic() - _net_checked < _NET_CHECK_TTL_SEC):
-            return _net_ok
-    ok = False
+def _probe_round() -> bool:
+    """Одна серия TCP-проб: хоть один хост ответил — онлайн."""
     for host, port in _NET_PROBE_HOSTS:
         try:
             socket.create_connection((host, port),
                                      timeout=_NET_PROBE_TIMEOUT_SEC).close()
-            ok = True
-            break
+            return True
         except OSError:
             continue
+    return False
+
+
+def note_internet_ok() -> None:
+    """Облако/веб-чат только что ответили — интернет есть по факту, проба
+    не нужна (слабая сеть, где проба теряет SYN, а HTTP всё же проходит)."""
+    global _net_ok, _net_checked
+    with _net_lock:
+        _net_ok, _net_checked = True, time.monotonic()
+
+
+def internet_available() -> bool:
+    """Есть ли интернет: TCP-probe пары надёжных IP с кэшем (процесс):
+    «онлайн» — 30 с, «офлайн» — 10 с. Ложное «офлайн» безопасно для
+    ответа (если local не ответила, обычная цепочка всё равно идёт дальше —
+    меняется только её приоритет), но вредно для качества (решения режима
+    управления уходят слабой локальной модели), поэтому офлайн
+    признаётся только после двух подряд пустых серий."""
+    global _net_ok, _net_checked
+    with _net_lock:
+        if _net_ok is not None:
+            ttl = _NET_CHECK_TTL_SEC if _net_ok else _NET_OFFLINE_TTL_SEC
+            if time.monotonic() - _net_checked < ttl:
+                return _net_ok
+    ok = False
+    for _ in range(_NET_PROBE_ROUNDS):
+        if _probe_round():
+            ok = True
+            break
     with _net_lock:
         _net_ok, _net_checked = ok, time.monotonic()
     return ok
 
 
+# Бюджет одного ожидания занятых сайтов во ВТОРОМ заходе фона (вся цепочка
+# упёрлась в занятость): сайты опрашиваются по кругу такими квантами, чтобы
+# освободившийся первым не ждал, пока истечёт ожидание соседнего
+BG_RETRY_SLICE_SEC = 5.0
+
+
+def _is_bg_channel(channel: str) -> bool:
+    """Фоновый канал веб-чата (side/proactive: очередь сайта в web_llm)."""
+    try:
+        from app.features.web_llm import _BACKGROUND_CHANNELS
+    except Exception:
+        _BACKGROUND_CHANNELS = ("side", "proactive")
+    return channel in _BACKGROUND_CHANNELS
+
+
 class ModelRouter:
+    # Кто ответил на ПОСЛЕДНИЙ вызов — на поток (ThreadLocalAttr поверх
+    # threading.local). Роутер один на персону, а get_response зовут
+    # параллельно ответ пользователю, инициатива, досье, LTM: общим полем
+    # фоновая задача перетирала провайдера между «ответ получен» и «метку
+    # прочитали» — неверная метка провайдера в ответе API и лишний запрос
+    # «продолжи» для веб-чата (bot_instance читает, веб-чат ли ответил).
+    # Присваивания self._last_provider = x не изменились; чтение отдаёт
+    # значение СВОЕГО потока, а поток, который ещё ничего не писал, —
+    # последнее значение любого (как прежний общий атрибут: init-значение,
+    # сторонние читатели статуса). Снимать метку для ответа нужно в том же
+    # потоке, где шёл вызов.
+    _last_provider = ThreadLocalAttr()
+    _last_local_model = ThreadLocalAttr()
+
     def __init__(self, provider: str = None, context: str = "default"):
         # context — изоляция состояния веб-чатов персоны: у каждой свой
         # постоянный чат на сайте (data/{context}/computer_control), иначе
@@ -177,7 +240,33 @@ class ModelRouter:
     @webchat_site.setter
     def webchat_site(self, site: str | None):
         self.webchat_sites = [site] if site else []
-        self._webchats = {}
+        self.reset_webchats()
+
+    def reset_webchats(self) -> None:
+        """Сбросить кэш webchat-инстансов (смена сайтов в настройках и т.п.;
+        следующий вызов создаст свежие). Единственный правильный способ —
+        не присваивать _webchats = {} напрямую: раньше старые инстансы просто
+        забывались, а их служебные вкладки жили в пуле до конца процесса.
+        Снимок кэша подменяется новым dict, каждому выбывшему — retire():
+        свободный закрывает вкладку сразу, а если через него идёт вызов
+        (поток уже держит ссылку) — по завершении этого вызова: закрыть
+        вкладку посреди ответа значило бы оборвать его."""
+        old, self._webchats = self._webchats, {}
+        for chat in list(old.values()):
+            retire = getattr(chat, "retire", None)
+            if callable(retire):
+                try:
+                    retire()
+                except Exception as e:
+                    logger.debug(f"[WebChat] вкладка выбывшего инстанса не "
+                                 f"закрылась: {e}")
+
+    def _reset_last_provider(self) -> None:
+        """Начало нового вызова: метка «кто ответил» ЭТОГО потока — None.
+        Потоки пула (to_thread, ltm_extractor…) переиспользуются: без сброса
+        неудачный вызов оставлял потоку метку его ПРОШЛОГО запроса, и её
+        читали как ответившего сейчас. Общий fallback не трогаем."""
+        type(self).__dict__["_last_provider"].set_local(self, None)
 
     def model_for(self, provider: str) -> str:
         """Модель провайдера с учётом персонального override (пусто, если неизвестен)."""
@@ -187,15 +276,17 @@ class ModelRouter:
 
     def _provider_sem(self, provider: str, cfg: dict):
         """Семафор параллельности провайдера (max_concurrent в конфиге);
-        None — без лимита. Ленивое создание, потокобезопасность не нужна:
-        худший случай гонки — два семафора, оба с лимитом (безопасно)."""
+        None — без лимита. Ленивое создание через dict.setdefault (атомарно
+        под GIL): при гонке двух первых вызовов прежний «get → создать →
+        записать» давал ДВА семафора с лимитом 1 каждый — два параллельных
+        запроса на один ключ, тот самый 403 concurrent (kimi=1)."""
         limit = cfg.get("max_concurrent")
         if not limit:
             return None
         sem = self._provider_sems.get(provider)
         if sem is None:
-            sem = threading.BoundedSemaphore(int(limit))
-            self._provider_sems[provider] = sem
+            sem = self._provider_sems.setdefault(
+                provider, threading.BoundedSemaphore(int(limit)))
         return sem
 
     def _call_with_keys(self, provider: str, cfg: dict, messages: list,
@@ -250,6 +341,8 @@ class ModelRouter:
                 self._last_provider = provider
                 self._last_key_index[provider] = idx
                 logger.debug(f"[Response] {provider}/{model} key={idx + 1} | len={len(answer) if answer else 0}")
+                if answer:
+                    note_internet_ok()
                 return answer
             except Exception as e:
                 logger.warning(
@@ -290,7 +383,8 @@ class ModelRouter:
                      max_tokens: int = 2000, top_p: float = 0.9,
                      exclude_provider: str = None, timeout: float = 60.0,
                      webchat_channel: str = "main",
-                     force_provider: str = None) -> str | None:
+                     force_provider: str = None,
+                     user_path: bool = False) -> str | None:
         """Возвращает ответ модели или None, если все провайдеры недоступны.
 
         Вызывающий код ОБЯЗАН проверять результат на None/пустоту — строка-заглушка
@@ -298,8 +392,22 @@ class ModelRouter:
 
         force_provider — провайдер по назначению (llm.answer_provider/
         cc_provider): одна попытка ВНЕ цепочки, неудача — обычная цепочка.
+
+        user_path=True — вызов на пути ответа пользователю (его ждёт живой
+        человек), даже если он идёт фоновым каналом веб-чата (side — ради
+        отдельного чата, как кореференция книжного поиска или разбор ответа
+        на тест курса): вместо постоянного фонового чата — разовый канал
+        USER_PATH_CHANNEL: ни фоновой очереди сайта, ни семафора фона, ни
+        пола 150 с на ожидание ответа (ждём таймаут вызывающего), лок
+        инстанса — не дольше USER_PATH_QUEUE_WAIT_SEC; второго долгого
+        захода (_bg_busy_retry, до BG_GATE_TIMEOUT_SEC) нет — занято значит
+        следующий провайдер.
         """
+        self._reset_last_provider()
         provider_order = self._get_full_order()
+        # Веб-чаты фона, пропущенные из-за занятой очереди сайта: если вся
+        # цепочка не ответит — второй заход с долгим ожиданием (_bg_busy_retry)
+        busy: set = set()
 
         if exclude_provider and len(provider_order) > 1:
             if exclude_provider == "webchat":
@@ -314,7 +422,8 @@ class ModelRouter:
         if force_provider and force_provider != exclude_provider \
                 and internet_available():
             answer = self._call_forced(force_provider, messages, temperature,
-                                       max_tokens, top_p, timeout, webchat_channel)
+                                       max_tokens, top_p, timeout, webchat_channel,
+                                       busy_out=busy, user_path=user_path)
             if answer:
                 return answer
             logger.info(f"[Router] назначенный провайдер {force_provider} "
@@ -352,7 +461,8 @@ class ModelRouter:
             tried_webchats.update(sites)
             if sites:
                 answer = self._try_webchat(messages, temperature, max_tokens, top_p,
-                                           timeout, sites, webchat_channel)
+                                           timeout, sites, webchat_channel,
+                                           busy_out=busy, user_path=user_path)
                 if answer:
                     return answer
                 logger.error("Веб-чат (основной провайдер) не ответил, идём по цепочке...")
@@ -388,7 +498,8 @@ class ModelRouter:
                     continue
                 tried_webchats.update(sites)
                 answer = self._try_webchat(messages, temperature, max_tokens, top_p,
-                                           timeout, sites, webchat_channel)
+                                           timeout, sites, webchat_channel,
+                                           busy_out=busy, user_path=user_path)
                 if answer:
                     return answer
                 continue
@@ -400,20 +511,28 @@ class ModelRouter:
                 return answer
             logger.error(f"Провайдер {provider.upper()} не ответил ни одним ключом, переключаемся...")
 
+        if busy and not user_path and _is_bg_channel(webchat_channel):
+            return self._bg_busy_retry(busy, messages, temperature, max_tokens,
+                                       top_p, timeout, webchat_channel)
         return None
 
     def get_response_stream(self, messages, on_token, temperature: float = 0.7,
                             max_tokens: int = 2000, top_p: float = 0.9,
                             exclude_provider: str = None, timeout: float = 60.0,
                             webchat_channel: str = "main",
-                            force_provider: str = None) -> str | None:
+                            force_provider: str = None,
+                     user_path: bool = False) -> str | None:
         """Стриминговый вариант get_response: токены уходят в on_token(delta) по мере
         генерации, возвращается полный текст. Fallback на другой ключ/провайдер —
         только до первого токена; обрыв посередине — возвращаем накопленное.
         Локальный fallback (Ollama) не стримится — отдаётся одним куском.
         force_provider — провайдер по назначению: одна попытка вне цепочки
         (веб-чат/локальный отдают одним куском), неудача — обычная цепочка."""
+        self._reset_last_provider()
         provider_order = self._get_full_order()
+        # Веб-чаты фона, пропущенные из-за занятой очереди сайта: если вся
+        # цепочка не ответит — второй заход с долгим ожиданием (_bg_busy_retry)
+        busy: set = set()
 
         if exclude_provider and len(provider_order) > 1:
             if exclude_provider == "webchat":
@@ -427,7 +546,8 @@ class ModelRouter:
                 and internet_available():
             answer = self._call_forced(force_provider, messages, temperature,
                                        max_tokens, top_p, timeout,
-                                       webchat_channel, on_token=on_token)
+                                       webchat_channel, on_token=on_token,
+                                       busy_out=busy, user_path=user_path)
             if answer:
                 return answer
             logger.info(f"[Router] назначенный провайдер {force_provider} "
@@ -471,7 +591,8 @@ class ModelRouter:
             tried_webchats.update(sites)
             if sites:
                 answer = self._try_webchat(messages, temperature, max_tokens, top_p,
-                                           timeout, sites, webchat_channel)
+                                           timeout, sites, webchat_channel,
+                                           busy_out=busy, user_path=user_path)
                 if answer:
                     on_token(answer)
                     return answer
@@ -499,7 +620,8 @@ class ModelRouter:
                     continue
                 tried_webchats.update(sites)
                 answer = self._try_webchat(messages, temperature, max_tokens, top_p,
-                                           timeout, sites, webchat_channel)
+                                           timeout, sites, webchat_channel,
+                                           busy_out=busy, user_path=user_path)
                 if answer:
                     on_token(answer)
                     return answer
@@ -512,6 +634,12 @@ class ModelRouter:
                 return answer
             logger.error(f"Провайдер {provider.upper()} не ответил ни одним ключом, переключаемся...")
 
+        if busy and not user_path and _is_bg_channel(webchat_channel):
+            answer = self._bg_busy_retry(busy, messages, temperature, max_tokens,
+                                         top_p, timeout, webchat_channel)
+            if answer:
+                on_token(answer)
+                return answer
         return None
 
     def _stream_with_keys(self, provider: str, cfg: dict, messages: list, on_token,
@@ -568,6 +696,7 @@ class ModelRouter:
                     continue  # пустой ответ — пробуем следующий ключ
                 self._last_provider = provider
                 self._last_key_index[provider] = idx
+                note_internet_ok()
                 return answer
             except Exception as e:
                 logger.warning(
@@ -608,8 +737,10 @@ class ModelRouter:
         return self.webchat_limits.get(site, QUOTA_PER_HOUR)
 
     def _apply_webchat_limits(self):
-        """Передать лимиты персоны уже созданным webchat-инстансам (кэш)."""
-        for key, chat in self._webchats.items():
+        """Передать лимиты персоны уже созданным webchat-инстансам (кэш).
+        Обход по снимку: кэш пополняют потоки вызовов, а итерация живого
+        dict при вставке падает «dictionary changed size during iteration»."""
+        for key, chat in list(self._webchats.items()):
             site = key.split("#", 1)[0]
             try:
                 chat.set_quota(self._webchat_quota_for(site))
@@ -626,9 +757,31 @@ class ModelRouter:
             return "v"
         return None
 
+    def _webchat_instance(self, key: str, site: str, channel: str):
+        """Кэшированный WebChatLLM сайта+канала. Раньше «get → None →
+        создать → записать» шёл без синхронизации: два потока персоны (LTM и
+        досье на side, два чата пользователя на main) при первом обращении
+        создавали ДВА инстанса — у каждого свой лок и своя вкладка на ОДНОМ
+        сохранённом чате (адрес общий через web_llm_state.json), и они
+        печатали в один тред параллельно; проигравший инстанс с вкладкой
+        оставался сиротой. dict.setdefault атомарен под GIL: в кэш попадает
+        и возвращается ОДИН инстанс, лишний отбрасывается до первого вызова
+        (вкладку он ещё не открыл — _ensure_chat ленивый)."""
+        chat = self._webchats.get(key)
+        if chat is None:
+            from app.features.web_llm import WebChatLLM
+            chat = self._webchats.setdefault(key, WebChatLLM(
+                site, context=self.context, channel=channel,
+                quota_per_hour=self._webchat_quota_for(site),
+                browser_pool=self._webchat_pool_for(site)))
+        return chat
+
     def _try_webchat(self, messages, temperature: float, max_tokens: int,
                      top_p: float, timeout: float,
-                     sites: list | None = None, channel: str = "main") -> str | None:
+                     sites: list | None = None, channel: str = "main",
+                     busy_out: set | None = None,
+                     queue_wait: float | None = None,
+                     user_path: bool = False) -> str | None:
         """Попытка ответа через веб-чат (аккаунт пользователя в Chrome).
         sites — конкретные сайты в порядке перебора; None — все включённые.
         channel — «main» (ответы) или «side» (побочные задачи): разные чаты.
@@ -636,51 +789,146 @@ class ModelRouter:
 
         Канал main — пользовательский путь: лок инстанса ждём недолго
         (BURST_LOCK_WAIT_SEC). Занят (другая генерация, в т.ч. второй чат
-        пользователя) — НЕ ждём: уходим в burst-инстанс (канал «burst»,
-        разовый свежий чат с тем же полным контекстом — _join_messages и
-        так шлёт его целиком, память сайта не нужна). Burst не кэшируется:
-        свой свежий лок, чужую очередь не ждёт никогда."""
+        пользователя) или вкладка вызова умерла посреди ответа (перезапуск
+        Chrome) — НЕ ждём: уходим в burst-инстанс (канал «burst», разовый
+        свежий чат с тем же полным контекстом — _join_messages и так шлёт его
+        целиком, память сайта не нужна). Burst не кэшируется, а его вкладка
+        закрывается сразу после вызова: раньше каждый burst оставлял в пуле
+        H живую SPA-вкладку до конца процесса.
+
+        Фоновые каналы (side/proactive) — очередь своего сайта в web_llm.
+        lock_timeout = бюджет ожидания очереди и лока вкладки: на первом
+        заходе короткий — min(timeout вызывающего, BG_QUEUE_WAIT_SEC):
+        занятость = переход к следующему провайдеру, а явный короткий
+        таймаут фоновой задачи (LTM: 15 с) уважается там, где отказ ничего
+        не стоит, — ДО отправки (пол ожидания ОТВЕТА после отправки — в
+        web_llm, см. комментарий у eff_timeout в _get_response_locked).
+        queue_wait — явный бюджет (второй заход, _bg_busy_retry). Сайты,
+        пропущенные из-за занятости, складываются в busy_out. user_path —
+        вызов на пути ответа пользователю: фоновый канал подменяется разовым
+        USER_PATH_CHANNEL (без фоновой очереди и пола ответа, лок инстанса —
+        не дольше USER_PATH_QUEUE_WAIT_SEC; см. get_response).
+
+        Прочие каналы (vision/cc/…) — лок инстанса без ограничения, как
+        раньше."""
         try:
-            from app.features.web_llm import WebChatLLM
+            from app.features.web_llm import (WebChatLLM, BG_QUEUE_WAIT_SEC,
+                                              USER_PATH_QUEUE_WAIT_SEC,
+                                              USER_PATH_CHANNEL)
         except Exception:
             return None
+        bg = _is_bg_channel(channel)
+        answer_floor = 150.0
+        if bg and user_path:
+            # Побочный вызов на пути ответа: не постоянный фоновый чат, а
+            # разовый канал USER_PATH_CHANNEL — без фоновой очереди/семафора
+            # и без пола ожидания ответа (обоснование — у USER_PATH_CHANNEL
+            # в web_llm): ждёт человек, брошенная генерация разового чата
+            # никому не мешает
+            channel, bg = USER_PATH_CHANNEL, False
+            lock_timeout = max(0.0, min(float(timeout),
+                                        USER_PATH_QUEUE_WAIT_SEC))
+            answer_floor = 0.0
+        elif channel == "main":
+            lock_timeout = BURST_LOCK_WAIT_SEC
+        elif bg:
+            lock_timeout = queue_wait if queue_wait is not None \
+                else max(0.0, min(float(timeout), BG_QUEUE_WAIT_SEC))
+        else:
+            lock_timeout = None
         for site in (sites if sites is not None else self.webchat_sites):
             try:
                 key = site if channel == "main" else f"{site}#{channel}"
-                chat = self._webchats.get(key)
-                if chat is None:
-                    chat = WebChatLLM(site, context=self.context, channel=channel,
-                                      quota_per_hour=self._webchat_quota_for(site),
-                                      browser_pool=self._webchat_pool_for(site))
-                    self._webchats[key] = chat
-                # Веб-чат медленный (стриминг + опрос DOM): минимум 150 сек
-                eff_timeout = max(timeout, 150.0)
+                chat = self._webchat_instance(key, site, channel)
+                # Пол ожидания ОТВЕТА (после отправки): сайт отвечает 8–80 с,
+                # а таймауты вызывающих откалиброваны под API — см. web_llm
+                eff_timeout = max(timeout, answer_floor)
                 answer = chat.get_response(
                     messages, temperature=temperature, max_tokens=max_tokens,
                     top_p=top_p, timeout=eff_timeout,
-                    lock_timeout=(BURST_LOCK_WAIT_SEC
-                                  if channel == "main" else None))
-                if not answer and channel == "main" \
-                        and getattr(chat, "last_call_lock_miss", False):
-                    logger.info(f"[WebChat] {site}: основной чат занят — "
-                                "отвечаю из свежего чата (burst)")
+                    lock_timeout=lock_timeout)
+                lock_miss = bool(getattr(chat, "last_call_lock_miss", False))
+                tab_lost = bool(getattr(chat, "last_call_tab_lost", False))
+                if not answer and bg and lock_miss:
+                    if busy_out is not None:
+                        busy_out.add(site)
+                    if queue_wait is None:  # первый заход; второй пишет итог сам
+                        logger.info(f"[WebChat] {site}#{channel}: очередь фона "
+                                    f"занята дольше {lock_timeout:.0f}с — "
+                                    "следующий провайдер")
+                if not answer and channel == "main" and (lock_miss or tab_lost):
+                    logger.info(f"[WebChat] {site}: основной чат "
+                                f"{'занят' if lock_miss else 'потерял вкладку'} "
+                                "— отвечаю из свежего чата (burst)")
                     burst = WebChatLLM(
                         site, context=self.context, channel="burst",
                         quota_per_hour=self._webchat_quota_for(site),
                         browser_pool=self._webchat_pool_for(site))
-                    answer = burst.get_response(
-                        messages, temperature=temperature,
-                        max_tokens=max_tokens, top_p=top_p, timeout=eff_timeout)
+                    try:
+                        answer = burst.get_response(
+                            messages, temperature=temperature,
+                            max_tokens=max_tokens, top_p=top_p,
+                            timeout=eff_timeout)
+                    finally:
+                        close = getattr(burst, "close", None)
+                        if callable(close):
+                            try:
+                                close()
+                            except Exception as e:
+                                logger.debug(f"[WebChat] {site}: вкладка "
+                                             f"burst не закрылась: {e}")
                 if answer:
                     self._last_provider = f"webchat:{site}"
+                    note_internet_ok()
                     return answer
             except Exception as e:
                 logger.warning(f"[WebChat] {site}: вызов не сработал: {e}")
         return None
 
+    def _bg_busy_retry(self, busy: set, messages, temperature: float,
+                       max_tokens: int, top_p: float, timeout: float,
+                       channel: str) -> str | None:
+        """Второй заход фоновой задачи: вся цепочка не ответила, а часть
+        веб-чатов была пропущена только из-за ЗАНЯТОСТИ очереди. Первый заход
+        ждёт коротко (переход к следующему провайдеру вместо минут в
+        очереди), но терять фоновую работу (факты, досье, дневник) из-за
+        того, что все сайты были заняты, нельзя — ждём освобождения любого
+        из них общим бюджетом BG_GATE_TIMEOUT_SEC, опрашивая по кругу
+        квантами BG_RETRY_SLICE_SEC. Сайт, отказавший НЕ по занятости,
+        из круга выбывает."""
+        try:
+            from app.features.web_llm import BG_GATE_TIMEOUT_SEC
+        except Exception:
+            return None
+        pending = [s for s in (self.webchat_sites + sorted(busy))
+                   if s in busy]
+        pending = list(dict.fromkeys(pending))
+        if not pending:
+            return None
+        logger.info(f"[WebChat] фон ({channel}): вся цепочка занята/не "
+                    f"ответила — жду очередь {', '.join(pending)}")
+        deadline = time.monotonic() + BG_GATE_TIMEOUT_SEC
+        while pending:
+            for site in list(pending):
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                still: set = set()
+                answer = self._try_webchat(
+                    messages, temperature, max_tokens, top_p, timeout,
+                    [site], channel, busy_out=still,
+                    queue_wait=min(BG_RETRY_SLICE_SEC, left))
+                if answer:
+                    return answer
+                if site not in still:
+                    pending.remove(site)
+        return None
+
     def _call_forced(self, provider: str, messages, temperature: float,
                      max_tokens: int, top_p: float, timeout: float,
-                     webchat_channel: str = "main", on_token=None) -> str | None:
+                     webchat_channel: str = "main", on_token=None,
+                     busy_out: set | None = None,
+                     user_path: bool = False) -> str | None:
         """Одна попытка по назначенному провайдеру (llm.answer_provider/
         cc_provider) ВНЕ цепочки. None — провайдер недоступен/не ответил
         (caller идёт по обычной цепочке — fallback). on_token задан —
@@ -694,7 +942,9 @@ class ModelRouter:
                 sites = self.webchat_sites if provider == "webchat" \
                     else [provider.split(":", 1)[1]]
                 answer = self._try_webchat(messages, temperature, max_tokens,
-                                           top_p, timeout, sites, webchat_channel)
+                                           top_p, timeout, sites, webchat_channel,
+                                           busy_out=busy_out,
+                                           user_path=user_path)
                 if answer and on_token is not None:
                     on_token(answer)
                 return answer
@@ -1031,6 +1281,7 @@ class ModelRouter:
         Возвращает ответ или None, если vision-провайдеры недоступны/ошиблись.
         """
         import base64
+        self._reset_last_provider()
         img_b64 = base64.b64encode(image_bytes).decode()
         content = [
             {"type": "text", "text": text_prompt},
@@ -1120,7 +1371,7 @@ class ModelRouter:
         Отдельный канал 'vision', чтобы скриншоты не мусорили в основном чате.
         None — ни один сайт не ответил."""
         try:
-            from app.features.web_llm import ADAPTERS, WebChatLLM
+            from app.features.web_llm import ADAPTERS
         except Exception:
             return None
         if sites is None:
@@ -1129,14 +1380,7 @@ class ModelRouter:
             if not ADAPTERS.get(site, {}).get("images"):
                 continue
             try:
-                key = f"{site}#vision"
-                chat = self._webchats.get(key)
-                if chat is None:
-                    chat = WebChatLLM(site, context=self.context,
-                                      channel="vision",
-                                      quota_per_hour=self._webchat_quota_for(site),
-                                      browser_pool=self._webchat_pool_for(site))
-                    self._webchats[key] = chat
+                chat = self._webchat_instance(f"{site}#vision", site, "vision")
                 answer = chat.get_response_with_image(
                     text_prompt, image_bytes, timeout=max(timeout, 150.0),
                     image_mime=image_mime, extra_image=extra_image)

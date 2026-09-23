@@ -141,9 +141,11 @@ def _collect_dossier(bot, context, ck, out):
     mgr = getattr(bot, "_chat_dossier", None)
     entry = None
     if mgr is not None:
-        with mgr._lock:
-            prof = mgr._profiles.get(ck)
-            entry = dict(prof) if isinstance(prof, dict) else None
+        # В _profiles живого менеджера — объекты ChatProfile, не dict: прежняя
+        # проверка isinstance(prof, dict) всегда была ложной, и бэкап досье
+        # молча выходил пустым. Сериализует сам менеджер (формат файла досье
+        # + водяной знак экстракции фактов).
+        entry = mgr.export_profile(ck)
     else:
         entry = _read_json(_dossier_file(context), {}).get(ck)
     if isinstance(entry, dict) and entry:
@@ -169,15 +171,18 @@ def _wipe_dossier(bot, context, ck):
 def _restore_dossier(bot, context, ck, data):
     mgr = getattr(bot, "_chat_dossier", None)
     if mgr is not None:
-        with mgr._lock:
-            mgr._profiles[ck] = dict(data)
-            mgr._save()
+        # Через менеджер: раньше сюда клался сырой dict, а весь ChatDossier
+        # работает с ChatProfile — после restore падали get_profile_snapshot/
+        # get_context_block, а _save молча не писал файл
+        mgr.import_profile(ck, data)
         return
     path = _dossier_file(context)
     cur = _read_json(path, {})
     if not isinstance(cur, dict):
         cur = {}
-    cur[ck] = data
+    # Служебные ключи экспорта (водяной знак экстракции) в файл не пишем —
+    # это не поля профиля, знак живёт только в памяти менеджера
+    cur[ck] = {k: v for k, v in data.items() if not str(k).startswith("_")}
     _write_json(path, cur)
 
 

@@ -95,7 +95,7 @@ SUBMIT_MARGIN_SEC = 20.0         # запас поверх бюджета ожи
 
 # Сырой CDP (фоновые вкладки веб-чатов)
 RAW_CONNECT_TIMEOUT_SEC = 10.0   # установка websocket-соединения
-RAW_CALL_TIMEOUT_SEC = 20.0      # дефолтный потолок ОТВЕТА на один вызов
+RAW_CALL_TIMEOUT_SEC = 20.0      # дефолтный потолок вызова: очередь за локом пула + ответ
 RAW_MARGIN_SEC = 10.0            # запас поверх бюджета awaitPromise-ожидания
 
 # Флаги экономии ресурсов для автоматизационного профиля: фоновая сеть,
@@ -1727,11 +1727,20 @@ _LAST_RESTART_TS = 0.0
 def _close_pool_h_graceful():
     """Грациозное закрытие пула H по CDP (Browser.close): куки/сессии пишутся
     на диск (cf_clearance после rescue!), процесс уходит за ~1с вместо
-    10-секундного SIGTERM-таймаута под SIGKILL. Best effort."""
+    10-секундного SIGTERM-таймаута под SIGKILL. Best effort.
+    Напрямую клиентом, а НЕ через _raw_call: Chrome закрывает сокет вместе с
+    собой, и обрыв в _raw_call запускал «восстановление» — переattach →
+    ленивый запуск НОВОГО Chrome посреди его же закрытия (его затем убивал
+    перезапуск). Короткий потолок: закрываем обычно зависший браузер, а
+    ждём под локом пула. Вызывать под _RAW_LOCKS[H] (см. _teardown_pool_h)."""
     try:
-        if _RAW_CLIENTS[_POOL_H] is None:
+        cl = _RAW_CLIENTS[_POOL_H]
+        if cl is None:
             return
-        _raw_call("Browser.close", pool=_POOL_H)
+        try:
+            cl.call("Browser.close", timeout=5.0)
+        except Exception:
+            pass  # обрыв сокета здесь — ожидаемый исход закрытия
         t0 = time.monotonic()
         while time.monotonic() - t0 < 5:
             if _POOL_H_PROC is not None and _POOL_H_PROC.poll() is not None:
@@ -1743,14 +1752,23 @@ def _close_pool_h_graceful():
         pass
 
 
-def _reset_raw_pool(pool: str):
+def _forget_raw_pool_tabs(pool: str):
+    """Вкладки пула — из реестра, поколение пула +1 (одним захватом
+    _RAW_TABS_LOCK: наблюдатель видит либо старое, либо новое целиком)."""
+    with _RAW_TABS_LOCK:
+        for tid in [t for t, tab in _RAW_TABS.items()
+                    if _pool_of_tab(tab) == pool]:
+            _RAW_TABS.pop(tid, None)
+        _RAW_POOL_GEN[pool] = _RAW_POOL_GEN.get(pool, 0) + 1
+
+
+def _reset_raw_pool(pool: str, forget_tabs: bool = True):
     """Сбросить вкладки и сокет пула (они умирают вместе с его Chrome) —
-    следующие вызовы не должны стрелять в мёртвые сессии."""
+    следующие вызовы не должны стрелять в мёртвые сессии.
+    forget_tabs=False — реестр уже сброшен вызывающим (_teardown_pool_h)."""
     with _RAW_LOCKS[pool]:
-        with _RAW_TABS_LOCK:
-            for tid in [t for t, tab in _RAW_TABS.items()
-                        if _pool_of_tab(tab) == pool]:
-                _RAW_TABS.pop(tid, None)
+        if forget_tabs:
+            _forget_raw_pool_tabs(pool)
         cl = _RAW_CLIENTS[pool]
         if cl is not None:
             try:
@@ -1794,7 +1812,6 @@ def shutdown_browser(reason: str = "выход бота"):
 def _shutdown_pool_h(reason: str):
     """Пул H: гасим только если он реально запускался (процесс наш или живой
     SingletonLock его профиля) — лишний Chrome не поднимаем ради выключения."""
-    global _POOL_H_PROC
     udd = _pool_h_profile()
     if _is_default_browser_profile(udd):
         return
@@ -1802,10 +1819,30 @@ def _shutdown_pool_h(reason: str):
             os.path.join(udd, "SingletonLock")):
         return
     logger.info(f"[BrowserActions] Завершение пула H ({reason})")
-    _close_pool_h_graceful()
-    _reset_raw_pool(_POOL_H)
-    _kill_chrome_on_profile(_POOL_H_PROC, udd)
-    _POOL_H_PROC = None
+    _teardown_pool_h(grace_sec=10.0)
+
+
+def _teardown_pool_h(grace_sec: float = 3.0):
+    """Закрыть Chrome пула H: Browser.close → сброс вкладок/сокета → добить
+    процесс. ЦЕЛИКОМ под локом пула: иначе в окне между сбросом и убийством
+    поток ответа (обрыв сокета → переподключение) лениво поднимал свой
+    Chrome, а перезапуск тут же убивал его по профилю — вместе со свежей
+    вкладкой ответа. Под локом ленивый старт ждёт (в счёт бюджета вызова)
+    и поднимает Chrome уже ПОСЛЕ перезапуска."""
+    global _POOL_H_PROC
+    with _RAW_LOCKS[_POOL_H]:
+        # Реестр и поколение — ДО закрытия: Browser.close + ожидание процесса
+        # идут до ~10с, и в этом окне идущий вызов уже ловит обрыв/таймаут.
+        # Если вкладка к этому моменту ещё числится живой, web_llm
+        # принимает обрыв за залипшую страницу (streak → reload → карантин
+        # здорового сайта), а не за «вкладка умерла вместе с Chrome»
+        _forget_raw_pool_tabs(_POOL_H)
+        _close_pool_h_graceful()
+        _reset_raw_pool(_POOL_H, forget_tabs=False)
+        udd = _pool_h_profile()
+        if not _is_default_browser_profile(udd):
+            _kill_chrome_on_profile(_POOL_H_PROC, udd, grace_sec=grace_sec)
+        _POOL_H_PROC = None
 
 
 def restart_browser(reason: str = "",
@@ -1836,13 +1873,7 @@ def restart_browser(reason: str = "",
     logger.warning(f"[BrowserActions] Перезапуск браузера бота, пул "
                    f"{pool.upper()}{f' ({reason})' if reason else ''}")
     if pool == _POOL_H:
-        global _POOL_H_PROC
-        _close_pool_h_graceful()
-        _reset_raw_pool(_POOL_H)
-        udd_h = _pool_h_profile()
-        if not _is_default_browser_profile(udd_h):
-            _kill_chrome_on_profile(_POOL_H_PROC, udd_h, grace_sec=3.0)
-        _POOL_H_PROC = None
+        _teardown_pool_h(grace_sec=3.0)
         return True  # поднимется лениво на следующем вызове
     _reset_raw_pool(_POOL_V)
     udd = _pool_v_profile()
@@ -3267,6 +3298,11 @@ def reveal_player_controls(host_part: Optional[str] = None,
 # (там мало чего ещё есть) или КРУПНЫЙ видимый виджет капчи. Мелкий бейдж
 # reCAPTCHA v3 (есть на куче обычных сайтов и ничего не блокирует) —
 # сознательно отсекаем по площади.
+# Значения атрибутов с точкой — ТОЛЬКО в кавычках: незакавыченное
+# «challenges.cloudflare» не CSS-идентификатор, querySelectorAll кидал
+# SyntaxError на каждой странице — детект не работал нигде (кейс 22.09:
+# «антибот-проверку выполнить не удалось (JS во вкладке упал)» на чистом
+# deepseek; в best-effort режиме — молчаливое «чисто»).
 _ANTIBOT_JS = (
     "(function(){"
     "var t=(document.title||'');"
@@ -3274,7 +3310,7 @@ _ANTIBOT_JS = (
     "are you a robot|robot check|доступ запрещ|не робот|"
     "проверка безопасности/i.test(t))return 'title: '+t.slice(0,60);"
     "var sels=['iframe[src*=recaptcha]','iframe[src*=hcaptcha]',"
-    "'iframe[src*=challenges.cloudflare]','iframe[src*=smartcaptcha]',"
+    "'iframe[src*=\"challenges.cloudflare\"]','iframe[src*=smartcaptcha]',"
     "'iframe[src*=captcha]','#challenge-form','#challenge-stage',"
     "'[class*=CheckboxCaptcha]','[class*=SmartCaptcha]'];"
     "for(var i=0;i<sels.length;i++){var els=document.querySelectorAll(sels[i]);"
@@ -3302,7 +3338,7 @@ def detect_antibot(host_part: Optional[str] = None,
     except Exception as e:
         if strict:
             raise BrowserUnavailable(
-                f"антибот-проверка не выполнена: {str(e)[:120]}")
+                f"антибот-проверка не выполнена: {str(e)[:160]}")
         return None
     return label or None
 
@@ -3311,7 +3347,7 @@ def detect_antibot(host_part: Optional[str] = None,
 # human», hCaptcha, Yandex SmartCaptcha): первый видимый challenge-iframe
 # → его rect (чекбокс в таких виджетах слева по центру)
 _CHALLENGE_BOX_JS = (
-    "(function(){var sels=['iframe[src*=challenges.cloudflare]',"
+    "(function(){var sels=['iframe[src*=\"challenges.cloudflare\"]',"
     "'iframe[src*=hcaptcha]','iframe[src*=recaptcha]',"
     "'#challenge-stage iframe','iframe[src*=smartcaptcha]'];"
     "for(var i=0;i<sels.length;i++){var els=document.querySelectorAll(sels[i]);"
@@ -4587,7 +4623,10 @@ def _mark_find_js(idx: int, var: str = "el") -> str:
 # Однострочный JS (только одинарные кавычки — через AppleScript идёт как есть):
 # помечает видимые кликабельные элементы атрибутом data-vpc-idx (номера — от
 # __BASE__, блок сквозного пространства; бюджеты проходов тоже от базы) и возвращает
-# JSON {url, items:[{idx,tag,role,text,aria,title,href,w,h,vp}]}.
+# JSON {url, items:[{idx,tag,role,text,ctx,aria,title,tid,href,w,h,x,y,vp,ed,
+# md,dd,sf,ext,sc,cov,q,sn}]}: vp — во вьюпорте, md — в модалке, dd — в
+# открытом списке, sf — виджет выбора, ext — внешняя ссылка, sc — активный
+# слой при найденном бэкдропе, cov — перекрыт чужим слоем (см. vpcCov).
 # Помимо текста собираем aria-label/title/alt/placeholder и роль (п.3) —
 # подписи есть даже у иконок без текста. Видимость — по реальному рендеру:
 # размер rect + getComputedStyle (display/visibility/opacity), vp — во вьюпорте.
@@ -4669,6 +4708,34 @@ _SNAPSHOT_JS = (
     "if(scx<0||scy<0||scx>=window.innerWidth||scy>=window.innerHeight)return 0;"
     "var sct=null;try{sct=document.elementFromPoint(scx,scy);}catch(x2){}"
     "return (sct&&(e===sct||e.contains(sct)||sct.contains(e)))?1:0;}"
+    # cov — перекрыт ли элемент ЧУЖИМ СЛОЕМ, независимо от детекта бэкдропа
+    # (дополнение sc: sc требует найти бэкдроп по цвету/размеру в центре
+    # вьюпорта — у попапа товара dodo он не нашёлся, и карточка каталога
+    # «Яблочный крамбл 189 ₽» ПОД попапом на равных спорила с пунктом
+    # попапа «Яблочный крамбл + 60 ₽», кейс 22.09; cov судит каждый элемент
+    # по тому, что лежит над его центром). Верхний элемент в центре —
+    # не сам/потомок/предок → перекрыт; засчитываем только если у
+    # перекрывателя есть предок-СЛОЙ (fixed ≥30% вьюпорта или absolute
+    # ≥60%), не содержащий сам элемент: модалка/бэкдроп/шторка. Мелкие
+    # перекрыватели (бейдж, липкая шапка — её снимает scrollIntoView,
+    # растянутая ссылка-сосед в карточке) не считаются; общая обёртка,
+    # содержащая элемент, — не отдельный слой, обход на ней останавливается.
+    # Вне вьюпорта — 0 (неизвестно). Элемент из shadow root сравнивается
+    # через свой внешний хост (elementFromPoint ретаргетит в хост, а
+    # contains границу shadow не пересекает). computer_control режет
+    # активный слой по ОБОИМ флагам: sc и cov
+    "function vpcCov(e){var r=e.getBoundingClientRect();"
+    "var cx=r.left+r.width/2,cy=r.top+r.height/2;"
+    "if(cx<0||cy<0||cx>=window.innerWidth||cy>=window.innerHeight)return 0;"
+    "var t=null;try{t=document.elementFromPoint(cx,cy);}catch(x){}"
+    "var eh=e,rt;while(eh.getRootNode&&(rt=eh.getRootNode())&&rt.host)eh=rt.host;"
+    "if(!t||t===eh||eh.contains(t)||t.contains(eh))return 0;"
+    "var p=t,d=0,A=window.innerWidth*window.innerHeight;"
+    "while(p&&p!==document.body&&d<20){if(p.contains(eh))break;"
+    "var s=getComputedStyle(p),pr=p.getBoundingClientRect(),ar=pr.width*pr.height;"
+    "if((s.position==='fixed'&&ar>=A*0.3)||(s.position==='absolute'&&ar>=A*0.6))return 1;"
+    "p=p.parentElement;d++;}"
+    "return 0;}"
     "function vpcVis(e){var s=getComputedStyle(e);return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';}"
     # Подпись поля ввода: aria-label → aria-labelledby → связанный <label> →
     # placeholder → name; по ней команда ввода находит поле («Выберите город»)
@@ -4775,7 +4842,7 @@ _SNAPSHOT_JS = (
     # то, что пользователь сейчас видит; бонус в скоринге против одноимённых
     # ссылок футера («состав» на странице товара). sc — активный слой поверх
     # затемнённого фона (текстовый выбор и vision-рамки режутся до него)
-    "md:vpcMd(e),dd:vpcDd(e),sf:vpcSf(e),ext:vpcExt(e),sc:vpcSc(e),"
+    "md:vpcMd(e),dd:vpcDd(e),sf:vpcSf(e),ext:vpcExt(e),sc:vpcSc(e),cov:vpcCov(e),"
     "q:(ed&&(e.type==='search'||/search|поиск/i.test((e.id||'')+' '+"
     "(e.getAttribute('class')||'')+' '+(e.getAttribute('name')||'')+' '+"
     "(e.getAttribute('placeholder')||'')))?1:0),"
@@ -4978,9 +5045,62 @@ _SNAPSHOT_JS = (
     # class/id по словарю («нажми бургер» → «бургер-меню»). Элементы с
     # текстом уже собраны выше — их пропускаем
     "var blbl={burger:'бургер-меню',hamburger:'бургер-меню',menu:'меню',"
-    "close:'закрыть',search:'поиск',cart:'корзина',basket:'корзина',"
-    "profile:'профиль',account:'профиль',login:'войти',bell:'уведомления',"
-    "notif:'уведомления',filter:'фильтры',setting:'настройки',gear:'настройки'};"
+    "close:'закрыть',cross:'закрыть',xmark:'закрыть',times:'закрыть',"
+    "search:'поиск',cart:'корзина',basket:'корзина',"
+    "profile:'профиль',account:'профиль',avatar:'профиль',login:'войти',"
+    "bell:'уведомления',notif:'уведомления',filter:'фильтры',"
+    "setting:'настройки',gear:'настройки',"
+    "ellipsis:'ещё',kebab:'ещё',morevert:'ещё',morehoriz:'ещё'};"
+    # Иконка без class/id/aria/testid вовсе (кейс 22.09, platform.school-example:
+    # крестик и колокольчик шторки — <button class="jss151"><svg><path
+    # d=…>): семантики в DOM нет никакой, есть только ФОРМА. Классификатор
+    # формы по геометрии SVG: точки вдоль контуров (getPointAtLength),
+    # нормировка в bbox, три универсальных образа — крестик ✕ (точки на двух
+    # диагоналях), бургер ≡ (три горизонтальные полосы), троеточие ⋮/⋯ (три
+    # компактных кластера вдоль оси). Остальные иконки (колокольчик, лупа)
+    # остаются безымянными — их разбирает vision по рамкам. Плюс svg
+    # <title> — доступное имя иконки, которое innerText не отдаёт
+    "function vpcIcoShape(b){var sv=b.querySelectorAll('svg');if(sv.length!==1)return '';"
+    "var tt=sv[0].querySelector('title');"
+    "if(tt){var tx=(tt.textContent||'').replace(/\\s+/g,' ').trim();if(tx&&tx.length<=40)return tx;}"
+    "var geo=sv[0].querySelectorAll('path,line,polyline,polygon,rect,circle,ellipse');"
+    "if(!geo.length||geo.length>8)return '';"
+    "var pts=[],gi,L,n,m,p;"
+    "for(gi=0;gi<geo.length;gi++){try{L=geo[gi].getTotalLength();}catch(x){return '';}"
+    "if(!L||!isFinite(L))continue;n=Math.min(120,Math.max(24,Math.round(L)));"
+    "for(m=0;m<n;m++){p=geo[gi].getPointAtLength(L*m/n);pts.push([p.x,p.y]);}}"
+    "if(pts.length<24)return '';"
+    "var mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;"
+    "for(m=0;m<pts.length;m++){p=pts[m];if(p[0]<mnx)mnx=p[0];if(p[0]>mxx)mxx=p[0];if(p[1]<mny)mny=p[1];if(p[1]>mxy)mxy=p[1];}"
+    "var w=mxx-mnx,h=mxy-mny;if(w<1||h<1)return '';"
+    "var ar=w/h,N=pts.length,q=[];"
+    "for(m=0;m<N;m++)q.push([(pts[m][0]-mnx)/w,(pts[m][1]-mny)/h]);"
+    "if(ar>0.7&&ar<1.4){var t=0.17,d1=0,d2=0,off=0;"
+    "for(m=0;m<N;m++){var a=Math.abs(q[m][0]-q[m][1]),c=Math.abs(q[m][0]+q[m][1]-1);"
+    "if(a<t)d1++;if(c<t)d2++;if(a>=t&&c>=t)off++;}"
+    "if(off/N<0.12&&d1/N>=0.3&&d2/N>=0.3)return 'закрыть';}"
+    "function bands(ax){var vs=[],z;for(z=0;z<N;z++)vs.push(q[z][ax]);vs.sort(function(a,b){return a-b;});"
+    "var o=[],cur=[vs[0],vs[0]];for(z=1;z<vs.length;z++){if(vs[z]-cur[1]>0.08){o.push(cur);cur=[vs[z],vs[z]];}else cur[1]=vs[z];}"
+    "o.push(cur);return o;}"
+    "function span(ax,lo,hi){var a1=1e9,b1=-1e9,z;for(z=0;z<N;z++){var u=q[z][ax];if(u<lo||u>hi)continue;var v=q[z][1-ax];if(v<a1)a1=v;if(v>b1)b1=v;}return b1-a1;}"
+    "var j;"
+    "if(ar>1.0){var by=bands(1);"
+    "if(by.length===3){var okb=true;for(j=0;j<3;j++){if(by[j][1]-by[j][0]>0.25||span(1,by[j][0],by[j][1])<0.5)okb=false;}"
+    "if(okb)return 'бургер-меню';}}"
+    "if(ar<0.6||ar>1.6){var ax2=ar<0.6?1:0,bd=bands(ax2);"
+    "if(bd.length===3){var okd=true;for(j=0;j<3;j++){if(bd[j][1]-bd[j][0]>0.34)okd=false;}"
+    "if(okd)return 'ещё';}}"
+    "return '';}"
+    # Подсказки словарю сверх class/id самой кнопки: data-testid и атрибуты
+    # вложенных иконок (class/src/alt/data-icon/use href) — у MUI/FontAwesome
+    # семантика висит на <svg>/<i>/<use>, а не на кнопке
+    "function vpcIcoHint(b){var s=(b.getAttribute('data-testid')||b.getAttribute('data-test-id')||''),"
+    "qh=b.querySelectorAll('svg,img,i,use,span'),z;"
+    "for(z=0;z<qh.length&&z<6;z++){var e6=qh[z];"
+    "s+=' '+(e6.getAttribute('class')||'')+' '+(e6.getAttribute('id')||'')+' '+(e6.getAttribute('src')||'')"
+    "+' '+(e6.getAttribute('alt')||'')+' '+(e6.getAttribute('data-icon')||'')"
+    "+' '+(e6.getAttribute('href')||e6.getAttribute('xlink:href')||'');}"
+    "return s;}"
     "var btns=document.querySelectorAll('button,[role=button]');"
     "var nb5=0;"
     "for(i=0;i<btns.length&&idx<B+M;i++){el=btns[i];"
@@ -4989,8 +5109,13 @@ _SNAPSHOT_JS = (
     "if(!vpcVis(el))continue;"
     "var inf5=vpcInfo(el,el.tagName.toLowerCase());"
     "if(inf5.text)continue;"
-    "var cls=((el.getAttribute('class')||'')+' '+(el.getAttribute('id')||'')).toLowerCase();"
+    "var cls=((el.getAttribute('class')||'')+' '+(el.getAttribute('id')||'')+' '+vpcIcoHint(el)).toLowerCase().replace(/[-_.]/g,'');"
     "var lab='';for(var bk in blbl){if(cls.indexOf(bk)>=0){lab=blbl[bk];break;}}"
+    # Форма сильнее словаря класса (меню-тоггл в открытом состоянии рисует
+    # крестик — пользователь видит крестик); словарная подпись — в title,
+    # чтобы «нажми меню» тоже находило
+    "var shp='';try{shp=vpcIcoShape(el);}catch(x){shp='';}"
+    "if(shp){if(lab&&lab!==shp&&!inf5.title)inf5.title=lab;lab=shp;}"
     # Совсем безымянные (иконка-SVG без текста/aria/словарного класса) тоже
     # берём, но с отдельной квотой: текстовый скоринг по ним бессилен, а
     # vision-фолбэку нужны кандидаты с рамками — иначе иконочная кнопка
@@ -5109,6 +5234,9 @@ def _parse_snapshot(raw: str) -> Tuple[str, List[dict]]:
                 # Элемент активного слоя (поверх затемнённого фона); у
                 # фреймов/целевого снапшота флага нет — там по умолчанию
                 "sc": bool(it.get("sc", 1)),
+                # Перекрыт чужим слоем (vpcCov) — независимо от детекта
+                # бэкдропа; у фреймов флага нет — по умолчанию не перекрыт
+                "cov": bool(it.get("cov", 0)),
             })
         except (TypeError, ValueError):
             continue
@@ -5284,6 +5412,12 @@ def snapshot_elements(host_part: Optional[str] = None,
     iframe'ов (_merge_frame_items). Номера разметки — блок сквозного
     пространства (_mark_base): у каждого снапшота они свои, метки прошлого
     не матчатся."""
+    # Фоновая вкладка (пул H) — отказ СРАЗУ: снапшот — playwright-операция
+    # воркера пула V, а отказ page_for наступал только внутри неё — после
+    # очереди воркера за действиями пользователя (до 95–120с) и пробника
+    # бэкенда, будившего пул V. Так ждал goal-фолбэк ввода web_llm на пути
+    # основного ответа — ради заведомого отказа
+    _refuse_raw_tab(tab_id, "снапшот элементов")
     if _select_backend(tab_op=True) == "cdp":
         def _op(w):
             page = w.page_for(host_part, tab_id)
@@ -5344,6 +5478,20 @@ _GOAL_SNAPSHOT_JS = (
     "var M=" + str(GOAL_SNAPSHOT_MAX) + ";"  # бюджет — из константы, не литерал
     "function vpcVis(e){var s=getComputedStyle(e);"
     "return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';}"
+    # Перекрыт чужим слоем — та же vpcCov, что в _SNAPSHOT_JS (одно
+    # определение на проект, копии держать текстуально одинаковыми)
+    "function vpcCov(e){var r=e.getBoundingClientRect();"
+    "var cx=r.left+r.width/2,cy=r.top+r.height/2;"
+    "if(cx<0||cy<0||cx>=window.innerWidth||cy>=window.innerHeight)return 0;"
+    "var t=null;try{t=document.elementFromPoint(cx,cy);}catch(x){}"
+    "var eh=e,rt;while(eh.getRootNode&&(rt=eh.getRootNode())&&rt.host)eh=rt.host;"
+    "if(!t||t===eh||eh.contains(t)||t.contains(eh))return 0;"
+    "var p=t,d=0,A=window.innerWidth*window.innerHeight;"
+    "while(p&&p!==document.body&&d<20){if(p.contains(eh))break;"
+    "var s=getComputedStyle(p),pr=p.getBoundingClientRect(),ar=pr.width*pr.height;"
+    "if((s.position==='fixed'&&ar>=A*0.3)||(s.position==='absolute'&&ar>=A*0.6))return 1;"
+    "p=p.parentElement;d++;}"
+    "return 0;}"
     # Модальный контекст — как vpcMd в _SNAPSHOT_JS (role=dialog у карточки
     # dodo нет, только класс popup-inner в fixed-портале)
     "function vpcMd(e){var p=e,d=0;"
@@ -5397,7 +5545,7 @@ _GOAL_SNAPSHOT_JS = (
     "tid:(e.getAttribute('data-testid')||e.getAttribute('data-test-id')||'')"
     ".replace(/\\s+/g,' ').trim().slice(0,80),"
     "href:e.href||'',w:Math.round(b.width),h:Math.round(b.height),ed:0,"
-    "md:vpcMd(e),dd:vpcDd(e),sf:vpcSf(e),ext:vpcExt(e),"
+    "md:vpcMd(e),dd:vpcDd(e),sf:vpcSf(e),ext:vpcExt(e),cov:vpcCov(e),"
     "x:Math.round(b.left),"
     "vp:(b.bottom>0&&b.right>0&&b.top<window.innerHeight&&b.left<window.innerWidth)?1:0};}"
     # Общая нормализация цели (__vpcN — регистр/дефисы/апострофы/диакритика/
@@ -5443,10 +5591,14 @@ _GOAL_SNAPSHOT_JS = (
     # без приоритета видимого «омлет сырный» цеплял карточку рекомендаций
     # (а не панель выбора, которую пользователь смотрит)
     "var ivp=(r.bottom>0&&r.right>0&&r.top<window.innerHeight&&r.left<window.innerWidth)?1:0;"
-    # cov — перекрыт ли элемент другим в точке центра (открытая модалка
-    # поверх ленты): портал модалки рендерится в КОНЕЦ body, и без этого
-    # признака бюджет разметки съедали карточки каталога ПОД попапом (соусы
-    # dodo) — «сырный соус» резолвился в основную ленту
+    # cov (ключ сортировки) — перекрыт ли центр элемента ЛЮБЫМ чужим
+    # элементом (открытая модалка поверх ленты): портал модалки рендерится
+    # в КОНЕЦ body, и без этого признака бюджет разметки съедали карточки
+    # каталога ПОД попапом (соусы dodo) — «сырный соус» резолвился в
+    # основную ленту. Здесь нарочно мягкая проверка без требования слоя:
+    # маленькая шторка (<30% вьюпорта) тоже должна отодвигать перекрытые
+    # карточки вниз. Строгий признак слоя — vpcCov — уходит в поле cov
+    # items (его читает фильтр активного слоя в computer_control)
     "var cov=0;"
     "if(ivp){var tp=null;try{tp=document.elementFromPoint("
     "r.left+r.width/2,r.top+r.height/2);}catch(x3){}"
@@ -5603,6 +5755,7 @@ def snapshot_for_goal(host_part: Optional[str], goal: str,
                 "dd": bool(it.get("dd")),
                 "sf": bool(it.get("sf")),
                 "ext": bool(it.get("ext")),
+                "cov": bool(it.get("cov")),
             })
         except (TypeError, ValueError):
             continue
@@ -6887,11 +7040,21 @@ def _refuse_raw_tab(tab_id: Optional[int], what: str):
 # логинами, V при первом запуске получает его копию.
 _POOL_H = "h"
 _POOL_V = "v"
-# RLock, а не Lock: ленивый старт пула H идёт ИЗНУТРИ _raw_call (под этим
-# же локом) и при смене режима (rescue on/off) дёргает _reset_raw_pool и
-# Browser.close — на обычном Lock это вешало поток намертво
+# Лок ЖИЗНЕННОГО ЦИКЛА пула: подключение/ленивый запуск Chrome, сброс,
+# перезапуск. Сами вызовы под ним НЕ идут (ответ ждётся по id без общего
+# лока, см. _RawCdp) — иначе одна зависшая вкладка на 20с останавливала все
+# вкладки пула. Перезапуск пула H держит его ЦЕЛИКОМ (закрыть → сбросить →
+# убить процесс): ленивый старт из _raw_call ждёт конца перезапуска, а не
+# поднимает свой Chrome, который перезапуск тут же убил бы.
+# RLock, а не Lock: ленивый старт пула H идёт под этим же локом и при смене
+# режима (rescue on/off) дёргает _reset_raw_pool — на обычном Lock это
+# вешало поток намертво
 _RAW_LOCKS = {_POOL_H: threading.RLock(), _POOL_V: threading.RLock()}
 _RAW_CLIENTS: Dict[str, object] = {_POOL_H: None, _POOL_V: None}
+# Поколение пула: +1 на каждый сброс (_reset_raw_pool — перезапуск/rescue/
+# смена режима). Все вкладки пула прежнего поколения мертвы; см.
+# raw_pool_generation
+_RAW_POOL_GEN: Dict[str, int] = {_POOL_H: 0, _POOL_V: 0}
 _POOL_H_PROC: Optional[subprocess.Popen] = None  # Chrome пула H (V гоняет _WORKER)
 
 
@@ -6958,10 +7121,24 @@ def _ws_timeout(e: BaseException) -> bool:
         "WebSocketTimeoutException", "timeout", "TimeoutError")
 
 
+class _RawConnLost(ConnectionError):
+    """Сокет пула оборван (его увидел поток, читавший сокет за всех). НЕ
+    BrowserUnavailable: _raw_call обязан принять это за сбой транспорта
+    (пересоздать клиент + переattach), а не за протокольный отказ."""
+
+
 class _RawCdp:
     """Минимальный sync CDP-клиент поверх browser-websocket: один сокет,
     flat-сессии через sessionId в конверте, события пропускаем. Нужен для
-    background-таргетов, которых playwright не видит."""
+    background-таргетов, которых playwright не видит.
+    Сокет общий для ВСЕХ вкладок пула, поэтому вызовы мультиплексируются:
+    отправка — под коротким локом, ответ ждётся по id БЕЗ общего лока. Читает
+    сокет один поток за раз («ведущий» — любой ждущий вызов): чужие ответы он
+    раскладывает по id и будит их владельцев, свой — забирает. Раньше
+    вызов держал лок пула на весь recv до 20с (аплоад картинки — до 25с), и
+    зависшая вкладка одного канала останавливала опрос ответа во всех
+    остальных (3 тика по 40–60с — и снятый ответ терялся). Отдельный поток-
+    читатель не нужен: ведущим становится тот, кто и так ждёт."""
 
     def __init__(self, cdp_url: Optional[str] = None):
         import urllib.request
@@ -6973,6 +7150,17 @@ class _RawCdp:
         # (403 «--remote-allow-origins»); без заголовка пускает
         self._ws = websocket.create_connection(
             ws_url, timeout=RAW_CONNECT_TIMEOUT_SEC, suppress_origin=True)
+        self._mux_init()
+
+    def _mux_init(self):
+        # Отдельно от __init__: тестовые фейки собирают клиент через __new__
+        # с поддельным _ws — мультиплексор поднимается на первом вызове
+        self._cond = threading.Condition(threading.Lock())
+        self._send_lock = threading.Lock()
+        self._next = getattr(self, "_next", 0)
+        self._waiting: Dict[int, Optional[dict]] = {}  # id → ответ (None — ждём)
+        self._reading = False   # сокет сейчас читает ведущий
+        self._dead: Optional[BaseException] = None  # обрыв: всем ждущим — ошибка
 
     def call(self, method: str, params: Optional[dict] = None,
              session_id: Optional[str] = None,
@@ -6981,38 +7169,91 @@ class _RawCdp:
         этого не годится: он общий на соединение, а ожидания в странице
         (awaitPromise — аплоад картинки до 25с) длятся дольше любой разумной
         константы, и recv падал раньше ответа ровно на долгих операциях."""
+        if getattr(self, "_cond", None) is None:
+            self._mux_init()
         budget = float(RAW_CALL_TIMEOUT_SEC if timeout is None else timeout)
-        self._next = getattr(self, "_next", 0) + 1
-        msg: Dict[str, object] = {"id": self._next, "method": method,
+        with self._cond:
+            if self._dead is not None:
+                raise _RawConnLost(f"CDP-соединение оборвано: {self._dead}")
+            self._next += 1
+            my_id = self._next
+            # Регистрация ДО отправки: ответ может прийти раньше, чем мы
+            # начнём ждать, и ведущий обязан знать, что его кто-то ждёт
+            self._waiting[my_id] = None
+        msg: Dict[str, object] = {"id": my_id, "method": method,
                                   "params": params or {}}
         if session_id:
             msg["sessionId"] = session_id
-        self._ws.send(json.dumps(msg))
+        try:
+            with self._send_lock:
+                self._ws.send(json.dumps(msg))
+        except Exception as e:
+            with self._cond:
+                self._waiting.pop(my_id, None)
+            self._fail(e)
+            raise
         deadline = time.monotonic() + budget
+        try:
+            data = self._await(my_id, method, budget, deadline)
+        finally:
+            with self._cond:
+                self._waiting.pop(my_id, None)
+        if "error" in data:
+            raise BrowserUnavailable(
+                f"CDP {method}: {(data['error'] or {}).get('message')}")
+        return data.get("result") or {}
+
+    def _await(self, my_id: int, method: str, budget: float,
+               deadline: float) -> dict:
         while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise RawCallTimeout(
-                    f"CDP {method}: ответа нет за {int(budget)}с")
+            with self._cond:
+                while True:
+                    got = self._waiting.get(my_id)
+                    if got is not None:
+                        return got
+                    if self._dead is not None:
+                        raise _RawConnLost(
+                            f"CDP-соединение оборвано на {method}: {self._dead}")
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise RawCallTimeout(
+                            f"CDP {method}: ответа нет за {int(budget)}с")
+                    if not self._reading:
+                        self._reading = True  # ведущий — мы
+                        break
+                    self._cond.wait(min(left, 0.5))
+            data = None
             try:
                 # Шаг recv'а мелкий: сокет-таймаут только нарезает ожидание,
-                # потолок держит бюджет вызова
+                # потолок держит бюджет вызова. Потолок шага — и остаток
+                # НАШЕГО бюджета: ведущий не должен читать за других дольше,
+                # чем ждёт сам (дальше эстафету берёт следующий ждущий)
                 self._ws.settimeout(max(0.5, min(left, 5.0)))
                 data = json.loads(self._ws.recv())
             except Exception as e:
-                if _ws_timeout(e):
-                    continue  # ждём дальше в границах бюджета
-                raise
-            if data.get("id") != msg["id"]:
-                # События и ответы брошенных по таймауту вызовов — мимо
-                # (id монотонный, чужой ответ не может сойти за наш)
-                continue
-            if "error" in data:
-                raise BrowserUnavailable(
-                    f"CDP {method}: {(data['error'] or {}).get('message')}")
-            return data.get("result") or {}
+                if not _ws_timeout(e):
+                    self._fail(e)
+                    raise
+            finally:
+                with self._cond:
+                    self._reading = False
+                    # События и ответы брошенных по таймауту вызовов — мимо
+                    # (id монотонный, чужой ответ не может сойти за наш)
+                    if isinstance(data, dict) and data.get("id") in self._waiting:
+                        self._waiting[data["id"]] = data
+                    self._cond.notify_all()
+
+    def _fail(self, e: BaseException):
+        """Сокет умер: будим всех ждущих — каждый получит _RawConnLost и
+        уйдёт в переподключение, а не досидит до своего бюджета."""
+        with self._cond:
+            if self._dead is None:
+                self._dead = e
+            self._cond.notify_all()
 
     def close(self):
+        if getattr(self, "_cond", None) is not None:
+            self._fail(ConnectionError("соединение закрыто"))
         try:
             self._ws.close()
         except Exception:
@@ -7023,6 +7264,30 @@ def _session_gone(e: BaseException) -> bool:
     """Протокольный отказ «сессии с таким id нет»: таргет жив, но attach
     протух (Chrome пересоздал сессию, соединение переподнималось)."""
     return "Session with given id not found" in str(e)
+
+
+def raw_pool_generation(pool: str = _POOL_H) -> int:
+    """Поколение пула фоновых вкладок: растёт на каждом сбросе пула
+    (перезапуск Chrome, rescue, смена режима). Вызывающий, запомнивший
+    поколение при открытии/отправке, по его смене понимает, что его вкладка
+    умерла вместе с Chrome, не дожидаясь своего дедлайна."""
+    with _RAW_TABS_LOCK:
+        return _RAW_POOL_GEN.get(pool, 0)
+
+
+def _raw_lock_acquire(pool: str, method: str, budget: float,
+                      deadline: float) -> float:
+    """Захват лока жизненного цикла пула В СЧЁТ бюджета вызова → сколько
+    секунд ушло на ожидание. Не успели — RawCallTimeout, как у молчащего
+    ответа: для вызывающего это обычный сбой вызова, а не вечное ожидание за
+    чужим подключением/перезапуском (раньше ожидание лока было безлимитным и
+    в таймаут не входило)."""
+    t0 = time.monotonic()
+    if not _RAW_LOCKS[pool].acquire(timeout=max(0.0, deadline - t0)):
+        raise RawCallTimeout(
+            f"CDP {method}: пул {pool.upper()} занят (подключение/перезапуск "
+            f"браузера) дольше бюджета {int(budget)}с")
+    return time.monotonic() - t0
 
 
 def _raw_call(method: str, params: Optional[dict] = None,
@@ -7038,41 +7303,70 @@ def _raw_call(method: str, params: Optional[dict] = None,
     реестра НА КАЖДОЙ попытке, поэтому повтор после переподключения уходит
     уже в новую сессию. С зафиксированным sessionId повтор в новом
     соединении был невалиден всегда — один обрыв убивал разом все вкладки.
-    timeout — потолок ожидания ответа; его истечение соединение НЕ рвёт."""
-    lock = _RAW_LOCKS[pool]
+    timeout — потолок вызова: ожидание лока пула + ожидание ответа; его
+    истечение соединение НЕ рвёт. Лок пула держится только на подключение
+    (и ленивый запуск Chrome), не на ответ — см. _RAW_LOCKS."""
     if pool == _POOL_V:
         note_pool_v_activity()
-    reattach = ""  # "pool" — пересобрали клиент, "tab" — протухла одна сессия
-    with lock:
-        if _RAW_CLIENTS[pool] is None:
+    budget = float(RAW_CALL_TIMEOUT_SEC if timeout is None else timeout)
+    deadline = time.monotonic() + budget
+    lock = _RAW_LOCKS[pool]
+    waited = _raw_lock_acquire(pool, method, budget, deadline)
+    try:
+        # Вкладка резолвится ДО подключения: вызов в мёртвую вкладку (пул
+        # сброшен перезапуском) не должен поднимать ради неё новый Chrome
+        sid = _raw_session(tab_id) if tab_id is not None else session_id
+        cl = _RAW_CLIENTS[pool]
+        if cl is None:
             if pool == _POOL_H:
                 _ensure_pool_h_browser()
-            _RAW_CLIENTS[pool] = _RawCdp(_pool_h_cdp_url()
-                                         if pool == _POOL_H else None)
-            _sweep_orphan_tabs(_RAW_CLIENTS[pool], pool)
-        sid = _raw_session(tab_id) if tab_id is not None else session_id
+            cl = _RawCdp(_pool_h_cdp_url() if pool == _POOL_H else None)
+            _RAW_CLIENTS[pool] = cl
+            _sweep_orphan_tabs(cl, pool)
+    finally:
+        lock.release()
+    # Ожидание лока — в счёт бюджета; собственное подключение/запуск Chrome —
+    # нет (иначе первый вызов после холодного старта всегда бы падал)
+    left = max(0.5, budget - waited)
+    reattach = ""  # "pool" — пересобрали клиент, "tab" — протухла одна сессия
+    try:
+        return cl.call(method, params, sid, timeout=left)
+    except RawCallTimeout:
+        raise  # бюджет одного вызова: соединение и соседние вкладки живы
+    except BrowserUnavailable as e:
+        if _retried or tab_id is None or not _session_gone(e):
+            raise
+        reattach = "tab"
+    except Exception:
+        if _retried:
+            raise BrowserUnavailable(f"CDP-соединение оборвано на {method}")
+        # Короткий гарантированный запас: обрыв мог прийти на самом краю
+        # бюджета, а без захвата лока клиент пула не пересобрать
+        _raw_lock_acquire(pool, method, budget,
+                          max(deadline, time.monotonic() + 2.0))
         try:
-            return _RAW_CLIENTS[pool].call(method, params, sid, timeout=timeout)
-        except RawCallTimeout:
-            raise  # бюджет одного вызова: соединение и соседние вкладки живы
-        except BrowserUnavailable as e:
-            if _retried or tab_id is None or not _session_gone(e):
-                raise
-            reattach = "tab"
-        except Exception:
-            if _retried:
-                raise BrowserUnavailable(f"CDP-соединение оборвано на {method}")
-            try:
-                _RAW_CLIENTS[pool].close()
-            except Exception:
-                pass
-            _RAW_CLIENTS[pool] = None
-            reattach = "pool"
-    # Переattach — ВНЕ лока: он сам ходит через _raw_call
+            if _RAW_CLIENTS[pool] is cl:
+                # Обрыв первым увидели мы — пересобираем клиент пула
+                try:
+                    cl.close()
+                except Exception:
+                    pass
+                _RAW_CLIENTS[pool] = None
+                reattach = "pool"
+            else:
+                # Клиент уже пересобрал другой поток (или пул сброшен
+                # перезапуском): соседний переattach идёт у него, нам — только
+                # своя вкладка (её нет в реестре → честное «закрыта»)
+                reattach = "tab" if tab_id is not None else ""
+        finally:
+            lock.release()
+    # Переattach — ВНЕ лока: он сам ходит через _raw_call. sid — протухшая
+    # сессия этого вызова: если её уже сменил соседний поток, повтор идёт
+    # сразу в новую, без второго attach'а
     if reattach == "pool":
         _raw_reattach_pool(pool)
-    else:
-        _raw_reattach_tab(int(tab_id))
+    elif reattach == "tab":
+        _raw_reattach_tab(int(tab_id), sid)
     return _raw_call(method, params, session_id, pool=pool, tab_id=tab_id,
                      timeout=timeout, _retried=True)
 
@@ -7097,14 +7391,37 @@ def _raw_tab_call(tab_id: int, method: str, params: Optional[dict] = None,
     return _raw_call(method, params, pool=pool, tab_id=tab_id, timeout=timeout)
 
 
-def _raw_reattach_tab(tab_id: int) -> bool:
+# Переattach сериализован по пулу: после обрыва сокета вкладку одновременно
+# переattach'ивали поток-пересборщик (_raw_reattach_pool) и её собственный
+# поток (свой обрыв) — две сессии на таргет, лишняя утекала до конца
+# соединения. Под этим локом проверка «sid ещё тот, что протух» делает
+# повтор no-op. Порядок локов: этот → _RAW_LOCKS[pool] (внутри _raw_call),
+# обратного нет (под локом жизненного цикла переattach не зовётся)
+_RAW_REATTACH_LOCKS = {_POOL_H: threading.Lock(), _POOL_V: threading.Lock()}
+
+
+def _raw_reattach_tab(tab_id: int, stale_sid: Optional[str] = None) -> bool:
     """Новый sessionId для живого таргета вкладки. False — таргета больше
     нет (вкладку закрыли снаружи): запись выбрасываем, и вызывающий получит
-    честное «фоновая вкладка закрыта» вместо вечных «session not found»."""
+    честное «фоновая вкладка закрыта» вместо вечных «session not found».
+    stale_sid — сессия, которую вызывающий видел протухшей: если в реестре
+    уже другая, вкладку переattach'ил соседний поток — повторно не нужно."""
     with _RAW_TABS_LOCK:
         tab = _RAW_TABS.get(tab_id)
         if tab is None:
             return False
+        pool = _pool_of_tab(tab)
+    with _RAW_REATTACH_LOCKS[pool]:
+        return _raw_reattach_tab_locked(tab_id, stale_sid)
+
+
+def _raw_reattach_tab_locked(tab_id: int, stale_sid: Optional[str]) -> bool:
+    with _RAW_TABS_LOCK:
+        tab = _RAW_TABS.get(tab_id)
+        if tab is None:
+            return False
+        if stale_sid is not None and str(tab["sessionId"]) != str(stale_sid):
+            return True
         target_id, pool = str(tab["targetId"]), _pool_of_tab(tab)
     try:
         sid = str(_raw_call("Target.attachToTarget",
@@ -7125,10 +7442,12 @@ def _raw_reattach_pool(pool: str):
     """После пересоздания клиента все прежние sessionId невалидны —
     переattach живых таргетов пула; мёртвые вылетают из реестра."""
     with _RAW_TABS_LOCK:
-        ids = [t for t, tab in _RAW_TABS.items() if _pool_of_tab(tab) == pool]
+        stale = {t: str(tab["sessionId"]) for t, tab in _RAW_TABS.items()
+                 if _pool_of_tab(tab) == pool}
+    ids = list(stale)
     if not ids:
         return
-    alive = sum(1 for t in ids if _raw_reattach_tab(t))
+    alive = sum(1 for t in ids if _raw_reattach_tab(t, stale[t]))
     logger.info(f"[BrowserActions] Пул {pool.upper()}: соединение пересобрано, "
                 f"живых фоновых вкладок {alive} из {len(ids)}")
 
@@ -7229,12 +7548,8 @@ def _ensure_pool_h_browser():
                 _POOL_H_RUNNING_MODE == _pool_h_desired_mode():
             return
         # Режим поменялся (rescue on/off) — перезапускаем в нужном
-        global _POOL_H_PROC
         logger.info("[BrowserActions] Пул H: смена режима — перезапуск")
-        _close_pool_h_graceful()
-        _reset_raw_pool(_POOL_H)
-        _kill_chrome_on_profile(_POOL_H_PROC, _pool_h_profile(), grace_sec=3.0)
-        _POOL_H_PROC = None
+        _teardown_pool_h(grace_sec=3.0)
     if not _BCFG.get("launch", True):
         raise BrowserUnavailable(
             f"headless-браузер бота ({_pool_h_cdp_url()}) недоступен")
@@ -7496,19 +7811,17 @@ def rescue_pool_h(duration_min: float = POOL_H_RESCUE_MIN) -> bool:
     """Перезапустить пул H ВИДИМЫМ (rescue: пользователь решает капчу руками).
     Вкладки веб-чатов умирают — web_llm переоткроет их по URL (self-healing).
     → True, если видимый браузер поднялся."""
-    global _POOL_H_MODE_OVERRIDE, _POOL_H_RESCUE_UNTIL, _POOL_H_PROC
+    global _POOL_H_MODE_OVERRIDE, _POOL_H_RESCUE_UNTIL
     _POOL_H_MODE_OVERRIDE = "headed"
     _POOL_H_RESCUE_UNTIL = time.time() + duration_min * 60
     logger.warning(f"[BrowserActions] Rescue пула H на {int(duration_min)} мин — "
                    "перезапуск в видимом режиме")
     try:
-        _close_pool_h_graceful()
-        _reset_raw_pool(_POOL_H)
-        udd = _pool_h_profile()
-        if not _is_default_browser_profile(udd):
-            _kill_chrome_on_profile(_POOL_H_PROC, udd, grace_sec=3.0)
-        _POOL_H_PROC = None
-        _launch_pool_h_chrome()
+        # Убить и поднять — одним захватом лока пула: ленивый старт соседа
+        # не вклинится между ними со своим (headless) Chrome
+        with _RAW_LOCKS[_POOL_H]:
+            _teardown_pool_h(grace_sec=3.0)
+            _launch_pool_h_chrome()
         return True
     except Exception as e:
         logger.warning(f"[BrowserActions] Rescue-перезапуск пула H не удался: {e}")
@@ -7616,6 +7929,18 @@ def close_background_tab(tab_id: Optional[int]) -> bool:
         return False
 
 
+_RAW_CONTEXT_TRANSIENT = ("Cannot find context",
+                          "Execution context was destroyed",
+                          "Inspected target navigated or closed")
+
+
+def _raw_context_transient(e: BaseException) -> bool:
+    """Протокольный отказ Runtime.evaluate из-за навигации: контекст
+    исполнения пересоздаётся, вкладка при этом жива."""
+    msg = str(e)
+    return any(m in msg for m in _RAW_CONTEXT_TRANSIENT)
+
+
 def _raw_eval(tab_id: int, js: str,
               timeout_sec: Optional[float] = None) -> str:
     """JS во фоновой вкладке. timeout_sec — бюджет ожидания ОТВЕТА: у JS,
@@ -7632,24 +7957,43 @@ def _raw_eval(tab_id: int, js: str,
         except RawCallTimeout:
             raise  # вкладку НЕ роняем: не ответил один вызов, а не страница
         except BrowserUnavailable as e:
-            # «Cannot find context» — контекст пересоздаётся (навигация SPA
-            # на свежей вкладке): транзиент, вкладку НЕ роняем — ретрай
-            if attempt == 1 and "Cannot find context" in str(e):
-                time.sleep(0.7)
-                continue
+            # Контекст страницы пересоздаётся (навигация/перезагрузка SPA):
+            # транзиент — вкладку НЕ роняем, ретрай; и повторный сбой — ошибка
+            # ВЫЗОВА, а не смерть вкладки (выброс из реестра web_llm теперь
+            # читает как «вкладка умерла» и сразу бросает ожидание ответа).
+            # Реально закрытый таргет всплывёт следующим вызовом: session not
+            # found → переattach → таргета нет → _raw_forget
+            if _raw_context_transient(e):
+                if attempt == 1:
+                    time.sleep(0.7)
+                    continue
+                raise
             _raw_drop(tab_id)
             raise
-        if res.get("exceptionDetails"):
+        exc = res.get("exceptionDetails")
+        if exc:
             # Холодная страница (свежий Chrome, дорендер SPA, навигация)
             # может кидать разовые исключения — одна повторная попытка после
             # паузы; детерминированная ошибка просто упадёт повторно
             # (кейс kimi 17.09: первое сообщение на холодной вкладке падало
             # «JS во вкладке упал», дальше всё уезжало в 150-с таймауты).
+            # Текст исключения — в ошибку: голое «JS упал» неделю прятало
+            # SyntaxError невалидного селектора в детекте антибота.
             if attempt == 1:
                 time.sleep(0.7)
                 continue
-            raise BrowserUnavailable("JS во вкладке упал")
+            raise BrowserUnavailable(
+                f"JS во вкладке упал: {_cdp_exception_text(exc)}")
         return str((res.get("result") or {}).get("value") or "")
+
+
+def _cdp_exception_text(exc: dict) -> str:
+    """Короткая причина из exceptionDetails Runtime.evaluate: первая строка
+    description (имя + сообщение; дальше идёт стек), иначе text протокола."""
+    ex = (exc or {}).get("exception") or {}
+    desc = str(ex.get("description") or ex.get("value") or "").strip()
+    line = desc.splitlines()[0].strip() if desc else ""
+    return (line or str((exc or {}).get("text") or "без текста"))[:160]
 
 
 def _raw_url(tab_id: int) -> str:

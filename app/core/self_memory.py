@@ -126,6 +126,23 @@ _SUMMARY_PROMPT_PRIMITIVE = """Ты — {persona_name}, примитивное �
 Верни JSON: {{"patterns": ["паттерн 1", "паттерн 2"]}}"""
 
 
+
+def _episode_day_label(ts: str, now: Optional[datetime] = None) -> str:
+    """Метка дня эпизода для промпта: «today, 20:38» / «yesterday, 11:46» /
+    «2026-09-19». Таймстемп эпизода пишется datetime.now().isoformat() —
+    сравниваем по тем же часам. Битый/пустой таймстемп — без метки."""
+    try:
+        dt = datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return ""
+    now = now or datetime.now()
+    days = (now.date() - dt.date()).days
+    if days == 0:
+        return f"today, {dt:%H:%M}"
+    if days == 1:
+        return f"yesterday, {dt:%H:%M}"
+    return f"{dt:%Y-%m-%d}"
+
 class BotSelfMemory:
     """
     Личная память бота — эпизоды и наблюдения.
@@ -285,7 +302,8 @@ class BotSelfMemory:
         # «list changed size during iteration» прямо в генерации ответа)
         with self._lock:
             summary = self._episodes.get("life_summary", "")
-            active = [ep.get("text", "") for ep in self._episodes.get("active", [])]
+            active = [(ep.get("text", ""), ep.get("timestamp", ""))
+                      for ep in self._episodes.get("active", [])]
             notes = [n.get("text", "") for n in self._notes.get("notes", [])[-MAX_NOTES:]]
 
         # Жизненная история
@@ -294,10 +312,13 @@ class BotSelfMemory:
             parts.append("")
 
         # Активные эпизоды
+        # С пометкой дня: без неё модель не отличала вчерашний эпизод от
+        # сегодняшнего и на «что сегодня делал?» пересказывала что попало
         if active:
-            parts.append("Recent episodes:")
-            for text in active:
-                parts.append(f"- {text}")
+            parts.append("Recent episodes (oldest first):")
+            for text, ts in active:
+                label = _episode_day_label(ts)
+                parts.append(f"- [{label}] {text}" if label else f"- {text}")
             parts.append("")
 
         # Заметки

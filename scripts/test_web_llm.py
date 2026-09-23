@@ -37,6 +37,7 @@ def main():
     # 1.1.1.1:443/8.8.8.8:53, которые в песочнице/за файрволом молчат, и тогда
     # webchat-ветка роутера и резолв сайтов честно «офлайн» → ложные FAIL
     import app.core.router as _net_router
+    _real_internet_available = _net_router.internet_available
     _net_router.internet_available = lambda: True
     _net_router._net_ok, _net_router._net_checked = True, float("inf")
 
@@ -44,6 +45,38 @@ def main():
         nonlocal ok
         print(f"  [{'OK' if cond else 'FAIL'}] {name}")
         ok = ok + 1 if cond else ok - 100
+
+    # Проба интернета (кейс 22.09: слабый Wi-Fi → «Нет интернета» → 30 с
+    # решений режима управления от локальной модели): офлайн признаётся
+    # только после ДВУХ пустых серий, кэш «офлайн» короткий, а успешный
+    # ответ облака/веб-чата подтверждает онлайн без пробы
+    _orig_probe = _net_router._probe_round
+    _rounds = []
+    _net_router._probe_round = lambda: (_rounds.append(1), False)[1]
+    _net_router._net_ok, _net_router._net_checked = None, 0.0
+    _off = _real_internet_available()
+    _n_off = len(_rounds)
+    _net_router._probe_round = lambda: (_rounds.append(1), True)[1]
+    _cached = _real_internet_available()  # кэш «офлайн» ещё жив — без пробы
+    _n_cached = len(_rounds)
+    _net_router.note_internet_ok()
+    _on = _real_internet_available()
+    _n_on = len(_rounds)
+    _net_router._net_checked = 0.0  # кэш истёк — проба снова, сеть вернулась
+    _back = _real_internet_available()
+    _net_router._probe_round = _orig_probe
+    _net_router._net_ok, _net_router._net_checked = True, float("inf")
+    check("probe: офлайн — после двух пустых серий подряд",
+          _off is False and _n_off == 2)
+    check("probe: кэш «офлайн» жив — повторной пробы нет",
+          _cached is False and _n_cached == _n_off)
+    check("probe: ответ облака подтверждает онлайн без пробы; проба после "
+          "истечения кэша — онлайн",
+          _on is True and _n_on == _n_off and _back is True
+          and len(_rounds) == _n_on + 1)
+    check("probe: таймаут пробы ≥ 3 с (слабая сеть ≠ офлайн)",
+          _net_router._NET_PROBE_TIMEOUT_SEC >= 3.0
+          and _net_router._NET_OFFLINE_TTL_SEC < _net_router._NET_CHECK_TTL_SEC)
 
     from app.features import web_llm as wl
     from app.features import browser_actions as ba

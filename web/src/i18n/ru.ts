@@ -188,6 +188,7 @@ const ru: Record<string, string> = {
   'chat.trendWorsening': 'ухудшается',
   'chat.trendImproving': 'улучшается',
   'chat.trendStable': 'стабильно',
+  'chat.streamInterrupted': 'Связь прервалась до конца ответа — дождусь его на сервере и подгружу из истории',
 
   // ===== Комната =====
   'room.subtitle': 'Личное пространство персоны: аватар, инвентарь и жизнь без оператора',

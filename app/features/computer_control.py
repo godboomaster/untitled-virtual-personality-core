@@ -372,6 +372,47 @@ from app.features.browser_actions import (  # noqa: E402
     _card_text_key, _link_key, _rects_close, _snap_frag, _texts_dup)
 
 
+def _active_layer(items: List[dict]) -> List[dict]:
+    """Кандидаты только из активного слоя страницы — общий фильтр для
+    текстового выбора (_choose_element), широкого LLM-резолва
+    (_llm_wide_pick) и vision-рамок (_visual_resolve). Два сигнала снапшота:
+    1) sc — «в слое поверх бэкдропа»: снапшот нашёл затемняющий бэкдроп в
+       центре вьюпорта и проверил, чем перекрыт центр каждого элемента;
+       требует, чтобы бэкдроп прошёл цветовую эвристику (rgba с 0<α<0.98);
+    2) cov — «центр элемента перекрыт чужим фиксированным слоем» (vpcCov,
+       elementFromPoint): считается для каждого элемента независимо от
+       детекта бэкдропа. Кейс 22.09, dodo: попап товара («Заменить» в комбо)
+       без опознанного бэкдропа — sc у всех 1, а карточка каталога ПОД
+       попапом с точным текстом «Яблочный крамбл» обошла пункт попапа
+       «Яблочный крамбл + 60 ₽», LLM выбирала из голого списка и тыкала в
+       каталог. Клик по перекрытому элементу физически попадает в слой
+       сверху (force-клик playwright бьёт по координатам) — такие кандидаты
+       недоступны.
+    Правило «не режем в ноль» для обоих сигналов: если фильтр выкинул ВСЕ
+    элементы (ложный детект слоя / всё перекрыто одинаково) — возвращаем
+    список как есть; отсутствие ключа = элемент доступен."""
+    scoped = [it for it in items if it.get("sc", True)]
+    if scoped and len(scoped) < len(items):
+        items = scoped
+    uncovered = [it for it in items if not it.get("cov")]
+    if uncovered and len(uncovered) < len(items):
+        items = uncovered
+    return items
+
+
+def _layer_note(it: dict) -> str:
+    """Пометка контекста слоя к строке кандидата в промпте LLM: открытое
+    окно (md) / открытый список (dd) / перекрыт затемнением (cov). Компактно
+    — одна пометка, самая «горячая» первой: список → окно → затемнение."""
+    if it.get("dd"):
+        return " — в открытом списке"
+    if it.get("md"):
+        return " — в открытом окне"
+    if it.get("cov"):
+        return " — под затемнением"
+    return ""
+
+
 def _dedup_same_target_cards(items: List[dict]) -> List[dict]:
     """Схлопывание дублей одной карточки перед нарезкой топ-N для vision:
     на одну ссылку у карточки часто висит несколько разных a[href]
@@ -572,47 +613,93 @@ _SWIPE_FEED_URL_RE = re.compile(r"/(?:shorts|reels?)/", re.IGNORECASE)
 # перечислены морфологически, а не открытым корнем: «закр\w*» ловил
 # «закрепить», «скро\w*» — «скролл», «удал» — «удалённая работа», и вето либо
 # срабатывало на безобидной кнопке, либо (в цели) молча отключалось
+# Разрушители делятся на КЛАССЫ — намерение в цели снимает вето только с
+# контролов своего класса: «нажми закрыть» разрешает крестик, но не «Log
+# out» (кейс 22.09: крестика в снапшоте не было, широкий LLM-резолв ткнул в
+# «Log out», а вето молчало — «закрыть» и «выйти» были одним флагом)
+_DESTRUCTIVE_CLASS_RES = {
+    "close": re.compile(
+        r"(?<![a-z0-9а-яё])(?:"
+        r"закрыть\w*|закрыва\w*|закрыл\w*|закрыти[ея]\w*|закро[йеюям]\w*|"
+        r"скрыть\w*|скрыва\w*|скрыл\w*|скро[йеюя]\w*|сверн\w*|сворач\w*|"
+        r"close(?![a-z])|closing|dismiss\w*"
+        r")", re.IGNORECASE),
+    "delete": re.compile(
+        r"(?<![a-z0-9а-яё])(?:"
+        r"удали\w*|удаля\w*|удален(?:и[ея]|ий)\w*|"
+        r"убрать|убрал\w*|убери\w*|уберит\w*|уберем\w*|"
+        r"стереть|сотри\w*|очист(?!ител)\w*|очищ\w*|сброс\w*|сбрось\w*|сбрас\w*|"
+        r"delete\w*|remove\w*|removal|"
+        r"clear(?:s|ed|ing)?(?![a-z])|discard\w*|reset\w*|trash\w*|erase\w*"
+        r")", re.IGNORECASE),
+    "leave": re.compile(
+        r"(?<![a-z0-9а-яё])(?:"
+        r"отпис\w*|покин\w*|"
+        r"выйти|выйди\w*|выхожу|выход(?:а|у|ом|е)?(?![а-яё])|"
+        r"unsubscribe\w*|unfollow\w*|quit\w*|exit\w*|"
+        r"log\s?out|logout|sign\s?out|signout|log\s?off"
+        r")", re.IGNORECASE),
+}
 _DESTRUCTIVE_WORD_RE = re.compile(
-    r"(?<![a-z0-9а-яё])(?:"
-    r"закрыть\w*|закрыва\w*|закрыл\w*|закрыти[ея]\w*|закро[йеюям]\w*|"
-    r"скрыть\w*|скрыва\w*|скрыл\w*|скро[йеюя]\w*|сверн\w*|сворач\w*|"
-    r"удали\w*|удаля\w*|удален(?:и[ея]|ий)\w*|"
-    r"убрать|убрал\w*|убери\w*|уберит\w*|уберем\w*|"
-    r"стереть|сотри\w*|очист(?!ител)\w*|очищ\w*|сброс\w*|сбрось\w*|сбрас\w*|"
-    r"отпис\w*|покин\w*|"
-    r"выйти|выйди\w*|выхожу|выход(?:а|у|ом|е)?(?![а-яё])|"
-    r"close(?![a-z])|closing|delete\w*|remove\w*|removal|"
-    r"clear(?:s|ed|ing)?(?![a-z])|discard\w*|dismiss\w*|unsubscribe\w*|"
-    r"unfollow\w*|reset\w*|trash\w*|erase\w*|quit\w*|exit\w*|"
-    r"log\s?out|logout|sign\s?out|signout|log\s?off"
-    r")", re.IGNORECASE)
-# Безымянные иконки закрытия: вся подпись — один крестик/корзина
-_DESTRUCTIVE_ICONS = frozenset({"x", "х", "×", "✕", "✖", "✘", "✗", "⨯",
-                                "❌", "🗑", "🗑️", "✖️", "❎"})
+    "|".join(f"(?:{r.pattern})" for r in _DESTRUCTIVE_CLASS_RES.values()),
+    re.IGNORECASE)
+# Безымянные иконки закрытия/удаления: вся подпись — один крестик/корзина.
+# Крестик — и «закрыть», и «убрать» (× у товара в корзине), поэтому оба
+# класса; корзина — только удаление
+_DESTRUCTIVE_ICONS = {
+    **{s: frozenset({"close", "delete"})
+       for s in ("x", "х", "×", "✕", "✖", "✘", "✗", "⨯", "❌", "✖️", "❎")},
+    **{s: frozenset({"delete"}) for s in ("🗑", "🗑️")},
+}
 # Намерение в цели, которое глаголом не выражено: «нажми крестик у джема»
 _DESTRUCTIVE_HINT_RE = re.compile(r"(?<![а-яё])крестик\w*", re.IGNORECASE)
 
 
-def _destructive_label(it: dict) -> bool:
-    """Элемент — разрушительный контрол: ЛЮБАЯ из его подписей (текст,
-    aria-label, title) начинается с формы глагола закрытия/удаления/очистки
+def _destructive_classes(text: str, anchored: bool) -> frozenset:
+    """Классы разрушительности текста: подпись — по началу (anchored),
+    цель — по любому месту. Иконка целиком — по словарю."""
+    if not text:
+        return frozenset()
+    if text in _DESTRUCTIVE_ICONS:
+        return _DESTRUCTIVE_ICONS[text]
+    out = set()
+    for cls, rx in _DESTRUCTIVE_CLASS_RES.items():
+        if rx.match(text) if anchored else rx.search(text):
+            out.add(cls)
+    return frozenset(out)
+
+
+def _destructive_label_classes(it: dict) -> frozenset:
+    """Классы разрушительности элемента: ЛЮБАЯ из его подписей (текст,
+    aria-label, title) начинается с формы глагола закрытия/удаления/выхода
     или целиком является иконкой-крестиком. Иконку часто подписывает только
     aria («Remove from queue» при пустом тексте) — поэтому смотрим все три,
     а не первую непустую."""
+    out: set = set()
     for key in ("text", "aria", "title"):
-        lab = _norm_match(it.get(key))
-        if lab and (lab in _DESTRUCTIVE_ICONS or _DESTRUCTIVE_WORD_RE.match(lab)):
-            return True
-    return False
+        out |= _destructive_classes(_norm_match(it.get(key)), anchored=True)
+    return frozenset(out)
+
+
+def _destructive_label(it: dict) -> bool:
+    """Элемент — разрушительный контрол (любого класса)."""
+    return bool(_destructive_label_classes(it))
+
+
+def _destructive_intent_classes(goal: str) -> frozenset:
+    """Классы намерения в цели: закрыть/удалить/выйти (глаголом или
+    подсказкой-иконкой «крестик»)."""
+    g = _norm_match(goal)
+    out = set(_destructive_classes(g, anchored=False))
+    if g and _DESTRUCTIVE_HINT_RE.search(g):
+        out |= _DESTRUCTIVE_ICONS["×"]
+    return frozenset(out)
 
 
 def _destructive_intent(goal: str) -> bool:
     """В самой цели есть намерение закрыть/удалить/очистить/выйти — тогда
-    разрушительный контрол и есть то, о чём просили, и вето не работает."""
-    g = _norm_match(goal)
-    return bool(g) and (g in _DESTRUCTIVE_ICONS
-                        or bool(_DESTRUCTIVE_WORD_RE.search(g))
-                        or bool(_DESTRUCTIVE_HINT_RE.search(g)))
+    разрушительный контрол ЭТОГО класса и есть то, о чём просили."""
+    return bool(_destructive_intent_classes(goal))
 
 
 # Операции, которые элемент не активируют: наведение курсора ничего не
@@ -627,8 +714,14 @@ def _destructive_mismatch(goal: str, it: dict, op: str = "click") -> bool:
     True — такой элемент не показываем скорингу и не отдаём в клик.
     op — тип операции (см. _NON_ACTIVATING_OPS): наведению разрушительный
     контрол не опасен."""
-    return (_destructive_label(it) and op not in _NON_ACTIVATING_OPS
-            and not _destructive_intent(goal))
+    if op in _NON_ACTIVATING_OPS:
+        return False
+    label_cls = _destructive_label_classes(it)
+    if not label_cls:
+        return False
+    # Намерение снимает вето только с контролов СВОЕГО класса: «закрой»
+    # разрешает крестик/«Закрыть», но не «Log out» и не «Удалить»
+    return not (label_cls & _destructive_intent_classes(goal))
 
 
 def _goal_in_label(goal: str, label: str, host: Optional[str] = None) -> bool:
@@ -1194,24 +1287,32 @@ LLM_WIDE_MAX = 30          # столько элементов снапшота 
 # «Меню аккаунта», а пользователь зовёт её «аватар». Ключ — слово цели,
 # значения — корни-подстроки, засчитываемые за совпадение слова
 _GOAL_SYNONYMS = {
-    "аватар": ("аккаунт", "профил", "учётн", "учетн"),
-    "аватарка": ("аккаунт", "профил", "учётн", "учетн"),
-    "ава": ("аккаунт", "профил"),
-    "аккаунт": ("профил", "аватар", "учётн", "учетн"),
-    "учётка": ("аккаунт", "профил"),
-    "учетка": ("аккаунт", "профил"),
-    "профиль": ("аккаунт", "аватар", "учётн", "учетн"),
+    # Латинские стемы — для англоязычных интерфейсов и data-testid/class
+    # иконок (school.example.com: «Close»/«Notifications» в aria — и
+    # ничего по-русски; без них «крестик» не находил «Close» и уходил в
+    # текстовый LLM-резолв наугад)
+    "аватар": ("аккаунт", "профил", "учётн", "учетн", "avatar", "profile",
+               "account"),
+    "аватарка": ("аккаунт", "профил", "учётн", "учетн", "avatar", "profile",
+                 "account"),
+    "ава": ("аккаунт", "профил", "avatar", "profile"),
+    "аккаунт": ("профил", "аватар", "учётн", "учетн", "account", "profile",
+                "avatar"),
+    "учётка": ("аккаунт", "профил", "account", "profile"),
+    "учетка": ("аккаунт", "профил", "account", "profile"),
+    "профиль": ("аккаунт", "аватар", "учётн", "учетн", "profile", "account",
+                "avatar"),
     "троеточие": ("ещё", "еще", "параметр", "действ"),  # «действ» — основа:
     # prefix-матч ловит и «Меню действий» YouTube, и «Действия»
-    "лупа": ("поиск",),
-    "колокольчик": ("уведомлен",),
-    "колокол": ("уведомлен",),
-    "шестерёнка": ("настрой",),
-    "шестеренка": ("настрой",),
-    "закрой": ("закрыт", "закрыть"),
-    "закрытие": ("закрыть",),
-    "закрытия": ("закрыть",),
-    "крестик": ("закрыт",),
+    "лупа": ("поиск", "search"),
+    "колокольчик": ("уведомлен", "notif", "bell"),
+    "колокол": ("уведомлен", "notif", "bell"),
+    "шестерёнка": ("настрой", "setting"),
+    "шестеренка": ("настрой", "setting"),
+    "закрой": ("закрыт", "закрыть", "close"),
+    "закрытие": ("закрыть", "close"),
+    "закрытия": ("закрыть", "close"),
+    "крестик": ("закрыт", "close", "dismiss"),
     # «нажми состав» на странице товара — это кнопка «i» («Показать
     # дополнительную информацию» / «Калорийность и состав» в модалке).
     # Синонимы — усечённые префиксы («информац» матчит и «информация»,
@@ -1256,6 +1357,24 @@ _GOAL_ALIAS = {
     "полоски меню": "бургер",
     "меню полоски": "бургер",
 }
+
+
+# Слова цели, означающие ИКОНКУ (графический образ, а не подпись): «крестик»,
+# «колокольчик», «лупа», «бургер»… Если скоринг (с синонимами выше) такую
+# цель не нашёл — подписи у иконки нет, и текстовому LLM-резолву в списке
+# подписей искать нечего: он лишь угадает чужой элемент (кейс 22.09,
+# school.example.com: «крестик» → «More», «колокольчик» → пункт меню
+# «Notifications»). Такие цели минуют текстовый ярус и уходят в vision —
+# ярус с рамками вокруг безымянных кнопок, который для иконок и существует
+_ICON_WORD_ROOTS = ("крестик", "колокол", "лупа", "лупу", "лупы", "шестер",
+                    "троеточ", "аватар", "бургер", "гамбургер", "полоск",
+                    "иконк", "значок", "значк", "галочк")
+
+
+def _icon_goal(goal: str) -> bool:
+    """Цель названа иконкой: хотя бы одно слово — образ, а не подпись."""
+    words = re.findall(r"[a-z0-9а-яё]+", _norm_match(goal))
+    return any(w.startswith(_ICON_WORD_ROOTS) for w in words)
 
 
 def _goal_with_synonyms(goal: str, host: Optional[str] = None) -> str:
@@ -3358,6 +3477,14 @@ class ComputerControlManager:
                 # Внешняя ссылка: уводит со страницы (футер dodo «Калорийность
                 # и состав» → drive.google.com), on-page контрол важнее
                 s -= 15.0
+            if it.get("cov"):
+                # Центр элемента перекрыт чужим фиксированным слоем (карточка
+                # каталога под открытым попапом): клик туда физически не
+                # дойдёт. Основной барьер — _active_layer в выборе; штраф —
+                # страховка для путей, которые скорят без фильтра слоя
+                # (goal_sole, _element_on_other_pages); когда перекрыто всё —
+                # равномерен и порядка не меняет
+                s -= 30.0
             s -= min(pos, 20) * 0.5  # штраф за позднюю позицию в DOM
             scored.append((s, it))
         scored.sort(key=lambda x: -x[0])
@@ -3520,13 +3647,13 @@ class ComputerControlManager:
         meta: Dict[str, object] = {"path": None, "candidates": [],
                                    "llm_response": None}
         # Активный слой поверх затемнённого фона (боковая корзина dodo,
-        # модалка с бэкдропом): элементы под бэкдропом (sc=False) сейчас
-        # недоступны — клик попадает в оверлей и закрывает панель. Выбираем
-        # только внутри слоя; если вне слоя оказались ВСЕ кандидаты
-        # (ложный детект) — не режем в ноль, работаем с полным списком
-        scoped = [it for it in items if it.get("sc", True)]
-        if scoped and len(scoped) < len(items):
-            items = scoped
+        # модалка с бэкдропом): элементы под бэкдропом (sc=False) или
+        # перекрытые чужим фиксированным слоем (cov=True — попап без
+        # опознанного бэкдропа, кейс 22.09) сейчас недоступны — клик
+        # попадает в оверлей и закрывает панель. Выбираем только внутри
+        # слоя; если вне слоя оказались ВСЕ кандидаты (ложный детект) — не
+        # режем в ноль, работаем с полным списком (_active_layer)
+        items = _active_layer(items)
 
         def _out(idx_val: Optional[int], path: str,
                  it: Optional[dict] = None) -> Tuple[Optional[int], dict]:
@@ -3578,9 +3705,13 @@ class ComputerControlManager:
             # явный отрыв лидера — LLM не нужна
             return _out(top["idx"], "score", top)
         if router is not None:
+            # Контекст слоя в строке кандидата: без него LLM выбирала между
+            # «Яблочный крамбл + 60 ₽» (пункт открытого попапа) и «Яблочный
+            # крамбл 189 ₽» (карточка каталога под ним) наугад — и брала
+            # карточку (кейс 22.09, dodo)
             lines = "\n".join(
                 f"{n}) [{it.get('tag')}/{it.get('role') or '-'}] "
-                f"{str(it.get('text') or '')[:80]}"
+                f"{str(it.get('text') or '')[:80]}{_layer_note(it)}"
                 for n, (s, it) in enumerate(scored[:n_llm], 1))
             prompt = (
                 f"Задача: нажать «{goal}».\nКандидаты:\n{lines}\n"
@@ -4250,12 +4381,18 @@ class ComputerControlManager:
         или ответ невалиден (meta — в аудит причины отказа)."""
         if not self.llm_wide_resolve or router is None:
             return None, None
+        if not for_field and _icon_goal(goal):
+            # Цель-иконка, а скоринг с синонимами её не нашёл: подписи у
+            # иконки нет, в текстовом списке её не будет — LLM лишь ткнёт
+            # в чужой элемент. Сразу в vision (см. _ICON_WORD_ROOTS)
+            logger.info(f"[CompControl] «{goal[:40]}» — иконка без подписи: "
+                        "текстовый широкий резолв пропущен, дальше vision")
+            return None, None
         # Активный слой поверх затемнённого фона — как в _choose_element:
-        # под бэкдропом (sc=False) элементы недоступны, в список для LLM
-        # их не берём; все вне слоя (ложный детект) — не режем в ноль
-        scoped = [it for it in items if it.get("sc", True)]
-        if scoped and len(scoped) < len(items):
-            items = scoped
+        # под бэкдропом (sc=False) или под чужим слоем (cov) элементы
+        # недоступны, в список для LLM их не берём; все вне слоя (ложный
+        # детект) — не режем в ноль (_active_layer)
+        items = _active_layer(items)
         # Безымянные элементы (ни текста, ни aria — иконки-SVG) текстовой
         # LLM нечем сопоставить с целью — их разбирает vision-фолбэк
         named = [it for it in items
@@ -4283,7 +4420,7 @@ class ComputerControlManager:
             if ctx and len(lab) <= 15:
                 lab = f"{lab} (блок: {ctx[:60]})"
             return (f"{n}) [{it.get('tag')}/{it.get('role') or '-'}] "
-                    f"{lab[:120]}")
+                    f"{lab[:120]}{_layer_note(it)}")
 
         lines = "\n".join(_line(n, it) for n, it in enumerate(pool, 1))
         task = "выбрать поле ввода" if for_field else "нажать"
@@ -4370,12 +4507,11 @@ class ComputerControlManager:
                  if it.get("vp") and (it.get("w") or 0) >= 10
                  and (it.get("h") or 0) >= 10]
         # Открытая панель/модалка поверх затемнённого фона (sc=0 — элементы
-        # под бэкдропом): рамки тратим только на активный слой (кейс 08.09:
-        # зоны размазаны по странице, на панель комментариев не хватало
-        # бюджета). Все кандидаты вне слоя (ложный детект) — не режем в ноль
-        scoped = [it for it in cands if it.get("sc", True)]
-        if scoped:
-            cands = scoped
+        # под бэкдропом; cov — перекрытые чужим слоем): рамки тратим только
+        # на активный слой (кейс 08.09: зоны размазаны по странице, на панель
+        # комментариев не хватало бюджета). Все кандидаты вне слоя (ложный
+        # детект) — не режем в ноль (_active_layer)
+        cands = _active_layer(cands)
         cands = _dedup_same_target_cards(cands)
         cands.sort(key=lambda it: (bool(it.get("text") or it.get("aria")),
                                    -(float(it.get("w") or 0)

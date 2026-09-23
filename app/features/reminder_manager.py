@@ -28,6 +28,13 @@ from app.core.language import detect_language, detect_dialogue_language, languag
 
 logger = logging.getLogger(__name__)
 
+# Итоги _fire помимо True/False (app/core/turn_gate.py): идёт ход
+# пользователя — напоминание не теряется, цикл повторит его следующим тиком
+# без траты попытки доставки; отменено/перенесено в том самом ходе, которого
+# ждали, — не доставляется, запись напоминания цикл не трогает
+_DEFERRED = "deferred"
+_CANCELLED = "cancelled"
+
 
 # ─── Парсинг запроса ──────────────────────────────────────
 
@@ -957,6 +964,9 @@ class ReminderManager:
         self._primitive = False
         self._persona = None
         self._memory = None
+        # Гейт хода пользователя (общий с BotInstance): напоминание не
+        # пишется в STM и не уходит посреди идущего хода — см. _fire
+        self._turn_gate = None
 
         self._reminders: List[dict] = []
         self._load()
@@ -975,6 +985,10 @@ class ReminderManager:
     def set_memory(self, memory):
         """Передаёт MemoryManager — сработавшие напоминания логируются в STM."""
         self._memory = memory
+
+    def set_turn_gate(self, gate):
+        """Передаёт ChatTurnGate бота (app/core/turn_gate.py)."""
+        self._turn_gate = gate
 
     def set_muted_check(self, check):
         """Передаёт callable () -> bool: заморожена ли персона (features.muted)."""
@@ -1457,26 +1471,62 @@ class ReminderManager:
         if prefix and prefix.lstrip("@").lower() not in text.lstrip()[:120].lower():
             text = f"{prefix}, {text}"
 
+        # Посреди хода пользователя (он написал, ответ генерируется или
+        # доставляется) не пишем и не шлём: раньше напоминание ложилось в STM
+        # между репликой и ответом (user → напоминание → ответ) и уходило
+        # поверх живого обмена. Запись в STM — атомарно с проверкой под локом
+        # гейта: хода нет И напоминание всё ещё в силе (в только что
+        # закончившемся ходе его могли отменить или перенести — тогда не
+        # шлём). Ход идёт — откладываем до следующего тика, не ждём в цикле.
+        entry = None
+        gate = self._turn_gate
+        if gate is not None:
+            res = await asyncio.to_thread(
+                gate.commit_message, self._memory, chat_id, text,
+                None, lambda: self._still_due(reminder))
+            if res.status == "busy":
+                logger.info(f"[Reminder] Идёт ход пользователя в {chat_id} — "
+                            "напоминание отложено до следующего тика")
+                return _DEFERRED
+            if res.status == "cancelled":
+                logger.info(f"[Reminder] Напоминание отменено/перенесено, пока шёл "
+                            f"ход пользователя, — не отправляем: {task}")
+                return _CANCELLED
+            entry = res.entry
+
         try:
             ok = await self._sender.send_message(chat_id, text, topic_id=topic_id)
-            if ok:
-                logger.info(f"[Reminder] Отправлено в чат {chat_id}: {text[:60]}")
-                # Логируем в STM, чтобы в буфере и в чате картина была одна
-                # (роль assistant — LTM-экстракция на неё не срабатывает)
-                if self._memory:
-                    try:
-                        await asyncio.to_thread(
-                            self._memory.add_message, "assistant", text,
-                            user_id=chat_id, chat_id=chat_id,
-                        )
-                    except Exception as e:
-                        logger.warning(f"[Reminder] Не удалось записать напоминание в STM: {e}")
-            else:
-                logger.error(f"[Reminder] Отправка в {chat_id} вернула False")
-            return bool(ok)
         except Exception as e:
             logger.error(f"[Reminder] Ошибка отправки в {chat_id}: {e}")
+            ok = False
+        if not ok:
+            logger.error(f"[Reminder] Отправка в {chat_id} не удалась")
+            # Пользователь напоминания не увидел — в истории его быть не должно
+            if entry is not None:
+                await asyncio.to_thread(gate.rollback_message, self._memory, chat_id, entry)
             return False
+        logger.info(f"[Reminder] Отправлено в чат {chat_id}: {text[:60]}")
+        # Логируем в STM, чтобы в буфере и в чате картина была одна
+        # (роль assistant — LTM-экстракция на неё не срабатывает). С гейтом
+        # запись уже сделана выше, до доставки
+        if gate is None and self._memory:
+            try:
+                await asyncio.to_thread(
+                    self._memory.add_message, "assistant", text,
+                    user_id=chat_id, chat_id=chat_id,
+                )
+            except Exception as e:
+                logger.warning(f"[Reminder] Не удалось записать напоминание в STM: {e}")
+        return True
+
+    def _still_due(self, reminder: dict) -> bool:
+        """Напоминание всё ещё должно сработать: оно в списке (не отменено —
+        сравнение по идентичности), не погашено и не перенесено на потом.
+        Зовётся под локом гейта хода, перед записью в STM."""
+        with self._lock:
+            return (any(r is reminder for r in self._reminders)
+                    and not reminder.get("fired")
+                    and reminder.get("trigger_at", 0) <= time.time())
 
     def _reminder_lang(self, chat_id: str, task: Optional[str]) -> str:
         """Язык напоминания: сначала текст задачи (он продиктован пользователем),
@@ -1564,7 +1614,19 @@ class ReminderManager:
                 # (падение процесса, ошибка сети) напоминание терялось без retry
                 changed = False
                 for r in due:
+                    # Идёт ход пользователя в этом чате — напоминание ждёт
+                    # следующего тика целиком (без генерации текста и без траты
+                    # попытки), чтобы не держать цикл и напоминания других чатов
+                    gate = self._turn_gate
+                    if gate is not None and gate.busy(r["chat_id"]):
+                        logger.info(f"[Reminder] Идёт ход пользователя в {r['chat_id']} — "
+                                    f"«{r.get('task')}» ждёт следующего тика")
+                        continue
                     success = await self._fire(r)
+                    if success == _DEFERRED or success == _CANCELLED:
+                        # отложено ходом — повтор тиком, не сбой; отменено —
+                        # запись уже убрана/перенесена самим ходом
+                        continue
                     with self._lock:
                         if success:
                             if r.get("recurrence"):

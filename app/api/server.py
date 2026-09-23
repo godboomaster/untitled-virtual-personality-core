@@ -13,6 +13,7 @@
 
 import asyncio
 import base64
+import contextlib
 import hmac
 import json
 import logging
@@ -110,10 +111,75 @@ if _api_host not in ("127.0.0.1", "localhost", "::1") and not _api_token:
         "этого хоста. Задайте API_TOKEN в .env, если сервер смотрит наружу."
     )
 
-# Чаты, где прямо сейчас идёт генерация ответа: "persona:chat_key".
-# Inbox отдаёт это фронту — индикатор «печатает» переживает перезагрузку
-# страницы (запрос-то на сервере продолжается).
-_generating: set[str] = set()
+# Чаты, где прямо сейчас идёт генерация ответа: "persona:chat_key" → число
+# активных/ожидающих генераций. Inbox отдаёт это фронту — индикатор
+# «печатает» переживает перезагрузку страницы (запрос-то на сервере
+# продолжается). Счётчик, а не множество: два запроса в один чат (второй ждёт
+# лок) не должны гасить флаг друг другу — первый завершившийся снимал бы его,
+# пока второй ещё в работе.
+_generating: dict[str, int] = {}
+# Сильные ссылки на фоновые задачи генерации: event loop держит задачи только
+# слабо, «осиротевшую» после разрыва соединения задачу мог бы собрать GC
+_detached_generations: set[asyncio.Task] = set()
+
+
+def _generating_enter(key: str) -> None:
+    _generating[key] = _generating.get(key, 0) + 1
+
+
+def _generating_exit(key: str) -> None:
+    n = _generating.get(key, 0) - 1
+    if n > 0:
+        _generating[key] = n
+    else:
+        _generating.pop(key, None)
+
+
+def _log_detached_failure(task: asyncio.Task) -> None:
+    """Исключение задачи, которую никто уже не ждёт (клиент отключился), —
+    в лог, а не в «Task exception was never retrieved»."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("[chat] фоновая генерация завершилась ошибкой", exc_info=exc)
+
+
+async def _run_generation(gen_key: str, fn):
+    """Генерация ответа, которую НЕ отменяет разрыв соединения клиента.
+
+    fn — синхронная тяжёлая часть (process_message), идёт в потоке пула.
+    Поток отменить нельзя, поэтому раньше при перезагрузке страницы
+    CancelledError прилетал в await to_thread(...), finally сразу снимал флаг
+    «генерирует» и отпускал лок чата, а поток ещё секунды дописывал ответ в
+    STM: новая страница читала историю без ответа, перехода флага true→false
+    уже не видела — ответ не показывался никогда; а следующее сообщение в тот
+    же чат шло параллельно с живым потоком. Теперь флаг и лок принадлежат
+    отдельной задаче и снимаются, только когда fn реально вернулся; вызывающий
+    ждёт её через shield — его отмена задачу не трогает.
+
+    Флаг ставится ДО ожидания лока: сообщение, вставшее в очередь за
+    предыдущим, тоже показывает «печатает»."""
+    async def _job():
+        _generating_enter(gen_key)
+        try:
+            async with chat_lock(gen_key):
+                return await asyncio.to_thread(fn)
+        finally:
+            _generating_exit(gen_key)
+
+    task = asyncio.create_task(_job())
+    _detached_generations.add(task)
+    task.add_done_callback(_detached_generations.discard)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Клиент ушёл: задача доработает сама, ответ ляжет в STM (фронт
+        # перечитает историю по спаду флага / росту last_ts). Её ошибку —
+        # в лог, раз результат уже никому не нужен.
+        task.add_done_callback(_log_detached_failure)
+        logger.info(f"[chat] {gen_key}: клиент отключился, генерация продолжается в фоне")
+        raise
 
 
 async def require_auth(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
@@ -219,9 +285,25 @@ async def chat(req: ChatRequest):
     # Лок на (персона, чат): сериализуем сообщения одного чата,
     # разные чаты и персоны обрабатываются параллельно.
     lock_key = f"{req.persona}:{req.chat_id or req.user_id}"
-    _generating.add(lock_key)
+    stm_key = _stm_key(req)
+    # Ход пользователя — от получения сообщения до отдачи ответа (см.
+    # _begin_turn): фоновые сообщения чата в это окно в STM не встают
+    frame = await _begin_turn(bot, stm_key)
     try:
-        async with chat_lock(lock_key):
+        return await _chat_in_turn(bot, req, lock_key, stm_key, frame)
+    finally:
+        _end_turn(bot, frame)
+
+
+async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, frame):
+    def _generate():
+        """Синхронная часть целиком (в потоке пула, под локом чата): и
+        генерация, и разбор pending-бакетов — они должны сниматься тем же
+        запросом, что их наполнил, до следующего сообщения в чат."""
+        # Поток генерации держит ход сам (_adopt_turn): при разрыве
+        # соединения обработчик уходит, а генерация и правка STM картинки
+        # ещё идут — ход закроется, только когда выйдет и она
+        with _adopt_turn(bot, frame):
             cmd = _try_slash_command(bot, req)
             if cmd is not None:
                 # Слэш-команда: без process_message (как в TG — отдельные хендлеры)
@@ -230,11 +312,10 @@ async def chat(req: ChatRequest):
                 split_extra = bot.pop_pending_split_messages(req.chat_id)
             else:
                 llm_input = (
-                    await asyncio.to_thread(_prepare_image_input, bot, req.message, req.image)
+                    _prepare_image_input(bot, req.message, req.image)
                     if req.image else req.message
                 )
-                reply = await asyncio.to_thread(
-                    bot.process_message,
+                reply = bot.process_message(
                     llm_input,
                     user_id=req.user_id,
                     chat_id=req.chat_id,
@@ -245,22 +326,28 @@ async def chat(req: ChatRequest):
                     # llm_input (там текст с картинки — см. _prepare_image_input)
                     raw_user_text=req.message if req.image else None,
                 )
+                # Провайдер ответа — СРАЗУ после process_message и в этом же
+                # потоке (см. _answer_provider)
+                provider, model = _answer_provider(bot)
                 # Хвост расщеплённого ответа (settings.split_messages) забираем
                 # до правки STM картинки — переписываемый хвост включает его части
                 split_extra = bot.pop_pending_split_messages(req.chat_id)
                 if req.image:
                     cap = req.message.strip()
-                    await asyncio.to_thread(
-                        _rewrite_image_stm, bot, req.chat_id or req.user_id, req.user_id,
+                    _rewrite_image_stm(
+                        bot, stm_key, req.user_id,
                         f"📷 {cap}" if cap else "📷 (изображение)", [reply] + split_extra,
                     )
-                provider, model = _answer_provider(bot)
-            # Части расщеплённого ответа идут раньше досылаемых списков:
-            # это продолжение реплики, а список — приложение к ней
-            extra = split_extra + bot.pop_pending_list_messages(req.chat_id)
-            question_kind = bot.pop_pending_question_kind(req.chat_id)
-    finally:
-        _generating.discard(lock_key)
+        # Части расщеплённого ответа идут раньше досылаемых списков:
+        # это продолжение реплики, а список — приложение к ней
+        extra = split_extra + bot.pop_pending_list_messages(req.chat_id)
+        question_kind = bot.pop_pending_question_kind(req.chat_id)
+        return reply, provider, model, extra, question_kind
+
+    # Лок на (персона, чат) и флаг «генерирует» держит _run_generation:
+    # сообщения одного чата сериализуются, разные чаты и персоны идут
+    # параллельно; разрыв соединения генерацию не обрывает
+    reply, provider, model, extra, question_kind = await _run_generation(lock_key, _generate)
     return ChatResponse(
         reply=reply,
         extra_messages=extra,
@@ -288,9 +375,46 @@ def _pending_images(bot, chat_id) -> list[str]:
     return out
 
 
+def _stm_key(req: ChatRequest) -> str:
+    """Ключ чата в STM — то же правило, что у BotInstance/MemoryManager
+    (chat_id, иначе user_id; пустой chat_id — свой ключ ""): ход и правка
+    STM картинки ключуются так же, как реально пишется история."""
+    return str(req.chat_id if req.chat_id is not None else req.user_id)
+
+
+async def _begin_turn(bot, chat_key):
+    """Открыть ход пользователя (BotInstance — гейт против фоновых
+    инициатив/ритма/напоминаний, app/core/turn_gate.py) при получении
+    сообщения. Заготовки бота без гейта (тесты) — None."""
+    begin = getattr(bot, "begin_user_turn_async", None)
+    return await begin(chat_key) if callable(begin) else None
+
+
+def _end_turn(bot, frame) -> None:
+    if frame is not None:
+        bot.end_user_turn(frame)
+
+
+def _adopt_turn(bot, frame):
+    """Присоединить рабочий поток генерации к открытому ходу (кадр передаётся
+    явно: SSE-генератор не должен трогать contextvars)."""
+    adopt = getattr(bot, "adopt_turn", None)
+    if frame is None or not callable(adopt):
+        return contextlib.nullcontext()
+    return adopt(frame)
+
+
 def _answer_provider(bot) -> tuple[str | None, str | None]:
     """Провайдер и модель, реально давшие ответ (с учётом fallback-цепочки
-    и персональных override модели)."""
+    и персональных override модели).
+
+    Звать В ТОМ ЖЕ ПОТОКЕ, что генерировал ответ, и сразу после
+    process_message: router._last_provider пишут все потоки персоны
+    (ответ, инициатива, досье) — снятое позже или из другого потока
+    (event loop) значение может оказаться чужим. После перевода полей
+    роутера на потоко-локальные (п. 9 отчёта о конкурентности) из другого
+    потока оно было бы просто пустым; getattr с дефолтом работает при
+    обеих реализациях."""
     router = bot.router
     pid = getattr(router, "_last_provider", None) or router.active_provider
     if not pid:
@@ -336,16 +460,27 @@ def _rewrite_image_stm(bot, chat_key: str, user_id: str, display_text: str, repl
     на читабельные «📷 подпись» и части ответа бота (при split_messages ответ
     лежит в STM несколькими сообщениями — переписываем весь хвост целиком)."""
     try:
-        msgs = bot.memory.stm.get_messages(chat_id=chat_key)
-        # Хвост STM: [синтетическое user-сообщение, часть1, ..., частьN] —
-        # считаем завершающую серию assistant-частей и переписываем её
-        # вместе с user-сообщением перед ней
-        n_assist = 0
-        for m in reversed(msgs):
-            if m.get("role") != "assistant":
-                break
-            n_assist += 1
-        n_pop = min(n_assist + 1, len(msgs))
+        # Хвост STM: [синтетическое user-сообщение, часть1, ..., частьN].
+        # Точная граница — записи ЭТОГО хода (якорь хода у BotInstance): раньше
+        # считали завершающую серию assistant-сообщений, и инициатива, успевшая
+        # лечь в STM после ответа (пользователь её уже видел), удалялась вместе
+        # с ним; а если ход не записал user-реплику, под снос шла инициатива
+        # ПЕРЕД ходом и сообщение до неё. Запрос держит ход пользователя до
+        # конца правки (_user_turn), так что фоновых записей внутри хвоста нет.
+        tail_fn = getattr(bot, "_turn_stm_tail", None)
+        tail = tail_fn(chat_key) if callable(tail_fn) else None
+        if tail is not None:
+            n_pop = len(tail)
+        else:
+            # Якоря нет (заготовка бота / буфер перечитан) — прежняя эвристика:
+            # завершающая серия assistant-частей и user-сообщение перед ней
+            msgs = bot.memory.stm.get_messages(chat_id=chat_key)
+            n_assist = 0
+            for m in reversed(msgs):
+                if m.get("role") != "assistant":
+                    break
+                n_assist += 1
+            n_pop = min(n_assist + 1, len(msgs))
         bot.memory.stm.pop_last_n(n_pop, chat_key)
         bot.memory.stm.add_message("user", display_text, user_id, chat_key)
         for part in reply_parts:
@@ -488,7 +623,8 @@ async def chat_stream(req: ChatRequest):
     bot = await _get_bot(req.persona)
     _check_not_muted(bot, req.persona)
     gen_key = f"{req.persona}:{req.chat_id or req.user_id}"
-    lock = chat_lock(gen_key)
+    stm_key = _stm_key(req)
+    turn = {"frame": None}
 
     def _generate():
         """Тяжёлая СИНХРОННАЯ часть — идёт в потоке пула (asyncio.to_thread).
@@ -497,82 +633,99 @@ async def chat_stream(req: ChatRequest):
         анимации — под нагрузкой параллельные /api/chat/stream исчерпывали
         общий пул asyncio.to_thread, и другие эндпоинты зависали в очереди
         на поток."""
-        cmd = _try_slash_command(bot, req)
-        if cmd is not None:
-            # Слэш-команда: без process_message (как в TG)
-            reply, llm_used = cmd
-            provider, model = _answer_provider(bot) if llm_used else (None, None)
-            split_rest = bot.pop_pending_split_messages(req.chat_id)
-        else:
-            llm_input = _prepare_image_input(bot, req.message, req.image) if req.image else req.message
-            reply = bot.process_message(
-                llm_input,
-                user_id=req.user_id,
-                chat_id=req.chat_id,
-                user_name=req.user_name,
-                reply_context=req.reply_context,
-                # См. /api/chat: подтверждение pending-действия — только по
-                # тому, что реально ввёл пользователь, не по OCR картинки
-                raw_user_text=req.message if req.image else None,
-            )
-            split_rest = bot.pop_pending_split_messages(req.chat_id)
-            if req.image:
-                cap = req.message.strip()
-                _rewrite_image_stm(
-                    bot, req.chat_id or req.user_id, req.user_id,
-                    f"📷 {cap}" if cap else "📷 (изображение)", [reply] + split_rest,
+        # Поток генерации держит ход сам (см. /api/chat, _adopt_turn)
+        with _adopt_turn(bot, turn["frame"]):
+            cmd = _try_slash_command(bot, req)
+            if cmd is not None:
+                # Слэш-команда: без process_message (как в TG)
+                reply, llm_used = cmd
+                provider, model = _answer_provider(bot) if llm_used else (None, None)
+                split_rest = bot.pop_pending_split_messages(req.chat_id)
+            else:
+                llm_input = _prepare_image_input(bot, req.message, req.image) if req.image else req.message
+                reply = bot.process_message(
+                    llm_input,
+                    user_id=req.user_id,
+                    chat_id=req.chat_id,
+                    user_name=req.user_name,
+                    reply_context=req.reply_context,
+                    # См. /api/chat: подтверждение pending-действия — только по
+                    # тому, что реально ввёл пользователь, не по OCR картинки
+                    raw_user_text=req.message if req.image else None,
                 )
-            provider, model = _answer_provider(bot)
-        return reply, split_rest, provider, model
+                # Провайдер ответа — сразу и в этом же потоке (_answer_provider)
+                provider, model = _answer_provider(bot)
+                split_rest = bot.pop_pending_split_messages(req.chat_id)
+                if req.image:
+                    cap = req.message.strip()
+                    _rewrite_image_stm(
+                        bot, stm_key, req.user_id,
+                        f"📷 {cap}" if cap else "📷 (изображение)", [reply] + split_rest,
+                    )
+        # Pending-бакеты снимаем здесь же, в потоке под локом чата: раньше
+        # это делалось после «печати», уже без лока, — следующее сообщение в
+        # тот же чат успевало обнулить/перехватить бакеты этого ответа
+        extra = split_rest + bot.pop_pending_list_messages(req.chat_id)
+        question_kind = bot.pop_pending_question_kind(req.chat_id)
+        images = _pending_images(bot, req.chat_id)
+        return reply, split_rest, extra, question_kind, images, provider, model
 
     async def _gen():
-        await lock.acquire()
-        _generating.add(gen_key)
+        # Ход пользователя держим до конца «печати» (split-пузыри с паузами):
+        # раньше он закрывался вместе с генерацией, и напоминание/утро из
+        # фона вставало между частями ответа. finally — при любом исходе,
+        # включая разрыв SSE (aclose генератора)
+        turn["frame"] = await _begin_turn(bot, stm_key)
         try:
-            try:
-                reply, split_rest, provider, model = await asyncio.to_thread(_generate)
-            except Exception:
-                # Клиенту — обезличенное сообщение: текст исключения LLM-клиента
-                # может содержать фрагменты API-ключа/URL с токеном авторизации
-                # (так отвечают некоторые провайдеры на 401/403). Полный текст —
-                # только в лог.
-                logger.exception(f"[chat/stream] {req.persona}: ошибка генерации")
-                yield f"data: {json.dumps({'error': 'Не удалось получить ответ. Попробуйте ещё раз.'}, ensure_ascii=False)}\n\n"
-                return
-
-            # «Печать» финального текста: порции по несколько символов
-            async for ev in _typed_chunks(reply):
-                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-            # Расщеплённый хвост — отдельные пузыри: part_break велит фронту
-            # начать новое сообщение, дальше части печатаются как обычно.
-            # Пауза перед пузырём — как у TG-бота: растёт с длиной части
-            for part in split_rest:
-                yield f"data: {json.dumps({'part_break': True}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(send_delay(part))
-                async for ev in _typed_chunks(part):
-                    yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-
-            payload = {
-                "done": True,
-                "reply": reply,
-                "extra_messages": split_rest + bot.pop_pending_list_messages(req.chat_id),
-                "question_kind": bot.pop_pending_question_kind(req.chat_id),
-                "persona": req.persona,
-                "chat_id": req.chat_id or req.user_id,
-                "provider": provider,
-                "model": model,
-                # Режим управления после обработки сообщения (фронт гасит
-                # дебаунс-паузу отправки для команд управления)
-                "control_mode": bot.control_mode_on(req.chat_id or req.user_id),
-                # Скриншоты страницы из режима управления («что на странице?»)
-                "images": _pending_images(bot, req.chat_id),
-            }
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            async for chunk in _gen_in_turn():
+                yield chunk
         finally:
-            # Клиент мог отключиться (перезагрузка) — флаг снимаем здесь,
-            # когда серверная генерация реально завершилась
-            _generating.discard(gen_key)
-            lock.release()
+            _end_turn(bot, turn["frame"])
+
+    async def _gen_in_turn():
+        # Генерация — в отдельной задаче (_run_generation): перезагрузка
+        # страницы отменяет этот генератор, но не её; флаг «генерирует» и лок
+        # чата снимутся, только когда ответ реально ляжет в STM
+        try:
+            (reply, split_rest, extra, question_kind, images,
+             provider, model) = await _run_generation(gen_key, _generate)
+        except Exception:
+            # Клиенту — обезличенное сообщение: текст исключения LLM-клиента
+            # может содержать фрагменты API-ключа/URL с токеном авторизации
+            # (так отвечают некоторые провайдеры на 401/403). Полный текст —
+            # только в лог.
+            logger.exception(f"[chat/stream] {req.persona}: ошибка генерации")
+            yield f"data: {json.dumps({'error': 'Не удалось получить ответ. Попробуйте ещё раз.'}, ensure_ascii=False)}\n\n"
+            return
+
+        # «Печать» финального текста: порции по несколько символов
+        async for ev in _typed_chunks(reply):
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        # Расщеплённый хвост — отдельные пузыри: part_break велит фронту
+        # начать новое сообщение, дальше части печатаются как обычно.
+        # Пауза перед пузырём — как у TG-бота: растёт с длиной части
+        for part in split_rest:
+            yield f"data: {json.dumps({'part_break': True}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(send_delay(part))
+            async for ev in _typed_chunks(part):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+        payload = {
+            "done": True,
+            "reply": reply,
+            "extra_messages": extra,
+            "question_kind": question_kind,
+            "persona": req.persona,
+            "chat_id": req.chat_id or req.user_id,
+            "provider": provider,
+            "model": model,
+            # Режим управления после обработки сообщения (фронт гасит
+            # дебаунс-паузу отправки для команд управления)
+            "control_mode": bot.control_mode_on(req.chat_id or req.user_id),
+            # Скриншоты страницы из режима управления («что на странице?»)
+            "images": images,
+        }
+        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
 

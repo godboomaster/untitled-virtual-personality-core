@@ -1211,6 +1211,35 @@ def main():
                   "субтитры", {"text": "Closed captions"})
               and not _cc_mod._destructive_mismatch(
                   "лента", {"text": "Скроллить"}))
+        # Классы разрушительности: намерение снимает вето только со СВОЕГО
+        # класса (кейс 22.09: «нажми закрыть» без крестика в снапшоте
+        # кликало «Log out» — «закрыть» и «выйти» были одним флагом)
+        check("veto: «закрыть» не разрешает «Log out»/«Удалить»",
+              _cc_mod._destructive_mismatch("закрыть", {"text": "Log out"})
+              and _cc_mod._destructive_mismatch("закрой окно", {"text": "Удалить"})
+              and _cc_mod._destructive_mismatch("нажми крестик", {"title": "Log out"})
+              and _cc_mod._destructive_mismatch("удали трек", {"aria": "Close"}))
+        check("veto: свой класс разрешён — крестик/«Закрыть», × и для удаления",
+              not _cc_mod._destructive_mismatch("закрыть", {"text": "Закрыть"})
+              and not _cc_mod._destructive_mismatch("крестик у джема", {"text": "×"})
+              and not _cc_mod._destructive_mismatch("удали сыр", {"text": "×"})
+              and not _cc_mod._destructive_mismatch("выйди из аккаунта",
+                                                    {"title": "Log out"})
+              and not _cc_mod._destructive_mismatch("очисти очередь",
+                                                    {"text": "Очистить очередь"})
+              and not _cc_mod._destructive_mismatch("закрыть", {"text": "Log out"},
+                                                    op="hover"))
+        # Латинские синонимы иконок: «крестик» находит aria «Close»,
+        # «колокольчик» — «Notifications» (англоязычные интерфейсы)
+        _sc_en = mvt._score_candidates(
+            [_it(0, "button", "", aria="Close"), _it(1, "a", "Dashboard")],
+            "крестик")
+        _sc_bell = mvt._score_candidates(
+            [_it(2, "button", "", aria="Notifications"), _it(3, "a", "More")],
+            "колокольчик")
+        check("синонимы: «крестик» → aria Close, «колокольчик» → Notifications",
+              _sc_en and _sc_en[0][1]["idx"] == 0
+              and _sc_bell and _sc_bell[0][1]["idx"] == 2)
     finally:
         _ba.snapshot_elements = _orig_snap_vt
 
@@ -6274,6 +6303,83 @@ console.log(%s);
                                         chat_id="vis6")
         check("слои: все кандидаты вне слоя — фолбэк на полный список",
               act_v8 is not None and act_v8["idx"] == 32)
+
+        # ── Перекрытие чужим слоем без опознанного бэкдропа (cov; кейс
+        # 22.09, dodo: попап «Заменить» в комбо «Десерт и напиток» — sc у
+        # всех 1, карточка каталога ПОД попапом с точным текстом обходила
+        # пункт попапа, LLM из голого списка брала карточку). Элементы —
+        # ровно из audit.jsonl (ts 1790088183) плюс флаги md/cov ──
+        _crumble = [
+            _it(86811758, "label", "Сорбет Клубничный гранат + 25 ₽", md=True,
+                ctx="Яблочный крамбл + 60 ₽ Сорбет Клубничный гранат + 25 ₽"),
+            _it(86811759, "label", "Пирожное Муравьешки + 30 ₽", md=True,
+                ctx="Яблочный крамбл + 60 ₽ Пирожное Муравьешки + 30 ₽"),
+            _it(86811762, "label", "Яблочный крамбл + 60 ₽", md=True,
+                ctx="Заменить десерт Яблочный крамбл + 60 ₽"),
+            _it(86811852, "a", "Яблочный крамбл", cov=True,
+                href="https://dodopizza.ru/city/product/yablochnyi-krambl"),
+            _it(86811853, "div", "Яблочный крамбл 189 ₽", cov=True,
+                ctx="Десерты Яблочный крамбл 189 ₽"),
+        ]
+        idx_c1, meta_c1 = m_vis._choose_element(
+            "яблочный крамбл", _crumble, _BoomRouter())
+        check("cov: пункт открытого попапа побеждает точный матч каталога "
+              "под ним — без LLM",
+              idx_c1 == 86811762 and meta_c1["path"] == "score")
+        check("cov: перекрытые карточки каталога в кандидаты не попали",
+              all(c["idx"] not in (86811852, 86811853)
+                  for c in meta_c1["candidates"]))
+        # Всё перекрыто одинаково (ложный детект слоя) — не режем в ноль,
+        # порядок прежний: точный матч выигрывает
+        idx_c2, _ = m_vis._choose_element(
+            "яблочный крамбл",
+            [_it(50, "a", "Яблочный крамбл", cov=True),
+             _it(51, "div", "Яблочный крамбл 189 ₽", cov=True)],
+            _BoomRouter())
+        check("cov: все кандидаты перекрыты — фолбэк на полный список",
+              idx_c2 == 50)
+        # Штраф скоринга — страховка путей без фильтра слоя: перекрытый
+        # точный матч 100−30=70 — ниже пункта открытого окна (70+10)
+        sc_c = m_vis._score_candidates(
+            [_it(52, "a", "Яблочный крамбл", cov=True),
+             _it(53, "label", "Яблочный крамбл + 60 ₽", md=True)],
+            "яблочный крамбл")
+        check("cov: штраф −30 в скоринге",
+              [it["idx"] for _, it in sc_c] == [53, 52]
+              and abs(sc_c[1][0] - 70.0) < 1e-6)
+        # Широкий LLM-резолв и vision-рамки — тоже только активный слой
+        _cap.clear()
+        idx_cw, _ = m_vis._llm_wide_pick(
+            "десерт", [_it(54, "a", "Сладкое", cov=True),
+                       _it(55, "label", "Пирожное", md=True)],
+            _CapRouter("1"))
+        check("cov: широкий LLM-резолв не видит перекрытые элементы",
+              idx_cw == 55 and _cap and "Пирожное" in _cap[-1]
+              and "Сладкое" not in _cap[-1])
+        _lay3 = [_it(56, "button", "", x=10.0, y=10.0, w=300.0, h=200.0,
+                     vw=1280.0, cov=True),
+                 _it(57, "button", "", x=500.0, y=300.0, w=80.0, h=30.0,
+                     vw=1280.0)]
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://x.ru", "x.ru", _lay3)
+        _cap_prompt.clear()
+        act_v9, _ = m_vis.resolve_click("корзина", None, _VR2("1"),
+                                        chat_id="vis7")
+        check("cov: vision-рамки — только неперекрытые",
+              act_v9 is not None and act_v9["idx"] == 57
+              and _cap_prompt and "1..1" in _cap_prompt[0])
+        # Пометка контекста слоя в промпте LLM (дизамбигуация «пункт
+        # попапа vs карточка страницы» больше не жребий)
+        _cap.clear()
+        m_vis._choose_element(
+            "пирожное", [_it(58, "label", "Пирожное картошка", md=True),
+                         _it(59, "a", "Пирожное муравейник"),
+                         _it(60, "div", "Пирожное эклер", dd=True)],
+            _CapRouter("1"))
+        check("cov: строки кандидатов LLM помечены контекстом слоя",
+              _cap and "Пирожное картошка — в открытом окне" in _cap[-1]
+              and "Пирожное эклер — в открытом списке" in _cap[-1]
+              and "Пирожное муравейник\n" in _cap[-1] + "\n")
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://x.ru", "x.ru", _vis_items)
     finally:
@@ -6643,6 +6749,27 @@ console.log(%s);
                                            rw_e)
         check("wide: все элементы безымянные — LLM не дёргается (это к vision)",
               idx_e is None and meta_e is None and not rw_e.calls)
+        # Цель-иконка («крестик», «колокольчик»), которую скоринг не нашёл:
+        # подписи у иконки нет, в текстовом списке её не будет — LLM лишь
+        # угадает чужой элемент (кейс 22.09: «крестик» → «More», «колокольчик»
+        # → пункт меню «Notifications»). Ярус пропускается в пользу vision
+        rw_i = _WideRouter("1")
+        idx_i, meta_i = m_w._llm_wide_pick(
+            "крестик", [_it(20, "button", "More"), _it(21, "a", "Dashboard"),
+                        _it(22, "button", "")], rw_i)
+        rw_b = _WideRouter("2")
+        idx_b, _ = m_w._llm_wide_pick(
+            "колокольчик", [_it(23, "button", "More"),
+                            _it(24, "a", "Notifications")], rw_b)
+        check("wide: цель-иконка (крестик/колокольчик) — текстовый LLM не дёргается",
+              idx_i is None and meta_i is None and not rw_i.calls
+              and idx_b is None and not rw_b.calls)
+        rw_t = _WideRouter("1")
+        idx_t, _ = m_w._llm_wide_pick(
+            "почта", [_it(25, "input", "Электронная почта", ed=True)],
+            rw_t, for_field=True)
+        check("wide: обычная цель по-прежнему идёт в LLM",
+              idx_t == 25 and rw_t.calls)
         # Псевдокликабельные фрагменты (span с унаследованным
         # cursor:pointer) — после настоящих контролов: иначе на ютубе
         # имена каналов вытесняли ссылку-заголовок из топ-30, и «видео с

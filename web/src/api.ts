@@ -85,6 +85,16 @@ export class ApiError extends Error {
   }
 }
 
+/** Стрим ответа оборвался без финального события (перезагрузка/сон ноутбука,
+ * обрыв сети, рестарт прокси): это НЕ ошибка генерации — сервер, скорее
+ * всего, дописал (или допишет) ответ в STM, чат догружает его из истории.
+ * Ошибки сервера (event.error, HTTP-статус) остаются обычным ApiError. */
+export class StreamInterruptedError extends ApiError {
+  constructor(detail: string) {
+    super(0, detail);
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem('vpc-api-token');
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -575,22 +585,29 @@ export async function streamChat(
   onPartBreak?: () => void,
 ): Promise<ApiChatResponse> {
   const token = localStorage.getItem('vpc-api-token');
-  const res = await fetch(`${BASE_URL}/api/chat/stream`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({
-      persona: params.persona,
-      message: params.message,
-      user_id: params.userId ?? WEB_USER_ID,
-      chat_id: WEB_CHAT_ID,
-      user_name: params.userName ?? null,
-      reply_context: params.replyContext ?? null,
-      image: params.image ?? null,
-    }),
-  });
+  // Сетевой сбой до ответа (fetch отклонён) — запрос мог и дойти до сервера:
+  // считаем обрывом, чат сверится с историей по last_ts
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/api/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        persona: params.persona,
+        message: params.message,
+        user_id: params.userId ?? WEB_USER_ID,
+        chat_id: WEB_CHAT_ID,
+        user_name: params.userName ?? null,
+        reply_context: params.replyContext ?? null,
+        image: params.image ?? null,
+      }),
+    });
+  } catch (e) {
+    throw new StreamInterruptedError(e instanceof Error ? e.message : String(e));
+  }
   if (!res.ok || !res.body) {
     // Достаём detail из JSON-тела ошибки (например, 409 «персона заморожена»)
     let detail = `HTTP ${res.status}`;
@@ -607,7 +624,14 @@ export async function streamChat(
   const decoder = new TextDecoder();
   let buf = '';
   for (;;) {
-    const { done, value } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (e) {
+      // Соединение оборвалось посреди стрима
+      throw new StreamInterruptedError(e instanceof Error ? e.message : String(e));
+    }
+    const { done, value } = chunk;
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     // SSE-кадры разделены пустой строкой
@@ -623,7 +647,7 @@ export async function streamChat(
       else if (event.done) return event as ApiChatResponse;
     }
   }
-  throw new ApiError(500, 'Стрим оборвался без финального события');
+  throw new StreamInterruptedError('Стрим оборвался без финального события');
 }
 
 export interface InboxMessage {

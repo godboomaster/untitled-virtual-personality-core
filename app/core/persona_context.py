@@ -227,8 +227,19 @@ def _heuristic_fallback(system_prompt: str) -> dict:
 class PersonaContextLayer:
     """Ленивая выжимка system_prompt с кэшем на диске.
 
-    Потокобезопасен: extract() может зваться из фонового цикла и из
-    process_message параллельно — RLock + повторная проверка хэша.
+    Потокобезопасен: get() зовут несколько потоков разом (первый заход и
+    тики фонового цикла living, урожай диалога, гейт стимулов), а память
+    чата (/api/chat/clear, undo — app/api/memory_wipe.py) берёт self._lock,
+    чтобы снять/вернуть кэш.
+
+    LLM-вызов извлечения идёт БЕЗ self._lock: это фоновый канал веб-чата
+    (очередь сайта + ответ до 150 с) — под локом он держал бы очистку
+    переписки пользователя (to_thread в API ждал лок до конца извлечения).
+    Под локом — только проверка/запись кэша. Повторное извлечение одного и
+    того же промпта не дублируется: второй поток ждёт первого на Condition
+    (wait отпускает лок — очистка чата проходит сразу).
+    На пути ответа пользователю get() нет: get_living_context выжимку не
+    читает, process_message её не вызывает.
     """
 
     def __init__(self, context: str, router=None,
@@ -241,6 +252,15 @@ class PersonaContextLayer:
         # перероллила гейт внешних стимулов; ручное значение детерминировано.
         self.manual_binding = manual_binding if isinstance(manual_binding, dict) else None
         self._lock = threading.RLock()
+        # Ожидание чужого извлечения того же промпта (на self._lock)
+        self._cond = threading.Condition(self._lock)
+        # Хэши промптов, которые сейчас извлекаются (у каждого свой поток);
+        # один слот на все промпты путал ожидание разных промптов
+        self._extracting: set = set()
+        # Хэш промпта из ПОСЛЕДНЕГО запроса get(): кэш пишется только для
+        # него — результат устаревшего промпта (правку прислали, пока шло
+        # извлечение старого) в кэш не попадает
+        self._latest_hash: Optional[str] = None
         db = get_db_paths(context)
         self._base_dir = Path(db["stm"]).parent / "living"
         self._base_dir.mkdir(parents=True, exist_ok=True)
@@ -296,12 +316,33 @@ class PersonaContextLayer:
         из YAML (если задан) накладывается поверх — каждый раз, детерминировано."""
         h = _hash_prompt(system_prompt)
         with self._lock:
-            if self._cache and self._cache.get("hash") == h:
-                return self._apply_manual_binding(self._cache["persona_context"])
+            self._latest_hash = h
+            while True:
+                if self._cache and self._cache.get("hash") == h:
+                    return self._apply_manual_binding(self._cache["persona_context"])
+                if h not in self._extracting:
+                    break
+                # Тот же промпт уже извлекается другим потоком — ждём его
+                # результат (wait отпускает лок), а не шлём второй вызов
+                self._cond.wait(timeout=5.0)
+            self._extracting.add(h)
+        extracted = None
+        try:
+            # Вне лока: LLM-вызов может идти минуты (очередь веб-чата)
             extracted = self._extract(system_prompt)
-            self._cache = {"hash": h, "persona_context": extracted}
-            self._save()
-            return self._apply_manual_binding(extracted)
+        finally:
+            with self._lock:
+                self._extracting.discard(h)
+                # Кэш — только для актуального промпта: пока шло извлечение,
+                # могли прислать правку (новый хэш) — тогда этот результат
+                # отдаём своему вызывающему, но не записываем поверх.
+                # Сброс/возврат кэша очисткой чата за это время записи не
+                # мешает: выжимка — производная того же промпта
+                if extracted is not None and self._latest_hash == h:
+                    self._cache = {"hash": h, "persona_context": extracted}
+                    self._save()
+                self._cond.notify_all()
+        return self._apply_manual_binding(extracted)
 
     def refresh(self, system_prompt: str) -> dict:
         """Принудительное переизвлечение (правка персоны)."""

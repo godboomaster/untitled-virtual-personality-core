@@ -202,6 +202,10 @@ class ProactiveMessaging:
     каждый активный чат и решает — писать ли proactive-сообщение.
     """
 
+    # Дефолт уровня класса — для заготовок без __init__ (тесты): без гейта
+    # поведение прежнее
+    turn_gate = None
+
     def __init__(
         self,
         config: ProactiveConfig,
@@ -215,9 +219,15 @@ class ProactiveMessaging:
         self_memory=None,
         living=None,
         intellect=None,
+        turn_gate=None,
     ):
         self.config = config
         self.router = router
+        # Гейт хода пользователя (app/core/turn_gate.py, общий с BotInstance):
+        # инициатива перед записью в STM перепроверяет, что в чате не идёт
+        # ход и пользователь не писал с момента старта генерации. None —
+        # прежнее поведение (тестовые заготовки без бота).
+        self.turn_gate = turn_gate
 
         self.persona = persona
         self.memory = memory
@@ -254,6 +264,9 @@ class ProactiveMessaging:
         # Тип последней инициативы по чату — для метрик вовлечённости
         # по типам (фаза 3.2): успех/провал записывается в разрезе типа
         self._last_initiative_type: Dict[str, str] = {}
+        # Epoch гейта хода на момент коммита инициативы: ответом на неё
+        # считается только реплика с бо́льшим номером (пришедшая ПОСЛЕ)
+        self._last_initiative_epoch: Dict[str, int] = {}
 
         # История инициатив по чатам: chat_id -> list of {message, timestamp, topic}
         self._initiative_history: Dict[str, List[dict]] = {}
@@ -535,15 +548,24 @@ class ProactiveMessaging:
     # «отметить отправку» и «зачесть ответ» — атомарные операции, а не три
     # независимые записи, между которыми другой поток видит полуправду.
 
+    def _initiative_epochs(self) -> Dict[str, int]:
+        # setdefault — заготовки без __init__ (тесты) тоже работают
+        return self.__dict__.setdefault("_last_initiative_epoch", {})
+
     def _get_last_initiative_time(self, chat_id: str) -> float:
         with self._lock:
             return self._last_initiative_time.get(chat_id, 0)
 
     def _mark_initiative_sent(self, chat_id: str, initiative_type=None,
-                              multi_turn_message: Optional[str] = None):
-        """Инициатива ушла: время, тип и (если включён multi-turn) состояние
-        ожидания ответа — одним снимком."""
+                              multi_turn_message: Optional[str] = None,
+                              epoch: Optional[int] = None):
+        """Инициатива ушла: время, тип, epoch коммита и (если включён
+        multi-turn) состояние ожидания ответа — одним снимком."""
         with self._lock:
+            if epoch is not None:
+                self._initiative_epochs()[chat_id] = epoch
+            else:
+                self._initiative_epochs().pop(chat_id, None)
             if multi_turn_message is not None and self.config.multi_turn_enabled:
                 self._multi_turn_state[chat_id] = {
                     "waiting": True,
@@ -570,29 +592,45 @@ class ProactiveMessaging:
             if state:
                 state["waiting"] = False
 
-    def record_user_response(self, chat_id: str):
-        """Вызывается при входящем сообщении пользователя.
+    def record_user_response(self, chat_id: str, turn_epoch: Optional[int] = None):
+        """Вызывается при входящем сообщении пользователя (в конце его хода).
 
         Ответ засчитывается как успех инициативы только если инициатива была
         недавно (30 мин, как таймаут multi-turn) — иначе обычные сообщения
-        раздувают successes и вероятность дрейфует к максимуму.
+        раздувают successes и вероятность дрейфует к максимуму — и только
+        если реплика пришла ПОСЛЕ инициативы. turn_epoch — номер реплики в
+        гейте хода (по умолчанию — ход, открытый текущим потоком): раньше
+        зачёт шёл в конце process_message безусловно, и реплика, написанная
+        ДО инициативы (инициатива ушла, пока генерировался ответ), считалась
+        ответом на неё — росла вероятность, сбрасывался ignore streak,
+        снималась метка времени и гейт интервала открывался снова.
         """
+        if turn_epoch is None and self.turn_gate is not None:
+            turn_epoch = self.turn_gate.current_turn_epoch(chat_id)
         # Проверка «инициатива была недавно?», зачёт ответа и снятие метки —
         # одной операцией под локом (RLock: _update_probability берёт его же).
         # Врозь два одновременных сообщения пользователя засчитывали одну
         # инициативу дважды: оба читали непустую метку раньше, чем первый её
         # обнулил, и вероятность дрейфовала вверх.
         with self._lock:
-            last_initiative = self._last_initiative_time.get(chat_id, 0)
-            if last_initiative and time.time() - last_initiative < 1800:
-                self._update_probability(
-                    chat_id, got_response=True,
-                    initiative_type=self._last_initiative_type.pop(chat_id, None))
-                # Метку снимаем: следующие обычные сообщения не засчитываются повторно
-                self._last_initiative_time[chat_id] = 0
-            # Сбрасываем multi-turn состояние
-            if chat_id in self._multi_turn_state:
-                self._multi_turn_state[chat_id]["waiting"] = False
+            init_epoch = self._initiative_epochs().get(chat_id)
+            if (turn_epoch is not None and init_epoch is not None
+                    and turn_epoch <= init_epoch):
+                # Реплика написана до инициативы — не ответ на неё: ни зачёта,
+                # ни снятия ожидания multi-turn
+                logger.info(f"[Proactive] {chat_id}: реплика #{turn_epoch} "
+                            f"раньше инициативы (#{init_epoch}) — не ответ на неё")
+            else:
+                last_initiative = self._last_initiative_time.get(chat_id, 0)
+                if last_initiative and time.time() - last_initiative < 1800:
+                    self._update_probability(
+                        chat_id, got_response=True,
+                        initiative_type=self._last_initiative_type.pop(chat_id, None))
+                    # Метку снимаем: следующие обычные сообщения не засчитываются повторно
+                    self._last_initiative_time[chat_id] = 0
+                # Сбрасываем multi-turn состояние
+                if chat_id in self._multi_turn_state:
+                    self._multi_turn_state[chat_id]["waiting"] = False
         # Анализируем сообщения для досье
         self.record_incoming_message(chat_id)
 
@@ -1537,6 +1575,8 @@ class ProactiveMessaging:
         # уйдёт (в другом чате/у другой персоны инициатива не задерживается)
         if web_presence.is_active(self.context, chat_id):
             return False
+        if self._turn_busy(chat_id):
+            return False
         if not self.config.enabled:
             return False
         if not self._in_initiative_hours():
@@ -1561,10 +1601,83 @@ class ProactiveMessaging:
             return False
         return True
 
+    # ── гейт хода пользователя (app/core/turn_gate.py) ──
+    # Генерация инициативы идёт минутами (очередь фоновых веб-чатов до 600 с
+    # на сайт + ответ до 150 с); всё это время пользователь мог писать. Метка
+    # «момент старта» снимается ДО генерации, перед отправкой — перепроверка,
+    # а запись в STM — атомарный коммит под локом гейта.
+
+    def _turn_busy(self, chat_id: str) -> bool:
+        return self.turn_gate is not None and self.turn_gate.busy(chat_id)
+
+    def _generation_mark(self, chat_id: str) -> Tuple[Optional[int], float]:
+        """Метка старта генерации: (epoch гейта, wall-время)."""
+        epoch = self.turn_gate.epoch(chat_id) if self.turn_gate is not None else None
+        return epoch, time.time()
+
+    def _user_spoke_since(self, chat_id: str, mark: Tuple[Optional[int], float]) -> bool:
+        """Пользователь пишет сейчас / написал после метки / открыл вкладку
+        этого чата — сгенерированное по старой картине сообщение неуместно."""
+        epoch, started = mark
+        if self.turn_gate is not None:
+            if self.turn_gate.busy(chat_id) or self.turn_gate.epoch(chat_id) != epoch:
+                return True
+        # И при гейте: активность (Telegram отмечает её при получении
+        # сообщения — раньше, чем ход дойдёт до ответа) — второй независимый
+        # сигнал «пользователь уже пишет»
+        if self.get_last_message_time(chat_id) > started:
+            return True
+        return web_presence.is_active(self.context, chat_id)
+
+    async def _commit_and_send(self, chat_id: str, message: str, topic_id,
+                               mark: Tuple[Optional[int], float]):
+        """Запись инициативы в STM и доставка → (отправлено, epoch коммита).
+
+        С гейтом: коммит в STM ПЕРВЫМ, атомарно с проверкой «хода нет и
+        пользователь не писал с метки» (раньше запись шла после отправки без
+        проверок и вставала между репликой пользователя и ответом:
+        user → инициатива → ответ). Доставка — после выхода из лока; не
+        доставлено — запись откатывается (пользователь сообщения не видел)."""
+        # Дешёвая предпроверка (и единственная без гейта): вкладка открылась /
+        # пользователь писал за время генерации
+        if self._user_spoke_since(chat_id, mark):
+            logger.info(f"[Proactive] Чат {chat_id}: пользователь активен после "
+                        "старта генерации — инициатива отброшена")
+            return False, None
+        gate = self.turn_gate
+        commit_epoch = None
+        entry = None
+        if gate is not None:
+            res = await asyncio.to_thread(
+                gate.commit_message, self.memory, chat_id, message, mark[0])
+            if res.status != "ok" and res.status != "failed":
+                logger.info(f"[Proactive] Чат {chat_id}: пользователь пишет/написал "
+                            f"во время генерации ({res.status}) — инициатива отброшена")
+                return False, None
+            # failed — в STM записать не вышло (как раньше при сбое записи):
+            # доставляем, откатывать нечего
+            commit_epoch, entry = res.epoch, res.entry
+        try:
+            success = await self._sender.send_message(chat_id, message, topic_id=topic_id)
+        except Exception as e:
+            logger.error(f"[Proactive] Ошибка отправки в {chat_id}: {e}")
+            success = False
+        if not success:
+            if entry is not None:
+                await asyncio.to_thread(gate.rollback_message, self.memory, chat_id, entry)
+            return False, None
+        if gate is None:
+            self.memory.add_message("assistant", message, user_id=chat_id, chat_id=chat_id)
+        return True, commit_epoch
+
     def _should_send_initiative(self, chat_id: str) -> bool:
         """Проверяет все условия перед отправкой."""
         # Веб-вкладка ЭТОГО чата активна — инициатива ждёт, пока пользователь уйдёт
         if web_presence.is_active(self.context, chat_id):
+            return False
+
+        # Идёт ход пользователя (он написал, ответ генерируется) — не время
+        if self._turn_busy(chat_id):
             return False
 
         # Замороженная персона (features.muted) не пишет ничего, включая инициативы
@@ -1666,12 +1779,23 @@ class ProactiveMessaging:
                 except Exception:
                     pass
 
+                # Метка старта генерации: всё, что пользователь напишет после
+                # неё, делает сгенерированное неуместным (см. _commit_and_send)
+                mark = self._generation_mark(chat_id)
+
                 # Генерируем через внутренний монолог (синхронные LLM-вызовы — в поток,
                 # иначе блокируем event loop бота на десятки секунд на каждый чат)
                 message = await asyncio.to_thread(
                     self._generate_initiative, chat_id, chat_id, user_name, initiative_type
                 )
                 logger.info(f"[Proactive] Чат {chat_id}: сообщение сгенерировано={message is not None}")
+
+                # Монолог мог вернуть None именно потому, что пользователь
+                # только что написал (перепроверка молчания внутри) — рефлексия
+                # такой проверки не имеет и раньше уходила поверх живого обмена
+                if not message and self._user_spoke_since(chat_id, mark):
+                    logger.info(f"[Proactive] Чат {chat_id}: пользователь активен — без рефлексии")
+                    continue
 
                 # Если нет сообщения -- генерируем рефлексию на основе типа
                 if not message:
@@ -1701,26 +1825,26 @@ class ProactiveMessaging:
                 if topic_id:
                     logger.info(f"[Proactive] Используем топик {topic_id} для чата {chat_id}")
 
-                # Отправляем
+                # Отправляем: перепроверка «пользователь не писал с метки» и
+                # запись в STM — атомарно под гейтом, затем доставка
                 message = _strip_markdown(message)
                 logger.info(f"[Proactive] Отправка инициативы в {chat_id}: {message[:60]}...")
-                success = await self._sender.send_message(chat_id, message, topic_id=topic_id)
+                success, commit_epoch = await self._commit_and_send(
+                    chat_id, message, topic_id, mark)
 
                 if success:
-                    # Метки «инициатива ушла» (время, тип, multi-turn) — одним
-                    # снимком под локом и СРАЗУ после отправки, до долгих
+                    # Метки «инициатива ушла» (время, тип, epoch, multi-turn) —
+                    # одним снимком под локом и СРАЗУ после отправки, до долгих
                     # шагов ниже (self_memory.tick — это LLM, десятки секунд):
                     # ответ пользователя, пришедший в это окно, должен видеть
                     # уже выставленные метки, иначе он не засчитывается, а
                     # multi-turn потом встаёт в ожидание ответа, который уже был
                     self._mark_initiative_sent(chat_id, initiative_type,
-                                               multi_turn_message=message)
+                                               multi_turn_message=message,
+                                               epoch=commit_epoch)
 
                     # Сохраняем в историю инициатив (дедупликация + тип)
                     self._add_to_history(chat_id, message, initiative_type)
-
-                    # Сохраняем в STM
-                    self.memory.add_message("assistant", message, user_id=chat_id, chat_id=chat_id)
 
                     # Сохраняем в self_memory
                     if self.self_memory:
@@ -1744,6 +1868,9 @@ class ProactiveMessaging:
         # Веб-вкладка ЭТОГО чата активна — сигнал ждёт, пока пользователь уйдёт
         if web_presence.is_active(self.context, chat_id):
             logger.info("[Proactive] Сигнал состояния при активной вкладке — молчим")
+            return
+        if self._turn_busy(chat_id):
+            logger.info("[Proactive] Сигнал состояния посреди хода пользователя — молчим")
             return
         # Время самоинициативы задаёт пользователь: вне окна движок жизни
         # тоже не пишет сам (момент выбирает не движок, а окно пользователя)
@@ -1787,10 +1914,14 @@ class ProactiveMessaging:
             except Exception:
                 pass
 
+            # Метка старта генерации — как в _check_all_chats
+            mark = self._generation_mark(chat_id)
             message = await asyncio.to_thread(
                 self._generate_initiative, chat_id, chat_id, user_name,
                 InitiativeType.STATE_CHANGE, bypass_silence=True
             )
+            if not message and self._user_spoke_since(chat_id, mark):
+                return
             if not message:
                 message = await asyncio.to_thread(
                     self._generate_reflection_initiative, chat_id,
@@ -1801,12 +1932,13 @@ class ProactiveMessaging:
 
             topic_id = self._get_topic_for_chat(chat_id)
             message = _strip_markdown(message)
-            success = await self._sender.send_message(chat_id, message, topic_id=topic_id)
+            success, commit_epoch = await self._commit_and_send(
+                chat_id, message, topic_id, mark)
             if success:
                 # Метки — сразу после отправки, до долгих шагов (см. _check_all_chats)
-                self._mark_initiative_sent(chat_id, InitiativeType.STATE_CHANGE)
+                self._mark_initiative_sent(chat_id, InitiativeType.STATE_CHANGE,
+                                           epoch=commit_epoch)
                 self._add_to_history(chat_id, message, InitiativeType.STATE_CHANGE)
-                self.memory.add_message("assistant", message, user_id=chat_id, chat_id=chat_id)
                 if self.self_memory:
                     stm_messages = self.memory.stm.get_last(10, chat_id=chat_id)
                     await asyncio.to_thread(self.self_memory.tick, stm_messages, chat_id, message)
