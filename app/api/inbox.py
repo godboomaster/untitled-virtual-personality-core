@@ -32,7 +32,7 @@ def inbox_push(persona: str, chat_id: str, text: str, kind: str = "message"):
 
 
 def inbox_pop(persona: str, chat_id: str) -> list[dict]:
-    """Забрать все накопленные сообщения (pop-семантика)."""
+    # Забрать все накопленные сообщения (pop-семантика).
     key = (persona, str(chat_id))
     with _inbox_lock:
         q = _inbox.get(key)
@@ -44,7 +44,7 @@ def inbox_pop(persona: str, chat_id: str) -> list[dict]:
 
 
 class WebInboxSender:
-    """MessageSender-совместимый транспорт: кладёт сообщения в inbox веб-чата."""
+    # MessageSender-совместимый транспорт: кладёт сообщения в inbox веб-чата.
 
     def __init__(self, persona: str):
         self._persona = persona
@@ -79,7 +79,7 @@ def _run_loop(loop: asyncio.AbstractEventLoop):
 
 
 def background_loop() -> asyncio.AbstractEventLoop:
-    """Общий фоновый loop API-процесса (создаётся при первом боте с фичами)."""
+    # Общий фоновый loop API-процесса (создаётся при первом боте с фичами).
     global _bg_loop
     with _bg_lock:
         if _bg_loop is None:
@@ -90,9 +90,9 @@ def background_loop() -> asyncio.AbstractEventLoop:
 
 
 def wire_reminder_for_api(persona: str, bot, sender=None) -> None:
-    """Подключает reminder-менеджер бота к веб-inbox (sender/память/LLM-текст/
-    заморозка) и запускает его фоновый цикл. Используется при старте бота и при
-    живом включении фичи reminder через настройки (без рестарта сервера)."""
+    # Подключает reminder-менеджер бота к веб-inbox (sender/память/LLM-текст/
+    # заморозка) и запускает его фоновый цикл. Используется при старте бота
+    # и при живом включении фичи reminder через настройки (без рестарта сервера).
     if bot.reminder_manager is None:
         return
     sender = sender or getattr(bot, "_api_inbox_sender", None) or WebInboxSender(persona)
@@ -109,9 +109,9 @@ def wire_reminder_for_api(persona: str, bot, sender=None) -> None:
 
 
 def wire_rhythm_for_api(persona: str, bot, sender=None) -> None:
-    """Подключает rhythm-менеджер (утро/ночь/погода) к веб-inbox и запускает
-    его фоновый цикл. Используется при старте бота и при живом включении
-    features.rhythm через настройки (без рестарта сервера)."""
+    # Подключает rhythm-менеджер (утро/ночь/погода) к веб-inbox и запускает
+    # его фоновый цикл. Используется при старте бота и при живом включении
+    # features.rhythm через настройки (без рестарта сервера).
     sender = sender or getattr(bot, "_api_inbox_sender", None) or WebInboxSender(persona)
     bot._api_inbox_sender = sender
     if getattr(bot, "rhythm", None) is None:
@@ -125,7 +125,7 @@ def wire_rhythm_for_api(persona: str, bot, sender=None) -> None:
 
 
 def start_bot_features(persona: str, bot):
-    """Подключает inbox-sender и запускает фоновые циклы бота (идемпотентно)."""
+    # Подключает inbox-sender и запускает фоновые циклы бота (идемпотентно).
     if getattr(bot, "_api_features_started", False):
         return
     bot._api_features_started = True

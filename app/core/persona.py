@@ -23,7 +23,7 @@ def _format_msg_ts(ts) -> str:
 
 
 def _ts_prefix(ts) -> str:
-    """Готовый префикс «[15.08 14:32] » (или пустой)."""
+    # Готовый префикс «[15.08 14:32] » (или пустой).
     formatted = _format_msg_ts(ts)
     return f"[{formatted}] " if formatted else ""
 
@@ -99,7 +99,7 @@ class PersonaLayer:
             # Поддержка ${ENV_VAR} в поле id
             if su_id.startswith("${") and su_id.endswith("}"):
                 su_id = os.getenv(su_id[2:-1], "")
-            # Однопользовательский веб-режим: собеседник один — особый пользователь он
+            # Однопользовательский веб-режим: единственный собеседник — он и есть особый пользователь
             if not ((self.web_single_user and su_id) or (su_id and str(su_id) == str(user_id))):
                 continue
             aliases = ", ".join(su.get("aliases", []))
@@ -142,14 +142,13 @@ Use the information from the uploaded files in your answer if the user mentions 
             else:
                 context_block = f"\nMemory:\n{memory_context}"
 
-        # Стилевое ограничение помощи по intellect tier (§4 плана уровней
-        # интеллекта): подставляется ТОЛЬКО на help-запросах — в остальное
-        # время тон персоны не трогается
+        # Стилевое ограничение помощи по уровню интеллекта: подставляется
+        # ТОЛЬКО на help-запросах — в остальное время тон персоны не трогается
         if help_style_context:
             context_block += f"\n\n{help_style_context}"
 
-        # Живой контекст персоны (state/world/offline-факты, план «живой» персоны):
-        # что персонаж делал и как себя чувствовал между сообщениями
+        # Живой контекст персоны (state/world/offline-факты): что персонаж
+        # делал и как себя чувствовал между сообщениями
         if living_context:
             context_block += (
                 f"\n\n{living_context}\n"
@@ -178,7 +177,7 @@ Use the information from the uploaded files in your answer if the user mentions 
                 "DO NOT mention that these are \"retrieved memories\" — just use them as natural context."
             )
 
-        # Контекст из книги (RAG по Lord of the Mysteries)
+        # Контекст из книги (RAG по книжному канону персоны)
         if book_context:
             context_block += (
                 f"\n\n{book_context}\n\n"
@@ -190,7 +189,7 @@ Use the information from the uploaded files in your answer if the user mentions 
                 "5. Собирай ответ из нескольких фрагментов — не жди что всё в одном."
             )
 
-        # Веб-контекст (результаты поиска DuckDuckGo)
+        # Веб-контекст (результаты поиска в интернете)
         if web_context:
             context_block += f"""
 
@@ -343,11 +342,11 @@ Ignore the web search entirely.
                 else:
                     messages.append({"role": msg["role"], "content": f"{prefix}{msg['content']}"})
 
-        # Последнее (текущее) сообщение — всегда с именем, ID отправителя и меткой времени
         # Перед основным ответом вставляем текст из сообщения, на которое пользователь ответил
         if reply_context:
             user_message = f"[Reply to message: {reply_context}]\n{user_message}"
 
+        # Последнее (текущее) сообщение — всегда с именем, ID отправителя и меткой времени
         now_prefix = _ts_prefix(time.time())
         if current_sender_name and current_sender_id:
             uid_tag = f" (ID:{current_sender_id})"

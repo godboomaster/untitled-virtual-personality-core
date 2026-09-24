@@ -62,7 +62,7 @@ def main():
     check("gate: внешние стимулы запрещены для fictional (даже при enabled)",
           living.external_stimuli_allowed() is False)
 
-    # 2. Тик состояния: Gemma (Ollama) при доступности, иначе эвристика
+    # 2. Тик состояния: локальная LLM при доступности, иначе эвристика
     state = living.state_engine.tick("chat1", pc)
     check("тик: состояние создано", 0 <= state["energy"] <= 100)
     check(f"тик: движок отработал (engine={state.get('engine')})",
@@ -70,7 +70,7 @@ def main():
     state2 = living.state_engine.tick("chat1", pc)
     check("тик: состояние персистентно", isinstance(state2["energy"], int))
 
-    # 2b. Объединённый тик+скоринг одним вызовом (§3.4, экономия Gemma-вызова)
+    # 2b. Объединённый тик+скоринг одним вызовом — экономит вызов LLM
     state_ts, score_ts = living.state_engine.tick_and_score(
         "chat1", pc, silence_hours=5.0, since_initiative_hours=10.0,
         proactive_settings={"initiative_probability": 0.5, "max_daily_initiatives": 3})
@@ -103,7 +103,7 @@ def main():
     check("событие: журнал последнего факта",
           living.world_engine.last_world_fact("chat1").startswith("Заметил"))
 
-    # 5. Приветствие-дневник (Gemma недоступна — прямые тезисы)
+    # 5. Приветствие-дневник (LLM недоступна — прямые тезисы)
     entries = living.state_engine.entries_since("chat1", time.time() - 7200)
     ctx = living.summarizer.build_return_context("chat1", entries, 24.0)
     check("возврат: контекст собран", ctx is not None and "AWAY" in ctx)
@@ -131,7 +131,7 @@ def main():
 
     # 8. Сигнал инициативы проходит полным путём: объединённый тик+скоринг →
     #    tuple из _tick_all → задача на event loop в _loop(). tick_and_score
-    #    мокаем (score=0.9) — проверяем механику доставки, а не настроение Gemma.
+    #    мокаем (score=0.9) — проверяем механику доставки, а не настроение LLM.
     received = []
     import asyncio
 
@@ -156,7 +156,7 @@ def main():
     check("инициатива: сигнал дошёл до получателя (proactive-контракт)",
           len(received) == 1 and received[0][0] == "chat1")
 
-    # 9. external_stimuli: дефолт флага по world_binding (§1.3) + ручной override
+    # 9. external_stimuli: дефолт флага по world_binding + ручной override
     orig_pc_fn = living.persona_context
     real_pc = dict(pc)
     real_pc["world_binding"] = {"type": "real_world", "location": "Москва",
@@ -181,14 +181,14 @@ def main():
         del living.persona_context  # снимаем instance-shadow, метод класса виден снова
         assert living.persona_context is orig_pc_fn or True
 
-    # 10. use_gemma=false: строго эвристический тик, даже если Ollama жива
+    # 10. use_gemma=false: строго эвристический тик, даже если локальная LLM доступна
     from app.core.state_engine import StateEngine
     se_off = StateEngine("smoke_gemma_off", "tester", use_gemma=False)
     st_off = se_off.tick("c1", pc)
     check("use_gemma=false: тик строго эвристический",
           st_off.get("engine") == "heuristic")
 
-    # 11. Прореживание тиков неактивных чатов (§3.2): молчание > 72ч → тик реже
+    # 11. Прореживание тиков неактивных чатов: молчание > 72ч → тик реже
     del living.state_engine.tick_and_score  # снимаем мок секции 8 — нужен настоящий тик
     living.get_last_message_time = lambda cid: time.time() - 3600 * 100  # 100ч молчания
     living.state_engine._states["chat1"]["last_tick_at"] = time.time()  # тик был только что

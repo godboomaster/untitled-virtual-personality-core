@@ -141,9 +141,8 @@ def _collect_dossier(bot, context, ck, out):
     mgr = getattr(bot, "_chat_dossier", None)
     entry = None
     if mgr is not None:
-        # В _profiles живого менеджера — объекты ChatProfile, не dict: прежняя
-        # проверка isinstance(prof, dict) всегда была ложной, и бэкап досье
-        # молча выходил пустым. Сериализует сам менеджер (формат файла досье
+        # _profiles живого менеджера хранит объекты ChatProfile, а не dict —
+        # сериализует сам менеджер через export_profile() (формат файла досье
         # + водяной знак экстракции фактов).
         entry = mgr.export_profile(ck)
     else:
@@ -171,9 +170,9 @@ def _wipe_dossier(bot, context, ck):
 def _restore_dossier(bot, context, ck, data):
     mgr = getattr(bot, "_chat_dossier", None)
     if mgr is not None:
-        # Через менеджер: раньше сюда клался сырой dict, а весь ChatDossier
-        # работает с ChatProfile — после restore падали get_profile_snapshot/
-        # get_context_block, а _save молча не писал файл
+        # Только через import_profile(): ChatDossier хранит в _profiles объекты
+        # ChatProfile, сырой dict сломал бы get_profile_snapshot/
+        # get_context_block и сохранение файла досье
         mgr.import_profile(ck, data)
         return
     path = _dossier_file(context)
@@ -208,11 +207,11 @@ def _collect_learning(bot, context, ck, out):
 def _wipe_learning(bot, context, ck):
     mgr = getattr(bot, "learning_manager", None)
     if mgr is not None:
-        # Весь чат стирается целиком: сессии + ВСЕ ожидающие setup «как часто?»
+        # Весь чат стирается целиком: сессии + все ожидающие setup «как часто?»
         # (в группе их несколько — по одному на участника) + реестр открытых
-        # вопросов уроков. Всё это знает сам менеджер — clear_chat делает это
-        # под своим локом одной транзакцией; ковыряться здесь в его приватных
-        # полях (_sessions/_setup_state/_question_msgs) больше не нужно.
+        # вопросов уроков. clear_chat() делает это под своим локом одной
+        # транзакцией, не трогая здесь приватные поля менеджера
+        # (_sessions/_setup_state/_question_msgs).
         mgr.clear_chat(ck)
         return
     path = _learning_file(context)
@@ -562,7 +561,7 @@ def _restore_living(bot, context, ck, inv):
 # ════════════ публичный интерфейс ════════════
 
 def collect_stores(bot, persona: str, chat_key: str) -> dict:
-    """Срезы памяти чата для снапшота корзины (ДО удаления). Чистое чтение."""
+    # Срезы памяти чата для снапшота корзины (до удаления). Чистое чтение.
     context = f"api_{persona}"
     ck = str(chat_key)
     out: dict = {}
@@ -580,8 +579,8 @@ def collect_stores(bot, persona: str, chat_key: str) -> dict:
 
 
 def wipe_stores(bot, persona: str, chat_key: str):
-    """Полное стирание памяти чата поверх STM/LTM/дневника (те — в server.py).
-    Живые менеджеры в приоритете, файлы — фолбэк при выключенных фичах."""
+    # Полное стирание памяти чата поверх STM/LTM/дневника (те — в server.py).
+    # Живые менеджеры в приоритете, файлы — фолбэк при выключенных фичах.
     context = f"api_{persona}"
     ck = str(chat_key)
     for name, fn in (("todo", _wipe_todo), ("reminders", _wipe_reminders),
@@ -597,7 +596,7 @@ def wipe_stores(bot, persona: str, chat_key: str):
 
 
 def restore_stores(bot, persona: str, chat_key: str, stores: dict):
-    """Вернуть срезы из снапшота корзины (undo полной очистки)."""
+    # Вернуть срезы из снапшота корзины (undo полной очистки).
     if not stores:
         return
     context = f"api_{persona}"

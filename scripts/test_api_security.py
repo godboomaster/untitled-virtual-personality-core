@@ -1,4 +1,4 @@
-"""Smoke-тест защиты API от небезопасного ввода (задача №6 аудита):
+"""Smoke-тест защиты API от небезопасного ввода:
 
   - id персоны (и вообще «безопасный id») из тела/query/path не должен
     доходить до файловой системы как есть — единая точка проверки в
@@ -59,9 +59,9 @@ def test_security_primitives():
     for v in good_ids:
         check(f"is_safe_id принимает {v!r}", is_safe_id(v))
 
-    # safe_join: базовый traversal-сценарий из аудита — victim-файл ЛЕЖИТ
-    # там, куда целится ".." (иначе resolve()-проверка ничего бы не решала:
-    # цель просто не существовала бы, что не то же самое, что «отвергнут»)
+    # safe_join: базовый traversal-сценарий — victim-файл ЛЕЖИТ там, куда
+    # целится ".." (иначе resolve()-проверка ничего бы не решала: цель
+    # просто не существовала бы, что не то же самое, что «отвергнут»)
     tmp = Path(tempfile.mkdtemp(prefix="safejoin_"))
     try:
         base = tmp / "personas"
@@ -97,7 +97,7 @@ def test_runtime_last_line_of_defense():
               info is not None and info["id"] == name)
 
     traversal_names = [
-        "../../persona_template",  # ровно сценарий из аудита: файл СУЩЕСТВУЕТ
+        "../../persona_template",  # файл СУЩЕСТВУЕТ на диске
         "..", "../x", "a/b", "/etc/passwd", "", "a" * 100,
         "a\x00b", "café", "pip_the_sprite/../../persona_template",
     ]
@@ -370,7 +370,7 @@ def test_fastapi_endpoints():
         check("GET /api/personas/<100 символов>/config: 422 (превышена длина)",
               r.status_code == 422)
 
-        # Query-параметр (аудит: /api/chat/history?persona=)
+        # Query-параметр: /api/chat/history?persona=
         r = client.get("/api/chat/history", params={"persona": "../evil"})
         check("GET /api/chat/history?persona=../evil: 422", r.status_code == 422)
 
@@ -395,7 +395,7 @@ def test_fastapi_endpoints():
         server_mod._api_token = orig_token
 
 
-# ════════════ H. chat_stream: «печать» не блокирует поток пула (задача №4) ═══
+# ════════════ H. chat_stream: «печать» не блокирует поток пула ════════════
 
 def test_typed_chunks_nonblocking():
     section("H. server._typed_chunks — пейсинг через asyncio.sleep, не time.sleep")
@@ -421,7 +421,7 @@ def test_typed_chunks_nonblocking():
     check("_typed_chunks: пустой текст → без событий", empty_events == [])
 
 
-# ════════════ I. persona_yaml: sync read вынесен в поток (задача №4) ═══════
+# ════════════ I. persona_yaml: sync read вынесен в поток ══════════════════
 
 def test_persona_yaml_nonblocking():
     section("I. GET /api/personas/{persona}/yaml — не блокирует event loop")

@@ -9,7 +9,7 @@ from app.core.config import PROVIDER_CONFIGS
 
 
 class Embedder:
-    #Вычисляет эмбеддинги через HF Inference API.
+    # Вычисляет эмбеддинги через HF Inference API.
 
     MODEL = "sentence-transformers/all-MiniLM-L6-v2"
     API_URL = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{MODEL}"
@@ -18,7 +18,7 @@ class Embedder:
         self._api_key = PROVIDER_CONFIGS["hf"]["api_keys"][0]
 
     def encode(self, text: str | list[str]) -> list[float] | list[list[float]]:
-        #Возвращает эмбеддинги для текста. Совместим с SentenceTransformer.encode().
+        # Возвращает эмбеддинги для текста. Совместим с SentenceTransformer.encode().
         if isinstance(text, str):
             return self._encode_single(text)
         return [self._encode_single(t) for t in text]

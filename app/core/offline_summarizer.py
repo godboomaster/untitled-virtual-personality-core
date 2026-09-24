@@ -1,18 +1,19 @@
 """
-Суммаризация офлайн-жизни (§6) и сюжетные арки (§5-фаза 5).
+Суммаризация офлайн-жизни персонажа и продвижение сюжетных арок.
 
-Пайплайн дневной суммаризации:
-  Gemma: сжать unconsumed offline_log в 3-5 фактических тезисов (черновик)
-  Основная LLM: превратить тезисы в episode в стиле персоны —
-  с ПОЛНЫМ system_prompt, как для обычных эпизодов self_memory.
+Пайплайн дневной суммаризации: локальная LLM сжимает unconsumed offline_log
+в 3-5 фактических тезисов (черновик), затем основная LLM превращает тезисы
+в episode в стиле персоны — с ПОЛНЫМ system_prompt, как для обычных
+эпизодов self_memory.
 
-Приветствие-дневник (§7 «возврат после паузы»): offline_log за период
-пропуска → Gemma сжимает → тезисы уходят в контекст основной LLM,
-которая вплетает их в первый ответ пользователю (полный system_prompt).
+Приветствие-дневник при возврате после паузы: offline_log за период
+пропуска сжимается локальной LLM в тезисы, которые уходят в контекст
+основной LLM — она вплетает их в первый ответ пользователю (полный
+system_prompt).
 
-Сценарист (§6, раз в 1-2 недели): основная LLM смотрит на активные
-storylines и решает, продвигать ли к повороту/развязке. Промпт включает
-полный system_prompt — нужна авторская консистентность.
+Сценарист (раз в 1-2 недели): основная LLM смотрит на активные storylines
+и решает, продвигать ли к повороту/развязке. Промпт включает полный
+system_prompt — нужна авторская консистентность.
 """
 
 import json
@@ -47,8 +48,7 @@ _EPISODE_PROMPT = """Ниже — тезисы о том, что происхо�
 
 Запись в дневнике:"""
 
-# Примитивный вариант (intellect primitive, §3.1): из событий жизни — одна
-# вспышка-впечатление, не нарратив
+# Примитивный вариант: одна вспышка-впечатление из событий жизни, а не нарратив
 _EPISODE_PROMPT_PRIMITIVE = """Ты — примитивное существо (не человек по типу мышления). Ниже — что происходило с тобой. Запиши ОДНО короткое впечатление (1 предложение, до 10 слов): сенсорное, инстинктивное, без причин и выводов. Пиши на языке тезисов.
 
 Что происходило:
@@ -68,7 +68,7 @@ _SCREENWRITER_PROMPT = """Ты — сценарист жизни персона�
 
 
 class OfflineSummarizer:
-    """Дневные эпизоды + приветствие при возврате + продвижение арок."""
+    # Дневные эпизоды, приветствие при возврате, продвижение сюжетных арок.
 
     def __init__(self, context: str, persona_name: str, router,
                  primitive: bool = False):
@@ -113,7 +113,7 @@ class OfflineSummarizer:
             except Exception as e:
                 logger.error(f"[Summarizer] Ошибка сохранения: {e}")
 
-    # ── Дневная суммаризация (§6) ─────────────────────────
+    # ── Дневная суммаризация ──────────────────────────────
 
     def should_run_daily(self, chat_id: str, unconsumed_count: int) -> bool:
         today = timeutil.today().strftime("%Y-%m-%d")
@@ -124,8 +124,8 @@ class OfflineSummarizer:
     def daily_summarize(self, chat_id: str, entries: List[dict], persona,
                         state_engine, self_memory=None,
                         user_language: Optional[str] = None) -> Optional[str]:
-        """Gemma-тезисы → episode основной LLM → self_memory. Список записей
-        помечается consumed. Возвращает текст эпизода или None.
+        """Тезисы локальной LLM → episode основной LLM → self_memory. Список
+        записей помечается consumed. Возвращает текст эпизода или None.
         user_language ('ru'/'en') — язык пользователя чата: тезисы и запись
         дневника пишутся на нём, а не на языке внутренних промптов."""
         if not entries:
@@ -175,7 +175,7 @@ class OfflineSummarizer:
         if not lines:
             return []
 
-        # Gemma сжимает; при недоступности — берём последние как есть.
+        # Локальная LLM сжимает; при недоступности — берём последние как есть.
         # Тезисы — на языке пользователя (дневник ведётся на нём)
         if self.local.is_available(task="offline_summary"):
             try:
@@ -201,7 +201,7 @@ class OfflineSummarizer:
 
     def _theses_to_episode(self, theses: List[str], persona,
                            user_language: Optional[str] = None) -> Optional[str]:
-        """Финальный эпизод — основная LLM с ПОЛНЫМ system_prompt (§6).
+        """Финальный эпизод — основная LLM с ПОЛНЫМ system_prompt.
         Для primitive — вспышка-впечатление вместо дневникового нарратива.
         user_language — язык записи (= язык пользователя чата)."""
         system_prompt = (persona.system_prompt or "").strip()
@@ -239,7 +239,7 @@ class OfflineSummarizer:
             logger.warning(f"[Summarizer] Генерация эпизода не удалась: {e}")
             return None
 
-    # ── Приветствие-дневник при возврате (§7) ─────────────
+    # ── Приветствие-дневник при возврате ──────────────────
 
     def build_return_context(self, chat_id: str, entries: List[dict],
                              absence_hours: float,
@@ -273,7 +273,7 @@ class OfflineSummarizer:
             "DO NOT mention logs, entries or any system."
         )
 
-    # ── Сценарист (§6, раз в 1-2 недели) ──────────────────
+    # ── Сценарист (раз в 1-2 недели) ──────────────────────
 
     def should_run_screenwriter(self, world_engine) -> bool:
         last = self._state.get("last_screenwriter")
@@ -286,7 +286,7 @@ class OfflineSummarizer:
         return bool(world_engine.active_storylines(limit=1))
 
     def advance_storylines(self, persona, world_engine) -> int:
-        """Основная LLM в роли сценариста. Возвращает число обновлённых линий."""
+        # Основная LLM в роли сценариста. Возвращает число обновлённых линий.
         storylines = world_engine.active_storylines(limit=5)
         if not storylines:
             return 0
@@ -323,7 +323,7 @@ class OfflineSummarizer:
             for u in data["updates"][:3]:
                 title = str(u.get("title", "")).strip()
                 # Нечёткий матч с линиями мира: сценарист перефразирует
-                # заголовки — exact-матч молча терял апдейты
+                # заголовки, и exact-матч молча терял бы апдейты
                 s = next((sl for sl in world_engine._world["storylines"]
                           if _titles_similar(sl["title"], title)), None)
                 if not s:

@@ -104,7 +104,7 @@ def main():
     check("повторный start — no-op (задача не пересоздана)", rm._task is task_after_start)
     rm.stop()
 
-    # ── 3. save_persona_yaml: reminder-переключатель больше не требует рестарта ──
+    # ── 3. save_persona_yaml: reminder-переключатель применяется без рестарта ──
     import app.api.settings_api as sa
     sa._PERSONAS_DIR = Path(tmp)
     from app.api import runtime

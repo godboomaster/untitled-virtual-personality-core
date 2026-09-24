@@ -342,8 +342,8 @@ export const api = {
     ),
 
   // Состояние вкладки чата (видима и в фокусе) — гейт фоновой активности бота
-  // ПО ЭТОМУ чату: persona + chat_id, иначе одна вкладка морозила фон всех
-  // персон и всех чатов (см. app/core/presence.py)
+  // ПО ЭТОМУ чату: persona + chat_id, иначе одна вкладка морозила бы фон
+  // всех персон и всех чатов (см. app/core/presence.py)
   setPresence: (active: boolean, persona: string) =>
     request<{ ok: boolean }>('/api/presence', {
       method: 'POST',
@@ -365,7 +365,7 @@ export const api = {
     request<LocalStatus>('/api/providers/local/status'),
 
   // Веб-чаты как провайдеры без API-ключей: список сайтов в порядке
-  // перебора (deepseek|qwen|claude), [] — выключить
+  // перебора (ключи из webchat_options), [] — выключить
   setWebchat: (sites: string[]) =>
     request<{ ok: boolean; webchat_site: string | null; webchat_sites: string[] }>('/api/providers/webchat', {
       method: 'PUT',
@@ -553,7 +553,7 @@ export interface PersonaLlmConfig {
   answer_provider?: string | null; // текст ответа пользователю
   cc_provider?: string | null; // решения режима управления (разбор/резолв)
   vision_provider?: string | null; // vision-фолбэк (картинки)
-  // лимиты веб-чатов: {сайт: {enabled, per_hour}}; сайта нет — дефолт 40/час
+  // лимиты веб-чатов: {сайт: {enabled, per_hour}}; сайта нет — без лимита
   webchat_limits: Record<string, { enabled: boolean; per_hour?: number }>;
 }
 

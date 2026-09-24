@@ -139,9 +139,9 @@ def _postpone_result_context(result: Optional[dict]) -> str:
 
 
 def _looks_truncated(text: str) -> bool:
-    """Эвристика обрыва ответа по max_tokens,
-    текст не заканчивается знаком завершения предложения.
-    Каомодзи/эмодзи на хвосте («…выбрали? (。•̀ᴗ-)✧») обрывом не считаются."""
+    """Эвристика обрыва ответа по max_tokens: текст не заканчивается знаком
+    завершения предложения. Каомодзи/эмодзи на хвосте («…выбрали? (。•̀ᴗ-)✧»)
+    обрывом не считаются."""
     t = (text or "").rstrip()
     if not t:
         return False
@@ -199,8 +199,8 @@ def _is_plain_yes_no(text: str) -> bool:
 
 
 class BotInstance:
-    
-    # Каждому Telegram-боту (Коннор, Арродес) соответствует свой BotInstance.
+
+    # У каждой персоны — свой BotInstance.
 
 
     def __init__(self, persona_name: str, context: str = None):
@@ -234,7 +234,7 @@ class BotInstance:
         # Per-chat — та же защита от гонок, что у списков выше.
         self._pending_photos: Dict[str, List[dict]] = {}
 
-        # Остаток полностраничного альбома («покажи всю страницу» резалась
+        # Остаток полностраничного альбома («покажи всю страницу» режется
         # на партии по 10 — лимит media group Telegram): «ещё» досылает
         # следующую партию. {"photos": [{"data": ...}], "ts": epoch},
         # TTL 10 минут
@@ -244,7 +244,7 @@ class BotInstance:
         persona_data = self.persona.persona_data
         self.features: dict = persona_data.get("features", {}) # получаем навыки персоны
 
-        # Уровень интеллекта (план уровней): tier + overrides; без блока
+        # Уровень интеллекта: tier + overrides; без блока
         # intellect — legacy-режим, уровневые механики не активируются
         from app.core.intellect import IntellectConfig
         self.intellect = IntellectConfig(persona_data)
@@ -279,12 +279,12 @@ class BotInstance:
             self.todo_manager = TodoManager(context=self.context)
             logger.info(f"  [{persona_name}] Todo manager включён")
 
-        # Reminder manager — независимый флаг reminder (раньше был расширением todo)
+        # Reminder manager — независимый флаг reminder
         self.reminder_manager: Optional[ReminderManager] = None
         if self.features.get("reminder", False):
             self.reminder_manager = ReminderManager(context=self.context)
             self.reminder_manager.set_turn_gate(self.turn_gate)
-            # §3.5 плана уровней: primitive — минимальная вербализация напоминаний
+            # на primitive-tier — минимальная вербализация напоминаний
             self.reminder_manager.set_intellect_tier(self.intellect.tier)
             logger.info(f"  [{persona_name}] Reminder manager включён")
 
@@ -332,7 +332,7 @@ class BotInstance:
         if isinstance(learning_cfg, bool):
             learning_on, learning_cfg = learning_cfg, {}
         else:
-            # dict: enabled решает явно; без него непустой dict — включён (старое поведение)
+            # dict: enabled решает явно; без него непустой dict — включён (обратная совместимость)
             learning_on = bool(learning_cfg) and learning_cfg.get("enabled", True)
         if learning_on:
             self.learning_manager = LearningManager(context=self.context, config=learning_cfg)
@@ -442,7 +442,7 @@ class BotInstance:
         }
 
         # Self memory (эпизодическая память бота)
-        # Режим по intellect tier (§3.1): none — модуль не создаётся вообще,
+        # Режим по intellect tier: none — модуль не создаётся вообще,
         # primitive — вспышки-впечатления, full — как обычно
         self.self_memory = None
         if self.features.get("self_memory", False) and self.intellect.self_memory_mode != "none":
@@ -456,10 +456,10 @@ class BotInstance:
             if self.intellect.self_memory_mode == "primitive":
                 logger.info(f"  [{persona_name}] Self memory в примитивном режиме (вспышки-впечатления)")
 
-        # Living persona (слои state/world плана «живой» персоны):
+        # Living persona (слои state/world):
         # тики состояния, офлайн-события мира, суммаризация, сюжетные арки.
-        # Intellect tier сужает слои (§3.3-3.4 плана уровней): primitive —
-        # world без NPC/арок, события = физические действия с инвентарём
+        # Intellect tier сужает слои: primitive — world без NPC/арок,
+        # события = физические действия с инвентарём
         self.living = None
         try:
             from app.core.living_persona import LivingPersona, LivingPersonaConfig
@@ -481,7 +481,7 @@ class BotInstance:
         except Exception as e:
             logger.warning(f"  [{persona_name}] Living persona не запущена: {e}")
 
-        # Напоминания знают о living-состоянии (mood/energy в тексте, §7)
+        # Напоминания знают о living-состоянии (mood/energy в тексте)
         if self.reminder_manager is not None and self.living is not None:
             self.reminder_manager.set_living(self.living)
 
@@ -506,8 +506,8 @@ class BotInstance:
         if proactive_config.get("enabled", False):
             from app.features.proactive_messaging import ProactiveConfig, ProactiveMessaging, ChatActivityTracker
             self._activity_tracker = ChatActivityTracker(context=context)
-            # sender будет установлен позже через setup_sender()
-            self.proactive = None  # создадим после установки sender
+            # ProactiveMessaging создаётся в setup_proactive(), когда появится sender
+            self.proactive = None
             logger.info(f"  [{persona_name}] Proactive messaging подготовлен (ожидает sender)")
 
         # Суточный ритм: утреннее приветствие / ночной «пора спать» / погода
@@ -522,9 +522,9 @@ class BotInstance:
             # manager создастся позже через setup_rhythm(sender)
             logger.info(f"  [{persona_name}] Rhythm (утро/ночь/погода) подготовлен (ожидает sender)")
 
-        # Банк flavor-реплик для CC-команд (Google AI Mode — «системные»
-        # сообщения без истории/LTM): фоновая генерация, если банк отсутствует
-        # или устарел (хэш system_prompt). Без CC реплики не нужны.
+        # Банк flavor-реплик для CC-команд (AI Mode — «системные» сообщения
+        # без истории/LTM): фоновая генерация, если банк отсутствует или
+        # устарел (хэш system_prompt). Без CC реплики не нужны.
         if self.computer_control is not None:
             try:
                 from app.features import flavor_text
@@ -606,7 +606,7 @@ class BotInstance:
                                                   fetch_pages=False))
 
     def _address_names(self) -> set:
-        """Как к персоне обращаются: trigger_words + id + имя из YAML."""
+        # Как к персоне обращаются: trigger_words + id + имя из YAML.
         # getattr — бот мог быть собран без __init__ (тестовые заготовки)
         names = set(getattr(self, "trigger_words", ()) or ())
         if getattr(self, "persona_name", None):
@@ -680,7 +680,7 @@ class BotInstance:
     # ── per-chat pending-состояние (досылка списков, регистрация вопросов) ──
 
     def _pending_lists(self, chat_id) -> List[str]:
-        """Бакет списков (дел/инвентаря) текущего чата для досылки после ответа."""
+        # Бакет списков (дел/инвентаря) текущего чата для досылки после ответа.
         return self._pending_list_messages.setdefault(str(chat_id), [])
 
     def pop_pending_list_messages(self, chat_id) -> List[str]:
@@ -747,7 +747,7 @@ class BotInstance:
     # Main processing
 
     def control_mode_on(self, chat_id) -> bool:
-        """Включён ли режим управления (computer control) для чата."""
+        # Включён ли режим управления (computer control) для чата.
         return str(chat_id) in self._control_mode
 
     def _control_mode_switch(self, chat_id: str, turn_on: bool) -> str:
@@ -866,8 +866,7 @@ class BotInstance:
         return self._get_turn_gate().begin_turn(chat_key)
 
     async def begin_user_turn_async(self, chat_key) -> dict:
-        """begin_user_turn с event loop (в потоке; отмена ожидающего не
-        оставляет открытый ход)."""
+        # begin_user_turn для event loop: в потоке, отмена ожидания не оставляет открытый ход.
         return await begin_turn_async(self._get_turn_gate(), chat_key)
 
     def end_user_turn(self, frame: dict):
@@ -923,9 +922,9 @@ class BotInstance:
                         reply_to_bot_message_id: Optional[int] = None,
                         on_token=None,
                         raw_user_text: Optional[str] = None) -> str:
-        """Обработка сообщения; парная к START строка END — в логе видно,
-        дошла ли генерация до конца и сколько заняла (раньше по логу нельзя
-        было отличить «ответ сгенерирован, но не доставлен» от «завис»)."""
+        """Обработка сообщения; парная к START строка END — по её наличию в
+        логе видно, дошла ли генерация до конца и сколько заняла (без неё
+        не отличить «ответ сгенерирован, но не доставлен» от «завис»)."""
         t0 = time.monotonic()
         try:
             # Ход пользователя открыт ДО записи его реплики в STM и закрыт
@@ -1012,8 +1011,9 @@ class BotInstance:
                         "сам при следующем обращении.")
         except Exception:
             pass
-        # Локальная переменная (раньше — общий атрибут, та же гонка): готовый ответ,
-        # минующий основной LLM-вызов (фидбек теста, реплики setup/continue обучения).
+        # Готовый ответ, минующий основной LLM-вызов (фидбек теста, реплики
+        # setup/continue обучения). Локальная переменная, не атрибут: process_message
+        # выполняется конкурентно для разных чатов, общий атрибут утёк бы между ними.
         skip_llm_answer = None
         # Вопрос о секции открытой страницы («что находится в X?»): живой текст
         # секции заполняется в cc fast-path ниже и уезжает в LLM контекстом
@@ -1148,7 +1148,7 @@ class BotInstance:
                 # pending живёт до TTL
 
             # «ещё» / «покажи остальное» — досылка остатка полностраничного
-            # альбома («покажи всю страницу» резалась на партии по 10).
+            # альбома («покажи всю страницу» режется на партии по 10).
             # Только при живом остатке (TTL 10 мин) — иначе бытовое «ещё»
             # уходит обычным путём
             _more_ph = self._pending_more_photos.get(str(chat_id))
@@ -1229,8 +1229,8 @@ class BotInstance:
                         self.proactive.record_user_response(chat_id)
                     return sg_reply
 
-            # «включи X на ютубе» (поиск на сайте) проверяем ДО «открой X»:
-            # иначе «интерстеллар на кинопоиске» уйдёт в резолв как имя сайта
+            # «включи X на <сайте>» (поиск на сайте) проверяем ДО «открой X»:
+            # иначе «<фильм> на <сайте>» уйдёт в резолв как имя сайта
             cc_action = None
             cc_err = None
             cc_pair = parse_search_on_site(user_input)
@@ -1239,7 +1239,7 @@ class BotInstance:
                     cc_action = self.computer_control.resolve_search(*cc_pair)
                 except Exception as e:
                     logger.debug(f"[CompControl] fast-path поиск на сайте не удался: {e}")
-            # «открой на example.edu/827 студентам — …»: явный адрес в фразе —
+            # «открой на site.ru/827 студентам — …»: явный адрес в фразе —
             # открываем его, даже когда вокруг длинный текст; хвост по
             # сепараторам « - »/«→» — путь кликами по странице (nav-действие).
             # До клика и open_many: те обе длинную фразу отвергнут по длине
@@ -1433,7 +1433,7 @@ class BotInstance:
                         if self.proactive and chat_id:
                             self.proactive.record_user_response(chat_id)
                         return cc_err
-            # «прочитай последнее сообщение (на кладе)» / «что ответил клод» —
+            # «прочитай последнее сообщение (на <сайте>)» / «что ответил <чат-бот>» —
             # чтение со страницы: без подтверждения (ничего не меняет),
             # прочитанный текст — сразу ответом
             if cc_action is None and self.computer_control.click:
@@ -1644,7 +1644,7 @@ class BotInstance:
 
         # Живой контекст персоны (state/world): считаем ДО добавления сообщения
         # в STM — по последней реплике истории ещё видна пауза отсутствия
-        # пользователя, и приветствие-дневник (§7) собирается честно
+        # пользователя, и приветствие-дневник собирается честно
         living_context = None
         if self.living is not None and chat_id:
             living_context = self._build_living_context(
@@ -1652,7 +1652,7 @@ class BotInstance:
 
         # Стилевой модификатор помощи по intellect tier — опциональный аддон
         # (features.side_tasks.help_detect): при выключенном флаге LLM-детекция
-        # не запускается и Ollama не дёргается на каждое сообщение
+        # не запускается и локальная LLM не дёргается на каждое сообщение
         help_style_future = side_tasks.submit_help_style_if_enabled(self, user_input)
 
         # Переписываем запрос: разрешаем местоимения и анафору — опциональный
@@ -1663,7 +1663,7 @@ class BotInstance:
         )
         logger.info(f"[BotInstance] rewrite_query: '{user_input[:60]}' -> '{ru_rewritten[:60]}'")
 
-        # Лёгкий режим: отвечать будет локальная модель (Ollama) ИЛИ флаг
+        # Лёгкий режим: отвечать будет локальная модель ИЛИ флаг
         # features.light_context принудительно включён в YAML персоны — слабая
         # модель тонет в большом промпте, поэтому урезаем всё необязательное
         # (короткая история, минимум фактов, без RAG/веба/self-memory/файлов).
@@ -1675,17 +1675,17 @@ class BotInstance:
                 f"features.light_context: {self.features.get('light_context') is True})"
             )
 
-        # 1. Запускаем веб-поиск в фоне (параллельно с памятью)
+        # Запускаем веб-поиск в фоне (параллельно с памятью)
         # QueryEnhancer преобразует запрос в короткую поисковую форму через LLM —
         # только при включённом аддоне features.side_tasks.search_query_enhance,
         # иначе поиск идёт сырым ru_rewritten
         web_future = None
         # При прочитанной секции страницы веб-поиск не нужен: ответ целиком
-        # в живом тексте секции, выдача DDG только сместит фокус ответа
+        # в живом тексте секции, поисковая выдача только сместит фокус ответа
         # Гейт уместности: обращение по имени, реплика-связка или вопрос о
         # самой персоне («что сегодня делал?») внешних данных не требуют —
-        # раньше поиск шёл на каждое сообщение, «коннор?» гуглилось как имя,
-        # а выдача по SOURCE PRIORITY перебивала дневник персоны
+        # поиск по имени персоны как по обычному слову увёл бы фокус ответа
+        # на выдачу (SOURCE PRIORITY) вместо дневника персоны
         search_skip = search_skip_reason(user_input, self._address_names())
         if search_skip and getattr(self, "_web_search_enabled", False):
             logger.info(f"[BotInstance] веб-поиск пропущен ({search_skip}): '{user_input[:60]}'")
@@ -1703,7 +1703,7 @@ class BotInstance:
                            side_tasks.translate_verify_enabled(self))
             if self._web_race_enabled():
                 # Гонка AI Mode + DDG-сниппеты (web_search_race): ~5 с
-                # вместо 16-23 с у DDG с загрузкой страниц
+                # вместо 16-23 с у обычного поиска с загрузкой страниц
                 web_future = self._web_pool.submit(self._race_search, search_args)
             else:
                 web_future = self._web_pool.submit(self._search_web, *search_args)
@@ -1734,8 +1734,8 @@ class BotInstance:
             web_context = None
             if web_future is not None:
                 try:
-                    # search_web (LLM-enhance + DDG + загрузка страниц) регулярно
-                    # занимает больше 10с — при меньшем таймауте результат терялся
+                    # search_web (LLM-enhance + поисковик + загрузка страниц) регулярно
+                    # занимает больше 10с — при меньшем таймауте результат теряется
                     results = web_future.result(timeout=25)
                     if results:
                         web_context = self._format_web_results(results)
@@ -1845,8 +1845,8 @@ class BotInstance:
                 # спросил ПОЗЖЕ — человек отвечает на последний заданный вопрос. Если свежее
                 # setup обучения — уступаем: напоминание НЕ потребляем (остаётся pending,
                 # на него можно ответить следующим сообщением), сообщение разберёт
-                # learning-блок ниже. Раньше напоминание всегда съедало такой ответ,
-                # и setup курса зависал навсегда.
+                # learning-блок ниже. Без уступки напоминание съело бы такой ответ,
+                # и setup курса завис бы навсегда.
                 _yield_to_learning = False
                 if pending_task and self.learning_manager:
                     _setup = self.learning_manager.get_setup_state(chat_id, user_id)
@@ -1866,7 +1866,6 @@ class BotInstance:
                     # Единый источник истины — reminder_manager: id кандидатов
                     # и сдвиг хранятся там же, где заведены (begin_pending_
                     # postpone_choice), тонкий вызов без своей логики разбора
-                    # (задача №7 аудита)
                     result = self.reminder_manager.resolve_postpone_choice(chat_id, user_input)
                     if result and result.get("gone"):
                         reminder_context = (
@@ -1885,8 +1884,8 @@ class BotInstance:
                         )
 
                 # Ответ на «на когда перенести напоминание?» (перенос без времени).
-                # Без этой ветки ответ улетал в общий LLM, и модель могла
-                # «подтвердить» перенос, который нигде не применялся.
+                # Без этой ветки ответ ушёл бы в общий LLM, и модель могла бы
+                # «подтвердить» перенос, который нигде не применён.
                 elif not _yield_to_learning and self.reminder_manager.get_pending_postpone(chat_id):
                     is_reminder_request = True
                     shift = parse_postpone(f"перенеси напоминание {user_input}")
@@ -1996,18 +1995,17 @@ class BotInstance:
                             )
                             is_reminder_request = True
 
-                # ВАЖНО: раньше это был `elif` на том же уровне, что и `if self.reminder_manager
-                # and chat_id:` выше — а условие elif было строгим подмножеством условия if,
-                # так что при отсутствии pending_task (обычный случай) сюда вообще никогда не
-                # попадали, и свежие текстовые запросы «напомни мне X через Y» никогда не
-                # парсились. Теперь это правильно вложено: проверяем «напом»/«remind» только
-                # когда НЕТ pending-задачи.
+                # ВАЖНО: ветка «напом»/«remind» — часть цепочки pending-ответов
+                # ВНУТРИ `if self.reminder_manager and chat_id:` (срабатывает, когда
+                # pending нет). Вынесенная как elif к этому внешнему if, она не
+                # срабатывала бы в обычном случае, и свежие запросы
+                # «напомни мне X через Y» не парсились бы.
                 elif "напом" in user_input.lower() or re.search(r"\bremind", user_input.lower()):
                     is_reminder_request = True
                     # Перенос существующего напоминания («перенеси/отложи/сдвинь
                     # напоминание ...») — строго ДО обычного парсера: иначе весь текст
-                    # уезжал в pending-задачу нового напоминания, реального переноса не
-                    # происходило, а бот словами его «подтверждал».
+                    # уедет в pending-задачу нового напоминания, реального переноса не
+                    # будет, а бот словами его «подтвердит».
                     postpone = parse_postpone(user_input)
                     if postpone and postpone.get("unknown"):
                         self.reminder_manager.begin_pending_postpone(chat_id)
@@ -2147,7 +2145,7 @@ class BotInstance:
                         #     разобрать умным классификатором (LLM, с OFFTOPIC-веткой);
                         # (b) обычное КОРОТКОЕ сообщение с однозначным да/нет по regex —
                         #     в личных чатах reply почти не используют, и без этого пути
-                        #     вопрос висел до авто-остановки курса в _loop(), хотя человек
+                        #     вопрос висел бы до авто-остановки курса в _loop(), хотя человек
                         #     по сути ответил. Лимит длины важен: длинное сообщение, пусть
                         #     и начинающееся с «да», обычно несёт свой вопрос/тему — его
                         #     нельзя съедать ответом на «продолжаем?».
@@ -2208,7 +2206,7 @@ class BotInstance:
                             is_learning_request = True
                             # Ответ ниже — вопрос «как часто?»: отмечаем, чтобы telegram-слой
                             # зарегистрировал его message_id и reply пользователя распознался
-                            # как ответ о частоте (без этого reply-gate работал только на
+                            # как ответ о частоте (иначе reply-gate сработает только на
                             # переспросах, а на первом вопросе — нет).
                             self._pending_question_kind[str(chat_id)] = "frequency"
                         else:
@@ -2217,7 +2215,7 @@ class BotInstance:
                             # или просто пишет по теме. Запрещаем персоне самой продолжать курс:
                             # следующий урок придёт по расписанию как отдельный файл.
                             # Курсов может быть несколько параллельно — перечисляем все темы,
-                            # т.к. get_session(chat_id) больше не возвращает одну сессию однозначно.
+                            # т.к. get_session(chat_id) не возвращает одну сессию однозначно.
                             active_sessions = self.learning_manager.get_sessions(chat_id)
                             if active_sessions:
                                 subjects = [s.get("subject", "") for s in active_sessions if s.get("subject")]
@@ -2302,7 +2300,7 @@ class BotInstance:
                 elif winner:
                     logger.info(f"[Intent] Конфликт {_fired_intents} → {winner} (локальная LLM)")
                     _fired_intents = {winner}
-                # локальная недоступна — оставляем прежнее поведение
+                # локальная LLM недоступна — сработавшие эвристики остаются как есть
 
             if self.todo_manager and chat_id:
                 if "todo_remove" in _fired_intents:
@@ -2417,8 +2415,8 @@ class BotInstance:
                     # Position-запросы → summaries вместо chunk-поиска
                     if position is not None and volume is not None:
                         # ВАЖНО: здесь НЕ делать `import json, re` — инлайновый импорт
-                        # делал re локальным для ВСЕГО process_message, и любой
-                        # re.* выше по функции падал с UnboundLocalError
+                        # сделает re локальным для ВСЕГО process_message, и любой
+                        # re.* выше по функции упадёт с UnboundLocalError
                         # (json и re уже импортированы на уровне модуля)
                         # _db_path = "data/arrodes/book" -> context_dir = "data/arrodes"
                         context_dir = "/".join(self.book_search._db_path.split("/")[:-1])
@@ -2431,7 +2429,7 @@ class BotInstance:
                             with open(summaries_path, encoding="utf-8") as sf:
                                 all_summaries = json.load(sf)
 
-                        # Диапазоны глав по томам LotM
+                        # Диапазоны глав по томам книги
                         VOL_RANGES = {
                             1: (1, 213), 2: (214, 408), 3: (409, 600),
                             4: (601, 783), 5: (784, 980), 6: (981, 1138),
@@ -2477,9 +2475,9 @@ class BotInstance:
                         _book_frag_count = len(fragments) if fragments else 0
                         translated_query = self.book_search.translate_query(user_input)
 
-                        # Динамический глоссарий: только записи, релевантные
-                        # вопросу (раньше весь глоссарий ~17k токенов шёл
-                        # в системный промпт каждого сообщения).
+                        # Динамический глоссарий: в промпт попадают только записи,
+                        # релевантные вопросу, а не весь глоссарий (~17k токенов
+                        # на каждое сообщение).
                         from app.features.glossary_context import build_glossary_block
                         _glos = build_glossary_block(
                             [user_input, translated_query or ""],
@@ -2511,9 +2509,9 @@ class BotInstance:
                 except Exception as e:
                     logger.debug(f"Book search error: {e}")
 
-            # Стилевой модификатор помощи по intellect tier (§4 плана
-            # уровней): детекция стартовала фоном в начале process_message —
-            # здесь только забираем результат (обычно уже готов)
+            # Стилевой модификатор помощи по intellect tier: детекция
+            # стартовала фоном в начале process_message — здесь только
+            # забираем результат (обычно уже готов)
             help_style_block = None
             if help_style_future is not None:
                 try:
@@ -2712,7 +2710,7 @@ class BotInstance:
             if self._punish_enabled:
                 answer = self._parse_punishment(answer, user_id)
 
-            # 9.5 Автопредложение записать сценарий: закрывающая реплика
+            # Автопредложение записать сценарий: закрывающая реплика
             # («спасибо»/«готово») после цепочки действий → один раз
             # предлагаем «запомни сценарий …». Только в режиме управления,
             # только авторизованному — иначе чужому «спасибо» подсказка
@@ -2727,43 +2725,39 @@ class BotInstance:
                 except Exception as e:
                     logger.debug(f"[Scenarios] maybe_offer не удался: {e}")
 
-            # 10. Сохраняем ответ (при split_messages — по частям, хвост в pending)
+            # Сохраняем ответ (при split_messages — по частям, хвост в pending)
             answer = self._save_assistant_reply(answer, user_id, chat_id)
 
-            # 11. Эпизодическая память (self_memory) — побочная LLM-запись,
+            # Эпизодическая память (self_memory) — побочная LLM-запись,
             # пока веб-вкладка ЭТОГО чата активна счётчики заморожены
             # (у чата другой персоны/Telegram-чата — своя отметка, см. presence)
             if self.self_memory and not web_presence.is_active(
                     self.context, chat_id or user_id):
                 self.self_memory.tick(stm_messages, user_id, user_input)
 
-            # 11b. Мир персоны: детекция новых NPC/мест из диалога (в фоне)
+            # Мир персоны: детекция новых NPC/мест из диалога (в фоне)
             if self.living is not None and chat_id:
                 try:
                     self.living.on_user_message(str(chat_id), stm_messages)
                 except Exception as e:
                     logger.debug(f"[Living] Диалоговый тик не удался: {e}")
 
-            # 12. Обратная связь proactive: если ждем ответа на инициативу -- фиксируем успех
+            # Обратная связь proactive: если ждём ответа на инициативу — фиксируем успех
             # (record_user_response сам обновляет досье — отдельный вызов
-            # record_incoming_message здесь гнал счётчик анализа вдвое быстрее)
+            # record_incoming_message здесь гнал бы счётчик анализа вдвое быстрее)
             if self.proactive and chat_id:
                 self.proactive.record_user_response(chat_id)
 
             return answer
         except Exception as e:
-            # Единая обработка сбоя пайплайна. Корень дефекта: вокруг основного
-            # пайплайна был try/finally БЕЗ except — любое исключение (например
-            # в computer_control.process_markers или в маркерах дел/инвентаря)
-            # улетало вызывающему, а реплика пользователя уже лежала в STM без
-            # ответа: в истории оставался «вопрос без ответа», и следующий
-            # запрос уходил в модель с битой историей (модель считала, что она
-            # смолчала). Веб-клиент при этом получал 500 вместо сообщения, а
-            # Telegram — свой хардкодный текст «Произошла ошибка» мимо языка
-            # пользователя. Теперь сбой фиксируется здесь: traceback в лог,
-            # понятная реплика-ошибка в STM (история остаётся консистентной)
-            # и её же текст возвращается вызывающему как обычный ответ —
-            # индикаторы/локи вызывающего снимаются его finally как всегда.
+            # Единая обработка сбоя пайплайна: реплика пользователя уже
+            # записана в STM, поэтому любое необработанное исключение здесь
+            # (например, в process_markers или в маркерах дел/инвентаря) не
+            # должно долетать до вызывающего без ответа — иначе в истории
+            # остаётся «вопрос без ответа», и следующий запрос уходит в
+            # модель с рассинхронизированным контекстом. Пишем traceback в
+            # лог и возвращаем понятную реплику-ошибку и в STM, и вызывающему;
+            # индикаторы/локи снимает finally вызывающей стороны.
             logger.error(
                 f"[BotInstance] Сбой пайплайна (chat {chat_id}): {e}",
                 exc_info=True)
@@ -2790,11 +2784,10 @@ class BotInstance:
                 "Извини, у меня что-то сломалось при обработке сообщения. "
                 "Попробуй ещё раз — или сформулируй иначе.")
         try:
-            # «Ответ уже есть» — именно на ТЕКУЩУЮ реплику: в этом ходе
-            # отработал _save_assistant_reply (отметка в кадре хода). Раньше
-            # смотрели «последняя запись STM — assistant», и чужая запись
-            # ассистента в хвосте (инициатива, напоминание) или ответ на
-            # прошлую реплику (сбой до записи текущей) выдавались за ответ.
+            # Проверяем именно ТЕКУЩУЮ реплику: смотрим отметку answer_saved
+            # в кадре текущего хода, а не последнюю запись STM — иначе за
+            # ответ приняли бы чужую запись ассистента в хвосте (инициатива,
+            # напоминание) или ответ на прошлую реплику.
             key = self.stm_key(chat_id, user_id)
             frame = self._get_turn_gate().current_frame(key)
             if frame is not None:
@@ -2826,7 +2819,7 @@ class BotInstance:
     def _build_living_context(self, chat_id: str, history: List[Dict],
                               user_message: str = "") -> Optional[str]:
         """Собирает living-контекст для prepare_messages: приветствие-дневник
-        при долгой паузе (§7) + текущее состояние персоны. Пауза считается по
+        при долгой паузе + текущее состояние персоны. Пауза считается по
         последней реплике истории ДО добавления текущего сообщения в STM.
         user_message — текущая реплика: последний факт жизни включается,
         только когда у него есть топическая зацепка (реактивная подача)."""
@@ -2870,9 +2863,9 @@ class BotInstance:
         двинуто; остальное — стандартное подтверждение/отказ."""
         if result and result.get("ambiguous"):
             # id кандидатов — в показанном порядке: reminder_manager хранит
-            # их вместе со сдвигом (единый источник истины — задача №7
-            # аудита) и по ним же разберёт ответ в resolve_postpone_choice,
-            # даже если список активных успеет измениться до ответа
+            # их вместе со сдвигом (единый источник истины) и по ним же
+            # разберёт ответ в resolve_postpone_choice, даже если список
+            # активных успеет измениться до ответа
             self.reminder_manager.begin_pending_postpone_choice(
                 chat_id, ids=[c.get("id") for c in result["choices"]],
                 seconds=seconds, abs_time=abs_time,
@@ -2900,8 +2893,8 @@ class BotInstance:
 
     def _reformulate_task(self, raw_task: str) -> str:
         """
-        Очищает сырой текст задачи через local LLM.
-        'что пора написать Коннор' -> 'Написать Коннор'
+        Очищает сырой текст задачи через локальную LLM.
+        'что пора купить хлеб' -> 'Купить хлеб'
         'мне сделать апдейт' -> 'Сделать апдейт'
         """
         if not raw_task or len(raw_task.strip()) < 2:
@@ -2998,7 +2991,7 @@ class BotInstance:
         Арбитр намерений при конфликте эвристик: локальная LLM выбирает ОДНО
         намерение из candidates (snake_case: todo_add, inventory_remove...).
         Возвращает winner (snake_case), "CHAT" (ничего не подходит) или None
-        (локальная модель недоступна — оставляем прежнее поведение).
+        (локальная модель недоступна — вызывающий оставляет все сработавшие эвристики).
         """
         if not self._local_router or not self._local_router.is_available(task="intent_router"):
             return None
@@ -3128,10 +3121,9 @@ class BotInstance:
     def _cc_reply(self, action: Optional[dict], ok: bool,
                   detail: Optional[str], template: str) -> str:
         """Ответ о результате CC-команды: flavor-реплика в характере персоны
-        (банк фраз с плейсхолдерами → живой Google AI Mode, канал cc),
-        при недоступности — честный шаблон (template). Суть ошибки flavor
-        обязан сохранить, поэтому при ok=False detail передаётся в любом
-        случае."""
+        (банк фраз с плейсхолдерами → живой ответ провайдера google, канал cc),
+        при недоступности — честный шаблон (template). При ok=False detail
+        передаётся в любом случае, чтобы суть ошибки не терялась."""
         try:
             from app.features import flavor_text
             flavored = flavor_text.cc_reply(self, action, ok, detail)
@@ -3255,7 +3247,7 @@ class BotInstance:
 
     @staticmethod
     def _strip_meta_reasoning(text: str) -> str:
-        """Удаляет мета-рассуждения LLM: вероятности, запросы, внутренний монолог."""
+        # Удаляет мета-рассуждения LLM: вероятности, запросы, внутренний монолог.
         # Сохраняем блоки кода
         code_blocks = []
         def _save(m):
@@ -3263,8 +3255,8 @@ class BotInstance:
             return f'\x00CB{len(code_blocks) - 1}\x00'
         text = re.sub(r'```.*?```', _save, text, flags=re.DOTALL)
 
-        # Вставки в двойных звёздочках — художественный приём («внутренние
-        # процессы», см. connor.yaml), читатель должен их видеть: рендер
+        # Вставки в двойных звёздочках — стилистический приём персоны
+        # («внутренние процессы» и т.п.), читатель должен их видеть: рендер
         # Telegram сам показывает **x** жирным. Мета-паттерны ниже писались
         # под одиночные *...* — внутри пары ** они матчатся посередине и
         # съедают текст, оставляя висящий **.
@@ -3305,11 +3297,11 @@ class BotInstance:
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
-        """ Удаляет Markdown-разметку, которую Telegram не поддерживает.
-        Жирный (**), курсив (*), код (`), спойлер (||), подчеркивание (__), 
+        """Удаляет Markdown-разметку, которую Telegram не поддерживает.
+        Жирный (**), курсив (*), код (`), спойлер (||), подчеркивание (__),
         выделение (==) — остаётся, их конвертит _md_to_html.
         Code-блоки (```...```) не трогаются — их обрабатывает file_sender."""
-        
+
         # Сохраняем блоки кода, чтобы не повредить их чисткой
         code_blocks = []
         def _save(m):
@@ -3340,7 +3332,7 @@ class BotInstance:
         return text.strip()
 
     def _parse_punishment(self, response: str, user_id: str) -> str:
-        #Парсит маркеры наказания, выполняет действия.
+        # Парсит маркеры наказания, выполняет действия.
         if "[PUNISH:BLOCK]" in response:
             response = response.replace("[PUNISH:BLOCK]", "").strip()
             self._block_user(user_id)
@@ -3379,7 +3371,7 @@ class BotInstance:
             return response.strip()
 
         # Fallback удаление через эвристику — подтверждаем через LLM, иначе
-        # «готово, прочитал 3 главы» молча удаляло пункт №3
+        # «готово, прочитал 3 главы» молча удалило бы пункт №3
         if fallback_done_index is not None:
             verdict = self._confirm_intent(user_text, f"item #{fallback_done_index}", "todo_remove")
             if verdict == "ADD":
@@ -3414,7 +3406,7 @@ class BotInstance:
     def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None, giver_name: str = "", user_text: str = "", chat_id=None) -> str:
         """Парсит маркеры [INVENTORY_ADD:...], [INVENTORY_REMOVE:...], [INVENTORY_USE:...], обновляет инвентарь.
         Инвентарь отправляется отдельным сообщением через _pending_list_messages (per-chat бакет
-        по chat_id — иначе при параллельных чатах список уезжал не в тот чат).
+        по chat_id — иначе при параллельных чатах список уедет не в тот чат).
         Эвристический fallback подтверждается локальной LLM (_confirm_intent), чтобы не добавлять
         предметы из обычных реплик («получил жабку» не должно добавлять «л жабку»)."""
         if not self.inventory_manager:
@@ -3491,7 +3483,7 @@ class BotInstance:
     ]
 
     def _get_persona_context_for_search(self) -> str:
-        """Собирает краткий контекст персоны для QueryEnhancer (имя, роль, ключевые черты)."""
+        # Собирает краткий контекст персоны для QueryEnhancer (имя, роль, ключевые черты).
         data = self.persona.persona_data
         parts = []
         
@@ -3634,23 +3626,23 @@ class BotInstance:
         self.memory.ltm.save_facts(fact_text, user_id)
 
     def get_ltm_privacy(self, user_id: str) -> str:
-        """Режим приватности LTM пользователя: 'smart' (по умолчанию) | 'strict'."""
+        # Режим приватности LTM пользователя: 'smart' (по умолчанию) | 'strict'.
         return self.memory.ltm.get_privacy_mode(user_id)
 
     def set_ltm_privacy(self, user_id: str, mode: str) -> str:
-        """Устанавливает режим приватности LTM. Возвращает установленный режим."""
+        # Устанавливает режим приватности LTM. Возвращает установленный режим.
         return self.memory.ltm.set_privacy_mode(user_id, mode)
 
     def forget_fact(self, query: str, user_id: str) -> Optional[str]:
-        """Точечное забывание факта из LTM. Возвращает текст удалённого или None."""
+        # Точечное забывание факта из LTM. Возвращает текст удалённого или None.
         return self.memory.ltm.forget(query, user_id)
 
     def update_fact(self, old_query: str, new_text: str, user_id: str) -> Optional[str]:
-        """Замена факта новым текстом (правка из веб-UI). Возвращает старый текст или None."""
+        # Замена факта новым текстом (правка из веб-UI). Возвращает старый текст или None.
         return self.memory.ltm.update_fact(old_query, new_text, user_id)
 
     def get_relations_text(self, user_id: str, chat_id: str = None) -> str:
-        """Социальный граф: связи пользователя и (в группе) других участников."""
+        # Социальный граф: связи пользователя и (в группе) других участников.
         from app.core.users import get_user_tag
         lines = []
         own = self.memory.ltm.get_facts_by_category(user_id, "Relation", chat_id=chat_id)
@@ -3672,7 +3664,7 @@ class BotInstance:
         return "\n".join(lines) if lines else "Пока ничего не знаю о связях."
 
     def debug_context(self, user_id: str, chat_id: str = None, query: str = "") -> str:
-        """Собирает блоки, которые ушли бы в промпт (отладка для owner'а)."""
+        # Собирает блоки, которые ушли бы в промпт (отладка для owner'а).
         stm_messages, ltm_facts, stm_relevant = self.memory.get_context(
             user_id, chat_id, ltm_query=query or "контекст"
         )
@@ -3695,7 +3687,7 @@ class BotInstance:
         return "\n".join(parts)
 
     def export_ltm_file(self, user_id: str) -> Optional[str]:
-        """Создаёт JSON-файл со всеми фактами LTM пользователя. Путь к файлу или None."""
+        # Создаёт JSON-файл со всеми фактами LTM пользователя. Путь к файлу или None.
         import tempfile
         facts = self.memory.ltm.get_all_facts_with_meta(user_id)
         if not facts:
@@ -3780,7 +3772,7 @@ class BotInstance:
         return 0
 
     def setup_proactive(self, sender: MessageSender):
-        """Создает ProactiveMessaging с готовым sender. Вызывается после инициализации Telegram Bot."""
+        # Создаёт ProactiveMessaging с готовым sender (платформа: Telegram / веб-inbox).
         if not self._activity_tracker:
             return
         from app.features.proactive_messaging import ProactiveConfig, ProactiveMessaging
@@ -3807,19 +3799,19 @@ class BotInstance:
         self.proactive.dossier = self._chat_dossier
         logger.info(f"  [{self.persona_name}] Proactive messaging инициализирован с sender и досье")
 
-        # Живая персона: сигналы инициативы + источники чатов (§3.2)
+        # Живая персона: сигналы инициативы + источники чатов
         if self.living is not None:
             self.living.on_initiative_signal = self.proactive.state_initiative_signal
             self.living.get_known_chats = self._activity_tracker.get_known_chats
             self.living.get_last_message_time = self._get_last_message_time
             self.living.get_last_initiative_time = (
                 lambda chat_id: self.proactive._last_initiative_time.get(str(chat_id), 0))
-            # дешёвые гейты перед LLM-скорингом инициативы (§3.4)
+            # дешёвые гейты перед LLM-скорингом инициативы
             self.living.pre_initiative_gate = self.proactive.initiative_cheaply_possible
             logger.info(f"  [{self.persona_name}] Living persona связана с proactive")
 
     def setup_learning(self, sender: MessageSender):
-        """Передаёт sender, роутеры и memory в learning_manager. Вызывается после инициализации Telegram Bot."""
+        # Передаёт sender, роутеры и memory в learning_manager (платформа: Telegram / веб-inbox).
         if not self.learning_manager:
             return
         self.learning_manager.set_sender(sender)
@@ -4124,14 +4116,14 @@ class BotInstance:
             )
             # Ответ ниже — вопрос «как часто?»: отмечаем, чтобы telegram-слой
             # зарегистрировал его message_id и reply пользователя распознался
-            # как ответ о частоте (без этого reply-gate для /learn не работал).
+            # как ответ о частоте (иначе reply-gate для /learn не сработает).
             self._pending_question_kind[str(chat_id)] = "frequency"
             return self.command_reply(note, "learning", chat_id, user_id, user_name, user_input_cmd)
 
         return "Неизвестная команда."
 
     def record_activity(self, chat_id: str):
-        """Записывает активность в чате. Вызывается при каждом сообщении."""
+        # Записывает активность в чате. Вызывается при каждом сообщении.
         if self._activity_tracker:
             self._activity_tracker.record_activity(chat_id)
 
@@ -4146,24 +4138,23 @@ class BotInstance:
 
     def on_user_message(self, chat_id: str):
         """Единая точка для «пришло сообщение пользователя»: note_presence
-        ДО record_activity — иначе (задача №9 аудита) rhythm.note_presence
-        через _last_seen() берёт max(presence_ts, activity_tracker.last_activity),
-        а record_activity уже успел бы проставить last_activity=now ДО того,
-        как rhythm посмотрел на разрыв — пауза всегда оказывалась ≈0, и
-        утреннее приветствие не срабатывало никогда, независимо от того, как
-        давно писал пользователь. Здесь порядок гарантирован и не зависит от
-        вызывающего — используй этот метод вместо раздельных record_activity/
-        note_presence."""
+        ДО record_activity — иначе rhythm.note_presence через _last_seen()
+        берёт max(presence_ts, activity_tracker.last_activity), а
+        record_activity уже проставит last_activity=now до того, как rhythm
+        посмотрит на разрыв — пауза окажется ≈0, и утреннее приветствие не
+        сработает, сколько бы пользователь ни молчал. Порядок здесь
+        гарантирован и не зависит от вызывающего — используй этот метод
+        вместо раздельных record_activity/note_presence."""
         self.note_presence(chat_id)
         self.record_activity(chat_id)
 
     def record_topic(self, chat_id: str, topic_id: int):
-        """Записывает ID топика для чата."""
+        # Записывает ID топика для чата.
         if self._activity_tracker:
             self._activity_tracker.record_topic(chat_id, topic_id)
 
     def get_chat_topic(self, chat_id: str) -> Optional[int]:
-        """Возвращает ID топика для чата."""
+        # Возвращает ID топика для чата.
         if self._activity_tracker:
             return self._activity_tracker.get_topic(chat_id)
         return None

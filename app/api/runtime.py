@@ -2,8 +2,8 @@
 
 Боты создаются лениво (инициализация тяжёлая: загрузка эмбеддинг-модели,
 ChromaDB) и кешируются по имени персоны. Память каждой персоны изолирована
-контекстом ``api_{persona}``, чтобы
-факты разных персон не смешивались для одного веб-пользователя.
+контекстом ``api_{persona}``, чтобы факты разных персон не смешивались для
+одного веб-пользователя.
 """
 
 import asyncio
@@ -28,8 +28,8 @@ _COLOR_PALETTE = [
 
 
 def persona_color(name: str, data: dict) -> str:
-    """Цвет метки персоны: явный color из YAML, иначе стабильный по имени
-    выбор из палитры (crc32 — в отличие от hash(), не зависит от процесса)."""
+    # Цвет метки персоны: явный color из YAML, иначе стабильный по имени
+    # выбор из палитры (crc32 — в отличие от hash(), не зависит от процесса).
     explicit = data.get("color")
     if isinstance(explicit, str) and explicit.strip():
         return explicit.strip()
@@ -66,13 +66,13 @@ def list_personas() -> list[str]:
 
 
 def get_persona_info(name: str) -> dict | None:
-    """Публичная информация о персоне из её YAML. None — если не персона."""
+    # Публичная информация о персоне из её YAML. None — если не персона.
     data = _load_persona_yaml(name)
     if not data or not data.get("system_prompt"):
         return None
     return {
         # id = имя файла, а не поле id из YAML: все API-эндпоинты адресуются
-        # файлом, а поле id в файле может дублироваться (verso_ru_group.yaml → id: verso)
+        # файлом, а поле id внутри YAML может совпадать у нескольких персон
         "id": name,
         "name": data.get("name", name),
         "description": data.get("description", ""),
@@ -83,16 +83,16 @@ def get_persona_info(name: str) -> dict | None:
 
 
 class BotRegistry:
-    """Ленивый потокобезопасный реестр BotInstance по имени персоны."""
+    # Ленивый потокобезопасный реестр BotInstance по имени персоны.
 
     def __init__(self):
         self._bots: dict[str, BotInstance] = {}
         self._lock = threading.Lock()
 
     def get(self, persona: str) -> BotInstance | None:
-        """Возвращает (создавая при первом обращении) BotInstance персоны.
-        None — если такой персоны нет. Вызывать из рабочего потока
-        (создание инстанса блокирующее)."""
+        # Возвращает (создавая при первом обращении) BotInstance персоны.
+        # None — если такой персоны нет. Вызывать из рабочего потока
+        # (создание инстанса блокирующее).
         with self._lock:
             bot = self._bots.get(persona)
             if bot is not None:
@@ -113,12 +113,11 @@ class BotRegistry:
             return self._bots[persona]
 
     def evict(self, persona: str) -> None:
-        """Убрать бота из кеша и остановить его фоновые циклы (удаление персоны)."""
+        # Убрать бота из кеша и остановить его фоновые циклы (удаление персоны).
         with self._lock:
             bot = self._bots.pop(persona, None)
         if bot is None:
             return
-        # rhythm раньше не останавливался — цикл переживёт выгрузку персоны
         for mgr in (bot.proactive, bot.reminder_manager, bot.learning_manager,
                     bot.living, getattr(bot, "rhythm", None)):
             try:

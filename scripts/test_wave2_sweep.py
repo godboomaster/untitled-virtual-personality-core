@@ -1,5 +1,5 @@
-"""Тесты хвостов волны 2 аудита (fix/audit-control-mode), не покрытых
-test_state_io.py / test_misc_features.py / test_memory_core.py / test_timeutil.py:
+"""Тесты для функциональности, не покрытой test_state_io.py / test_misc_features.py /
+test_memory_core.py / test_timeutil.py:
 
   1. Напоминания в API (app/api/server.py): _reminders() отдаёт "id";
      /reminders DELETE и текстовые /reminders, /cancel_reminder идут через
@@ -15,12 +15,12 @@ test_state_io.py / test_misc_features.py / test_memory_core.py / test_timeutil.p
      коллекцию через open_collection (перенос l2→cosine) и логирует WARNING,
      если перенос не удался; migrate_embeddings.migrate_collection пересоздаёт
      коллекцию с hnsw:space=cosine;
-  4. state_engine._load_json заменён на atomic_io.load_json_safe/
+  4. state_engine хранит состояние через atomic_io.load_json_safe/
      atomic_write_json: битый файл состояния — warning + .corrupt-копия +
      дефолт, а не тихая потеря;
-  5. Вечные словари по chat_id/user_id → BoundedCache: rate_limiter.
-     _punish_blocked/_user_requests, chat_dossier._facts_seen/_facts_watermark
-     — ограничены (LRU), функциональность (бан/дедуп/лимит) не сломана.
+  5. Словари по chat_id/user_id ограничены BoundedCache (LRU): rate_limiter.
+     _punish_blocked/_user_requests, chat_dossier._facts_seen/_facts_watermark;
+     функциональность (бан/дедуп/лимит) не сломана.
 
 Все проверки — на временных каталогах/моках, без сети, data/ не трогаем.
 Запуск: PYTHONPATH=. python3 scripts/test_wave2_sweep.py
@@ -100,7 +100,7 @@ def test_reminders_api():
         check("_reminders(): 'index' по-прежнему есть (легаси, фронт шлёт его в DELETE)",
               [it["index"] for it in items] == [1, 2])
 
-        # ── DELETE-эндпоинт: index → cancel_by_ref (не легаси cancel_reminder) ──
+        # ── DELETE-эндпоинт: index → cancel_by_ref ──
         import asyncio
 
         async def _cancel(index):
@@ -320,8 +320,8 @@ def test_timeutil_usage():
 # ════════════ 3. Chroma-метрика вне ядра (book_search, migrate_embeddings) ════════════
 
 class _FakeEmbedder:
-    """Дублирует duck-type интерфейс SentenceTransformerEmbeddingFunction
-    (._model.max_seq_length + __call__), не загружая реальную модель."""
+    # Дублирует duck-type интерфейс SentenceTransformerEmbeddingFunction
+    # (._model.max_seq_length + __call__), не загружая реальную модель.
 
     def __init__(self, model_name=None):
         self._model = SimpleNamespace(max_seq_length=128)
@@ -369,7 +369,7 @@ def test_chroma_outside_core():
             check("BookSearch._ensure_connection(): данные книги целы после переноса",
                   got["documents"] == ["глава про Тингена"])
 
-            # Отсутствующая коллекция — по-прежнему честный False, не тихое
+            # Отсутствующая коллекция — честный False, не тихое
             # создание пустой (иначе фолбэк на общую базу персоны сломался бы)
             bs_missing = bsmod.BookSearch(context="arrodes", collection_name="no_such_collection")
             check("BookSearch._ensure_connection(): отсутствующая коллекция — False, "
@@ -395,11 +395,10 @@ def test_chroma_outside_core():
             bsmod.SentenceTransformerEmbeddingFunction = orig_embedder_cls
 
         # ── migrate_embeddings: пересоздание коллекции — hnsw:space=cosine ──
-        # Модуль на импорте создаёт реальный NEW_EMBEDDER (SentenceTransformer,
-        # тот же paraphrase-multilingual-MiniLM-L12-v2, что и в ядре памяти) —
-        # если он уже в HF-кэше (обычно так и есть в этом окружении, см.
-        # test_memory_core.py), форсируем offline-режим, чтобы точно не
-        # уйти в сеть; после импорта всё равно подменяем на fake-эмбеддер.
+        # Модуль на импорте создаёт реальный NEW_EMBEDDER (SentenceTransformer
+        # той же модели, что в ядре памяти). Если модель уже в HF-кэше,
+        # форсируем offline-режим, чтобы не уйти в сеть; после импорта всё
+        # равно подменяем на fake-эмбеддер.
         from app.core import st_embedder
         if st_embedder._model_cached(st_embedder.ST_MODEL_NAME):
             st_embedder.force_hf_offline()
@@ -428,7 +427,7 @@ def test_chroma_outside_core():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-# ════════════ 4. state_engine: atomic_io вместо своей реализации ════════════
+# ════════════ 4. state_engine: персистентность через atomic_io ════════════
 
 def test_state_engine_atomic_io():
     section("4. state_engine._load_json → atomic_io.load_json_safe/atomic_write_json")
@@ -490,7 +489,7 @@ def test_state_engine_atomic_io():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-# ════════════ 5. BoundedCache вместо вечных словарей по chat_id/user_id ════════════
+# ════════════ 5. BoundedCache для словарей по chat_id/user_id ════════════
 
 def test_bounded_caches():
     section("5. rate_limiter / chat_dossier: BoundedCache вместо вечных dict")
@@ -548,7 +547,7 @@ def test_bounded_caches():
               isinstance(dossier._profiles, dict)
               and not isinstance(dossier._profiles, BoundedCache))
 
-        # Дедуп фактов по-прежнему работает через BoundedCache
+        # Дедуп фактов работает через BoundedCache
         msgs = [{"role": "user", "content": "это тестовое сообщение номер один",
                 "sender_id": "u1", "timestamp": time.time()}]
         dossier._analyze_chat_impl("chatDed", msgs)

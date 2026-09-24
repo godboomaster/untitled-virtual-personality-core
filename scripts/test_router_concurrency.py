@@ -1,5 +1,4 @@
-"""Конкурентность роутера LLM и веб-чат-провайдера (отчёт
-docs/concurrency-issues-2026-09-23.md, проблемы 6, 8, 9, 10):
+"""Конкурентность роутера LLM и веб-чат-провайдера:
 - _last_provider/_last_local_model — на поток (ThreadLocalAttr);
 - гонка создания инстансов ModelRouter._webchats — один инстанс на ключ;
 - burst-вкладка закрывается после вызова; потеря вкладки main → burst;
@@ -96,7 +95,7 @@ def main():
         r._last_key_index = {}
         r._provider_sems = {}
         r.answer_provider = r.cc_provider = r.vision_provider = None
-        # Локальная модель (Ollama по HTTP) — не трогаем
+        # Локальную модель не трогаем
         r._try_local = lambda *a, **kw: None
         return r
 
@@ -398,7 +397,7 @@ def main():
         wl.clear_quarantine("zai")
         wl.pop_quarantine_alerts()
 
-    # Лок вкладки фона — с ограничением (раньше — без ограничения)
+    # Лок вкладки фона — ожидание ограничено бюджетом
     ds = mk("deepseek", sub="lock")
     ds._lock.acquire()
     try:
@@ -560,7 +559,7 @@ def main():
         check("restart: чужой ФОНОВЫЙ вызов перезапуск не блокирует",
               restart_from(bg_chat) is True)
 
-    # TOCTOU (ревью): основной вызов, начатый ВО ВРЕМЯ перезапуска, ждёт его
+    # TOCTOU: основной вызов, начатый ВО ВРЕМЯ перезапуска, ждёт его
     # конца и не попадает под убийство Chrome
     order = []
 
@@ -752,7 +751,7 @@ def main():
     finally:
         wl.WebChatLLM = _wc
 
-    # ── 10. Локальный роутер: короткая очередь веб-чата → откат на Ollama ──
+    # ── 10. Локальный роутер: короткая очередь веб-чата → откат на локальную модель ──
     import app.core.local_router as lrm
     lr = lrm.LocalLLMRouter.__new__(lrm.LocalLLMRouter)
     lr._task_cfg = {"query_rewrite": {"backend": "webchat", "site": "qwen"}}

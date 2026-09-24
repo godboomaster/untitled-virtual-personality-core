@@ -24,7 +24,7 @@ function persist() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(avatars));
 }
 
-/** Подписка на хранилище аватаров (обновляется сразу после загрузки) */
+// Подписка на хранилище аватаров (обновляется сразу после загрузки)
 export function usePersonaAvatars(): Record<string, string> {
   const [, force] = useReducer((x: number) => x + 1, 0);
   useEffect(() => {
@@ -54,8 +54,8 @@ export function clearPersonaAvatar(personaId: string) {
   emit();
 }
 
-/** Файл → квадратный data-URL 256×256 (cover-кроп). PNG-оригиналы
- *  сохраняют прозрачность, остальные кодируются в JPEG. */
+// Файл → квадратный data-URL 256×256 (cover-кроп). PNG-оригиналы
+// сохраняют прозрачность, остальные кодируются в JPEG.
 export function fileToAvatarDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!file.type.startsWith('image/')) {

@@ -1,12 +1,10 @@
 """Тест настройки часового пояса пользователя (веб-настройки → TIMEZONE, см.
 app/core/timeutil и app/api/settings_api.get_timezone/set_timezone).
 
-Проверяет бизнес-логику settings_api.get_timezone/set_timezone напрямую (как
-секция D2/F в test_api_security.py — settings_api._ENV_PATH подменяется на
-временный файл, реальный .env не трогается). HTTP-эндпоинты
-GET/PUT /api/settings/timezone заводятся отдельно в app/api/server.py (вне
-области этого агента) по образцу /api/settings/location — здесь фиксируется
-контракт, который они должны выполнять, вызывая эти же функции:
+Проверяет бизнес-логику settings_api.get_timezone/set_timezone напрямую:
+settings_api._ENV_PATH подменяется на временный файл, реальный .env не
+трогается. HTTP-эндпоинты GET/PUT /api/settings/timezone в app/api/server.py
+должны выполнять тот же контракт, вызывая эти же функции:
 
   GET  -> settings_api.get_timezone()
   PUT  -> settings_api.set_timezone(req.timezone); result["ok"] is False -> 422
@@ -92,8 +90,7 @@ def test_put_valid_roundtrip():
     fake_env, restore = _use_temp_env()
     try:
         timeutil._cache = ("", None)
-        # Два пояса с заведомо разным смещением — годится любой, если он
-        # отличается от системного в момент теста
+        # Пояс с заведомо иным смещением, чем системный на момент теста
         tz_name = "Asia/Tokyo"
         res = settings_api.set_timezone(tz_name)
         check("set_timezone(валидное): ok=True", res.get("ok") is True)

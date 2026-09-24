@@ -51,7 +51,7 @@ def main():
     }
 
     class SpyManager(ComputerControlManager):
-        """_dispatch подменён: реальные системные вызовы в тесте не делаем."""
+        # _dispatch подменён: реальные системные вызовы в тесте не делаем
 
         def __init__(self, *a, fail_with=None, **kw):
             super().__init__(*a, **kw)
@@ -433,7 +433,7 @@ def main():
     mu.update_config({"click": True})
     check("update_config: click обратно включается", mu.click is True)
 
-    # recipe-задачи (этап 3b): значение "recipe:<id>" уходит в browser_actions,
+    # recipe-задачи: значение "recipe:<id>" уходит в browser_actions,
     # а не в shell; неизвестный id — (False, человеческая причина)
     import app.features.browser_actions as _ba
     _calls = []
@@ -606,7 +606,7 @@ def main():
     import app.features.computer_control as _cc_mod
 
     def _it(idx, tag, text, **kw):
-        """Элемент структурированного снапшота (как отдаёт snapshot_elements)."""
+        # Элемент структурированного снапшота (как отдаёт snapshot_elements)
         it = {"idx": idx, "tag": tag, "role": "", "text": text, "aria": "",
               "title": "", "href": "", "w": 40.0, "h": 20.0, "vp": True}
         it.update(kw)
@@ -641,12 +641,12 @@ def main():
     _ba.open_list_visible = lambda host=None, tab_id=None: False
     _ba.wait_dom_idle = lambda *a, **kw: None
     # Видимая вкладка (CDP visibilityState): по умолчанию «нет видимой» —
-    # адресация по отслеживаемой/хосту, как раньше; секция видимой вкладки
+    # адресация по отслеживаемой вкладке/хосту; секция видимой вкладки
     # перемокирует локально
     _real_visible_page_info = _ba.visible_page_info
     _ba.visible_page_info = lambda: None
     # Доскролл-поиск (виртуализированные списки): по умолчанию «некуда
-    # листать» — целевой снапшот не находит, поведение прежнее
+    # листать» — целевой снапшот ничего не находит
     _ba.scroll_position = lambda host=None, tab_id=None: 0.0
     _ba.scroll_step = lambda host=None, tab_id=None: {"moved": False,
                                                       "bottom": True}
@@ -722,7 +722,7 @@ def main():
                         "host": "example.edu/827", "steps": ["студентам"]})
         check("nav: «элемент потерян» — один повтор шага, успех",
               _ct_n["n"] == 2)
-        # Клик без видимого эффекта (closed-loop, п.6) — тоже один повтор шага
+        # Клик без видимого эффекта (closed-loop) — тоже один повтор шага
         _ct_n2 = {"n": 0}
         def _ct_uncertain(host, idx, tab_id=None):
             _ct_n2["n"] += 1
@@ -786,12 +786,11 @@ def main():
         _ba.page_urls, _ba.follow_popup = _orig_pu_np, _orig_fp_np
         _ba.snapshot_elements, _ba.click_tagged = _orig_snap_np, _orig_ct_np
 
-    # Навигация, эскалация сбойного шага (п.3): пропуск устаревшего шага без
+    # Навигация, эскалация сбойного шага: пропуск устаревшего шага без
     # LLM, целевой снапшот (gidx), LLM-восстановление (клик/«пропустить»/
     # «нет»), вето на деструктивный выбор
     class _SeqRouter:
-        """Ответы LLM по очереди: широкий резолв, затем восстановление."""
-
+        # Ответы LLM по очереди: широкий резолв, затем восстановление
         def __init__(self, *resps):
             self.resps = list(resps)
             self.calls = 0
@@ -1212,8 +1211,8 @@ def main():
               and not _cc_mod._destructive_mismatch(
                   "лента", {"text": "Скроллить"}))
         # Классы разрушительности: намерение снимает вето только со СВОЕГО
-        # класса (кейс 22.09: «нажми закрыть» без крестика в снапшоте
-        # кликало «Log out» — «закрыть» и «выйти» были одним флагом)
+        # класса — «закрыть» и «выйти» не должны быть одним флагом, иначе
+        # «нажми закрыть» без крестика в снапшоте кликало бы «Log out»
         check("veto: «закрыть» не разрешает «Log out»/«Удалить»",
               _cc_mod._destructive_mismatch("закрыть", {"text": "Log out"})
               and _cc_mod._destructive_mismatch("закрой окно", {"text": "Удалить"})
@@ -1262,7 +1261,7 @@ def main():
           not _cc_mod._CLOSE_GOAL_RE.search("закрепить форму")
           and bool(_cc_mod._CLOSE_GOAL_RE.search("закрой окно"))
           and bool(_cc_mod._CLOSE_GOAL_RE.search("сверни анкету")))
-    # Сквозь resolve_click: крестик рядом с «Закрепить» больше не выигрывает
+    # Сквозь resolve_click: крестик рядом с «Закрепить» не выигрывает
     _orig_snap_pin = _ba.snapshot_elements
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         "https://youtube.com/x", "youtube.com", [
@@ -1320,7 +1319,7 @@ def main():
 
     # Бургер («три полоски») — хост-зависимые синонимы: на YouTube кнопка
     # зовётся «Гид» (а «Меню аккаунта» рядом — не цель), на прочих сайтах —
-    # «Меню»/«Открыть меню» (кейс 10.09: «нажми три полоски» на платформе)
+    # «Меню»/«Открыть меню»
     _orig_snap_bg = _ba.snapshot_elements
     try:
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
@@ -1546,8 +1545,8 @@ def main():
             return False
 
     class _PopWorker:
-        """Стуб CDP-воркера для follow_popup: страницы — список URL,
-        меняемый между опросами (submit вызывает fn синхронно)."""
+        # Стуб CDP-воркера для follow_popup: страницы — список URL,
+        # меняемый между опросами (submit вызывает fn синхронно)
         def __init__(self, urls):
             self.urls = list(urls)
             self._pages = {}
@@ -1610,9 +1609,9 @@ def main():
 
     # tab_op без явной цели: исполнение берёт видимую вкладку ТЕМ ЖЕ
     # источником, что подпись на резолве (AppleScript переднего окна), а не
-    # CDP-эвристикой _visible_of (кейс 10.09: «закрой вкладку» подписалось
-    # «YouTube», а закрыло платформу — Chrome отдаёт visibilityState
-    # 'visible' всем вкладкам окна, и эвристика брала просто последнюю)
+    # CDP-эвристикой _visible_of: Chrome отдаёт visibilityState 'visible'
+    # всем вкладкам окна, и эвристика взяла бы просто последнюю — подпись
+    # разошлась бы с тем, что реально закрывается/кликается
     class _ClosablePg:
         def __init__(self, url, title=""):
             self.url, self._title, self.closed = url, title, False
@@ -1645,7 +1644,7 @@ def main():
         _url_c3, _ = _ba.close_tab(None)
         check("tab_op: точный URL устарел — origin-матч видимой",
               _p5.closed and _url_c3.endswith("/watch?v=9"))
-        # Источник молчит (не macOS/нет прав) — прежний фолбэк page_for
+        # Источник молчит (не macOS/нет прав) — фолбэк на page_for
         _ba._front_window_url = lambda: ""
         _p3 = _ClosablePg("https://a.ru/", "A")
         _p4 = _ClosablePg("https://b.ru/", "B")
@@ -1663,8 +1662,7 @@ def main():
     # Элемента нет на целевой вкладке, но он — единственный явный лидер на
     # другой открытой странице ТОГО ЖЕ сайта (SSO-окно auth.…, открытое до
     # клика): кликаем там. Чужой сайт без явного «на X» — никогда: «текущий
-    # сайт» липкий (кейс 10.09: «три полоски» не нашлись на платформе →
-    # фолбэк кликал «Гид» на ютубе)
+    # сайт» липкий, иначе фолбэк уводил бы клик на случайный другой сайт
     _orig_snap7, _orig_lp = _ba.snapshot_elements, _ba.list_pages
     _pages_map = {
         "school.example.com": (
@@ -2482,9 +2480,8 @@ def main():
               err_v2 is None
               and _sn_v2[-1] == (None, 42))
         # B. Видимая вкладка ДРУГОГО сайта цель не перетягивает: «текущий
-        # сайт» меняется только явным «открой …»/«перейди на вкладку …»
-        # (кейс 10.09: «нажми три полоски» после «открой платформу»
-        # уходило в бургер-гид ютуба — видимой на тот момент вкладке)
+        # сайт» меняется только явным «открой …»/«перейди на вкладку …»,
+        # иначе команда ушла бы на случайно видимую в этот момент вкладку
         _ba.visible_page_info = lambda: ("https://google.com", "google.com")
         _sn_v2.clear()
         act_v3, _ = m_vis2.resolve_key("Space", None, None)
@@ -2538,7 +2535,7 @@ def main():
               act_pt is not None and _sn_v2 and _sn_v2[-1] == (None, 42))
         # F. Отслеживаемая вкладка переехала редиректом (SSO: platform →
         # auth…): контекст следует за живым URL, иначе после авторизации
-        # «эта страница» замирает на адресе открытия (кейс 10.09)
+        # «эта страница» замирает на адресе открытия
         _ba.visible_page_info = lambda: None
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             _sn_v2.append((host, tab_id)),
@@ -2625,7 +2622,7 @@ def main():
               and _pmr("нажми паузу") == ("Space", 1, "toggle")
               and _pmr("нажми плей") == ("Space", 1, "toggle")
               and _pmr("пауза") == ("Space", 1, "toggle"))
-        # Обычный YouTube — стрелки как раньше
+        # Обычный YouTube (не shorts) — стрелки
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://www.youtube.com/watch?v=1", "www.youtube.com",
             [_it(0, "a", "Hi")])
@@ -2633,7 +2630,7 @@ def main():
         check("shorts: обычный YouTube — клавиша ArrowDown, как раньше",
               act_yt is not None and act_yt["kind"] == "key"
               and act_yt.get("key") == "ArrowDown")
-        # Обычный YouTube — пауза по-прежнему клавишей k
+        # Обычный YouTube — пауза клавишей k
         act_yk, _ = m_mv.resolve_key(("Space", 1, "toggle"), None, None)
         check("shorts: обычный YouTube — пауза клавишей k",
               act_yk is not None and act_yk["kind"] == "key"
@@ -2774,8 +2771,8 @@ def main():
         _ba._as_browser_pids = lambda app=None: [101]
         _ba._bot_page_urls = lambda: ()
         # CDP-бэкенд на macOS — тоже активная вкладка окна: visibilityState
-        # врёт (Chrome отдаёт visible всем вкладкам окна, кейс 10.09 —
-        # «нажми три полоски» уходило на youtube вместо платформы)
+        # врёт (Chrome отдаёт visible всем вкладкам окна, так что по нему
+        # нельзя было бы отличить активную вкладку от прочих)
         _ba._select_backend = lambda tab_op=True: "cdp"
         _ba._osascript = lambda script, browser="chrome": \
             "https://school.example.com/\n"
@@ -2852,7 +2849,7 @@ def main():
         _pg = _wk_pf.page_for(_stale)
         check("page_for: устаревший OAuth-URL — матч по origin",
               _pg.url == _auth_new)
-        # Точный URL по-прежнему в приоритете
+        # Точный URL в приоритете над origin-матчем
         _pg2 = _wk_pf.page_for("https://www.youtube.com/")
         check("page_for: точный URL — как раньше",
               _pg2.url == "https://www.youtube.com/")
@@ -2866,7 +2863,7 @@ def main():
     except Exception:
         check("page_for: origin-фолбэк не упал", False)
 
-    # ── page_for: вкладка ушла дальше по редиректам (кейс 10.09, повтор) ──
+    # ── page_for: вкладка ушла дальше по редиректам ──
     check("_redirect_origins_of: redirect_uri из query (и двойное кодирование)",
           _ba._redirect_origins_of(
               "https://auth.school.example.com/auth?client_id=school21"
@@ -2951,7 +2948,7 @@ def main():
     except Exception:
         check("page_for: без redirect_uri — матч по семейству сайта", False)
 
-    # ── Пустой скриншот фоновой вкладки (dodo, кейсы 09.09/18.09) ──
+    # ── Пустой скриншот фоновой вкладки (dodo) ──
     import io as _io
     from PIL import Image as _PILImage
     def _jpeg_blank():
@@ -2976,7 +2973,7 @@ def main():
         img.save(b, "PNG")
         return b.getvalue()
     def _png_halfrendered():
-        # Как «полосатый» dodo-кадр (18.09): 75% фон + 15% белое + 10%
+        # Как «полосатый» dodo-кадр: 75% фон + 15% белое + 10%
         # контента — top-2 ~90% < 99.5% → НЕ пустой
         img = _PILImage.new("L", (200, 100), 243)
         for x in range(170, 200):
@@ -3051,8 +3048,8 @@ def main():
         got2 = _ba.screenshot_viewport("dodopizza.ru")
         check("screenshot: retry после паузы помог — без OS-уровня",
               got2 == _jpeg_busy() and pg2.shots_taken == 2 and not _os_calls3)
-        # Композитор белый (окно скрыто/перекрыто, кейс 18.09 dodo):
-        # OS-уровень вытащил кадр БЕЗ активации вкладки
+        # Композитор белый (окно скрыто/перекрыто): OS-уровень вытащил
+        # кадр БЕЗ активации вкладки
         pg3 = _ShotPage([_jpeg_blank(), _jpeg_blank()])
         wk3 = _ShotWorker(pg3)
         _os_shots3[:] = [_jpeg_busy()]
@@ -3132,7 +3129,7 @@ def main():
         pg_gw, _ = _ba._open_page_gateway_retry(w_gw, None, "https://x.ru/")
         check("gateway: 200 — без переоткрытия",
               len(w_gw.made) == 1 and not pg_gw.closed)
-        # 502 → закрыть и открыть заново (кейс 18.09, dodo)
+        # 502 → закрыть и открыть заново
         w_gw2 = _GWWorker([_GWPage([502]), _GWPage([200])])
         pg_gw2, _ = _ba._open_page_gateway_retry(w_gw2, None, "https://x.ru/")
         check("gateway: 502 → закрыть и открыть заново",
@@ -3151,7 +3148,7 @@ def main():
         _ba._open_page_gateway_retry(w_gw5, None, "https://x.ru/")
         check("gateway: 504 лечится, 500 — нет",
               len(w_gw4.made) == 2 and len(w_gw5.made) == 1)
-        # Статус не читается (старый бэкенд) — не мешаем открытию
+        # Статус не читается (бэкенд без eval) — не мешаем открытию
         w_gw6 = _GWWorker([_GWPage([0], no_eval=True)])
         pg_gw6, _ = _ba._open_page_gateway_retry(w_gw6, None, "https://x.ru/")
         check("gateway: статус не читается — вкладка оставлена",
@@ -3427,8 +3424,8 @@ def main():
         check(f"confirm UNKNOWN: {t!r}", classify_confirmation(t) == "UNKNOWN")
 
     # ── 7b. Отрицание побеждает («сомнение = UNKNOWN, отрицание побеждает»):
-    # голое да-слово внутри отрицающей реплики раньше пробивало границу
-    # безопасности (RUN_TASK=shell исполнялся по «не открывай») ──
+    # голое да-слово внутри отрицающей реплики не должно пробивать границу
+    # безопасности — иначе RUN_TASK=shell исполнился бы по «не открывай» ──
     for t in (
         "не открывай", "не запускай", "не включай", "давай не будем",
         "подожди, не открывай", "нет, давай, действуй", "да, но нет",
@@ -3504,7 +3501,7 @@ def main():
                                "войти")[1][1]["idx"] == 1
           and ms._score_candidates([_it(0, "a", "Войти"), _it(1, "a", "Войти")],
                                    "войти")[1][0] == 99.5)
-    # Ярус «слова в тексте + остальные в контексте»: модалка соусов dodo —
+    # Ярус «слова в тексте + остальные в контексте»: модалка соусов на сайте доставки —
     # кнопки цен одинаковые («49 ₽»), отличает их подпись совпадения
     # («Сырный · 49 ₽») и контекст места с заголовком «Соусы…»
     _sauce_ctx = ("Соусы к бортикам и закускам Тысяча островов 45 ₽ "
@@ -3525,8 +3522,8 @@ def main():
               "выбрать на цезарь") == [])
 
     # Отрицание «не» в подписи кандидата: «нравится» ≠ кнопка
-    # «Поставить отметку "Не нравится"» — раньше обе матчились одинаково
-    # и клик уходил на дизлайк (shorts)
+    # «Поставить отметку "Не нравится"» — иначе обе матчились бы одинаково
+    # и клик на shorts уходил бы на дизлайк вместо лайка
     _like_pair = [_it(0, "button", "", aria='Поставить отметку "Нравится"'),
                   _it(1, "button", "", aria='Поставить отметку "Не нравится"')]
     _sc = ms._score_candidates(_like_pair, "нравится")
@@ -3803,7 +3800,7 @@ def main():
     finally:
         _sbc({})
 
-    # Ожидание конца аплоада аттачей веб-чата (qwen: *-uploading класс):
+    # Ожидание конца аплоада аттачей веб-чата (класс *-uploading):
     # JS-маркеры + обёртка по raw-вкладке
     from app.features.browser_actions import _CHAT_WAIT_UPLOADED_JS
     check("chat_wait_uploaded: JS ищет uploading/progressbar, шаблон под sel",
@@ -4008,7 +4005,7 @@ def main():
               err_t12 is not None and "Не разобрал" in err_t12
               and "Выберите город" in err_t12)
         # «эссе в стиле классиков»: голое «в» без явных маркеров — генерация,
-        # по-прежнему уходит в LLM-поток
+        # уходит в LLM-поток
         no_t2, no_e2 = mt.resolve_type("эссе в стиле классиков", None,
                                        _BoomRouter())
         check("type: «в стиле…» без поля — по-прежнему не наше (LLM-поток)",
@@ -4065,9 +4062,8 @@ def main():
               and "Выберите город" in ComputerControlManager.describe(act_t9)
               and ComputerControlManager.confirm_question(act_t9).startswith("Ввести")
               and "ввёл «�город»" in ComputerControlManager.describe_done(act_t9))
-        # «роллы в поиск» — без слова «поле»: «поиск» сам название поля.
-        # Раньше фраза не считалась явной командой и уходила в LLM-поток,
-        # который «изображал» ввод, ничего не делая
+        # «роллы в поиск» — без слова «поле»: «поиск» сам название поля,
+        # сепаратор находит его без LLM
         _orig_hel = _ba.hidden_editable_labels
         _ba.hidden_editable_labels = lambda host=None, tab_id=None: []
         act_tsr, err_tsr = mt.resolve_type("роллы в поиск", None, _BoomRouter())
@@ -4195,7 +4191,7 @@ def main():
     content = msgs[0]["content"]
     # Порядок системных нот: CC → conversation_style → язык ответа. Нота
     # языка добавлена в persona.py ПОСЛЕ conv_style_note намеренно (она
-    # перекрывает язык всех блоков выше) — «последняя» теперь она
+    # перекрывает язык всех блоков выше), поэтому она последняя
     check("prepare_messages: порядок нот CC → conv_style → нота языка",
           content.index("\n\nCC_NOTE") < content.index("\n\nCS_NOTE")
           < content.index("[RESPONSE LANGUAGE")
@@ -4255,9 +4251,9 @@ def main():
               _ba.find_tab_id("chat.qwen.ai/c/x1") == tid
               and _ba.find_tab_id("example.org") is None)
 
-        # Единый диспетчер: у операций со вкладкой НЕТ своих развилок —
-        # всё, что раньше «забывало» raw-ветку (_eval_js_any и его
-        # обёртки), идёт в raw-транспорт, а не в playwright
+        # Единый диспетчер: у операций со вкладкой нет своих развилок —
+        # _eval_js_any и его обёртки идут в raw-транспорт, а не в
+        # playwright
         _raw_js = []
         _orig_raw_eval = _ba._raw_eval
         _ba._raw_eval = lambda t, js, timeout_sec=None: (
@@ -4365,9 +4361,8 @@ def main():
     # ── 11b. Жизненный цикл raw-соединения: переattach вместо смерти вкладок,
     #        бюджет ответа на вызов (живого браузера не трогаем) ──
     class _FakeCdp:
-        """Фейк _RawCdp: ни сокета, ни браузера. sessions — живые сессии
-        таргетов; broken — «сокет оборван»."""
-
+        # Фейк _RawCdp: ни сокета, ни браузера; sessions — живые сессии
+        # таргетов, broken — эмуляция обрыва сокета
         def __init__(self, sessions):
             self.sessions = dict(sessions)
             self.calls = []
@@ -4398,9 +4393,9 @@ def main():
     _orig_rawcdp = _ba._RawCdp
     _made = []
     try:
-        # Обрыв сокета: клиент пересоздаётся, живые таргеты получают НОВЫЙ
-        # sessionId, вкладка продолжает работать (раньше повтор шёл со
-        # старым sessionId и убивал разом все вкладки пула)
+        # Обрыв сокета: клиент пересоздаётся, живые таргеты получают новый
+        # sessionId — повтор со старым sessionId убил бы разом все вкладки
+        # пула
         _ba._RAW_TABS[900001] = {"targetId": "T1", "sessionId": "S1",
                                  "pool": "v"}
         first = _FakeCdp({"T1": "S1"})
@@ -4515,8 +4510,8 @@ def main():
     from app.features.scenario_manager import ScenarioManager
 
     class FakeCC:
-        """Минимальный computer_control для ScenarioManager: без браузера —
-        резолверы/исполнение подменены, base_dir ведёт в tmp (трасса)."""
+        # Минимальный computer_control для ScenarioManager: без браузера —
+        # резолверы/исполнение подменены, base_dir ведёт в tmp (трасса)
         def __init__(self, base_dir, fail=False, uncertain=False,
                      fail_times=None, snapshot_items=None):
             self.base_dir = Path(base_dir)
@@ -4577,7 +4572,7 @@ def main():
     sc_tmp = Path(tempfile.mkdtemp(prefix="scenarios_test_"))
 
     def write_trace(cc_dir, chat_id, rows):
-        """rows: [(kind, extra_dict)] — пишем audit.jsonl как _audit."""
+        # rows: [(kind, extra_dict)] — пишем audit.jsonl как _audit
         with open(Path(cc_dir) / "audit.jsonl", "a", encoding="utf-8") as f:
             for kind, extra in rows:
                 rec = {"ts": time.time(), "chat_id": str(chat_id), "ok": True,
@@ -4972,8 +4967,8 @@ def main():
               no_ls is None
               and any(r.get("fail_reason") == "low_score"
                       and r.get("candidates") for r in _aud_recs("rf-ls")))
-        # LLM посмотрела топ и сказала «нет» (кандидаты с РАЗНЫМ текстом —
-        # одноимённые теперь разруливаются детерминированно, без LLM)
+        # LLM посмотрела топ и сказала «нет» (кандидаты с разным текстом;
+        # одноимённые разруливаются детерминированно, без LLM)
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://x.ru", "x.ru",
             [_it(0, "a", "Кешбэк"), _it(1, "button", "Кешбэк программа")])
@@ -5070,7 +5065,7 @@ def main():
         _real_wait_dom_idle("x.ru", None, timeout_sec=5.0, min_wait=0.05)
         check("wait_dom_idle: выход после стабилизации DOM",
               time.time() - _t0 < 3)
-        # Бэкенд без eval → прежний фиксированный слип (половина бюджета)
+        # Бэкенд без eval → фиксированный слип (половина бюджета)
         def _no_eval(h, t, js):
             raise _ba.BrowserUnavailable("no eval")
         _ba._eval_js_any = _no_eval
@@ -5165,7 +5160,7 @@ def main():
           and f"var M={_ba.SNAPSHOT_MAX};" not in _ba._GOAL_SNAPSHOT_JS)
 
     class _MarkedEl:
-        """Размеченный элемент страницы: клик меняет отпечаток (closed-loop)."""
+        # Размеченный элемент страницы: клик меняет отпечаток (closed-loop)
 
         def __init__(self, page, text, href=""):
             self.page, self.text, self.href = page, text, href
@@ -5186,9 +5181,9 @@ def main():
         def first(self): return self._els[0]
 
     class _MarkedPage:
-        """Страница с DOM-разметкой: locator понимает селектор _mark_sel,
-        снапшот размечает элементы номерами от базы, подставленной в JS
-        (var B=…) — как настоящий JS в браузере, и снимает прошлые метки."""
+        # Страница с DOM-разметкой: locator понимает селектор _mark_sel,
+        # снапшот размечает элементы номерами от базы, подставленной в JS
+        # (var B=…) — как настоящий JS в браузере, и снимает прошлые метки
 
         def __init__(self):
             self.main_frame = self
@@ -5368,9 +5363,9 @@ def main():
                                                           "bottom": True}
         _ba.scroll_restore = lambda host=None, tab_id=None, y=0.0: None
 
-    # ── Closed-loop: «замер не удался» ≠ «сработало» (п.6) ──
-    # Отпечаток и три исхода замера. Раньше любая ошибка evaluate отдавалась
-    # уникальным сентинелом и первый же опрос признавал клик успешным
+    # ── Closed-loop: «замер не удался» ≠ «сработало» ──
+    # Отпечаток и три исхода замера: сбой evaluate не должен приниматься за
+    # успешное изменение страницы
     _P = _ba._Probe
     _pa = _P(True, "https://x.ru/a", "d1", "h1")
     check("замер: тот же отпечаток → «не изменилось»",
@@ -5434,8 +5429,8 @@ def main():
             self._scope.acts.append("hover")
 
     class _LoopScope:
-        """Страница для closed-loop: evaluate либо бросает («замер не
-        удался»), либо отдаёт очередь отпечатков; url меняется навигацией."""
+        # Страница для closed-loop: evaluate либо бросает («замер не
+        # удался»), либо отдаёт очередь отпечатков; url меняется навигацией
         def __init__(self, states=None, boom=False, hov=None):
             self.url = "https://x.ru/a"
             self.states = list(states or ["d1|https://x.ru/a|complete|1"])
@@ -5705,7 +5700,7 @@ console.log(%s);
               [(b["x"], b["w"], b["text"]) for b in _clamped]
               == [(0, 120, "a"), (940, 60, "c")])
 
-    # ── Задача №10: единая JS-нормализация + безопасная подстановка в JS ──
+    # ── Единая JS-нормализация и безопасная подстановка в JS ──
     if _node_ok:
         import app.features.computer_control as _cc_norm
 
@@ -5737,8 +5732,8 @@ console.log(%s);
               not _norm_err and _js_norm == _py_norm)
 
         # 2) _js_fill/_js_value: значения с кавычками/бэкслешем/переводом
-        # строки/U+2028-2029/</script> дают синтаксически валидный JS И
-        # доносят исходную строку без искажений (не «вырезаны», как раньше)
+        # строки/U+2028-2029/</script> дают синтаксически валидный JS и
+        # доносят исходную строку без искажений (кавычки не вырезаются)
         _tricky_values = [
             "plain", "with 'single' quotes", 'with "double" quotes',
             "back\\slash", "newline\nhere", "crlf\r\nhere",
@@ -5787,8 +5782,8 @@ console.log(%s);
         # тот же код (goal=__vpcN(goal); hits поверх общего __vpcWIn), что
         # реально ищет цель в снапшоте, — «Ёлка» находится по «елка»,
         # «L'Oréal» по «l'oreal». Обвязка — _VPC_NORM_JS (нормализация + стем
-        # + поиск слова): своей копии стемминга в шаблоне больше нет, и если
-        # она вернётся, фрагмент перестанет работать с общей обвязкой
+        # + поиск слова): своей копии стемминга в шаблоне нет — если она
+        # появится, фрагмент перестанет работать с общей обвязкой
         _goal_core = _ba._GOAL_SNAPSHOT_JS[
             _ba._GOAL_SNAPSHOT_JS.index("goal=__vpcN(goal);"):
             _ba._GOAL_SNAPSHOT_JS.index("var mts=[];")]
@@ -5828,9 +5823,9 @@ console.log(%s);
         check("целевой снапшот: несовпадающий текст хитов не даёт",
               not _err_m and _h_miss < 1)
 
-        # 5) _HIDDEN_EDITABLES_JS теперь в IIFE — не течёт в глобальный скоуп
-        # страницы (сайт с собственным `let e` раньше валил evaluate целиком
-        # SyntaxError'ом, hidden_editable_labels молча возвращал [])
+        # 5) _HIDDEN_EDITABLES_JS обёрнут в IIFE — не течёт в глобальный
+        # скоуп страницы; иначе сайт с собственным `let e` валит evaluate
+        # целиком SyntaxError'ом, и hidden_editable_labels молча возвращает []
         import subprocess as _sp10
         _leak_script = (
             "const vm=require('vm');"
@@ -5895,7 +5890,7 @@ console.log(%s);
               "_as_lit(host_part)" in Path(_ba.__file__).read_text(
                   encoding="utf-8"))
 
-    # ── Линтер: единая подстановка в JS (задача №10) ──────────
+    # ── Линтер: единая подстановка в JS ──────────
     import ast as _ast10b
     _ba_src10 = Path(_ba.__file__).read_text(encoding="utf-8")
     _ba_tree10 = _ast10b.parse(_ba_src10)
@@ -5993,7 +5988,7 @@ console.log(%s);
         _cc_mod._SCROLL_END_GRACE_SEC = _orig_grace8
         _cc_mod._SCROLL_MAX_SEC = _orig_max8
 
-    # ── Мягкая верификация сайта после навигации (п.5) ──
+    # ── Мягкая верификация сайта после навигации ──
     _orig_pid = _ba.page_identity
     _orig_gt = _ws._google_translate
     _ws._google_translate = lambda text: "youtube" if text == "ютуб" else None
@@ -6021,7 +6016,7 @@ console.log(%s);
         _ba.page_identity = _orig_pid
         _ws._google_translate = _orig_gt
 
-    # ── Визуальный фолбэк резолва (п.4) ──
+    # ── Визуальный фолбэк резолва ──
     class _VisionRouter:
         def __init__(self, resp): self.resp = resp; self.img_calls = 0
         def supports_vision(self): return True
@@ -6095,8 +6090,8 @@ console.log(%s);
         check("гибрид: строка вне экрана — выбор по метке, offscreen в мете",
               act_h2 is not None and act_h2["idx"] == 5
               and act_h2["choose"].get("offscreen") is True)
-        # Строка текстового списка сверки подписи не проходит (как прежний
-        # широкий резолв), а РАМКА с чужой подписью — вето всегда; дальше
+        # Строка текстового списка сверки подписи не проходит (как и в
+        # широком резолве), а РАМКА с чужой подписью — вето всегда; дальше
         # текстовый широкий резолв (тут «нет») и зоны (в этой секции пусты)
         # → честный отказ; вето гибрида — в следе ярусов аудита
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
@@ -6134,8 +6129,8 @@ console.log(%s);
         check("п.4: рамки кандидатов рисуются (JPEG на выходе)",
               boxed is not None and boxed[:2] == b"\xff\xd8")
         # Бейджи номеров: заливка цветом рамки из палитры, коллизии
-        # разнесены, кегль растёт с шириной кадра (кейс 07.09: мелкий красный
-        # текст по видеоряду vision-модель не читала)
+        # разнесены, кегль растёт с шириной кадра — мелкий текст поверх
+        # видеоряда vision-модель не различает
         _im = _PILImage.open(_io.BytesIO(boxed)).convert("RGB")
         _reds = _blues = 0
         for _yy in range(0, _im.height, 3):
@@ -6169,7 +6164,7 @@ console.log(%s);
               "function svc(t)" in _ba._ALL_CLICKABLE_BOXES_JS
               and "buried" in _ba._ALL_CLICKABLE_BOXES_JS)
 
-        # ── Дедуп дублей одной карточки для vision-рамок (кейс 08.09) ──
+        # ── Дедуп дублей одной карточки для vision-рамок ──
         # У youtube-карточки на одну ссылку — обёртка, заголовок и строка
         # метаданных; все три проходили в рамки и съедали номера топ-8
         _H = "https://youtube.com/watch?v=abc"
@@ -6216,7 +6211,7 @@ console.log(%s);
               and _cc_mod._link_key("https://y.ru/watch?v=1")
               != _cc_mod._link_key("https://y.ru/watch?v=2"))
 
-        # ── Дедуп дублей карточки в текстовом снапшоте (кейс 09.09) ──
+        # ── Дедуп дублей карточки в текстовом снапшоте ──
         # Список для LLM был забит фрагментами одной карточки ютуба:
         # превью-обёртка «1:03», заголовок, span-дубли канала/метаданных
         _snap_dd = _ba._dedup_snapshot_items([
@@ -6265,10 +6260,10 @@ console.log(%s);
               "d{1,3}" in _ba._SNAPSHOT_JS
               and "dtl.length>t.length" in _ba._SNAPSHOT_JS)
         # Основной проход собирает сначала элементы вьюпорта, потом
-        # остальные в DOM-порядке (кейс 09.09: ссылка-заголовок видимой
-        # карточки не влезала в бюджет 100 за шапкой/сайдбаром); при активном
-        # бэкдропе внутри обеих фаз первыми — элементы его слоя (кейс 11.09:
-        # пилюли «49 ₽» шторки соусов dodo терялись за затемнённым каталогом)
+        # остальные в DOM-порядке — иначе заголовок видимой карточки не
+        # влезает в бюджет 100 за шапкой/сайдбаром; при активном бэкдропе
+        # внутри обеих фаз первыми идут элементы его слоя — иначе пилюли
+        # «49 ₽» шторки соусов теряются за затемнённым каталогом
         check("снапшот: основной проход — вьюпорт первым, слой впереди",
               "var evp=[],eoff=[],evx=[],eox=[];" in _ba._SNAPSHOT_JS
               and "(isc3?evp:evx).push(el)" in _ba._SNAPSHOT_JS
@@ -6315,9 +6310,9 @@ console.log(%s);
             "https://x.ru", "x.ru", _vis_items2)
         act_v6, _ = m_vis.resolve_click("корзина", None, _VR2("1"),
                                         chat_id="vis4")
-        # Дедуп: 1 рамка в промпте (prompt собран до ответа модели). Сам выбор
-        # с 19.09 ветируется: у кандидата читаемая подпись без слов цели
-        # («корзина» vs «Джем – Sirene…») — галлюцинация номера, клика нет
+        # Дедуп: 1 рамка в промпте (prompt собран до ответа модели). Выбор
+        # ветируется, если у кандидата читаемая подпись без слов цели
+        # («корзина» vs «Джем – Sirene…») — это галлюцинация номера, клика нет
         check("дедуп карт: в vision-промпт ушла 1 рамка вместо 2 дублей",
               _cap_prompt and "1..1" in _cap_prompt[0])
         check("дедуп карт: vision-выбор без цели в подписи — вето",
@@ -6325,14 +6320,14 @@ console.log(%s);
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://x.ru", "x.ru", _vis_items)
 
-        # ── Активный слой поверх затемнённого фона (кейс 08.09: панель
-        # комментариев поверх страницы — зоны/рамки размечали всё подряд,
-        # на панель не хватало бюджета) ──
+        # ── Активный слой поверх затемнённого фона: панель комментариев
+        # поверх страницы — зоны/рамки размечают всё подряд, на панель не
+        # хватает бюджета ──
         check("слои: снапшот и искатель зон помечают активный слой (sc)",
               "elementsFromPoint" in _ba._SNAPSHOT_JS
               and "sc:vpcSc(e)" in _ba._SNAPSHOT_JS
               and "elementsFromPoint" in _ba._ALL_CLICKABLE_BOXES_JS)
-        # Боковая панель (корзина dodo) центр вьюпорта не перекрывает:
+        # Боковая панель (корзина) центр вьюпорта не перекрывает:
         # верхний элемент стека там сам бэкдроп — нужен разбор bi=0 и
         # покрытие центра элемента (bdEl-ветка)
         check("слои: бэкдроп верхним в центре (боковая корзина) — bdEl-ветка",
@@ -6340,9 +6335,8 @@ console.log(%s);
               and "bdEl" in _ba._ALL_CLICKABLE_BOXES_JS
               and "bi=0" in _ba._SNAPSHOT_JS
               and "bi=0" in _ba._ALL_CLICKABLE_BOXES_JS)
-        # Текстовый выбор тоже режется до активного слоя (раньше sc
-        # использовал только vision — клик уходил в затемнённый фон мимо
-        # открытой корзины)
+        # Текстовый выбор тоже режется до активного слоя — иначе клик
+        # уходит в затемнённый фон мимо открытой корзины
         idx_l, _ = m_vis._choose_element(
             "оформить заказ",
             [_it(35, "a", "Оформить заказ", sc=False),  # точный матч под бэкдропом
@@ -6392,11 +6386,11 @@ console.log(%s);
         check("слои: все кандидаты вне слоя — фолбэк на полный список",
               act_v8 is not None and act_v8["idx"] == 32)
 
-        # ── Перекрытие чужим слоем без опознанного бэкдропа (cov; кейс
-        # 22.09, dodo: попап «Заменить» в комбо «Десерт и напиток» — sc у
-        # всех 1, карточка каталога ПОД попапом с точным текстом обходила
-        # пункт попапа, LLM из голого списка брала карточку). Элементы —
-        # ровно из audit.jsonl (ts 1790088183) плюс флаги md/cov ──
+        # ── Перекрытие чужим слоем без опознанного бэкдропа (cov): попап
+        # «Заменить» в комбо «Десерт и напиток» — sc у всех 1,
+        # карточка каталога под попапом с точным текстом обходит пункт
+        # попапа, LLM из голого списка берёт карточку. Элементы — из
+        # реального снапшота, с флагами md/cov ──
         _crumble = [
             _it(86811758, "label", "Сорбет Клубничный гранат + 25 ₽", md=True,
                 ctx="Яблочный крамбл + 60 ₽ Сорбет Клубничный гранат + 25 ₽"),
@@ -6418,7 +6412,7 @@ console.log(%s);
               all(c["idx"] not in (86811852, 86811853)
                   for c in meta_c1["candidates"]))
         # Всё перекрыто одинаково (ложный детект слоя) — не режем в ноль,
-        # порядок прежний: точный матч выигрывает
+        # исходный порядок: точный матч выигрывает
         idx_c2, _ = m_vis._choose_element(
             "яблочный крамбл",
             [_it(50, "a", "Яблочный крамбл", cov=True),
@@ -6456,8 +6450,8 @@ console.log(%s);
         check("cov: vision-рамки — только неперекрытые",
               act_v9 is not None and act_v9["idx"] == 57
               and _cap_prompt and "1..1" in _cap_prompt[0])
-        # Пометка контекста слоя в промпте LLM (дизамбигуация «пункт
-        # попапа vs карточка страницы» больше не жребий)
+        # Пометка контекста слоя в промпте LLM — чтобы выбор «пункт попапа
+        # vs карточка страницы» не был жребием
         _cap.clear()
         m_vis._choose_element(
             "пирожное", [_it(58, "label", "Пирожное картошка", md=True),
@@ -6476,9 +6470,9 @@ console.log(%s);
         if _orig_acb_v is not None:
             _ba.all_clickable_boxes = _orig_acb_v
 
-    # ── Зональный vision-фолбэк (п.2-дельта): DOM нечитаем — клик по координатам ──
+    # ── Зональный vision-фолбэк: DOM нечитаем — клик по координатам ──
     class _ZoneRouter:
-        """get_response — «нет» (широкий резолв мимо); vision-ответы по очереди."""
+        # get_response — «нет» (широкий резолв мимо); vision-ответы по очереди
 
         def __init__(self, *resps):
             self.resps = list(resps)
@@ -6599,7 +6593,8 @@ console.log(%s);
     # Слабый ярус (<55: голый контекст — клик по карточке комбо из-за
     # упоминания товара в её описании) или ничья одноимённых («Изменить» ×3
     # в корзине): до клика вслепую — зональный vision как общий
-    # дизамбигуатор без привязки к сайту; отказ vision — старый выбор
+    # дизамбигуатор без привязки к сайту; отказ vision — остаётся текстовый
+    # выбор
     m_gate = make()
     _gate_calls = []
 
@@ -6675,7 +6670,7 @@ console.log(%s);
         "https://x.ru", "x.ru", [_it(0, "a", "Мегасоус")])
     try:
         # «соус» — подстрока внутри чужого слова («мегаСОУС»): ярус 50,
-        # единственный кандидат — раньше кликнули бы вслепую
+        # единственный кандидат — без гейта это был бы слепой клик
         act_g, _ = make().resolve_click(
             "соус", None, _ZoneRouter("2"), chat_id="vg1")
         check("vision-гейт e2e: слабый выбор → point-действие от vision",
@@ -6839,8 +6834,8 @@ console.log(%s);
               idx_e is None and meta_e is None and not rw_e.calls)
         # Цель-иконка («крестик», «колокольчик»), которую скоринг не нашёл:
         # подписи у иконки нет, в текстовом списке её не будет — LLM лишь
-        # угадает чужой элемент (кейс 22.09: «крестик» → «More», «колокольчик»
-        # → пункт меню «Notifications»). Ярус пропускается в пользу vision
+        # угадает чужой элемент («крестик» → «More», «колокольчик» → пункт
+        # меню «Notifications»). Ярус пропускается в пользу vision
         rw_i = _WideRouter("1")
         idx_i, meta_i = m_w._llm_wide_pick(
             "крестик", [_it(20, "button", "More"), _it(21, "a", "Dashboard"),
@@ -6859,9 +6854,9 @@ console.log(%s);
         check("wide: обычная цель по-прежнему идёт в LLM",
               idx_t == 25 and rw_t.calls)
         # Псевдокликабельные фрагменты (span с унаследованным
-        # cursor:pointer) — после настоящих контролов: иначе на ютубе
-        # имена каналов вытесняли ссылку-заголовок из топ-30, и «видео с
-        # японскими символами» нажало span канала вместо видео (кейс 09.09)
+        # cursor:pointer) — после настоящих контролов: иначе на сайте
+        # видеохостинга имена каналов вытеснят ссылку-заголовок из топ-30,
+        # и «видео с японскими символами» нажмёт span канала вместо видео
         rw_f = _WideRouter("1")
         idx_f, _ = m_w._llm_wide_pick(
             "видео с японскими символами",
@@ -6913,9 +6908,9 @@ console.log(%s);
         _ba.hidden_editable_labels = _orig_hid_w
 
     # ── Ярус 1: «нажми X» — сначала видимая страница, скролл лишь при
-    # промахе (кейс 09.09: «нажми Lumiere» при видимом «Lumière – Expedition
-    # 33» уезжало к «Lumiere | Metal Cover» ниже по ленте — целевой снапшот
-    # заменял выбор при равном скоре и делал scrollIntoView) ──
+    # промахе: без этого «нажми Lumiere» при видимом «Lumière – Expedition
+    # 33» уехало бы к «Lumiere | Metal Cover» ниже по ленте — целевой
+    # снапшот заменяет выбор при равном скоре и делает scrollIntoView ──
     _orig_snap_vp = _ba.snapshot_elements
     _orig_sfg_vp = _ba.snapshot_for_goal
     _goal_calls_vp = []
@@ -7034,7 +7029,7 @@ console.log(%s);
           and not parse_tab_list_query("перейди на вкладку ютуб")
           and not parse_tab_list_query("нажми кнопку"))
 
-    # ── «обнови/закрой вкладку (X)» — tab_op (кейс 10.09) ──
+    # ── «обнови/закрой вкладку (X)» — tab_op ──
     from app.features.computer_control import parse_tab_op, parse_close_request
     check("tab_op parse: обнови/перезагрузи/закрой вкладку (X)",
           parse_tab_op("обнови страницу") == ("reload", None)
@@ -7051,7 +7046,7 @@ console.log(%s);
           and parse_tab_op("закрой соусы к бортикам") is None
           and parse_tab_op("обнови ленту") is None
           and parse_tab_op("закрой их") is None
-          # «закрой вкладку» теперь НЕ уходит в клик-закрытие крестиком
+          # «закрой вкладку» не уходит в клик-закрытие крестиком
           and parse_close_request("закрой вкладку") is None
           and parse_close_request("закрой страницу") is None
           and parse_close_request("закрой окно") is not None
@@ -7367,8 +7362,9 @@ console.log(%s);
           == (("громкость", 5, ""), None)
           and parse_slider_request("поставь лайк") is None
           and parse_slider_request("нажми кнопку") is None)
-    # Единицы после числа (кейс 08.09: «на 50 процентов»/«на 10 минут»
-    # не матчились и фраза улетала в generic-клик — кликал «1:37 / 16:28»)
+    # Единицы после числа: без их разбора «на 50 процентов»/«на 10 минут»
+    # не матчились бы, и фраза улетела бы в generic-клик по таймкоду вида
+    # «1:37 / 16:28»
     check("parse slider: единицы %/минут/секунд",
           parse_slider_request("перетащи громкость на 50 процентов")
           == (("громкость", 50, "pct"), None)
@@ -7416,10 +7412,10 @@ console.log(%s);
               _slider_calls[-1][4] == "pct"
               and "50%" in ComputerControlManager.describe(act_s2))
         # Подпись слайдера матчится по собственному aria-label/title
-        # (громкость/прогресс ютуба — текст не в innerText предков), слова
-        # от 6 букв — по усечённому началу («громкости» → «громкост…»),
-        # свёрнутые до наведения — второй шанс + hover-reveal на CDP,
-        # промах — со списком имеющихся (have)
+        # (громкость/прогресс на видеохостинге — текст не в innerText
+        # предков), слова от 6 букв — по усечённому началу («громкости» →
+        # «громкост…»), свёрнутые до наведения — второй шанс + hover-reveal
+        # на CDP, промах — со списком имеющихся (have)
         check("слайдер: матч по aria-label, стемминг, tiny, have-список",
               "ownLab" in _ba._SET_SLIDER_JS
               and "aria-labelledby" in _ba._SET_SLIDER_JS
@@ -7437,8 +7433,8 @@ console.log(%s);
               and hasattr(_ba, "_keyboard_set_slider")
               and "dbg" in _ba._SET_SLIDER_JS)
 
-        # Клавиатурный фолбэк: Home → min, шаг измеряется (ютуб-громкость
-        # шагает по 5), стрелки до цели
+        # Клавиатурный фолбэк: Home → min, шаг измеряется (для громкости
+        # на видеохостинге — 5), стрелки до цели
         class _Kb:
             def __init__(self, pg):
                 self.pg = pg
@@ -7546,10 +7542,9 @@ console.log(%s);
           any(r.get("text") == "привет" for r in aud_recs))
 
     # ── Доскролл-поиск: окно возвращается на место ПЕРЕД фазой контейнера ──
-    # Кейс 03.09: «включи/троеточие в <видео> из плейлиста» на YouTube —
-    # фаза 1 (3 экрана окна вниз) уносила панель ytd-playlist-panel-renderer
-    # из вьюпорта, и контейнерный шаг (только видимые контейнеры) крутил
-    # левое меню вместо списка #items
+    # На сайте видеохостинга фаза 1 (3 экрана окна вниз) уносит боковую
+    # панель плейлиста из вьюпорта, и контейнерный шаг (только видимые
+    # контейнеры) крутит левое меню вместо списка элементов
     from app.features import browser_actions as _ba_hunt
     _hunt_calls = []
 
@@ -7587,15 +7582,14 @@ console.log(%s);
           and _hunt_calls.index(("wrestore", 100.0))
           < _hunt_calls.index("cstep"))
     # Окно возвращается РОВНО один раз (перед фазой контейнера): контейнерный
-    # шаг окно не двигает, и второй возврат был лишним походом в браузер
+    # шаг окно не двигает, второй возврат был бы лишним походом в браузер
     check("scroll_hunt: контейнерная фаза отработала и возвращена",
           _hunt_calls.count("cstep") == 10 and _hunt_calls[-1] == "crestore"
           and _hunt_calls.count(("wrestore", 100.0)) == 1)
 
-    # Свайп-лента (shorts/reels): доскролл-поиск пропускается ЦЕЛИКОМ —
-    # шаг прокрутки там листает основной контент, а не список элементов
-    # (кейс 07.09: «нажми сортировать» на странице shorts бесконечно
-    # листало видео: фаза 2 крутила #shorts-container)
+    # Свайп-лента коротких видео (shorts): доскролл-поиск пропускается
+    # ЦЕЛИКОМ — шаг прокрутки там листает основной контент, а не список
+    # элементов
     _ba_hunt.snapshot_for_goal = lambda *a, **kw: ("", [])
     try:
         _hunt_calls.clear()
@@ -7613,11 +7607,12 @@ console.log(%s);
     finally:
         _ba_hunt.snapshot_for_goal = _orig_sfg
 
-    # ── Корзинный фолбэк: «удали/закрой X» без «из корзины» (кейс 07.09) ──
-    # Крестик товара в корзине dodo — иконка без текста и aria, текстовый
-    # резолв его не видит («не нашёл элемента для "удалить чикен"»), а
-    # целевое закрытие «закрыть на чикен» цепляло крестик ВСЕЙ панели.
-    # Удаление уходит в cart_op — но только когда товар реально в корзине
+    # ── Корзинный фолбэк: «удали/закрой X» без «из корзины» ──
+    # Крестик товара в корзине (dodopizza.ru) — иконка без текста и aria,
+    # текстовый резолв её не видит («не нашёл элемента для "удалить
+    # чикен"»), а целевое закрытие «закрыть на чикен» цепляет крестик ВСЕЙ
+    # панели. Удаление уходит в cart_op, но только когда товар реально в
+    # корзине
     _orig_snap_cr = _ba.snapshot_elements
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         "https://dodopizza.ru/x", "dodopizza.ru", _gh_items())
@@ -7654,9 +7649,9 @@ console.log(%s);
         check("корзина-фолбэк: «поменять гавайскую» → cart edit",
               a_ce2 is not None and a_ce2.get("op") == "edit"
               and a_ce2.get("product") == "гавайскую")
-        # Количество символом/словом: «нажми + в двойная пепперони» —
-        # раньше шло общим резолвом и цепляло упоминание товара в описании
-        # состава комбо (клик по «+» открывал «3 пиццы 30 или 35 см»)
+        # Количество символом/словом: «нажми + в двойная пепперони» — без
+        # выделения в cart_op общий резолв зацепит упоминание товара в
+        # описании состава комбо (клик по «+» откроет «3 пиццы 30 или 35 см»)
         a_cq, _ = _m_cart.resolve_click("+ в двойная пепперони", None, None,
                                         chat_id="cr12")
         check("корзина-фолбэк: «+ в X» → cart increase",
@@ -7683,8 +7678,8 @@ console.log(%s);
               _m_cart._cart_op_fallback("звук", "remove", None, "cr5")
               is None)
         # Не корзина, а страница/модалка продукта со слотами «Изменить
-        # состав» (комбо dodo): детерминированный поиск по контексту предка
-        # (кейс 07.09: раньше кликало инфо-иконку «Показать доп. информацию»)
+        # состав» (комбо): детерминированный поиск по контексту предка
+        # — иначе резолв зацепит инфо-иконку «Показать доп. информацию»
         _ba.edit_composition_find = lambda host=None, product="", tab_id=None: {
             "status": "unique"}
         a_pe, _ = _m_cart.resolve_click("изменить состав", "гавайская",
@@ -7737,15 +7732,14 @@ console.log(%s);
 
     # Приоритет заголовка карточки корзины: «двойная пепперони» — это и имя
     # одиночной пиццы, и строка в описании состава комбо «3 пиццы …»; без
-    # приоритета первой строки карточки искатель отдавал ложную
-    # неоднозначность из 3 карточек, а клик уходил в «Изменить» первого
-    # комбо (кейс 07.09). Сам подбор карточек проверен вживую на CDP
+    # приоритета первой строки карточки поиск дал бы ложную неоднозначность
+    # из 3 карточек, а клик ушёл бы в «Изменить» первого комбо
     check("корзина-искатель: приоритет заголовка над описанием состава",
           "titled" in _ba._CART_FIND_JS
           and "__vpcWIn(fl" in _ba._CART_FIND_JS)
 
     # Синоним «троеточие»: основа «действ» prefix-матчит «Меню действий»
-    # YouTube (полное слово «действия» не матчило «действий»)
+    # (полное слово «действия» не матчит «действий»)
     from app.features.computer_control import _goal_with_synonyms, _word_in
     check("синонимы «троеточие» содержат основу «действ»",
           _word_in("действ", _goal_with_synonyms("троеточие")))
@@ -7765,9 +7759,9 @@ console.log(%s);
                                                  "school.example.com")))
 
     # data-testid безтекстовой иконки — крюк скоринга: бургер платформы
-    # School 21 (<button data-testid="MobileHeader.BurgerButton">, без текста
-    # и aria) находится по стему «burger» из синонимов (кейс 10.09: «три
-    # полоски» на платформе не находились вовсе — и клик уходил на ютуб)
+    # (<button data-testid="MobileHeader.BurgerButton">, без текста и aria)
+    # находится по стему «burger» из синонимов — без него «три полоски» на
+    # такой платформе не находились бы вовсе
     _tid_items = [
         _it(0, "a", "Tribe Tournament"),
         _it(1, "button", "", tid="MobileHeader.SearchButton"),
@@ -7780,9 +7774,9 @@ console.log(%s);
           and _sc_tid[0][1]["tid"] == "MobileHeader.BurgerButton"
           and _sc_tid[0][0] >= 60.0)
 
-    # Кейс 10.09 целиком: «нажми три полоски» на платформе (отслеживаемая
-    # вкладка) при открытом ютубе — клик по бургеру ПЛАТФОРМЫ по testid,
-    # а не «Гид» ютуба через кросс-страничный фолбэк
+    # e2e: «нажми три полоски» на отслеживаемой вкладке (платформа) при
+    # открытом другом сайте — клик уходит по testid бургера платформы, а
+    # не через кросс-страничный фолбэк на элемент другого сайта
     _orig_snap_tb = _ba.snapshot_elements
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         "https://school.example.com/", "school.example.com",
@@ -7825,8 +7819,8 @@ console.log(%s);
           _m_zoom.needs_confirm({"kind": "zoom", "dir": "in"}) is False)
 
     # ── «в джеме/миксе/очереди» — область страницы, а не скоп цели ──
-    # Кейс 19.09: «нажми renoir в джем» — «джем» не алиас и не домен, он
-    # склеивался в цель («renoir на джем») и убивал текстовый резолв
+    # «нажми renoir в джем»: «джем» — не алиас и не домен; без этого он
+    # склеивается в цель («renoir на джем») и убивает текстовый резолв
     _orig_snap_jam = _ba.snapshot_elements
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         "https://www.youtube.com/watch?v=x", "www.youtube.com",
@@ -7883,7 +7877,7 @@ console.log(%s);
     finally:
         _ba.screenshot_viewport = _orig_sshot_vv
 
-    # ── 12z. Разбор команд, адресация места и инварианты выбора (аудит п.2/п.3) ──
+    # ── 12z. Разбор команд, адресация места и инварианты выбора ──
     from app.features.computer_control import (
         _looks_like_domain, parse_page_view_request, parse_scroll_request,
         parse_media_request, parse_cart_request, parse_tab_op, ordinal_recipe)
@@ -7900,7 +7894,8 @@ console.log(%s);
           and parse_page_view_request("что на этой странице на додо")
           == ("додо", False, False))
     # Направление листания — одно определение слов: и в regex, и при срезке
-    # с имени контейнера («комментарии вниз» было именем контейнера)
+    # с имени контейнера, иначе «вниз» осталось бы в имени контейнера
+    # («комментарии вниз»)
     check("scroll: направление вырезается из имени контейнера",
           parse_scroll_request("пролистай комментарии вниз")
           == ("start", None, None, None, "комментарии")
@@ -7974,7 +7969,7 @@ console.log(%s);
                                     "submit": True}) is True)
 
     # Нераспознанное имя места — честный отказ, а не подмена отслеживаемой
-    # вкладкой (раньше «нажми X на платформе» уходило в ютуб)
+    # вкладкой (иначе «нажми X на платформе» ушло бы в ютуб)
     _orig_snap_uz = _ba.snapshot_elements
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         "https://youtube.com/watch", "youtube.com", [_it(0, "a", "Войти")])
@@ -8000,8 +7995,8 @@ console.log(%s);
               all(v[0] is None and v[1] and "Не знаю, где" in v[1]
                   for v in _unknown.values()))
         # У клика/наведения неопознанное слово места — скоп карточки («нажми
-        # выбрать на маргарите»), это решение старше и остаётся: до
-        # _snapshot_for такое слово не доходит вовсе
+        # выбрать на маргарите»): до _snapshot_for такое слово не доходит
+        # вовсе
         _no_cw, _err_cw = m_us.resolve_click("выбрать", "маргарите", None,
                                              chat_id="us-scope")
         check("клик: неопознанное слово места — скоп карточки, не отказ места",
@@ -8095,7 +8090,7 @@ console.log(%s);
                                  chat_id="hv2")[0]["element"]
               == "Очистить очередь")
         # На странице ТОЛЬКО разрушительный контрол: клик без слова-намерения
-        # ветирован (как и раньше), а наведение — нет: оно не активирует
+        # ветирован, а наведение — нет: оно не активирует
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://youtube.com", "youtube.com",
             [_it(0, "button", "Очистить очередь")])
@@ -8217,10 +8212,8 @@ console.log(%s);
     finally:
         _ba.close_tab = _orig_close_z
 
-    # Подпись поля внутри фразы: хвост — от конца подписи (терялось первое
-    # слово текста)
-    # Подпись поля ВНУТРИ фразы: текст — всё, что вокруг подписи. Хвост
-    # брался от начала следующего слова, и первое слово текста пропадало
+    # Подпись поля внутри фразы: текст — всё, что вокруг подписи; хвост
+    # берётся от конца подписи, иначе первое слово текста терялось бы
     _fld = [{"idx": 0, "tag": "input", "text": "город", "ed": True}]
     _fa_it, _fa_txt = ComputerControlManager._match_field_anywhere(
         "кутузова город �город", _fld)
@@ -8391,8 +8384,8 @@ console.log(%s);
     import app.features.flavor_text as _flavor
 
     class _AuthzCC(ComputerControlManager):
-        """_dispatch подменён — как SpyManager выше, отдельный класс не нужен,
-        но своё имя для читаемости диагностики теста."""
+        # _dispatch подменён, как у SpyManager — под своим именем для
+        # читаемости диагностики теста
         def __init__(self, *a, **kw):
             super().__init__(*a, **kw)
             self.calls = []
@@ -8506,7 +8499,7 @@ console.log(%s);
     _authz_calls = {"set_mode": [], "rescue": 0}
     _ba.set_control_mode = lambda chat_id, on: _authz_calls["set_mode"].append((str(chat_id), on))
     _ba.rescue_pool_h = lambda *a, **kw: (_authz_calls.__setitem__("rescue", _authz_calls["rescue"] + 1) or True)
-    # cc_reply без банка фраз уходит в «живой» Google AI Mode — в тесте не
+    # cc_reply без банка фраз уходит в живой запрос к LLM — в тесте не
     # нужен, форсируем честный шаблон
     _flavor.cc_reply = lambda *a, **kw: None
     try:
@@ -8640,10 +8633,10 @@ console.log(%s);
 
 
 def _with_temp_browser_locks(fn):
-    """Лок-файлы Chrome пулов (<профиль>.bot-lifecycle.lock/.bot-users.lock)
-    — во временный каталог на весь прогон: тест ходит в сырой пул V (и
-    воркер) с конфигом по умолчанию, и иначе создавал/держал лок-файлы рядом
-    с НАСТОЯЩИМИ профилями — теми же, что у живого бота."""
+    """Лок-файлы Chrome-пулов (<профиль>.bot-lifecycle.lock/.bot-users.lock)
+    уводятся во временный каталог на время прогона: тест обращается к пулу V
+    с конфигом по умолчанию и иначе создавал бы лок-файлы рядом с реальными
+    профилями бота."""
     import app.features.browser_actions as _ba_locks
     d = tempfile.mkdtemp(prefix="browser_locks_")
     saved = (_ba_locks._pool_h_life_path, _ba_locks._pool_v_life_path)

@@ -93,7 +93,7 @@ def _cached_resolved_ip(host: str):
 
 
 def is_safe_public_url(url: str) -> bool:
-    """SSRF-фильтр (задача №5 аудита): True — только для http(s)-URL, чей
+    """SSRF-фильтр: True — только для http(s)-URL, чей
     хост резолвится ИСКЛЮЧИТЕЛЬНО в публичные адреса.
 
     URL страниц из выдачи поиска фактически приходит от третьей стороны
@@ -154,9 +154,9 @@ def _pinned_get(client, url: str, host: str | None, ip):
 
     Если ip не резолвлен (is_safe_public_url подменена — тесты, реального
     резолва не было) или client — тестовый фейк без keyword-параметров
-    headers/extensions (например ``def get(self, url)``) — коннект идёт как
-    раньше, по имени: пиннинг не применяется, только для него и нужны эти
-    параметры."""
+    headers/extensions (например ``def get(self, url)``) — коннект идёт
+    обычным способом, по имени хоста: пиннинг не применяется, эти параметры
+    нужны только для него."""
     if ip is None or host is None:
         return client.get(url)
     try:
@@ -210,8 +210,8 @@ def fetch_page_text(url: str, max_len: int = MAX_PAGE_TEXT_LEN) -> str:
     Возвращает чистый текст длиной до max_len символов, или пустую строку при ошибке.
 
     SSRF-фильтр (is_safe_public_url) — на исходном URL И на каждом хопе
-    редиректа: follow_redirects=True сам по себе не проверял, куда сервер
-    уводит запрос — публичная страница вполне может 302-нуть на
+    редиректа: follow_redirects=True сам по себе не проверяет, куда сервер
+    уводит запрос, а публичная страница может 302-нуть на
     http://169.254.169.254/latest/meta-data/ или localhost:6379.
     """
     if not is_safe_public_url(url):
@@ -302,13 +302,13 @@ BLACKLIST_DOMAINS = {
     "pikabu.ru", "joyreactor.cc",
     # Короткие ссылки (непредсказуемы)
     "bit.ly", "tinyurl.com", "goo.gl", "ow.ly", "short.link",
-    # AI-генераторы контента (можут быть галлюцинации)
+    # AI-генераторы контента (могут быть галлюцинации)
     "chatgpt.com", "openai.com",
 }
 
 
 def _is_blacklisted(url: str) -> bool:
-    """Проверяет URL по чёрному списку доменов."""
+    # Проверяет URL по чёрному списку доменов.
     try:
         parsed = urlparse(url)
         hostname = parsed.hostname
@@ -474,7 +474,7 @@ def search_web(
             verify_translation=verify_translation)
 
     def _run_search(q: str, limit: int) -> list[dict]:
-        """Один поиск с фильтрацией по блэклисту."""
+        # Один поиск с фильтрацией по блэклисту.
         try:
             ddgs = DDGS()
             raw = list(ddgs.text(q, max_results=limit))
@@ -546,9 +546,10 @@ def search_web(
 
 
 # «Не тот сайт» для резолва «открой X»: соцсети, энциклопедии, магазины
-# приложений. По запросу «сайт вуза» нужен example.edu, а не группа ВК или статья
-# Википедии. Если запрос сам называет платформу («открой вк», «открой ютуб») —
-# она и есть цель, не фильтруем (сверка по слагу названия/перевода).
+# приложений. По запросу «сайт вуза» нужен официальный домен вуза, а не его
+# группа в соцсети или статья в энциклопедии. Если запрос сам называет
+# платформу («открой вк», «открой ютуб») — она и есть цель, не фильтруем
+# (сверка по слагу названия/перевода).
 _PLATFORM_DOMAINS = {
     "wikipedia.org": "wikipedia", "wikimedia.org": "wikimedia",
     "vk.ru": "vk", "vk.com": "vk", "ok.ru": "ok",
@@ -561,16 +562,16 @@ _PLATFORM_DOMAINS = {
     "grokipedia.com": "grokipedia", "pinterest.com": "pinterest",
 }
 
-# _WORD_ENDINGS/_stem — алиасы на app.core.word_stem (см. импорт вверху
-# файла: таблица и сам стем теперь живут в отдельном stdlib-модуле, его же
-# без httpx/openai импортирует browser_actions). Имена оставлены прежними:
-# остальной проект (scenario_manager, computer_control, browser_history)
-# продолжает делать `from app.features.web_search import _stem` и не
-# замечает переезда.
+# _WORD_ENDINGS/_stem — алиасы на app.core.word_stem: таблица окончаний и
+# сама функция стемминга живут в отдельном stdlib-модуле (его же, без
+# httpx/openai, импортирует browser_actions). Имена оставлены прежними,
+# чтобы остальной проект (scenario_manager, computer_control,
+# browser_history), делающий `from app.features.web_search import _stem`,
+# продолжал работать без изменений.
 
 
 def _match_word(qw: str, tw: str, text_slug: str) -> bool:
-    """Слово запроса есть в слаге: само, его перевод или их основы."""
+    # Слово запроса есть в слаге: само, его перевод или их основы.
     for w in (qw, tw):
         if w and (w in text_slug or _stem(w) in text_slug):
             return True
@@ -578,7 +579,7 @@ def _match_word(qw: str, tw: str, text_slug: str) -> bool:
 
 
 def find_site_url(name: str, max_results: int = 10) -> str | None:
-    """Лёгкий резолв «название сайта» → корневой URL сайта по выдаче DDG.
+    """Лёгкий резолв «название сайта» → корневой URL сайта по выдаче поисковика.
 
     Для fast-path «открой X» (computer_control): один поисковый вызов,
     БЕЗ LLM-улучшения запроса и БЕЗ загрузки полных текстов страниц —
@@ -588,17 +589,18 @@ def find_site_url(name: str, max_results: int = 10) -> str | None:
     1. первый, чей домен содержит название (для кириллицы — через перевод:
        «ютуб» → «youtube» матчит www.youtube.com);
     2. для мультисловных названий — первый, у кого все слова запроса есть
-       в домене+пути (сами или через перевод: «гугл карты» → google.com/maps —
-       конкатенированный слаг ломался бы о порядок слов и смешанные языки);
-    3. первый, чей заголовок содержит название/все его слова («вуза. …» →
-       example.edu: домен вуза аббревиатуру не содержит, доменный матч не сработал бы);
+       в домене+пути (сами или через перевод) — конкатенированный слаг
+       ломался бы о порядок слов и смешанные языки;
+    3. первый, чей заголовок содержит название/все его слова (например,
+       аббревиатура учреждения есть в заголовке, но не в домене — доменный
+       матч тогда не сработал бы);
     4. иначе None (запрос уходит в LLM-путь): открыть не тот сайт по первому
        результату хуже, чем спросить уточнение.
-    Итоговый URL: доменный матч и однословный запрос — «корень + путь до первого
-    сегмента со словом запроса» (example.edu, а не подстраница приёмной кампании;
-    discord.com, а не чужой сервер; но google.de/intl/ru/maps для «гугл карт»);
-    мультисловный матч по заголовку — страница целиком («кутузова вуза» →
-    example.edu/kaf/persons/98849 — искомое как раз на ней).
+    Итоговый URL: доменный матч и однословный запрос — «корень + путь до
+    первого сегмента со словом запроса» (домен учреждения, а не подстраница
+    приёмной кампании; корень сервиса, а не чужая страница на нём); мультисловный матч по
+    заголовку — страница целиком (например, запрос «человек + организация»
+    может резолвиться прямо на страницу этого человека).
     Домены из _PLATFORM_DOMAINS пропускаем, если запрос их самих не называет."""
     from urllib.parse import urlparse
     # Офлайн: резолв через DDG заведомо мёртв — сразу None (запрос уходит
@@ -624,8 +626,8 @@ def find_site_url(name: str, max_results: int = 10) -> str | None:
     if translated:
         slugs.add(_slug(translated))
 
-    # Мультисловные названия («гугл карты» → maps.google.com): конкатенированный
-    # слаг ломается о порядок слов в домене и о смешанные языки («Google Карты»).
+    # Мультисловные названия: конкатенированный слаг ломается о порядок слов
+    # в домене и о смешанные языки (слова запроса на разных языках).
     # Поэтому дополнительно матчим по словам: каждое значимое слово запроса должно
     # найтись в домене/заголовке — само или через перевод (пары слово↔перевод
     # строятся при совпадении числа слов, иначе — только слова запроса).
@@ -656,15 +658,17 @@ def find_site_url(name: str, max_results: int = 10) -> str | None:
         return None
 
     def _word_in(text_slug: str) -> bool:
-        """Хотя бы одно слово запроса (или его перевод) есть в слаге."""
+        # Хотя бы одно слово запроса (или его перевод) есть в слаге.
         return any(_match_word(qw, tw, text_slug) for qw, tw in pairs)
 
     multi = len(pairs) >= 2
 
     def _site_url(url: str) -> str:
-        """Корень + путь до первого сегмента со словом запроса:
-        google.de/intl/ru/maps/about → google.de/intl/ru/maps,
-        example.edu/entrance/… → example.edu, чужой discord-сервер → discord.com."""
+        """Корень + путь до первого сегмента со словом запроса: длинный путь
+        сворачивается до найденного раздела (например,
+        example.com/intl/ru/maps/about → example.com/intl/ru/maps); ни один
+        сегмент не совпал (например, ссылка на чужую страницу внутри сервиса) —
+        только корень домена."""
         p = urlparse(url)
         kept = []
         for seg in [s for s in p.path.split("/") if s]:
@@ -679,7 +683,7 @@ def find_site_url(name: str, max_results: int = 10) -> str | None:
         p = urlparse(url)
         host = p.hostname or ""
         hosts = [host]
-        try:  # кириллические домены: xn--c1atqe.xn--p1ai → «вуза.рф»
+        try:  # кириллические домены: punycode → читаемый вид (например, «сайт.рф»)
             hosts.append(host.encode("ascii").decode("idna"))
         except Exception:
             pass
@@ -687,7 +691,7 @@ def find_site_url(name: str, max_results: int = 10) -> str | None:
         if any(s and s in domain for s in slugs):
             logger.info(f"[WEB_SEARCH] Резолв '{name[:40]}' → {_site_url(url)[:60]} (домен)")
             return _site_url(url)
-        # Мультисловный запрос: слова могут лежать в пути (google.com/maps)
+        # Мультисловный запрос: слова могут лежать в пути, а не только в домене
         if multi and _all_words_in(domain + " " + _slug(p.path)):
             logger.info(f"[WEB_SEARCH] Резолв '{name[:40]}' → {_site_url(url)[:60]} (домен+путь)")
             return _site_url(url)
@@ -697,8 +701,9 @@ def find_site_url(name: str, max_results: int = 10) -> str | None:
                 or _all_words_in(title_slug)):
             logger.info(f"[WEB_SEARCH] Резолв '{name[:40]}' → {url[:60]} (заголовок)")
             if multi:
-                # Мультисловный запрос по заголовку — ищут СТРАНИЦУ
-                # («кутузова вуза» → …/persons/98849): путь сохраняем целиком
+                # Мультисловный запрос по заголовку — ищут конкретную
+                # страницу (например, «человек + организация»): путь
+                # сохраняем целиком
                 p = urlparse(url)
                 return f"{p.scheme}://{p.netloc}{p.path or '/'}"
             return _site_url(url)

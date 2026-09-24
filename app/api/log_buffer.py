@@ -40,7 +40,7 @@ class _RingBufferHandler(logging.Handler):
 
 
 def install():
-    """Повесить хендлер на root-логгер (идемпотентно)."""
+    # Повесить хендлер на root-логгер (идемпотентно).
     root = logging.getLogger()
     if any(isinstance(h, _RingBufferHandler) for h in root.handlers):
         return
@@ -50,7 +50,7 @@ def install():
 
 
 def since(seq: int, limit: int = 500) -> dict:
-    """Записи с seq > переданного + маркер последнего seq (для следующего опроса)."""
+    # Записи с seq > переданного + маркер последнего seq (для следующего опроса).
     out = [e for e in _entries if e["seq"] > seq]
     if limit and len(out) > limit:
         out = out[-limit:]

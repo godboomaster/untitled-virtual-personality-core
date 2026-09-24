@@ -70,6 +70,8 @@
            левый сайдбар: персоны. Поля: name, status. Корню клона
            выставляется data-active у выбранной персоны; клик по элементу
            переключает персону (обрабатывает bridge, вешать ничего не надо).
+         [data-vpc="todo-list"] + todo-item  поля: text; кнопка
+           [data-vpc-item-action="toggle-todo"] в элементе переключает «сделано»
          [data-vpc="inventory-list"] + inventory-item  поля: icon, name, description, tag
          [data-vpc="feature-list"] + feature-item   поля: label
 
@@ -95,7 +97,7 @@
        когда список реально свёрнут.
 
        Счётчики: элемент [data-vpc-count="<ключ>"] получает число записей
-       списка. Ключи этого экрана: personas, inventory, features.
+       списка. Ключи этого экрана: personas, todos, inventory, features.
 
      SHELL-ТЕМА КАРКАСА (OPTIONAL): пока открыт экран персоны со скином,
      приложение перекрашивает и свой каркас — левый бар с разделами и
@@ -401,7 +403,7 @@
   .ctx-details summary .cnt { color: var(--accent); }
   .ctx-details[open] summary { margin-bottom: 4px; }
 
-  /* Вкладки досье (переключает JS из свободной зоны) */
+  /* Вкладки досье: в разметке этого экрана не используются */
   .dossier-tabs {
     display: flex;
     gap: 4px;
@@ -581,7 +583,7 @@
 <!-- ==== VPC-BRIDGE:START ====
      Служебный блок: при загрузке скина приложение ПЕРЕЗАПИШЕТ его
      своей эталонной версией. Не редактировать, не удалять маркеры. -->
-<script>/* bridge placeholder — will be replaced by the app */</script>
+<script>/* заглушка: приложение подставит сюда рабочий код моста */</script>
 <!-- ==== VPC-BRIDGE:END ==== -->
 
 </body>

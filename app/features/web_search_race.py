@@ -1,9 +1,8 @@
 """Веб-поиск гонкой: Google AI Mode (веб-чат в пуле H) и DuckDuckGo параллельно.
 
-Зачем. Прежний поиск (DDG + загрузка двух страниц) занимал 16-23 с (замер
-23.09) и тащил в промпт до 6000 символов сырых страниц. AI Mode отвечает
-собранной сводкой по выдаче Google за 4-6 с на тёплом браузере, но
-иногда отказывает (фильтр контента) или недоступен (карантин, пул не
+Зачем. AI Mode отвечает собранной сводкой по выдаче Google за 4-6 с на
+тёплом браузере — короче и быстрее, чем сниппеты DDG с загрузкой страниц,
+но иногда отказывает (фильтр контента) или недоступен (карантин, пул не
 поднялся).
 
 Политика — не «кто первый», а приоритет качества с дедлайном:
@@ -47,8 +46,8 @@ _ai_lock = threading.Lock()
 
 
 def _ai_llm(context: str):
-    """Инстанс AI Mode на канале search — один на контекст персоны (у него
-    своя вкладка и лок)."""
+    # Инстанс AI Mode на канале search — один на контекст персоны (у него
+    # своя вкладка и лок).
     with _ai_lock:
         llm = _ai_instances.get(context)
         if llm is None:
@@ -59,7 +58,7 @@ def _ai_llm(context: str):
 
 
 def ai_mode_available() -> bool:
-    """AI Mode не в карантине (антибот/лимит) — иначе ногу не запускаем."""
+    # AI Mode не в карантине (антибот/лимит) — иначе ногу не запускаем.
     try:
         from app.features.web_llm import site_quarantined
         return not site_quarantined("google")
@@ -68,7 +67,7 @@ def ai_mode_available() -> bool:
 
 
 def ai_result(answer: str) -> dict:
-    """Сводка AI Mode в формате результата поиска (format_web_results)."""
+    # Сводка AI Mode в формате результата поиска (format_web_results).
     text = answer.strip()
     if len(text) > AI_MAX_CHARS:
         text = text[:AI_MAX_CHARS].rsplit(" ", 1)[0] + " […]"
@@ -102,7 +101,7 @@ def race_search(query: str, *, context: str,
     ddg_f: Future = _pool.submit(_timed, "ddg", ddg_search, query)
 
     def _ok(f: Future):
-        """Результат ноги или None (ошибка/пусто) — только для завершённой."""
+        # Результат ноги или None (ошибка/пусто) — только для завершённой.
         try:
             r = f.result(timeout=0)
         except Exception:

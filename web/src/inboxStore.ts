@@ -29,7 +29,7 @@ let serverLastTs: Record<string, number> = {};
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 
-/** Подписка на хранилище: фоновые сообщения и непрочитанные по персонам */
+// Подписка на хранилище: фоновые сообщения и непрочитанные по персонам
 export function useInbox() {
   const [, force] = useReducer((x: number) => x + 1, 0);
   useEffect(() => {
@@ -41,31 +41,30 @@ export function useInbox() {
   return { messages, unread, generating, lastTs, serverLastTs, controlMode };
 }
 
-/** Обновить флаг режима управления (из ответа /api/chat или поллинга inbox):
- * в режиме управления фронт шлёт сообщения без «реалистичной» паузы-дебаунса */
+// Обновить флаг режима управления (из ответа /api/chat или поллинга inbox):
+// в этом режиме фронт шлёт сообщения без «реалистичной» паузы-дебаунса
 export function setControlMode(persona: string, value: boolean) {
   if ((controlMode[persona] ?? false) === value) return;
   controlMode = { ...controlMode, [persona]: value };
   emit();
 }
 
-/** Отметить свежую активность в чате персоны (сортировка списка по новизне) */
+// Отметить свежую активность в чате персоны (для сортировки списка персон по новизне)
 export function touchActivity(persona: string, ts: number) {
   if (!ts || (lastTs[persona] ?? 0) >= ts) return;
   lastTs = { ...lastTs, [persona]: ts };
   emit();
 }
 
-/** Гашение флага «печатает» при локальном завершении обмена: ответ уже у нас,
- * не ждём следующий тик поллера (иначе индикатор висит лишние секунды) */
+// Гасит флаг «печатает» сразу по завершении обмена, не дожидаясь тика поллера —
+// иначе индикатор висит лишние секунды
 export function setGenerating(persona: string, value: boolean) {
   if ((generating[persona] ?? false) === value) return;
   generating = { ...generating, [persona]: value };
   emit();
 }
 
-/** Текущий серверный last_ts персоны (для замыканий, где значение из
- * рендера уже устарело) */
+// Текущий серверный last_ts персоны — для замыканий, где значение из рендера уже устарело
 export function getServerLastTs(persona: string): number {
   return serverLastTs[persona] ?? 0;
 }
@@ -88,26 +87,26 @@ function armFastPoll() {
   fastTimer = setInterval(() => pollOne?.(id), FAST_POLL_MS);
 }
 
-/** Включить/выключить быстрый опрос персоны (null — выключить) */
+// Включить/выключить быстрый опрос персоны (null — выключить)
 export function setFastPoll(persona: string | null) {
   if (fastPersona === persona) return;
   fastPersona = persona;
   armFastPoll();
 }
 
-/** Опросить inbox персоны вне расписания (возврат фокуса, конец/обрыв стрима) */
+// Опросить inbox персоны вне расписания (возврат фокуса, конец/обрыв стрима)
 export function pollInboxNow(persona: string) {
   pollOne?.(persona);
 }
 
-/** Отметить персону прочитанной (её чат сейчас открыт) */
+// Отметить персону прочитанной (её чат сейчас открыт)
 export function markRead(persona: string) {
   if (!unread[persona]) return;
   unread = { ...unread, [persona]: 0 };
   emit();
 }
 
-/** Убрать сообщения, уже попавшие в STM (после перечитывания истории — иначе дубли) */
+// Убрать сообщения, уже попавшие в STM (после перечитывания истории — иначе дубли)
 export function pruneInbox(persona: string, inStm: Set<string>) {
   const list = messages[persona];
   if (!list?.length) return;
@@ -117,7 +116,7 @@ export function pruneInbox(persona: string, inStm: Set<string>) {
   emit();
 }
 
-/** Единый поллер inbox'ов всех персон. Вызывать один раз — в App. */
+// Единый поллер inbox'ов всех персон. Вызывать один раз — в App.
 export function useInboxPolling(apiOnline: boolean, personas: Persona[]) {
   const ids = personas.map((p) => p.id).join(',');
   useEffect(() => {

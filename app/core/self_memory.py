@@ -1,7 +1,5 @@
-"""
-Эпизодическая память бота — личный опыт и саморефлексия.
-Отдельный слой поверх LTM: бот накапливает собственный опыт.
-"""
+# Эпизодическая память бота — личный опыт и саморефлексия.
+# Отдельный слой поверх LTM: бот накапливает собственный опыт.
 
 import logging
 import threading
@@ -99,8 +97,8 @@ Write it in the language the entries themselves are written in.
 
 Life story:"""
 
-# Примитивный режим (intellect tier primitive, §3.1 плана уровней интеллекта):
-# эпизод — не нарратив, а вспышка сенсорного/инстинктивного впечатления.
+# Примитивный режим (уровень интеллекта primitive): эпизод — не нарратив,
+# а вспышка сенсорного/инстинктивного впечатления.
 _EPISODE_PROMPT_PRIMITIVE = """Ты — {persona_name}, примитивное существо (не человек по типу мышления).
 Ниже — фрагмент общения. Запиши ОДНО короткое впечатление-вспышку (1 предложение, до 10 слов):
 сенсорное или инстинктивное, БЕЗ причин, БЕЗ выводов, БЕЗ наблюдений о себе или собеседнике.
@@ -113,7 +111,7 @@ _EPISODE_PROMPT_PRIMITIVE = """Ты — {persona_name}, примитивное �
 
 Впечатление:"""
 
-# life_summary для primitive (§3.1): не «история жизни», а список повторяющихся
+# life_summary для primitive: не «история жизни», а список повторяющихся
 # паттернов — «любит блестящие предметы», «пугается громких звуков»
 _SUMMARY_PROMPT_PRIMITIVE = """Ты — {persona_name}, примитивное существо. Ниже — твои старые впечатления-вспышки.
 Выпиши 3-5 ПОВТОРЯЮЩИХСЯ паттернов существа (что любит, чего боится, что делает снова и снова).
@@ -128,9 +126,9 @@ _SUMMARY_PROMPT_PRIMITIVE = """Ты — {persona_name}, примитивное �
 
 
 def _episode_day_label(ts: str, now: Optional[datetime] = None) -> str:
-    """Метка дня эпизода для промпта: «today, 20:38» / «yesterday, 11:46» /
-    «2026-09-19». Таймстемп эпизода пишется datetime.now().isoformat() —
-    сравниваем по тем же часам. Битый/пустой таймстемп — без метки."""
+    # Метка дня эпизода для промпта: «today, 20:38» / «yesterday, 11:46» /
+    # «2026-09-19». Таймстемп эпизода пишется datetime.now().isoformat() —
+    # сравниваем по тем же часам. Битый/пустой таймстемп — без метки.
     try:
         dt = datetime.fromisoformat(ts)
     except (TypeError, ValueError):
@@ -144,20 +142,18 @@ def _episode_day_label(ts: str, now: Optional[datetime] = None) -> str:
     return f"{dt:%Y-%m-%d}"
 
 class BotSelfMemory:
-    """
-    Личная память бота — эпизоды и наблюдения.
-    Хранение: JSON-файлы (data/{context}/self_memory/)
-    """
+    # Личная память бота — эпизоды и наблюдения.
+    # Хранение: JSON-файлы (data/{context}/self_memory/)
 
     def __init__(self, context: str, persona_name: str, router: ModelRouter,
                  mode: str = "full"):
         """
-        mode (intellect tiers, §3.1):
-          full     — обычный режим (эпизоды + заметки + life_summary)
+        mode (уровни интеллекта):
+          full      — обычный режим (эпизоды + заметки + life_summary)
           primitive — вспышки-впечатления, без заметок (наблюдения о
                       пользователе — слишком рефлексивно), life_summary —
                       список паттернов
-          none     — сюда не доходим: модуль не создаётся в BotInstance
+          none      — сюда не доходим: модуль не создаётся в BotInstance
         """
         self.mode = mode if mode in ("full", "primitive") else "full"
         self.context = context
@@ -181,7 +177,6 @@ class BotSelfMemory:
         # по стёртому диалогу, а восстановленный из бэкапа — чужим саммари.
         self._epoch = 0
 
-        # Пути к файлам
         db = get_db_paths(context)
         self._base_dir = Path(db["stm"]).parent / "self_memory"
         self._base_dir.mkdir(parents=True, exist_ok=True)
@@ -190,7 +185,6 @@ class BotSelfMemory:
         self._notes_file = self._base_dir / "notes.json"
         self._state_file = self._base_dir / "state.json"
 
-        # Загружаем или создаём
         self._episodes = self._load_json(self._episodes_file, {
             "active": [],      # [{text, timestamp, msg_count}]
             "archive": [],     # [{text, timestamp, msg_count}]
@@ -214,9 +208,9 @@ class BotSelfMemory:
                    f"заметок: {len(self._notes['notes'])}")
 
     def _side_response(self, messages, **kw):
-        """Вызов LLM (дневник, саммари): ПОЛНАЯ цепочка основного роутера,
-        начиная с primary (основной провайдер НЕ исключается — дневник
-        пишет основная модель); веб-чат — отдельный side-чат."""
+        # Вызов LLM (дневник, саммари): ПОЛНАЯ цепочка основного роутера,
+        # начиная с primary (основной провайдер НЕ исключается — дневник
+        # пишет основная модель); веб-чат — отдельный side-чат.
         return self.router.get_response(
             messages, webchat_channel="side", **kw)
     # ─── Загрузка / сохранение ───────────────────────────
@@ -246,12 +240,10 @@ class BotSelfMemory:
             })
 
     def tick(self, messages: List[Dict], user_id: str, last_message: str):
-        """
-        Вызывается после каждого сообщения пользователя.
-        Решает, нужно ли писать эпизод или заметку. Сама запись — в фоне:
-        это LLM-вызовы side-цепочки (десятки секунд), а tick идёт по
-        request-path уже после генерации ответа — ждать его нельзя.
-        """
+        # Вызывается после каждого сообщения пользователя: решает, нужно ли
+        # писать эпизод или заметку. Сама запись идёт в фоне — это LLM-вызовы
+        # side-цепочки (десятки секунд), а tick идёт по request-path уже
+        # после генерации ответа, и ждать его нельзя.
         with self._lock:
             self._msg_since_episode += 1
             self._msg_since_last_note += 1
@@ -263,7 +255,7 @@ class BotSelfMemory:
 
             # Заметка — по маркерам и интервалу. Примитивный режим не пишет
             # заметок: наблюдения о паттернах пользователя — рефлексия не
-            # того уровня (§3.1)
+            # того уровня
             note_due = (self.mode == "full"
                         and self._msg_since_last_note >= MIN_NOTE_INTERVAL
                         and len(last_message) >= MIN_MSG_LEN_FOR_NOTE
@@ -311,9 +303,9 @@ class BotSelfMemory:
             parts.append(f"Story: {summary}")
             parts.append("")
 
-        # Активные эпизоды
-        # С пометкой дня: без неё модель не отличала вчерашний эпизод от
-        # сегодняшнего и на «что сегодня делал?» пересказывала что попало
+        # Активные эпизоды — с пометкой дня: без неё модель не отличает
+        # вчерашний эпизод от сегодняшнего и на «что сегодня делал?»
+        # пересказывает что попало
         if active:
             parts.append("Recent episodes (oldest first):")
             for text, ts in active:
@@ -338,9 +330,8 @@ class BotSelfMemory:
         Единственное место, где меняется состав эпизодов, и единственное, где
         держится лок — на время чистой работы с памятью и атомарной записи.
         Возвращает признак «архив переполнен»: суммаризация архива — это
-        LLM-вызов на десятки секунд, и делать её вызывающий обязан ВНЕ лока
-        (раньше add_external_episode вызывал _summarize_archive под локом, и
-        tick() следующего сообщения ждал сеть до 30 секунд).
+        LLM-вызов на десятки секунд, и делать её вызывающий обязан ВНЕ лока,
+        иначе tick() следующего сообщения ждёт сеть до 30 секунд.
 
         epoch — поколение состояния на момент запуска LLM; не совпало (пока
         шёл вызов, дневник очистили/восстановили) — эпизод не вливаем.
@@ -360,9 +351,9 @@ class BotSelfMemory:
         return archive_full
 
     def add_external_episode(self, text: str):
-        """Эпизод из офлайн-жизни персоны (план «живой» персоны, §6):
-        текст сгенерирован основной LLM в стиле персоны — просто кладём
-        в дневник с обычной архивацией/лимитами."""
+        # Эпизод из офлайн-жизни персоны: текст уже сгенерирован основной
+        # LLM в стиле персоны — просто кладём в дневник с обычной
+        # архивацией/лимитами.
         if not text or len(text.strip()) < 10:
             return
         archive_full = self._append_episode({
@@ -392,7 +383,7 @@ class BotSelfMemory:
     # ─── Бэкап/восстановление (корзина очистки диалога) ───
 
     def export_state(self) -> dict:
-        """Снапшот дневника для бэкапа перед очисткой."""
+        # Снапшот дневника для бэкапа перед очисткой.
         with self._lock:
             return {
                 "episodes": self._episodes,
@@ -402,7 +393,7 @@ class BotSelfMemory:
             }
 
     def import_state(self, state: dict):
-        """Восстановление дневника из снапшота (полная замена)."""
+        # Восстановление дневника из снапшота (полная замена).
         with self._lock:
             self._episodes = state.get("episodes") or {"active": [], "archive": [], "life_summary": ""}
             self._notes = state.get("notes") or {"notes": []}
@@ -417,13 +408,11 @@ class BotSelfMemory:
     # ─── Приватные методы ────────────────────────────────
 
     def _write_episode(self, messages: List[Dict]):
-        # Создание эпизода из последних сообщений (с прошлого эпизода).
+        # Создание эпизода из последних сообщений (не больше 2×EPISODE_EVERY).
         # Для primitive-режима — свой шаблон: вспышка-впечатление, не нарратив.
         try:
-            # Берём только сообщения с прошлого эпизода
             recent = messages[-(EPISODE_EVERY * 2):] if len(messages) > EPISODE_EVERY * 2 else messages
 
-            # Форматируем диалог
             dialog_lines = []
             for msg in recent:
                 role = msg.get("role", "user")
@@ -508,7 +497,6 @@ class BotSelfMemory:
     def _maybe_write_note(self, message: str, user_id: str, context_messages: List[Dict]):
         # Попытка записать наблюдение.
         try:
-            # Формируем контекст
             context_lines = []
             for msg in context_messages:
                 role = msg.get("role", "user")
@@ -602,8 +590,9 @@ class BotSelfMemory:
         """Влить результат суммаризации под локом — если состояние не устарело.
 
         Из архива выбрасываются РОВНО те записи, по которым считалось саммари
-        (первые taken): пока шёл LLM-вызов, в архив могли уехать новые эпизоды,
-        а прежний ``archive = []`` терял их, не включив ни в одно саммари.
+        (первые taken): пока шёл LLM-вызов, в архив могли добавиться новые
+        эпизоды, и полная очистка archive потеряла бы их, не включив ни в
+        одно саммари.
         """
         with self._lock:
             if epoch != self._epoch:
@@ -617,7 +606,7 @@ class BotSelfMemory:
 
     def _summarize_archive(self):
         # Суммаризирует архивные эпизоды в life_summary.
-        # primitive: не «история жизни», а список повторяющихся паттернов (§3.1).
+        # primitive: не «история жизни», а список повторяющихся паттернов.
         # Вызывается ВНЕ лока: внутри LLM-вызов на десятки секунд.
         with self._lock:
             if self._summarize_inflight:

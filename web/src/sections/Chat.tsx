@@ -85,7 +85,7 @@ export default function Chat() {
   // id пузыря, в который сейчас стримится ответ (ему markdown достраивается
   // на лету) — по id персоны
   const [streamMsgIdByPersona, setStreamMsgIdByPersona] = useState<Record<string, number | null>>({});
-  // Провайдер, реально ответивший последним (по id персоны): «ZAI · glm-5.2»
+  // Провайдер, реально ответивший последним (по id персоны): «провайдер · модель»
   const [answerer, setAnswerer] = useState<Record<string, string>>({});
   // Счётчик завершённых обменов: досье по нему перечитывает STM
   // (оно может быть открыто, пока бот ещё отвечает)
@@ -108,7 +108,7 @@ export default function Chat() {
   // за персоной основной (а не глобальный активный), иначе глобальный
   const providerLabel = (pid: string | null | undefined, model?: string | null) => {
     if (!pid) return null;
-    // webchat:qwen → QWEN · веб-чат (в списке API-провайдеров его нет)
+    // webchat:<сайт> → SITE · веб-чат (в списке API-провайдеров его нет)
     const name = apiProviders?.find((p) => p.id === pid)?.name
       ?? (pid.startsWith('webchat:') ? `${pid.split(':')[1].toUpperCase()} · ${t('settings.webchatBadge')}` : pid.toUpperCase());
     return model ? `${name} · ${model}` : name;
@@ -237,7 +237,7 @@ export default function Chat() {
 
   // Живое «печатает»: если ответ дольше ~5с, статус прерывается на «онлайн»
   // и возвращается — как у собеседника, который остановился и продолжил.
-  // Прерывание только в хедере (пузырь typing из ленты убран).
+  // Прерывание только в хедере (пузыря typing в ленте нет).
   const [typingBreak, setTypingBreak] = useState(false);
   useEffect(() => {
     if (!typing) {
@@ -510,7 +510,7 @@ export default function Chat() {
     (m) => !baseMessages.some((h) => h.text === m.text && (h.ts ?? 0) >= (m.ts ?? 0)),
   );
   // Лента смешанная (история STM + локальные реплики сессии + inbox):
-  // простое склеивание ставило пришедшую из inbox инициативу ПОСЛЕ свежего
+  // при простом склеивании инициатива из inbox встала бы ПОСЛЕ свежего
   // сообщения пользователя — сортируем по реальному времени (стабильная
   // сортировка: при равном/отсутствующем ts порядок источников сохраняется)
   const messages = [...baseMessages, ...sentVisible, ...inboxChat].sort(
@@ -661,8 +661,8 @@ export default function Chat() {
     }));
   };
 
-  // Отправка сразу, без дебаунс-очереди: задержка 1–5 с «для реализма»
-  // только раздражала, а склейкой серий реплик пользователь не пользуется.
+  // Отправка сразу, без дебаунс-очереди: каждое сообщение — отдельный обмен,
+  // серии реплик не склеиваются.
 
   const send = () => {
     const text = draft.trim();
@@ -674,7 +674,7 @@ export default function Chat() {
       setDraft('');
       return;
     }
-    // Цитата уходит на бэкенд как reply_context (как reply в Telegram);
+    // Цитата уходит на бэкенд как reply_context (как ответ на сообщение в мессенджерах);
     // картинка — base64 в поле image, в пузыре остаётся локальная копия.
     // pid фиксируем здесь: за время генерации пользователь может уйти
     // в чат другой персоны — флаги waiting/stream гасим именно отправленной
@@ -690,7 +690,7 @@ export default function Chat() {
     startGeneration(pid, personaName, text, quoted?.text, image);
   };
 
-  // Отправка одного (возможно склеенного) сообщения и стриминг ответа
+  // Отправка сообщения и стриминг ответа
   const startGeneration = (pid: string, personaName: string, text: string,
                            replyContext?: string, image?: string | null) => {
     localExchange.current[pid] = true; // своя генерация — перечитку истории пропустим
@@ -1264,8 +1264,8 @@ export default function Chat() {
                     </div>
                   )}
                   <div className="message-text">
-                    {/* Ответы бота — с markdown-разметкой, как в Telegram;
-                        у стримящегося пузыря висячие маркеры достраиваются на лету */}
+                    {/* Ответы бота — с markdown-разметкой; у стримящегося
+                        пузыря висячие маркеры достраиваются на лету */}
                     {m.role === 'bot' ? <MessageText text={m.text} streaming={m.id === streamMsgId} /> : m.text}
                   </div>
                   {m.image && <img className="message-image" src={m.image} alt={t('chat.attachment')} />}

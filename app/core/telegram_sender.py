@@ -1,6 +1,4 @@
-"""
-Реализация MessageSender для Telegram Bot API.
-"""
+# Реализация MessageSender для Telegram Bot API.
 
 import html
 import logging
@@ -42,7 +40,7 @@ _TELEGRAM_TEXT_LIMIT = 3500
 
 
 def _truncate_plain(text: str, limit: int) -> str:
-    """Обрезает текст по лимиту с многоточием (для plain-text деградации)."""
+    # Обрезает текст по лимиту с многоточием (для plain-text деградации).
     if len(text) <= limit:
         return text
     return text[: limit - 3].rstrip() + "..."
@@ -69,7 +67,7 @@ def _split_for_telegram(text: str, limit: int = _TELEGRAM_TEXT_LIMIT) -> List[st
 
 
 def markdown_to_telegram_html(text: str) -> str:
-    """Конвертирует Markdown персоны в HTML, понятный Telegram (parse_mode=HTML)."""
+    # Конвертирует Markdown персоны в HTML, понятный Telegram (parse_mode=HTML).
     if not text:
         return text
 
@@ -100,7 +98,7 @@ def markdown_to_telegram_html(text: str) -> str:
 
 
 class TelegramMessageSender:
-    """Отправка сообщений через Telegram Bot API."""
+    # Отправка сообщений через Telegram Bot API.
 
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
@@ -111,12 +109,12 @@ class TelegramMessageSender:
         self._last_sent_message_ids: Dict[str, int] = {}
 
     def get_last_sent_message_id(self, chat_id: str) -> Optional[int]:
-        """message_id последнего успешно отправленного сообщения в этот чат (или None)."""
+        # message_id последнего успешно отправленного сообщения в этот чат (или None).
         return self._last_sent_message_ids.get(str(chat_id))
 
     async def _send_one(self, chat_id: str, text: str, parse_mode: Optional[str],
                         topic_id: Optional[int]) -> None:
-        """Одна отправка bot.send_message + фиксация message_id последнего сообщения."""
+        # Одна отправка bot.send_message + фиксация message_id последнего сообщения.
         kwargs = {
             "chat_id": int(chat_id),
             "text": text,
@@ -125,7 +123,6 @@ class TelegramMessageSender:
         if topic_id:
             kwargs["message_thread_id"] = topic_id
         sent = await self._bot.send_message(**kwargs)
-        # Сохраняем message_id для вызывающего кода (опционально) — по чату.
         msg_id = getattr(sent, "message_id", None)
         if msg_id is not None:
             self._last_sent_message_ids[str(chat_id)] = msg_id
@@ -158,19 +155,15 @@ class TelegramMessageSender:
         parse_mode: Optional[str] = None,
     ) -> bool:
         """
-        Отправка сообщений через Telegram Bot API.
+        Отправка сообщения через Telegram Bot API.
 
-        Параметр parse_mode позволяет указать форматирование:
-        - None — обычный текст (экранирование HTML)
-        - "HTML" — HTML-форматирование
-        - "Markdown" — Markdown-форматирование
-
-        Когда python-telegram-bot обновится до поддержки Bot API 10.1,
-        можно будет использовать send_rich_message() с InputRichMessage.
+        Без явного parse_mode текст считается Markdown'ом персоны и
+        конвертируется в HTML (см. markdown_to_telegram_html). Явный
+        parse_mode отправляется как есть, без конвертации и разбиения —
+        контроль длины остаётся на вызывающем коде.
 
         Текст, не влезающий в лимит Telegram (4096 после конвертации в HTML),
-        разбивается на части и отправляется несколькими сообщениями — раньше такой
-        текст Telegram просто отклонял, и он молча терялся.
+        разбивается на части и отправляется несколькими сообщениями.
 
         После успешной отправки сохраняет message_id последней части
         (доступен через get_last_sent_message_id(chat_id)).
@@ -215,7 +208,7 @@ class TelegramMessageSender:
         topic_id: Optional[int] = None,
         parse_mode: Optional[str] = None,
     ) -> bool:
-        """Отправляет файл (документ) в чат через Telegram Bot API."""
+        # Отправляет файл (документ) в чат через Telegram Bot API.
         try:
             kwargs = {"chat_id": int(chat_id)}
             if topic_id:
@@ -223,7 +216,7 @@ class TelegramMessageSender:
             if caption:
                 # Как и в send_message: без явного parse_mode считаем caption Markdown'ом
                 # персоны и конвертируем в HTML — иначе разметка в подписи к файлу
-                # (что и было в баг-репорте) уходит буквальными звёздочками.
+                # уходит буквальными звёздочками.
                 if parse_mode is None:
                     html_caption = markdown_to_telegram_html(caption)
                     if len(html_caption) <= _CAPTION_LIMIT:

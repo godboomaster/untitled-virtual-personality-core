@@ -1,9 +1,8 @@
 """Определение языка сообщений пользователя для правила языка ответа.
 
 Проект двуязычный (русский/английский), поэтому детект скриптовый:
-кириллица → 'ru', латиница → 'en'. Это тот же подход, что раньше
-жил локально в rhythm_manager._lang и reminder_manager._reminder_lang,
-теперь в одном месте для всех.
+кириллица → 'ru', латиница → 'en'. Общая точка для всех вызывающих мест
+(включая rhythm_manager._lang и reminder_manager._reminder_lang).
 """
 
 import re
@@ -21,7 +20,7 @@ _LANGUAGE_NAMES_RU = {"ru": "русский", "en": "английский"}
 
 
 def detect_language(text: str) -> Optional[str]:
-    """Язык одного текста: 'ru' / 'en' / None (букв нет или синтетика)."""
+    # Язык одного текста: 'ru' / 'en' / None (букв нет или синтетика).
     if not text:
         return None
     if text.strip().lower().startswith(_SYNTHETIC_PREFIXES):
@@ -65,7 +64,7 @@ def language_name(code: Optional[str]) -> Optional[str]:
 
 
 def language_name_ru(code: Optional[str]) -> Optional[str]:
-    """Имя языка по-русски — для промптов, написанных на русском."""
+    # Имя языка по-русски — для промптов, написанных на русском.
     return _LANGUAGE_NAMES_RU.get(code or "")
 
 

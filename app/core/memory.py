@@ -38,20 +38,20 @@ MAX_COUNTER_USERS = 500
 
 # Пороги близости для точечных операций над фактами. Это cosine-distance
 # (0 = идентично, 1 = ортогонально, 2 = противоположно) — метрика коллекций
-# задана явно в app/core/chroma_space.py (VECTOR_SPACE); при дефолтной для
-# Chroma l2 на ненормированных эмбеддингах эти пороги не проходил никто.
+# задана явно в app/core/chroma_space.py (VECTOR_SPACE); с дефолтной для
+# Chroma l2 на ненормированных эмбеддингах эти пороги не работают.
 # «забудь про X»: перефразировка факта даёт d≈0.35, посторонний запрос к
 # неродственному факту — d≈0.9, поэтому 1.0 (почти вся шкала) удалял бы
 # первый попавшийся факт по любому запросу; 0.7 — между этими случаями
 FORGET_MAX_DISTANCE = 0.7
 UPDATE_FACT_MAX_DISTANCE = 0.3   # правка факта: промах затирает чужой факт
 
-# Источник миллисекундных id записей STM/LTM. id вида stm_{chat}_{ms} и
-# {user}_fact_{ms} повторялись, если две записи попадали в одну миллисекунду
-# (ответ, разбитый на части; сохранение факта рядом с консолидацией), а
-# Chroma молча игнорирует add с уже существующим id — вторая запись пропадала
-# без ошибки. Счётчик монотонный: не меньше текущего времени и строго больше
-# прошлого значения — формат id и сортировка по времени те же.
+# Источник миллисекундных id записей STM/LTM (stm_{chat}_{ms},
+# {user}_fact_{ms}). Две записи в одну миллисекунду (ответ, разбитый на
+# части; сохранение факта рядом с консолидацией) получили бы один id, а
+# Chroma молча игнорирует add с уже существующим id — вторая запись пропала
+# бы без ошибки. Счётчик монотонный: не меньше текущего времени и строго
+# больше прошлого значения, поэтому id по-прежнему сортируются по времени.
 _ID_MS_LOCK = threading.Lock()
 _last_id_ms = 0
 
@@ -69,7 +69,7 @@ SUMMARY_CONFLICT = -2
 
 
 def _first_sentence(text: str, max_len: int = 80) -> str:
-    """Обрезать текст до первого предложения. Если длиннее max_len — добавить ..."""
+    # Обрезать текст до первого предложения; если длиннее max_len — добавить "..."
     if not text:
         return ""
     # Конец предложения: . ! ? или перенос строки
@@ -167,7 +167,7 @@ class ShortTermMemory:
         return entry
 
     def _load_chat_from_db(self, chat_id: str) -> deque:
-        """История одного чата из ChromaDB (последние max_messages)."""
+        # История одного чата из ChromaDB (последние max_messages)
         buf = deque(maxlen=self.max_messages)
         if not self._db_backed:
             return buf
@@ -274,10 +274,10 @@ class ShortTermMemory:
     def add_message(self, role: str, content: str, user_id: str = "default",
                     chat_id: str = None, user_name: str = None):
         """
-        Добавление сообщения в буфер чата и сохранить в базу.
+        Добавляет сообщение в буфер чата и сохраняет в базу.
 
         Args:
-            user_id: Реальный ID отправителя (Telegram user_id).
+            user_id: Реальный ID отправителя.
             chat_id: ID чата для фильтрации. Если None — используется user_id.
             user_name: Имя пользователя для отображения в истории.
         """
@@ -299,11 +299,10 @@ class ShortTermMemory:
         сортировки персон по свежести переписки; метка производная —
         перезаписывается при каждом новом сообщении.
 
-        Read-modify-write под self._lock (уже RLock — есть повторный вход
+        Read-modify-write под self._lock (RLock — есть повторный вход
         через другие locked-методы MemoryManager) и атомарная запись: без
-        лока конкурентные add_message из разных чатов (обычные потоки
-        обработки сообщений) чередовали чтение и запись и теряли чужие
-        метки; голый except molчал даже о неожиданных ошибках диска."""
+        лока конкурентные add_message из разных чатов чередовали бы чтение
+        и запись и теряли чужие метки. Ошибки диска логируются."""
         try:
             path = Path(f"data/{self.context}/last_message.json")
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -384,11 +383,9 @@ class ShortTermMemory:
             relevant = []
             seen = set()
             for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-                # Пропускаем дубликаты с хронологией
-                if doc in recent_contents:
+                if doc in recent_contents:  # уже есть в хронологии
                     continue
-                # Пропускаем дубликаты внутри результатов
-                if doc in seen:
+                if doc in seen:  # дубликат внутри результатов поиска
                     continue
                 seen.add(doc)
 
@@ -422,12 +419,10 @@ class ShortTermMemory:
         result = []
         for m in messages:
             content = m.get("content", "")
-            # Берём только первое предложение
             first_sentence = _first_sentence(content)
-            # Формат метки — одно определение на проект (persona._format_msg_ts:
-            # время пользователя по TIMEZONE, год только если не текущий);
-            # здесь была вторая копия того же кода на системном поясе машины.
-            # Импорт локальный — persona грузится не ради одной метки.
+            # Формат метки — общее определение с persona._format_msg_ts
+            # (время пользователя по TIMEZONE, год только если не текущий).
+            # Импорт локальный — persona не нужна ради одной метки.
             from app.core.persona import _format_msg_ts
             time_str = _format_msg_ts(m.get("timestamp"))
             result.append({
@@ -459,8 +454,7 @@ class ShortTermMemory:
             if not to_remove:
                 return 0
 
-            # Ищем эти записи в ChromaDB по содержимому + chat_id
-            # (chroma_id = stm_{chat_id}_{timestamp}, но мы храним timestamp в metadata)
+            # Ищем эти записи в ChromaDB по тексту в пределах чата
             contents_to_remove = {m["content"] for m in to_remove}
 
             try:
@@ -523,8 +517,9 @@ class ShortTermMemory:
 
         Для отката фонового сообщения, которое не удалось доставить
         (app/core/turn_gate.py): delete_message по индексу снапшота при
-        полном deque (maxlen) или конкурентной записи удалял чужую реплику,
-        а поиск по тексту — старую запись с тем же шаблонным текстом."""
+        полном deque (maxlen) или конкурентной записи удалил бы чужую
+        реплику, а поиск по тексту — старую запись с тем же шаблонным
+        текстом."""
         with self._lock:
             buf = self._get_buffer(chat_id)
             for i in range(len(buf) - 1, -1, -1):
@@ -572,7 +567,6 @@ class ShortTermMemory:
                 if ids_to_delete:
                     self.collection.delete(ids=ids_to_delete)
                     print(f"  [STM] Удалено {len(ids_to_delete)} сообщений чата {chat_id}")
-            # Удаляем буфер чата
             with self._lock:
                 self.buffers.pop(chat_id, None)
         else:
@@ -600,11 +594,11 @@ class LongTermMemory:
     _executor = None
     _executor_lock = threading.Lock()
     
-    # Синглтон с экзекьтором (менеджер рабочих потоков) для контролирования потоков
-    # Благодаря синглтону оба бота пользуются одним пулом из 3 потоков
+    # Пул из 3 потоков на уровне класса — общий для всех экземпляров
+    # LongTermMemory в процессе (все персоны делят его)
     @classmethod
     def _get_executor(cls):
-        # Проверка на созданый экзекьютор + замок
+        # Двойная проверка под локом (double-checked locking)
         if cls._executor is None:
             with cls._executor_lock:
                 if cls._executor is None:
@@ -673,7 +667,7 @@ class LongTermMemory:
         # clear_all() — общую. Фоновая задача запоминает эпоху до LLM-вызова
         # и при записи сверяет: сменилась — результат относится к стёртой
         # памяти и отбрасывается (иначе экстракция/консолидация, начатые до
-        # очистки, воскрешали факты после неё). Под _facts_lock.
+        # очистки, воскресили бы факты после неё). Под _facts_lock.
         self._epochs: Dict[str, int] = {}
         self._epoch_all = 0
         # Очередь фоновых задач на пользователя (экстракция, консолидация):
@@ -688,14 +682,14 @@ class LongTermMemory:
 
     def _exclude(self):
         """Кого пропускать в цепочке: текущий основной провайдер основного
-        роутера. Динамически — основной могут сменить на живую через досье,
+        роутера. Динамически — основной могут сменить на лету через досье,
         а self.exclude_provider зафиксирован при старте."""
         if self.main_router is not None:
             return self.main_router.active_provider
         return self.exclude_provider
 
     def _epoch(self, user_id) -> Tuple[int, int]:
-        """Текущая эпоха очистки фактов пользователя (см. _epochs)."""
+        # Текущая эпоха очистки фактов пользователя (см. _epochs)
         with self._facts_lock:
             return self._epoch_all, self._epochs.get(str(user_id), 0)
 
@@ -705,11 +699,11 @@ class LongTermMemory:
     def _submit_serial(self, user_id, fn, on_cancel=None) -> bool:
         """Фоновая задача пользователя — строго после предыдущих его задач.
 
-        add_message ставит экстракцию и консолидацию одним вызовом; в общем
-        пуле они шли параллельно: консолидация снимала снимок фактов сразу,
-        экстракция за время её LLM-вызова делала UPDATE/слияние — снятый
-        факт исчезал, и консолидация отменялась (каждый раз заново). По
-        очереди консолидация видит факты уже после экстракции.
+        add_message ставит экстракцию и консолидацию одним вызовом. Если
+        запустить их параллельно, экстракция за время LLM-вызова консолидации
+        сделает UPDATE/слияние снятого ею факта, и консолидация отменится
+        (и так каждый раз). По очереди консолидация видит факты уже после
+        экстракции.
 
         on_cancel — если задача так и не выполнится (пул остановлен).
         False — пул не принял задачу сразу (on_cancel уже вызван).
@@ -780,11 +774,11 @@ class LongTermMemory:
             logger.warning(f"[LTM] Не удалось сохранить режимы приватности: {e}")
 
     def get_privacy_mode(self, user_id: str) -> str:
-        """Режим приватности пользователя: 'smart' (по умолчанию) или 'strict'."""
+        # Режим приватности пользователя: "smart" (по умолчанию) или "strict"
         return self._privacy_modes.get(str(user_id), "smart")
 
     def set_privacy_mode(self, user_id: str, mode: str) -> str:
-        """Устанавливает режим приватности. Возвращает фактически установленный."""
+        # Устанавливает режим приватности, возвращает фактически установленный
         if mode not in ("smart", "strict"):
             mode = "smart"
         self._privacy_modes[str(user_id)] = mode
@@ -815,7 +809,6 @@ class LongTermMemory:
                             origin_chat: str = None, user_name: str = None):
         """
         Запускает извлечение фактов в фоновом потоке.
-        Не блокирует основной поток.
         origin_chat — чат, где факт был рассказан (для скоупа приватности).
         """
         # Эпоха — в момент постановки, а не старта задачи: задача может ждать
@@ -1046,15 +1039,13 @@ class LongTermMemory:
                     print(f"  [LTM] UPDATE {cat_key}: '{old_val}' → '{new_val}'")
 
                 elif cat_key in APPEND_CATEGORIES:
-                    # Умное слияние (LLM) посчитано до лока; старое значение
-                    # успело смениться — плана нет, сливаем без LLM
+                    # Умное слияние (LLM) посчитано до лока в _plan_merges
                     key = (cat_key, old_val, new_val)
                     merged = merges.get(key)
                     if not merged:
                         # Плана нет (старое значение сменилось) или LLM не
-                        # ответил — объединение без LLM. Раньше при неудаче
-                        # старый факт удалялся и сохранялось только новое
-                        # значение: накопленное молча терялось
+                        # ответил — сливаем вручную без LLM, чтобы не терять
+                        # уже накопленное значение
                         merged = self._merge_append_fact(cat_key, old_val, new_val,
                                                          allow_llm=False)
                     self.collection.delete(ids=[old_id])
@@ -1062,7 +1053,7 @@ class LongTermMemory:
                         fact_stripped = f"{cat_key}: {merged}"
                     print(f"  [LTM] MERGE {cat_key}: '{old_val}' + '{new_val}' → '{merged}'")
                 else:
-                    # Категория без явного типа — сохраняем обе (старый подход)
+                    # Категория без явного типа — обе записи сохраняются как есть
                     pass
 
             # 3. Сохраняем факт (новый или обновлённый/слитый)
@@ -1081,9 +1072,9 @@ class LongTermMemory:
             )
             existing_docs.add(fact_stripped.lower())
             # Маппинг категории — на только что записанный факт (реальный id
-            # и итоговое значение): второй факт той же категории в этом же
-            # вызове заменит/сольёт его. Раньше здесь был id "_pending_" —
-            # delete по нему ничего не удалял, и в базе оставались оба
+            # и итоговое значение): id должен быть настоящим, иначе второй
+            # факт той же категории в этом же вызове не найдёт что удалить
+            # при замене/слиянии, и в базе останутся оба
             if cat_key:
                 existing_by_cat[cat_key] = (fact_id, fact_stripped.partition(":")[2].strip())
             added += 1
@@ -1162,13 +1153,14 @@ class LongTermMemory:
         LLM получает все факты, чистит противоречия и дубликаты,
         затем старые факты заменяются чистыми.
 
-        Раньше весь метод шёл под _facts_lock вместе с LLM-вызовом (до 150 с
-        у веб-чата), а замена была «clear + поштучный add» — читатель между
-        ними видел неполный набор (пропадали правила Rule из промпта). Теперь:
-        снимок фактов — под локом, LLM и эмбеддинги — вне лока, замена —
-        одним шагом под локом, и только если за время LLM-вызова память не
-        очищали (эпоха) и снятые факты не удаляли/не меняли. Факты, которые
-        экстракция добавила за это время, остаются рядом с чистыми.
+        LLM-вызов (до 150 с у веб-чата) и эмбеддинги считаются вне
+        _facts_lock, чтобы не держать читателей фактов на время ответа
+        модели. Снимок фактов берётся под локом, замена — тоже одним шагом
+        под локом (а не clear + поштучный add), чтобы читатель не увидел
+        промежуточное неполное состояние. Замена применяется только если за
+        время LLM-вызова память не очищали (эпоха) и снятые факты не
+        удаляли/не меняли. Факты, которые экстракция добавила за это время,
+        остаются рядом с чистыми.
 
         Returns: количество фактов после консолидации, -1 при ошибке/очистке,
         SUMMARY_CONFLICT — отменена из-за правки фактов (стоит повторить).
@@ -1306,7 +1298,7 @@ class LongTermMemory:
             return -1
 
     def search(self, query: str, user_id: str = "default", limit: int = 5, chat_id: str = None) -> List[str]:
-        """Семантический поиск фактов с учётом приватности (chat_id — текущий чат)."""
+        # Семантический поиск фактов с учётом приватности (chat_id — текущий чат)
         with self._facts_lock:
             if self.collection.count() == 0:
                 return []
@@ -1339,7 +1331,7 @@ class LongTermMemory:
             return filtered
 
     def get_all_facts(self, user_id: str = "default", chat_id: str = None) -> List[str]:
-        """Все факты пользователя. Если задан chat_id — только видимые в этом чате."""
+        # Все факты пользователя. Если задан chat_id — только видимые в этом чате
         with self._facts_lock:
             if self.collection.count() == 0:
                 return []
@@ -1354,7 +1346,7 @@ class LongTermMemory:
             return []
     
     def get_facts_by_category(self, user_id: str, category: str, chat_id: str = None) -> List[str]:
-        """Факты пользователя одной категории (с учётом приватности)."""
+        # Факты пользователя одной категории (с учётом приватности)
         with self._facts_lock:
             if self.collection.count() == 0:
                 return []
@@ -1374,7 +1366,7 @@ class LongTermMemory:
             return out
 
     def get_all_facts_with_meta(self, user_id: str = "default") -> List[Dict]:
-        """Все факты пользователя с метаданными (для экспорта). Без фильтра приватности."""
+        # Все факты пользователя с метаданными (для экспорта), без фильтра приватности
         with self._facts_lock:
             if self.collection.count() == 0:
                 return []
@@ -1605,8 +1597,8 @@ class MemoryManager:
 
     # Пакетная LTM-экстракция: каждые N сообщений диалога (user+assistant) —
     # один вызов на пачку новых N (обычный режим — 15, light — 6, под размер
-    # контекста ответа). Раньше экстракция шла на КАЖДОЕ сообщение — при
-    # LLM через веб-чат это съедало дневную квоту и спамило служебный чат.
+    # контекста ответа), а не на каждое сообщение — иначе LLM через веб-чат
+    # съедала бы дневную квоту и спамила служебный чат.
     EXTRACT_EVERY = 15
     EXTRACT_EVERY_LIGHT = 6
 
@@ -1616,8 +1608,8 @@ class MemoryManager:
         """
         Добавить сообщение в память.
         Факты для LTM извлекаются в фоновом потоке пакетами: каждые
-        EXTRACT_EVERY (light — EXTRACT_EVERY_LIGHT) сообщений пользователя —
-        один вызов по последним N сообщениям этого чата.
+        EXTRACT_EVERY (light — EXTRACT_EVERY_LIGHT) сообщений диалога —
+        один вызов по сообщениям, накопленным с прошлой экстракции.
 
         Args:
             chat_id: ID чата для STM. Если None — STM использует user_id.
@@ -1643,7 +1635,7 @@ class MemoryManager:
                 extract_due = role == "user" and count >= every
                 # Веб-вкладка ЭТОГО чата активна — экстракция ждёт: счётчик не
                 # сбрасываем, батч доберётся при сообщении в неактивности
-                # (чат другой персоны или Telegram-чат ничего не тормозит)
+                # (чат другой персоны или чат другой платформы ничего не тормозит)
                 if extract_due and web_presence.is_active(
                         self.context, chat_id or user_id):
                     extract_due = False
@@ -1669,8 +1661,8 @@ class MemoryManager:
             with self._counter_lock:
                 self._user_msg_counters[user_id] = self._user_msg_counters.get(user_id, 0) + 1
                 due = self._user_msg_counters[user_id] >= SUMMARY_SETTINGS["trigger_every"]
-            # Активная веб-вкладка ЭТОГО чата — консолидация ждёт, как при
-            # занятом lock: счётчик не сбрасываем, повторим на следующем
+            # Активная веб-вкладка ЭТОГО чата — консолидация ждёт:
+            # счётчик не сбрасываем, повторим на следующем
             # сообщении. Консолидация идёт по user_id, но гейт — по чату, из
             # которого пришло сообщение: смысл гейта не «персона занята», а
             # «не тратим модель, пока человек ждёт ответа в этом чате»
@@ -1683,11 +1675,10 @@ class MemoryManager:
     def _run_summarize_async(self, user_id: str) -> bool:
         # Запускает консолидацию LTM в фоне, с защитой от параллельного запуска.
         # Возвращает True, если задача поставлена в пул.
-        # Защита — флаг под коротким локом, а не лок на всё время задачи:
-        # раньше RLock захватывался в потоке запроса, а release() звался в
-        # потоке пула — RLock принадлежит захватившему потоку, release бросал
-        # RuntimeError, лок навсегда оставался занятым, и после первой
-        # консолидации все следующие пропускались. Флаг снимает любой поток.
+        # Защита — флаг под коротким локом, а не RLock на всё время задачи:
+        # RLock принадлежит захватившему потоку, а release() звался бы из
+        # потока пула — это бросает RuntimeError и оставляет лок занятым
+        # навсегда, блокируя все следующие консолидации. Флаг снимает любой поток.
         with self._counter_lock:
             if self._summary_running:
                 print("  [LTM SUM] Пропуск — консолидация уже запущена")
@@ -1722,7 +1713,7 @@ class MemoryManager:
                 _finish()
 
         # В очередь пользователя — после экстракции, поставленной этим же
-        # add_message (иначе её UPDATE/слияние отменяли консолидацию)
+        # add_message (иначе её UPDATE/слияние отменили бы консолидацию)
         if not self.ltm._submit_serial(user_id, _do, on_cancel=_cancelled):
             print(f"  [LTM SUM] Не удалось запустить консолидацию для {user_id}")
             return False

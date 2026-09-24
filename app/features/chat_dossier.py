@@ -24,7 +24,6 @@ from app.core.local_router import get_local_router
 
 logger = logging.getLogger(__name__)
 
-# Промпт для LLM-анализа досье
 _DOSSIER_ANALYSIS_PROMPT = """Analyze the user's messages. Answer STRICTLY in JSON format:
 {{
   "interests": ["concrete interest"],
@@ -51,7 +50,7 @@ JSON:"""
 
 @dataclass
 class UserFacts:
-    """Факты конкретного пользователя в чате."""
+    # Факты конкретного пользователя в чате.
     user_id: str
     facts: List[str] = field(default_factory=list)  # Факты которые пользователь сказал о себе
     last_updated: float = 0.0
@@ -59,8 +58,8 @@ class UserFacts:
 
 @dataclass
 class AttributedItem:
-    """Интерес или топик с указанием автора."""
-    value: str        # Само значение ("python", "resident evil")
+    # Интерес или топик с указанием автора.
+    value: str        # Само значение ("python", "настольные игры")
     user_id: str      # Кто упомянул
     ts: float = 0.0   # Когда добавлено (unix timestamp)
 
@@ -77,13 +76,13 @@ class AttributedItem:
 
     @staticmethod
     def from_legacy(value: str) -> "AttributedItem":
-        """Миграция из старого формата (просто строка)."""
+        # Миграция из старого формата (просто строка).
         return AttributedItem(value=value, user_id="unknown", ts=0.0)
 
 
 @dataclass
 class ChatProfile:
-    """Профиль чата — интересы, предпочтения, факты."""
+    # Профиль чата — интересы, предпочтения, факты.
     chat_id: str
     interests: List[AttributedItem] = field(default_factory=list)  # Топ интересов с авторами
     topics: List[AttributedItem] = field(default_factory=list)      # Темы с авторами
@@ -101,7 +100,6 @@ class ChatDossier:
     предоставляет контекст для proactive-инициатив.
     """
 
-    # Стоп-слова для фильтрации
     STOP_WORDS = {
         'этот', 'этого', 'этой', 'этом', 'твой', 'твоя', 'твое', 'твои',
         'мой', 'моя', 'мое', 'мои', 'свой', 'своя', 'свое', 'свои',
@@ -216,12 +214,12 @@ class ChatDossier:
         self._local_router = get_local_router()
         # Уже обработанные сообщения (chat_id → маркеры): analyze_chat идёт по
         # последним 50 сообщениям каждые 5 входящих — без дедупликации старые
-        # сообщения экстрактились заново на каждом цикле (спам LLM-вызовами).
-        # BoundedCache, а не dict (аудит, задача №7 хвост): в отличие от
-        # self._profiles это НЕ персистентные данные — не сохраняются
-        # в _save()/_load(), только для дедупликации в рамках жизни процесса,
-        # поэтому вечный рост на каждый новый chat_id нечем оправдать, а
-        # вытеснение безобидно (сообщение просто переэкстрактится заново).
+        # сообщения экстрактились бы заново на каждом цикле (спам LLM-вызовами).
+        # BoundedCache, а не dict: в отличие от self._profiles это НЕ
+        # персистентные данные — не сохраняются в _save()/_load(), только для
+        # дедупликации в рамках жизни процесса, поэтому вечный рост на каждый
+        # новый chat_id нечем оправдать, а вытеснение безобидно (сообщение
+        # просто переэкстрактится заново).
         self._facts_seen: BoundedCache = BoundedCache(max_entries=2000)
         # Водяной знак: бэклог STM (сообщения ДО старта процесса) в экстракцию
         # не берём вообще — факты нужны только из свежих сообщений
@@ -232,7 +230,7 @@ class ChatDossier:
     def _side_response(self, messages, **kw):
         """Побочный вызов LLM (анализ досье): fallback-цепочка основного
         роутера МИНУС основной провайдер (веб-чат — отдельный side-чат);
-        без основного роутера — локальная модель, как раньше."""
+        без основного роутера — локальная модель."""
         if self._router is not None:
             return self._router.get_response(
                 messages, exclude_provider=self._router.active_provider,
@@ -367,7 +365,7 @@ class ChatDossier:
                 self._profiles = {}
 
     def _save(self):
-        """Сохраняет досье на диск (атомарно, под блокировкой)."""
+        # Сохраняет досье на диск (атомарно, под блокировкой).
         with self._lock:
             try:
                 data = {}
@@ -378,17 +376,15 @@ class ChatDossier:
                 logger.warning(f"[Dossier] Не удалось сохранить: {e}")
 
     def _extract_words(self, text: str) -> List[str]:
-        """Извлекает значимые слова из текста."""
+        # Извлекает значимые слова из текста.
         if not text:
             return []
-        # Слова 4+ символов
         words = re.findall(r'[а-яА-Яa-zA-Z]{4,}', text.lower())
-        # Фильтруем стоп-слова
         filtered = [w for w in words if w not in self.STOP_WORDS]
         return filtered
 
     def _extract_tech_keywords(self, text: str) -> List[str]:
-        """Извлекает IT/технические ключевые слова."""
+        # Извлекает IT/технические ключевые слова.
         if not text:
             return []
         words = re.findall(r'[a-zA-Z+#/]{2,}', text.lower())
@@ -399,18 +395,19 @@ class ChatDossier:
     def analyze_chat(self, chat_id: str, messages: List[dict]):
         """Потокобезопасная обёртка — вызывается из рабочих потоков конкурентно.
 
-        Раньше весь анализ шёл под self._lock, включая LLM-вызовы side-цепочки
-        (через веб-чат — минуты в общей очереди фоновых вызовов). Лок один на
-        персону, и на всё это время вставали ответ пользователю
-        (get_profile_snapshot при сборке контекста) и RhythmManager._note_dossier
-        → record_event — корутина общего фонового loop, т.е. ритм, напоминания
-        и инициативы ВСЕХ персон процесса. Теперь под локом только снимок входа
-        и слияние результата (см. _analyze_chat_impl), LLM — без лока.
+        Лок держится только вокруг снимка входа и слияния результата (см.
+        _analyze_chat_impl); LLM-вызовы идут без лока — лок общий на персону,
+        и на время side-чата (через веб-чат — минуты в общей очереди фоновых
+        вызовов) под ним встали бы ответ пользователю (get_profile_snapshot
+        при сборке контекста) и RhythmManager._note_dossier → record_event —
+        корутина общего фонового loop, т.е. ритм, напоминания и инициативы
+        ВСЕХ персон процесса.
 
-        Раз лок больше не сериализует анализы, два анализа одного чата
-        сериализует флаг _analyzing: второй дублировал бы LLM-вызовы и сливал
-        бы те же интересы/факты поверх первого. Второй — пропуск, не ожидание:
-        его сообщения — те же последние N из STM, первый их уже разбирает."""
+        Флаг _analyzing сериализует параллельные анализы одного чата: раз
+        лок их не сериализует, второй вызов дублировал бы LLM-вызовы и
+        сливал бы те же интересы/факты поверх первого. Второй — пропуск, не
+        ожидание: его сообщения — те же последние N из STM, первый их уже
+        разбирает."""
         with self._lock:
             if chat_id in self._analyzing:
                 logger.info(f"[Dossier] Анализ чата {chat_id} уже идёт — пропуск")
@@ -484,8 +481,8 @@ class ChatDossier:
             user_msg_count = len([m for m in messages if m.get("role") == "user"])
 
         # ── Фаза 2: LLM (БЕЗ лока) ──
-        # Пакетная экстракция фактов: ОДИН вызов на все новые сообщения
-        # отправителя за цикл (раньше — вызов на каждое сообщение)
+        # Пакетная экстракция фактов: один LLM-вызов на все новые сообщения
+        # отправителя за цикл, а не по вызову на сообщение
         extracted: Dict[str, List[str]] = {}
         for sender_id, contents in new_facts.items():
             facts = self._extract_user_facts(chat_id, sender_id, contents)
@@ -499,13 +496,12 @@ class ChatDossier:
 
         # ── Фаза 3: слияние в актуальный профиль (под локом) ──
         with self._lock:
-            # Профиль за время LLM вытерли (memory_wipe: pop из _profiles) или
-            # заменили другим объектом (restore / вытирание + новый
-            # record_event) — результат относится к досье, которого больше
-            # нет. Искать/создавать профиль заново по chat_id (как делал
-            # прежний _extract_user_facts) — воскрешать вытертые данные или
-            # подмешивать их в новое досье; сверка по идентичности объекта из
-            # фазы 1 — это и есть «поколение» досье чата.
+            # Профиль мог быть вытерт (memory_wipe: pop из _profiles) или
+            # заменён другим объектом (restore / новый record_event) за время
+            # LLM-вызовов — тогда результат относится к досье, которого
+            # больше нет. Искать/создавать профиль заново по chat_id
+            # воскресило бы вытертые данные или подмешало бы их в новое
+            # досье, поэтому сверяем по идентичности объекта из фазы 1.
             if self._profiles.get(chat_id) is not profile:
                 logger.info(f"[Dossier] Досье чата {chat_id} очищено во время "
                             f"анализа — результат отброшен")
@@ -532,9 +528,10 @@ class ChatDossier:
                             value=interest, user_id=sender_id, ts=time.time()
                         ))
                         existing_interests.add(interest)
-                # Вытесняем unknown когда есть реальные user_id. Свежие
-                # вытесняют старые: кап с головы ([:20]) молча отбрасывал
-                # НОВЫЕ интересы — при полном списке ничего не добавлялось
+                # Вытесняем unknown, когда есть реальные user_id. Кап с
+                # головы ([:20]) отбрасывал бы новые интересы при уже полном
+                # списке — поэтому known ограничиваем с хвоста ([-20:]),
+                # свежие вытесняют старые.
                 known = [i for i in profile.interests
                          if i.user_id not in ("unknown", "")][-20:]
                 unknown_items = [i for i in profile.interests
@@ -546,7 +543,7 @@ class ChatDossier:
                 existing_topics = {t.value for t in profile.topics}
                 for topic in llm_analysis.get("topics", []):
                     topic = topic.lower().strip()
-                    # Фильтруем: минимум 2 слова ИЛИ имя собственное длиннее 4 символов
+                    # Тема — минимум 2 слова или одно слово от 5 символов
                     words_in_topic = topic.split()
                     if len(words_in_topic) < 2 and len(topic) < 5:
                         continue
@@ -558,8 +555,8 @@ class ChatDossier:
                             value=topic, user_id=sender_id, ts=time.time()
                         ))
                         existing_topics.add(topic)
-                # Кап с хвоста: [:30] отбрасывал НОВЫЕ темы — при полном
-                # списке анализ сохранялся, но добавить в него ничего не мог
+                # Кап с хвоста, а не с головы: [:30] отбрасывал бы новые темы
+                # при уже полном списке.
                 profile.topics = profile.topics[-30:]
 
                 for note in llm_analysis.get("personality_notes", []):
@@ -581,7 +578,7 @@ class ChatDossier:
                 self._merge_user_facts(profile, sender_id, good)
 
             if not any_llm_success:
-                # Fallback: старый метод подсчета слов (без атрибуции)
+                # Fallback без LLM: подсчёт частоты слов, без атрибуции автору
                 self._analyze_with_words(chat_id, messages, profile)
 
             # Инкремент, а не присваивание — счётчик мог измениться за время LLM
@@ -610,17 +607,16 @@ class ChatDossier:
             known.add(fact.lower())
             added = True
         if added:
-            # Ограничиваем до 20 фактов на пользователя
             uf.facts = uf.facts[-20:]
             uf.last_updated = time.time()
 
     def _analyze_with_llm(self, user_messages: List[str]) -> Optional[dict]:
-        """Анализирует сообщения через LLM (fallback-цепочка без основного)."""
+        # Анализирует сообщения через LLM (fallback-цепочка без основного).
         if self._router is None and not self._local_router.is_available():
             return None
 
         try:
-            messages_text = "\n---\n".join(user_messages[-30:])  # последние 30 сообщений
+            messages_text = "\n---\n".join(user_messages[-30:])
 
             prompt = _DOSSIER_ANALYSIS_PROMPT.format(messages=messages_text)
 
@@ -636,7 +632,6 @@ class ChatDossier:
             if not response:
                 return None
 
-            # Пытаемся найти JSON в ответе
             response = response.strip()
 
             # Ищем JSON блок
@@ -666,7 +661,7 @@ class ChatDossier:
             return None
 
     def _analyze_with_words(self, chat_id: str, messages: List[dict], profile: ChatProfile):
-        """Fallback: анализ через подсчет слов (старый метод)."""
+        # Fallback без LLM: интересы/темы по частоте слов, без атрибуции автору.
         all_words = []
         tech_words = []
         for msg in messages:
@@ -731,12 +726,12 @@ class ChatDossier:
             return profile.interests[0].value
 
     def record_fact(self, chat_id: str, fact: str):
-        """Записывает факт который уже был рассказан."""
+        # Запоминает факт, уже рассказанный ботом в чате (последние 20).
         with self._lock:
             profile = self._profiles.get(chat_id)
             if not profile:
                 return
-            profile.facts_shared.append(fact[:200])  # обрезаем для хранения
+            profile.facts_shared.append(fact[:200])
             if len(profile.facts_shared) > 20:
                 profile.facts_shared = profile.facts_shared[-20:]
             self._save()
@@ -757,7 +752,7 @@ class ChatDossier:
             self._save()
 
     def was_fact_shared(self, chat_id: str, fact: str) -> bool:
-        """Проверялся ли похожий факт ранее."""
+        # Рассказывался ли уже похожий факт (общие слова с последними 5).
         with self._lock:
             profile = self._profiles.get(chat_id)
             if not profile or not profile.facts_shared:
@@ -774,7 +769,7 @@ class ChatDossier:
 
     def _extract_user_facts(self, chat_id: str, user_id: str, contents: List[str]) -> List[str]:
         """Извлекает факты о пользователе ПАКЕТОМ: один LLM-вызов на все
-        новые сообщения цикла анализа (раньше — вызов на каждое сообщение).
+        новые сообщения цикла анализа, а не по вызову на сообщение.
 
         Только LLM и разбор ответа — состояние досье НЕ трогает и лок не
         берёт (идёт в фазе 2 analyze_chat, без лока); возвращает
@@ -808,7 +803,6 @@ class ChatDossier:
                 return []
 
             facts: List[str] = []
-            # Парсим факты из ответа
             for line in response.strip().split("\n"):
                 line = line.strip()
                 if not line or line.upper() == "NONE":
@@ -835,7 +829,7 @@ class ChatDossier:
             return []
 
     def add_personality_note(self, chat_id: str, note: str):
-        """Добавляет наблюдение о пользователе."""
+        # Добавляет наблюдение о пользователе.
         with self._lock:
             profile = self._profiles.get(chat_id)
             if not profile:
@@ -875,8 +869,8 @@ class ChatDossier:
 
         Всё чтение — под локом (см. get_interests_text про гонку с фоновым
         analyze_chat): это самый частый читатель профиля (собирается на
-        каждый ответ персоны), и без лока именно здесь ловилось
-        "dictionary changed size during iteration" из аудита."""
+        каждый ответ персоны), без лока здесь возможно
+        "dictionary changed size during iteration"."""
         with self._lock:
             return self._context_block_locked(chat_id)
 

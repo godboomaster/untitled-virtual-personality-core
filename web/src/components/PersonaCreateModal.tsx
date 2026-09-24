@@ -10,8 +10,8 @@ import InfoButton from './InfoButton';
    settings), справа — живое превью генерируемого YAML. Кнопки архетипов —
    подсказки: подставляют значения в поля, после чего всё редактируется. */
 
-// Все флаги features как в реальных yaml-конфигах (app/personas/connor.yaml);
-// telegram-опс export_server/restore_memory сюда не входят — в вебе они инертны
+// Все флаги features как в реальных yaml-конфигах персон (app/personas/*.yaml);
+// флаги мессенджер-бота export_server/restore_memory сюда не входят — в вебе они не действуют
 const simpleFlags = [
   'rate_limit',
   'moderation',
@@ -33,11 +33,11 @@ const allFeatureKeys: FeatureKey[] = [...simpleFlags, 'learning', 'proactive'];
 // не пишется вовсе, персона работает в legacy-режиме без уровневых механик
 type IntellectTier = 'none' | 'primitive' | 'normal' | 'bot';
 
-// Дефолты LLM-настроек по уровню интеллекта. bot — точность Коннора
-// (temperature/top_p), но max_tokens выше human: полный разбор просьбы
-// (код, расчёты) требует длинных ответов; normal — между Версо и Алексом
-// (теплее, свободнее); primitive — стереотипная короткая речь инстинктивного
-// существа. Подставляются при выборе tier, дальше правятся вручную.
+// Дефолты LLM-настроек по уровню интеллекта: bot — высокая точность
+// (temperature/top_p), но max_tokens выше — полный разбор сложной просьбы
+// (код, расчёты) требует длинных ответов; normal — тёплый, свободный стиль;
+// primitive — стереотипная короткая речь инстинктивного существа.
+// Подставляются при выборе tier, дальше правятся вручную.
 const tierSettings: Record<Exclude<IntellectTier, 'none'>, { temperature: number; maxTokens: number; topP: number }> = {
   primitive: { temperature: 0.5, maxTokens: 800, topP: 0.85 },
   normal: { temperature: 0.85, maxTokens: 3000, topP: 0.92 },

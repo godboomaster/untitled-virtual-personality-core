@@ -1,6 +1,6 @@
-"""Ретенция персистентных словарей по chat_id (аудит: proactive_messaging,
-state_engine, relationship растут на каждый chat_id и никогда не
-уменьшаются — разовый чат остаётся в файле навсегда).
+"""Ретенция персистентных словарей по chat_id: proactive_messaging,
+state_engine и relationship растут с каждым chat_id и без прунинга никогда
+не уменьшаются — разовый чат остаётся в файле навсегда.
 
 Проверяет:
   1. app.core.retention.prune_stale — общий helper: свежие записи остаются,

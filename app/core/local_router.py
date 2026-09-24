@@ -1,11 +1,8 @@
 """
 Локальный LLM роутер через Ollama.
 
-Используется для лёгких бинарных классификаций:
-- self_memory: SKIP / NOTE
-- proactive: МОЛЧУ / мысль
-
-Преимущества: быстро, дёшево (бесплатно), приватно.
+Обслуживает лёгкие служебные вызовы (классификации, извлечение, сжатие) —
+полный список задач в LOCAL_TASKS.
 
 Движок каждой задачи выбирает пользователь (настройки досье, «Движок
 локальных задач»): «ollama» (дефолт) или «webchat» — тогда вызовы этой
@@ -58,7 +55,8 @@ LOCAL_TASKS: dict[str, bool] = {
 }
 
 # Бюджет ожидания очереди фона веб-чата (канал side) для локальных задач:
-# занято дольше — откат на Ollama (см. get_response). Как у main перед burst
+# занято дольше — откат на Ollama (см. get_response). Столько же, сколько
+# основной роутер ждёт перед уходом в burst (BURST_LOCK_WAIT_SEC).
 LOCAL_WEBCHAT_QUEUE_WAIT_SEC = 3.0
 
 # Выбор пользователя: {task: {"backend": "ollama"|"webchat", "site": ...}}
@@ -86,9 +84,7 @@ def _save_task_config(tasks: dict):
 
 
 class LocalLLMRouter:
-    """
-    Простой роутер к локальной модели через Ollama API.
-    """
+    # Роутер служебных задач: Ollama или веб-чат (канал side) — по выбору на задачу.
 
     def __init__(
         self,
@@ -121,12 +117,12 @@ class LocalLLMRouter:
     # ── движки задач: ollama или веб-чат (выбор пользователя) ──
 
     def _default_backend(self) -> str:
-        """Дефолтный движок для задач без явной записи: LOCAL_LLM_BACKEND."""
+        # Дефолтный движок для задач без явной записи: LOCAL_LLM_BACKEND.
         b = (os.getenv("LOCAL_LLM_BACKEND") or "ollama").strip().lower()
         return b if b in ("ollama", "webchat") else "ollama"
 
     def _resolve_task(self, task: Optional[str]) -> tuple[str, Optional[str]]:
-        """(backend, site|None) задачи: запись пользователя или дефолт env."""
+        # (backend, site|None) задачи: запись пользователя или дефолт env.
         entry = self._task_cfg.get(task) if task else None
         if isinstance(entry, dict):
             backend = entry.get("backend")
@@ -137,7 +133,7 @@ class LocalLLMRouter:
         return self._default_backend(), None
 
     def task_snapshot(self) -> list[dict]:
-        """Снимок для UI: текущий (resolved) движок каждой известной задачи."""
+        # Снимок для UI: текущий (resolved) движок каждой известной задачи.
         out = []
         for task, ollama_only in LOCAL_TASKS.items():
             backend, site = self._resolve_task(task)
@@ -213,7 +209,7 @@ class LocalLLMRouter:
         из WEBCHAT_SITES), канал «side» — отдельный чат и квота. Контекст
         «default»: локальный роутер — синглтон без привязки к персоне, его
         сайт#side общий для всех персон (там только короткие классификации —
-        персональный контент инициатив/LTM у персон теперь в своих чатах,
+        персональный контент инициатив/LTM у персон идёт в своих чатах,
         см. ModelRouter(context=...)). None — веб-чаты не включены."""
         try:
             from app.core.router import _parse_webchat_sites
@@ -234,14 +230,14 @@ class LocalLLMRouter:
             return None
 
     def _check_available(self) -> bool:
-        """Проверяет доступность Ollama."""
+        # Ollama отвечает и нужная модель в ней скачана.
         try:
             resp = self._client.get(f"{self.base_url}/api/tags", timeout=5.0)
             if resp.status_code != 200:
                 return False
             data = resp.json()
             models = [m.get("name", "") for m in data.get("models", [])]
-            # Ollama хранит имя с тегом: llama3 -> llama3:latest
+            # Ollama хранит имя с тегом: <model> -> <model>:latest
             if self.model not in models and f"{self.model}:latest" not in models:
                 logger.warning(
                     f"[LocalLLM] Модель '{self.model}' не найдена в Ollama. "
@@ -257,7 +253,7 @@ class LocalLLMRouter:
         """Доступен ли движок задачи (какой бы ни был выбран).
 
         webchat — включён сайт задачи (или любой, если сайт не задан);
-        ollama — как раньше (с пере-проверкой не чаще раза в 30 сек).
+        ollama — ответ /api/tags (после отказа пере-проверка не чаще раза в 30 сек).
         Доступность ≠ успех вызова: веб-чат мог не ответить, Ollama — упасть;
         тогда get_response честно вернёт None (или откатится на второй движок).
         """
@@ -292,13 +288,13 @@ class LocalLLMRouter:
         queue_wait: Optional[float] = None,
     ) -> Optional[str]:
         """
-        Отправляет запрос к локальной модели.
+        Отправляет запрос движку задачи (Ollama или веб-чат).
         Возвращает текст ответа или None при ошибке.
 
         task — идентификатор задачи из LOCAL_TASKS: движок (Ollama/веб-чат
         и сайт) берётся из выбора пользователя для этой задачи. webchat —
         сначала веб-чат (канал side), его неудача мягко откатывает на
-        Ollama; ollama — только Ollama, как раньше.
+        Ollama; ollama — только Ollama.
 
         queue_wait — сколько ждать очередь фона сайта веб-чата (сек); None —
         LOCAL_WEBCHAT_QUEUE_WAIT_SEC. Канал side фоновый: без бюджета вызов
@@ -343,7 +339,7 @@ class LocalLLMRouter:
                 # вызовы редкие — при дефолтных 5m модель (~2.6 ГБ) висит в
                 # RAM почти постоянно; 2m даёт ей реально выгружаться.
                 "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "2m"),
-                # Рассуждающие модели (gemma4 и т.п.) иначе тратят весь
+                # Рассуждающие модели иначе тратят весь
                 # num_predict на thinking, и content возвращается пустым —
                 # классификаторы получают None. Для служебных вызовов
                 # рассуждения не нужны. На обычных моделях флаг безвреден.
@@ -411,7 +407,7 @@ class LocalLLMRouter:
 
         response_upper = response.strip().upper()
 
-        # Ищем точное совпадение
+        # Допустимое значение встречается в ответе
         for valid in valid_outputs:
             if valid.upper() in response_upper:
                 return valid
@@ -483,13 +479,10 @@ class LocalLLMRouter:
 
 # Глобальный singleton (ленивая инициализация)
 _local_router: Optional[LocalLLMRouter] = None
-# Double-checked locking: без лока конкурентные первые вызовы из разных
-# потоков (self_memory/proactive/query_rewrite и т.д. — все дергают
-# get_local_router() лениво) могли одновременно пройти проверку
-# `_local_router is None` и создать несколько LocalLLMRouter (лишние
-# httpx.Client + запрос /api/tags к Ollama на каждый), последний из которых
-# молча побеждает — остальные потоки продолжали бы работать со своим
-# «потерянным» экземпляром, если бы успели прочитать ссылку раньше замены.
+# Double-checked locking: первые вызовы get_local_router() идут из разных
+# потоков одновременно; без лока каждый создал бы свой LocalLLMRouter (лишний
+# httpx.Client и запрос /api/tags), и часть потоков работала бы с
+# «потерянным» экземпляром, который перезаписал последний.
 _local_router_lock = threading.Lock()
 
 

@@ -6,7 +6,7 @@
    - приём снапшота данных от хоста (postMessage {vpc:'host', type:'state'})
      и наполнение hook-точек [data-vpc] / [data-vpc-field];
    - отправку событий хосту: ready / send / clear / select-persona /
-     open-dossier / close-dossier / error.
+     open-dossier / close-dossier / action / set-setting / zoom-image / error.
 
    JS написан без шаблонных литералов и стрелок нарочно: файл встраивается
    в TS как строка и исполняется в любом современном браузере. */

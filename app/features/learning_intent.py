@@ -37,16 +37,14 @@ _LEARN_KEYWORD_RE = re.compile(
 
 
 def _keyword_match(text: str) -> bool:
-    """Быстрая проверка по ключевым словам — без вызова LLM."""
+    # Быстрая проверка по ключевым словам — без вызова LLM.
     return bool(_LEARN_KEYWORD_RE.search(text))
 
 
 def classify_learning_intent(text: str) -> str:
-    """
-    Возвращает 'LEARN' | 'INFO'.
-    'LEARN' — пользователь хочет, чтобы его учили (курс, регулярные уроки).
-    'INFO'  — обычный вопрос/объяснение по теме.
-    """
+    """Возвращает 'LEARN' | 'INFO'. 'LEARN' — пользователь хочет, чтобы его
+    учили (курс, регулярные уроки); 'INFO' — обычный вопрос/объяснение
+    по теме."""
     user_block = f"\nUSER MESSAGE: {text}"
 
     # 1. Быстрая проверка по ключевым словам (без LLM)
@@ -110,7 +108,7 @@ _FREQUENCY_TAIL_RE = re.compile(
 
 
 def extract_subject(text: str) -> str:
-    """Извлекает тему обучения из фразы «научи меня X»."""
+    # Извлекает тему обучения из фразы «научи меня X».
     for pattern in _SUBJECT_PATTERNS:
         m = pattern.search(text)
         if m:

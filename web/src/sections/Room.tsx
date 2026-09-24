@@ -397,7 +397,7 @@ export default function Room() {
       <div className="room-layout">
         {/* Сцена комнаты. В фулскрине уходит порталом в <body>: анимации-предки
             (section-enter, stagger-item) держат transform и ломают position: fixed —
-            без портала оверлей прокручивался вместе со страницей */}
+            без портала оверлей прокручивается вместе со страницей */}
         {(() => {
           const sceneCard = (
         <div

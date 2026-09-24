@@ -1,8 +1,9 @@
 """Smoke-тест системы уровней интеллекта (intellect tiers).
 
 Проверяет: IntellectConfig (дефолты/overrides/legacy), стилевые модификаторы
-помощи + Gemma-детекцию, примитивный режим self_memory / world / state /
-proactive / reminder, применение inventory_action офлайн-событием.
+помощи + детекцию запроса локальной моделью, примитивный режим self_memory /
+world / state / proactive / reminder, применение inventory_action
+офлайн-событием.
 
 Запуск: python -m scripts.test_intellect
 """
@@ -29,7 +30,7 @@ def main():
         print(f"  [{'OK' if cond else 'FAIL'}] {name}")
         ok = ok + 1 if cond else ok - 100
 
-    # ── 1. IntellectConfig: legacy / дефолты / overrides (§2) ──
+    # ── 1. IntellectConfig: legacy / дефолты / overrides ──
     from app.core.intellect import IntellectConfig
 
     legacy = IntellectConfig({"features": {"self_memory": True}})
@@ -69,7 +70,7 @@ def main():
     check("features.self_memory=false → модуля нет при любом tier",
           off.self_memory_mode == "none")
 
-    # world_lore: full/partial (§3.3)
+    # world_lore: full/partial
     check("world: primitive → partial, не full",
           prim.world_lore_full(True) is False and prim.world_lore_partial(True) is True)
     check("world: normal/bot → full",
@@ -82,7 +83,7 @@ def main():
           prim_off.world_lore_partial(True) is False
           and prim_off.world_lore_full(True) is False)
 
-    # ── 2. Стилевые модификаторы (§4.2-4.3) ──
+    # ── 2. Стилевые модификаторы ──
     from app.features import help_style
 
     for style, marker in (("action_only", "НЕ можешь объяснять"),
@@ -96,7 +97,7 @@ def main():
     check("пайплайн: legacy-персона → блок не нужен",
           help_style.build_block_for_message("как приготовить пасту?", legacy, None) is None)
 
-    # Gemma-детекция (Ollama доступен в этом окружении; иначе — пропуск)
+    # Детекция локальной моделью (если она недоступна — пропуск)
     from app.core.local_router import get_local_router
     local = get_local_router()
     if local.is_available():
@@ -120,13 +121,13 @@ def main():
     else:
         print("  [SKIP] Gemma недоступна — детекция пропущена")
 
-    # Fallback: Gemma недоступна → ограничивающие стили всё равно применяются
+    # Fallback: без локальной модели ограничивающие стили всё равно применяются
     check("fallback: без Gemma casual_human всё равно применяется",
           help_style.build_block_for_message("как испечь хлеб?", norm, None) is not None)
     check("fallback: без Gemma full_assistant не подставляется зря",
           help_style.build_block_for_message("как испечь хлеб?", bot, None) is None)
 
-    # ── 3. self_memory primitive (§3.1) ──
+    # ── 3. self_memory primitive ──
     import app.core.self_memory as sm_mod
     importlib.reload(sm_mod)
 
@@ -175,7 +176,7 @@ def main():
           "любит тепло" in sm_prim._episodes["life_summary"]
           and sm_prim._episodes["archive"] == [])
 
-    # ── 4. world_engine primitive (§3.3-3.4) ──
+    # ── 4. world_engine primitive ──
     import app.core.world_engine as we_mod
     importlib.reload(we_mod)
 
@@ -260,7 +261,7 @@ def main():
     check("state: контекст primitive запрещает человеческую рефлексию",
           "CANNOT discuss" in block and "PHYSICAL STATE" in block)
 
-    # ── 6. proactive: ограничение типов (§3.2) ──
+    # ── 6. proactive: ограничение типов ──
     from app.features.proactive_messaging import (
         ProactiveMessaging, ProactiveConfig, InitiativeType)
     pm = ProactiveMessaging(
@@ -304,7 +305,7 @@ def main():
     check("proactive: веб-чат — канал «proactive»",
           fr.last_kw.get("webchat_channel") == "proactive")
 
-    # ── 7. reminder: primitive → без LLM-текста (§3.5) ──
+    # ── 7. reminder: primitive → без LLM-текста ──
     from app.features.reminder_manager import ReminderManager
     rm = ReminderManager(context="smoke_rm")
     rm.set_intellect_tier("primitive")

@@ -77,7 +77,7 @@ app = FastAPI(title="Virtual Persona API", version="1.0")
 
 @app.on_event("shutdown")
 def _shutdown_bot_browser():
-    # Гасим Chrome бота при остановке API — иначе он жил после выхода,
+    # Гасим браузер бота при остановке API — иначе он переживает выход,
     # держа окно и вкладки веб-чатов (фоновая нагрузка на систему)
     try:
         from app.features import browser_actions as ba
@@ -136,8 +136,8 @@ def _generating_exit(key: str) -> None:
 
 
 def _log_detached_failure(task: asyncio.Task) -> None:
-    """Исключение задачи, которую никто уже не ждёт (клиент отключился), —
-    в лог, а не в «Task exception was never retrieved»."""
+    # Ошибка задачи, которую уже никто не ждёт (клиент отключился), — в лог,
+    # а не в "Task exception was never retrieved"
     if task.cancelled():
         return
     exc = task.exception()
@@ -146,19 +146,17 @@ def _log_detached_failure(task: asyncio.Task) -> None:
 
 
 async def _run_generation(gen_key: str, fn):
-    """Генерация ответа, которую НЕ отменяет разрыв соединения клиента.
+    """Генерация ответа, которую не отменяет разрыв соединения клиента.
 
-    fn — синхронная тяжёлая часть (process_message), идёт в потоке пула.
-    Поток отменить нельзя, поэтому раньше при перезагрузке страницы
-    CancelledError прилетал в await to_thread(...), finally сразу снимал флаг
-    «генерирует» и отпускал лок чата, а поток ещё секунды дописывал ответ в
-    STM: новая страница читала историю без ответа, перехода флага true→false
-    уже не видела — ответ не показывался никогда; а следующее сообщение в тот
-    же чат шло параллельно с живым потоком. Теперь флаг и лок принадлежат
-    отдельной задаче и снимаются, только когда fn реально вернулся; вызывающий
-    ждёт её через shield — его отмена задачу не трогает.
+    fn — синхронная тяжёлая часть (process_message), идёт в потоке пула;
+    поток нельзя отменить, поэтому флаг «генерирует» и лок чата держит
+    отдельная задача и снимает их, только когда fn реально вернулся. Вызывающий
+    ждёт её через shield: разрыв соединения (CancelledError) саму задачу не
+    трогает, поток дописывает ответ в STM, а флаг и лок остаются выставленными
+    до этого момента — иначе следующее сообщение в тот же чат могло бы уйти
+    параллельно с ещё живым потоком.
 
-    Флаг ставится ДО ожидания лока: сообщение, вставшее в очередь за
+    Флаг ставится до ожидания лока: сообщение, вставшее в очередь за
     предыдущим, тоже показывает «печатает»."""
     async def _job():
         _generating_enter(gen_key)
@@ -183,7 +181,7 @@ async def _run_generation(gen_key: str, fn):
 
 
 async def require_auth(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
-    """Bearer-авторизация. Активна только когда задан API_TOKEN."""
+    # Bearer-авторизация активна только когда задан API_TOKEN
     if not _api_token:
         return
     # compare_digest вместо != — токен не сравнивается char-by-char с ранним
@@ -193,7 +191,7 @@ async def require_auth(credentials: HTTPAuthorizationCredentials = Depends(_bear
 
 
 async def _get_bot(persona: str):
-    """Бот персоны или 404. Создание инстанса блокирующее — в потоке."""
+    # Бот персоны или 404; создание инстанса блокирующее — выполняем в потоке
     bot = await asyncio.to_thread(runtime.registry.get, persona)
     if bot is None:
         raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
@@ -201,8 +199,8 @@ async def _get_bot(persona: str):
 
 
 def _check_not_muted(bot, persona: str):
-    """Замороженная персона (features.muted) не отвечает: 409, сообщение не принимается
-    (в STM оно не пишется — персона полностью «выключена»)."""
+    # Замороженная персона (features.muted) не отвечает: 409, сообщение не
+    # пишется в STM — персона полностью выключена
     if (bot.features or {}).get("muted"):
         raise HTTPException(status_code=409,
                             detail=f"Персона '{persona}' заморожена и молчит, пока её не разморозят")
@@ -215,15 +213,14 @@ async def health():
 
 @app.get("/api/logs", dependencies=[Depends(require_auth)])
 async def get_logs(since: int = 0, limit: int = 500):
-    """Инкрементальная лента логов ядра (режим разработчика в веб-UI)."""
+    # Инкрементальная лента логов ядра (режим разработчика в веб-UI)
     return log_buffer.since(since, limit)
 
 
 @app.get("/api/system/memory", dependencies=[Depends(require_auth)])
 async def system_memory():
-    """Загрузка RAM/свопа хоста — виджет режима разработчика (системные
-    фризы 09.2026 шли от переполненного свопа: 21+ ГБ при 16 ГБ RAM).
-    Без psutil — ok=false, виджет прячется."""
+    # Загрузка RAM/свопа хоста — виджет режима разработчика;
+    # без psutil — ok=false, виджет прячется
     try:
         import psutil
         vm = psutil.virtual_memory()
@@ -250,7 +247,7 @@ async def personas():
 
 @app.post("/api/personas", dependencies=[Depends(require_auth)])
 async def persona_create(req: PersonaYamlUpdate):
-    """Создать новую персону из YAML (имя файла = поле id из YAML)."""
+    # Создать новую персону из YAML (имя файла = поле id из YAML)
     from app.api import settings_api
     result = await asyncio.to_thread(settings_api.create_persona, req.yaml)
     if not result["ok"]:
@@ -261,7 +258,7 @@ async def persona_create(req: PersonaYamlUpdate):
 
 @app.delete("/api/personas/{persona}", dependencies=[Depends(require_auth)])
 async def persona_delete(persona: PersonaIdPath):
-    """Удалить персону: YAML-файл + выгрузка из реестра. Память остаётся на диске."""
+    # Удалить персону: YAML-файл + выгрузка из реестра; память остаётся на диске
     from app.api import settings_api
     if not await asyncio.to_thread(settings_api.delete_persona, persona):
         raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
@@ -270,7 +267,7 @@ async def persona_delete(persona: PersonaIdPath):
 
 @app.post("/api/personas/{persona}/duplicate", dependencies=[Depends(require_auth)])
 async def persona_duplicate(persona: PersonaIdPath):
-    """Копия YAML персоны с новым id/name ({id}_copy, имя + «(копия)»)."""
+    # Копия YAML персоны с новым id/name ({id}_copy, имя + «(копия)»)
     from app.api import settings_api
     result = await asyncio.to_thread(settings_api.duplicate_persona, persona)
     if result is None:
@@ -364,8 +361,8 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
 
 
 def _pending_images(bot, chat_id) -> list[str]:
-    """Скриншоты страницы из режима управления (pending-фото бакет бота) —
-    в dataURL для поля images ответа."""
+    # Скриншоты страницы из режима управления (pending-фото бакет бота) —
+    # в dataURL для поля images ответа
     out = []
     for ph in bot.pop_pending_photos(chat_id):
         data = ph.get("data")
@@ -396,8 +393,8 @@ def _end_turn(bot, frame) -> None:
 
 
 def _adopt_turn(bot, frame):
-    """Присоединить рабочий поток генерации к открытому ходу (кадр передаётся
-    явно: SSE-генератор не должен трогать contextvars)."""
+    # Присоединить рабочий поток генерации к открытому ходу (кадр передаётся
+    # явно: SSE-генератор не должен трогать contextvars)
     adopt = getattr(bot, "adopt_turn", None)
     if frame is None or not callable(adopt):
         return contextlib.nullcontext()
@@ -408,13 +405,11 @@ def _answer_provider(bot) -> tuple[str | None, str | None]:
     """Провайдер и модель, реально давшие ответ (с учётом fallback-цепочки
     и персональных override модели).
 
-    Звать В ТОМ ЖЕ ПОТОКЕ, что генерировал ответ, и сразу после
-    process_message: router._last_provider пишут все потоки персоны
-    (ответ, инициатива, досье) — снятое позже или из другого потока
-    (event loop) значение может оказаться чужим. После перевода полей
-    роутера на потоко-локальные (п. 9 отчёта о конкурентности) из другого
-    потока оно было бы просто пустым; getattr с дефолтом работает при
-    обеих реализациях."""
+    Звать в том же потоке, что генерировал ответ, и сразу после
+    process_message: router._last_provider — потоко-локальное поле, его пишут
+    все потоки персоны (ответ, инициатива, досье), и из другого потока или
+    event loop оно было бы пустым или чужим. getattr с дефолтом — для
+    роутеров без этого поля (заглушки в тестах)."""
     router = bot.router
     pid = getattr(router, "_last_provider", None) or router.active_provider
     if not pid:
@@ -428,7 +423,7 @@ def _answer_provider(bot) -> tuple[str | None, str | None]:
 
 
 def _decode_image(data: str) -> bytes:
-    """base64 или dataURL («data:image/...;base64,...») → байты изображения."""
+    # base64 или dataURL ("data:image/...;base64,...") → байты изображения
     import base64
     try:
         if data.startswith("data:"):
@@ -439,9 +434,9 @@ def _decode_image(data: str) -> bytes:
 
 
 def _prepare_image_input(bot, message: str, image_b64: str) -> str:
-    """Текст для LLM из сообщения с картинкой: подпись + содержимое по
-    vision-модели. Каскад как у TG-бота: vision-провайдер основного роутера
-    → локальная gemma (OCR)."""
+    # Текст для LLM из сообщения с картинкой: подпись + содержимое по
+    # vision-модели. Каскад как у TG-бота: vision-провайдер основного роутера
+    # → локальная LLM (OCR)
     image_bytes = _decode_image(image_b64)
     question = message.strip()
     ocr = bot.describe_image(image_bytes, question)
@@ -461,18 +456,19 @@ def _rewrite_image_stm(bot, chat_key: str, user_id: str, display_text: str, repl
     лежит в STM несколькими сообщениями — переписываем весь хвост целиком)."""
     try:
         # Хвост STM: [синтетическое user-сообщение, часть1, ..., частьN].
-        # Точная граница — записи ЭТОГО хода (якорь хода у BotInstance): раньше
-        # считали завершающую серию assistant-сообщений, и инициатива, успевшая
-        # лечь в STM после ответа (пользователь её уже видел), удалялась вместе
-        # с ним; а если ход не записал user-реплику, под снос шла инициатива
-        # ПЕРЕД ходом и сообщение до неё. Запрос держит ход пользователя до
-        # конца правки (_user_turn), так что фоновых записей внутри хвоста нет.
+        # Точная граница — записи ЭТОГО хода (якорь хода у BotInstance): без
+        # него пришлось бы считать по завершающей серии assistant-сообщений,
+        # а это ловит как часть ответа инициативу, успевшую лечь в STM после
+        # него (хотя пользователь её уже видел), а если ход не записал
+        # user-реплику — сносит инициативу перед ходом и сообщение до неё.
+        # Запрос держит ход пользователя до конца правки (_user_turn), так что
+        # фоновых записей внутри хвоста нет.
         tail_fn = getattr(bot, "_turn_stm_tail", None)
         tail = tail_fn(chat_key) if callable(tail_fn) else None
         if tail is not None:
             n_pop = len(tail)
         else:
-            # Якоря нет (заготовка бота / буфер перечитан) — прежняя эвристика:
+            # Якоря нет (заготовка бота / буфер перечитан) — эвристика:
             # завершающая серия assistant-частей и user-сообщение перед ней
             msgs = bot.memory.stm.get_messages(chat_id=chat_key)
             n_assist = 0
@@ -513,8 +509,8 @@ _SLASH_HELP = (
 
 
 def _try_slash_command(bot, req: ChatRequest) -> tuple[str, bool] | None:
-    """Перехват слэш-команды. Возвращает (ответ, был_ли_llm) или None,
-    если сообщение — не команда."""
+    # Перехват слэш-команды: возвращает (ответ, был_ли_llm) или None, если
+    # сообщение не команда
     text = req.message.strip()
     if not text.startswith("/"):
         return None
@@ -599,13 +595,12 @@ def _try_slash_command(bot, req: ChatRequest) -> tuple[str, bool] | None:
 
 
 async def _typed_chunks(text: str):
-    """«Печать» порциями по 6 символов — чистый ``await asyncio.sleep`` в
-    event loop'е, БЕЗ потока пула (задача №4 аудита: раньше та же пауза шла
-    через time.sleep() внутри asyncio.to_thread — держала воркер пула
-    executor'а все секунды анимации; под нагрузкой параллельные
-    /api/chat/stream исчерпывали общий пул, другие эндпоинты зависали в
-    очереди на поток). Вынесена на уровень модуля — тестируется независимо
-    от bot/req, см. scripts/test_api_security.py."""
+    """«Печать» порциями по 6 символов — чистый asyncio.sleep в event loop'е,
+    без потока пула: time.sleep() внутри asyncio.to_thread держал бы воркер
+    пула все секунды анимации, и под нагрузкой параллельные /api/chat/stream
+    исчерпывали бы общий пул, а другие эндпоинты зависали бы в очереди на
+    поток. Вынесена на уровень модуля — тестируется независимо от bot/req,
+    см. scripts/test_api_security.py."""
     for i in range(0, len(text), 6):
         yield {"token": text[i:i + 6]}
         await asyncio.sleep(0.02)
@@ -627,12 +622,12 @@ async def chat_stream(req: ChatRequest):
     turn = {"frame": None}
 
     def _generate():
-        """Тяжёлая СИНХРОННАЯ часть — идёт в потоке пула (asyncio.to_thread).
-        «Печать» сюда больше не входит (см. _gen ниже, задача №4 аудита):
-        она не блокирующая и не должна держать поток пула все секунды
-        анимации — под нагрузкой параллельные /api/chat/stream исчерпывали
-        общий пул asyncio.to_thread, и другие эндпоинты зависали в очереди
-        на поток."""
+        """Тяжёлая синхронная часть — идёт в потоке пула (asyncio.to_thread).
+        «Печать» сюда не входит (см. _gen ниже): она не блокирующая и не
+        должна держать поток пула все секунды анимации — под нагрузкой
+        параллельные /api/chat/stream иначе исчерпывали бы общий пул
+        asyncio.to_thread, и другие эндпоинты зависали бы в очереди на
+        поток."""
         # Поток генерации держит ход сам (см. /api/chat, _adopt_turn)
         with _adopt_turn(bot, turn["frame"]):
             cmd = _try_slash_command(bot, req)
@@ -662,19 +657,19 @@ async def chat_stream(req: ChatRequest):
                         bot, stm_key, req.user_id,
                         f"📷 {cap}" if cap else "📷 (изображение)", [reply] + split_rest,
                     )
-        # Pending-бакеты снимаем здесь же, в потоке под локом чата: раньше
-        # это делалось после «печати», уже без лока, — следующее сообщение в
-        # тот же чат успевало обнулить/перехватить бакеты этого ответа
+        # Pending-бакеты снимаем здесь же, в потоке под локом чата: без лока
+        # следующее сообщение в тот же чат успело бы обнулить/перехватить
+        # бакеты этого ответа
         extra = split_rest + bot.pop_pending_list_messages(req.chat_id)
         question_kind = bot.pop_pending_question_kind(req.chat_id)
         images = _pending_images(bot, req.chat_id)
         return reply, split_rest, extra, question_kind, images, provider, model
 
     async def _gen():
-        # Ход пользователя держим до конца «печати» (split-пузыри с паузами):
-        # раньше он закрывался вместе с генерацией, и напоминание/утро из
-        # фона вставало между частями ответа. finally — при любом исходе,
-        # включая разрыв SSE (aclose генератора)
+        # Ход пользователя держим до конца «печати» (split-пузыри с паузами) —
+        # иначе, закрывшись вместе с генерацией, он пустил бы напоминание/утро
+        # из фона между частями ответа. finally — при любом исходе, включая
+        # разрыв SSE (aclose генератора)
         turn["frame"] = await _begin_turn(bot, stm_key)
         try:
             async for chunk in _gen_in_turn():
@@ -799,7 +794,7 @@ def _proactive_stats_path(persona: str) -> Path:
 
 
 def _pop_json_key(path: Path, key: str):
-    """Удалить ключ из json-словаря на диске, вернуть удалённое значение."""
+    # Удалить ключ из json-словаря на диске, вернуть удалённое значение
     if not path.is_file():
         return None
     try:
@@ -814,7 +809,7 @@ def _pop_json_key(path: Path, key: str):
 
 
 def _restore_json_key(path: Path, key: str, value):
-    """Вернуть ключ в json-словарь на диске (восстановление из корзины)."""
+    # Вернуть ключ в json-словарь на диске (восстановление из корзины)
     try:
         data = {}
         if path.is_file():
@@ -842,7 +837,7 @@ def _pop_initiative_history(bot, persona: str, chat_key: str) -> list:
 
 
 def _restore_initiative_history(bot, persona: str, chat_key: str, entries: list):
-    """Вернуть историю самоинициатив из снапшота корзины (менеджер или файл)."""
+    # Вернуть историю самоинициатив из снапшота корзины (менеджер или файл)
     if not entries:
         return
     p = bot.proactive
@@ -853,7 +848,7 @@ def _restore_initiative_history(bot, persona: str, chat_key: str, entries: list)
 
 
 def _pop_daily_stats(bot, persona: str, chat_key: str) -> dict | None:
-    """Забрать и удалить дневной счётчик инициатив («инициатив сегодня»)."""
+    # Забрать и удалить дневной счётчик инициатив («инициатив сегодня»)
     p = bot.proactive
     if p is not None:
         return p.pop_daily_stats(chat_key)
@@ -862,7 +857,7 @@ def _pop_daily_stats(bot, persona: str, chat_key: str) -> dict | None:
 
 
 def _restore_daily_stats(bot, persona: str, chat_key: str, entry: dict):
-    """Вернуть дневной счётчик инициатив из снапшота корзины."""
+    # Вернуть дневной счётчик инициатив из снапшота корзины
     if not entry:
         return
     p = bot.proactive
@@ -899,7 +894,7 @@ def _pop_last_activity(bot, persona: str, chat_key: str) -> float:
 
 
 def _restore_last_activity(bot, persona: str, chat_key: str, ts: float):
-    """Вернуть метку последней активности из снапшота корзины."""
+    # Вернуть метку последней активности из снапшота корзины
     if not ts:
         return
     tracker = getattr(bot, "_activity_tracker", None)
@@ -923,8 +918,8 @@ def _restore_last_activity(bot, persona: str, chat_key: str, ts: float):
 
 @app.get("/api/personas/{persona}/clear-backup", dependencies=[Depends(require_auth)])
 async def clear_backup_info(persona: PersonaIdPath, chat_id: str | None = None):
-    """Есть ли в корзине снапшот последней очистки ЭТОГО чата (для кнопки
-    восстановления) — бэкапы привязаны к (persona, chat_id), см. clear_backup.py."""
+    # Есть ли в корзине снапшот последней очистки этого чата (для кнопки
+    # восстановления) — бэкапы привязаны к (persona, chat_id), см. clear_backup.py
     if persona not in list_personas():
         raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
     from app.api import clear_backup
@@ -933,8 +928,8 @@ async def clear_backup_info(persona: PersonaIdPath, chat_id: str | None = None):
 
 @app.post("/api/personas/{persona}/clear-backup/restore", dependencies=[Depends(require_auth)])
 async def clear_backup_restore(persona: PersonaIdPath, chat_id: str | None = None):
-    """Восстановить STM/LTM/дневник/историю инициатив из свежего снапшота корзины ЭТОГО
-    чата (файл удаляется)."""
+    # Восстановить STM/LTM/дневник/историю инициатив из свежего снапшота
+    # корзины этого чата (файл удаляется)
     from app.api import clear_backup
     bot = await _get_bot(persona)
     data = await asyncio.to_thread(clear_backup.pop_latest, persona, chat_id or "web_user")
@@ -993,7 +988,7 @@ async def clear_backup_restore(persona: PersonaIdPath, chat_id: str | None = Non
 
 @app.post("/api/chat/history/delete", dependencies=[Depends(require_auth)])
 async def chat_history_delete(req: StmDeleteRequest):
-    """Удалить одно сообщение из STM (поштучное удаление в досье)."""
+    # Удалить одно сообщение из STM (поштучное удаление в досье)
     bot = await _get_bot(req.persona)
     chat_key = req.chat_id or req.user_id
     ok = await asyncio.to_thread(bot.memory.stm.delete_message, chat_key, req.index)
@@ -1004,7 +999,7 @@ async def chat_history_delete(req: StmDeleteRequest):
 
 @app.post("/api/chat/history/trim", dependencies=[Depends(require_auth)])
 async def chat_history_trim(req: StmTrimRequest):
-    """Удалить последние N сообщений из STM (кнопка «Удалить» в досье)."""
+    # Удалить последние N сообщений из STM (кнопка «Удалить» в досье)
     bot = await _get_bot(req.persona)
     chat_key = req.chat_id or req.user_id
     n = await asyncio.to_thread(bot.memory.stm.pop_last_n, req.count, chat_key)
@@ -1030,7 +1025,7 @@ async def memory_ltm(persona: PersonaIdPath, user_id: str = "web_user"):
 
 @app.get("/api/personas/{persona}/dossier", dependencies=[Depends(require_auth)])
 async def persona_dossier(persona: PersonaIdPath, chat_id: str = "web_user"):
-    """Профиль досье чата: интересы/темы/наблюдения (анализ диалога — не LTM)."""
+    # Профиль досье чата: интересы/темы/наблюдения (анализ диалога, не LTM)
     bot = await _get_bot(persona)
     return await asyncio.to_thread(bot.get_dossier_snapshot, chat_id)
 
@@ -1044,7 +1039,7 @@ async def memory_add_fact(persona: PersonaIdPath, req: FactRequest):
 
 @app.put("/api/personas/{persona}/memory/facts", dependencies=[Depends(require_auth)])
 async def memory_update_fact(persona: PersonaIdPath, req: FactUpdateRequest):
-    """Замена факта отредактированным текстом (правка в досье)."""
+    # Замена факта отредактированным текстом (правка в досье)
     bot = await _get_bot(persona)
     new_text = req.new.strip()
     if not new_text:
@@ -1186,7 +1181,7 @@ def _reminders(bot, chat_id: str) -> list[dict]:
         return []
     return [
         {
-            "index": i + 1,  # индекс для отмены — внутри этого же списка (легаси, фронт шлёт его в DELETE)
+            "index": i + 1,  # 1-based позиция в этом списке — фронт шлёт её в DELETE
             "id": r.get("id"),
             "task": r.get("task") or "",
             "trigger_at": r.get("trigger_at"),
@@ -1217,8 +1212,8 @@ async def reminders_add(persona: PersonaIdPath, req: ReminderAddRequest):
 
 @app.delete("/api/personas/{persona}/reminders", dependencies=[Depends(require_auth)])
 async def reminders_cancel(persona: PersonaIdPath, index: int, chat_id: str = "web_user"):
-    # Фронт (web/src/api.ts) шлёт 1-based index из _reminders() — тот же
-    # 0-based индекс, что и раньше, но через единую точку удаления по ссылке
+    # Фронт (web/src/api.ts) шлёт 1-based index из _reminders(): переводим в
+    # 0-based и подаём в единую точку удаления по ссылке
     # (parse_reminder_ref/cancel_by_ref, см. reminder_manager), чтобы
     # адресация нигде в проекте не расходилась.
     bot = await _get_bot(persona)
@@ -1237,7 +1232,7 @@ async def reminders_cancel(persona: PersonaIdPath, index: int, chat_id: str = "w
 # назначили через чат.
 
 def _calendar_personas() -> dict:
-    """id персоны → {name, color} для меток записей календаря."""
+    # id персоны → {name, color} для меток записей календаря
     out = {}
     for name in list_personas():
         info = get_persona_info(name)
@@ -1247,7 +1242,7 @@ def _calendar_personas() -> dict:
 
 
 def _calendar_view(e: dict, persons: dict) -> dict:
-    """Запись календаря + имя/цвет персоны-владельца для отображения."""
+    # Запись календаря + имя/цвет персоны-владельца для отображения
     info = persons.get(e.get("persona") or "") or {}
     return {
         **e,
@@ -1259,8 +1254,8 @@ def _calendar_view(e: dict, persons: dict) -> dict:
 
 
 def _reminder_calendar_items(start, end, persons) -> list[dict]:
-    """Активные напоминания всех персон как readonly-записи календаря.
-    Читаем JSON-файлы напрямую, без подъёма BotInstance (он тяжёлый)."""
+    # Активные напоминания всех персон как readonly-записи календаря.
+    # Читаем JSON-файлы напрямую, без подъёма BotInstance (он тяжёлый)
     items = []
     now = time.time()
     for persona in list_personas():
@@ -1305,8 +1300,8 @@ def _reminder_calendar_items(start, end, persons) -> list[dict]:
 
 @app.get("/api/calendar", dependencies=[Depends(require_auth)])
 async def calendar_list(start: str | None = None, end: str | None = None):
-    """Записи календаря за диапазон дат (YYYY-MM-DD, включительно) +
-    активные напоминания всех персон."""
+    # Записи календаря за диапазон дат (YYYY-MM-DD, включительно) +
+    # активные напоминания всех персон
     persons = await asyncio.to_thread(_calendar_personas)
     entries = await asyncio.to_thread(get_calendar().list_entries, start, end)
     items = [_calendar_view(e, persons) for e in entries]
@@ -1425,10 +1420,10 @@ async def learning_start(persona: PersonaIdPath, req: LearningStartRequest):
         # Двухшаговое создание курса: setup (тема) + commit (частота).
         # user_id="web_user" в обоих — begin_setup кладёт setup именно под
         # этим ключом (chat_id, user_id), а без user_id в commit_session
-        # применяется легаси-фолбэк get_setup_state (см. learning_manager,
-        # задача №9/№6 аудита): «единственный ожидающий» — верно почти всегда,
-        # но параллельный /learn из другого источника в тот же chat_id (TG-бот
-        # и веб одновременно) уводил бы commit не в тот setup.
+        # применяется фолбэк get_setup_state (см. learning_manager): «единственный
+        # ожидающий» верно почти всегда, но параллельный /learn из другого
+        # источника в тот же chat_id (TG-бот и веб одновременно) увёл бы commit
+        # не в тот setup.
         bot.learning_manager.begin_setup(req.chat_id, req.subject, "web_user", req.user_name)
         return bot.learning_manager.commit_session(
             req.chat_id, req.interval_seconds, user_id="web_user"
@@ -1475,8 +1470,8 @@ async def diary(persona: PersonaIdPath):
 # ── Живая персона: состояние + мир (ui_room_mood_sync) ────────────────
 @app.get("/api/personas/{persona}/state", dependencies=[Depends(require_auth)])
 async def living_state(persona: PersonaIdPath, chat_id: str = "web_user"):
-    """Текущее состояние персоны (energy/mood/pastime/location), сюжетные
-    линии и лента последних событий — для вкладок комната/настроение."""
+    # Текущее состояние персоны (energy/mood/pastime/location), сюжетные
+    # линии и лента последних событий — для вкладок комната/настроение
     bot = await _get_bot(persona)
     living = getattr(bot, "living", None)
     if living is None:
@@ -1516,8 +1511,8 @@ async def presence(req: PresenceRequest):
 
 
 def _read_last_message_ts(persona: str, chat_id: str) -> float:
-    """Метка последнего сообщения чата из data/api_{persona}/last_message.json
-    (синхронное чтение — вызывать через asyncio.to_thread)."""
+    # Метка последнего сообщения чата из data/api_{persona}/last_message.json
+    # (синхронное чтение — вызывать через asyncio.to_thread)
     lm_file = Path(f"data/api_{persona}/last_message.json")
     if not lm_file.is_file():
         return 0.0
@@ -1548,7 +1543,7 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     # Метка последнего сообщения чата (STM штампует её на каждое сообщение) —
     # фронт сортирует по ней список персон по свежести переписки. inbox —
     # часто опрашиваемый эндпоинт (поллинг фронта): синхронное чтение файла
-    # прямо в хендлере блокировало бы event loop на каждый тик (задача №4 аудита)
+    # прямо в хендлере блокировало бы event loop на каждый тик
     last_ts = await asyncio.to_thread(_read_last_message_ts, persona, chat_id)
     bot = registry._bots.get(persona)
     # Карантины веб-чатов (антибот) и состояние пулов браузера — общие для
@@ -1585,8 +1580,8 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
 # ── Инициатива (proactive) ────────────────────────────────────────────
 
 def _read_ignore_streak(persona: str, chat_id: str) -> int:
-    """Ступень «игнора» чата из data/api_{persona}/ignore_streak.json
-    (синхронное чтение — вызывать через asyncio.to_thread)."""
+    # Ступень «игнора» чата из data/api_{persona}/ignore_streak.json
+    # (синхронное чтение — вызывать через asyncio.to_thread)
     ignore_file = Path(f"data/api_{persona}/ignore_streak.json")
     if not ignore_file.is_file():
         return 0
@@ -1610,7 +1605,7 @@ async def initiative(persona: PersonaIdPath, chat_id: str = "web_user"):
             raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
         # streak читаем из файла: настроение может быть испорчено заморозкой
         # даже при выключенной проактивности (фронт считает ступень обиды из него).
-        # Синхронное чтение — в поток пула, не в event loop (задача №4 аудита)
+        # Синхронное чтение — в поток пула, не в event loop
         streak = await asyncio.to_thread(_read_ignore_streak, persona, chat_id)
         return {
             "enabled": bool(cfg.get("enabled", False)),
@@ -1656,7 +1651,7 @@ async def initiative(persona: PersonaIdPath, chat_id: str = "web_user"):
 
 @app.put("/api/personas/{persona}/initiative", dependencies=[Depends(require_auth)])
 async def initiative_update(persona: PersonaIdPath, req: InitiativeUpdate):
-    """Записать параметры проактивности в YAML персоны и в живой конфиг."""
+    # Записать параметры проактивности в YAML персоны и в живой конфиг
     from app.api import settings_api
     patch = {k: v for k, v in req.model_dump().items() if v is not None}
     result = await asyncio.to_thread(settings_api.update_persona_proactive, persona, patch)
@@ -1677,7 +1672,7 @@ async def providers_list():
 
 @app.get("/api/providers/local/status", dependencies=[Depends(require_auth)])
 async def local_provider_status():
-    """Свежая проверка локальной Ollama: сервер, настроенная модель, список моделей."""
+    # Свежая проверка локальной Ollama: сервер, настроенная модель, список моделей
     from app.api import settings_api
     return await asyncio.to_thread(settings_api.local_status)
 
@@ -1730,16 +1725,15 @@ async def provider_set_webchat(req: WebchatRequest):
 
 @app.post("/api/providers/webchat/test", dependencies=[Depends(require_auth)])
 async def provider_test_webchat(req: WebchatRequest):
-    """Проба веб-чата из настроек: «test» в свежий чат, ok — сайт ответил.
-    Долго (сайт может думать до ~90с) — в потоке, роутер не блокируем."""
+    # Проба веб-чата из настроек: «test» в свежий чат, ok — сайт ответил.
+    # Долго (сайт может думать до ~90с) — в потоке, роутер не блокируем
     from app.api import settings_api
     return await asyncio.to_thread(settings_api.test_webchat, req.site)
 
 
 @app.put("/api/providers/local-tasks/{task}", dependencies=[Depends(require_auth)])
 async def provider_set_local_task(task: str, req: LocalBackendRequest):
-    """Движок локальной задачи (всё, что ходило в Ollama): ollama | webchat
-    + сайт веб-чата для этой задачи."""
+    # Движок локальной задачи (ollama | webchat) + сайт веб-чата для этой задачи
     from app.api import settings_api
     result = await asyncio.to_thread(settings_api.set_local_task, task, req.backend, req.site)
     if not result["ok"]:
@@ -1755,7 +1749,7 @@ async def timezone_get():
 
 @app.put("/api/settings/timezone", dependencies=[Depends(require_auth)])
 async def timezone_set(req: TimezoneRequest):
-    """Невалидное имя зоны → 422, .env не трогается (settings_api.set_timezone)."""
+    # Невалидное имя зоны → 422, .env не трогается (settings_api.set_timezone)
     from app.api import settings_api
     result = await asyncio.to_thread(settings_api.set_timezone, req.timezone)
     if not result.get("ok"):
@@ -1793,7 +1787,7 @@ async def location_set(req: LocationRequest):
 
 @app.get("/api/settings/env-preview", dependencies=[Depends(require_auth)])
 async def env_preview():
-    """Точная строка окружения, которая уйдёт в контекст персон (None — выкл)."""
+    # Точная строка окружения, которая уйдёт в контекст персон (None — выкл)
     from app.features import env_context
     line = await asyncio.to_thread(env_context.get_env_line)
     return {"line": line, "location": env_context.load_location()}
@@ -1810,19 +1804,19 @@ async def persona_config(persona: PersonaIdPath):
 
 @app.get("/api/personas/{persona}/yaml", dependencies=[Depends(require_auth)])
 async def persona_yaml(persona: PersonaIdPath):
-    """Сырой YAML-файл персоны (просмотр из топбара, read-only)."""
+    # Сырой YAML-файл персоны (просмотр из топбара, read-only)
     if persona not in list_personas():
         raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
     path = runtime.PERSONAS_DIR / f"{persona}.yaml"
     # Синхронное чтение файла — в поток пула: иначе на время I/O блокирует
-    # весь event loop (задача №4 аудита)
+    # весь event loop
     yaml_text = await asyncio.to_thread(path.read_text, encoding="utf-8")
     return {"persona": persona, "yaml": yaml_text}
 
 
 @app.put("/api/personas/{persona}/yaml", dependencies=[Depends(require_auth)])
 async def persona_yaml_update(persona: PersonaIdPath, req: PersonaYamlUpdate):
-    """Записать отредактированный YAML персоны (с валидацией)."""
+    # Записать отредактированный YAML персоны (с валидацией)
     if persona not in list_personas():
         raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
     from app.api import settings_api
@@ -1851,14 +1845,14 @@ async def persona_config_update(persona: PersonaIdPath, req: PersonaConfigUpdate
 
 @app.get("/api/persona-drafts", dependencies=[Depends(require_auth)])
 async def persona_drafts():
-    """Все черновики целиком (form + yaml), свежие сверху."""
+    # Все черновики целиком (form + yaml), свежие сверху
     from app.api import drafts_api
     return {"drafts": await asyncio.to_thread(drafts_api.list_drafts)}
 
 
 @app.post("/api/persona-drafts", dependencies=[Depends(require_auth)])
 async def persona_draft_save(req: PersonaDraftSave):
-    """Создать (id=None) или обновить черновик."""
+    # Создать (id=None) или обновить черновик
     from app.api import drafts_api
     draft = await asyncio.to_thread(drafts_api.save_draft, req.id, req.name, req.form, req.yaml)
     if draft is None:

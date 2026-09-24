@@ -13,7 +13,7 @@
         "date": "2026-09-20",          # YYYY-MM-DD, обязательно
         "time": "18:30" | None,        # HH:MM, опционально
         "kind": "todo" | "reminder" | "note" | "event",
-        "persona": "alex" | None,      # id персоны-владельца записи
+        "persona": "<id>" | None,      # id персоны-владельца записи
         "user_name": "web",            # кто попросил
         "note": "",
         "done": False,
@@ -54,7 +54,7 @@ def _valid_time(value: str) -> bool:
 
 
 class CalendarManager:
-    """CRUD над общим файлом календаря. Потокобезопасен."""
+    # CRUD над общим файлом календаря. Потокобезопасен.
 
     def __init__(self, data_dir: Optional[str] = None):
         self._base_dir = Path(data_dir or Config.DATA_DIR)
@@ -71,7 +71,7 @@ class CalendarManager:
         self._entries = data if isinstance(data, list) else []
 
     def _save(self):
-        """Атомарная запись (общий helper app.core.atomic_io — tmp-файл + os.replace)."""
+        # Атомарная запись (общий helper app.core.atomic_io — tmp-файл + os.replace).
         try:
             atomic_write_json(self._file, self._entries)
         except Exception as e:
@@ -82,7 +82,7 @@ class CalendarManager:
     def add_entry(self, title: str, date: str, time_: Optional[str] = None,
                   kind: str = "note", persona: Optional[str] = None,
                   user_name: str = "web", note: str = "") -> dict:
-        """Создаёт запись. ValueError — при невалидных дате/времени/типе."""
+        # Создаёт запись. ValueError — при невалидных дате/времени/типе.
         title = (title or "").strip()
         if not title:
             raise ValueError("пустой заголовок")
@@ -126,12 +126,9 @@ class CalendarManager:
         """Правит запись по id. None — запись не найдена, ValueError — невалидное поле.
         None-значения принимаются только у time/persona (сброс поля).
 
-        title="" раньше молча записывался как есть (пустой заголовок проходил
-        мимо проверки, которая есть в add_entry) — здесь тот же запрет: пустой
-        title — ValueError, а не тихая порча записи. time="" (веб-форма шлёт
-        пустую строку, когда время сбрасывают) раньше тоже записывался как
-        буквальная "" вместо None — нормализуем к None, чтобы «время не
-        указано» хранилось одним способом, а не двумя вперемешку."""
+        Пустой title запрещён, как и в add_entry. Пустая строка time (веб-форма
+        шлёт её при сбросе времени) нормализуется в None, чтобы отсутствие
+        времени хранилось одним способом, а не двумя вперемешку."""
         if "title" in patch:
             patch["title"] = (patch["title"] or "").strip()
             if not patch["title"]:
@@ -159,7 +156,7 @@ class CalendarManager:
         return None
 
     def remove_entry(self, entry_id: str) -> bool:
-        """Удаляет запись по id. True — удалена."""
+        # Удаляет запись по id. True — удалена.
         with self._lock:
             before = len(self._entries)
             self._entries = [e for e in self._entries if e["id"] != entry_id]

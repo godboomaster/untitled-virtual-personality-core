@@ -12,7 +12,7 @@ interface HomeProps {
   onNavigate: (s: Section) => void;
 }
 
-// Строка ленты «пока вас не было»: событие одного из типов per-персона
+// Строка ленты «пока вас не было»: событие одной персоны одного из типов
 interface FeedRow {
   kind: 'initiative' | 'diary' | 'reminder';
   persona: string;

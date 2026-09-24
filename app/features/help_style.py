@@ -1,5 +1,5 @@
 """
-Стилевые модификаторы ответа на просьбы о помощи (§4 плана уровней интеллекта).
+Стилевые модификаторы ответа на просьбы о помощи.
 
 Центральная механика различия primitive / normal / bot: не «насколько персонаж
 умный», а КАК он помогает. Три общесистемных фрагмента (не per-persona yaml):
@@ -8,11 +8,12 @@
   casual_human    (normal)    — коротко по-бытовому, без ассистентских уточнений
   full_assistant  (bot)       — право на полный разбор: расчёты, код, уточнения
 
-Детекция (§4.1): лёгкий Gemma-классификатор «является ли сообщение просьбой
-о помощи в теме (а не бытовым разговором)» — модификатор подключается только
-когда он реально нужен, остальное время тон персоны не трогается.
+Детекция: лёгкий классификатор на локальной LLM определяет, является ли
+сообщение просьбой о помощи в теме (а не бытовым разговором) — модификатор
+подключается только когда он реально нужен, остальное время тон персоны не
+трогается.
 
-Приоритет (§4.3): tier-модификатор — ограничение СВЕРХУ; он перекрывает
+Приоритет: tier-модификатор — ограничение сверху; он перекрывает
 конфликтующие инструкции system_prompt, всё остальное в характере остаётся.
 """
 
@@ -29,11 +30,12 @@ logger = logging.getLogger(__name__)
 
 # Общий пул для фоновой детекции: process_message запускает классификатор
 # параллельно с rewrite/памятью/поиском и забирает результат перед сборкой
-# промпта — без этого Gemma-вызов добавлял бы задержку к каждому ответу
+# промпта — без этого вызов классификатора добавлял бы задержку к каждому
+# ответу
 _detect_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="help-detect")
 
 # Кэш вердиктов детекции: повторные/типичные сообщения («ок», «спасибо»)
-# не дёргают Gemma повторно. Ключ — нормализованный текст, TTL 10 минут.
+# не дёргают классификатор повторно. Ключ — нормализованный текст, TTL 10 минут.
 _DETECT_CACHE_TTL_SEC = 600
 _DETECT_CACHE_MAX = 256
 _detect_cache: "OrderedDict[str, tuple]" = OrderedDict()
@@ -55,8 +57,8 @@ CHAT — приветствия, болтовня, эмоции, рассказ�
 
 Сообщение: «{text}»"""
 
-# Фрагменты §4.2 — общие шаблоны уровня системы. Персональные правила подачи
-# (как у Коннора — «Мне нужно уточнить одну деталь» перед точным вопросом)
+# Общесистемные шаблоны уровня. Персональные правила подачи конкретной
+# персоны (например, обязательная фраза-переход перед точным вопросом)
 # ложатся поверх, если не противоречат.
 STYLE_FRAGMENTS = {
     "action_only": (
@@ -85,9 +87,9 @@ STYLE_FRAGMENTS = {
 
 
 def detect_help_request(text: str, local_router) -> Optional[dict]:
-    """Gemma-детекция просьбы о помощи (§4.1).
-    Возвращает {"is_help_request": bool, "domain": str} или None, если
-    локальная модель недоступна."""
+    """Детекция просьбы о помощи локальной моделью. Возвращает
+    {"is_help_request": bool, "domain": str} или None, если локальная
+    модель недоступна."""
     if not text or len(text.strip()) < 3:
         return None
     if local_router is None or not local_router.is_available(task="help_detect"):
@@ -125,7 +127,7 @@ def detect_help_request(text: str, local_router) -> Optional[dict]:
 
 
 def build_style_block(style: str, domain: str = "") -> Optional[str]:
-    """Собирает промпт-фрагмент для вставки в system_prompt (§4.2 + §4.3)."""
+    # Собирает промпт-фрагмент для вставки в system_prompt.
     fragment = STYLE_FRAGMENTS.get(style)
     if not fragment:
         return None
@@ -140,7 +142,7 @@ def build_style_block(style: str, domain: str = "") -> Optional[str]:
 
 
 def _detect_cached(text: str, local_router) -> Optional[dict]:
-    """detect_help_request с TTL-кэшем по нормализованному тексту."""
+    # detect_help_request с TTL-кэшем по нормализованному тексту.
     key = " ".join((text or "").lower().split())[:200]
     now = time.time()
     with _detect_cache_lock:
@@ -164,9 +166,9 @@ def build_block_for_message(text: str, intellect, local_router) -> Optional[str]
     """Полный пайплайн для process_message: детекция → модификатор.
     None — модификатор не нужен (не help-запрос или legacy-режим).
 
-    Fallback-политика при недоступности Gemma: ограничивающие стили
-    (action_only, casual_human) применяются ВСЕГДА — ограничение безопаснее
-    свободы; full_assistant (разрешающий) не подставывается зря."""
+    Fallback-политика при недоступности классификатора: ограничивающие
+    стили (action_only, casual_human) применяются всегда — ограничение
+    безопаснее свободы; full_assistant (разрешающий) не подставляется зря."""
     if intellect is None or not intellect.active:
         return None
     style = intellect.help_response_style
@@ -189,9 +191,9 @@ def build_block_for_message(text: str, intellect, local_router) -> Optional[str]
 
 
 def submit_block_for_message(text: str, intellect, local_router):
-    """Фоновый вариант build_block_for_message (§4.1): возвращает Future,
-    чтобы Gemma-детекция шла параллельно с остальной подготовкой контекста
-    в process_message, а не добавляла задержку к ответу.
+    """Фоновый вариант build_block_for_message: возвращает Future, чтобы
+    детекция шла параллельно с остальной подготовкой контекста в
+    process_message, а не добавляла задержку к ответу.
     None — модификатор заведомо не нужен (legacy/нет стиля)."""
     if intellect is None or not intellect.active:
         return None

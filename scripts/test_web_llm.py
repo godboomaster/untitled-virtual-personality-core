@@ -17,13 +17,13 @@ from zoneinfo import ZoneInfo
 
 
 def _mp_quota_worker(base_dir: str, site: str, channel: str, n: int):
-    """Воркер ОТДЕЛЬНОГО ПРОЦЕССА (multiprocessing, не потока) — хвост задачи
-    №7 аудита: threading.Lock (_STATE_FILE_LOCKS) сериализует запись
-    web_llm_state.json только внутри одного процесса, а несколько процессов
-    персон на общий data/ иначе теряли параллельный инкремент квоты
-    (read-modify-write без общесистемного лока). Модульная функция — не
-    замыкание внутри main(): multiprocessing (spawn, дефолт на macOS)
-    подгружает воркер через pickle по имени, замыкания так не передаются."""
+    """Воркер отдельного процесса (multiprocessing, не потока): threading.Lock
+    (_STATE_FILE_LOCKS) сериализует запись web_llm_state.json только внутри
+    одного процесса, и несколько процессов персон на общий data/ без
+    межпроцессного лока теряли бы параллельный инкремент квоты
+    (read-modify-write). Модульная функция, не замыкание внутри main(): multiprocessing (spawn,
+    дефолт на macOS) подгружает воркер через pickle по имени, а замыкания так
+    не передаются."""
     from app.features import web_llm as _wl
     inst = _wl.WebChatLLM(site, base_dir=Path(base_dir), channel=channel)
     for _ in range(n):
@@ -46,10 +46,10 @@ def main():
         print(f"  [{'OK' if cond else 'FAIL'}] {name}")
         ok = ok + 1 if cond else ok - 100
 
-    # Проба интернета (кейс 22.09: слабый Wi-Fi → «Нет интернета» → 30 с
-    # решений режима управления от локальной модели): офлайн признаётся
-    # только после ДВУХ пустых серий, кэш «офлайн» короткий, а успешный
-    # ответ облака/веб-чата подтверждает онлайн без пробы
+    # Проба интернета: слабая сеть не должна ложно давать «офлайн» (иначе
+    # режим управления откатывается на решения локальной модели) — офлайн
+    # признаётся только после ДВУХ пустых серий подряд, кэш «офлайн» короткий,
+    # а успешный ответ облака/веб-чата подтверждает онлайн без пробы
     _orig_probe = _net_router._probe_round
     _rounds = []
     _net_router._probe_round = lambda: (_rounds.append(1), False)[1]
@@ -110,7 +110,7 @@ def main():
           and wl.extract_json("никакого json") is None
           and wl.extract_json("") is None)
 
-    # Опрос в тестах глушим глобально (пейсинг из рантайма убран)
+    # Опрос в тестах без пауз — ускоряет прогон
     wl.POLL_SEC = 0
 
     # Якорное чтение (answer_blocks_after) по умолчанию «не находит якорь» —
@@ -403,9 +403,9 @@ def main():
             raise ba.BrowserUnavailable("поле чата не приняло ввод")
         return "sent"
     ba.chat_fill_send = _flaky_send
-    cnts = iter([0, 1, 2, 2, 2])  # baseline попыток: 0 (битая), 1 (свежая с
-    txts = iter(["ок"] * 5)  # baseline_text попыток ×2 + 3 замера; прошлым
-    # блоком в DOM) → ждём блок > 1
+    cnts = iter([0, 1, 2, 2, 2])  # baseline: 0 (битая), 1 (свежая, с прошлым
+                                    # блоком в DOM) → ждём блок > 1
+    txts = iter(["ок"] * 5)  # baseline_text ×2 + 3 замера
     ba.count_blocks = lambda *a, **kw: next(cnts)
     def _lbt_rec(host, tid, sels=None, **kw):
         if sels and list(sels) == (llm5.adapter.get("user") or []):
@@ -460,9 +460,9 @@ def main():
         ba.chat_fill_send, ba.last_block_text = _cfs6, _lbt6
         ba.count_blocks, ba.tab_url = _cnt6, _url6
 
-    # ── 6d. Кейс 22.08: баннер ошибки рендерится в assistant-контейнере БЕЗ
-    #       content-классов — answer-селекторы его не видят (last_block_text
-    #       всегда отдаёт старый ответ), ловим только через error_scope ──
+    # ── 6d. Баннер ошибки рендерится в assistant-контейнере без content-
+    #       классов — answer-селекторы его не видят (last_block_text всегда
+    #       отдаёт старый ответ), ловим только через error_scope ──
     llm7 = wl.WebChatLLM("qwen", base_dir=tmp / "q7")
     llm7._save_state({"chat_url": "https://chat.qwen.ai/c/dead"})
     flow7 = {"nav": [], "send": 0}
@@ -502,9 +502,9 @@ def main():
         ba.chat_fill_send, ba.last_block_text = _cfs7, _lbt7
         ba.count_blocks, ba.tab_url, ba.eval_js = _cnt7, _url7, _ev7
 
-    # ── 6e. Hydration-гонка (кейс 22.08): closed-loop «поле очистилось»
-    #       сработал ложно, сообщение не попало в ленту — _send_verified
-    #       обязан заметить по user-блоку и повторить отправку ──
+    # ── 6e. Hydration-гонка: closed-loop «поле очистилось» срабатывает ложно,
+    #       сообщение не попадает в ленту — _send_verified обязан заметить
+    #       это по user-блоку и повторить отправку ──
     _sv, _pl = wl.SEND_VERIFY_SEC, wl.POLL_SEC
     wl.SEND_VERIFY_SEC, wl.POLL_SEC = 0.5, 0.05
     llm8 = wl.WebChatLLM("qwen", base_dir=tmp / "q8")
@@ -589,8 +589,9 @@ def main():
         llm_q2._challenge_check(ba, 42)
         check("quarantine: _challenge_check замеряет строго (strict=True)",
               _strict_flags == [True])
-        # Сбой замера: карантин НЕ снимается (раньше detect_antibot отдавал
-        # None на любой ошибке — и карантин снимался вслепую)
+        # Сбой замера не считается «чисто»: detect_antibot обязан различать
+        # «не удалось проверить» и «страница чистая», иначе карантин
+        # снимается вслепую
         wl.quarantine_site("qwen", "widget: turnstile")
         wl.pop_quarantine_alerts()
         def _da_boom(host=None, tab_id=None, strict=False):
@@ -641,10 +642,10 @@ def main():
         ba.open_new_tab, ba.tab_url = _oq, _uq
         wl.clear_quarantine("qwen")
 
-    # ── 6f. Кейс 22.08: «реформулировка вместо ответа». Страница чата
-    #       непрогрета: baseline=0, хотя в ленте уже лежит СТАРЫЙ завершённый
-    #       ответ (реплика coref) — baseline-путь вернул бы её. Якорный путь
-    #       ждёт блок ПОСЛЕ нашего сообщения ──
+    # ── 6f. «Реформулировка вместо ответа»: страница чата непрогрета —
+    #       baseline=0, хотя в ленте уже лежит СТАРЫЙ завершённый ответ
+    #       (реплика coref), и baseline-путь вернул бы именно её. Якорный
+    #       путь ждёт блок ПОСЛЕ нашего сообщения ──
     llm10 = wl.WebChatLLM("qwen", base_dir=tmp / "q10")
     llm10._save_state({"chat_url": "https://chat.qwen.ai/c/c1"})
     _open10, _nav10 = ba.open_new_tab, ba.navigate_tab
@@ -1242,16 +1243,16 @@ def main():
     check("без lock_timeout — семантика прежняя (блокирующий лок)",
           c18b.get_response([{"role": "user", "content": "x"}]) == "ок")
 
-    # ── 19. Аудит №7: сигнал сайта (rate limit/картинки/ошибка) только из
+    # ── 19. Сигнал сайта (rate limit/картинки/ошибка) берётся только из
     #       баннера/error_scope сайта, НЕ из текста ответа модели ──
     _cnt19, _lbt19, _ev19 = ba.count_blocks, ba.last_block_text, ba.eval_js
     try:
         # 19a. Длинный реалистичный ответ, где МОДЕЛЬ САМА обсуждает лимиты
         # сообщений/картинок чужих сервисов (пользователь спросил про
-        # лимиты) — раньше «message limit»/«usage limit»/«too many images»
-        # в этой прозе резали готовый ответ и слали ЭТОТ сайт в часовой
-        # карантин (аудит: _RATE_LIMIT_RES/_TOO_MANY_IMAGES_RES сверялись
-        # с cur_norm — текстом самого ответа).
+        # лимиты): фразы вроде «message limit»/«usage limit»/«too many
+        # images» в такой прозе не должны резать готовый ответ и отправлять
+        # ЭТОТ сайт в карантин — _RATE_LIMIT_RES/_TOO_MANY_IMAGES_RES не
+        # сверяются с cur_norm (текстом самого ответа).
         long_answer = (
             "Лимиты бесплатных тарифов у чат-сервисов разные: у одних "
             "message limit считается числом сообщений в сутки, у других — "
@@ -1279,11 +1280,11 @@ def main():
 
         # 19b. Настоящий баннер сайта (сканер страницы, НЕ текст ответа —
         # сайт ничего не ответил, cur_norm пуст) — карантин ДЕЙСТВИТЕЛЬНО
-        # ставится, TTL парсится из текста баннера. Заодно проверяет фикс
-        # частоты пробника: banner_js сканит раз в BANNER_PROBE_EVERY
-        # тиков, а порогу нужны 2 замера ПОДРЯД — без форсирования
-        # непрерывного пробника после первого совпадения (rl_seen/im_seen
-        # в условии пробника) два подряд замера никогда бы не набрались.
+        # ставится, TTL парсится из текста баннера. Заодно проверяет частоту
+        # пробника: banner_js сканит раз в BANNER_PROBE_EVERY тиков, а порогу
+        # нужны 2 замера ПОДРЯД — без форсирования непрерывного пробника
+        # после первого совпадения (rl_seen/im_seen в условии пробника) два
+        # подряд замера никогда бы не набрались.
         banner_real = "You've reached your message limit. Try again in 2 hours."
         ba.eval_js = lambda *a, **kw: banner_real
         ba.count_blocks = lambda *a, **kw: 0   # сайт вообще не ответил
@@ -1301,7 +1302,7 @@ def main():
 
         # 19c. Сайты БЕЗ error_scope, у которых баннер рендерится ВНУТРИ
         # answer-блока (deepseek «Length limit reached…» — без content-
-        # классов): короткий блок, целиком похожий на баннер, — по-прежнему
+        # классов): короткий блок, целиком похожий на баннер, всё равно
         # детектится (allow_answer_text), в отличие от 19a, где похожий
         # текст тонет в длинном настоящем ответе.
         short_refusal = "Length limit reached. Please start a new chat."
@@ -1321,10 +1322,11 @@ def main():
         ba.count_blocks, ba.last_block_text, ba.eval_js = _cnt19, _lbt19, _ev19
 
     # 19d. web_llm_state.json — общий на контекст файл: два РАЗНЫХ инстанса
-    # WebChatLLM (как бот + память со своими ModelRouter, см. комментарий у
-    # _STATE_FILE_LOCKS) конкурентно пишут РАЗНЫЕ каналы одного сайта —
-    # раньше read-modify-write под разными per-instance локами терял ключ
-    # (chat_url/счётчик квоты) того канала, что сохранился НЕ последним.
+    # WebChatLLM (например, бот и фоновая память со своими ModelRouter, см.
+    # комментарий у _STATE_FILE_LOCKS) конкурентно пишут РАЗНЫЕ каналы одного
+    # сайта — read-modify-write под разными per-instance локами не должен
+    # терять ключ (chat_url/счётчик квоты) того канала, что сохранился не
+    # последним.
     base19d = tmp / "state19d"
     a19d = wl.WebChatLLM("qwen", base_dir=base19d, channel="main")
     b19d = wl.WebChatLLM("qwen", base_dir=base19d, channel="side")
@@ -1350,13 +1352,13 @@ def main():
           sites19d.get("qwen", {}).get("count") == 25
           and sites19d.get("qwen#side", {}).get("count") == 25)
 
-    # ── 19e. Хвост №7: межпроцессный file_lock ──
+    # ── 19e. Межпроцессный file_lock ──
     # Два НЕЗАВИСИМЫХ ПРОЦЕССА (multiprocessing, не потока — threading.Lock
     # процесса A не виден процессу B) параллельно инкрементируют квоту ОДНОГО
     # и того же сайта+канала в общем web_llm_state.json. Без file_lock
     # (atomic_io, fcntl/msvcrt) часть из 2×N инкрементов терялась бы —
-    # ровно та же гонка read-modify-write, что и в 19d, но между процессами,
-    # где _STATE_FILE_LOCKS (threading, только для своего процесса) не спасает.
+    # та же гонка read-modify-write, что и в 19d, но между процессами, где
+    # _STATE_FILE_LOCKS (threading, только для своего процесса) не спасает.
     base19e = tmp / "state19e"
     n19e = 30
     p1 = multiprocessing.Process(target=_mp_quota_worker,
@@ -1371,13 +1373,13 @@ def main():
           "без потерь (2×30, а не меньше)",
           p1.exitcode == 0 and p2.exitcode == 0 and count19e == 2 * n19e)
 
-    # ── 19f. Хвост №7: время сайта → timeutil (TIMEZONE), не системный пояс ──
-    # _parse_reset_ttl («resets at HH:MM») теперь считает через timeutil.now()
-    # /to_ts() — часы САЙТА (открытого в браузере пользователя) это часы
-    # ПОЛЬЗОВАТЕЛЯ из TIMEZONE, а не системный пояс машины бота (было
-    # time.localtime/time.mktime). Проверяем на двух РАЗНЫХ поясах: TTL
-    # совпадает с прямым расчётом через zoneinfo для КАЖДОГО из них — то
-    # есть функция действительно читает TIMEZONE, а не игнорирует его.
+    # ── 19f. Время сайта → timeutil (TIMEZONE), не системный пояс ──
+    # _parse_reset_ttl («resets at HH:MM») считает через timeutil.now()/
+    # to_ts(): часы САЙТА (открытого в браузере пользователя) — это часы
+    # ПОЛЬЗОВАТЕЛЯ из TIMEZONE, а не системный пояс машины бота. Проверяем на
+    # двух РАЗНЫХ поясах: TTL совпадает с прямым расчётом через zoneinfo для
+    # КАЖДОГО из них — то есть функция действительно читает TIMEZONE, а не
+    # игнорирует его.
     _orig_timezone_env = os.environ.get("TIMEZONE")
     try:
         # Строка «resets at HH:MM» несёт только час:минуту (без секунд) —
@@ -1420,7 +1422,7 @@ def main():
 def _with_temp_browser_locks(fn):
     """Лок-файлы Chrome пулов (<профиль>.bot-lifecycle.lock/.bot-users.lock)
     — во временный каталог на весь прогон: тест ходит в сырой пул V (и
-    воркер) с конфигом по умолчанию, и иначе создавал/держал лок-файлы рядом
+    воркер) с конфигом по умолчанию и иначе создавал бы/держал лок-файлы рядом
     с НАСТОЯЩИМИ профилями — теми же, что у живого бота."""
     import app.features.browser_actions as _ba_locks
     d = tempfile.mkdtemp(prefix="browser_locks_")

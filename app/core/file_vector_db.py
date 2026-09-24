@@ -17,18 +17,18 @@ import time
 logger = logging.getLogger(__name__)
 
 MAX_DOCS_DEFAULT = 3
-# Сколько пользователей помнить в _loaded_docs (последний загруженный файл) —
-# вечный dict тут был чистой утечкой
+# Сколько пользователей помнить в _loaded_docs (последний загруженный файл):
+# без предела словарь рос бы на каждого пользователя за всё время процесса
 MAX_LOADED_DOCS_USERS = 500
 
 
 def _locked(method):
     """Выполнить метод под ``self._lock`` — одним RLock на инстанс.
 
-    Один декоратор на все операции вместо ручного ``with`` в каждом методе:
-    иначе новый метод легко забыть закрыть локом, а именно так и появлялись
-    гонки (см. комментарий в ``__init__``). RLock — вложенные вызовы
-    (``add_file`` → ``_delete_full_doc``) берут тот же лок повторно.
+    Один декоратор на все операции вместо ручного ``with`` в каждом методе —
+    так новый метод не может забыть взять лок (см. комментарий в ``__init__``
+    про гонки без него). RLock — вложенные вызовы (``add_file`` →
+    ``_delete_full_doc``) берут тот же лок повторно.
     """
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
@@ -65,19 +65,18 @@ class FileVectorDB:
         self._loaded_docs = BoundedCache(max_entries=MAX_LOADED_DOCS_USERS)  # user_id -> filename
         # Все операции здесь — read-modify-write по двум коллекциям
         # (get список → delete лишнего → add нового). Без лока параллельные
-        # add_file/remove_file/reset из разных потоков (загрузка файла в TG и
-        # запрос из веб-API) работали по устаревшему списку ids: один поток
-        # удалял чанки, которые другой только что записал, или лимит max_docs
-        # обходился, и в базе оставались документы сверх лимита. RLock —
-        # публичные методы вызывают приватные, которые тоже берут лок.
+        # add_file/remove_file/reset из разных потоков (например, загрузка
+        # файла в мессенджере и запрос из веб-API) работали бы по устаревшему
+        # списку ids: один поток удалял бы чанки, которые другой только что
+        # записал, а лимит max_docs обходился бы, оставляя в базе документы
+        # сверх лимита. RLock — публичные методы вызывают приватные, которые
+        # тоже берут лок.
         self._lock = threading.RLock()
 
     @_locked
     def add_file(self, user_id: str, filename: str, content: str):
-
-        # Добавить файл в базу. Если уже есть максимальное количество — удаляет самый старый.
-        # Если файл с таким именем уже есть — удаляем все чанки
-
+        # Добавляет файл; при совпадении имени заменяет прежнюю версию, при
+        # превышении лимита удаляет самый старый документ пользователя.
         user_docs = self.collection.get(where={"user_id": user_id})
         if user_docs and user_docs["ids"]:
             existing_ids = [
@@ -158,7 +157,6 @@ class FileVectorDB:
 
     @_locked
     def search(self, user_id: str, query: str, limit: int = 5) -> list[str]:
-        # Поиск по файлам пользователя.
         user_docs = self.collection.get(where={"user_id": user_id})
         if not user_docs or not user_docs["ids"]:
             return []
@@ -176,7 +174,6 @@ class FileVectorDB:
 
     @_locked
     def _assemble_full_doc(self, user_id: str, filename: str) -> str | None:
-        # Собирает полный документ из частей
         all_parts = self.full_docs.get(where={"user_id": user_id})
         if not all_parts or not all_parts["ids"]:
             return None
@@ -223,7 +220,6 @@ class FileVectorDB:
 
     @_locked
     def get_loaded_files(self, user_id: str) -> list[str]:
-        # Получить список загруженных файлов пользователя.
         user_docs = self.collection.get(where={"user_id": user_id})
         if not user_docs or not user_docs["metadatas"]:
             return []
@@ -237,7 +233,7 @@ class FileVectorDB:
 
     @_locked
     def list_files_detailed(self, user_id: str) -> list[dict]:
-        """Список файлов с метаданными: имя, размер полного текста (символов), дата загрузки."""
+        # Список файлов с метаданными: имя, размер полного текста (символов), дата загрузки.
         docs = self.full_docs.get(where={"user_id": user_id})
         out: dict = {}
         for meta in (docs.get("metadatas") or []):
@@ -254,7 +250,7 @@ class FileVectorDB:
 
     @_locked
     def remove_file(self, user_id: str, filename: str) -> bool:
-        """Удалить один файл пользователя (чанки + полный текст). False — файла не было."""
+        # Удалить один файл пользователя (чанки + полный текст). False — файла не было.
         user_docs = self.collection.get(where={"user_id": user_id})
         chunk_ids = [
             eid for eid, meta in zip(user_docs["ids"], user_docs.get("metadatas", []))
@@ -269,7 +265,6 @@ class FileVectorDB:
 
     @_locked
     def _delete_full_doc(self, user_id: str, filename: str):
-        # Удаляет все части полного текста документа
         all_parts = self.full_docs.get(where={"user_id": user_id})
         if not all_parts or not all_parts["ids"]:
             return

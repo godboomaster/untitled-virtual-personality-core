@@ -1,8 +1,8 @@
-"""Smoke-тест браузерного слоя (browser_actions) — правки аудита, п.5.
+"""Smoke-тест браузерного слоя (browser_actions).
 
 Живого браузера здесь нет: страницы, процессы, osascript и raw-CDP —
 моки/фейки (как в разделе «Фоновые вкладки (raw CDP)» test_computer_control).
-Проверяется по одной проверке на каждое исправление:
+Один блок проверок на тему:
 
   1. «текущая пользовательская вкладка» — одно понятие (scan_search, tab_op);
   2. сбой запуска браузера добивает осиротевший процесс (пулы V и H);
@@ -19,7 +19,11 @@
  13. бюджеты снапшотов в JS подставляются из SNAPSHOT_MAX/GOAL_SNAPSHOT_MAX;
  14. стем слова (__vpcStem/__vpcWIn) — одно определение на все шаблоны;
  15. press_key: один потолок серии (PRESS_TIMES_MAX) и добивание остатка;
- 16. звук направленно (mute/unmute), отчёт по факту, а не «громкость N%».
+ 16. звук направленно (mute/unmute), отчёт по факту, а не «громкость N%»;
+ 17. AppleScript при нескольких экземплярах браузера: сверка URL вкладок;
+ 18. Windows: профиль и завершение процесса;
+ 19. реестр страниц воркера — по поколениям;
+ 20. антибот: валидные CSS-селекторы, причина ошибки JS в сообщении.
 
 Запуск: PYTHONPATH=. python3 scripts/test_browser_actions.py
 """
@@ -52,7 +56,7 @@ def main():
     SRC = io.open(ba.__file__, encoding="utf-8").read()
 
     class _Pg:
-        """Минимальная страница playwright: url + evaluate + закрытость."""
+        # Минимальная страница playwright: url + evaluate + закрытость.
 
         def __init__(self, url, res=None, title=""):
             self.url = url
@@ -109,7 +113,7 @@ def main():
         check("scan_search: рецепт выполняется в видимой вкладке, "
               "а не в первой из списка",
               wk.eval_js(None, "JS", scan_search=True) == "ok:visible")
-        # Источник видимой молчит — прежнее поведение (первая подходящая)
+        # Источник видимой молчит — фолбэк на первую подходящую вкладку
         ba._front_window_url = lambda: ""
         wk2 = ba._CdpWorker()
         wk2.ensure_browser = lambda allow_launch=False: None
@@ -145,7 +149,7 @@ def main():
             return None if self._alive else 1
 
     class _FakeSub:
-        """Подмена модуля subprocess для путей запуска (Popen/run/DEVNULL)."""
+        # Подмена модуля subprocess для путей запуска (Popen/run/DEVNULL).
         DEVNULL = -3
         TimeoutExpired = subprocess.TimeoutExpired
 
@@ -615,7 +619,7 @@ def main():
             ba.set_slider("a.ru", "громкость", 8)
         except ba.BrowserUnavailable as e:
             err = str(e)
-        except ValueError as e:  # прежний голый float(got)
+        except ValueError as e:  # так проявился бы голый float(got)
             err = f"ValueError: {e}"
         check("слайдер Safari: нечисловое значение — честный отказ, "
               "а не ValueError",
@@ -803,8 +807,8 @@ def main():
           not _re.search(r"B\+\d", _snap_tpl)
           and not _re.search(r"B\+\d", _goal_tpl)
           and _snap_tpl.count("B+M") >= 7 and _goal_tpl.count("B+M") >= 5)
-    # Плейсхолдеров не добавилось: шаблон по-прежнему заполняется одним BASE
-    # (иначе разъехались бы вызывающие и шаблонный линтер)
+    # Шаблон заполняется одним BASE, без лишних плейсхолдеров (иначе
+    # разъехались бы вызывающие и шаблонный линтер)
     _fill_ok = True
     try:
         _sf = ba._js_fill(_snap_tpl, BASE=100)
@@ -826,9 +830,9 @@ def main():
         check("снапшот (node): шаблоны с M синтаксически валидны",
               _bad_tpl == [])
 
-    # Признак перекрытия cov (кейс 22.09, dodo: каталог под попапом при
-    # непойманном бэкдропе) — одно определение vpcCov в обоих шаблонах,
-    # эмиссия из vpcInfo/info, парсер отдаёт bool с дефолтом «не перекрыт»
+    # Признак перекрытия cov (элемент под попапом, когда бэкдроп не пойман
+    # детектом) — одно определение vpcCov в обоих шаблонах, эмиссия из
+    # vpcInfo/info, парсер отдаёт bool с дефолтом «не перекрыт»
     _cov_defs = [_re.search(r"function vpcCov\(e\)\{.*?return 0;\}", _t)
                  for _t in (_snap_tpl, _goal_tpl)]
     check("cov: vpcCov определён в обоих шаблонах и копии идентичны",
@@ -870,10 +874,10 @@ def main():
               tuple(ba._STEM_ENDINGS) == tuple(_WORD_ENDINGS)
               and len(ba._STEM_ENDINGS) >= 30
               and "var __vpcEnds=" in ba._VPC_NORM_JS
-              # ни одной копии прежней формулы усечения по длине
+              # усечение окончаний по длине не дублируется своей формулой
               and "w.length>=7?w.length-3" not in SRC
               and SRC.count("function __vpcStem") == 1
-              # третья копия жила в _READ_SECTION_JS — теперь общий хелпер
+              # _READ_SECTION_JS использует тот же общий хелпер, без своей копии
               and ba._VPC_NORM_JS in ba._READ_SECTION_JS
               and "function stem(w)" not in SRC)
         _stem_corpus = [
@@ -944,7 +948,7 @@ def main():
             self.presses.append(key)
 
     class _Loc:
-        """locator('video').first: press падает на N-м нажатии серии."""
+        # locator('video').first: press падает на N-м нажатии серии.
 
         def __init__(self, fail_at=None):
             self.presses = []
@@ -1097,7 +1101,7 @@ def main():
     try:
         _as_url = ["https://www.youtube.com/watch?v=1"]
         ba._as_run = lambda script, browser="chrome", app=None: _as_url[0]
-        # (а) один экземпляр — как раньше, без всякой сверки
+        # (а) один экземпляр — сверка не нужна
         ba._as_browser_pids = lambda app=None: [111]
         ba._bot_page_urls = lambda: ()
         check("один экземпляр: мост работает, сверка не нужна",
@@ -1121,7 +1125,7 @@ def main():
             check("два экземпляра + совпало: переднее окно используется",
                   ba._front_window_url() == _as_url[0]
                   and ba._as_single_target() is True)
-        # (в) два экземпляра + URL чужой — прежний отказ
+        # (в) два экземпляра + URL чужой — отказ
         ba._bot_page_urls = lambda: ("https://www.youtube.com/results?q=b",)
         check("два экземпляра + чужой URL: ответ признан личным браузером",
               ba._as_foreign_instance(_as_url[0]) is True)
@@ -1194,7 +1198,7 @@ def main():
         check("win32: lockfile свободен — профиль закрыт, править можно",
               ba._win_profile_closed(str(_win_prof)) is True
               and _free.calls == [_free.LK_NBLCK, _free.LK_UNLCK])
-        # Memory Saver на win32 снова включается — но только при закрытом профиле
+        # Memory Saver на win32 включается — но только при закрытом профиле
         sys.platform = "win32"
         check("win32: закрытость профиля решает _prefs_editable",
               ba._prefs_editable(str(_win_prof)) is True)
@@ -1298,14 +1302,12 @@ def main():
           wkg2._next_tab_id > _tid_fresh
           and "self._next_tab_id = 1  # общий на все поколения" in SRC)
 
-    # ── 17. Кейс 22.09: «антибот-проверку выполнить не удалось (JS во
-    #       вкладке упал)» на каждой странице deepseek без всякой капчи.
-    #       Корень: селектор iframe[src*=challenges.cloudflare] невалиден
-    #       (точка в незакавыченном значении атрибута) — querySelectorAll
-    #       кидал SyntaxError, детект антибота не работал нигде: в strict-
-    #       режиме шум в логе и «карантин не трогаю», в best-effort
-    #       (computer_control) — молчаливое «чисто». Плюс сама ошибка
-    #       прятала причину: голое «JS во вкладке упал» без текста ──
+    # ── 20. Точка в незакавыченном значении атрибута
+    #    (iframe[src*=challenges.cloudflare]) — невалидный CSS: querySelectorAll
+    #    кидает SyntaxError, и детект антибота не работает нигде — strict-режим
+    #    падает с ошибкой замера на любой странице, best-effort
+    #    (computer_control) молча отвечает «чисто». Ошибка JS обязана нести
+    #    текст причины, а не голое «JS во вкладке упал» ──
     import re as _re
     _css_ident = _re.compile(r"^-?[A-Za-z_][\w-]*$")
     _attr_sel = _re.compile(r"\[([\w-]+)(?:[*^$~|]?=)([^\]]+)\]")

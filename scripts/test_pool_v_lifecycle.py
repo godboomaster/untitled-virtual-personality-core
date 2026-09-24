@@ -1,8 +1,8 @@
-"""Межпроцессный жизненный цикл Chrome пула V (хвост отчёта
-docs/concurrency-issues-2026-09-23.md, «Осталось»): профиль *-headed и порт
-9222 у пула V тоже общие для всех процессов бота (API-сервер и Telegram-бот
-с computer_control), а запуск/убийство его Chrome межпроцессного лока не
-имели, и простой/выключение одного процесса гасили Chrome соседу.
+"""Межпроцессный жизненный цикл Chrome пула V: профиль *-headed и порт 9222
+у пула V общие для всех процессов бота (API-сервер и Telegram-бот с
+computer_control), поэтому запуск/убийство его Chrome идёт под общим
+межпроцессным локом — простой или выключение одного процесса не должны
+гасить Chrome, которым пользуется другой.
 
 Проверяется:
   1. простой пула V в процессе A при живом пользователе B — Chrome жив, A
@@ -16,8 +16,8 @@ docs/concurrency-issues-2026-09-23.md, «Осталось»): профиль *-h
      цикла ограничено (пропуск без убийства);
   5. перезапуск (лечение) гасит Chrome и при живых соседях-пользователях,
      но устаревший (решён для Chrome X, а сосед уже поднял Y) Y не трогает;
-  6. регистрация ждёт гасящего соседа ≤ своего потолка; учёт без flock —
-     гасим, как раньше;
+  6. регистрация ждёт гасящего соседа ≤ своего потолка; без flock (учёт
+     недоступен) — Chrome гасится безусловно;
   7. процесс, ходящий в Chrome V только сырым сокетом (без воркера), —
      тоже пользователь; в своём простое снимает регистрацию.
 
@@ -128,7 +128,7 @@ def _mp_user(vdd, log_path, ready, cmdq, q):
 
 
 def _mp_lazy(vdd, log_path, who, go, no_flock, q):
-    """Ленивый старт пула V по сигналу go (оба процесса — разом)."""
+    # Ленивый старт пула V по сигналу go (оба процесса — разом).
     ba = _setup(vdd, log_path, who, no_flock)
     go.wait(20)
     try:
@@ -140,7 +140,7 @@ def _mp_lazy(vdd, log_path, who, go, no_flock, q):
 
 
 def _mp_hold_life(vdd, log_path, ready, release):
-    """Держит лок цикла пула V (будто запускает Chrome)."""
+    # Держит лок цикла пула V (будто запускает Chrome).
     ba = _setup(vdd, log_path, "L")
     with ba._pool_lifecycle("v"):
         ready.set()
@@ -148,7 +148,7 @@ def _mp_hold_life(vdd, log_path, ready, release):
 
 
 def _mp_launch_slow(vdd, log_path, started):
-    """Запуск пула V «долгий»: процесс поднимает Chrome под локом цикла."""
+    # Запуск пула V «долгий»: процесс поднимает Chrome под локом цикла.
     ba = _setup(vdd, log_path, "S")
 
     def _slow_launch(self):
@@ -456,7 +456,8 @@ def main():
         def _nosup(fd, op):
             raise OSError(errno.ENOTSUP, "Operation not supported")
 
-        # Сосед держит регистрацию, но у нас flock недоступен: гасим как раньше
+        # Сосед держит регистрацию, но flock недоступен — учёта нет,
+        # Chrome гасится
         ready, cmdq, q = ctx.Event(), ctx.Queue(), ctx.Queue()
         pb = ctx.Process(target=_mp_user, args=(vdd, log_path, ready, cmdq, q))
         pb.start()

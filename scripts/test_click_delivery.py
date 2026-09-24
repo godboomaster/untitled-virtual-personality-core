@@ -1,12 +1,10 @@
 """Регрессия: доставленный клик не рапортуется как проваленный.
 
-Кейс пользователя: «нажми кабинет обучающегося» / «нажми sign in» — оба
-клика в браузере ПРОИЗОШЛИ, а бот ответил «клик не выполнен: Locator.click:
-Timeout 2500ms exceeded..». Причина: playwright по умолчанию считает клик
-незавершённым, пока не закоммитится вызванный им переход («waiting for
-scheduled navigations to finish»); медленный вход не укладывался в
-CLICK_TIMEOUT_MS, исключение летело ПОСЛЕ отправки мыши, а фолбэк ещё и
-кликал второй раз force'ом.
+playwright по умолчанию считает клик незавершённым, пока не закоммитится
+вызванный им переход («waiting for scheduled navigations to finish»): при
+медленном переходе таймаут CLICK_TIMEOUT_MS срабатывает ПОСЛЕ отправки мыши.
+Такой клик должен считаться доставленным — без ответа «клик не выполнен» и
+без повторного force-клика.
 
 Живого браузера нет: locator/страница — фейки; тексты ошибок — дословно
 снятые с playwright 1.62 + Chrome (медленная ссылка, timeout=2500).
@@ -46,7 +44,8 @@ PRE_DISPATCH = (
 
 
 class PwTimeout(Exception):
-    """Как playwright TimeoutError: текст с call log."""
+    # как playwright TimeoutError: текст с call log
+    pass
 
 
 def main():
@@ -67,8 +66,8 @@ def main():
             return self._nav
 
     class Page:
-        """Страница: evaluate отдаёт отпечаток (fp крутится scroll'ом),
-        on/remove_listener — события запросов, как у playwright."""
+        # evaluate отдаёт отпечаток (fp крутится scroll'ом), on/remove_listener
+        # — события запросов, как у playwright.
 
         def __init__(self):
             self.url = "https://lk.example.ru/"
@@ -104,7 +103,7 @@ def main():
             return f"{self.doc}|{self.url}|complete|{self.fp}"
 
     class Loc:
-        """locator.first: по сценарию — поведение каждой попытки клика."""
+        # locator.first: по сценарию — поведение каждой попытки клика.
 
         def __init__(self, page, script):
             self.page, self.script = page, list(script)
@@ -133,7 +132,7 @@ def main():
             return [self.page]
 
     def run(script, fast_verify=True):
-        """→ (результат|исключение, loc, page)."""
+        # → (результат|исключение, loc, page)
         page = Page()
         loc = Loc(page, script)
         saved = (ba._locator_any_frame, ba.CLICK_VERIFY_SEC,
@@ -153,15 +152,15 @@ def main():
         return res, loc, page
 
     def nav_then(exc=None):
-        """Клик доставлен: страница ставит навигационный запрос (виден на
-        ближайшем вызове playwright), затем — опционально исключение."""
+        # Клик доставлен: страница ставит навигационный запрос (виден на
+        # ближайшем вызове playwright), затем — опционально исключение.
         def step(pg):
             pg.pending.append(Req(pg))
             if exc is not None:
                 raise exc
         return step
 
-    # 1. Ровно кейс пользователя: клик ушёл, переход медленный, playwright
+    # 1. Клик ушёл, переход медленный, playwright
     # бросил таймаут ПОСЛЕ отправки (если бы no_wait_after не действовал)
     res, loc, page = run([nav_then(PwTimeout(POST_DISPATCH))])
     check("таймаут после «click action done» — клик доставлен, «clicked»",

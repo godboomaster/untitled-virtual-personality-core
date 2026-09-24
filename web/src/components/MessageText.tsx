@@ -2,11 +2,11 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { useI18n } from '../i18n';
 
-/* Форматирование ответов бота, как в Telegram (_md_to_html /
-   RichMessageFormatter.to_current_html): **жирный**, *курсив*, _курсив_,
-   __подчёркнутый__, ~~зачёркнутый~~, ==выделение==, ||спойлер||
-   (раскрывается кликом), `inline-код`, ```блоки кода```, [ссылки](url),
-   > цитаты. Рендерим в React-узлы — без dangerouslySetInnerHTML. */
+/* Форматирование ответов бота (_md_to_html / RichMessageFormatter.to_current_html):
+   **жирный**, *курсив*, _курсив_, __подчёркнутый__, ~~зачёркнутый~~,
+   ==выделение==, ||спойлер|| (раскрывается кликом), `inline-код`,
+   ```блоки кода```, [ссылки](url), > цитаты. Рендерим в React-узлы —
+   без dangerouslySetInnerHTML. */
 
 // Порядок альтернатив важен: ** раньше *, __ раньше _
 const INLINE_RE = new RegExp(
@@ -53,7 +53,7 @@ function renderInline(text: string): ReactNode[] {
   return nodes;
 }
 
-// Спойлер: скрыт до клика (как tg-spoiler в Telegram)
+// Спойлер: скрыт до клика
 function Spoiler({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);

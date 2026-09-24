@@ -2,7 +2,7 @@
 Уровни интеллекта персон (intellect tiers) — отдельное измерение поверх
 характера (system_prompt) и фич (features.*).
 
-Три уровня (§1 плана):
+Три уровня:
   primitive — существо с нечеловеческим типом мышления (животное, дух,
               примитивный робот): простая речь, помощь = действие, дневник
               из инстинктивных впечатлений, мир без NPC/арок
@@ -11,11 +11,11 @@
   bot       — высокий интеллект: право на полный разбор (расчёты, код,
               уточнения), подача всё равно в стиле персоны
 
-Ключевой принцип (§4.3): tier-модификатор ОГРАНИЧИВАЕТ, system_prompt
-наполняет характером внутри ограничения. `normal` — не «глупее» `bot`,
-это другой режим поведения при просьбах о помощи.
+Ключевой принцип: tier-модификатор ОГРАНИЧИВАЕТ, system_prompt наполняет
+характером внутри ограничения. `normal` — не «глупее» `bot`, это другой
+режим поведения при просьбах о помощи.
 
-YAML (§2):
+YAML:
   intellect:
     tier: normal            # primitive | normal | bot
     overrides:              # для нетипичных персон своего tier
@@ -23,9 +23,9 @@ YAML (§2):
       world_lore_enabled: null
       help_response_style: null # action_only | casual_human | full_assistant
 
-Персоны БЕЗ блока intellect работают в legacy-режиме: уровневые механики
-не активируются вообще (ручная разметка tier — рекомендация §7 плана:
-ошибка автодетекта испортила бы стиль помощи, поэтому только явный выбор).
+Персоны без блока intellect работают в legacy-режиме: уровневые механики
+не активируются вообще. Tier размечается только вручную — ошибка
+автодетекта испортила бы стиль помощи.
 """
 
 import logging
@@ -37,7 +37,7 @@ TIERS = ("primitive", "normal", "bot")
 SELF_MEMORY_MODES = ("none", "primitive", "full")
 HELP_STYLES = ("action_only", "casual_human", "full_assistant")
 
-# Дефолт-таблица (§2): что включается по tier, если overrides.* не задан
+# Дефолт-таблица: что включается по tier, если overrides.* не задан
 _TIER_DEFAULTS = {
     "primitive": {
         "self_memory_mode": "primitive",
@@ -86,7 +86,7 @@ class IntellectConfig:
         if not isinstance(overrides, dict):
             overrides = {}
 
-        # ── self_memory: features-флаг × tier-дефолт × override (§3.1) ──
+        # ── self_memory: features-флаг × tier-дефолт × override ──
         if not features.get("self_memory", False):
             mode = "none"  # фича выключена — модуля нет при любом tier
         else:
@@ -97,7 +97,7 @@ class IntellectConfig:
                 mode = _TIER_DEFAULTS[tier or "normal"]["self_memory_mode"]
         self.self_memory_mode: str = mode
 
-        # ── help_response_style: дефолт по tier, override сверху (§4) ──
+        # ── help_response_style: дефолт по tier, override сверху ──
         style = overrides.get("help_response_style")
         if style not in HELP_STYLES:
             if style is not None:
@@ -105,7 +105,7 @@ class IntellectConfig:
             style = _TIER_DEFAULTS[tier]["help_response_style"] if tier else None
         self.help_response_style: Optional[str] = style
 
-        # ── world_lore: override булев; дефолт по tier (§3.3) ──
+        # ── world_lore: override булев; дефолт по tier ──
         wl = overrides.get("world_lore_enabled")
         self.world_lore_override: Optional[bool] = None if wl is None else bool(wl)
 
@@ -127,7 +127,7 @@ class IntellectConfig:
     def world_lore_full(self, features_enabled: bool) -> bool:
         """Полный ли слой мира (NPC/места/storylines)?
 
-        §3.3: для primitive полный слой не положен никогда — даже если
+        Для primitive полный слой не положен никогда — даже если
         features.world_lore включён (pipeline-проверка, не только конфиг).
         Выключенный features.world_lore выключает всё, включая частичный
         режим (только state_engine)."""
@@ -140,7 +140,7 @@ class IntellectConfig:
         return _TIER_DEFAULTS[self.tier]["world_lore_full"]
 
     def world_lore_partial(self, features_enabled: bool) -> bool:
-        """Частичный слой для primitive (§3.3): state_engine + офлайн-события
+        """Частичный слой для primitive: state_engine + офлайн-события
         (действия с инвентарём), без NPC/мест/storylines.
         Явный override world_lore_enabled: false выключает и его."""
         if not features_enabled or not self.is_primitive:

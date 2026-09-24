@@ -1,4 +1,4 @@
-"""Smoke-тест апдейта «жизни персоны» (ветка update-three).
+"""Smoke-тест «жизни персоны».
 
 Проверяет без LLM (моки/эвристики):
 1. Окно времени самоинициативы (initiative_hours) — гейт регулярного цикла
@@ -60,11 +60,11 @@ def main():
     # context нужен гейту присутствия веб-вкладки (web_presence по ключу
     # персона+чат) — первая проверка _should_send_initiative
     p.context = "living_update3_test"
-    # Метки инициатив/ignore streak читаются под RLock (задача №9 аудита)
+    # Метки инициатив/ignore streak читаются под RLock (конкурентный доступ)
     import threading as _threading
     p._lock = _threading.RLock()
     p._ignore_streak = {}
-    p._primitive = False  # уровень интеллекта (§3.2): обычная персона
+    p._primitive = False  # уровень интеллекта: обычная персона
     p.persona = persona
     p.config = PC(enabled=True, initiative_hours=("09:00", "22:00"))
 
@@ -209,7 +209,7 @@ def main():
           any(s["status"] == "started" and "ключ" in s["title"]
               for s in eng2._world["storylines"]))
 
-    # бэкфилл для мира, засеянного раньше без сюжетов (кейс connor)
+    # бэкфилл сюжетов для уже засеянного мира без них
     class StorylineRouter:
         def __init__(self):
             self.calls = 0

@@ -7,16 +7,16 @@
   offline_log (append-only): type (state_change | world_event |
                  external_stimulus), payload, consumed
 
-Тик-цикл (§3.2): каждые tick_interval_minutes для каждого известного чата
-Gemma механически обновляет параметры состояния (STATE_TICK_PROMPT) и
-оценивает повод написать пользователю (INITIATIVE_SCORE_PROMPT). Если Gemma
-(Ollama) недоступна — детерминированный эвристический дрейф: энергия падает
-днём и восстанавливается ночью, mood тянется к baseline_mood из выжимки
-персонажа. Без LLM система продолжает жить, просто скучнее.
+Тик-цикл: каждые tick_interval_minutes для каждого известного чата Gemma
+механически обновляет параметры состояния (STATE_TICK_PROMPT) и оценивает
+повод написать пользователю (INITIATIVE_SCORE_PROMPT). Если Gemma
+недоступна — детерминированный эвристический дрейф: энергия падает днём и
+восстанавливается ночью, mood тянется к baseline_mood из выжимки персонажа.
+Без LLM система продолжает жить, просто скучнее.
 
-Ключевой принцип (§1.2): Gemma работает с persona_context (выжимкой), не с
-полным system_prompt. Любой текст, который видит пользователь, генерирует
-основная LLM — движок состояния только решает «что произошло».
+Ключевой принцип: Gemma работает с persona_context (выжимкой), не с полным
+system_prompt. Любой текст, который видит пользователь, генерирует основная
+LLM — движок состояния только решает «что произошло».
 """
 
 import json
@@ -36,8 +36,8 @@ from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TICK_MINUTES = 20          # §3.2: 15-30 мин
-INITIATIVE_THRESHOLD = 0.62        # порог скоринга инициативы (§3.4)
+DEFAULT_TICK_MINUTES = 20          # разумный диапазон — 15-30 мин
+INITIATIVE_THRESHOLD = 0.62        # порог скоринга инициативы
 MAX_OFFLINE_LOG = 500              # append-only, но не бесконечно
 OFFLINE_LOG_TTL_DAYS = 14          # consumed-записи старше — вычищаются
 _MOOD_TAGS = [                     # допустимые теги mood (fallback-случай)
@@ -48,7 +48,7 @@ _MOOD_TAGS = [                     # допустимые теги mood (fallbac
 _WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг",
                 "пятница", "суббота", "воскресенье"]
 
-# ── Промпты (§3.3, §3.4) ────────────────────────────────────────────────
+# ── Промпты ────────────────────────────────────────────────────────────
 
 STATE_TICK_PROMPT = """Ты — движок симуляции внутреннего состояния персонажа.
 Твоя задача — механически обновить параметры, НЕ сочинять литературный текст.
@@ -96,8 +96,8 @@ INITIATIVE_SCORE_PROMPT = """Оцени от 0 до 1: насколько сей
 Непотреблённые факты жизни: {unconsumed_count}
 Часов с последней инициативы: {since_initiative:.1f}"""
 
-# Суффикс к тик-промпту для объединённого вызова (§3.4): один Gemma-вызов
-# на чат/тик вместо двух. Настройки proactive из yaml передаются в скоринг.
+# Суффикс к тик-промпту для объединённого вызова: один Gemma-вызов на
+# чат/тик вместо двух. Настройки proactive из yaml передаются в скоринг.
 _INITIATIVE_SUFFIX = """
 Дополнительно оцени от 0 до 1: насколько сейчас есть повод персонажу написать пользователю.
 Учти: время с последнего сообщения, смену настроения/занятия, наличие
@@ -111,8 +111,8 @@ _INITIATIVE_SUFFIX = """
 
 Добавь в ответ-JSON поля "initiative_score": <float 0..1> и "initiative_reason": "<коротко>"."""
 
-# Примитивный вариант (intellect tier primitive): состояние — чисто физическое,
-# pastime — действие, internal_note — сенсорное впечатление без рефлексии
+# Вариант для primitive: состояние — чисто физическое, pastime — действие,
+# internal_note — сенсорное впечатление без рефлексии
 STATE_TICK_PROMPT_PRIMITIVE = """Ты — движок простого физического состояния существа (не человека по типу мышления).
 Обнови параметры механически, НЕ сочиняй текст. Верни СТРОГО JSON:
 {{
@@ -157,7 +157,7 @@ def _now_iso() -> str:
 
 
 class StateEngine:
-    """Хранение + тики состояния. Потокобезопасен (RLock), файлы — JSON."""
+    # Хранение + тики состояния. Потокобезопасен (RLock), файлы — JSON.
 
     def __init__(self, context: str, persona_name: str,
                  tick_interval_minutes: int = DEFAULT_TICK_MINUTES,
@@ -165,8 +165,8 @@ class StateEngine:
         self.context = context
         self.persona_name = persona_name
         self.tick_interval_minutes = tick_interval_minutes
-        # primitive (intellect tier): физическое состояние без рефлексии —
-        # свой тик-промпт и запрет вербализации состояния в диалоге
+        # primitive: физическое состояние без рефлексии — свой тик-промпт
+        # и запрет вербализации состояния в диалоге
         self.primitive = primitive
         # use_gemma=false (features.state_engine.use_gemma): только
         # эвристический дрейф, локальная модель не дёргается вовсе
@@ -175,9 +175,8 @@ class StateEngine:
         self._lock = threading.RLock()
         # Счётчики для наблюдаемости (in-memory, снапшот — get_state_for_ui)
         self.stats = {"ticks_gemma": 0, "ticks_heuristic": 0}
-        # Ретенция на живущем процессе (аудит): дозор — не чаще раза в
-        # RETENTION_TICK_HOURS перезапускать прореживание из tick()/
-        # tick_and_score() (см. _maybe_prune_stale)
+        # Дозор: не чаще раза в RETENTION_TICK_HOURS перезапускать
+        # прореживание из tick()/tick_and_score() (см. _maybe_prune_stale)
         self._retention_timer = RetentionTimer()
 
         db = get_db_paths(context)
@@ -193,10 +192,10 @@ class StateEngine:
         self._log: List[dict] = log_data["entries"]
         self._next_id: int = log_data["next_id"]
 
-        # Ретенция (app.core.retention, задача аудита): чат давно неактивен —
-        # состояние для него не нужно хранить вечно. Прогоняем сразу при
-        # загрузке, чтобы разовые/заброшенные чаты не таскались тиком
-        # (_tick_all — по объединению _states.keys() и known_chats) годами.
+        # Чат давно неактивен — состояние для него не нужно хранить вечно
+        # (app.core.retention). Прогоняем сразу при загрузке, чтобы
+        # разовые/заброшенные чаты не таскались тиком (_tick_all — по
+        # объединению _states.keys() и known_chats) годами.
         if self._prune_stale_states():
             self._save_state()
 
@@ -215,9 +214,9 @@ class StateEngine:
         return prune_stale(self._states, _seen, CHAT_RETENTION_DAYS, label="StateEngine")
 
     def _maybe_prune_stale(self):
-        """Повтор ретенции на живущем процессе (аудит: раньше прунились
-        только при загрузке — процесс месяцами не перезапускается, разовые
-        чаты копятся между рестартами бессрочно). Зовётся из tick()/
+        """Повтор ретенции на живущем процессе: без него прунились бы
+        только при загрузке, а процесс месяцами не перезапускается — разовые
+        чаты копились бы между рестартами бессрочно. Зовётся из tick()/
         tick_and_score() — периодического тик-цикла living_persona, НЕ из
         обработчика входящего сообщения. Дозор гасит частоту до раза в
         RETENTION_TICK_HOURS; лок держим только на мутацию словаря, save —
@@ -229,9 +228,8 @@ class StateEngine:
         if removed:
             self._save_state()
 
-    # ── Хранение (общий helper app.core.atomic_io — задача №9 аудита:
-    # битый файл раньше тихо проглатывался в default без следа в логе,
-    # запись была tmp+replace без fsync) ─────────────────────────────
+    # ── Хранение (app.core.atomic_io: atomic-запись с fsync, ошибки
+    # идут в лог, а не проглатываются молча) ──────────────────────────
 
     def _save_state(self):
         try:
@@ -248,7 +246,7 @@ class StateEngine:
     # ── Публичный API ────────────────────────────────────
 
     def get_state(self, chat_id: str) -> dict:
-        """Состояние чата (создаёт дефолтное при первом обращении)."""
+        # Состояние чата (создаёт дефолтное при первом обращении).
         with self._lock:
             return self._ensure_state(chat_id)
 
@@ -268,8 +266,8 @@ class StateEngine:
         return state
 
     def apply_mood_impact(self, chat_id: str, valence_delta: float, tag: str):
-        """Толчок mood от события мира (§4.3 mood_impact). Дрейф к baseline
-        доделает ближайший тик — событие только толкает."""
+        """Толчок mood от события мира. Дрейф к baseline доделает ближайший
+        тик — событие только толкает."""
         with self._lock:
             state = self._ensure_state(chat_id)
             mood = state["mood"]
@@ -282,7 +280,7 @@ class StateEngine:
     # ── Offline log ──────────────────────────────────────
 
     def log_event(self, chat_id: str, entry_type: str, payload: dict) -> int:
-        """Append-only запись в offline_log. Возвращает id записи."""
+        # Append-only запись в offline_log. Возвращает id записи.
         with self._lock:
             entry = {
                 "id": self._next_id,
@@ -338,7 +336,7 @@ class StateEngine:
             self._save_log()
 
     def entries_since(self, chat_id: str, since_ts: float) -> List[dict]:
-        """Записи лога с заданного времени (приветствие-дневник, §7).
+        """Записи лога с заданного времени (для приветствия-дневника).
         consumed-записи пропускаем: уже озвученные (дневник/инициатива)
         факты не пересобираются в приветствие повторно."""
         with self._lock:
@@ -354,7 +352,7 @@ class StateEngine:
                     out.append(e)
             return out
 
-    # ── Тик состояния (§3.3) ─────────────────────────────
+    # ── Тик состояния ─────────────────────────────────────
 
     def tick(self, chat_id: str, persona_context: dict,
              storylines: Optional[List] = None,
@@ -364,7 +362,7 @@ class StateEngine:
         Возвращает новое состояние. Синхронный LLM-вызов — звать из потока.
         Для primitive storylines — строки об окружении (предметы/факты).
         known_places — известные места мира: location вне списка мягко
-        откатывается к прежнему (санитайзер дрейфа мира, §4.1)."""
+        откатывается к прежнему (санитайзер дрейфа мира)."""
         with self._lock:
             prev = dict(self._ensure_state(chat_id))
         new_state = self._tick_via_gemma(
@@ -383,11 +381,11 @@ class StateEngine:
                        since_initiative_hours: float = 24.0,
                        proactive_settings: Optional[dict] = None,
                        known_places: Optional[List[str]] = None) -> tuple:
-        """Тик состояния (§3.3) + скоринг инициативы (§3.4) ОДНИМ Gemma-вызовом —
-        вдвое меньше локальных вызовов на чат/тик. Настройки proactive из yaml
-        уходят в промпт скоринга (§3.4: скоринг учитывает существующие поля).
-        known_places — санитайзер location (см. tick).
-        Возвращает (new_state, score 0..1). Без Gemma — эвристика обоих."""
+        """Тик состояния + скоринг инициативы ОДНИМ Gemma-вызовом — вдвое
+        меньше локальных вызовов на чат/тик. Настройки proactive из yaml
+        уходят в промпт скоринга. known_places — санитайзер location
+        (см. tick). Возвращает (new_state, score 0..1). Без Gemma —
+        эвристика обоих."""
         with self._lock:
             prev = dict(self._ensure_state(chat_id))
         new_state, score = None, None
@@ -437,7 +435,7 @@ class StateEngine:
 
     def _heuristic_score(self, chat_id: str, silence_hours: float,
                          since_initiative_hours: float) -> float:
-        """Скоринг без LLM: молчание + непотреблённые факты + давность инициативы."""
+        # Скоринг без LLM: молчание + непотреблённые факты + давность инициативы.
         score = 0.0
         score += min(0.35, silence_hours / 24.0)
         score += min(0.30, len(self.unconsumed(chat_id)) * 0.10)
@@ -448,7 +446,7 @@ class StateEngine:
     def _commit_tick(self, chat_id: str, prev: dict, new_state: dict,
                      persona_context: Optional[dict] = None,
                      known_places: Optional[List[str]] = None) -> dict:
-        """Постобработка тика: guard mood.tag по behavioral_rules (§1.2),
+        """Постобработка тика: guard mood.tag по behavioral_rules,
         санитайзер location по известным местам мира, штампы времени,
         сохранение, осмысленный diff → offline_log."""
         # mood.tag не должен нарушать behavioral_rules: грубая проверка —
@@ -568,7 +566,7 @@ class StateEngine:
 
     def _heuristic_tick(self, prev: dict, persona_context: dict) -> dict:
         """Дрейф без LLM: энергия по времени суток, mood — к baseline.
-        Распорядок (фаза C): ночью не-primitive почти всегда спит."""
+        Ночью не-primitive почти всегда спит."""
         hour = timeutil.now().hour
         energy = prev["energy"]
         pastime = prev["pastime"]
@@ -577,7 +575,7 @@ class StateEngine:
         else:
             energy = min(100, energy + 7)
 
-        # pastime держится 1-3 тика (§3.3): иногда меняем; ночью — сон
+        # pastime держится 1-3 тика: иногда меняем; ночью — сон
         keep = random.random() < 0.55
         if not (7 <= hour < 23) and not self.primitive:
             pastime = "спит" if random.random() < 0.85 else pastime
@@ -630,7 +628,7 @@ class StateEngine:
             diff["internal_note"] = note
         return diff
 
-    # ── Скоринг инициативы (§3.4) ────────────────────────
+    # ── Скоринг инициативы ────────────────────────────────
 
     def score_initiative(self, chat_id: str, silence_hours: float,
                          since_initiative_hours: float) -> float:
@@ -673,13 +671,13 @@ class StateEngine:
     # ── Контекст для промптов ────────────────────────────
 
     def get_state_context_block(self, chat_id: str) -> str:
-        """Компактный блок состояния для промпта основной LLM (§7).
+        """Компактный блок состояния для промпта основной LLM.
         Для primitive — запрет вербализации: состояние выражается только
-        действием/звуком/жестом, не человеческой рефлексией (§2 матрицы)."""
+        действием/звуком/жестом, не человеческой рефлексией."""
         state = self.get_state(chat_id)
         mood = state.get("mood", {})
 
-        # Проекция состояния в НАБЛЮДАЕМОЕ поведение ответа (§7): «react
+        # Проекция состояния в НАБЛЮДАЕМОЕ поведение ответа: «react
         # naturally» почти не давит на длину/тон, конкретные инструкции —
         # давят. Только поведенческие следствия, без просьб «сказать, что
         # устал» — это не нарушает behavioral_rules-персон с запретом

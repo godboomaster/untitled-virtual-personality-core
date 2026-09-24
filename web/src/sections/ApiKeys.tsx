@@ -53,7 +53,7 @@ export default function ApiKeys() {
   const apiOnline = useApiOnline();
   const apiProviders = useApiProviders();
 
-  // Свежая проверка локальной Ollama (кнопка у строки Ollama)
+  // Свежая проверка локальной модели (кнопка у её строки)
   const [localStatus, setLocalStatus] = useState<LocalStatus | null>(null);
   const [localChecking, setLocalChecking] = useState(false);
   const checkLocal = () => {
@@ -495,7 +495,7 @@ export default function ApiKeys() {
         <ul className="memory-list">
           {providers.map((p) => {
             const hasKey = Boolean(keys[p.id]) || p.keySet;
-            // Строка Ollama при живом бэкенде: статус доступности вместо формы ключа
+            // Строка локальной модели при живом бэкенде: статус доступности вместо формы ключа
             const localRow = p.local && apiOnline;
             const localAvailable = localStatus ? localStatus.available : p.keySet;
             return (
@@ -558,7 +558,7 @@ export default function ApiKeys() {
                     </button>
                   </div>
                 )}
-                {/* Детали неудачной проверки Ollama: что именно не так и как чинить */}
+                {/* Детали неудачной проверки локальной модели: что не так и как исправить */}
                 {localRow && localStatus && !localStatus.available && (
                   <div className="field-hint provider-local-detail">
                     {!localStatus.server
@@ -590,7 +590,7 @@ export default function ApiKeys() {
         </ul>
       </div>
 
-      {/* Веб-чаты как провайдеры без API-ключей: чаты в ботском окне Chrome.
+      {/* Веб-чаты как провайдеры без API-ключей: чаты в общем окне браузера бота.
           Галочками — несколько; порядок выбора = порядок перебора (номер на бейдже) */}
       {apiOnline && webchatOptions.length > 0 && (
         <div className="card">

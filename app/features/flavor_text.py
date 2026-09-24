@@ -2,26 +2,25 @@
 компьютером (CC) — «системные сообщения», которым не нужны история диалога,
 LTM, погода и прочий контекст.
 
-Живой вызов идёт ТОЛЬКО в Google AI Mode (webchat:google, stateless-канал
-«cc»: каждый вызов — свежий чат без прошлого контекста; лок инстанса ждётся
-не дольше _LIVE_LOCK_TIMEOUT_SEC, пока идёт фоновая генерация банка — живой
-вызов пропускается в пользу шаблонов). Генерация/пополнение банка — канал
-«cc_gen»: отдельный инстанс со своим локом, чтобы не блокировать живые
-реплики. Основной путь — банк заранее сгенерированных фраз
-(data/{context}/flavor_bank.json) с плейсхолдерами ({host}, {element},
+Живой вызов идёт только через webchat-провайдер google (канал «cc»,
+stateless: каждый вызов — свежий чат без прошлого контекста; лок инстанса
+ждётся не дольше _LIVE_LOCK_TIMEOUT_SEC, пока идёт фоновая генерация банка —
+живой вызов тогда пропускается в пользу шаблонов). Генерация/пополнение
+банка — канал «cc_gen»: отдельный инстанс со своим локом, чтобы не
+блокировать живые реплики. Основной путь — банк заранее сгенерированных
+фраз (data/{context}/flavor_bank.json) с плейсхолдерами ({host}, {element},
 {text}, {detail}); последний фоллбек — честный шаблон caller'а
 (describe_done и т.п.).
 
-Ошибки тоже проходят через flavor, но с жёстким требованием: суть ошибки
-сохраняется ({detail} в банковских фразах, инструкция в живом промпте) —
-причину не скрывать и не приукрашивать.
+Ошибки тоже проходят через flavor, но суть ошибки всегда сохраняется
+({detail} в банковских фразах, инструкция в живом промпте) — причину не
+скрывать и не приукрашивать.
 
-Напоминания сюда НЕ входят — они всегда генерируются LLM намеренно.
+Напоминания сюда не входят — они всегда генерируются LLM намеренно.
 
-Банк генерируется при создании персоны (settings_api.create_persona) и при
-старте бота, если хэш system_prompt изменился (BotInstance.__init__);
-дополнительно пополняется новыми вариантами, когда банк старше
-FLAVOR_BANK_REFRESH_DAYS и пользователь неактивен (тик проактив-модуля).
+Банк генерируется при создании персоны и при старте бота, если хэш
+system_prompt изменился, и дополнительно пополняется новыми вариантами,
+когда банк старше FLAVOR_BANK_REFRESH_DAYS и пользователь неактивен.
 """
 
 import hashlib
@@ -38,7 +37,7 @@ from app.core.atomic_io import atomic_write_json, load_json_safe
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2  # +секция phrases (служебные фразы голосом персоны)
+SCHEMA_VERSION = 2  # версия схемы банка: включает секцию phrases (служебные фразы)
 FLAVOR_BANK_REFRESH_DAYS = 3
 _OK_PER_KIND = 6    # вариантов успеха просим у генератора
 _ERR_PER_KIND = 4   # вариантов ошибки
@@ -183,27 +182,25 @@ def _from_bank(context: str, kind: str, bucket: str,
     def _pick(candidates) -> Optional[str]:
         candidates = [p for p in candidates or []
                       if isinstance(p, str) and p.strip()]
-        # Раньше — random.sample(candidates, 3): если первым трём случайно
-        # попадались только фразы без {detail}/с пустым плейсхолдером, функция
-        # молча возвращала None и звала честный шаблон, хотя дальше в банке
-        # мог быть годный вариант. Перебираем ВСЕХ кандидатов в случайном
-        # порядке — до первого подходящего, а не до третьей попытки.
+        # Перебираем всех кандидатов в случайном порядке до первого
+        # подходящего: при усечении до нескольких попыток можно наткнуться
+        # только на фразы без нужных плейсхолдеров и остаться без варианта,
+        # хотя годный был дальше в списке.
         shuffled = list(candidates)
         random.shuffle(shuffled)
         for phrase in shuffled:
             # err-фраза без {detail} теряет суть ошибки — не годится
             if bucket == "err" and "{detail}" not in phrase:
                 continue
-            # Плейсхолдер с пустым значением уродует фразу («Выполнено: .» —
-            # кейс 19.09, «пауза»: key-действие без element): вариант годен,
-            # только если все его плейсхолдеры непусты у этого действия
+            # Плейсхолдер с пустым значением портит фразу («Выполнено: .»
+            # для key-действия без element) — вариант годен, только если
+            # все его плейсхолдеры непусты для этого действия
             if any(not values.get(p)
                    for p in _PLACEHOLDER_RE.findall(phrase)):
                 continue
             vals = values
-            # «Причина: {detail}.» + detail с точкой на конце («…если
-            # нужна новая.») давало «новая..» — точку фразы оставляем,
-            # хвостовую точку detail срезаем
+            # «Причина: {detail}.» + detail с точкой на конце дал бы «..»
+            # — точку фразы оставляем, хвостовую точку detail срезаем
             if re.search(r"\{detail\}[.!?…]", phrase):
                 vals = {**values,
                         "detail": values["detail"].rstrip().rstrip(".")}
@@ -222,11 +219,10 @@ def _from_bank(context: str, kind: str, bucket: str,
 
 
 def _google_cc_chat(context: str, channel: str = "cc"):
-    """WebChatLLM google на stateless-канале (свежий чат на вызов, история
-    не копится). Кэшируется по (контекст, канал): у ДОЛГОЙ генерации банка
-    канал «cc_gen» — отдельный инстанс со своим локом и вкладкой, чтобы
-    она не блокировала живые реплики канала «cc» (кейс 18.09: ответ
-    пользователю ждал генерацию банка 2.5 мин)."""
+    """WebChatLLM на провайдере google, stateless-канал (свежий чат на
+    каждый вызов, история не копится). Кэш по (контекст, канал): долгая
+    генерация банка идёт в отдельном канале «cc_gen» со своим инстансом
+    и локом, чтобы не блокировать живые реплики канала «cc»."""
     key = (context, channel)
     with _WC_LOCK:
         chat = _WC.get(key)
@@ -239,7 +235,7 @@ def _google_cc_chat(context: str, channel: str = "cc"):
 
 
 def _clean_live(text: Optional[str]) -> Optional[str]:
-    """Живой ответ google → короткая реплика. None — ответ не годится."""
+    # Живой ответ google → короткая реплика. None — ответ не годится.
     t = (text or "").strip().strip('"«»').strip()
     if not t or t.startswith("{") or t.startswith("["):
         return None
@@ -250,9 +246,9 @@ def _clean_live(text: Optional[str]) -> Optional[str]:
 
 def _from_live(bot, kind: str, bucket: str,
                action: Optional[dict], detail: Optional[str]) -> Optional[str]:
-    """Живой вызов Google AI Mode (канал cc). None — недоступен (шаблон).
-    Пока идёт фоновая генерация банка — не дёргаем вовсе: дождёмся банка,
-    до него честные шаблоны (кейс 18.09). Лок инстанса ждём не дольше
+    """Живой вызов через google (канал cc). None — недоступен, тогда шаблон.
+    Пока идёт фоновая генерация банка — вызов пропускается: до готовности
+    банка отвечаем шаблонами. Лок инстанса ждём не дольше
     _LIVE_LOCK_TIMEOUT_SEC — реплика на пользовательском пути."""
     context = getattr(bot, "context", "default")
     if context in _GEN_STARTED:
@@ -310,21 +306,21 @@ def cc_reply(bot, action: Optional[dict], ok: bool,
 
 def phrase(context: str, key: str, template: str, **values) -> str:
     """Служебная фраза (режим управления, сценарии) голосом персоны из банка
-    (секция phrases), с подстановкой плейсхолдеров. Живого вызова нет — это
-    ответы на действие пользователя, ждать LLM нельзя: ключа/вариантов нет
-    или плейсхолдеры не сошлись — честный шаблон template."""
+    (секция phrases), с подстановкой плейсхолдеров. Живого вызова нет —
+    это ответ на действие пользователя, ждать LLM нельзя: ключа/вариантов
+    нет или плейсхолдеры не сошлись — честный шаблон template."""
     try:
         with _BANK_LOCK:
             bank = _load_bank(context)
         variants = [v for v in ((bank.get("phrases") or {}).get(key) or [])
                     if isinstance(v, str) and v.strip()]
         vals = {k: str(v) for k, v in values.items()}
-        # Все варианты в случайном порядке — см. комментарий в _pick() внутри
-        # _from_bank про то, почему sample(3) молча терял годные варианты.
+        # Все варианты перебираем в случайном порядке, чтобы не пропустить
+        # годный вариант дальше по списку (как в _pick() внутри _from_bank).
         shuffled_variants = list(variants)
         random.shuffle(shuffled_variants)
         for variant in shuffled_variants:
-            # Как в банке команд: плейсхолдер с пустым значением уродует
+            # Как в банке команд: плейсхолдер с пустым значением портит
             # фразу — такой вариант пропускаем
             if any(not vals.get(p)
                    for p in _PLACEHOLDER_RE.findall(variant)):
@@ -370,10 +366,9 @@ def _gen_prompt(system_prompt: str, ok_n: int, err_n: int) -> str:
 
 
 def _gen_prompt_phrases(system_prompt: str) -> str:
-    """Отдельная генерация служебных фраз (секция phrases). Своим вызовом:
-    объединённый промпт (kinds + phrases) раздувал и запрос, и ответ —
-    google AI Mode думал ~8 минут и не укладывался в таймаут чтения
-    (кейс 19.09: ответ дорендерился на вкладке, но обёртка уже ушла)."""
+    """Отдельная генерация служебных фраз (секция phrases): объединённый с
+    kinds промпт раздувал и запрос, и ответ настолько, что генерация не
+    укладывалась в таймаут чтения ответа."""
     lines = "\n".join(f'- "{k}": {v["spec"]}' for k, v in _PHRASE_KEYS.items())
     return (
         "Пишешь служебные сообщения Telegram-бота в характере персоны. "
@@ -433,9 +428,9 @@ def _parse_phrases_json(raw: str) -> dict:
 
 def _parse_bank_json(raw: str) -> dict:
     """Ответ генератора → {"kinds": {kind: {"ok"/"err": [...]}}, "phrases":
-    {key: [...]}}. Валидация: только строки; err — только с {detail}; phrases —
-    только известные ключи _PHRASE_KEYS, без чужих плейсхолдеров, обязательные
-    (req) присутствуют."""
+    {key: [...]}}. Валидация: только строки; err — только с {detail};
+    phrases — только известные ключи _PHRASE_KEYS, без чужих
+    плейсхолдеров, обязательные (req) присутствуют."""
     from app.features.web_llm import extract_json
     data = extract_json(raw or "")
     if not isinstance(data, dict):
@@ -476,8 +471,7 @@ def _generate_kinds(context: str, system_prompt: str, router,
                     ok_n: int, err_n: int) -> dict:
     """Генерация реплик команд (kinds): google (канал cc_gen — отдельный
     инстанс, чтобы не держать лок живых реплик) → одна попытка по обычной
-    цепочке роутера. → {"kinds": ...}; {} — ничего не вышло (работаем на
-    шаблонах)."""
+    цепочке роутера. → {"kinds": ...}; {} — ничего не вышло (шаблоны)."""
     messages = [{"role": "user", "content": _gen_prompt(system_prompt, ok_n, err_n)}]
     raw = None
     try:
@@ -503,10 +497,9 @@ def _generate_kinds(context: str, system_prompt: str, router,
 
 
 def _generate_phrases(context: str, system_prompt: str, router) -> dict:
-    """Генерация служебных фраз (phrases) — ОТДЕЛЬНЫМ вызовом от kinds:
-    объединённый промпт раздувал ответ вдвое, google AI Mode думал ~8 минут
-    и не укладывался в таймаут чтения (кейс 19.09: ответ дорендерился на
-    вкладке, но обёртка уже ушла по timeout=120). {} — не вышло (шаблоны)."""
+    """Генерация служебных фраз (phrases) отдельным вызовом от kinds:
+    объединённый промпт раздувал ответ вдвое и не укладывался в таймаут
+    чтения ответа. {} — не вышло (работаем на шаблонах)."""
     messages = [{"role": "user", "content": _gen_prompt_phrases(system_prompt)}]
     raw = None
     try:
@@ -574,12 +567,10 @@ def ensure_flavor_bank(bot=None, context: str = None, system_prompt: str = None,
     if bank.get("kinds") and bank.get("phrases") and \
             (bank.get("_meta") or {}).get("prompt_hash") == _prompt_hash(sp):
         return  # актуален
-    # check-and-add в _GEN_STARTED — под _GEN_LOCK: раньше "in _GEN_STARTED" и
-    # ".add(context)" были двумя отдельными шагами без лока между ними — два
-    # параллельных ensure_flavor_bank(context) (например, две персоны на одном
-    # контексте стартуют одновременно) оба проходили проверку до того, как
-    # любой из них успевал добавить context, и запускали ДВЕ фоновые генерации
-    # банка одновременно.
+    # check-and-add в _GEN_STARTED делаем под одним _GEN_LOCK: иначе два
+    # параллельных запуска ensure_flavor_bank(context) (например, две
+    # персоны на одном контексте стартуют одновременно) проходят проверку
+    # одновременно и оба запускают фоновую генерацию банка.
     with _GEN_LOCK:
         if context in _GEN_STARTED:
             return

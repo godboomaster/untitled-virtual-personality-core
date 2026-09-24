@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
 Восстановление памяти из JSON-дампов при старте.
-Запускается автоматически перед стартом бота.
 Загружает данные только если целевая коллекция пуста.
 
 Использование:
-    python -m app.restore_memory
-    # или автоматически при старте telegram_bot.py
+    python -m app.features.restore_memory
+    # или автоматически из app/main.py при включённой фиче restore_memory
 """
 
 import os
@@ -30,7 +29,7 @@ logger = logging.getLogger(__name__)
 RESTORE_KINDS = ("stm", "ltm", "files")
 
 # Имя дампа: {контекст}_{вид}_{метка времени}.json, например
-# api_arrodes_ltm_20260503_221535.json. Контекст — нежадно, чтобы вид
+# api_web_ltm_20260503_221535.json. Контекст — нежадно, чтобы вид
 # отделился по первому же вхождению _stm_/_ltm_/_files_.
 _EXPORT_RE = re.compile(
     r"^(?P<ctx>.+?)_(?P<kind>" + "|".join(RESTORE_KINDS) + r")_(?P<stamp>.+)\.json$")
@@ -45,12 +44,9 @@ def find_latest_export(export_dir: str,
                        contexts: Optional[List[str]] = None) -> Dict[str, Tuple[str, str, str]]:
     """Последний дамп по каждой (контекст, вид) из фактических файлов каталога.
 
-    Раньше вместо этого был жёстко прошитый RESTORE_MAP на пять персон
-    ("connor", "arrodes", "verso", "assistant", "default"): дампы веб-персон
-    (data/api_*) и любой новой персоны молча не восстанавливались, а
-    переименование персоны требовало правки константы. Теперь набор целей
-    вычисляется из имён файлов в каталоге дампов, а путь к базе — из конфига
-    (get_db_paths), так что достаточно положить дамп рядом с остальными.
+    Набор целей вычисляется из имён файлов в каталоге дампов (а не из
+    жёсткого списка персон), а путь к базе — из конфига (get_db_paths):
+    достаточно положить дамп рядом с остальными, без правки кода.
 
     Args:
         export_dir: каталог дампов (memory_export/).
@@ -94,17 +90,15 @@ def restore_collection(db_path: str, collection_name: str, json_path: str) -> in
     """
     client = chromadb.PersistentClient(path=db_path)
     # Эмбеддер и метрика — как у рабочих коллекций (единая точка открытия),
-    # иначе восстановленная база получала дефолтную l2 и «забудь про X»
-    # переставало находить факты
+    # иначе восстановленная база получит дефолтную метрику l2 и поиск
+    # («забудь про X») перестанет находить факты
     collection = open_collection(
         client, collection_name, embedding_function=create_st_embedder())
 
-    # Не трогаем если уже есть данные
     if collection.count() > 0:
         logger.info(f"  [Restore] {collection_name} уже содержит {collection.count()} записей, пропускаем")
         return 0
 
-    # Читаем JSON
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -113,7 +107,6 @@ def restore_collection(db_path: str, collection_name: str, json_path: str) -> in
         logger.info(f"  [Restore] {json_path} пуст, пропускаем")
         return 0
 
-    # Подготавливаем данные для batch-вставки
     ids = []
     docs = []
     metas = []

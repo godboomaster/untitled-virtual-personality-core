@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 logging.basicConfig(level=logging.WARNING)
 
-# (ярлык сложности, messages в формате OpenAI). Системные — реалистичные
+# (ярлык сложности, messages в формате role/content). Системные — реалистичные
 # задачи-классификаторы бота (инициатива/тональность): system+user.
 MESSAGES = [
     ("системное", [
@@ -65,7 +65,7 @@ TIERS = ["системное", "лёгкое", "среднее", "сложное
 
 
 def _configured_sites() -> list:
-    """Сайты из WEBCHAT_SITES/WEBCHAT_SITE (.env), отфильтрованные по ADAPTERS."""
+    # Сайты из WEBCHAT_SITES/WEBCHAT_SITE (.env), отфильтрованные по ADAPTERS
     from app.core.router import _parse_webchat_sites
     from app.features.web_llm import ADAPTERS
     return [s for s in _parse_webchat_sites() if s in ADAPTERS]
@@ -80,7 +80,7 @@ def bench_site(site: str, messages: list, pause: float = 6.0) -> list:
     for i, (tier, msgs) in enumerate(messages):
         cold = " [cold]" if i == 0 else ""
         # Пауза между отправками: UI чата после ответа ещё «отходит»
-        # (стриминг закрылся, но React-поле не готово) — иначе send-verify
+        # (стриминг закрылся, но поле ввода не готово) — иначе send-verify
         # ловит «сообщение не появилось в ленте» на быстрых сериях
         if i > 0 and pause > 0:
             time.sleep(pause)

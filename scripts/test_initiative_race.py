@@ -1,5 +1,4 @@
-"""Гонка «ход пользователя ↔ фоновое сообщение» (docs/concurrency-issues-
-2026-09-23.md, п. 3–5): гейт хода app/core/turn_gate.py.
+"""Гонка «ход пользователя ↔ фоновое сообщение»: гейт хода app/core/turn_gate.py.
 
 Проверяет офлайн, на фейковых STM/отправителе и заглушке BotInstance:
 - инициатива, сгенерированная во время хода пользователя или после его
@@ -32,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 class FakeStm:
-    """Минимальный STM: буферы чатов, get_messages отдаёт те же dict'ы."""
+    # Минимальный STM: буферы чатов, get_messages отдаёт те же dict'ы.
 
     def __init__(self):
         self.buffers = {}
@@ -284,7 +283,7 @@ def main():
     state = {"entered": threading.Event(), "release": threading.Event(), "n": 0}
 
     def impl(user_input, user_id="default", chat_id=None, **kw):
-        """Ход пользователя: реплика в STM → «LLM» (ждёт release) → ответ."""
+        # Ход пользователя: реплика в STM → «LLM» (ждёт release) → ответ.
         state["n"] += 1
         mem.add_message("user", user_input, user_id, chat_id)
         state["entered"].set()
@@ -416,7 +415,7 @@ def main():
                        memory=mem, sender=rsender, turn_gate=gate)
 
     def hold_turn(user_text):
-        """Ход пользователя в потоке, остановленный посреди «генерации»."""
+        # Ход пользователя в потоке, остановленный посреди «генерации».
         reset_turn(release_now=False)
         t = threading.Thread(target=bot.process_message, args=(user_text,),
                              kwargs={"user_id": "u", "chat_id": chat})
@@ -507,7 +506,7 @@ def main():
           and contents(mem, chat)[-2:] == [("assistant", "ответ на «занят»"),
                                            ("assistant", rem_text)])
 
-    # Отменено в том самом ходе, которого ждали (репро B)
+    # Отменено в том самом ходе, которого ждали
     rem2 = new_reminder("выключить духовку")
     msender.sent.clear()
 
@@ -636,7 +635,7 @@ def main():
           and delivered[:3] == ["часть 1", "часть 2", "часть 3"] and len(delivered) == 4)
     remm.set_sender(msender)
 
-    # ── 9e. Telegram-фото: ход с получения, инициатива не встаёт перед репликой ──
+    # ── 9e. Фото: ход с получения, инициатива не встаёт перед репликой ──
     print("\n── 9e. Фото: инициатива в окне распознавания ──")
     sender.sent.clear()
     pm._last_initiative_time[chat] = 0

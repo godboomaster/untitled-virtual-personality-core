@@ -6,14 +6,11 @@
 записи нового. После успешного восстановления файл удаляется (повторный
 restore дал бы дубли).
 
-До задачи №6 (хвост) бэкапы лежали плоско в clear_backups/{timestamp}.json
-на ВСЮ персону: latest_backup/pop_latest брали глобально самый свежий файл
-независимо от того, какой чат его создал — очистка/восстановление одного
-чата чужой персоны била по данным другого чата той же персоны (в групповом
-использовании — реальная потеря данных чужого диалога). Теперь бэкап
-привязан к (persona, chat_id); latest_backup дополнительно читает старые
-плоские файлы (миграция чтения, см. _legacy_backups) — они никуда не делись
-с апгрейда, просто больше не пишутся.
+Бэкап привязан к (persona, chat_id), а не к персоне целиком: иначе в
+групповом использовании очистка/восстановление одного чата задевала бы
+данные другого чата той же персоны. latest_backup дополнительно ищет
+совпадение среди старых плоских файлов clear_backups/*.json без привязки
+к чату — они больше не создаются, но не должны теряться из виду.
 """
 
 import json
@@ -30,15 +27,15 @@ _RETENTION_DAYS = 7
 
 
 def _backup_root(persona: str) -> Path | None:
-    """None — persona не прошла проверку формата (см. app/api/security):
-    вызывающие уже гейтят persona через list_personas()/_get_bot, это —
-    рубеж защиты в глубину на случай, если такого вызова где-то не будет."""
+    # None — persona не прошла проверку формата (см. app/api/security):
+    # вызывающие уже гейтят persona через list_personas()/_get_bot, это —
+    # рубеж защиты в глубину на случай, если такого вызова где-то не будет.
     base = safe_join(_DATA_DIR, persona, prefix="api_")
     return base / "clear_backups" if base is not None else None
 
 
 def _backup_dir(persona: str, chat_id: str) -> Path | None:
-    """Каталог бэкапов КОНКРЕТНОГО чата персоны."""
+    # Каталог бэкапов конкретного чата персоны.
     root = _backup_root(persona)
     return root / safe_segment(chat_id) if root is not None else None
 
@@ -50,7 +47,7 @@ def make_backup(persona: str, user_id: str, chat_id: str,
                 last_activity: float = 0,
                 chat_urls: dict | None = None,
                 stores: dict | None = None) -> Path | None:
-    """Сохранить снапшот перед очисткой. Пустой снапшот не пишем."""
+    # Сохранить снапшот перед очисткой; пустой снапшот не пишем.
     if not stm and not ltm and not diary and not initiatives \
             and not daily_stats and not last_activity and not chat_urls \
             and not stores:
@@ -90,7 +87,7 @@ def make_backup(persona: str, user_id: str, chat_id: str,
 
 
 def _prune(bdir: Path):
-    """Удалить снапшоты старше _RETENTION_DAYS."""
+    # Удалить снапшоты старше _RETENTION_DAYS.
     cutoff = time.time() - _RETENTION_DAYS * 86400
     for f in bdir.glob("*.json"):
         try:
@@ -102,7 +99,7 @@ def _prune(bdir: Path):
 
 
 def _newest_in_dir(bdir: Path | None) -> dict | None:
-    """Самый свежий валидный снапшот в каталоге (None — пусто/битые файлы)."""
+    # Самый свежий валидный снапшот в каталоге (None — пусто/битые файлы).
     files = sorted(bdir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True) \
         if bdir is not None and bdir.is_dir() else []
     for f in files:
@@ -116,12 +113,11 @@ def _newest_in_dir(bdir: Path | None) -> dict | None:
 
 
 def latest_backup(persona: str, chat_id: str) -> dict | None:
-    """Самый свежий снапшот ИМЕННО этого чата (None — корзина пуста).
+    """Самый свежий снапшот именно этого чата (None — корзина пуста).
 
-    Миграция чтения: если у чата нет своих бэкапов, ищем среди старых
-    плоских файлов clear_backups/*.json (до привязки к chat_id) с
-    совпадающим chat_id/user_id внутри самого снапшота — так бэкапы,
-    сделанные до этого фикса, не теряются молча."""
+    Если у чата нет своих бэкапов, ищем совпадение по chat_id/user_id среди
+    старых плоских файлов clear_backups/*.json (бэкапы до привязки к чату
+    хранились без разбивки по chat_id)."""
     data = _newest_in_dir(_backup_dir(persona, chat_id))
     if data is not None:
         return data
@@ -145,7 +141,7 @@ def latest_backup(persona: str, chat_id: str) -> dict | None:
 
 
 def backup_info(persona: str, chat_id: str) -> dict:
-    """Краткая информация для UI: есть ли бэкап этого чата и что в нём."""
+    # Краткая информация для UI: есть ли бэкап этого чата и что в нём.
     data = latest_backup(persona, chat_id)
     if not data:
         return {"exists": False}
@@ -164,7 +160,7 @@ def backup_info(persona: str, chat_id: str) -> dict:
 
 
 def pop_latest(persona: str, chat_id: str) -> dict | None:
-    """Забрать свежий снапшот этого чата и удалить его файл (для восстановления)."""
+    # Забрать свежий снапшот этого чата и удалить его файл (для восстановления).
     data = latest_backup(persona, chat_id)
     if not data:
         return None

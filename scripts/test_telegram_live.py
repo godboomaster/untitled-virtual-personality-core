@@ -1,8 +1,6 @@
 """Обработчики Telegram на НАСТОЯЩЕЙ библиотеке python-telegram-bot (не фейках).
 
-Раньше telegram_bot проверялся только фейковыми message/update — живьём
-не запускался (docs/concurrency-issues-2026-09-23.md, «Осталось»). Здесь:
-настоящие Application (concurrent_updates=True, как в main.py), Bot,
+Настоящие Application (concurrent_updates=True, как в main.py), Bot,
 Update.de_json, PhotoSize/Document/File, CommandHandler/MessageHandler и
 фильтры, сериализация запросов Bot API (включая multipart альбома). В сеть
 не ходит: транспорт — OfflineRequest (подкласс telegram.request.BaseRequest),
@@ -57,7 +55,7 @@ DOC_BYTES = "Список покупок: хлеб, молоко.\n".encode("utf
 # ─── офлайн-транспорт Bot API ────────────────────────────────
 
 class OfflineRequest(BaseRequest):
-    """Отвечает вместо api.telegram.org. calls — [(метод, параметры)]."""
+    # Отвечает вместо api.telegram.org; calls — список (метод, параметры)
 
     def __init__(self):
         self.calls = []
@@ -169,7 +167,7 @@ class FakeMemory:
 
 
 class Recorder:
-    """Менеджер-заглушка: любой метод пишет вызов в calls."""
+    # Менеджер-заглушка: любой метод пишет вызов в calls
 
     def __init__(self, name, returns=None):
         self._name = name
@@ -379,7 +377,7 @@ def main():
         return [p.get("text") for n, p in req.calls[since:] if n == "sendMessage"]
 
     def turn_seen(where, cid, since):
-        """Каждый вызов where в чате cid шёл внутри хода (кадр в контексте, busy)."""
+        # Каждый вызов where в чате cid шёл внутри хода (кадр в контексте, busy)
         hits = [s for s in seen[since:] if s[0] == where and s[1] == str(cid)]
         return bool(hits) and all(s[2] is not None and s[3] for s in hits)
 

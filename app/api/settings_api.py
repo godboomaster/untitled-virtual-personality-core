@@ -51,14 +51,15 @@ def _persist_env(var: str, value: str):
 
     Атомарно (tmp + os.replace, права файла сохраняются) и под общим локом —
     см. app/api/security.persist_env. Значение с \\r/\\n/NUL или var не из
-    [A-Z0-9_] отклоняется ValueError-ом (раньше \\n в значении дописывал в
-    .env произвольную вторую строку, применявшуюся при следующем рестарте)."""
+    [A-Z0-9_] отклоняется ValueError-ом: иначе \\n в значении дописал бы в
+    .env произвольную вторую строку, которая применилась бы при следующем
+    рестарте."""
     _security_persist_env(_ENV_PATH, var, value)
     os.environ[var] = value
 
 
 def _refresh_live_routers():
-    """Перечитать провайдеров в роутерах уже созданных ботов."""
+    # Перечитать провайдеров в роутерах уже созданных ботов.
     from app.api.runtime import registry
     available = get_available_providers()
     for bot in registry._bots.values():
@@ -66,14 +67,14 @@ def _refresh_live_routers():
 
 
 def _mask_key(key: str) -> str:
-    """Маска для UI: первые и последние 4 символа, середина скрыта."""
+    # Маска для UI: первые и последние 4 символа, середина скрыта.
     if len(key) <= 8:
         return key[:2] + "…"
     return f"{key[:4]}…{key[-4:]}"
 
 
 def list_providers() -> dict:
-    """Список провайдеров для UI: статус ключей, модель, активность."""
+    # Список провайдеров для UI: статус ключей, модель, активность.
     active = os.getenv("ACTIVE_PROVIDER")
     available = get_available_providers()
     if active not in available:
@@ -116,7 +117,7 @@ def list_providers() -> dict:
     from app.features.web_llm import ADAPTERS as _WC_ADAPTERS
     from app.core.router import _parse_webchat_sites
     webchat_sites = _parse_webchat_sites()
-    # Движки локальных задач: что из службыбных вызовов идёт в Ollama,
+    # Движки локальных задач: что из служебных вызовов идёт в Ollama,
     # а что — в веб-чат (и на какой сайт)
     from app.core.local_router import get_local_router
     return {"providers": providers, "active": active,
@@ -166,7 +167,7 @@ def set_webchat(sites) -> dict:
         bot.router.webchat_sites = list(norm)
         # Экземпляры пересоздадутся на следующем вызове; reset_webchats, а не
         # `_webchats = {}`: выбывшие инстансы закрывают свои вкладки (идущий
-        # вызов — по его завершении), иначе те жили в пуле до конца процесса
+        # вызов — по его завершении), иначе они жили бы в пуле до конца процесса
         bot.router.reset_webchats()
         # Отдельный роутер LTM (LTM_MODEL_PROVIDER) — те же сайты и сброс,
         # иначе фон памяти продолжал бы ходить в выключенный веб-чат
@@ -301,7 +302,7 @@ def set_provider_model(provider: str, model: str) -> dict:
 
 
 def add_provider_key(provider: str, key: str) -> dict:
-    """Добавить ключ провайдеру: в .env (первый свободный слот), в рантайм, в живых ботов."""
+    # Добавить ключ провайдеру: в .env (первый свободный слот), в рантайм, в живых ботов.
     if provider not in PROVIDER_CONFIGS:
         return {"ok": False, "detail": f"Неизвестный провайдер: {provider}"}
     key = key.strip()
@@ -358,13 +359,13 @@ def _key_vars(provider: str) -> list[str]:
 
 
 def _remove_env(var: str):
-    """Удалить переменную из .env и из окружения процесса (атомарно, под локом)."""
+    # Удалить переменную из .env и из окружения процесса (атомарно, под локом).
     _security_remove_env(_ENV_PATH, var)
     os.environ.pop(var, None)
 
 
 def delete_provider_key(provider: str, index: int) -> dict:
-    """Удалить ключ провайдера по индексу (порядок — как в list_providers)."""
+    # Удалить ключ провайдера по индексу (порядок — как в list_providers).
     if provider not in PROVIDER_CONFIGS:
         return {"ok": False, "detail": f"Неизвестный провайдер: {provider}"}
     variables = _key_vars(provider)
@@ -450,7 +451,7 @@ def set_timezone(value: str) -> dict:
 
 
 def _apply_llm_to_bot(persona: str, llm_cfg: dict):
-    """Применить секцию llm к живому роутеру бота (без перезапуска)."""
+    # Применить секцию llm к живому роутеру бота (без перезапуска).
     from app.api.runtime import registry
     bot = registry._bots.get(persona)
     if bot is not None:
@@ -634,7 +635,7 @@ def _apply_life_live(persona: str, bot, life_cfg) -> None:
                 lambda chat_id: bot.proactive._last_initiative_time.get(str(chat_id), 0))
             # обратная ссылка: STATE_CHANGE-инициативы и mood-синк ignore streak
             bot.proactive.living = bot.living
-            # дешёвые гейты перед LLM-скорингом инициативы (§3.4)
+            # дешёвые гейты перед LLM-скорингом инициативы
             bot.living.pre_initiative_gate = bot.proactive.initiative_cheaply_possible
         logger.info(f"[{persona}] Жизнь персоны активирована на живую")
 
@@ -697,7 +698,7 @@ def update_persona_proactive(persona: str, patch: dict) -> dict | None:
         return None
 
     # Лок на весь read-modify-write: без него конкурентная правка (например,
-    # автосохранение формы) могла перечитать данные до записи другого запроса
+    # автосохранение формы) может перечитать данные до записи другого запроса
     # и затереть его правку своей — атомарность самой записи (tmp+os.replace)
     # этого не решает, нужна сериализация всего цикла целиком.
     with yaml_write_lock:
@@ -761,12 +762,12 @@ _PERSONAS_DIR = Path(__file__).parent.parent / "personas"
 def _persona_yaml_path(persona: str) -> Path | None:
     """Путь к YAML персоны, если имя прошло проверку и путь не выходит за
     пределы app/personas/ — иначе None (везде ниже это уже означает «персоны
-    нет», как и отсутствующий файл). Общая точка для всех мест этого модуля,
-    где persona раньше подставлялась в Path(...) без проверки формата вовсе
+    нет», как и отсутствующий файл). Общая точка для всех мест этого модуля
     (get_persona_config/update_persona_config/save_persona_yaml/
-    duplicate_persona и т.д. — их вызывают эндпоинты БЕЗ предварительного
-    _get_bot()/list_personas(), так что до задачи №6 traversal-имя доходило
-    сюда напрямую и читало/писало произвольный существующий файл)."""
+    duplicate_persona и т.д.): их вызывают эндпоинты БЕЗ предварительного
+    _get_bot()/list_personas(), поэтому без этой проверки traversal-имя
+    дошло бы сюда напрямую и читало/писало бы произвольный существующий
+    файл."""
     return safe_join(_PERSONAS_DIR, persona, ".yaml")
 
 
@@ -1017,7 +1018,7 @@ def create_persona(raw: str) -> dict:
             return {"ok": False, "conflict": True, "detail": f"Персона '{persona_id}' уже существует"}
         atomic_write_text(path, raw)
     logger.info(f"[api] Создана персона {persona_id}")
-    # Банк flavor-реплик для CC-команд (Google AI Mode): фоновая генерация
+    # Банк flavor-реплик для CC-команд: фоновая генерация
     # сразу при создании персоны, если у неё включён computer_control
     try:
         from app.features.computer_control import config_enabled as _cc_on

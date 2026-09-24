@@ -22,7 +22,6 @@ def extract_reply_context(update: Update, bot_id: int) -> str | None:
     if replied.from_user and replied.from_user.id == bot_id:
         return None
 
-    # Текст
     replied_text = replied.text or replied.caption or None
     if not replied_text:
         # Если это документ без текста — берём имя файла
@@ -31,7 +30,6 @@ def extract_reply_context(update: Update, bot_id: int) -> str | None:
         else:
             return None
 
-    # Автор
     author = "Unknown"
     if replied.from_user:
         author = replied.from_user.first_name or replied.from_user.username or f"User_{replied.from_user.id}"

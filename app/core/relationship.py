@@ -1,20 +1,21 @@
 """
-Память отношений с пользователем (план «развитие отношений», фаза 2.1).
+Память отношений с пользователем: близость, общие темы и моменты, эволюция мнений.
 
 Хранение data/{context}/living/relationship.json, per chat:
-  first_met_at, user_messages, last_message_at — счётчики (бесплатно,
+  first_met_at, user_messages, last_message_at — счётчики (обновляются
   на каждое сообщение пользователя через LivingPersona.on_user_message)
   shared_topics:  list[str] — общие темы интересов
   shared_moments: list[str] — внутренние шутки, запомнившиеся эпизоды
 Стадия близости — вычисляемая (дни знакомства × сообщений), не хранится.
 
-Наполнение: раз в MOMENT_EXTRACT_EVERY пользовательских сообщений локальный
-движок (задача relationship) извлекает из последних реплик НОВЫЕ общие
-моменты/темы, с дедупом против уже известных.
+Наполнение: раз в MOMENT_EXTRACT_EVERY пользовательских сообщений локальная
+LLM извлекает из последних реплик новые общие моменты/темы, с дедупом
+против уже известных.
 
 Подача: компактный блок в контекст ответа (get_context_block) — стадия,
-общие темы, последние моменты; дежурное «не перечисляй механически».
-Для primitive-персон блок не строится: вербальной истории отношений нет.
+общие темы, последние моменты; с предупреждением не перечислять их
+механически. Для primitive-персон блок не строится: вербальной истории
+отношений нет.
 """
 
 import json
@@ -63,7 +64,7 @@ _STAGES = [
 
 
 def _stage_index(days: float, msgs: int) -> int:
-    """Стадия близости от длительности и интенсивности общения."""
+    # Стадия близости от длительности и интенсивности общения.
     if days >= 30 and msgs >= 300:
         return 3
     if days >= 10 and msgs >= 100:
@@ -78,16 +79,15 @@ def _norm(text: str) -> str:
 
 
 class RelationshipMemory:
-    """Потокобезопасное хранилище отношений per chat. Файл — JSON."""
+    # Потокобезопасное хранилище отношений per chat. Файл — JSON.
 
     def __init__(self, context: str, primitive: bool = False):
         self.context = context
         self.primitive = primitive
         self.local = get_local_router()
         self._lock = threading.RLock()
-        # Ретенция на живущем процессе (аудит): дозор — не чаще раза в
-        # RETENTION_TICK_HOURS перезапускать прореживание из add_extracted
-        # (см. _maybe_prune_stale)
+        # Дозор: не чаще раза в RETENTION_TICK_HOURS перезапускать
+        # прореживание из add_extracted (см. _maybe_prune_stale)
         self._retention_timer = RetentionTimer()
 
         db = get_db_paths(context)
@@ -96,9 +96,9 @@ class RelationshipMemory:
         self._file = base / "relationship.json"
         self._chats: Dict[str, dict] = self._load()
 
-        # Ретенция (app.core.retention, задача аудита): разовый чат
-        # (человек написал раз и не вернулся) не должен копить историю
-        # отношений вечно. Прогоняем сразу при загрузке.
+        # Ретенция (app.core.retention): разовый чат (человек написал раз и
+        # не вернулся) не должен копить историю отношений вечно. Прогоняем
+        # сразу при загрузке.
         if self._prune_stale_chats():
             self._save()
 
@@ -113,7 +113,7 @@ class RelationshipMemory:
         )
 
     def _maybe_prune_stale(self):
-        """Повтор ретенции на живущем процессе (аудит): зовётся из
+        """Повтор ретенции на живущем процессе: зовётся из
         add_extracted — урожай диалога идёт раз в HARVEST_MIN_MESSAGES
         реплик/по таймеру (LivingPersona._harvest_dialogue), НЕ на каждое
         сообщение (для этого — record_message, туда прунинг не вешаем).
@@ -166,9 +166,8 @@ class RelationshipMemory:
 
     def record_message(self, chat_id: str) -> bool:
         """Учесть сообщение пользователя. True — прошло MOMENT_EXTRACT_EVERY
-        сообщений (устаревший триггер: извлечение теперь делает общий
-        урожай диалога LivingPersona._harvest_dialogue; флаг оставлен для
-        совместимости)."""
+        сообщений (флаг для совместимости: извлечение делает общий урожай
+        диалога LivingPersona._harvest_dialogue)."""
         with self._lock:
             rec = self._rec(chat_id)
             rec["user_messages"] += 1
@@ -178,7 +177,7 @@ class RelationshipMemory:
             return due
 
     def known_lists(self, chat_id: str) -> tuple:
-        """(moments, topics, stances) строками для промптов-разборов диалога."""
+        # (moments, topics, stances) строками для промптов-разборов диалога.
         with self._lock:
             rec = self._rec(chat_id)
             return (
@@ -223,7 +222,7 @@ class RelationshipMemory:
                 rec["shared_topics"].append(topic)
                 known_t.add(nt)
                 added += 1
-            # Позиции персоны: высказывания и пересмотры мнений (фаза 3.1)
+            # Позиции персоны: высказывания и пересмотры мнений
             for st in (stance_changes or [])[:2]:
                 if not isinstance(st, dict):
                     continue
@@ -349,7 +348,7 @@ class RelationshipMemory:
         return "\n".join(lines)
 
     def get_snapshot(self, chat_id: str) -> Optional[dict]:
-        """Снимок для UI (комната/настроение)."""
+        # Снимок для UI (комната/настроение).
         with self._lock:
             rec = self._chats.get(str(chat_id))
             if not rec:

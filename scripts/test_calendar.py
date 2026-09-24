@@ -79,9 +79,7 @@ def main():
     except ValueError:
         check("update: битая дата → ValueError", True)
 
-    # ── 4b. title="" и time="" (задача №9 аудита: раньше писались как есть —
-    # пустой заголовок проходил мимо проверки из add_entry, а time="" хранился
-    # буквальной пустой строкой вместо None) ──
+    # ── 4b. update_entry: title="" запрещён, time="" → None (как в add_entry) ──
     try:
         cal.update_entry(e1["id"], title="")
         check("update: title='' → ValueError (как в add_entry)", False)

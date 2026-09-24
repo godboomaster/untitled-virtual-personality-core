@@ -368,7 +368,7 @@ def parse_and_filter_facts(raw: str) -> dict:
         if re.search(r'\bno_\w+', value, re.IGNORECASE) or re.search(r'\bnot_\w+', value, re.IGNORECASE):
             continue
 
-        # 4. Старые проверки для совместимости
+        # 4. Маркеры отсутствия в любом месте значения
         if any(marker in value.lower() for marker in ["no_facts", "not mentioned", "not known"]):
             continue
 
@@ -417,7 +417,7 @@ PUBLIC_CATEGORY_PREFIXES = ("Hobby_", "Skills_")
 
 
 def is_public_category(category: str) -> bool:
-    """Относится ли категория факта к публичному профилю."""
+    # Относится ли категория факта к публичному профилю
     if not category:
         return False
     if category in PUBLIC_CATEGORIES:
@@ -518,9 +518,7 @@ Consolidated facts:"""
 
 
 def should_ignore_message(message: str) -> bool:
-    """
-    Игнорируем слишком короткие сообщения и чистый шум.
-    """
+    # Игнорируем слишком короткие сообщения и чистый шум
     stripped = message.strip()
     if len(stripped) < 8:
         return True

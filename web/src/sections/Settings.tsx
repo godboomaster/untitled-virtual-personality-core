@@ -103,7 +103,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                 : false;
         }
         for (const [k, v] of Object.entries(c.features)) {
-          // telegram-опс фичи (export_server/restore_memory) в вебе инертны — скрываем
+          // фичи, специфичные для мессенджера (export_server/restore_memory), в вебе инертны — скрываем
           if (WEB_HIDDEN_FEATURES.has(k)) continue;
           if (typeof v === 'boolean' && !(k in bools)) bools[k] = v;
         }
@@ -209,7 +209,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
   const webchatProvs: ProviderInfo[] = webchatSites.map((s) => ({
     id: `webchat:${s}`,
     name: s,
-    key_set: true, // доступность не от ключа — от логина в ботском Chrome
+    key_set: true, // доступность не от ключа — от логина в браузере бота
     keys_count: 0,
     keys: [],
     model: '',
@@ -327,7 +327,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
     })
   );
 
-  // Моковый режим (без бэкенда) — как раньше
+  // Моковый режим (без бэкенда)
   const [mainId, setMainId] = useState(() => llmProviders.find((p) => p.active)?.id ?? llmProviders[0].id);
   const [backupIds, setBackupIds] = useState<string[]>(() => llmProviders.filter((p) => p.backup).map((p) => p.id));
   const main = llmProviders.find((p) => p.id === mainId) ?? llmProviders[0];
@@ -410,7 +410,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                     </div>
                     <div className="provider-side">
                       {p.id.startsWith('webchat:') ? (
-                        // Веб-чат: без ключа — доступность от логина в ботском Chrome.
+                        // Веб-чат: без ключа — доступность от логина в браузере бота.
                         // В досье — свой лимит: tick снимает его, число — сообщений в час
                         <>
                           <span className="badge">{t('settings.webchatBadge')}</span>

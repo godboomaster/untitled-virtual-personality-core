@@ -212,10 +212,9 @@ def main():
           'web_presence.note(web_context(req.persona), req.chat_id, req.active)' in src
           and 'web_presence.note(web_context(persona), chat_id, True)' in src)
 
-    # Старый фронт мог слать /api/presence вовсе без persona (до того, как
-    # гейт стали ключевать парой персона+чат) — раньше это 422 без внятного
-    # объяснения на стороне фронта. persona теперь Optional: запрос
-    # принимается, отметка просто не ставится (ключ без персоны не собрать).
+    # Старый фронт может слать /api/presence без persona: запрос должен
+    # приниматься (не 422), просто отметка не ставится — без персоны ключ
+    # присутствия не собрать.
     req_no_persona = PresenceRequest(active=True)
     check("PresenceRequest: без persona — не бросает (Optional, default None)",
           req_no_persona.persona is None and req_no_persona.chat_id == "web_user")
@@ -324,7 +323,7 @@ def main():
         ("нет", "NO"), ("не надо", "NO"), ("хватит", "NO"),
         ("отстань", "NO"), ("стоп", "NO"), ("надоело", "NO"),
         ("останови курс", "NO"), ("не хочу", "NO"),
-        # Корень дефекта: раньше два re.search по всему тексту давали YES
+        # Отрицание в начале не должно перекрываться словом «давай»/«продолжать» дальше в тексте
         ("не, давай не будем продолжать", "NO"),
         ("давай не будем", "NO"),
         ("подожди, не продолжай", "NO"),

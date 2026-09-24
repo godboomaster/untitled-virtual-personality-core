@@ -1,13 +1,10 @@
 """Общие защитные примитивы API-слоя.
 
-Задача №6 аудита: строки из тела/query запроса (имя персоны в первую
-очередь) без единой точки валидации доходили до Path(...) как есть —
-``persona="../../persona_template"`` превращал ``_PERSONAS_DIR / f"{persona}.yaml"``
-в путь вне app/personas/, а ``context=f"api_{persona}"`` тем же способом уводил
-BotInstance вне data/. Раньше свой regex был только в settings_api
-(создание персоны) — остальные функции (get_persona_config,
-update_persona_proactive, save_persona_yaml, duplicate_persona,
-runtime.get_persona_info и т.д.) строили путь без проверки вовсе.
+Строки из тела/query запроса (имя персоны в первую очередь) не должны идти
+в Path(...) без проверки формата: ``persona="../../persona_template"``
+превратил бы ``_PERSONAS_DIR / f"{persona}.yaml"`` в путь вне app/personas/,
+а ``context=f"api_{persona}"`` тем же способом увёл бы BotInstance вне
+data/.
 
 Здесь — единственное место, где определён допустимый формат id персоны
 (и вообще «безопасного» id вроде черновика персоны), плюс safe_join —
@@ -24,10 +21,9 @@ from fastapi import Path as ApiPath
 from fastapi import Query as ApiQuery
 from pydantic import AfterValidator
 
-# Единственная реализация — app/core/atomic_io.py (задача №6 аудита, хвост:
-# здесь раньше лежала вторая копия tmp+os.replace без fsync и без сохранения
-# прав файла). Реэкспорт — чтобы не трогать импорты `from app.api.security
-# import atomic_write_text` по всему проекту (settings_api и т.д.).
+# Единственная реализация атомарной записи — app/core/atomic_io.py; реэкспорт
+# сохраняет рабочими импорты `from app.api.security import atomic_write_text`
+# (settings_api и др.).
 from app.core.atomic_io import atomic_write_text  # noqa: F401
 
 # id персоны = имя YAML-файла в app/personas/ (и черновика в data/persona_drafts/,
@@ -109,7 +105,7 @@ def validate_env_value(value: str) -> None:
 
 
 def persist_env(path: Path, var: str, value: str) -> None:
-    """Записать/обновить переменную в .env атомарно и под локом."""
+    # Записать/обновить переменную в .env атомарно и под локом.
     if not ENV_VAR_RE.match(var):
         raise ValueError(f"недопустимое имя переменной окружения: {var!r}")
     validate_env_value(value)
@@ -119,7 +115,7 @@ def persist_env(path: Path, var: str, value: str) -> None:
 
 
 def remove_env(path: Path, var: str) -> None:
-    """Удалить переменную из .env атомарно и под локом (нет файла/ключа — no-op)."""
+    # Удалить переменную из .env атомарно и под локом (нет файла/ключа — no-op).
     if not ENV_VAR_RE.match(var):
         raise ValueError(f"недопустимое имя переменной окружения: {var!r}")
     from dotenv import unset_key
@@ -143,10 +139,8 @@ yaml_write_lock = threading.Lock()
 # формат диктует Telegram/фронтенд, не наш код (например, у групп он
 # отрицательный: "-1001234567890"), поэтому здесь не отказ, а приведение к
 # безопасному виду: любой символ вне "буква/цифра (в т.ч. юникод)/_/-"
-# заменяется на "_" (\w — как в исходном re.sub(r"[^\w\-]", "_", ...), что
-# уже было продублировано в app/api/memory_wipe.py::_todo_file — сведено
-# сюда как общий helper). Traversal невозможен по построению — "/", "\\",
-# ".." в \w и "-" не входят и превращаются в "_", какой бы алфавит ни был.
+# заменяется на "_". Traversal невозможен по построению — "/", "\\", ".."
+# в это множество не входят и превращаются в "_", какой бы алфавит ни был.
 _UNSAFE_SEGMENT_RE = re.compile(r"[^\w-]+", re.UNICODE)
 
 

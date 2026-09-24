@@ -1,16 +1,15 @@
-"""Smoke-тест хвостов аудита (fix/audit-control-mode), не покрытых
-test_api_security.py/test_state_io.py:
+"""Smoke-тест точечных сценариев, не покрытых test_api_security.py/
+test_state_io.py:
 
   - clear_backup: снапшот корзины /api/chat/clear привязан к (persona,
     chat_id), а не только к persona — восстановление одного чата не должно
-    задевать другой; старые (до фикса) плоские бэкапы читаются миграцией;
+    задевать другой; старый плоский формат бэкапа читается миграцией;
   - memory_wipe: полная очистка чата стирает ВСЕ ожидающие setup «как
-    часто» learning_manager в этом чате (не только «единственный» —
-    legacy-фолбэк clear_setup без user_id, см. задачу №9/№6);
+    часто» learning_manager в этом чате, а не только один;
   - web_search: is_safe_public_url — SSRF-фильтр (приватные/loopback/
     link-local/metadata-адреса, IPv4/IPv6, «резолвится и туда, и сюда»),
     fetch_page_text проверяет КАЖДЫЙ хоп редиректа, а не только исходный URL;
-  - query_rewriter: анафора перед знаком препинания («его?», «него.») теперь
+  - query_rewriter: анафора перед знаком препинания («его?», «него.»)
     распознаётся;
   - intent_router: OLLAMA_URL берётся из того же источника (env OLLAMA_URL),
     что и app.core.local_router, а не хардкод localhost;
@@ -94,7 +93,7 @@ def test_clear_backup_chat_isolation():
         check("chat2: бэкап цел после восстановления chat1", b2_after is not None
               and b2_after["stm"][0]["content"] == "chat2 msg")
 
-        # ── миграция чтения: бэкап старого (до фикса) плоского формата ──
+        # ── миграция чтения: старый плоский формат бэкапа ──
         root = cb._backup_root(persona)
         legacy_path = root / "1000000000.json"
         legacy_path.write_text(json.dumps({
@@ -143,8 +142,8 @@ def test_memory_wipe_learning_setup_multiuser():
             self.saved += 1
 
         def clear_chat(self, ck):
-            """Публичная очистка обучения чата (learning_manager.clear_chat):
-            memory_wipe теперь ходит через неё, а не в приватные поля."""
+            """Публичная очистка обучения чата: memory_wipe снимает сессии и
+            ожидающие setup через неё, а не через приватные поля."""
             with self._lock:
                 ck = str(ck)
                 self._sessions = [s for s in self._sessions
@@ -381,9 +380,9 @@ def test_web_search_dns_rebinding_pinned_connect():
     pin_pages.clear()
     pin_pages["v6.example"] = _FakeResp(text="ok")
 
-    # 2001:4860:4860::8888 — публичный IPv6 (Google Public DNS); 2001:db8::/32
-    # для этого не годится — это документационный префикс RFC 3849,
-    # is_private=True у ipaddress, что тут и требуется отклонить.
+    # 2001:4860:4860::8888 — публичный IPv6-адрес; 2001:db8::/32 для этого
+    # не годится — это документационный префикс RFC 3849, ipaddress считает
+    # его приватным (is_private=True), а тест проверяет именно отклонение.
     def _resolve_v6(host, *a, **kw):
         return [(10, 1, 6, "", ("2001:4860:4860::8888", 0, 0, 0))]
 

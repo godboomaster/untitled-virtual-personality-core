@@ -1,23 +1,23 @@
 """
 Слой «Мир» (World/Lore Engine) — NPC, места, сюжетные линии, внешние стимулы.
 
-Хранение (§4.1): data/{context}/living/world.json
+Хранение: data/{context}/living/world.json
   npc:       id, name, role, relationship_status, origin (seeded | detected | generated)
   place:     id, name, type, atmosphere
   storyline: id, title, status (started|ongoing|resolved), summary,
              related_npc_ids, next_advance_at
   external_stimulus: id, source, fetched_at, content, relevance_score, used
 
-Заполнение базы (§4.2):
+Заполнение базы:
   - при создании персоны: основная LLM разбирает system_prompt (npc_seed_on_create)
-  - из диалога: Gemma-классификатор «упомянут ли новый NPC/место?»
-  - из мира (§5): внешние стимулы через интернет — ТОЛЬКО для real_world-персон
-    (жёсткий gate external_stimuli_allowed, см. persona_context.py §10).
+  - из диалога: LLM-классификатор «упомянут ли новый NPC/место?»
+  - из мира: внешние стимулы через интернет — ТОЛЬКО для real_world-персон
+    (жёсткий gate external_stimuli_allowed, см. persona_context.py).
 
-Генерация офлайн-событий (§4.3): 1-3 раза/день Gemma генерирует короткое
-событие из жизни персонажа. Для fictional_universe внешний стимул НЕ тянется
-из интернета — внутримировой факт («в Детройте похолодало») генерируется тем
-же пайплайном с universe_note вместо external_stimulus (§1.3).
+Генерация офлайн-событий: 1-3 раза/день LLM генерирует короткое событие из
+жизни персонажа. Для fictional_universe внешний стимул НЕ тянется из
+интернета — внутримировой факт («в городе похолодало») генерируется тем
+же пайплайном с universe_note вместо external_stimulus.
 
 Событие описывает ЧТО произошло, финальную подачу для пользователя делает
 основная LLM с полным system_prompt.
@@ -45,21 +45,21 @@ MAX_NPCS = 40
 MAX_PLACES = 30
 MAX_STORYLINES = 15
 MAX_STIMULI = 20
-MAX_PLANS = 8                # открытые планы персоны (фаза B: ожидания)
+MAX_PLANS = 8                # открытые планы персоны (ожидания)
 MAX_RESOLVED_PLANS = 5       # завершённые планы храним кратко — для «как прошло»
 DETECT_THROTTLE_SEC = 60  # детекция NPC/мест из диалога — не чаще раза в минуту
 MAX_RESOLVED_STORYLINES = 10  # завершённые линии: храним последние, старые чистим
 
 
 def _norm_title(title: str) -> str:
-    """Нормализация заголовка линии для сопоставления: Gemma часто
-    перефразирует («Расследование Кутузовой» vs «расследование кутузовой!»),
-    и exact-матч молча терял апдейты. Регистр/пунктуация/пробелы не важны."""
+    """Нормализация заголовка линии для сопоставления: LLM часто
+    перефразирует («Расследование Смирновой» vs «расследование смирновой!»),
+    и exact-матч молча терял бы апдейты. Регистр/пунктуация/пробелы не важны."""
     return re.sub(r"[^\w\s]+", " ", str(title or "").lower()).strip()
 
 
 def _titles_similar(a: str, b: str) -> bool:
-    """Похоже ли два заголовка (нормализация + близость по difflib)."""
+    # Похоже ли два заголовка (нормализация + близость по difflib).
     na, nb = _norm_title(a), _norm_title(b)
     if not na or not nb:
         return False
@@ -85,10 +85,10 @@ system_prompt:
 {system_prompt}
 ---"""
 
-# Фолбэк-сеялка: основной сид часто не находит сюжетных линий в промпте
-# (кейс connor: storylines: [] → сценаристу никогда было что двигать).
-# Здесь просим ПРИДУМАТЬ фоновые линии, следующие лору, — это штатно для
-# «жизни между диалогами»: открытые обстоятельства жизни самой персоны.
+# Фолбэк-сеялка: основной сид часто не находит сюжетных линий в промпте,
+# а без них сценаристу нечего двигать. Здесь просим ПРИДУМАТЬ фоновые линии,
+# следующие лору, — это штатно для «жизни между диалогами»: открытые
+# обстоятельства жизни самой персоны.
 _STORYLINE_SEED_PROMPT = """Ты — сценарист базы мира персонажа. По system_prompt ниже придумай 1-2 ФОНОВЫЕ сюжетные линии САМОЙ персоны (не пользователя): незавершённые обстоятельства её жизни, которые могут тихо развиваться между разговорами. Линии обязаны следовать лору вселенной и характеру; открытые ситуации, а не разрешённые конфликты.
 
 Верни СТРОГО JSON без markdown:
@@ -138,7 +138,7 @@ mood_impact.valence_delta — маленький (обычно -0.2..0.2).
 Время: {daytime}
 {resolve_block}{stimulus_block}"""
 
-# §1.3: внутримировой стимул для fictional_universe — генерируется, не ищется
+# Внутримировой стимул для fictional_universe — генерируется, не ищется
 _INWORLD_STIMULUS_INSTRUCTION = """Внешний стимул (внутри вселенной персонажа, симулируй сам в её духе):
 Вселенная: {universe_note}
 Локация: {location}
@@ -147,8 +147,8 @@ _INWORLD_STIMULUS_INSTRUCTION = """Внешний стимул (внутри в�
 _REALWORLD_STIMULUS_INSTRUCTION = """Последний внешний стимул из реального мира (учти, если релевантен):
 {stimulus}"""
 
-# §3.4 плана уровней интеллекта: офлайн-события примитивного существа —
-# физические действия (в т.ч. с предметами инвентаря), не «мысли»
+# Офлайн-события примитивного существа — физические действия (в т.ч. с
+# предметами инвентаря), не «мысли»
 _WORLD_EVENT_PROMPT_PRIMITIVE = """Сгенерируй одно короткое ФИЗИЧЕСКОЕ событие из жизни примитивного существа за последние часы.
 Это НЕ мысль и не размышление — только действие: что-то сделало, обнюхало, сгрызло, нашло, уронило, спрятало.
 Используй только известные места и предметы — не выдумывай новых имён.
@@ -196,7 +196,7 @@ _STIMULUS_FILTER_PROMPT = """Оцени внешний факт из интер�
 
 
 class WorldEngine:
-    """Мир персоны: NPC, места, арки, стимулы. Потокобезопасен (RLock)."""
+    # Мир персоны: NPC, места, арки, стимулы. Потокобезопасен (RLock).
 
     def __init__(self, context: str, persona_name: str,
                  events_per_day: tuple = DEFAULT_EVENTS_PER_DAY,
@@ -205,11 +205,11 @@ class WorldEngine:
         self.context = context
         self.persona_name = persona_name
         self.events_per_day = events_per_day
-        # primitive (intellect tier, §3.3): без NPC/storylines/засева/детекции —
-        # только офлайн-события как физические действия (§3.4)
+        # primitive: без NPC/storylines/засева/детекции — только офлайн-
+        # события как физические действия
         self.primitive = primitive
-        # §5: whitelist-категории внешних стимулов из YAML персоны;
-        # пустой список — категории выводятся из persona_context.interests
+        # whitelist-категории внешних стимулов из YAML персоны; пустой
+        # список — категории выводятся из persona_context.interests
         self.allowed_categories = list(allowed_categories or [])
         self.local = get_local_router()
         self._lock = threading.RLock()
@@ -224,7 +224,7 @@ class WorldEngine:
         # Расписание per-chat: когда генерировать следующее офлайн-событие
         self._next_event_at: Dict[str, float] = data.get("next_event_at", {})
         self._next_fetch_at: float = data.get("next_fetch_at", 0.0)
-        # Троттлинг детекции из диалога: Gemma-разбор на КАЖДОЕ сообщение
+        # Троттлинг детекции из диалога: LLM-разбор на КАЖДОЕ сообщение
         # при активной переписке выстраивает очередь в локальную модель;
         # детекция смотрит последние 6 реплик, так что пропущенное
         # подхватится следующим сообщением
@@ -289,8 +289,8 @@ class WorldEngine:
                     if s.get("status") in ("started", "ongoing")][:limit]
 
     def _prune_resolved_locked(self):
-        """Завершённые линии копились вечно — держим только последние
-        MAX_RESOLVED_STORYLINES по времени апдейта (база не растёт бесконечно).
+        """Держит только последние MAX_RESOLVED_STORYLINES завершённых линий
+        по времени апдейта, чтобы база не росла бесконечно.
         Вызывается под уже взятым self._lock (RLock)."""
         resolved = [s for s in self._world["storylines"]
                     if s.get("status") == "resolved"]
@@ -302,18 +302,18 @@ class WorldEngine:
                                      if id(s) not in drop]
 
     def prune_resolved_storylines(self):
-        """Публичная обёртка чистки завершённых линий (для сценариста)."""
+        # Публичная обёртка чистки завершённых линий (для сценариста).
         with self._lock:
             self._prune_resolved_locked()
 
     def last_world_fact(self, chat_id: str) -> str:
-        """Последний офлайн-факт для контекста тика (§3.3). Хранится в мире
+        """Последний офлайн-факт для контекста тика состояния. Хранится в мире
         per-chat journal — держим короткий журнал последних событий."""
         with self._lock:
             journal = self._world.setdefault("event_journal", {}).get(str(chat_id), [])
             return journal[-1] if journal else ""
 
-    # ── Планы персоны (ожидания, фаза B) ──────────────────
+    # ── Планы персоны (ожидания) ───────────────────────────
     # У персоны есть будущее: план с датой рождается из офлайн-события,
     # упоминается заранее (anticipation), а в срок становится событием-исходом
     # (follow-through). Не storylines: storylines — фоновые арки без даты,
@@ -321,7 +321,7 @@ class WorldEngine:
 
     def add_plan(self, title: str, detail: str = "",
                  due_in_hours: float = 24.0) -> Optional[dict]:
-        """Новый план персоны. Дедуп по заголовку среди открытых."""
+        # Новый план персоны. Дедуп по заголовку среди открытых.
         title = str(title or "").strip()[:120]
         if len(title) < 3:
             return None
@@ -347,7 +347,7 @@ class WorldEngine:
         return dict(plan)
 
     def due_plan(self) -> Optional[dict]:
-        """Самый ранний просроченный открытый план (пора событию-исходу)."""
+        # Самый ранний просроченный открытый план (пора событию-исходу).
         with self._lock:
             due = [p for p in self._world["plans"]
                    if p.get("status") == "pending"
@@ -356,7 +356,7 @@ class WorldEngine:
             return dict(due[0]) if due else None
 
     def upcoming_plans(self, within_hours: float = 48.0) -> List[dict]:
-        """Открытые планы с датой в ближайшие within_hours (для промпта)."""
+        # Открытые планы с датой в ближайшие within_hours (для промпта).
         horizon = time.time() + within_hours * 3600
         with self._lock:
             return [dict(p) for p in self._world["plans"]
@@ -383,12 +383,12 @@ class WorldEngine:
             self._save()
         logger.info(f"[WorldEngine] План #{plan_id} разрешён: {str(outcome)[:60]}")
 
-    # ── Засев базы из system_prompt (§4.2) ────────────────
+    # ── Засев базы из system_prompt ─────────────────────────
 
     def seed_from_system_prompt(self, system_prompt: str, router) -> bool:
         """Разовый парсинг system_prompt основной LLM (npc_seed_on_create).
-        Возвращает True, если база была засеяна. Для primitive (§3.3) засева
-        нет: у существа без социального мира нечего сеять — помечаем и уходим."""
+        Возвращает True, если база была засеяна. Для primitive засева нет:
+        у существа без социального мира нечего сеять — помечаем и уходим."""
         with self._lock:
             if self._world.get("seeded"):
                 return False
@@ -482,10 +482,10 @@ class WorldEngine:
         return True
 
     def ensure_storylines(self, system_prompt: str, router) -> bool:
-        """Одноразовый бэкфилл сюжетов для мира, засеянного БЕЗ них (кейс
-        connor: seeded=true, storylines=[] — сценаристу никогда было что
-        двигать). Действует и на уже созданные миры; флаг storylines_seeded
-        не даёт повторяться каждый запуск."""
+        """Одноразовый бэкфилл сюжетов для мира, засеянного БЕЗ них
+        (seeded=true, storylines=[] — сценаристу нечего двигать).
+        Действует и на уже созданные миры; флаг storylines_seeded не даёт
+        повторяться каждый запуск."""
         if self.primitive:
             return False
         with self._lock:
@@ -567,7 +567,7 @@ class WorldEngine:
                 known_places.add(name.lower())
                 added += 1
             if added:
-                # База не растёт бесконечно (§10 «не захламлять»)
+                # База не растёт бесконечно
                 self._world["npcs"] = self._world["npcs"][-MAX_NPCS:]
                 self._world["places"] = self._world["places"][-MAX_PLACES:]
                 self._save()
@@ -576,12 +576,12 @@ class WorldEngine:
             self.stats["dialogue_entities_added"] += added
         return added
 
-    # ── Детекция NPC/мест из диалога (§4.2) ───────────────
+    # ── Детекция NPC/мест из диалога ────────────────────────
 
     def detect_from_dialogue(self, messages: List[dict]) -> int:
-        """Gemma-классификатор на последние реплики. Возвращает число новых карт.
-        primitive (§3.3): детекции нет — у существа без социального мира
-        карточки NPC/мест не заводятся. Не чаще раза в DETECT_THROTTLE_SEC."""
+        """LLM-классификатор на последние реплики. Возвращает число новых карт.
+        primitive: детекции нет — у существа без социального мира карточки
+        NPC/мест не заводятся. Не чаще раза в DETECT_THROTTLE_SEC."""
         if self.primitive:
             return 0
         if not messages or not self.local.is_available(task="world_engine"):
@@ -624,14 +624,14 @@ class WorldEngine:
             return 0
 
     def touch_npc(self, name: str):
-        """Обновляет last_mentioned_at у NPC по имени (после события)."""
+        # Обновляет last_mentioned_at у NPC по имени (после события).
         with self._lock:
             for n in self._world["npcs"]:
                 if n["name"].lower() == (name or "").lower():
                     n["last_mentioned_at"] = datetime.now().isoformat(timespec="seconds")
             self._save()
 
-    # ── Генерация офлайн-событий (§4.3) ───────────────────
+    # ── Генерация офлайн-событий ───────────────────────────
 
     def should_generate_event(self, chat_id: str) -> bool:
         with self._lock:
@@ -653,10 +653,10 @@ class WorldEngine:
                                external_stimulus: Optional[str],
                                inventory_items: Optional[List[str]] = None,
                                resolve_plan: Optional[dict] = None) -> Optional[dict]:
-        """Одно офлайн-событие через Gemma. Возвращает payload события
+        """Одно офлайн-событие через LLM. Возвращает payload события
         (event/mood_impact/storyline_update/new_plan/... ) или None.
         resolve_plan — просроченный план: событие обязано быть его исходом
-        (follow-through, фаза B). Для primitive — физическое действие (§3.4)."""
+        (follow-through). Для primitive — физическое действие."""
         if not self.local.is_available(task="world_engine"):
             return None
         try:
@@ -665,7 +665,7 @@ class WorldEngine:
                        else "вечер" if 18 <= hour < 23 else "ночь")
 
             if self.primitive:
-                # §3.4: события примитивного существа — действия с предметами
+                # События примитивного существа — действия с предметами
                 with self._lock:
                     place_list = "; ".join(
                         p["name"] for p in self._world["places"][:10]) or "(нет)"
@@ -681,8 +681,8 @@ class WorldEngine:
                 max_tokens = 250
             else:
                 binding = (persona_context or {}).get("world_binding") or {}
-                # §1.3 прошлого плана: fictional_universe — стимул генерируется
-                # внутри вселенной, real_world — подтянутый из интернета факт
+                # fictional_universe — стимул генерируется внутри вселенной,
+                # real_world — подтянутый из интернета факт
                 if binding.get("type") == "real_world" and external_stimulus:
                     stimulus_block = _REALWORLD_STIMULUS_INSTRUCTION.format(
                         stimulus=external_stimulus[:400])
@@ -758,7 +758,7 @@ class WorldEngine:
         now_iso = datetime.now().isoformat(timespec="seconds")
         payload = {"event": str(event.get("event", ""))[:600], "ts": now_iso}
 
-        # Действие с инвентарём (primitive, §3.4): не применяем здесь —
+        # Действие с инвентарём (primitive): не применяем здесь —
         # WorldEngine не знает инвентарь; пробрасываем исполнителю (Living)
         inv_action = event.get("inventory_action")
         if isinstance(inv_action, dict) and inv_action.get("action") in ("add", "use", "remove"):
@@ -777,7 +777,7 @@ class WorldEngine:
             if place:
                 payload["place"] = str(place)[:80]
 
-            # Новый NPC/место из события — мир растёт сам (§4.2)
+            # Новый NPC/место из события — мир растёт сам
             nn = event.get("new_npc")
             if isinstance(nn, dict):
                 name = str(nn.get("name", "")).strip()[:60]
@@ -820,8 +820,8 @@ class WorldEngine:
             su = event.get("storyline_update")
             if isinstance(su, dict) and su.get("title"):
                 title = str(su["title"])[:120]
-                # Нечёткий матч: Gemma перефразирует заголовки, exact-матч
-                # молча терял апдейты (линия дублировалась или зависала)
+                # Нечёткий матч: LLM перефразирует заголовки, и при exact-матче
+                # линия дублировалась бы или зависала без апдейтов
                 matched = next((s for s in self._world["storylines"]
                                 if _titles_similar(s["title"], title)), None)
                 new_status = str(su.get("new_status", "ongoing"))
@@ -854,7 +854,7 @@ class WorldEngine:
         self.stats["events_generated"] += 1
         return payload
 
-    # ── Внешние стимулы (§5) ──────────────────────────────
+    # ── Внешние стимулы ─────────────────────────────────────
 
     def pop_unused_stimulus(self) -> Optional[dict]:
         with self._lock:
@@ -880,14 +880,14 @@ class WorldEngine:
             self._save()
 
     def fetch_external_stimulus(self, persona_context: dict) -> Optional[dict]:
-        """§5: web_search по whitelist-категории → Gemma relevance+safety фильтр
+        """web_search по whitelist-категории → LLM relevance+safety фильтр
         → external_stimulus(used=false). Вызывать ТОЛЬКО после gate
         external_stimuli_allowed (real_world) — движок не ходит в интернет
         для вымышленных персонажей."""
         interests = (persona_context or {}).get("interests") or []
         binding = (persona_context or {}).get("world_binding") or {}
         location = binding.get("location") or ""
-        # §5: whitelist из YAML приоритетнее; иначе категории из interests
+        # whitelist из YAML приоритетнее; иначе категории из interests
         categories = self.allowed_categories or interests
         if not categories and not location:
             # Нечем строить запрос — планируем следующий fetch, иначе
@@ -914,7 +914,7 @@ class WorldEngine:
             self.schedule_next_fetch()
             return None
 
-        # Берём самый «свежий» на вид результат и фильтруем Gemma'ой
+        # Берём самый «свежий» на вид результат и фильтруем LLM
         fact_parts = []
         for r in results[:2]:
             title = r.get("title", "")
@@ -928,8 +928,8 @@ class WorldEngine:
             return None
 
         # Фильтр ОБЯЗАТЕЛЕН (fail-closed): локальный движок недоступен или не
-        # дал валидного вердикта — стимул отбрасываем. Раньше отсутствие
-        # фильтра молча пропускало непроверенный текст из интернета в жизнь персоны
+        # дал валидного вердикта — стимул отбрасываем, иначе непроверенный
+        # текст из интернета молча попадёт в жизнь персоны
         relevance, passed = 0.0, False
         if self.local.is_available(task="world_engine"):
             try:

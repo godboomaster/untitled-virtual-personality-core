@@ -63,12 +63,12 @@ _ALL_WORD_NUMBERS = {**_RU_WORD_NUMBERS, **_EN_WORD_NUMBERS}
 
 
 def _has_remind_word(lower: str) -> bool:
-    """Маркер просьбы о напоминании: «напом…» (рус) или «remind…» (англ)."""
+    # Маркер просьбы о напоминании: «напом…» (рус) или «remind…» (англ).
     return "напом" in lower or re.search(r"\bremind", lower) is not None
 
 
 def _remind_word_pos(lower: str) -> int:
-    """Позиция первого вхождения «напом»/«remind» (-1 — нет)."""
+    # Позиция первого вхождения «напом»/«remind» (-1 — нет).
     pos = lower.find("напом")
     m = re.search(r"\bremind", lower)
     if m and (pos == -1 or m.start() < pos):
@@ -172,13 +172,9 @@ _ABS_HOUR_RE = re.compile(
     rf"\b{_ABS_PREPOSITIONS}\s+(\d{{1,2}})\s*({_AMPM})\b(?!\s*:\s*\d)", re.IGNORECASE)
 
 # Единая таблица словесных «круглых» времён — источник для _ABS_WORD_TIME,
-# _ABS_WORD_TIME_EN и _POSTPONE_ABS_WORDS (было три независимых списка,
-# из-за чего у одной и той же расшифровки разъезжались опечатки и час:
-# здесь была опечатка "полуночь" вместо "полночь" — «напомни в полночь» не
-# находило совпадения ни по одному ключу, и полночь по-русски хранилась как
-# 24.0 час, а по-английски midnight — как 0.0, хотя это один и тот же
-# момент; consumers (_absolute_to_delay/_next_occurrence/postpone) должны
-# были помнить оба варианта. Здесь полночь везде — 0 (см. _normalize_hour).
+# _ABS_WORD_TIME_EN и _POSTPONE_ABS_WORDS: одно место, где полночь = 0
+# (не 24), чтобы RU/EN-варианты и все потребители (_absolute_to_delay/
+# _next_occurrence/postpone) не расходились в трактовке (см. _normalize_hour).
 _ROUND_TIME_WORDS = {
     "полдень": 12, "полудня": 12, "полудню": 12,
     "полночь": 0, "полуночи": 0,
@@ -201,7 +197,7 @@ def _normalize_hour(hour: float) -> int:
 
 
 def _apply_ampm(hour: int, ampm: Optional[str]) -> int:
-    """Сдвигает час по am/pm («5 pm» → 17, «12 am» → 0, «12 pm» → 12)."""
+    # Сдвигает час по am/pm («5 pm» → 17, «12 am» → 0, «12 pm» → 12).
     if not ampm:
         return hour
     if re.match(r"p", ampm.strip(". "), re.IGNORECASE):
@@ -254,7 +250,6 @@ def _absolute_to_delay(hour: float, minute: int) -> Optional[float]:
     target_hour = _normalize_hour(hour)
     target_minute = minute
 
-    # Вычисляем разницу в секундах
     now_total = now.hour * 3600 + now.minute * 60 + now.second
     target_total = target_hour * 3600 + target_minute * 60
 
@@ -344,11 +339,10 @@ def _clean_task_fragment(fragment: str) -> str:
     s = re.sub(r"^(?:коннор|жабка|arrodes|connor)[,\s]+", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\b(?:напомни|напомнить|напоминание|напомните|напомню)\b", "", s, flags=re.IGNORECASE).strip()
     s = re.sub(r"\bremind\w*(?:\s+(?:me|us))?(?:\s+to)?\b", "", s, flags=re.IGNORECASE).strip()
-    # «напомни МНЕ завтра в 8 купить хлеб» — «завтра в 8» вырезаются спанами
-    # ДО вызова этой функции, «напомни» — строкой выше, а дативное «мне»
-    # (или «нам/ему/ей/им») перед задачей никто не убирал — оставалось
-    # «мне купить хлеб» (см. аналогичную чистку в parse_reminder для ветки
-    # без дня/части суток).
+    # «напомни мне завтра в 8 купить хлеб»: «завтра в 8» вырезаются спанами
+    # до вызова этой функции, «напомни» — строкой выше; дативное «мне»
+    # («нам/ему/ей/им») перед задачей убираем отдельно (см. аналогичную
+    # чистку в parse_reminder для ветки без дня/части суток).
     s = re.sub(r"^(?:мне|нам|ему|ей|им)\b\s*", "", s, flags=re.IGNORECASE).strip()
     s = re.sub(r"^(?:please)\s+", "", s, flags=re.IGNORECASE).strip()
     s = re.sub(r"^to\s+", "", s, flags=re.IGNORECASE).strip()
@@ -640,7 +634,7 @@ _POSTPONE_ABS_HOUR_RE = re.compile(
     re.IGNORECASE,
 )
 # Слова: «на полдень», «на полночь», «to noon», «at midnight» — из единой
-# таблицы _ROUND_TIME_WORDS(_EN), см. её комментарий выше про рассинхрон.
+# таблицы _ROUND_TIME_WORDS(_EN) (см. её комментарий выше).
 _POSTPONE_ABS_WORDS = tuple(_ROUND_TIME_WORDS.items()) + tuple(_ROUND_TIME_WORDS_EN.items())
 
 # Слова-единицы без числа: «на полчаса», «на час», «на минуту»,
@@ -697,11 +691,10 @@ def parse_postpone(text: str) -> Optional[dict]:
         return None
 
     def _rel(seconds: float, more: Optional[str]) -> dict:
-        # seconds распознан и валиден, просто ниже разумного минимума
-        # («перенеси напоминание на 5 секунд») — раньше это отбрасывалось как
-        # {"unknown": True}, и бот переспрашивал «на какое время перенести?»,
-        # хотя пользователь время прямо назвал. Округляем вверх до минимума
-        # вместо того, чтобы путать «слишком мало» с «не разобрано».
+        # seconds распознан и валиден, но ниже разумного минимума
+        # («перенеси напоминание на 5 секунд») — округляем вверх до минимума,
+        # а не считаем «не разобрано»: иначе бот переспрашивал бы время,
+        # которое пользователь уже назвал.
         if seconds <= 0 or seconds > 30 * 86400:
             return {"unknown": True}
         return {"seconds": max(seconds, 10.0), "relative_to_trigger": bool(more)}
@@ -778,7 +771,7 @@ def extract_postpone_hint(text: str) -> Optional[str]:
 
 
 def _task_matches(hint: Optional[str], task: Optional[str]) -> bool:
-    """Подсказка совпадает с задачей: подстрокой целиком или любым словом от 3 букв."""
+    # Подсказка совпадает с задачей: подстрокой целиком или любым словом от 3 букв.
     if not hint or not task:
         return False
     h, t = hint.lower(), task.lower()
@@ -853,9 +846,8 @@ def parse_recurring(text: str) -> Optional[tuple]:
     if not abs_time:
         return None  # время не указано — уточним через pending
     abs_hour, abs_minute, time_match = abs_time
-    # Раньше abs_hour >= 24 отбрасывался целиком («каждый день в 24:00»,
-    # «к полуночи» → None), хотя EN "midnight" всегда давал 0 — нормализуем,
-    # а не отбрасываем: 24:00 и 0:00 — один и тот же момент.
+    # 24:00 и 0:00 — один и тот же момент, поэтому час нормализуем, а не
+    # отбрасываем запрос («каждый день в 24:00», «к полуночи»).
     schedule["hour"] = _normalize_hour(abs_hour)
     schedule["minute"] = abs_minute
 
@@ -891,7 +883,7 @@ def _next_occurrence(schedule: dict, after: float) -> float:
 
 
 def format_schedule(schedule: dict) -> str:
-    """Человекочитаемое описание расписания: «every day at 12:30»."""
+    # Человекочитаемое описание расписания: «every day at 12:30».
     hh = f"{schedule['hour']:02d}:{schedule['minute']:02d}"
     if schedule["type"] == "weekly":
         return f"every {_WEEKDAY_NAMES[schedule['weekday']]} at {hh}"
@@ -899,23 +891,21 @@ def format_schedule(schedule: dict) -> str:
 
 
 # ─── Стабильный id напоминания ────────────────────────────
-# Корень дефекта «/cancel_reminder N отменил не то»: единственным именем
-# напоминания был его НОМЕР в списке get_active, а список считается заново на
-# каждый показ. Между «/reminders» и «/cancel_reminder 2» он успевает
-# измениться (одно сработало и выпало из активных, пришло новое, перенос
-# сдвинул порядок по trigger_at) — и тот же номер указывает уже на другую
-# запись. Решение: у каждого напоминания есть свой id, он рождается вместе с
-# записью, лежит в файле рядом с ней и показывается в списке.
+# Номер в списке get_active нестабилен: список пересчитывается на каждый
+# показ, и между «/reminders» и «/cancel_reminder 2» порядок может
+# измениться (одно сработало и выпало, добавилось новое, перенос сдвинул
+# порядок по trigger_at) — тот же номер укажет уже на другую запись. Поэтому
+# у каждого напоминания есть свой id: рождается вместе с записью, хранится
+# в файле рядом с ней и показывается в списке.
 #
-# Формат — «r» + 5 hex. Буква в начале обязательна: иначе «/cancel_reminder 3»
-# означало бы и «третье в списке», и «напоминание с id 3» — однозначности,
-# ради которой всё и делается, не было бы.
+# Формат — «r» + 5 hex. Буква в начале обязательна, иначе «/cancel_reminder 3»
+# было бы неоднозначно: и «третье в списке», и «напоминание с id 3».
 _RID_PREFIX = "r"
 _RID_RE = re.compile(rf"^#?({_RID_PREFIX}[0-9a-f]{{4,12}})$", re.IGNORECASE)
 
 
 def _new_rid(taken) -> str:
-    """Свежий id, не занятый среди `taken`."""
+    # Свежий id, не занятый среди `taken`.
     for _ in range(100):
         rid = _RID_PREFIX + uuid.uuid4().hex[:5]
         if rid not in taken:
@@ -983,30 +973,29 @@ class ReminderManager:
         self._sender = sender
 
     def set_memory(self, memory):
-        """Передаёт MemoryManager — сработавшие напоминания логируются в STM."""
+        # Передаёт MemoryManager — сработавшие напоминания логируются в STM.
         self._memory = memory
 
     def set_turn_gate(self, gate):
-        """Передаёт ChatTurnGate бота (app/core/turn_gate.py)."""
+        # Передаёт ChatTurnGate бота (app/core/turn_gate.py).
         self._turn_gate = gate
 
     def set_muted_check(self, check):
-        """Передаёт callable () -> bool: заморожена ли персона (features.muted)."""
+        # Передаёт callable () -> bool: заморожена ли персона (features.muted).
         self._muted_check = check
 
     def set_router_persona(self, router, persona):
-        """Передаёт router и persona для генерации текста напоминания через LLM."""
+        # Передаёт router и persona для генерации текста напоминания через LLM.
         self._router = router
         self._persona = persona
 
     def set_living(self, living):
-        """Передаёт LivingPersona — текущий mood/energy попадают в текст
-        напоминания (план «живой» персоны, §7)."""
+        # Передаёт LivingPersona — текущий mood/energy попадают в текст напоминания.
         self._living = living
 
     def set_intellect_tier(self, tier):
-        """Уровень интеллекта (§3.5 плана уровней): primitive — минимальная
-        вербализация напоминаний, почти шаблонная, без характерного текста."""
+        """Уровень интеллекта: primitive — минимальная вербализация
+        напоминаний, почти шаблонная, без характерного текста."""
         self._primitive = bool(tier == "primitive")
 
     # ── persistence ──
@@ -1016,11 +1005,11 @@ class ReminderManager:
         self._ensure_ids()
 
     def _ensure_ids(self):
-        """Миграция при чтении: записи без id (созданные до его появления) и
+        """Миграция при чтении: записи без id (старый формат файла) и
         случайные дубли (ручная правка файла, восстановление из бэкапа)
         получают свой id. Файл перезаписывается один раз — дальше id уже в нём.
-        Без этого старые напоминания остались бы адресуемыми только по номеру,
-        то есть с тем же дефектом, от которого id и заводился."""
+        Без этого часть напоминаний осталась бы адресуемой только по номеру —
+        без гарантии устойчивой адресации, ради которой id вводился."""
         taken = set()
         changed = False
         for r in self._reminders:
@@ -1038,7 +1027,7 @@ class ReminderManager:
             self._save()
 
     def _save(self):
-        """Атомарная запись (общий helper app.core.atomic_io — tmp-файл + os.replace)."""
+        # Атомарная запись (общий helper app.core.atomic_io — tmp-файл + os.replace).
         try:
             atomic_write_json(self._file, self._reminders)
         except Exception as e:
@@ -1088,7 +1077,7 @@ class ReminderManager:
         return reminder
 
     def get_active(self, chat_id: str) -> List[dict]:
-        """Активные (не сработавшие) напоминания для чата."""
+        # Активные (не сработавшие) напоминания для чата.
         now = time.time()
         with self._lock:
             return [
@@ -1191,8 +1180,8 @@ class ReminderManager:
         Выбор цели: с подсказкой — ближайшее из совпавших (нет совпадений —
         {"not_found": ...}, ничего не двигаем); без подсказки — единственное
         активное, а если их несколько — {"ambiguous": ..., "choices": [...]}
-        (НЕ угадываем: раньше молча двигалось ближайшее, а бот словами
-        «подтверждал» перенос другого).
+        (не угадываем: молча передвинутое ближайшее может быть не тем
+        напоминанием, которое имел в виду пользователь).
 
         Если активных нет, но за последние 24ч есть сработавшее — создаёт
         НОВОЕ напоминание с той же задачей (результат с recreated=True).
@@ -1277,14 +1266,13 @@ class ReminderManager:
             self._pending_remind[str(chat_id)] = {"task": task, "asked_at": time.time()}
 
     def get_pending_remind(self, chat_id: str) -> Optional[str]:
-        """Текст задачи pending-напоминания (или None)."""
+        # Текст задачи pending-напоминания (или None).
         with self._lock:
             entry = self._pending_remind.get(str(chat_id))
-            # Совместимость со старым форматом (голая строка)
             return entry.get("task") if isinstance(entry, dict) else entry
 
     def get_pending_remind_asked_at(self, chat_id: str) -> Optional[float]:
-        """Когда был задан вопрос «через сколько напомнить?» (timestamp или None)."""
+        # Когда был задан вопрос «через сколько напомнить?» (timestamp или None).
         with self._lock:
             entry = self._pending_remind.get(str(chat_id))
             return entry.get("asked_at") if isinstance(entry, dict) else None
@@ -1294,14 +1282,14 @@ class ReminderManager:
             self._pending_remind.pop(str(chat_id), None)
 
     def begin_pending_postpone(self, chat_id: str):
-        """Ждём ответа «на когда перенести?» (перенос без указания времени)."""
+        # Ждём ответа «на когда перенести?» (перенос без указания времени).
         with self._lock:
             self._pending_remind[str(chat_id)] = {
                 "task": None, "postpone": True, "asked_at": time.time(),
             }
 
     def get_pending_postpone(self, chat_id: str) -> bool:
-        """Висит ли вопрос «на когда перенести напоминание?»."""
+        # Висит ли вопрос «на когда перенести напоминание?».
         with self._lock:
             entry = self._pending_remind.get(str(chat_id))
             return bool(isinstance(entry, dict) and entry.get("postpone"))
@@ -1328,7 +1316,7 @@ class ReminderManager:
             }
 
     def get_pending_postpone_choice(self, chat_id: str) -> bool:
-        """Висит ли вопрос «какое напоминание перенести?»."""
+        # Висит ли вопрос «какое напоминание перенести?».
         with self._lock:
             entry = self._pending_remind.get(str(chat_id))
             return bool(isinstance(entry, dict) and entry.get("postpone_choice"))
@@ -1346,8 +1334,8 @@ class ReminderManager:
         — через _CHOICE_ORDINALS по списку id из вопроса; слова из задачи
         («чай») — по текущим активным (задача могла сохраниться, даже если
         порядок в списке сместился). Сам перенос — postpone_by_id (тот же
-        приём, что у отмены по id, задача №7 аудита): нужно то, что ВИДЕЛ
-        пользователь, а не то, что оказалось первым в пересчитанном списке.
+        приём, что у отмены по id): нужно то, что видел пользователь, а не
+        то, что оказалось первым в пересчитанном списке.
 
         Возвращает {"task", "trigger_at", "recreated": False} | {"gone": True}
         (активных больше нет) | None (ответ не распознан, либо указанное
@@ -1408,7 +1396,7 @@ class ReminderManager:
         return result
 
     def _cleanup_fired(self):
-        """Удаляет сработавшие напоминания старше 24ч."""
+        # Удаляет сработавшие напоминания старше 24ч.
         cutoff = time.time() - 86400
         with self._lock:
             before = len(self._reminders)
@@ -1422,7 +1410,7 @@ class ReminderManager:
     # ── фоновый цикл ──
 
     async def _fire(self, reminder: dict):
-        """Отправляет напоминание в чат. Текст генерируется через LLM в характере персоны."""
+        # Отправляет напоминание в чат. Текст генерируется через LLM в характере персоны.
         if not self._sender:
             return
         # Замороженная персона молчит: напоминание «сгорает» без отправки
@@ -1438,13 +1426,13 @@ class ReminderManager:
         text = None
 
         # Язык напоминания: по тексту задачи, иначе — по последним сообщениям
-        # чата (LLM переписку пользователя при генерации НЕ видит, поэтому
-        # раньше отвечала на языке английской служебной обёртки промпта)
+        # чата. Определяем явно: LLM переписку при генерации не видит и иначе
+        # ответит на языке английской служебной обёртки промпта
         lang = self._reminder_lang(chat_id, task)
 
         # Пытаемся сгенерировать через LLM в характере персоны.
-        # primitive (§3.5): характерного текста нет — почти шаблонная
-        # минимальная вербализация, LLM-генерация пропускается
+        # primitive: характерного текста нет — почти шаблонная минимальная
+        # вербализация, LLM-генерация пропускается
         if self._router and self._persona and not self._primitive:
             try:
                 text = await asyncio.to_thread(
@@ -1459,9 +1447,8 @@ class ReminderManager:
             else:
                 text = f"reminder: {task}" if task else "time's up! You asked for a reminder."
 
-        # Кто попросил: в группах тегаем через @username; имя — только
-        # настоящее: заглушку «User» в личке не печатаем (кейс 17.09:
-        # «User, Смотрю в сторону пользователя…»). И не дублируем приставку,
+        # Кто попросил: в группах тегаем через @username; в личке не
+        # печатаем заглушку «User» вместо имени. Не дублируем приставку,
         # если LLM уже обратился по имени в начале текста.
         prefix = None
         if reminder.get("username"):
@@ -1472,12 +1459,12 @@ class ReminderManager:
             text = f"{prefix}, {text}"
 
         # Посреди хода пользователя (он написал, ответ генерируется или
-        # доставляется) не пишем и не шлём: раньше напоминание ложилось в STM
-        # между репликой и ответом (user → напоминание → ответ) и уходило
-        # поверх живого обмена. Запись в STM — атомарно с проверкой под локом
-        # гейта: хода нет И напоминание всё ещё в силе (в только что
-        # закончившемся ходе его могли отменить или перенести — тогда не
-        # шлём). Ход идёт — откладываем до следующего тика, не ждём в цикле.
+        # доставляется) не пишем и не шлём — иначе напоминание легло бы в
+        # STM между репликой и ответом и перебило бы живой обмен. Запись в
+        # STM — атомарно под локом гейта: хода нет И напоминание всё ещё в
+        # силе (могло быть отменено/перенесено в только что закончившемся
+        # ходе — тогда не шлём). Ход идёт — откладываем до следующего тика,
+        # не ждём в цикле.
         entry = None
         gate = self._turn_gate
         if gate is not None:
@@ -1532,7 +1519,7 @@ class ReminderManager:
         """Язык напоминания: сначала текст задачи (он продиктован пользователем),
         иначе — последние сообщения пользователя из чата (общий детектор
         app.core.language: реплики ассистента и синтетика не считаются).
-        Ничего не определено — русский (как в rhythm)."""
+        Ничего не определено — русский (как в rhythm_manager)."""
         lang = detect_language(task or "")
         if not lang and self._memory:
             try:
@@ -1544,10 +1531,10 @@ class ReminderManager:
 
     def _generate_reminder_text(self, user_name: str, task: Optional[str],
                                 lang: str = "English", chat_id: str = None) -> Optional[str]:
-        """Генерирует текст напоминания через LLM в характере персоны. Синхронный вызов."""
+        # Генерирует текст напоминания через LLM в характере персоны. Синхронный вызов.
         assert self._router and self._persona  # проверяется в _fire перед вызовом
         persona_prompt = self._persona.system_prompt.strip()
-        # Текущее mood/energy персоны (§7): лёгкий фоновый контекст, не директива
+        # Текущее mood/energy персоны: лёгкий фоновый контекст, не директива
         living_block = ""
         if self._living and chat_id:
             try:
@@ -1557,7 +1544,7 @@ class ReminderManager:
             except Exception:
                 pass
         # Обращение по имени: заглушку «User» в промпт не подставляем —
-        # модель переносит её в текст дословно (кейс 17.09)
+        # модель переносит её в текст дословно
         addr = user_name.strip()
         if addr.lower() in ("user", "пользователь"):
             addr = ""
@@ -1590,7 +1577,7 @@ class ReminderManager:
         ]
 
         # Канал «proactive»: фон не делит инстанс/лок с ответом пользователю
-        # (main) — иначе зависшее напоминание блокировало диалог (кейс 19.09)
+        # (main) — иначе зависшее напоминание блокировало бы диалог
         response = self._router.get_response(messages, temperature=0.7,
                                              max_tokens=200, top_p=0.9,
                                              webchat_channel="proactive")
@@ -1599,7 +1586,7 @@ class ReminderManager:
         return response.strip()
 
     async def _loop(self):
-        """Главный цикл — проверяет каждые 30 секунд."""
+        # Главный цикл — проверяет каждые 30 секунд.
         logger.info(f"[Reminder] Цикл запущен для context={self.context}")
         cleanup_counter = 0
 
@@ -1611,7 +1598,7 @@ class ReminderManager:
                            if not r.get("fired") and r["trigger_at"] <= now]
 
                 # fired ставим только ПОСЛЕ успешной отправки — иначе при сбое
-                # (падение процесса, ошибка сети) напоминание терялось без retry
+                # (падение процесса, ошибка сети) напоминание потерялось бы без повтора
                 changed = False
                 for r in due:
                     # Идёт ход пользователя в этом чате — напоминание ждёт
@@ -1680,14 +1667,14 @@ class ReminderManager:
         logger.info(f"[Reminder] Запущено для {self.context}")
 
     def stop(self):
-        """Останавливает фоновую задачу."""
+        # Останавливает фоновую задачу.
         self._running = False
         if self._task:
             self._task.cancel()
             logger.info("[Reminder] Остановлено")
 
     def format_delay(self, delay_seconds: float) -> str:
-        """Человекочитаемое описание задержки."""
+        # Человекочитаемое описание задержки.
         if delay_seconds < 60:
             return f"{int(delay_seconds)} sec"
         if delay_seconds < 3600:

@@ -85,13 +85,12 @@ class InventoryManager:
             logger.warning(f"[Inventory] Не удалось сохранить {self._file}: {e}")
 
     def add_item(self, name: str, description: str = "", source: str = "", expires: Optional[str] = None) -> str:
-        """Добавляет предмет в инвентарь. Возвращает результат операции."""
+        # Добавляет предмет в инвентарь. Возвращает результат операции.
         name = name.strip()
         if not name:
             return "Item name cannot be empty."
 
         with self._lock:
-            # Проверяем дубликат
             for item in self._items:
                 if item.name.lower() == name.lower():
                     return f"Item '{name}' is already in the inventory."
@@ -106,7 +105,7 @@ class InventoryManager:
         return f"Item '{name}' added to the inventory."
 
     def remove_item(self, name: str) -> str:
-        """Удаляет предмет из инвентаря."""
+        # Удаляет предмет из инвентаря.
         name = name.strip().lower()
         with self._lock:
             for i, item in enumerate(self._items):
@@ -117,12 +116,12 @@ class InventoryManager:
         return f"Item '{name}' not found."
 
     def get_items(self) -> List[InventoryItem]:
-        """Возвращает список предметов."""
+        # Возвращает список предметов.
         with self._lock:
             return list(self._items)
 
     def use_item(self, name: str) -> str:
-        """Использует предмет из инвентаря (удаляет его)."""
+        # Использует предмет из инвентаря (удаляет его).
         name = name.strip().lower()
         with self._lock:
             for i, item in enumerate(self._items):
@@ -133,7 +132,7 @@ class InventoryManager:
         return f"Item '{name}' not found in the inventory."
 
     def remove_expired_items(self) -> List[str]:
-        """Удаляет просроченные предметы. Возвращает список удаленных."""
+        # Удаляет просроченные предметы. Возвращает список удаленных.
         removed = []
         with self._lock:
             remaining = []
@@ -148,16 +147,16 @@ class InventoryManager:
         return removed
 
     def get_expired_items(self) -> List[InventoryItem]:
-        """Возвращает список просроченных предметов без удаления."""
+        # Возвращает список просроченных предметов без удаления.
         with self._lock:
             return [item for item in self._items if item.is_expired()]
 
     def get_context_block(self) -> Optional[str]:
         """Возвращает форматированный блок для system prompt.
 
-        Итерация self._items — под локом: без него сборка системного промпта
-        (частый читатель) и add_item/remove_item из другого потока (HTTP-
-        обработчик /inventory) могли пересечься на живом списке и уронить
+        Снимок self._items берётся под локом: иначе сборка системного
+        промпта (частый читатель) и add_item/remove_item из другого потока
+        (HTTP-обработчик /inventory) пересекаются на живом списке →
         RuntimeError "list changed size during iteration"."""
         with self._lock:
             items = list(self._items)
@@ -237,7 +236,7 @@ def is_inventory_remove_request(text: str) -> bool:
 
 
 def extract_inventory_item(text: str) -> Optional[str]:
-    """Извлекает название предмета из запроса на добавление."""
+    # Извлекает название предмета из запроса на добавление.
     for pattern in _INVENTORY_ADD_PATTERNS:
         match = pattern.search(text)
         if match:
@@ -260,7 +259,7 @@ def extract_inventory_item(text: str) -> Optional[str]:
 
 
 def extract_inventory_remove(text: str) -> Optional[str]:
-    """Извлекает название предмета из запроса на удаление."""
+    # Извлекает название предмета из запроса на удаление.
     for pattern in _INVENTORY_REMOVE_PATTERNS:
         match = pattern.search(text)
         if match:

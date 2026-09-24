@@ -16,12 +16,12 @@ from app.core.language import detect_language
 
 logger = logging.getLogger(__name__)
 
-# Перенос строки внутри задачи ломал построчный формат файла (каждая
-# многострочная задача плодила "лишние" строки без "- Имя:", а _parse_items
-# либо терял хвост задачи после \n, либо читал его как отдельный пункт без
+# Перенос строки внутри задачи ломает построчный формат файла (каждая
+# многострочная задача плодит "лишние" строки без "- Имя:", а _parse_items
+# либо теряет хвост задачи после \n, либо читает его как отдельный пункт без
 # автора). Экранируем реальные \n/\r в один печатный маркер на запись и
-# разворачиваем обратно на чтение — старые файлы без маркера (никогда не
-# содержавших многострочных задач) читаются как раньше, экранировать нечего.
+# разворачиваем обратно на чтение — файлы без маркера (без многострочных
+# задач) читаются как есть, экранировать в них нечего.
 _NL_ESCAPE = "\\n"
 _BACKSLASH_ESCAPE = "\\\\"
 
@@ -75,7 +75,7 @@ class TodoManager:
         return chat_dir / "todo.txt"
 
     def _parse_items(self, text: str) -> List[tuple]:
-        """Парсит пункты из текста файла. Возвращает [(user_name, task)]."""
+        # Парсит пункты из текста файла. Возвращает [(user_name, task)].
         items = []
         for line in text.splitlines():
             line = line.strip()
@@ -92,7 +92,7 @@ class TodoManager:
         return items
 
     def _format_items(self, items: List[tuple], chat_id: str) -> str:
-        """Форматирует пункты в текст файла."""
+        # Форматирует пункты в текст файла.
         lines = [
             f"# Список дел чата {chat_id}",
             f"# Обновлен: {timeutil.now().strftime('%Y-%m-%d %H:%M')}",
@@ -195,7 +195,7 @@ class TodoManager:
         return self._render_list(items, lang=lang)
 
     def clear(self, chat_id: str) -> bool:
-        """Очищает список дел чата. Возвращает True если файл был удален."""
+        # Очищает список дел чата. Возвращает True если файл был удален.
         with self._lock:
             path = self._todo_path(chat_id)
             if path.exists():
@@ -207,9 +207,9 @@ class TodoManager:
         return False
 
 
-# Эвристика для определения todo-запросов
-# ВАЖНО: "напомни" убрано — это путь напоминаний (reminder_manager).
-# Если в тексте есть "напом" в любом виде, todo не срабатывает.
+# Эвристика для определения todo-запросов.
+# "напомни" сюда намеренно не входит: любой текст с "напом" уходит в путь
+# напоминаний (reminder_manager), который перехватывает его раньше todo.
 _TODO_TRIGGERS = [
     "запиши", "добавь", "список дел", "to-do", "todo",
 ]
@@ -221,8 +221,8 @@ _TODO_EXTRACT_PATTERNS = [
 ]
 
 
-# Word-boundary regex: «добавь» не должно ловить «добавьте», «сделал» — разговорные формы.
-# «сделать/доделать» — инфинитивы: «надо сделать отчёт», «нужно доделать проект».
+# Границы слов: «добавь» не ловит «добавьте», «сделать» не ловит «сделал»
+# (это завершение дела). «сделать/доделать» — инфинитивы: «надо сделать отчёт».
 _TODO_TRIGGER_RE = re.compile(
     r"\b(?:запиши|добавь|список\s+дел|to-do|todo|доделать|сделать)\b",
     re.IGNORECASE,
@@ -230,7 +230,7 @@ _TODO_TRIGGER_RE = re.compile(
 
 
 def is_todo_request(text: str) -> bool:
-    """Определяет, является ли запрос просьбой записать дело."""
+    # Определяет, является ли запрос просьбой записать дело.
     return bool(_TODO_TRIGGER_RE.search(text))
 
 
@@ -250,13 +250,13 @@ _TODO_LIST_EXCLUDE_RE = re.compile(
 
 
 def is_todo_list_request(text: str) -> bool:
-    """Просьба показать список дел (а не добавить/убрать пункт)."""
+    # Просьба показать список дел (а не добавить/убрать пункт).
     if not _TODO_LIST_REQUEST_RE.search(text):
         return False
     return not _TODO_LIST_EXCLUDE_RE.search(text)
 
 
-# Word-boundary regex для завершения дела.
+# Просьба отметить дело выполненным (по границам слов).
 _TODO_DONE_TRIGGER_RE = re.compile(
     r"\b(?:сделал|сделано|готово|вычеркни|вычеркнуть|убери\s+из|убрать\s+из|"
     r"удали\s+из|удалить\s+из|выполнил|выполнено|закрыл\s+дело|зачеркни)\b",
@@ -265,7 +265,7 @@ _TODO_DONE_TRIGGER_RE = re.compile(
 
 
 def is_todo_done_request(text: str) -> bool:
-    """Определяет, просит ли пользователь убрать дело (сделано/вычеркни/убери)."""
+    # Определяет, просит ли пользователь убрать дело (сделано/вычеркни/убери).
     return bool(_TODO_DONE_TRIGGER_RE.search(text))
 
 
@@ -281,10 +281,7 @@ _TODO_DONE_NUMBER_RE = re.compile(
 
 
 def extract_todo_done_index(text: str) -> Optional[int]:
-    """
-    Пытается извлечь номер пункта для удаления.
-    Возвращает 1-based индекс или None.
-    """
+    # Номер пункта для удаления (1-based) или None.
     match = _TODO_DONE_NUMBER_RE.search(text)
     if match:
         return int(match.group(1))
@@ -292,7 +289,7 @@ def extract_todo_done_index(text: str) -> Optional[int]:
 
 
 def extract_task(text: str) -> Optional[str]:
-    """Пытается извлечь текст задачи из запроса. Возвращает None если не удалось."""
+    # Пытается извлечь текст задачи из запроса. Возвращает None если не удалось.
     for pattern in _TODO_EXTRACT_PATTERNS:
         match = pattern.search(text)
         if match:

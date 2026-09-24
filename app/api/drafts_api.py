@@ -42,7 +42,7 @@ def list_drafts() -> list[dict]:
 
 
 def save_draft(draft_id: str | None, name: str, form: dict, yaml_text: str) -> dict | None:
-    """Создать (id=None) или обновить черновик. None — невалидный id."""
+    # Создать (id=None) или обновить черновик. None — невалидный id.
     now = time.time()
     created = now
     if draft_id:

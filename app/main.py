@@ -149,8 +149,8 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
     )
     register_handlers(app, bot_instance)
 
-    # run_polling() не работает в потоках (add_signal_handler) из-за нескольких потоков.
-    # Управляем event loop вручную.
+    # run_polling() не работает в дочернем потоке (add_signal_handler) —
+    # управляем event loop вручную.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     _running_loops.append(loop)
@@ -230,8 +230,8 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         loop.run_until_complete(_stop())
         loop.close()
         # Гасим Chrome бота последним (менеджеры в stop() могут ещё
-        # дёргать webchat): иначе он жил после выхода — окно и вкладки
-        # веб-чатов грузили систему бессрочно
+        # дёргать webchat); иначе он переживает выход процесса, и окно
+        # с вкладками веб-чатов грузит систему бессрочно
         try:
             from app.features import browser_actions as ba
             ba.shutdown_browser()
@@ -308,7 +308,7 @@ def start_target(target: str):
 
         try:
             for t in threads:
-                # ждёт завершения процессов
+                # ждёт завершения потоков
                 t.join()
         except KeyboardInterrupt:
             logger.info("Остановка по Ctrl+C...")

@@ -8,7 +8,7 @@
   веб-инбокса) в утреннем окне после долгой паузы;
 - ночь — пересечение bedtime_hour (по умолчанию полночь) при недавней
   активности пользователя; один раз за ночь;
-- погода — опрос прогноза Open-Meteo раз в check_interval_minutes (нужна
+- погода — опрос прогноза погоды раз в check_interval_minutes (нужна
   настроенная локация — data/env_location.json, см. env_context): осадки
   в пределах rain_lead_hours, гроза или перепад температуры ≥ temp_delta_c.
 
@@ -37,11 +37,9 @@ logger = logging.getLogger(__name__)
 
 _TICK_SECONDS = 60          # шаг фонового цикла
 _WAKE_DRIFT_SECONDS = 300   # wall-clock минус monotonic ≥ 5 минут → машина спала
-# Окно срабатывания ночного nudge после bedtime_hour — в секундах, не часах:
-# сравнение целых now.hour со целыми _NIGHT_WINDOW_HOURS (было int(hours_past)
-# > 2) на деле давало окно 00:00–02:59 (три часа) вместо документированных
-# двух — усечение минут при переходе на целые часы каждый раз добавляло
-# почти целый лишний час.
+# Окно срабатывания ночного nudge после bedtime_hour — в секундах, а не в
+# целых часах: сравнение по целым часам теряет минуты и может расширить
+# окно почти на час.
 _NIGHT_WINDOW_SECONDS = 2 * 3600
 _PRESENCE_THROTTLE = 30.0   # note_presence обрабатывается не чаще раза в 30 с на чат
 # Кулдауны погодных алертов (от последнего отправленного алерта этого типа)
@@ -54,7 +52,7 @@ _WEATHER_DEFER_TTL = 3600
 
 
 def _strip_markdown(text: str) -> str:
-    """Убирает markdown-разметку перед отправкой (как в proactive)."""
+    # Убирает markdown-разметку перед отправкой (как в proactive).
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'\*(.+?)\*', r'\1', text)
     text = re.sub(r'__(.+?)__', r'\1', text)
@@ -233,7 +231,7 @@ class RhythmManager:
         self._sender = sender
 
     def update_config(self, data) -> None:
-        """Живое обновление конфига из YAML (веб-настройки без рестарта)."""
+        # Живое обновление конфига из YAML (веб-настройки без рестарта).
         self.config = RhythmConfig.from_dict(data)
 
     # ── persistence ──
@@ -245,7 +243,7 @@ class RhythmManager:
                            "weather": data.get("weather") or {}}
 
     def _save(self):
-        """Атомарная запись (общий helper app.core.atomic_io — tmp-файл + os.replace)."""
+        # Атомарная запись (общий helper app.core.atomic_io — tmp-файл + os.replace).
         try:
             atomic_write_json(self._file, self._state)
         except Exception as e:
@@ -317,10 +315,9 @@ class RhythmManager:
         if not (self.config.enabled and s.enabled):
             return False
         # Точное время bedtime сегодня (или вчера, если оно ещё не наступило
-        # по календарной дате now) — секунды, а не усечённые целые часы:
-        # сравнение now.hour (int) со целым окном ошибочно расширяло окно
-        # почти на час (00:47 после bedtime=0 давало hours_past=0, как и
-        # 00:01 — реальная разница пряталась усечением до целого часа).
+        # по календарной дате now) — в секундах, а не в усечённых целых часах:
+        # сравнение по целому часу стирает минуты (00:47 и 00:01 после
+        # полуночи дали бы одно и то же число часов).
         bedtime_today = now.replace(hour=s.bedtime_hour % 24, minute=0,
                                     second=0, microsecond=0)
         if bedtime_today > now:
@@ -344,10 +341,9 @@ class RhythmManager:
         """Решение по прогнозу → (kind, facts) или None. kind: storm|rain|temp.
         wstate — снапшот состояния погоды (кулдауны).
 
-        Времена прогноза (h["time"]) — naive-часы ТОЧКИ локации
-        (Open-Meteo с timezone=auto), now — naive-часы пользователя:
-        сравниваем как раньше, исходя из того, что локация настроена
-        там, где живёт пользователь."""
+        Времена прогноза (h["time"]) — naive-часы точки локации (прогноз
+        отдаётся с timezone=auto), now — naive-часы пользователя; сравнение
+        предполагает, что локация настроена там, где живёт пользователь."""
         w = self.config.weather
         now_ts = timeutil.to_ts(now)
 
@@ -415,7 +411,7 @@ class RhythmManager:
         return "Russian"
 
     def _generate_text(self, kind: str, facts: str, lang: str) -> Optional[str]:
-        """Текст в характере персоны через LLM (синхронный вызов)."""
+        # Текст в характере персоны через LLM (синхронный вызов).
         if not (self._router and self._persona):
             return None
         persona_prompt = self._persona.system_prompt.strip()
@@ -436,8 +432,8 @@ class RhythmManager:
             )},
             {"role": "user", "content": user_content},
         ]
-        # Канал «proactive»: фон не делит инстанс/лок с ответом пользователю
-        # (main) — иначе зависший rhythm блокировал диалог (кейс 19.09)
+        # Канал «proactive»: фон не делит инстанс/лок с ответом пользователю,
+        # иначе зависший фоновый вызов заблокировал бы диалог
         response = self._router.get_response(messages, temperature=0.7,
                                              max_tokens=200, top_p=0.9,
                                              webchat_channel="proactive")
@@ -457,14 +453,13 @@ class RhythmManager:
         """True — доставлено; False — сбой; _DEFERRED — идёт ход пользователя.
 
         Утро срабатывает ровно при появлении пользователя (поллинг inbox,
-        сообщение в TG), ночь — только при его активности: коллизия с живым
-        обменом почти гарантирована. Раньше сообщение уходило и писалось в
-        STM без проверок — посреди хода, между репликой и ответом. Теперь
-        запись в STM — атомарно с проверкой «хода нет» под локом гейта; ход
-        идёт — сообщение откладывается (текст от диалога не зависит: реплика
-        его не отменяет, оно встанет после ответа) без ожидания в цикле, чтобы
-        не держать остальные чаты. Доставка — после записи; не доставлено —
-        запись откатывается по идентичности."""
+        сообщение в Telegram), ночь — только при его активности: коллизия с
+        живым обменом почти гарантирована. Запись в STM и проверка «хода
+        нет» атомарны под локом гейта; ход идёт — сообщение откладывается
+        (текст от диалога не зависит: реплика его не отменяет, оно встанет
+        после ответа) без ожидания в цикле, чтобы не держать остальные чаты.
+        Доставка — после записи; не доставлено — запись откатывается по
+        идентичности."""
         if self._sender is None:
             return False
         topic_id = None
@@ -728,7 +723,6 @@ class RhythmManager:
         logger.info(f"[Rhythm] Запущено для {self.context}")
 
     def stop(self):
-        """Останавливает фоновую задачу."""
         self._running = False
         if self._task:
             self._task.cancel()

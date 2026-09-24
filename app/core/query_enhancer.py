@@ -62,7 +62,6 @@ class QueryEnhancer:
             logger.info("[QueryEnhancer] Пустой вопрос, возвращаем как есть")
             return user_question
 
-        # Проверяем доступность локальной модели
         logger.info(f"[QueryEnhancer] Проверка доступности: router={self.router is not None}")
         if self.router:
             logger.info(f"[QueryEnhancer] router.is_available()={self.router.is_available(task='query_rewrite')}")
@@ -118,7 +117,6 @@ class QueryEnhancer:
                 logger.info(f"[QueryEnhancer] Fallback: '{user_question}' -> '{fallback}'")
                 return fallback
 
-            # Чистим ответ
             enhanced = self._clean_response(response)
 
             if not enhanced or len(enhanced) < 2:
@@ -137,11 +135,10 @@ class QueryEnhancer:
             return fallback
 
     def _clean_response(self, response: str) -> str:
-        """Чистит ответ LLM от лишних символов и форматирования."""
-        # Убираем кавычки
+        # Чистит ответ LLM от лишних символов и форматирования.
         response = response.strip().strip('"').strip("'")
-        # Убираем markdown (одиночные подчёркивания НЕ трогаем —
-        # они легитимны в запросах: user_id, all_MiniLM_L6_v2)
+        # Убираем markdown (одиночные подчёркивания НЕ трогаем — они легитимны
+        # в технических токенах вида user_id или именах моделей)
         response = re.sub(r'\*{1,3}|_{2,}', '', response)
         # Убираем префиксы
         response = re.sub(r'^(запрос|query|поиск|search)[:\s]*', '', response, flags=re.IGNORECASE)
@@ -150,9 +147,7 @@ class QueryEnhancer:
         return response
 
     def _fallback_enhance(self, user_question: str) -> str:
-        """
-        Fallback-преобразование без LLM — правила.
-        """
+        # Fallback-преобразование без LLM — по правилам.
         query = user_question.strip()
         
         # Убираем вопросительные слова в начале

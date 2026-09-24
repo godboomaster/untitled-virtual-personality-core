@@ -1,5 +1,6 @@
 """Тест политики гонки поиска (app/features/web_search_race.py) на подставных
-источниках: AI Mode в приоритете до дедлайна, DDG — подстраховка.
+источниках: ИИ-ответ поисковика (ai_ask) в приоритете до дедлайна, DDG —
+подстраховка.
 
 Запуск: PYTHONPATH=. python3 scripts/test_web_search_race.py
 """

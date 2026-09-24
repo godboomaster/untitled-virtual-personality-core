@@ -32,7 +32,7 @@ COLLECTIONS = ["short_term_memory", "long_term_memory", "file_documents", "file_
 
 
 def get_db_paths(context: str) -> dict:
-    """Пути к базам для контекста."""
+    # Пути к базам для контекста.
     base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", context)
     return {
         "stm": os.path.join(base, "stm"),
@@ -42,7 +42,7 @@ def get_db_paths(context: str) -> dict:
 
 
 def migrate_collection(db_path: str, collection_name: str):
-    """Пересчитать эмбеддинги в одной коллекции."""
+    # Пересчитать эмбеддинги в одной коллекции.
     if not os.path.exists(db_path):
         print(f"  [SKIP] Путь не существует: {db_path}")
         return

@@ -18,8 +18,8 @@ _VISION_PROBE_IMAGE_B64 = (
 
 
 def _parse_webchat_sites() -> list[str]:
-    """Сайты веб-чата из env: WEBCHAT_SITES=qwen,deepseek (порядок = порядок
-    перебора); legacy WEBCHAT_SITE (один сайт) добавляется, если его нет."""
+    # Сайты веб-чата из env: WEBCHAT_SITES=qwen,deepseek (порядок = порядок
+    # перебора); legacy WEBCHAT_SITE (один сайт) добавляется, если его нет.
     raw = f"{os.getenv('WEBCHAT_SITES') or ''},{os.getenv('WEBCHAT_SITE') or ''}"
     try:
         from app.features.web_llm import ADAPTERS
@@ -39,29 +39,27 @@ def _parse_webchat_sites() -> list[str]:
 # Без интернета облачная цепочка и веб-чаты заведомо мертвы, а до local
 # цепочка идёт минуты таймаутов — probe сырых IP, офлайн → локальная модель
 # (Ollama) пробуется первой.
-# Слабая сеть ≠ офлайн (кейс 22.09: Wi-Fi с потерями, SYN к 1.1.1.1 не
-# уложился в 1.5 с — «Нет интернета», 30 с все решения режима управления
-# принимала локальная gemma, и клики уходили мимо). Поэтому: таймаут
-# длиннее, вердикт «офлайн» — только после ДВУХ подряд неудачных серий
-# (гистерезис), кэш «офлайн» короткий (сеть мигает — быстро вернуться),
-# а любой успешный ответ облака/веб-чата подтверждает онлайн без пробы
-# (note_internet_ok).
+# Слабая сеть ≠ офлайн: на нестабильном Wi-Fi одиночный SYN может потеряться
+# в пределах короткого таймаута, хотя интернет есть, а ложное «офлайн» на
+# пути решений режима управления отправляет их слабой локальной модели.
+# Поэтому: таймаут длиннее, вердикт «офлайн» — только после ДВУХ подряд
+# неудачных серий (гистерезис), кэш «офлайн» короткий (сеть мигает — быстро
+# вернуться), а любой успешный ответ облака/веб-чата подтверждает онлайн
+# без пробы (note_internet_ok).
 _NET_CHECK_TTL_SEC = 30.0        # кэш вердикта «онлайн»
 _NET_OFFLINE_TTL_SEC = 10.0      # кэш вердикта «офлайн»
 _NET_PROBE_TIMEOUT_SEC = 3.0
 _NET_PROBE_ROUNDS = 2            # серий подряд без ответа = офлайн
-# IP-литералы, без DNS. Яндекс DNS — первым: провайдеры в РФ режут прямые
-# TCP к 1.1.1.1/8.8.8.8 (замер 23.09: оба таймаут, а HTTP до Google идёт
-# за 1.2 с) — проба ждала 2×2×3 = 12 с и выносила ложное «офлайн»: поиск
-# пропускался, цепочка уходила к локальной модели
+# IP-литералы, без DNS. 77.88.8.8 — первым: часть интернет-провайдеров режет
+# прямые TCP к 1.1.1.1/8.8.8.8 при работающем HTTP, и проба с ними первыми
+# ждала бы все таймауты и выносила ложное «офлайн»
 _NET_PROBE_HOSTS = (("77.88.8.8", 443), ("1.1.1.1", 443), ("8.8.8.8", 53))
 # Путь ответа пробу НЕ ждёт (stale-while-revalidate): истёкший кэш отдаёт
 # последний вердикт сразу, а проба идёт одним фоновым потоком на процесс
-# (параллельные вызовы её не дублируют). Раньше истёкший кэш «офлайн» (10 с)
-# стоил ответу до 2 серий × 3 хоста × 3 с = 18 с синхронных проб.
+# (параллельные вызовы её не дублируют).
 # Ждём коротко только:
 # - самый первый вызов без вердикта — до _NET_FIRST_WAIT_SEC, дальше
-#   считаем «онлайн» (ложный онлайн = прежняя цепочка, ложный офлайн хуже);
+#   считаем «онлайн» (ложный онлайн = обычная цепочка, ложный офлайн хуже);
 # - вызов, запустивший пробу при устаревшем «офлайн», — до
 #   _NET_STALE_OFFLINE_WAIT_SEC: вернувшаяся сеть отвечает первым же
 #   хостом за десятки мс, и ответ сразу идёт в облако, а не в локальную
@@ -83,7 +81,7 @@ BURST_LOCK_WAIT_SEC = 3.0
 
 
 def _probe_round() -> bool:
-    """Одна серия TCP-проб: хоть один хост ответил — онлайн."""
+    # Одна серия TCP-проб: хоть один хост ответил — онлайн.
     for host, port in _NET_PROBE_HOSTS:
         try:
             socket.create_connection((host, port),
@@ -95,18 +93,17 @@ def _probe_round() -> bool:
 
 
 def note_internet_ok() -> None:
-    """Облако/веб-чат только что ответили — интернет есть по факту, проба
-    не нужна (слабая сеть, где проба теряет SYN, а HTTP всё же проходит)."""
+    # Облако/веб-чат только что ответили — интернет есть по факту, проба
+    # не нужна (слабая сеть, где проба теряет SYN, а HTTP всё же проходит).
     global _net_ok, _net_checked
     with _net_lock:
         _net_ok, _net_checked = True, time.monotonic()
 
 
 def _refresh_async() -> tuple[threading.Event, bool]:
-    """Запустить фоновую пробу, если она ещё не идёт. Возвращает событие её
-    конца и признак «запустил именно этот вызов». Вердикт — как раньше:
-    хоть одна серия с ответом — онлайн, _NET_PROBE_ROUNDS пустых подряд —
-    офлайн."""
+    # Запустить фоновую пробу, если она ещё не идёт. Возвращает событие её
+    # конца и признак «запустил именно этот вызов». Вердикт: хоть одна серия
+    # с ответом — онлайн, _NET_PROBE_ROUNDS пустых подряд — офлайн.
     global _net_refresh_done
     with _net_lock:
         if _net_refresh_done is not None:
@@ -146,9 +143,9 @@ def _refresh_async() -> tuple[threading.Event, bool]:
 
 
 def note_internet_suspect() -> None:
-    """Облако не достучалось по сети (connect/timeout) — перепроверить
-    интернет досрочно, в фоне. Вердикт «офлайн» ставит только проба (две
-    пустые серии): одна сетевая ошибка на слабом Wi-Fi ≠ офлайн."""
+    # Облако не достучалось по сети (connect/timeout) — перепроверить
+    # интернет досрочно, в фоне. Вердикт «офлайн» ставит только проба (две
+    # пустые серии): одна сетевая ошибка на слабом Wi-Fi ≠ офлайн.
     with _net_lock:
         fresh = (_net_ok is not None
                  and time.monotonic() - _net_checked < _NET_SUSPECT_MIN_AGE_SEC)
@@ -157,7 +154,7 @@ def note_internet_suspect() -> None:
 
 
 def _is_network_error(e: BaseException) -> bool:
-    """Ошибка транспорта (нет соединения/таймаут), а не ответ API."""
+    # Ошибка транспорта (нет соединения/таймаут), а не ответ API.
     try:
         from openai import APIConnectionError  # APITimeoutError — подкласс
         if isinstance(e, APIConnectionError):
@@ -168,16 +165,17 @@ def _is_network_error(e: BaseException) -> bool:
 
 
 def internet_available() -> bool:
-    """Есть ли интернет: TCP-probe пары надёжных IP с кэшем (процесс):
-    «онлайн» — 30 с, «офлайн» — 10 с. Ложное «офлайн» безопасно для
-    ответа (если local не ответила, обычная цепочка всё равно идёт дальше —
-    меняется только её приоритет), но вредно для качества (решения режима
-    управления уходят слабой локальной модели), поэтому офлайн
-    признаётся только после двух подряд пустых серий.
-    Вызов не блокируется на пробе: истёкший кэш — последний вердикт сразу
-    + одна фоновая проба на процесс; короткое ожидание только у первого
-    вызова без вердикта (≤ _NET_FIRST_WAIT_SEC, затем «онлайн») и у
-    запустившего пробу при устаревшем «офлайн» (≤ _NET_STALE_OFFLINE_WAIT_SEC)."""
+    """Есть ли интернет: TCP-probe пары надёжных IP с кэшем на процесс:
+    «онлайн» — 30 с, «офлайн» — 10 с. Ложное «офлайн» безопасно для ответа
+    (обычная цепочка всё равно идёт дальше, меняется только приоритет), но
+    вредно для качества (решения режима управления уходят слабой локальной
+    модели), поэтому офлайн признаётся только после двух подряд пустых серий.
+
+    Вызов не блокируется на пробе: истёкший кэш отдаёт последний вердикт
+    сразу плюс запускает одну фоновую пробу на процесс; короткое ожидание —
+    только у первого вызова без вердикта (≤ _NET_FIRST_WAIT_SEC, затем
+    «онлайн») и у вызова, запустившего пробу при устаревшем «офлайн»
+    (≤ _NET_STALE_OFFLINE_WAIT_SEC)."""
     with _net_lock:
         ok, checked = _net_ok, _net_checked
     if ok is not None:
@@ -203,7 +201,7 @@ BG_RETRY_SLICE_SEC = 5.0
 
 
 def _is_bg_channel(channel: str) -> bool:
-    """Фоновый канал веб-чата (side/proactive: очередь сайта в web_llm)."""
+    # Фоновый канал веб-чата (side/proactive: очередь сайта в web_llm).
     try:
         from app.features.web_llm import _BACKGROUND_CHANNELS
     except Exception:
@@ -214,15 +212,13 @@ def _is_bg_channel(channel: str) -> bool:
 class ModelRouter:
     # Кто ответил на ПОСЛЕДНИЙ вызов — на поток (ThreadLocalAttr поверх
     # threading.local). Роутер один на персону, а get_response зовут
-    # параллельно ответ пользователю, инициатива, досье, LTM: общим полем
-    # фоновая задача перетирала провайдера между «ответ получен» и «метку
+    # параллельно ответ пользователю, инициатива, досье, LTM: с общим полем
+    # фоновая задача перетирала бы провайдера между «ответ получен» и «метку
     # прочитали» — неверная метка провайдера в ответе API и лишний запрос
     # «продолжи» для веб-чата (bot_instance читает, веб-чат ли ответил).
-    # Присваивания self._last_provider = x не изменились; чтение отдаёт
-    # значение СВОЕГО потока, а поток, который ещё ничего не писал, —
-    # последнее значение любого (как прежний общий атрибут: init-значение,
-    # сторонние читатели статуса). Снимать метку для ответа нужно в том же
-    # потоке, где шёл вызов.
+    # Чтение отдаёт значение СВОЕГО потока, а поток, который ещё ничего не
+    # писал, — последнее значение любого (init-значение, сторонние читатели
+    # статуса). Снимать метку для ответа нужно в том же потоке, где шёл вызов.
     _last_provider = ThreadLocalAttr()
     _last_local_model = ThreadLocalAttr()
 
@@ -235,9 +231,9 @@ class ModelRouter:
         self.active_provider = provider or os.getenv("ACTIVE_PROVIDER")
         self._last_key_index: dict[str, int] = {}
         # Семафоры параллельности API-провайдеров (max_concurrent в конфиге,
-        # напр. kimi=1 — аккаунтный лимит Moonshot): занят → мгновенный
-        # фолбэк по цепочке, без 403 «concurrent request limit» (кейс 19.09:
-        # фоновая задача и ответ пользователю столкнулись на одном ключе)
+        # напр. kimi=1 — аккаунтный лимит провайдера): занят → мгновенный
+        # фолбэк по цепочке, без 403 «concurrent request limit», если фоновая
+        # задача и ответ пользователю бьют в один ключ одновременно
         self._provider_sems: dict[str, threading.BoundedSemaphore] = {}
         # Персональный override из YAML персоны (секция llm): закреплённый
         # основной провайдер (глобальная смена active его не трогает),
@@ -316,13 +312,12 @@ class ModelRouter:
         # Кеш вердиктов автопробы vision: provider -> bool
         self._vision_verdict: dict[str, bool] = {}
 
-        # Логируем количество ключей
         key_info = {p: len(cfg["api_keys"]) for p, cfg in self.available.items()}
         logger.info(f"ModelRouter: active={self.active_provider} | keys={key_info}")
 
     @property
     def webchat_site(self) -> str | None:
-        """Первый (основной) сайт веб-чата — совместимость со старым кодом."""
+        # Первый (основной) сайт веб-чата — для обратной совместимости.
         return self.webchat_sites[0] if self.webchat_sites else None
 
     @webchat_site.setter
@@ -332,13 +327,13 @@ class ModelRouter:
 
     def reset_webchats(self) -> None:
         """Сбросить кэш webchat-инстансов (смена сайтов в настройках и т.п.;
-        следующий вызов создаст свежие). Единственный правильный способ —
-        не присваивать _webchats = {} напрямую: раньше старые инстансы просто
-        забывались, а их служебные вкладки жили в пуле до конца процесса.
-        Снимок кэша подменяется новым dict, каждому выбывшему — retire():
-        свободный закрывает вкладку сразу, а если через него идёт вызов
-        (поток уже держит ссылку) — по завершении этого вызова: закрыть
-        вкладку посреди ответа значило бы оборвать его."""
+        следующий вызов создаст свежие). Нельзя просто присвоить
+        _webchats = {} напрямую: выбывшие инстансы держат вкладки в пуле
+        браузера, и их нужно явно закрыть через retire(). Снимок кэша
+        подменяется новым dict, каждому выбывшему — retire(): свободный
+        закрывает вкладку сразу, а если через него идёт вызов (поток уже
+        держит ссылку) — по завершении этого вызова, чтобы не оборвать
+        ответ посередине."""
         old, self._webchats = self._webchats, {}
         for chat in list(old.values()):
             retire = getattr(chat, "retire", None)
@@ -352,22 +347,22 @@ class ModelRouter:
     def _reset_last_provider(self) -> None:
         """Начало нового вызова: метка «кто ответил» ЭТОГО потока — None.
         Потоки пула (to_thread, ltm_extractor…) переиспользуются: без сброса
-        неудачный вызов оставлял потоку метку его ПРОШЛОГО запроса, и её
-        читали как ответившего сейчас. Общий fallback не трогаем."""
+        после неудачного вызова у потока осталась бы метка его ПРОШЛОГО
+        запроса, и её прочитали бы как ответившего сейчас. Общий fallback не трогаем."""
         type(self).__dict__["_last_provider"].set_local(self, None)
 
     def model_for(self, provider: str) -> str:
-        """Модель провайдера с учётом персонального override (пусто, если неизвестен)."""
+        # Модель провайдера с учётом персонального override (пусто, если неизвестен).
         if provider in self.model_overrides:
             return self.model_overrides[provider]
         return (self.available.get(provider) or {}).get("model", "")
 
     def _provider_sem(self, provider: str, cfg: dict):
         """Семафор параллельности провайдера (max_concurrent в конфиге);
-        None — без лимита. Ленивое создание через dict.setdefault (атомарно
-        под GIL): при гонке двух первых вызовов прежний «get → создать →
-        записать» давал ДВА семафора с лимитом 1 каждый — два параллельных
-        запроса на один ключ, тот самый 403 concurrent (kimi=1)."""
+        None — без лимита. Создаётся через dict.setdefault (атомарно под
+        GIL): отдельные «get, затем создать» дали бы два семафора при гонке
+        двух первых вызовов — и два параллельных запроса на ключ с лимитом 1
+        (403 concurrent, напр. у kimi)."""
         limit = cfg.get("max_concurrent")
         if not limit:
             return None
@@ -443,8 +438,9 @@ class ModelRouter:
 
     def _try_local(self, messages, temperature: float, max_tokens: int,
                    top_p: float, timeout: float, on_token=None) -> str | None:
-        """Попытка ответа локальной моделью (Ollama). None — недоступна/не ответила.
-        on_token задан — ответ дополнительно отдаётся одним куском (стрим)."""
+        # Попытка ответа локальной моделью (Ollama); None — недоступна/не
+        # ответила. on_token задан — ответ дополнительно отдаётся одним
+        # куском (стрим).
         try:
             from app.core.local_router import get_local_router
             local = get_local_router()
@@ -477,8 +473,8 @@ class ModelRouter:
                      user_path: bool = False) -> str | None:
         """Возвращает ответ модели или None, если все провайдеры недоступны.
 
-        Вызывающий код ОБЯЗАН проверять результат на None/пустоту — строка-заглушка
-        больше не возвращается, чтобы ошибку нельзя было принять за ответ модели.
+        Вызывающий код обязан проверять результат на None/пустоту: ошибку
+        нельзя принимать за ответ модели.
 
         force_provider — провайдер по назначению (llm.answer_provider/
         cc_provider): одна попытка ВНЕ цепочки, неудача — обычная цепочка.
@@ -735,7 +731,7 @@ class ModelRouter:
     def _stream_with_keys(self, provider: str, cfg: dict, messages: list, on_token,
                           temperature: float, max_tokens: int, top_p: float,
                           timeout: float) -> str | None:
-        """Стримит ответ первого ответившего ключа провайдера. None — все ключи упали."""
+        # Стримит ответ первого ответившего ключа провайдера; None — все ключи упали.
         # Лимит параллельности провайдера (max_concurrent): занят — мгновенный
         # фолбэк, как в _call_with_keys (без 403 concurrent и ожидания)
         sem = self._provider_sem(provider, cfg)
@@ -754,7 +750,7 @@ class ModelRouter:
     def _stream_with_keys_locked(self, provider: str, cfg: dict, messages: list,
                                  on_token, temperature: float, max_tokens: int,
                                  top_p: float, timeout: float) -> str | None:
-        """Стримит ответ первого ответившего ключа провайдера. None — все ключи упали."""
+        # Стримит ответ первого ответившего ключа провайдера; None — все ключи упали.
         keys = cfg["api_keys"]
         last_idx = self._last_key_index.get(provider, 0)
         model = self.model_overrides.get(provider) or cfg["model"]
@@ -804,8 +800,8 @@ class ModelRouter:
 
     @staticmethod
     def _norm_webchat_limits(raw) -> dict:
-        """{сайт: {"enabled": bool, "per_hour": int}} → {сайт: per_hour|None}.
-        None — лимит снят персоной; мусорные записи отбрасываются (дефолт)."""
+        # {сайт: {"enabled": bool, "per_hour": int}} → {сайт: per_hour|None}.
+        # None — лимит снят персоной; мусорные записи отбрасываются (дефолт).
         from app.features.web_llm import ADAPTERS as _WC
         out = {}
         for site, cfg in (raw or {}).items():
@@ -823,15 +819,15 @@ class ModelRouter:
         return out
 
     def _webchat_quota_for(self, site: str):
-        """Лимит вызовов/час для сайта из llm.webchat_limits; без записи —
-        без лимита (дефолт web_llm.QUOTA_PER_HOUR = None)."""
+        # Лимит вызовов/час для сайта из llm.webchat_limits; без записи —
+        # без лимита (дефолт web_llm.QUOTA_PER_HOUR = None).
         from app.features.web_llm import QUOTA_PER_HOUR
         return self.webchat_limits.get(site, QUOTA_PER_HOUR)
 
     def _apply_webchat_limits(self):
-        """Передать лимиты персоны уже созданным webchat-инстансам (кэш).
-        Обход по снимку: кэш пополняют потоки вызовов, а итерация живого
-        dict при вставке падает «dictionary changed size during iteration»."""
+        # Передать лимиты персоны уже созданным webchat-инстансам (кэш).
+        # Обход по снимку: кэш пополняют потоки вызовов, а итерация живого
+        # dict при вставке падает «dictionary changed size during iteration».
         for key, chat in list(self._webchats.items()):
             site = key.split("#", 1)[0]
             try:
@@ -840,8 +836,8 @@ class ModelRouter:
                 pass
 
     def _webchat_pool_for(self, site: str) -> str | None:
-        """Пул браузера для сайта из llm.webchat_mode: headless → 'h',
-        hidden/headed → 'v'; без записи — None (дефолт WebChatLLM)."""
+        # Пул браузера для сайта из llm.webchat_mode: headless → 'h',
+        # hidden/headed → 'v'; без записи — None (дефолт WebChatLLM).
         mode = str((self.webchat_modes or {}).get(site) or "").lower()
         if mode == "headless":
             return "h"
@@ -850,13 +846,13 @@ class ModelRouter:
         return None
 
     def _webchat_instance(self, key: str, site: str, channel: str):
-        """Кэшированный WebChatLLM сайта+канала. Раньше «get → None →
-        создать → записать» шёл без синхронизации: два потока персоны (LTM и
-        досье на side, два чата пользователя на main) при первом обращении
-        создавали ДВА инстанса — у каждого свой лок и своя вкладка на ОДНОМ
-        сохранённом чате (адрес общий через web_llm_state.json), и они
-        печатали в один тред параллельно; проигравший инстанс с вкладкой
-        оставался сиротой. dict.setdefault атомарен под GIL: в кэш попадает
+        """Кэшированный WebChatLLM сайта+канала. Без синхронизации «get →
+        None → создать → записать» два потока персоны (LTM и досье на side,
+        два чата пользователя на main) при первом обращении создали бы ДВА
+        инстанса — у каждого свой лок и своя вкладка на ОДНОМ сохранённом
+        чате (адрес общий через web_llm_state.json), и они печатали бы в
+        один тред параллельно, а инстанс-проигравший оставался бы сиротой
+        со своей вкладкой. dict.setdefault атомарен под GIL: в кэш попадает
         и возвращается ОДИН инстанс, лишний отбрасывается до первого вызова
         (вкладку он ещё не открыл — _ensure_chat ленивый)."""
         chat = self._webchats.get(key)
@@ -885,8 +881,8 @@ class ModelRouter:
         Chrome) — НЕ ждём: уходим в burst-инстанс (канал «burst», разовый
         свежий чат с тем же полным контекстом — _join_messages и так шлёт его
         целиком, память сайта не нужна). Burst не кэшируется, а его вкладка
-        закрывается сразу после вызова: раньше каждый burst оставлял в пуле
-        H живую SPA-вкладку до конца процесса.
+        закрывается сразу после вызова — иначе живая SPA-вкладка оставалась
+        бы в пуле H до конца процесса.
 
         Фоновые каналы (side/proactive) — очередь своего сайта в web_llm.
         lock_timeout = бюджет ожидания очереди и лока вкладки: на первом
@@ -901,8 +897,7 @@ class ModelRouter:
         USER_PATH_CHANNEL (без фоновой очереди и пола ответа, лок инстанса —
         не дольше USER_PATH_QUEUE_WAIT_SEC; см. get_response).
 
-        Прочие каналы (vision/cc/…) — лок инстанса без ограничения, как
-        раньше."""
+        Прочие каналы (vision/cc/…) — лок инстанса без ограничения."""
         try:
             from app.features.web_llm import (WebChatLLM, BG_QUEUE_WAIT_SEC,
                                               USER_PATH_QUEUE_WAIT_SEC,
@@ -1151,9 +1146,9 @@ class ModelRouter:
                 return p if p.split(":", 1)[1] in _WC_ADAPTERS else None
             return p if p in PROVIDER_CONFIGS or p == "local" else None
 
-        # Провайдеры по назначению (кейс 18.09): answer — текст ответа
-        # пользователю, cc — внутренние решения режима управления (разбор
-        # команды, резолв элементов страницы), vision — картинки.
+        # Провайдеры по назначению: answer — текст ответа пользователю,
+        # cc — внутренние решения режима управления (разбор команды, резолв
+        # элементов страницы), vision — картинки.
         # None/неизвестный токен — обычная цепочка.
         for attr, val in (("answer_provider", answer_provider),
                           ("cc_provider", cc_provider),
@@ -1215,9 +1210,9 @@ class ModelRouter:
             )
 
     def is_local_primary(self) -> bool:
-        """Первым отвечает локальная модель (Ollama). Слабым моделям большой
-        контекст вредит — по этому флагу контекст основного ответа собирается
-        в урезанном виде (см. BotInstance.process_message)."""
+        # Первым отвечает локальная модель (Ollama). Слабым моделям большой
+        # контекст вредит — по этому флагу контекст основного ответа
+        # собирается в урезанном виде (см. BotInstance.process_message).
         return self.active_provider == "local"
 
     def _get_provider_order(self) -> list:
@@ -1239,9 +1234,9 @@ class ModelRouter:
         return order
 
     def _webchat_tokens(self) -> list[str]:
-        """Токены webchat:<сайт> для цепочки: все включённые сайты плюс сайты
-        из персонального primary/fallback (персона может включить себе сайт,
-        которого нет в глобальном списке)."""
+        # Токены webchat:<сайт> для цепочки: все включённые сайты плюс сайты
+        # из персонального primary/fallback (персона может включить себе
+        # сайт, которого нет в глобальном списке).
         sites = list(self.webchat_sites)
         extra = list(self.fallback_order or [])
         if self.pinned_provider:
@@ -1284,7 +1279,7 @@ class ModelRouter:
         return order
 
     def supports_vision(self) -> bool:
-        """Может ли роутер обработать изображение (vision-провайдер или режим auto)."""
+        # Может ли роутер обработать изображение (vision-провайдер или режим auto).
         for name, cfg in self.available.items():
             mode = cfg.get("vision", "auto")
             if mode is True or str(mode).lower() == "true":
@@ -1320,7 +1315,7 @@ class ModelRouter:
             ],
         }]
         try:
-            # max_tokens с запасом: reasoning-модели (k3 и т.п.) тратят бюджет
+            # max_tokens с запасом: reasoning-модели тратят бюджет
             # на скрытые размышления, при малом лимите ответ пустой
             answer = self._call_with_keys(
                 provider, cfg, messages,
@@ -1329,7 +1324,7 @@ class ModelRouter:
             if answer is None:
                 # все ключи упали (429/403/таймаут) — транзиент, не вердикт
                 # о слепоте модели: не кешируем, иначе одна неудачная проба
-                # выключала vision до конца процесса
+                # выключила бы vision до конца процесса
                 logger.info(f"[Vision probe] {provider}: вызов не прошёл — "
                             "вердикт не кешируем")
                 return False

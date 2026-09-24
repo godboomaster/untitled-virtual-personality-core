@@ -2,7 +2,7 @@
 бота на выделенном automation-профиле и гоняет реальные страницы).
 
 Проверяет на синтетической странице (пишется во временный каталог):
-  * авто-закрытие куки-оверлея перед снапшотом (+ audit overlay_dismiss);
+  * авто-закрытие куки-оверлея перед снапшотом (+ запись overlay_dismiss в аудит);
   * обычный клик end-to-end (resolve → execute, closed-loop);
   * элемент внутри iframe (снапшот-обход фреймов + клик);
   * элемент внутри open shadow root;
@@ -149,7 +149,7 @@ def main() -> int:
         base_dir=tmp)
 
     def run(goal, **kw):
-        """resolve_click + execute как в проде. → (ok, detail, action)"""
+        # resolve_click + execute как в проде → (ok, detail, action)
         act, err = mgr.resolve_click(goal, None, router,
                                      chat_id=kw.get("chat", "smoke"))
         if act is None:
@@ -166,10 +166,10 @@ def main() -> int:
         mgr._last_tab_id = tab_id
         time.sleep(1.0)
 
-        # Изоляция фикстуры: чужие вкладки (dodo и т.п. из ручных тестов)
-        # ловят zero-match цели через page_fallback — «корзина» уходила в
-        # хедер dodo вместо vision-фолбэка. Служебные веб-чаты и localhost/
-        # file-фикстуру list_tabs не отдаёт — они не трогаются
+        # Изоляция фикстуры: чужие вкладки из ручных тестов ловят zero-match
+        # цели через page_fallback — «корзина» могла уйти в чужой хедер
+        # вместо vision-фолбэка. Служебные веб-чаты и localhost/file-фикстуру
+        # list_tabs не отдаёт — они не трогаются
         def _close_tabs(tids):
             def _op(w):
                 n = 0
@@ -230,7 +230,7 @@ def main() -> int:
         ba.eval_js(None, tab_id,
                    "document.getElementById('prod').style.display='none'")
 
-        # 1.7. FAQ-аккордеон label+checkbox (dodo): заголовок глушит клики —
+        # 1.7. FAQ-аккордеон label+checkbox: заголовок глушит клики —
         # основной клик не меняет DOM, контрол перещёлкивает фолбэк; цель с
         # опечаткой «кэшбек» (на странице «кешбэк») — fuzzy-ярус скоринга
         ok1e, d1e, _ = run("что такое кэшбек")
@@ -344,8 +344,9 @@ def main() -> int:
 
         tid3 = ba.open_new_tab("https://ru.wikipedia.org/wiki/Заглавная_страница")
         mgr._last_tab_id = tid3  # резолв целится в вкладку википедии
-        # Окно автоматизационного браузера узкое (715px): Vector-2022 прячет
-        # поле поиска за иконкой. Десктопный вьюпорт — как у пользователя
+        # Окно автоматизационного браузера узкое (715px): при таком вьюпорте
+        # сайт прячет поле поиска за иконкой. Десктопный вьюпорт — как у
+        # пользователя
         ba._WORKER.submit(lambda w: w.page_for(None, tid3)
                           .set_viewport_size({"width": 1400, "height": 900}))
         time.sleep(0.5)

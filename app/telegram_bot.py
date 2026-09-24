@@ -36,7 +36,7 @@ _rich_formatter = RichMessageFormatter()
 def _md_to_html(text: str) -> str:
     """
     Конвертирует Markdown в HTML для Telegram.
-    Использует RichMessageFormatter для поддержки новых тегов:
+    Использует RichMessageFormatter для поддержки дополнительных тегов:
     - <tg-spoiler> — спойлеры
     - <u> — подчеркивание
     - <sub>, <sup> — индексы
@@ -120,8 +120,7 @@ async def _reply_with_photos(message, text: str, photos: list) -> list:
         def _frame_caption(off: int, j: int, ph: dict):
             """(подпись, parse_mode) кадра: первый кадр несёт ответ (HTML),
             остальные — свою подпись («Так выглядит страница (host)»,
-            «Край страницы …») обычным текстом. Раньше в альбоме и в его
-            фолбэке по одному подписи кадров терялись."""
+            «Край страницы …») обычным текстом."""
             if off == 0 and j == 0 and caption:
                 return caption, "HTML"
             return (ph.get("caption") or None), None
@@ -211,10 +210,9 @@ async def _gate_update(bot: BotInstance, message, user_id: str, is_private: bool
                        text: str) -> bool:
     """Общий pre_check-гейт для ЛЮБОГО входящего апдейта (текст/фото/документ/
     будущие хендлеры) — blocked_users/allowed_dm_users/punish/rate_limit/
-    moderation. Раньше pre_check вызывался только из handle_message, и фото/
-    документ обходили блокировки и allowlist ЛС. text — то, что реально пишет
-    пользователь (для фото/документа — подпись caption, а не распознанный
-    контент). True — апдейт заблокирован, обработчик должен прекратить работу."""
+    moderation. text — то, что реально пишет пользователь (для фото/документа —
+    подпись caption, а не распознанный контент). True — апдейт заблокирован,
+    обработчик должен прекратить работу."""
     check = await asyncio.to_thread(bot.pre_check, user_id, text, is_private)
     if not check:
         return False
@@ -354,7 +352,7 @@ def create_handlers(bot: BotInstance) -> dict:
         await update.message.reply_text(text)
 
     async def erase_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Удалить последние N сообщений из STM (deque + ChromaDB)."""
+        # Удалить последние N сообщений из STM (deque + ChromaDB).
         import os
         owner_id = os.getenv("OWNER_USER_ID", "")
         if str(update.effective_user.id) != owner_id:
@@ -377,7 +375,7 @@ def create_handlers(bot: BotInstance) -> dict:
         await update.message.reply_text(f"Удалено {deleted} сообщений из STM.")
 
     async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать последние n сообщений из STM (первое предложение)."""
+        # Показать последние n сообщений из STM (первое предложение).
         chat_id = str(update.effective_chat.id)
         n = 10
         if context.args:
@@ -412,7 +410,7 @@ def create_handlers(bot: BotInstance) -> dict:
         await update.message.reply_text(f"Факты сброшены.\nLTM: {s['ltm_count']} фактов")
 
     async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Точечное забывание: /forget <что забыть> — удаляет самый похожий факт."""
+        # Точечное забывание: /forget <что забыть> — удаляет самый похожий факт.
         user_id = str(update.effective_user.id)
         raw = update.message.text or ""
         args = raw.split(" ", 1)[1].strip() if " " in raw else ""
@@ -426,14 +424,14 @@ def create_handlers(bot: BotInstance) -> dict:
             await update.message.reply_text("Не нашёл похожего факта в памяти.")
 
     async def relations_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Социальный граф: связи участников чата."""
+        # Социальный граф: связи участников чата.
         user_id = str(update.effective_user.id)
         chat_id = str(update.effective_chat.id)
         text = await asyncio.to_thread(bot.get_relations_text, user_id, chat_id)
         await update.message.reply_text(text)
 
     async def context_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает, какой контекст ушёл бы в промпт — файлом."""
+        # Показывает, какой контекст ушёл бы в промпт — файлом.
         import os
         import tempfile
         import shutil
@@ -572,9 +570,9 @@ def create_handlers(bot: BotInstance) -> dict:
 
     async def _run_command(update: Update, kind: str, usage: str, manager_attr: str,
                            context: ContextTypes.DEFAULT_TYPE = None):
-        """Общий каркас: проверяет менеджера, парсит аргументы, вызывает _dispatch_command, отвечает.
-        context нужен досылке split-частей (_send_split_parts) — раньше он сюда
-        не передавался, и имя context падало NameError после ответа на команду."""
+        """Общий каркас: проверяет менеджера, парсит аргументы, вызывает
+        _dispatch_command, отвечает. context нужен для досылки split-частей
+        (_send_split_parts)."""
         if not getattr(bot, manager_attr):
             await update.message.reply_text("Эта функция не активна для данной персоны.")
             return
@@ -631,7 +629,7 @@ def create_handlers(bot: BotInstance) -> dict:
     # Per-chat блокировки: сообщения ОДНОГО чата обрабатываются последовательно,
     # но разные чаты и slash-команды — параллельно (приложение запущено с
     # concurrent_updates=True). Без этого два быстрых сообщения из одного чата
-    # гнались между собой за pending-флаги и порядок в STM.
+    # гоняются между собой за pending-флаги и порядок в STM.
     _chat_locks: dict = {}
 
     def _chat_lock(chat_id: str) -> asyncio.Lock:
@@ -673,7 +671,7 @@ def create_handlers(bot: BotInstance) -> dict:
                 is_reply_to_bot = True
                 reply_to_bot_message_id = replied.message_id
                 # Передаём текст СВОЕГО сообщения, на которое ответили, —
-                # иначе LLM видела только факт reply, но не на какую реплику
+                # иначе LLM видит только факт reply, но не саму реплику
                 replied_text = replied.text or replied.caption
                 if replied_text:
                     reply_ctx = f"[{persona_name}]: {replied_text[:500]}"
@@ -688,9 +686,9 @@ def create_handlers(bot: BotInstance) -> dict:
         is_addressed_to_bot = is_reply_to_bot or bot.should_respond(text) or is_private
         if is_addressed_to_bot:
             # on_user_message = note_presence (нужен разрыв ДО обновления
-            # активности) + record_activity, в этом порядке гарантированно —
-            # см. docstring on_user_message про то, почему раздельные вызовы
-            # в обратном порядке ломали утреннее приветствие rhythm.
+            # активности) + record_activity, строго в этом порядке: обратный
+            # порядок ломает утреннее приветствие rhythm (см. docstring
+            # on_user_message).
             bot.on_user_message(chat_id)
 
         # Trigger: в группе — слово-триггер или reply боту; в личке — всегда
@@ -717,7 +715,7 @@ def create_handlers(bot: BotInstance) -> dict:
 
             logger.info(f"[{persona_name}] Обработка от {user_id}: {clean_text[:60]}...")
 
-            # Предварительное сообщение (для Арродеса)
+            # Вступительная реплика персоны до генерации ответа
             if persona_name == "arrodes":
                 try:
                     await update.message.reply_text("Поверхность зеркала потемнела...")
@@ -739,7 +737,8 @@ def create_handlers(bot: BotInstance) -> dict:
                 logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
                 # Скриншоты режима управления уезжают ВМЕСТЕ с ответом:
                 # первый кадр несёт текст в подписи (одно сообщение вместо
-                # «текст, следом фото»); не влезло в подпись — как раньше
+                # «текст, следом фото»); не влезло в подпись — текст и кадры
+                # отдельно
                 photos = bot.pop_pending_photos(chat_id)
                 sent_ids = await _reply_with_photos(update.message, response, photos)
                 # Хвост расщеплённого ответа — отдельными сообщениями следом
@@ -787,15 +786,15 @@ def create_handlers(bot: BotInstance) -> dict:
         user_id = str(user.id)
         chat_id = str(update.effective_chat.id)
         # Ход пользователя (app/core/turn_gate.py) — с ПОЛУЧЕНИЯ сообщения:
-        # скачивание и распознавание (vision/файл — десятки секунд) раньше шли
-        # до хода, и инициатива успевала встать перед репликой и потом
-        # засчитаться ответом на неё. Активность — тоже при получении (как у
-        # текста), ход держится до конца доставки ответа.
+        # скачивание и распознавание (vision/файл — десятки секунд) должны идти
+        # уже внутри хода, иначе фоновая инициатива может встать перед репликой
+        # и быть засчитана как ответ на неё. Активность — тоже при получении
+        # (как у текста), ход держится до конца доставки ответа.
         bot.on_user_message(chat_id)
         async with bot.user_turn_async(chat_id):
             # Тот же гейт, что и у текстовых сообщений: blocked_users/allowlist ЛС/
-            # rate_limit/moderation раньше не проверялись для файлов — подпись
-            # (caption) вместо текста, содержимое файла в проверку не идёт
+            # rate_limit/moderation — проверяем и для файлов, по подписи
+            # (caption), содержимое файла в проверку не идёт
             if await _gate_update(bot, update.message, user_id, is_private, caption):
                 return
 
@@ -813,8 +812,8 @@ def create_handlers(bot: BotInstance) -> dict:
 
             # Та же per-chat сериализация, что и для текстовых сообщений
             async with _chat_lock(chat_id):
-                # Сбой Bot API/сети при скачивании раньше улетал из обработчика
-                # в лог PTB — пользователь не получал ничего
+                # Без явной обработки сбой Bot API/сети при скачивании уйдёт
+                # в лог PTB, и пользователь не получит ответа
                 try:
                     file = await context.bot.get_file(document.file_id)
                     file_bytes = await file.download_as_bytearray()
@@ -867,7 +866,7 @@ def create_handlers(bot: BotInstance) -> dict:
                     await update.message.reply_text("Произошла ошибка при обработке файла.")
 
     async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """OCR/описание изображения через локальную vision-модель (gemma в Ollama)."""
+        # OCR/описание изображения: vision-провайдер роутера или локальная vision-модель.
         caption = update.message.caption or ""
 
         # Reply на сообщение бота — тоже обрабатываем
@@ -886,10 +885,10 @@ def create_handlers(bot: BotInstance) -> dict:
         user_id = str(user.id)
         chat_id = str(update.effective_chat.id)
         # Ход пользователя (app/core/turn_gate.py) — с ПОЛУЧЕНИЯ сообщения:
-        # скачивание и распознавание (vision/файл — десятки секунд) раньше шли
-        # до хода, и инициатива успевала встать перед репликой и потом
-        # засчитаться ответом на неё. Активность — тоже при получении (как у
-        # текста), ход держится до конца доставки ответа.
+        # скачивание и распознавание (vision/файл — десятки секунд) должны идти
+        # уже внутри хода, иначе фоновая инициатива может встать перед репликой
+        # и быть засчитана как ответ на неё. Активность — тоже при получении
+        # (как у текста), ход держится до конца доставки ответа.
         bot.on_user_message(chat_id)
         async with bot.user_turn_async(chat_id):
             # Тот же гейт, что и у текстовых сообщений/документов — до скачивания
@@ -898,8 +897,8 @@ def create_handlers(bot: BotInstance) -> dict:
                 return
 
             photo = update.message.photo[-1]  # самый большой из предложенных размеров
-            # Сбой Bot API/сети при скачивании раньше улетал из обработчика
-            # в лог PTB — пользователь не получал ничего
+            # Без явной обработки сбой Bot API/сети при скачивании уйдёт
+            # в лог PTB, и пользователь не получит ответа
             try:
                 file = await context.bot.get_file(photo.file_id)
                 image_bytes = bytes(await file.download_as_bytearray())
@@ -915,7 +914,7 @@ def create_handlers(bot: BotInstance) -> dict:
 
             # Та же per-chat сериализация, что и для текстовых сообщений
             async with _chat_lock(chat_id):
-                # Каскад: vision-провайдер основного роутера → локальная gemma
+                # Каскад: vision-провайдер основного роутера → локальная vision-модель
                 try:
                     ocr_text = await asyncio.to_thread(bot.describe_image, image_bytes, caption_clean)
                 except Exception as e:
@@ -973,7 +972,7 @@ def create_handlers(bot: BotInstance) -> dict:
         await update.message.reply_text("Дневник полностью очищен. Эпизоды, архив и наблюдения удалены.")
 
     async def ltm_privacy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Переключение режима приватности долгосрочной памяти."""
+        # Переключение режима приватности долгосрочной памяти.
         user_id = str(update.effective_user.id)
         arg = (context.args[0].lower().strip() if context.args else "")
 
@@ -1003,7 +1002,7 @@ def create_handlers(bot: BotInstance) -> dict:
         )
 
     async def ltm_export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Высылает пользователю файл с его долгосрочной памятью — строго в личку."""
+        # Высылает пользователю файл с его долгосрочной памятью — строго в личку.
         import os
         import shutil
         from telegram.error import Forbidden
@@ -1093,12 +1092,12 @@ def register_handlers(app: Application, bot: BotInstance):
         sender = TelegramMessageSender(bot=app.bot)
         bot.setup_learning(sender)
 
-    # Только НОВЫЕ сообщения. В PTB 20+ MessageHandler по умолчанию ловит и
+    # Только НОВЫЕ сообщения. PTB MessageHandler по умолчанию ловит и
     # edited_message/channel_post, CommandHandler — edited_message, а main.py
-    # поллит allowed_updates=Update.ALL_TYPES: правка сообщения с триггером или
-    # команды (и пост канала) приходили сюда с update.message = None и падали
-    # AttributeError в обработчиках. Правка — не новая реплика: не отвечаем
-    # повторно (так было и в PTB 13, где правки по умолчанию не доставлялись)
+    # поллит allowed_updates=Update.ALL_TYPES: без фильтра правка сообщения
+    # с триггером/командой (и пост канала) придёт сюда с update.message = None
+    # и уронит AttributeError в обработчике. Правка — не новая реплика, повторно
+    # не отвечаем.
     _NEW = filters.UpdateType.MESSAGE
 
     app.add_handler(CommandHandler("start", h["start"], filters=_NEW))
@@ -1159,7 +1158,7 @@ def register_handlers(app: Application, bot: BotInstance):
     if h.get("handle_document"):
         app.add_handler(MessageHandler(_NEW & filters.Document.ALL, h["handle_document"]))
 
-    # Photos (OCR через локальную vision-модель)
+    # Photos (OCR/описание через vision-модель)
     app.add_handler(MessageHandler(_NEW & filters.PHOTO & ~filters.COMMAND, h["handle_photo"]))
 
     return app

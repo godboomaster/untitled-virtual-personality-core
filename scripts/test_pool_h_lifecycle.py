@@ -1,5 +1,4 @@
-"""Межпроцессный жизненный цикл Chrome пула H (хвост отчёта
-docs/concurrency-issues-2026-09-23.md, «Осталось»): Chrome пула H общий для
+"""Межпроцессный жизненный цикл Chrome пула H: Chrome пула H общий для
 всех процессов бота, и перезапуск в одном процессе (закрытие → убийство по
 профилю) не должен убивать Chrome, который в это окно лениво поднял другой
 процесс — независимо от того, основные у того вызовы или только фоновые.
@@ -20,7 +19,7 @@ docs/concurrency-issues-2026-09-23.md, «Осталось»): Chrome пула H 
   6. выключение процесса бота гасит общий Chrome H только ПОСЛЕДНИМ
      пользователем (разделяемый flock <профиль>.bot-users.lock): живой сосед —
      Chrome жив; сосед упал (SIGKILL) — его регистрацию снимает ядро; без
-     учёта (нет flock) — гасим, как раньше.
+     учёта (нет flock) — Chrome гасится безусловно.
 
 Настоящий Chrome не запускается и не убивается: «Chrome» — спящий python-
 подпроцесс с --user-data-dir=<tmp-профиль> в командной строке и симлинком
@@ -162,7 +161,7 @@ def _mp_restarter(udd, log_path, seen_pid, in_window, no_flock, q):
 
 
 def _mp_lazy(udd, log_path, go, no_flock, q):
-    """Процесс X: только фоновый вызов — лениво поднимает Chrome пула H."""
+    # Процесс X: только фоновый вызов — лениво поднимает Chrome пула H.
     ba = _setup(udd, log_path, "X", no_flock)
     go.wait(10)
     try:
@@ -173,7 +172,7 @@ def _mp_lazy(udd, log_path, go, no_flock, q):
 
 
 def _mp_hold_life(udd, log_path, ready, release):
-    """Держит лок жизненного цикла пула H (будто запускает Chrome)."""
+    # Держит лок жизненного цикла пула H (будто запускает Chrome).
     ba = _setup(udd, log_path, "H")
     with ba._pool_h_lifecycle():
         ready.set()
@@ -204,7 +203,7 @@ def _mp_user(udd, log_path, ready, release, q):
 
 
 def _race(tmp: Path, name: str, no_flock: bool):
-    """Сценарий 1 → (Y-результат, X-результат, лог, pid1)."""
+    # Сценарий 1 → (Y-результат, X-результат, лог, pid1).
     udd = str(tmp / name / "profile")
     os.makedirs(udd)
     log_path = str(tmp / name / "events.log")
@@ -478,8 +477,8 @@ def main():
         check("затем выключение последнего пользователя гасит Chrome H",
               not _alive(live2) and len(_kills()) == 2)
 
-        # Без пользователей вовсе (процесс Chrome не трогал, а тот жив —
-        # осиротел после падения бота): гасим, как раньше
+        # Без пользователей вовсе (Chrome осиротел после падения бота, никто
+        # его не трогал): выключение гасит его безусловно
         live3 = _spawn_chrome(udd)
         spawned.append(live3)
         ba._shutdown_pool_h("тест")
@@ -488,7 +487,7 @@ def main():
               not _alive(live3))
 
         # ФС без flock / нет разделяемых локов (msvcrt): учёт недоступен —
-        # прежнее поведение (гасим), даже если сосед держит регистрацию
+        # Chrome гасится, даже если сосед держит регистрацию
         live4 = _spawn_chrome(udd)
         spawned.append(live4)
         ready, cmdq, q = ctx.Event(), ctx.Queue(), ctx.Queue()

@@ -1,6 +1,6 @@
 """
-Lightweight HTTP server for exporting all ChromaDB memory data.
-Runs alongside the main app on a separate port.
+Лёгкий HTTP-сервер экспорта данных памяти из ChromaDB.
+Работает в фоновом потоке основного приложения на отдельном порту.
 
 Доступ: если задан EXPORT_TOKEN — требуется ?token=... или заголовок
 "Authorization: Bearer ...". Биндинг: EXPORT_HOST (по умолчанию 127.0.0.1).
@@ -21,7 +21,7 @@ EXPORT_TOKEN = os.getenv("EXPORT_TOKEN", "")
 
 
 def _build_db_sources() -> dict:
-   # Строит маппинг динамически на основе persona-папок
+    # Источники экспорта: STM/LTM/файлы для каждого контекста из списка ниже
     contexts = ["connor", "arrodes", "verso", "assistant", "default"]
     sources = {}
     for ctx in contexts:
@@ -36,7 +36,6 @@ DB_SOURCES = _build_db_sources()
 
 
 def dump_collection(db_path: str, collection_name: str) -> dict:
-    # Dump all data from a ChromaDB collection.
     # Эмбеддер не нужен для чтения; несуществующие БД не создаём на диске.
     if not os.path.exists(db_path):
         return {"count": 0, "documents": []}
@@ -88,11 +87,9 @@ class ExportHandler(BaseHTTPRequestHandler):
             requested = params.get("db", [None])[0]
 
             if requested and requested in DB_SOURCES:
-                # Export single database
                 source = DB_SOURCES[requested]
                 data = {requested: dump_collection(source["path"], source["collection"])}
             else:
-                # Export all databases
                 data = {}
                 for key, source in DB_SOURCES.items():
                     data[key] = dump_collection(source["path"], source["collection"])
@@ -104,7 +101,6 @@ class ExportHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
         elif parsed.path == "/api/export-memory/list":
-            # List available databases
             listing = {}
             for key, source in DB_SOURCES.items():
                 if not os.path.exists(source["path"]):
@@ -139,7 +135,6 @@ class ExportHandler(BaseHTTPRequestHandler):
 
 
 def start_export_server(port: int = 8080, host: str = None):
-    # Start the export server in a background thread.
     # По умолчанию слушаем только localhost; EXPORT_HOST=0.0.0.0 открывает наружу.
     bind_host = host or os.getenv("EXPORT_HOST", "127.0.0.1")
 

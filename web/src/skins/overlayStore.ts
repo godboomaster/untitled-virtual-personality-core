@@ -11,7 +11,7 @@ const CHANGE_EVENT = 'vpc-overlays-updated';
 
 export interface PersonaOverlay {
   addedTodos: { id: number; text: string; done: boolean }[];
-  toggledTodos: number[]; // id моковых дел, чей статус flipped
+  toggledTodos: number[]; // id моковых дел с перевёрнутым статусом «сделано»
   editedTodos: Record<number, string>; // id → новый текст (моковые дела)
   deletedTodos: number[];
   addedReminders: { id: number; time: string; text: string; repeat: string; active: boolean }[];

@@ -154,8 +154,8 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
   // LTM: правки и добавленные факты (локальный state); модалка факта (id=null — добавление)
   const [edited, setEdited] = useState<Record<number, { fact: string; category: string }>>({});
   const [addedFacts, setAddedFacts] = useState<LtmFact[]>([]);
-  // raw-строки («Категория: факт»), ушедшие на бэкенд для session-added фактов —
-  // нужны чтобы правка такого факта могла заменить его и на бэкенде
+  // raw-строки («Категория: факт»), ушедшие на бэкенд для фактов, добавленных в этой
+  // сессии — нужны, чтобы правка такого факта могла заменить его и на бэкенде
   const [addedRaws, setAddedRaws] = useState<Record<number, string>>({});
   const [factModal, setFactModal] = useState<{ id: number | null } | null>(null);
   const [factText, setFactText] = useState('');
@@ -214,7 +214,7 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
       setTrimmed((t) => Math.min(fullStm.length, t + n));
       return;
     }
-    // На бэкенде — из STM и ChromaDB; чат перечитает историю через onStmChange
+    // На бэкенде — из STM и векторного хранилища; чат перечитает историю через onStmChange
     api
       .trimStm(persona.id, n)
       .then(() => {

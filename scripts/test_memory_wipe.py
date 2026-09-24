@@ -28,7 +28,7 @@ def rjson(rel, default=None):
 
 
 class _FakeMgr:
-    """Общий фейк менеджера: lock + save-запись в файл."""
+    # Общий фейк менеджера: lock + save-запись в файл.
     def __init__(self):
         self._lock = threading.RLock()
 
@@ -65,9 +65,9 @@ class FakeLearningMgr(_FakeMgr):
         wjson("learning/learning.json", self._sessions)
 
     def clear_chat(self, ck):
-        """Публичная точка очистки обучения чата (learning_manager.clear_chat):
-        сессии + ВСЕ ожидающие setup чата + реестр вопросов — одной
-        транзакцией. memory_wipe больше не лезет в приватные поля менеджера."""
+        """Публичная точка очистки обучения чата: сессии, ожидающие setup и
+        реестр вопросов — одной транзакцией под локом, без доступа к
+        приватным полям менеджера извне."""
         with self._lock:
             self._sessions = [s for s in self._sessions
                               if str(s.get("chat_id")) != str(ck)]
@@ -77,9 +77,9 @@ class FakeLearningMgr(_FakeMgr):
 
 
 def make_dossier():
-    """Настоящий ChatDossier (без роутера — LLM не зовётся): фейк с dict в
-    _profiles маскировал баг — у живого менеджера там ChatProfile, и бэкап
-    досье молча выходил пустым, а restore клал dict вместо профиля."""
+    """Настоящий ChatDossier (без роутера — LLM не зовётся): у живого
+    менеджера _profiles хранит ChatProfile, а не dict — фейк с dict скрыл бы
+    пустой бэкап досье и restore, кладущий dict вместо профиля."""
     d = ChatDossier(context=CTX)
     d.record_event(CK, "утреннее приветствие")
     d.add_personality_note(CK, "любит кофе")

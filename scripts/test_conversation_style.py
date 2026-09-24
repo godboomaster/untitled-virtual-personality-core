@@ -191,8 +191,8 @@ def main():
     verso = cs.ConversationStyleConfig(PersonaLayer("verso").persona_data)
     check("verso.yaml: question_frequency=natural (характер)",
           verso.frequency == "natural" and not verso.limited)
-    # Освобождение Арродеса: финальный вопрос — обязательная часть его
-    # структуры ответа (принцип взаимности), правило бы ломало персонажа
+    # Исключение для arrodes*: финальный вопрос — обязательная часть
+    # структуры ответа персоны (принцип взаимности), правило ломало бы её
     for name in ("arrodes", "arrodes_master"):
         cfg = cs.ConversationStyleConfig(PersonaLayer(name).persona_data)
         check(f"{name}.yaml: natural (обязательный финальный вопрос)",

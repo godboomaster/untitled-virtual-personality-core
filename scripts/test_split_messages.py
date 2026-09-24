@@ -1,9 +1,9 @@
 """Smoke-тест расщепления ответа на отдельные сообщения (settings.split_messages).
 
-Проверяет: BotInstance.split_reply_parts (граница — пустая строка, пример из
-задачи), _save_assistant_reply (STM пишется по частям, хвост уходит в pending,
+Проверяет: BotInstance.split_reply_parts (абзацы разделяются пустой строкой),
+_save_assistant_reply (STM пишется по частям, хвост уходит в pending,
 возвращается первая часть) и _rewrite_image_stm веб-сервера (переписывает
-весь хвост assistant-частей, а не фиксированные 2 сообщения).
+весь хвост assistant-частей).
 
 Запуск: python -m scripts.test_split_messages
 """
@@ -55,7 +55,7 @@ def main():
         "сам не дал мне понять.\n\n"
         "Монетка в кармане. Я жду, пока ты решишь, что делать дальше.")
 
-    # ── 1. Включено: пример из задачи → три абзаца тремя сообщениями ──
+    # ── 1. Включено: несколько абзацев → три сообщения ──
     bot = make_bot(split=True)
     parts = bot.split_reply_parts(example)
     check("пример из задачи → 3 части", len(parts) == 3)
@@ -82,7 +82,7 @@ def main():
     check("pending-хвост = части 2–3", bot.pop_pending_split_messages("c1") == parts[1:])
     check("pending очищается после pop", bot.pop_pending_split_messages("c1") == [])
 
-    # ── 5. Выключено — прежнее поведение одним сообщением ──
+    # ── 5. Выключено — ответ одним сообщением, без изменений ──
     first_off = bot_off._save_assistant_reply(example, "u1", "c1")
     check("выключено: ответ без изменений", first_off == example)
     check("выключено: STM одним сообщением",

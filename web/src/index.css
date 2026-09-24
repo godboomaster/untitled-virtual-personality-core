@@ -20,7 +20,7 @@
   --accent-soft: rgba(0, 0, 0, 0.08);
   --bg-hover: rgba(0, 0, 0, 0.05);
   --border-accent: var(--accent);
-  /* Заголовки — чернила (как --accent-dark в старой теме) */
+  /* Заголовки — чернила */
   --accent-dark: #121212;
   --danger: #707070;
   --success: var(--accent);
@@ -606,7 +606,7 @@ html[data-vpc-shell] .detroit-bg {
   color: var(--text);
 }
 
-/* Primary — заливка чернилами, как в echo7 */
+/* Primary — заливка чернилами */
 .btn--primary {
   background: var(--text);
   border-color: var(--text);
@@ -986,7 +986,7 @@ html[data-vpc-shell] .detroit-bg {
   color: var(--text);
 }
 
-/* Markdown-форматирование ответов бота (как в Telegram) */
+/* Markdown-форматирование ответов бота */
 .msg-code {
   font-family: var(--font-mono);
   font-size: 0.92em;
@@ -2579,7 +2579,7 @@ input[type='radio'] {
   }
 }
 
-/* Терминальный блок «журнал системы» — всегда тёмный, как в echo7 */
+/* Терминальный блок «журнал системы» — всегда тёмный */
 .home-term {
   position: relative;
   border: 1px solid var(--term-line);
@@ -2674,7 +2674,7 @@ input[type='radio'] {
 /* ===== Комната — личное пространство персоны ===== */
 
 /* Сцена + телеметрия — единый блок: сцена слева, колонка состояния
-   справа во всю высоту, разделитель — 1px линия (как на макете) */
+   справа во всю высоту, разделитель — 1px линия */
 .room-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 250px;
@@ -3312,7 +3312,7 @@ input[type='radio'] {
   border-right: 4px solid var(--text-dim);
 }
 
-/* Спящий кот Мориарти на кровати */
+/* Спящий кот на кровати */
 .room-cat {
   position: absolute;
   bottom: calc(30% + 24px);
@@ -3463,7 +3463,7 @@ input[type='radio'] {
   flex-wrap: wrap;
 }
 
-/* Мольберт с холстом (Версо) */
+/* Мольберт с холстом */
 .room-easel {
   position: absolute;
   bottom: 30%;
@@ -3512,7 +3512,7 @@ input[type='radio'] {
   background: repeating-linear-gradient(-45deg, transparent 0 6px, var(--border-soft) 6px 7px);
 }
 
-/* Прислонённые рамы/холсты (Версо) */
+/* Прислонённые рамы/холсты */
 .room-frames {
   position: absolute;
   bottom: 30%;
@@ -3547,7 +3547,7 @@ input[type='radio'] {
   transform-origin: bottom right;
 }
 
-/* Банки с кистями на столе (Версо) */
+/* Банки с кистями на столе */
 .room-brushjars {
   position: absolute;
   bottom: calc(30% + 7px);
@@ -3573,7 +3573,7 @@ input[type='radio'] {
   background: repeating-linear-gradient(90deg, var(--text-dim) 0 2px, transparent 2px 5px);
 }
 
-/* Большое зеркало на стене (Арродес) */
+/* Большое зеркало на стене */
 .room-mirror {
   position: absolute;
   top: 40px;
@@ -3601,7 +3601,7 @@ input[type='radio'] {
   background: var(--border);
 }
 
-/* Второе зеркало поменьше (мастер) */
+/* Второе зеркало поменьше */
 .room-mirror--small {
   left: auto;
   right: 172px;
@@ -3610,7 +3610,7 @@ input[type='radio'] {
   height: 84px;
 }
 
-/* Свечи на столе (Арродес) */
+/* Свечи на столе */
 .room-candles {
   position: absolute;
   bottom: calc(30% + 7px);
@@ -3642,7 +3642,7 @@ input[type='radio'] {
   animation: pulse 1.8s ease-in-out infinite;
 }
 
-/* Стопки свитков и книг на полу (Арродес) */
+/* Стопки свитков и книг на полу */
 .room-scrolls {
   position: absolute;
   bottom: 30%;
@@ -3664,7 +3664,7 @@ input[type='radio'] {
   background: repeating-linear-gradient(0deg, var(--text-muted) 0 5px, var(--bg-panel) 5px 8px);
 }
 
-/* Серверная стойка с LED-точками (Ассистент) */
+/* Серверная стойка с LED-точками */
 .room-serverrack {
   position: absolute;
   bottom: 30%;
@@ -3699,7 +3699,7 @@ input[type='radio'] {
   animation: pulse 1.6s ease-in-out infinite;
 }
 
-/* Терминал мастера на столе (Арродес-мастер) */
+/* Терминал на столе */
 .room-terminal {
   position: absolute;
   bottom: calc(30% + 7px);
@@ -3732,7 +3732,7 @@ input[type='radio'] {
   background: repeating-linear-gradient(0deg, var(--border-soft) 0 1px, transparent 1px 4px);
 }
 
-/* Ворона на подоконнике (Версо) */
+/* Ворона на подоконнике */
 .room-crow {
   position: absolute;
   top: 126px;
@@ -3967,7 +3967,6 @@ input[type='radio'] {
   align-self: flex-start;
 }
 
-/* Превью фона: внутри стейджей размещения (общий слой картинки) */
 /* Стейдж отдельного редактора размещения предмета */
 .place-body {
   flex: 1;
@@ -4229,14 +4228,12 @@ input[type='radio'] {
   gap: 8px;
 }
 
-/* Строка эталонного референса */
 /* Пользовательский фон в сцене комнаты */
 .room-bg-img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  /* cover: заполнение без искажения пропорций (лишнее обрезается) */
   object-fit: cover;
 }
 
@@ -4276,8 +4273,6 @@ input[type='radio'] {
   width: 120px;
   display: block;
 }
-
-/* ===== Кнопка закрытия модалок (досье, формы) ===== */
 
 /* Калибровка меток арта (ступни спрайта / точки пола фона) */
 .cal-stage {
@@ -4333,6 +4328,7 @@ input[type='radio'] {
   pointer-events: none;
 }
 
+/* Кнопка закрытия модалок (досье, формы) */
 .pxe-close {
   margin-left: auto;
   width: 24px;
@@ -4356,7 +4352,7 @@ input[type='radio'] {
 /* ===== Модалка «Досье персоны» ===== */
 
 /* Досье встроено в чат: занимает область переписки между списком персон
-   и контекстной панелью (см. window.png), растягивается на всю высоту */
+   и контекстной панелью, растягивается на всю высоту */
 .dossier-panel {
   flex: 1;
   min-width: 0;
@@ -4412,7 +4408,7 @@ input[type='radio'] {
   flex-wrap: wrap;
 }
 
-/* Вкладок стало много — уплотняем, чтобы помещались в одну строку */
+/* Вкладок много — уплотняем, чтобы помещались в одну строку */
 .dossier-tabs .tab {
   padding: 9px 10px;
   font-size: 11px;
@@ -5150,7 +5146,7 @@ textarea.pcreate-yaml--edit:focus {
   font-size: 11px;
 }
 
-/* ===== Доработки досье: STM-трим, слайдеры, история курсов ===== */
+/* ===== Досье персоны: прочие блоки (STM, инициатива, история курсов) ===== */
 
 /* Строка «удалить последние N сообщений» во вкладке STM */
 .mem-trim {
@@ -5785,8 +5781,8 @@ html[data-theme='dark'] .input::-webkit-calendar-picker-indicator {
   outline-offset: 3px;
 }
 
-/* Редактор внутри xl-модалки: её тело — flex c overflow:hidden (правило
-   для YAML-редактора), поэтому сетке редактора отдаём всю ширину явно */
+/* Тело xl-модалки — flex c overflow:hidden (как у YAML-редактора),
+   поэтому сетке редактора нужно явно отдать всю ширину */
 .pcreate-panel--xl .pcreate-body .editor-layout {
   flex: 1;
   width: 100%;
@@ -6300,8 +6296,8 @@ html[data-theme='dark'] .input::-webkit-calendar-picker-indicator {
   }
 }
 
-/* Лайтбокс картинок: клик по контентному изображению — крупный просмотр
-   (ImageLightbox.tsx). Подложка затемняет, картинка вписана в 92% окна */
+/* Лайтбокс: клик по картинке в сообщении открывает крупный просмотр,
+   подложка затемняет фон, картинка вписана в 92% окна */
 .image-lightbox {
   position: fixed;
   inset: 0;

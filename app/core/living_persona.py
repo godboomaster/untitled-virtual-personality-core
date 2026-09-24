@@ -1,13 +1,13 @@
 """
-LivingPersona — оркестратор «живой» персоны (слои 2 и 3 плана).
+LivingPersona — оркестратор «живой» персоны.
 
 Связывает вместе:
-  PersonaContextLayer (§1)  — выжимка system_prompt + world_binding gate
-  StateEngine (§3)          — тики состояния + offline_log + скоринг инициативы
-  WorldEngine (§4, §5)      — NPC/места/арки + офлайн-события + внешние стимулы
-  OfflineSummarizer (§6)    — дневные эпизоды, приветствие-дневник, сценарист
+  PersonaContextLayer — выжимка system_prompt + world_binding gate
+  StateEngine          — тики состояния + offline_log + скоринг инициативы
+  WorldEngine          — NPC/места/арки + офлайн-события + внешние стимулы
+  OfflineSummarizer    — дневные эпизоды, приветствие-дневник, сценарист
 
-Единый фоновый цикл (§9 фазы 1-5):
+Единый фоновый цикл:
   каждые tick_interval_minutes:
     - тик состояния для каждого известного чата
     - офлайн-событие мира по расписанию events_per_day
@@ -17,7 +17,7 @@ LivingPersona — оркестратор «живой» персоны (слои
   раз в 1-2 недели: сценарист продвигает storylines (основная LLM)
 
 Всё, что видит пользователь, генерирует основная LLM с полным system_prompt;
-здесь только структурные операции и черновики (§1.2).
+здесь только структурные операции и черновики.
 """
 
 import asyncio
@@ -44,10 +44,10 @@ from app.core.language import detect_dialogue_language
 
 logger = logging.getLogger(__name__)
 
-# §3.2: «для неактивных пользователей — реже». Чат с молчанием дольше
+# Для неактивных пользователей — реже: чат с молчанием дольше
 # INACTIVE_SILENCE_HOURS тикается в INACTIVE_TICK_FACTOR раз реже
 # (база 20 мин → ~2 ч): state/world почти не меняются без собеседника,
-# а Gemma-вызовы на каждый мёртвый чат каждые 20 минут — чистая трата.
+# а вызовы модели на каждый мёртвый чат каждые 20 минут — чистая трата.
 INACTIVE_SILENCE_HOURS = 72
 INACTIVE_TICK_FACTOR = 6
 
@@ -63,12 +63,12 @@ HARVEST_MIN_MESSAGES = 10
 # (app/core/memory.py MAX_CACHED_CHATS) — по смыслу это те же живые чаты.
 MAX_CHAT_KEYS = 200
 
-# Офлайн-событие мира не генерируется посреди активного диалога (§4.3):
+# Офлайн-событие мира не генерируется посреди активного диалога:
 # «за последние часы случилось» не должно падать в разгар переписки —
 # событие остаётся дью и сработает на следующем тике, когда чат затихнет
 EVENT_DEFER_QUIET_MINUTES = 30
 
-# Топическая зацепка факта жизни к реплике пользователя (§7): совпадение
+# Топическая зацепка факта жизни к реплике пользователя: совпадение
 # содержательных слов — тот же подход, что _extract_topics в proactive.
 _TOPIC_STOP = {
     "этот", "этого", "этой", "этом", "твой", "твоя", "твое", "твои",
@@ -88,16 +88,15 @@ def _topic_words(text: str) -> set:
 
 def _topics_overlap(a: str, b: str) -> bool:
     """Есть ли общие содержательные слова (≥4 букв): точное совпадение или
-    по префиксу — русская морфология («детройт»/«детройте») ломает exact."""
+    по префиксу — русская морфология («парк»/«парке») ломает exact."""
     wa, wb = _topic_words(a), _topic_words(b)
     if wa & wb:
         return True
     return any(x.startswith(y) or y.startswith(x) for x in wa for y in wb)
 
 
-# Урожай диалога: ОДИН вызов вместо трёх (NPC/места + mood + моменты/темы/
-# позиции). Раньше мир, состояние и отношения разбирали одни и те же реплики
-# независимо — на веб-чате это три side-вызова на каждый разбор.
+# Промпт урожая диалога: за один проход NPC/места, mood и моменты/темы/
+# позиции — на веб-чате раздельный разбор стоил бы три side-вызова подряд.
 _HARVEST_PROMPT = """Проанализируй фрагмент диалога между персонажем ({persona_name}) и пользователем. Один проход — несколько выводов сразу. Верни СТРОГО JSON без markdown:
 
 {{
@@ -184,7 +183,7 @@ class LivingPersonaConfig:
         stimuli_cfg = (features or {}).get("external_stimuli") or {}
         if isinstance(stimuli_cfg, bool):
             stimuli_cfg = {"enabled": stimuli_cfg}
-        # §1.3: явный enabled в YAML — ручной override; без него дефолт
+        # Явный enabled в YAML — ручной override; без него дефолт
         # выводится из world_binding.type (true только для real_world) —
         # см. LivingPersona.external_stimuli_allowed()
         self.stimuli_flag_explicit = "enabled" in stimuli_cfg
@@ -201,7 +200,7 @@ class LivingPersonaConfig:
 
 def _manual_world_binding(persona) -> Optional[Dict]:
     """world_binding из YAML персоны (top-level ключ): {type, location,
-    universe_note}. None — не задан, работает LLM-экстракт как раньше."""
+    universe_note}. None — не задан, вместо этого работает LLM-экстракт."""
     try:
         mb = (getattr(persona, "persona_data", None) or {}).get("world_binding")
         if isinstance(mb, dict) and str(mb.get("type") or "").strip():
@@ -212,7 +211,7 @@ def _manual_world_binding(persona) -> Optional[Dict]:
 
 
 class LivingPersona:
-    """Фасад над всеми подсистемами живой персоны + фоновый цикл."""
+    # Фасад над всеми подсистемами живой персоны + фоновый цикл.
 
     def __init__(self, context: str, persona, router, config: LivingPersonaConfig,
                  self_memory=None, intellect=None, inventory_manager=None):
@@ -221,9 +220,9 @@ class LivingPersona:
         self.router = router
         self.config = config
         self.self_memory = self_memory
-        # Уровень интеллекта (план уровней): primitive сужает слои —
-        # state без вербализации-рефлексии, world без NPC/арок (события =
-        # физические действия, в т.ч. с инвентарём §3.4), эпизоды-вспышки
+        # Уровень интеллекта: primitive сужает слои — state без
+        # вербализации-рефлексии, world без NPC/арок (события — физические
+        # действия, в т.ч. с инвентарём), эпизоды-вспышки
         self.intellect = intellect
         self.primitive = bool(intellect is not None and intellect.is_primitive)
         # Инвентарь для офлайн-действий примитивных существ (add/use/remove)
@@ -260,13 +259,13 @@ class LivingPersona:
         self.summarizer = OfflineSummarizer(
             context, persona.persona_name, router,
             primitive=self.primitive)
-        # Память отношений (фаза 2.1): счётчики + общие моменты/темы;
+        # Память отношений: счётчики + общие моменты/темы;
         # у primitive нет вербальной истории отношений — блок не строится
         self.relationship = RelationshipMemory(context, primitive=self.primitive)
 
-        # §3.3 плана уровней: если уровень intelligence явно выключает слой
-        # мира (override world_lore_enabled: false у primitive) — гасим его
-        # целиком, pipeline-проверка, а не только конфиг-флаг
+        # Если уровень интеллекта явно выключает слой мира (override
+        # world_lore_enabled: false у primitive) — гасим его целиком через
+        # pipeline-проверку, а не только конфиг-флаг
         if intellect is not None and intellect.active and config.world_enabled:
             if not (intellect.world_lore_full(True) or intellect.world_lore_partial(True)):
                 config.world_enabled = False
@@ -293,7 +292,7 @@ class LivingPersona:
         self._task: Optional[asyncio.Task] = None
         self._seeded_this_run = False
 
-        # Счётчики для наблюдаемости (§9: раскатка фаз по метрикам).
+        # Счётчики для наблюдаемости.
         # In-memory: обнуляются при рестарте процесса; снапшот — get_state_for_ui,
         # дневная история — metrics_log.jsonl (_persist_metrics_daily)
         self.metrics = {
@@ -306,7 +305,7 @@ class LivingPersona:
     # ── Выжимка персоны ──────────────────────────────────
 
     def persona_context(self) -> dict:
-        """Актуальная выжимка (переизвлекается при правке system_prompt)."""
+        # Актуальная выжимка (переизвлекается при правке system_prompt).
         with self._pc_lock:
             if self._persona_context is None:
                 self._persona_context = self.persona_context_layer.get(
@@ -318,10 +317,10 @@ class LivingPersona:
             return self._persona_context
 
     def external_stimuli_allowed(self) -> bool:
-        """Жёсткий gate §10: реальный интернет только для real_world-персон.
+        """Жёсткий gate: реальный интернет только для real_world-персон.
         Флаг: явный `external_stimuli.enabled` из YAML — ручной override
         (в т.ч. выключение для real_world); если не задан — дефолт по
-        world_binding.type (§1.3). Для fictional/unspecified — False всегда."""
+        world_binding.type. Для fictional/unspecified — False всегда."""
         from app.core.persona_context import default_external_stimuli_flag
         pc = self.persona_context()
         flag = (self.config.external_stimuli_flag
@@ -333,13 +332,10 @@ class LivingPersona:
     # ── Публичный API для интеграций ─────────────────────
 
     def on_user_message(self, chat_id: str, messages: List[dict]) -> None:
-        """Вызывается из process_message ПОСЛЕ добавления сообщения в STM.
-        Раньше здесь была вторая ветка приветствия-дневника — мёртвая:
-        бот-инстанс собирает дневник возвращения ДО входа сообщения в STM
-        (_build_living_context), а пост-фактум проверка «≥12 ч absence» уже
-        не проходит. Живое: язык пользователя (дневник офлайн-жизни пишется
-        на нём), счётчики отношений и планировщик общего урожая диалога —
-        всё дешёвое, LLM-вызов уходит в фоновый поток."""
+        """Вызывается из process_message после добавления сообщения в STM:
+        обновляет язык пользователя (дневник офлайн-жизни пишется на нём),
+        счётчики отношений и планировщик общего урожая диалога — всё дешёвое,
+        LLM-вызов уходит в фоновый поток."""
         try:
             user_lang = detect_dialogue_language("", messages)
             if user_lang:
@@ -452,7 +448,7 @@ class LivingPersona:
             logger.debug(f"[Living] Урожай: отношения не обновлены: {e}")
 
     def _apply_inventory_action(self, action: Optional[dict]):
-        """Исполняет inventory_action из офлайн-события примитива (§3.4):
+        """Исполняет inventory_action из офлайн-события примитива:
         существо достало/использовало/потеряло предмет — физическое
         изменение инвентаря, без LLM."""
         if not action or self.inventory_manager is None:
@@ -470,7 +466,7 @@ class LivingPersona:
             elif kind == "use":
                 found = self.inventory_manager.has_item(item) and item
                 if not found:
-                    # нестрогий поиск по подстроке — Gemma склоняет слова
+                    # нестрогий поиск по подстроке — модель склоняет слова
                     for i in self.inventory_manager.get_items():
                         if item.lower() in i.name.lower() or i.name.lower() in item.lower():
                             found = i.name
@@ -485,7 +481,7 @@ class LivingPersona:
             logger.debug(f"[Living] Инвентарное действие не удалось: {e}")
 
     def get_living_context(self, chat_id: str, topic_text: str = "") -> Optional[str]:
-        """Блок контекста для prepare_messages (§7): текущее состояние +
+        """Блок контекста для prepare_messages: текущее состояние +
         последний офлайн-факт. Компактный — основной промпт и так большой.
 
         topic_text — текущая реплика пользователя: последний факт жизни
@@ -504,7 +500,7 @@ class LivingPersona:
                     "This happened to you recently outside the dialogue. "
                     "You may reference it naturally if relevant — never as a report."
                 )
-        # Ближайшие планы персоны (фаза B): у персоны есть будущее — можно
+        # Ближайшие планы персоны: у персоны есть будущее — можно
         # упомянуть заранее (anticipation), а не только «что было»
         if self.config.world_enabled and not self.primitive:
             try:
@@ -526,7 +522,7 @@ class LivingPersona:
                         "as a report.")
             except Exception:
                 pass
-        # Отношения с пользователем (фаза 2.1): стадия + общие темы/моменты
+        # Отношения с пользователем: стадия + общие темы/моменты
         try:
             rel = self.relationship.get_context_block(chat_id)
             if rel:
@@ -536,8 +532,8 @@ class LivingPersona:
         return "\n\n".join(p for p in parts if p) or None
 
     def get_state_for_ui(self, chat_id: str) -> dict:
-        """Снимок для вкладок комната/настроение (ui_room_mood_sync, §7).
-        metrics — операционные счётчики движков (наблюдаемость, §9)."""
+        """Снимок для вкладок комната/настроение (ui_room_mood_sync).
+        metrics — операционные счётчики движков, для наблюдаемости."""
         snapshot = {
             "enabled": self.config.state_enabled,
             "ui_sync": self.config.ui_room_mood_sync,
@@ -557,7 +553,7 @@ class LivingPersona:
             }
             snapshot["last_events"] = self.state_engine.unconsumed(chat_id, limit=5)
             # Лента комнаты: недавние события независимо от consumed — иначе
-            # после дневника/инициативы лента молча падала в моки
+            # после дневника/инициативы лента молча падала бы в моки
             snapshot["recent_events"] = self.state_engine.recent_entries(
                 chat_id, limit=8)
         help_stats = {}
@@ -584,7 +580,7 @@ class LivingPersona:
     # ── Фоновый цикл ─────────────────────────────────────
 
     def _persist_metrics_daily(self):
-        """Снапшот счётчиков движков в metrics_log.jsonl раз в день (§9):
+        """Снапшот счётчиков движков в metrics_log.jsonl раз в день:
         in-memory метрики обнуляются рестартом, а вопрос «работает ли жизнь
         и не спамит ли локальную модель» должен отвечаться задним числом."""
         # Граница суток — по времени пользователя (TIMEZONE), не по поясу машины
@@ -639,8 +635,8 @@ class LivingPersona:
                     self.world_engine.seed_from_system_prompt,
                     self.persona.system_prompt, self.router)
                 self._seeded_this_run = True
-            # Мир мог быть засеян раньше БЕЗ сюжетов (кейс connor) —
-            # одноразовый бэкфилл, чтобы сценаристу было что двигать
+            # Мир мог быть засеян без сюжетов — одноразовый бэкфилл,
+            # чтобы сценаристу было что двигать
             if self.config.world_enabled and not self.primitive:
                 await asyncio.to_thread(
                     self.world_engine.ensure_storylines,
@@ -677,7 +673,7 @@ class LivingPersona:
         return [c for c in chats if c]
 
     def _chat_throttled(self, chat_id: str) -> bool:
-        """True — чат неактивен давно, тик прореживаем (§3.2).
+        """True — чат неактивен давно, тик прореживаем.
         Чаты без метки активности (свежие/неизвестные) не прореживаются."""
         if not self.get_last_message_time:
             return False
@@ -701,8 +697,8 @@ class LivingPersona:
         signals: List[tuple] = []
         # Присутствие — по чатам, а не «по персоне целиком»: чат с открытой
         # веб-вкладкой пропускается ниже в цикле (вместе с его суммаризацией
-        # и скорингом инициативы), остальные чаты той же персоны и все её
-        # Telegram-чаты тикают как обычно. any_active — только для двух
+        # и скорингом инициативы), остальные чаты той же персоны, в т.ч.
+        # вне веба, тикают как обычно. any_active — только для двух
         # операций уровня персоны, которые по чатам не делятся (внешние
         # стимулы мира и сценарист): их нельзя выполнить «для одного чата»,
         # и это тяжёлые вызовы модели — при живом пользователе ждём.
@@ -713,7 +709,7 @@ class LivingPersona:
             return signals
         self._persist_metrics_daily()
 
-        # Внешние стимулы: 1 раз/1-3 дня, жёсткий gate по world_binding (§5)
+        # Внешние стимулы: 1 раз/1-3 дня, жёсткий gate по world_binding
         fetch_stimulus = False
         if (not persona_busy and self.config.world_enabled
                 and self.world_engine.should_fetch_stimuli()
@@ -737,7 +733,7 @@ class LivingPersona:
             except Exception as e:
                 logger.error(f"[Living] Тик {chat_id} не удался: {e}")
 
-        # Дневная суммаризация по чату с накопленными записями (§6)
+        # Дневная суммаризация по чату с накопленными записями
         try:
             for chat_id in active_chats:
                 entries = self.state_engine.unconsumed(chat_id, limit=40)
@@ -752,8 +748,8 @@ class LivingPersona:
         except Exception as e:
             logger.error(f"[Living] Суммаризация не удалась: {e}")
 
-        # Сценарист: раз в 1-2 недели (§6). Метрика — только реальные прогоны
-        # (продвинул хотя бы одну линию), иначе счётчик врал о пустых запусках
+        # Сценарист: раз в 1-2 недели. Метрика — только реальные прогоны
+        # (продвинул хотя бы одну линию), иначе счётчик врал бы о пустых запусках
         try:
             if (not persona_busy and self.config.world_enabled
                     and self.summarizer.should_run_screenwriter(
@@ -771,7 +767,7 @@ class LivingPersona:
         """Тик одного чата. Возвращает (chat_id, score, reason), если скоринг
         инициативы превысил порог — сигнал обработает _loop() на event loop."""
         # Предметы инвентаря: primitive передаёт их как «окружение» в тик
-        # состояния (§3.4: pastime в терминах действий с предметами), для
+        # состояния (времяпровождение в терминах действий с предметами), для
         # остальных — источник объектов офлайн-событий
         inventory_items = []
         if self.inventory_manager is not None:
@@ -780,7 +776,7 @@ class LivingPersona:
             except Exception:
                 inventory_items = []
 
-        # Известные места мира — мягкая валидация location в тике (§4.1):
+        # Известные места мира — мягкая валидация location в тике:
         # модель не должна телепортировать персону в выдуманные места
         known_places = None
         if self.config.world_enabled and not self.primitive:
@@ -790,8 +786,8 @@ class LivingPersona:
             except Exception:
                 known_places = None
 
-        # 1. Тик состояния (§3.3). Если подписан proactive — скоринг
-        # инициативы (§3.4) идёт тем же Gemma-вызовом (один вызов вместо двух).
+        # 1. Тик состояния. Если подписан proactive — скоринг
+        # инициативы идёт тем же вызовом модели (один вместо двух).
         # Дешёвые гейты (окно часов, дневной лимит, молчание) режут скоринг
         # ДО вызова модели — ночью вне окна score никому не нужен
         if self.primitive:
@@ -821,7 +817,7 @@ class LivingPersona:
             if self.get_last_initiative_time:
                 last_init = self.get_last_initiative_time(chat_id) or 0
                 since_init_h = max(0.0, (time.time() - last_init) / 3600)
-            # §3.4: скоринг учитывает существующие proactive-настройки персоны
+            # Скоринг учитывает существующие proactive-настройки персоны
             proactive_cfg: dict = {}
             try:
                 raw_cfg = (((self.persona.persona_data or {}).get("features") or {})
@@ -842,12 +838,12 @@ class LivingPersona:
                 known_places=known_places)
         self.metrics["ticks_total"] += 1
 
-        # 2. Офлайн-событие мира по расписанию (§4.3); для primitive это
-        # физическое действие, в т.ч. с инвентарём (§3.4). Посреди активного
-        # диалога не генерируем: событие остаётся дью и сработает на следующем
-        # тике, когда чат затихнет (иначе «случилось за последние часы»
-        # падает в разгар непрерывной переписки — временной парадокс).
-        # Просроченный план (фаза B) — тоже повод для события: это его исход.
+        # 2. Офлайн-событие мира по расписанию; для primitive это физическое
+        # действие, в т.ч. с инвентарём. Посреди активного диалога не
+        # генерируем: событие остаётся дью и сработает на следующем тике,
+        # когда чат затихнет (иначе «случилось за последние часы» падает
+        # в разгар непрерывной переписки — временной парадокс).
+        # Просроченный план — тоже повод для события: это его исход.
         due_plan = None
         if self.config.world_enabled and not self.primitive:
             try:
@@ -865,7 +861,7 @@ class LivingPersona:
             if last_msg and (time.time() - last_msg) < EVENT_DEFER_QUIET_MINUTES * 60:
                 event_due = False
         if event_due:
-            # §5: на генерацию события подтягивается 1 неиспользованный стимул
+            # На генерацию события подтягивается 1 неиспользованный стимул
             stimulus_obj = self.world_engine.pop_unused_stimulus() \
                 if self.external_stimuli_allowed() else None
             stimulus_text = None
@@ -901,8 +897,8 @@ class LivingPersona:
             self.world_engine.fetch_external_stimulus(pc)
 
         # 4. Скоринг инициативы уже посчитан в шаге 1 — порог → сигнал.
-        # Последний скор держим в метриках: наблюдаемость порога (§9) —
-        # раньше он нигде не был виден, включая /state
+        # Последний скор держим в метриках — иначе порог инициативы
+        # нигде не виден, включая /state
         if score is not None:
             try:
                 self.metrics["last_initiative_score"] = round(float(score), 2)

@@ -1,4 +1,4 @@
-"""Pydantic-схемы запросов и ответов API."""
+# Pydantic-схемы запросов и ответов API.
 
 from typing import Optional
 
@@ -42,13 +42,12 @@ class PresenceRequest(BaseModel):
     # Вкладка веб-чата видима и в фокусе — гейт фоновой активности бота
     active: bool
     # Чей именно чат открыт: гейт ключуется парой (персона, чат), иначе одна
-    # вкладка морозила фон всех персон и всех чатов, включая Telegram-чаты
+    # вкладка морозила бы фон всех персон и всех чатов, включая Telegram
     # (см. app/core/presence.py). persona валидируется как id персоны —
     # строка уходит в ключ контекста api_{persona}.
-    # Optional — старый фронт мог слать запрос вовсе без persona (до того,
-    # как гейт стали ключевать парой персона+чат); раньше это было 422 без
-    # объяснения на стороне фронта. Без persona запрос просто принимается
-    # (200), отметка не ставится — см. app/api/server.py: presence.
+    # Optional — старый фронт может слать запрос без persona: тогда запрос
+    # просто принимается (200), но отметка присутствия не ставится
+    # (см. app/api/server.py: presence).
     persona: Optional[PersonaId] = None
     chat_id: str = "web_user"
 
@@ -129,7 +128,7 @@ class ReminderAddRequest(BaseModel):
 
 
 class CalendarEntryCreate(BaseModel):
-    """Новая запись общего календаря."""
+    # Новая запись общего календаря.
     title: str
     date: str  # YYYY-MM-DD
     time: Optional[str] = None  # HH:MM
@@ -140,7 +139,7 @@ class CalendarEntryCreate(BaseModel):
 
 
 class CalendarEntryUpdate(BaseModel):
-    """Патч записи календаря (все поля опциональны)."""
+    # Патч записи календаря (все поля опциональны).
     title: Optional[str] = None
     date: Optional[str] = None
     time: Optional[str] = None
@@ -176,8 +175,8 @@ class ActiveProviderRequest(BaseModel):
 
 
 class WebchatRequest(BaseModel):
-    sites: list[str] | None = None  # ["qwen", "deepseek"] в порядке перебора; [] — выкл
-    site: str | None = None  # legacy: один сайт (deepseek|qwen|claude|zai|chatgpt); ""/off — выкл
+    sites: list[str] | None = None  # список сайтов веб-чата в порядке перебора; [] — выкл
+    site: str | None = None  # legacy: один сайт веб-чата; ""/off — выкл
 
 
 class LocalBackendRequest(BaseModel):
@@ -189,14 +188,14 @@ class PersonaLlmConfig(BaseModel):
     primary: Optional[str] = None   # None → глобальный активный провайдер
     fallback: Optional[list[str]] = None  # приоритет цепочки после основного
     models: Optional[dict[str, str]] = None  # свои модели по провайдерам (пустая строка — снять)
-    # Лимиты веб-чатов: {сайт: {"enabled": bool, "per_hour": int}} —
-    # enabled:false — лимит снят. Без этого поля pydantic молча отбрасывал
-    # webchat_limits из запроса, и отключение лимита в UI не сохранялось
+    # Лимиты веб-чатов: {сайт: {"enabled": bool, "per_hour": int}}.
+    # Поле должно быть объявлено явно: иначе pydantic молча отбрасывает
+    # webchat_limits из запроса, и отключение лимита в UI не сохраняется.
     webchat_limits: Optional[dict[str, dict]] = None
 
 
 class InitiativeUpdate(BaseModel):
-    """Патч параметров проактивности (все поля опциональны)."""
+    # Патч параметров проактивности (все поля опциональны).
     enabled: Optional[bool] = None
     silence_threshold_minutes: Optional[int] = None
     check_interval_minutes: Optional[int] = None
@@ -214,8 +213,8 @@ class PersonaConfigUpdate(BaseModel):
 
 
 class TimezoneRequest(BaseModel):
-    """Часовой пояс пользователя (app/core/timeutil): IANA-имя зоны;
-    пустая строка — сброс на системный пояс машины."""
+    # Часовой пояс пользователя (app/core/timeutil): IANA-имя зоны;
+    # пустая строка — сброс на системный пояс машины.
     timezone: str = ""
 
 
@@ -231,7 +230,7 @@ class LocationRequest(BaseModel):
 
 
 class PersonaDraftSave(BaseModel):
-    """Сохранение черновика новой персоны (id=None → создать новый)."""
+    # Сохранение черновика новой персоны (id=None → создать новый).
     id: Optional[SafeId] = None
     name: str = ""
     form: dict = Field(default_factory=dict)  # непрозрачное состояние формы фронта

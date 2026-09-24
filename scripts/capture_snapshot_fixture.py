@@ -1,7 +1,7 @@
 """Снять живой снапшот страницы в фикстуру для eval_snapshot_scoring.py.
 
 Запуск: python -m scripts.capture_snapshot_fixture <host-часть> <имя_фикстуры>
-Пример: python -m scripts.capture_snapshot_fixture dodopizza.ru dodo_main
+Пример: python -m scripts.capture_snapshot_fixture shop.ru shop_main
 
 Страница должна быть открыта в браузере бота (CDP). После записи вручную
 заполнить "goal" и "expect" в получившемся JSON.

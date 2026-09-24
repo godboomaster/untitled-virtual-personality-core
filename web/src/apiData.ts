@@ -76,7 +76,7 @@ function ensureFetch() {
     });
 }
 
-/** Персоны с бэкенда; null — бэкенд недоступен (или ещё грузится) */
+// Персоны с бэкенда; null — бэкенд недоступен (или ещё грузится)
 export function useApiPersonas(): Persona[] | null {
   const [, force] = useReducer((x: number) => x + 1, 0);
   useEffect(() => {
@@ -89,7 +89,7 @@ export function useApiPersonas(): Persona[] | null {
   return cache;
 }
 
-/** Сбросить кеш и перечитать список (после создания/удаления/дублирования персоны) */
+// Сбросить кеш и перечитать список (после создания/удаления/дублирования персоны)
 export function refetchPersonas() {
   cache = null;
   failedAt = 0;
@@ -98,7 +98,7 @@ export function refetchPersonas() {
   listeners.forEach((l) => l());
 }
 
-/** true — бэкенд отвечает, можно ходить в API за чатом/памятью */
+// true — бэкенд отвечает, можно ходить в API за чатом/памятью
 export function useApiOnline(): boolean {
   return useApiPersonas() !== null;
 }
@@ -134,7 +134,7 @@ function ensureProvidersFetch() {
     });
 }
 
-/** Сбросить кеш и перечитать (после добавления ключа/смены активного) */
+// Сбросить кеш и перечитать (после добавления ключа/смены активного)
 export function refetchProviders() {
   provCache = null;
   provFailed = false;
@@ -154,22 +154,22 @@ function useProvListener() {
   }, []);
 }
 
-/** Провайдеры с бэкенда; null — бэкенд недоступен (или ещё грузится) */
+// Провайдеры с бэкенда; null — бэкенд недоступен (или ещё грузится)
 export function useApiProviders(): ProviderInfo[] | null {
   useProvListener();
   return provCache;
 }
 
-/** Веб-чаты с бэкенда: включённые сайты (порядок перебора) и доступные;
- *  null — бэкенд недоступен (или ещё грузится) */
+// Веб-чаты с бэкенда: включённые сайты (порядок перебора) и доступные;
+// null — бэкенд недоступен (или ещё грузится)
 export function useApiWebchat(): { sites: string[]; options: string[] } | null {
   useProvListener();
   return provWebchat;
 }
 
-/** Задачи локального движка (классификаторы, тики state/world и т.п.) с их
- *  текущим движком — Ollama или веб-чат (выбор пользователя); null — бэкенд
- *  недоступен (или ещё грузится) */
+// Задачи локального движка (классификаторы, тики state/world и т.п.) с их
+// текущим движком — Ollama или веб-чат (выбор пользователя); null — бэкенд
+// недоступен (или ещё грузится)
 export function useApiLocalTasks(): LocalTaskInfo[] | null {
   useProvListener();
   return provLocalTasks;
@@ -198,13 +198,13 @@ function ensurePersonaLlmFetch(persona: string) {
     });
 }
 
-/** Перечитать llm-конфиг персоны (вызывать после сохранения в досье) */
+// Перечитать llm-конфиг персоны (вызывать после сохранения в досье)
 export function refetchPersonaLlm(persona: string) {
   delete llmCache[persona];
   ensurePersonaLlmFetch(persona);
 }
 
-/** llm-конфиг персоны с бэкенда; null — ещё не загружен */
+// llm-конфиг персоны с бэкенда; null — ещё не загружен
 export function useApiPersonaLlm(persona: string): PersonaLlmConfig | null {
   const [, force] = useReducer((x: number) => x + 1, 0);
   useEffect(() => {
@@ -243,8 +243,8 @@ function ensureLivingFetch(persona: string) {
     });
 }
 
-/** Живое состояние персоны; null — бэкенд недоступен, фича выключена
- *  или ui_room_mood_sync=false (тогда комната/настроение показывают моки) */
+// Живое состояние персоны; null — бэкенд недоступен, фича выключена
+// или ui_room_mood_sync=false (тогда комната/настроение показывают моки)
 export function usePersonaLivingState(persona: string): LivingStateData | null {
   const [, force] = useReducer((x: number) => x + 1, 0);
   useEffect(() => {

@@ -2,7 +2,7 @@
 
 Примеры:
   python3 scripts/debug_resolve.py "корзина" --url https://x.ru
-  python3 scripts/debug_resolve.py "тест в поле поиск" --type --url https://ru.wikipedia.org
+  python3 scripts/debug_resolve.py "тест в поле поиск" --type --url https://site.ru
   python3 scripts/debug_resolve.py "корзина" --smoke        # синтетическая смоук-страница
   python3 scripts/debug_resolve.py "войти"                  # активная вкладка запущенного
                                                             # браузера бота (attach)

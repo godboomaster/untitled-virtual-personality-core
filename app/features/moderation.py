@@ -32,9 +32,7 @@ Reply ONLY: BLOCK or ALLOW. Nothing else."""
 
 
 def moderate_message(text: str) -> bool:
-    """
-    Возвращает True если сообщение нужно заблокировать.
-    """
+    # Возвращает True, если сообщение нужно заблокировать.
     logger.info(f"[MODERATION] Проверка: \'{text[:60]}\'")
 
     messages = [

@@ -51,7 +51,7 @@ _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 
 
 def load_location() -> dict:
-    """Текущий конфиг местоположения. По умолчанию — выключено."""
+    # Текущий конфиг местоположения. По умолчанию — выключено.
     with _LOCATION_LOCK:
         data = load_json_safe(_CONFIG_PATH, default={"mode": "off"}, label="Env")
     return data if isinstance(data, dict) else {"mode": "off"}
@@ -70,7 +70,7 @@ def set_off() -> dict:
 
 
 def set_manual_city(city: str) -> dict | None:
-    """Режим 'manual': город → координаты через Open-Meteo Geocoding."""
+    # Режим 'manual': город → координаты через Open-Meteo Geocoding.
     city = (city or "").strip()
     if not city:
         return None
@@ -98,7 +98,7 @@ def set_manual_city(city: str) -> dict | None:
 
 
 def set_geo(lat: float, lon: float) -> dict | None:
-    """Режим 'geo': координаты от браузера → название места через Nominatim."""
+    # Режим 'geo': координаты от браузера → название места через Nominatim.
     city = f"{lat:.4f},{lon:.4f}"  # fallback, если обратный геокодинг недоступен
     try:
         with httpx.Client(timeout=_TIMEOUT, headers={"User-Agent": "virtual-persona-core/1.0"}) as client:
@@ -165,7 +165,7 @@ _PRECIP_CODES = {
 
 
 def is_precip_code(code) -> bool:
-    """Является ли WMO-код осадками (дождь/снег/морось/ливни)."""
+    # Является ли WMO-код осадками (дождь/снег/морось/ливни).
     try:
         return int(code) in _PRECIP_CODES
     except (TypeError, ValueError):
@@ -173,7 +173,7 @@ def is_precip_code(code) -> bool:
 
 
 def fetch_forecast(cfg: dict, hours: int = 12) -> dict | None:
-    """Прогноз на ближайшие часы — для погодных предупреждений (features.rhythm):
+    """Прогноз на ближайшие часы — для погодных предупреждений (rhythm_manager):
       {"current_code": int|None, "current_temp": float|None,
        "hours": [{"time": datetime, "code": int|None,
                   "temp": float|None, "precip_prob": int|None}]}
@@ -233,8 +233,8 @@ def get_env_line() -> str | None:
     """Строка окружения для системного промпта.
 
     Местоположение выключено — всё равно отдаём текущие дату/время пользователя
-    (app.core.timeutil: пояс TIMEZONE, без него — системный локальный, как
-    раньше): без этого персоны не знают который час и отвечают «не знаю».
+    (app.core.timeutil: пояс TIMEZONE, без него — системный локальный): без
+    этого персоны не знают, который час, и отвечают «не знаю».
     С местоположением — добавляется погода (сеть не чаще раза в 30 минут).
     """
     cfg = load_location()

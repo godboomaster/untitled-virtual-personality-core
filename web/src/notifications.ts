@@ -1,20 +1,20 @@
-/* Уведомления о новых сообщениях персон: системные всплывающие
-   (Web Notifications), звук (Web Audio — несколько пресетов на выбор,
-   без аудиофайлов) и счётчик непрочитанных в заголовке вкладки.
-   Показываются, только когда вкладка не в фокусе — как в мессенджерах;
-   включаются и выключаются в настройках (localStorage, ключи vpc-notify*). */
+// Уведомления о новых сообщениях персон: системные всплывающие (Web
+// Notifications), звук (Web Audio — несколько пресетов на выбор, без
+// аудиофайлов) и счётчик непрочитанных в заголовке вкладки. Показываются,
+// только когда вкладка не в фокусе — как в мессенджерах; включаются и
+// выключаются в настройках (localStorage, ключи vpc-notify*).
 
 import { getPersonaAvatar } from './avatarStore';
 
 const BASE_TITLE = document.title;
 const FRESH_WINDOW_SEC = 180; // старше — не уведомляем (хвосты inbox после перезагрузки страницы)
 
-/** Имя события «открыть чат с персоной» (клик по системному уведомлению) */
+// Имя события «открыть чат с персоной» (клик по системному уведомлению)
 export const OPEN_CHAT_EVENT = 'vpc:open-chat';
 
-const APP_ICON = '/favicon.png'; // PNG: SVG-иконки Chrome в уведомлениях не показывает
+const APP_ICON = '/favicon.png'; // PNG: часть браузеров не показывает SVG-иконки в уведомлениях
 
-/* ===== Настройки (localStorage) ===== */
+// ===== Настройки (localStorage) =====
 
 export function notificationsEnabled(): boolean {
   return localStorage.getItem('vpc-notify') !== 'off';
@@ -35,7 +35,7 @@ export function setNotifySoundId(id: NotifySoundId) {
   localStorage.setItem('vpc-notify-sound', id);
 }
 
-/** Громкость 0..1 */
+// Громкость 0..1
 export function notifyVolume(): number {
   const v = Number.parseFloat(localStorage.getItem('vpc-notify-volume') ?? '');
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.35;
@@ -47,8 +47,8 @@ export function setNotifyVolume(v: number) {
 
 export type NotifyIconMode = 'persona' | 'app';
 
-/** Иконка уведомления: аватар персоны (своя картинка, иначе буквенный)
- *  или иконка приложения */
+// Иконка уведомления: аватар персоны (своя картинка, иначе буквенный) или
+// иконка приложения
 export function notifyIconMode(): NotifyIconMode {
   return localStorage.getItem('vpc-notify-icon') === 'app' ? 'app' : 'persona';
 }
@@ -57,16 +57,17 @@ export function setNotifyIconMode(mode: NotifyIconMode) {
   localStorage.setItem('vpc-notify-icon', mode);
 }
 
-/* ===== Разрешение и показ ===== */
+// ===== Разрешение и показ =====
 
-/** Состояние разрешения системных уведомлений (для настроек и диагностики) */
+// Состояние разрешения системных уведомлений (для настроек и диагностики)
 export function notifyPermissionState(): 'unsupported' | 'default' | 'granted' | 'denied' {
   if (!('Notification' in window)) return 'unsupported';
   return Notification.permission;
 }
 
-/** Запросить разрешение системных уведомлений. Вызывать только по
- *  пользовательскому жесту (требование Safari); повторно не спрашиваем. */
+// Запросить разрешение системных уведомлений. Вызывать только по
+// пользовательскому жесту — часть браузеров иначе блокирует запрос;
+// повторно не спрашиваем.
 export function ensureNotifyPermission() {
   if (!('Notification' in window) || Notification.permission !== 'default') return;
   void Notification.requestPermission();
@@ -115,9 +116,9 @@ function showSystemNotification(personaId: string, personaName: string, text: st
   };
 }
 
-/* Буквенный аватар персоны (как в списке чатов): круг с цветом по хэшу id
-   и первой буквой имени. Canvas → PNG data-URL — то, что понимает icon
-   уведомления без файлов на диске. */
+// Буквенный аватар персоны (как в списке чатов): круг с цветом по хэшу id и
+// первой буквой имени. Canvas → PNG data-URL — формат, который принимает
+// icon уведомления без файлов на диске.
 const ICON_PALETTE = ['#5b8cff', '#9a6bff', '#3fbf9f', '#e0804f', '#d05f8f', '#4fa8d8'];
 const iconCache = new Map<string, string>();
 
@@ -146,12 +147,12 @@ function buildPersonaIcon(personaId: string, personaName: string): string {
   return url;
 }
 
-/* ===== Звук ===== */
+// ===== Звук =====
 
-/* Пресеты — ноты {частота, задержка от старта, длительность, тембр,
-   относительная громкость}; общий мастер-гейн = выбранная громкость.
-   Контекст подвешен политикой автоплея до первого клика по странице:
-   если ещё suspended — тихо пропускаем. */
+// Пресеты — ноты {частота, задержка от старта, длительность, тембр,
+// относительная громкость}; общий мастер-гейн = выбранная громкость.
+// Автоплей заблокирован до первого клика по странице: если контекст ещё
+// suspended — тихо пропускаем.
 type SoundNote = { freq: number; at: number; dur: number; type?: OscillatorType; level?: number };
 const SOUND_PRESETS: Record<Exclude<NotifySoundId, 'none'>, SoundNote[]> = {
   ding: [
@@ -176,7 +177,7 @@ const SOUND_PRESETS: Record<Exclude<NotifySoundId, 'none'>, SoundNote[]> = {
 
 let audioCtx: AudioContext | null = null;
 
-/** Проиграть выбранный звук оповещения на выбранной громкости */
+// Проиграть выбранный звук оповещения на выбранной громкости
 export function playNotifySound() {
   const presetId = notifySoundId();
   if (presetId === 'none') return;
@@ -208,21 +209,21 @@ export function playNotifySound() {
       osc.stop(t0 + n.dur + 0.05);
     }
   } catch {
-    /* звук — необязательная часть уведомления */
+    // звук — необязательная часть уведомления
   }
 }
 
-/** Предпрослушивание из настроек: то же, что и боевое срабатывание,
- *  но без проверки фокуса (клик по настройкам уже разблокирует звук) */
+// Предпрослушивание из настроек: то же самое срабатывание, но без проверки
+// фокуса (клик по настройкам уже разблокирует звук)
 export function previewNotifySound() {
   playNotifySound();
 }
 
-/* ===== Прочее ===== */
+// ===== Прочее =====
 
-/** Тестовое уведомление из настроек: при необходимости дозапрашивает
- *  разрешение (клик — это пользовательский жест), показывает пробное
- *  уведомление и звук; возвращает человекочитаемый результат проверки */
+// Тестовое уведомление из настроек: при необходимости дозапрашивает
+// разрешение (клик — пользовательский жест), показывает пробное уведомление
+// и звук; возвращает человекочитаемый результат проверки
 export async function testNotification(): Promise<string> {
   if (!('Notification' in window)) {
     return 'Notification API недоступен: страница должна быть открыта по localhost или HTTPS';
@@ -240,7 +241,7 @@ export async function testNotification(): Promise<string> {
   return 'Отправлено ✓ Баннера нет? Системные настройки → Уведомления → [браузер] → включить и выбрать стиль «Баннеры»; также проверь Фокус-режим';
 }
 
-/** Счётчик непрочитанных в заголовке вкладки: «(3) Virtual Persona Core» */
+// Счётчик непрочитанных в заголовке вкладки: «(3) Virtual Persona Core»
 export function setUnreadTitle(total: number) {
   document.title = total > 0 ? `(${total}) ${BASE_TITLE}` : BASE_TITLE;
 }

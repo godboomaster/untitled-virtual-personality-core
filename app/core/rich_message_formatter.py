@@ -25,20 +25,18 @@ _INLINE_CODE_RE = re.compile(r'`([^`]+)`')
 
 
 def _escape_html(text: str) -> str:
-    """Экранирование HTML-сущностей — единственное определение на модуль."""
+    # Экранирование HTML-сущностей — единственное определение на модуль.
     return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
 def _stash_code(text: str) -> Tuple[str, List[str], List[str]]:
-    """Вырезать код-блоки и инлайн-код в плейсхолдеры, ЭКРАНИРУЯ содержимое.
+    """Вырезать код-блоки и инлайн-код в плейсхолдеры, экранируя содержимое.
 
-    Экранирование кода тем же ``_escape_html``, что и остальной текст, —
-    один путь на модуль. Раньше ``markdown_to_rich_html`` прятало код до
-    экранирования и восстанавливало после, поэтому содержимое ``<pre>``
-    уходило в Telegram как есть: любой ``<`` в примере кода ломал разбор
-    HTML (сообщение не отправлялось), а ``<b>`` или ``<a href=...>`` из
-    текста модели исполнялись как разметка. В ``to_current_html`` это же
-    экранирование уже было — здесь оно стало общим для обоих путей.
+    Код экранируется тем же ``_escape_html``, что и остальной текст — один
+    путь на модуль. Без этого содержимое ``<pre>`` ушло бы в Telegram как
+    есть: любой ``<`` в примере кода сломал бы разбор HTML (сообщение не
+    отправится), а ``<b>`` или ``<a href=...>`` из текста модели
+    исполнились бы как разметка.
     """
     code_blocks: List[str] = []
     inline_codes: List[str] = []
@@ -64,7 +62,7 @@ def _stash_code(text: str) -> Tuple[str, List[str], List[str]]:
 
 
 def _restore_code(text: str, code_blocks: List[str], inline_codes: List[str]) -> str:
-    """Вернуть на место плейсхолдеры кода (после всей остальной разметки)."""
+    # Вернуть на место плейсхолдеры кода (после всей остальной разметки).
     for i, code in enumerate(inline_codes):
         text = text.replace(f'\x00INLINE{i}\x00', code)
     for i, block in enumerate(code_blocks):
@@ -73,16 +71,13 @@ def _restore_code(text: str, code_blocks: List[str], inline_codes: List[str]) ->
 
 
 class RichMessageFormatter:
-    """Конвертирует Markdown в Rich HTML/Markdown по спецификации Telegram Bot API 10.1."""
+    # Конвертирует Markdown в Rich HTML/Markdown по спецификации Telegram Bot API 10.1.
 
     # ─── Markdown → Rich HTML ──────────────────────────────────────
 
     @staticmethod
     def markdown_to_rich_html(text: str) -> str:
-        """
-        Конвертирует Markdown в Rich HTML для Telegram.
-        Поддерживает все новые теги Bot API 10.1.
-        """
+        # Конвертирует Markdown в Rich HTML для Telegram, включая новые теги Bot API 10.1.
         if not text:
             return text
 
@@ -170,11 +165,7 @@ class RichMessageFormatter:
 
     @staticmethod
     def markdown_to_rich_markdown(text: str) -> str:
-        """
-        Возвращает Rich Markdown (почти как входной, но с нормализацией).
-        Telegram Rich Markdown совместим с GitHub Flavored Markdown.
-        """
-        # Пока просто возвращаем как есть — Telegram сам парсит
+        # Возвращает текст как есть — Telegram сам парсит Markdown, нормализация не нужна.
         return text.strip()
 
     # ─── Поддержка новых тегов через parse_mode="HTML" (текущий API) ─
@@ -187,7 +178,7 @@ class RichMessageFormatter:
         
         Новые теги которые уже работают:
         - <tg-spoiler> — спойлер
-        - <u>, <ins> — подчеркивание  
+        - <u>, <ins> — подчеркивание
         - <sub>, <sup> — индексы
         - <mark> — выделение
         - <blockquote expandable> — раскрываемая цитата
@@ -228,7 +219,7 @@ class RichMessageFormatter:
 
 
 def _process_lists(text: str) -> str:
-    """Обрабатывает markdown-списки и конвертирует в HTML."""
+    # Обрабатывает markdown-списки и конвертирует в HTML.
     lines = text.split('\n')
     result = []
     i = 0

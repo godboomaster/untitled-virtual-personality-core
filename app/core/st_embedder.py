@@ -1,8 +1,8 @@
 """SentenceTransformer-эмбеддер, устойчивый к отсутствию интернета.
 
-Без сети загрузка модели шла на huggingface.co за HEAD-проверками (ретраи
+Без сети загрузка модели идёт на huggingface.co за HEAD-проверками (ретраи
 с backoff на каждый файл), а при параллельных загрузках глобальный httpx-
-клиент hub'а падал с RuntimeError — вместе с созданием бота (500 на
+клиент hub'а падает с RuntimeError — вместе с созданием бота (500 на
 /api/chat). Если hub недоступен и модель в кэше — включаем offline-режим
 HF: загрузка идёт из кэша без единого HTTP-запроса. Любая другая неудача
 при живом кэше — один повтор в offline. Режим липкий (на весь процесс):
@@ -22,8 +22,9 @@ _hub_reachable_cache = None
 
 
 def _model_cached(model_name: str) -> bool:
-    """Модель есть в кэше HF (хотя бы один снапшот). Короткое имя без орга
-    sentence-transformers резолвит в свой namespace — проверяем оба."""
+    # Модель есть в кэше HF (хотя бы один снапшот). Короткое имя без
+    # префикса namespace sentence-transformers резолвит в свой — проверяем
+    # оба варианта.
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
         names = [model_name] if "/" in model_name \
@@ -39,7 +40,7 @@ def _model_cached(model_name: str) -> bool:
 
 
 def _hub_reachable(timeout: float = 2.0) -> bool:
-    """Один probe на процесс: отвечает ли huggingface.co по сети."""
+    # Один probe на процесс: отвечает ли huggingface.co по сети.
     global _hub_reachable_cache
     if _hub_reachable_cache is None:
         try:
@@ -51,9 +52,9 @@ def _hub_reachable(timeout: float = 2.0) -> bool:
 
 
 def force_hf_offline():
-    """Offline-режим huggingface_hub на лету: env (для поздних импортов) +
-    константа (is_offline_mode читает её динамически — HTTP не выполняется,
-    cached_files сразу уходит в кэш)."""
+    # Offline-режим huggingface_hub на лету: env (для поздних импортов) +
+    # константа (is_offline_mode читает её динамически — HTTP не выполняется,
+    # cached_files сразу уходит в кэш).
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     try:

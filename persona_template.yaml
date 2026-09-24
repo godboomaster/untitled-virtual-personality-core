@@ -24,7 +24,7 @@ stm_size: 50  # Размер краткосрочной памяти (кол-в�
 #  УРОВЕНЬ ИНТЕЛЛЕКТА  (опционально; без блока — механики уровней выключены)
 #  tier задаёт рамку поверх system_prompt: какие модули доступны и как
 #  персонаж отвечает на просьбы о помощи. Характер внутри рамки — зона
-#  system_prompt, как и раньше.
+#  system_prompt.
 # ─────────────────────────────────────────────
 # intellect:
 #   tier: normal                  # primitive | normal | bot
@@ -93,7 +93,7 @@ features:
   #   allowed_categories: []       #   пусто — категории из интересов персоны
   # ui_room_mood_sync: true        # Комната/настроение в вебе показывают живое состояние
   #                                #   вместо моков (опрос раз в минуту)
-  # proactive:                     # Пишет пользователю первой (см. INITIATIVE.md)
+  # proactive:                     # Пишет пользователю первой
   #   enabled: false
   #   check_interval_minutes: 30   #   как часто проверять повод
   #   silence_threshold_minutes: 180  # порог тишины (адаптивный ×2, если adaptive)
@@ -147,7 +147,7 @@ features:
   #     download: true             #     скачивание файла — confirm
   #   allow_domains: []            #   Пусто = любые http(s); иначе whitelist доменов для OPEN_URL
   #   sites:                       #   Алиасы частых сайтов: мгновенный и точный резолв «открой X»
-  #     ютуб: youtube.com          #   (дальше — история браузера пользователя, затем DDG)
+  #     ютуб: youtube.com          #   (дальше — история браузера пользователя, затем поисковик)
   #   search:                      #   «включи X на ютубе»: URL-шаблон поиска по сайту, {q} — запрос
   #     ютуб:                      #   или словарём: first — regex ссылки первого результата,
   #       url: "https://www.youtube.com/results?search_query={q}"  #   открыть сразу его
@@ -174,7 +174,7 @@ features:
   #                                #   вкладку на передний план; нужен Develop → Allow JavaScript
   #                                #   from Apple Events)
   #     channel: chrome            #   приоритетный Chromium при авто-детекте (chrome | edge);
-  #                                #   Opera/Яндекс/Brave/Vivaldi детектятся сами
+  #                                #   остальные Chromium-браузеры детектятся сами
   #     cdp_url: http://127.0.0.1:9222   # пул V (headed): видимые команды + headed-сайты
   #     launch: true               #   бот может сам запускать браузер с отладкой
   #     user_data_dir:             #   профиль пула H (headless); пусто — выделенный

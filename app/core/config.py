@@ -24,8 +24,7 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
 def _collect_api_keys(prefix: str) -> list[str]:
     """
     Собирает все API-ключи для провайдера.
-    
-    Например
+
     Форматы в .env:
         GROQ_API_KEY=sk-aaa          # основной (или GROQ_API_KEY_1)
         GROQ_API_KEY_2=sk-bbb        # дополнительный
@@ -86,15 +85,15 @@ PROVIDER_CONFIGS = {
         "base_url": os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1"),
         "model": os.getenv("KIMI_MODEL", "moonshot-v1-8k"),
         "vision": os.getenv("KIMI_VISION", "auto"),
-        # Модели Kimi (k3 и др.) принимают только temperature=1 и top_p=0.95 — иначе
-        # API отвечает 400 «invalid temperature/top_p: only ... is allowed for this
-        # model». Фиксируем на уровне провайдера, игнорируя значения вызывающего кода;
+        # Провайдер Kimi принимает только temperature=1 и top_p=0.95 — иначе
+        # 400 «invalid temperature/top_p: only ... is allowed for this model».
+        # Фиксируем на уровне провайдера, игнорируя значения вызывающего кода;
         # переопределяются через KIMI_TEMPERATURE / KIMI_TOP_P в .env.config.
         "temperature": float(os.getenv("KIMI_TEMPERATURE", "1.0")),
         "top_p": float(os.getenv("KIMI_TOP_P", "0.95")),
-        # Аккаунтный лимит Moonshot: 1 параллельный запрос — иначе 403
-        # «concurrent request limit» (кейс 19.09: фон + диалог столкнулись).
-        # Роутер занятость пропускает мгновенно, уходя по цепочке дальше.
+        # Лимит аккаунта: 1 параллельный запрос — иначе 403 «concurrent
+        # request limit» (фон и диалог могут дёрнуть его одновременно).
+        # Роутер пропускает занятость мгновенно, уходя по цепочке дальше.
         "max_concurrent": 1,
     },
     "google": {
@@ -135,7 +134,7 @@ class Config:
     # Провайдер для побочных LLM-задач LTM (экстракция фактов и т.п.).
     # Пусто (дефолт) — основной роутер бота по fallback-цепочке персоны
     # МИНУС основной провайдер (exclude_provider); задан — отдельный роутер
-    # с этим провайдером основным (старое поведение).
+    # с этим провайдером основным.
     LTM_MODEL_PROVIDER = os.getenv("LTM_MODEL_PROVIDER", "")
 
 
@@ -143,12 +142,9 @@ def get_db_paths(context: str) -> dict:
     """
     Возвращает пути к базам данных для заданного контекста.
 
-    Контексты:
-        "connor"  -> data/connor/stm, ltm, files
-        "arrodes" -> data/arrodes/stm, ltm, files
-        "verso"   -> data/verso/stm, ltm, files
-        "api_{persona}" -> data/api_{persona}/stm, ltm, files (веб/API)
-        "tg"      -> data/tg/stm, ltm, files (обратная совместимость)
+    Контекст — обычно id персоны (data/<persona>/stm, ltm, files) или
+    "api_{persona}" для веб/API-режима; "tg" — общий контекст Telegram
+    (обратная совместимость).
     """
     base = os.path.join(Config.DATA_DIR, context)
     return {

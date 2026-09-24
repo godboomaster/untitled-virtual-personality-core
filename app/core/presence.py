@@ -11,21 +11,16 @@ self-memory, урожай диалога и living-тик чата молчат.
 или пользователь ушёл в другой чат — отметка снимается явным active=false
 или протухает по TTL.
 
-Корень дефекта (аудит): раньше это был ОДИН глобальный флаг без ключа —
-``web_presence.is_active()``. Он не знал, к какой персоне и какому чату
-относится, поэтому одна открытая веб-вкладка любого чата любой персоны
-замораживала фоновую жизнь ВСЕХ персон и всех чатов, включая Telegram-чаты
-той же персоны (у них веб-вкладки нет вовсе и появиться не может). Ключ
-здесь — пара (контекст BotInstance, chat_id): контекст у веб-персоны
-``api_{persona}`` (см. :func:`web_context` и registry в app/api/runtime.py),
-у Telegram-персоны — её собственный (``arrodes`` и т.п.), поэтому отметка
-веб-вкладки физически не может задеть Telegram-чат.
+Ключ — пара (контекст BotInstance, chat_id), а не глобальный флаг: контекст
+у веб-персоны ``api_{persona}`` (см. :func:`web_context` и registry в
+app/api/runtime.py), у Telegram-персоны — её собственный. Так одна открытая
+веб-вкладка не замораживает фоновую жизнь других персон и чатов, включая
+Telegram-чаты той же персоны (у них веб-вкладки нет вовсе).
 
 Ключи ограничены и протухают (BoundedCache: LRU + TTL) — чатов за время
 жизни процесса может быть сколько угодно, вечный dict здесь был бы утечкой.
 
-В Telegram-режиме сигналов нет — is_active() для его контекста всегда False,
-поведение прежнее.
+В Telegram-режиме сигналов нет — is_active() для его контекста всегда False.
 """
 
 import threading
@@ -65,7 +60,7 @@ class WebPresence:
         return (str(context or "default"), str(chat_id))
 
     def note(self, context: str, chat_id, active: bool):
-        """Отметка о состоянии вкладки конкретного чата конкретной персоны."""
+        # Отметка о состоянии вкладки конкретного чата конкретной персоны.
         key = self._key(context, chat_id)
         with self._lock:
             if active:
@@ -74,15 +69,15 @@ class WebPresence:
                 self._marks.pop(key, None)
 
     def is_active(self, context: str, chat_id) -> bool:
-        """Открыта ли прямо сейчас веб-вкладка ЭТОГО чата этой персоны."""
+        # Открыта ли прямо сейчас веб-вкладка ЭТОГО чата этой персоны.
         key = self._key(context, chat_id)
         with self._lock:
             return self._fresh(self._marks.get(key))
 
     def any_active(self, context: str) -> bool:
-        """Открыта ли веб-вкладка хоть одного чата этой персоны. Только для
+        """Открыта ли веб-вкладка хоть одного чата этой персоны. Нужно для
         операций уровня персоны, которые нельзя разделить по чатам
-        (см. living_persona._tick_all: сценарист и внешние стимулы)."""
+        (living_persona._tick_all: сценарист и внешние стимулы)."""
         ctx = str(context or "default")
         with self._lock:
             return any(self._fresh(stamp) for (c, _cid), stamp
@@ -92,7 +87,7 @@ class WebPresence:
         return bool(stamp) and (time.monotonic() - stamp) < self._ttl
 
     def clear(self):
-        """Сброс всех отметок (тесты, перезапуск)."""
+        # Сброс всех отметок (тесты, перезапуск).
         with self._lock:
             self._marks.clear()
 

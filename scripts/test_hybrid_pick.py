@@ -50,13 +50,13 @@ def main():
     CFG = {"confirm": True}
 
     def make(cfg=None):
-        """Свой tmp base_dir на каждый менеджер — аудит не смешивается."""
+        # Свой tmp base_dir на каждый менеджер — аудит не смешивается.
         base = Path(tempfile.mkdtemp(prefix="hybrid_pick_data_"))
         return ComputerControlManager(context="test", config=dict(cfg or CFG),
                                       base_dir=base)
 
     def _it(idx, tag, text, **kw):
-        """Элемент структурированного снапшота (как отдаёт snapshot_elements)."""
+        # Элемент структурированного снапшота (как отдаёт snapshot_elements).
         it = {"idx": idx, "tag": tag, "role": "", "text": text, "aria": "",
               "title": "", "href": "", "w": 40.0, "h": 20.0, "vp": True,
               "vw": 1280.0}
@@ -124,11 +124,11 @@ def main():
     _LINE_RE = re.compile(r"^(\d+)\) \[[^\]]*\] (.*)$", re.M)
 
     def lines_of(prompt):
-        """[(номер, подпись-строка)] из промпта."""
+        # [(номер, подпись-строка)] из промпта.
         return [(int(n), lab) for n, lab in _LINE_RE.findall(prompt)]
 
     def num_of(prompt, label):
-        """Номер строки кандидата, чья подпись начинается с label."""
+        # Номер строки кандидата, чья подпись начинается с label.
         for n, lab in lines_of(prompt):
             if lab.startswith(label):
                 return n
@@ -187,7 +187,7 @@ def main():
         ]
 
     def zero_items():
-        """Zero-match под «корзина»: без строки со словом цели."""
+        # Zero-match под «корзина»: без строки со словом цели.
         return [i for i in base_items() if i["idx"] != 5]
 
     try:
@@ -224,7 +224,7 @@ def main():
             (None, (None, None, False)),
             ("12345", (None, None, False)),
             ("C=0.8", (None, None, False)),
-            # M2: пояснение после номера, «.8», уверенность вне [0, 1] —
+            # Пояснение после номера, «.8», уверенность вне [0, 1] —
             # номер валиден (вне диапазона C — просто без уверенности)
             ("3 — это кнопка корзины", (3, None, False)),
             ("7 C=0.8 кнопка", (7, 0.8, False)),
@@ -242,8 +242,8 @@ def main():
             ("3 — 2:43 World Map", (None, None, False)),
             ("3,8", (None, None, False)),
             ("Подходящего нет, возможно 3", (None, None, False)),
-            ("Я не вижу подходящего элемента", (None, None, True)),  # N1d
-            # N1c: сомнение/отрицание при номере — невалидно всегда
+            ("Я не вижу подходящего элемента", (None, None, True)),
+            # Сомнение или отрицание при номере — невалидно всегда
             ("Не вижу подходящего, возможно 4", (None, None, False)),
             ("Не уверен, но 3", (None, None, False)),
             ("Возможно, 3", (None, None, False)),
@@ -251,7 +251,7 @@ def main():
             ("maybe 3", (None, None, False)),
             ("Наверное 3", (None, None, False)),
             ("Кажется, 2", (None, None, False)),
-            # N1d: фраза-отказ без номера — «нет»
+            # Фраза-отказ без номера — трактуется как «нет»
             ("Подходящего элемента нет", (None, None, True)),
             ("ничего не подходит", (None, None, True)),
             ("Nothing matches", (None, None, True)),
@@ -266,7 +266,7 @@ def main():
         for s, want in cases:
             got = _parse_pick_answer(s)
             check(f"parse {s!r} → {want}", got == want)
-        # Поведение, которое стоит знать (после M2 / нита «нет целым словом»):
+        # Отказ «none»/«No»/«нет, …», префикс «Ответ:», кириллическая «Т=», «нету»
         check("parse: «none» — отказ",
               _parse_pick_answer("none") == (None, None, True))
         check("parse: «No» — отказ",
@@ -279,7 +279,7 @@ def main():
               _parse_pick_answer("нет, но 3") == (None, None, True))
         check("parse: «нету» — не отказ и не номер (невалидно)",
               _parse_pick_answer("нету") == (None, None, False))
-        # N1a: строгая грамматика «[Ответ:] [T=]N [C=…][.]» — и ничего больше
+        # Строгая грамматика: «[Ответ:] [T=]N [C=…][.]» — и ничего больше
         strict_cases = [
             ("7", (7, None, False)), ("T=7", (7, None, False)),
             ("**7**", (7, None, False)), ("7.", (7, None, False)),
@@ -352,8 +352,8 @@ def main():
         ok_map = True
         for n, lab in ln:
             mm = make()
-            # Проверяется только соответствие номер → idx: сверку подписи
-            # (рамки «Cart»/«Помощь» для «корзина» ветируются, N2) отключаем
+            # Проверяется только соответствие номер → idx: сверка подписи
+            # (рамки «Cart»/«Помощь» для «корзина» ветируются) отключена
             mm._veto_model_pick = lambda *a, **kw: False
             rr = FakeRouter({"hybrid": f"{n} C=0.9"})
             idx, meta = mm._hybrid_pick("корзина", items_map, "x.ru", 7, rr)
@@ -667,7 +667,7 @@ def main():
         check("label_mismatch: чужая подпись с C=0.3 — вето, conf в мете",
               i_ is None and m_.get("veto") == "label_mismatch"
               and m_["conf"] == 0.3)
-        # N2: уверенность от сверки не освобождает — ни C=0.95, ни «другое
+        # Уверенность не освобождает от сверки подписи — ни C=0.95, ни «другое
         # название» рамкой («Cart» для «корзина» — это дело широкого резолва)
         (i_, m_), _, _ = run("корзина", base_items(), {
             "hybrid": lambda p: f"{num_of(p, 'Помощь')} C=0.95"})
@@ -890,10 +890,10 @@ def main():
               and rec.get("offscreen") is True
               and rec.get("path") == "vision_hybrid")
 
-        # M3: строка текстового списка сверки подписи не проходит (как
-        # прежний широкий резолв) — вето по подписи проверяем на РАМКЕ.
-        # N2: после вето каскад спрашивает широкий (тут «нет») — итоговая
-        # причина от него, а вердикт гибрида с C — в следе ярусов
+        # Строка текстового списка не проходит сверку подписи (как широкий
+        # резолв) — вето по подписи проверяем на РАМКЕ. После вето каскад
+        # спрашивает широкий (тут «нет») — итоговая причина от него, а
+        # вердикт гибрида с уверенностью — в следе ярусов
         m = make()
         act, err = m.resolve_click("оплата", None, FakeRouter({
             "hybrid": lambda p: f"{num_of(p, 'Помощь')} C=0.3"}),
@@ -933,7 +933,7 @@ def main():
               act is None and rec.get("path") == "vision"
               and rec.get("llm_response") == "нет"
               and rec.get("fail_reason") == "llm_veto"
-              and rec.get("wide_mode") == "text")  # m2: режим из конфига
+              and rec.get("wide_mode") == "text")  # режим взят из конфига
 
         m = make({**CFG, "wide_mode": "text"})
         act, err = m.resolve_click("корзина", None, FakeRouter({
@@ -963,8 +963,8 @@ def main():
         check("_visual_resolve без vision → (None, None)",
               (v_idx, v_meta) == (None, None))
 
-        # _llm_wide_pick: метки wide_mode в мете больше нет (N2: мёртвая —
-        # режим штампует _audit из конфига)
+        # _llm_wide_pick: в мете нет метки wide_mode — режим берётся из
+        # конфига в _audit
         m = make()
         w_idx, w_meta = m._llm_wide_pick("корзина", base_items(),
                                          FakeRouter({"wide": "нет"}))
@@ -976,13 +976,13 @@ def main():
         check("_llm_wide_pick(for_field): без метки wide_mode",
               w_meta is not None and "wide_mode" not in w_meta)
 
-        # ════════════════ 9. Правки ревью (M1–M5, m1–m8, ниты) ════════════════
+        # ════════════════ 9. Крайние случаи и устойчивость каскада ════════════════
         print("\n── 9. Правки ревью ──")
         state["items"] = zero_items()
         state["zones"] = []
         zone1 = [{"x": 10.0, "y": 10.0, "w": 60.0, "h": 30.0, "text": ""}]
 
-        # M1: vision-цепочка лежит — get_response_with_image вернул None/""
+        # Vision-цепочка недоступна — get_response_with_image вернул None/""
         for dead in (None, ""):
             mm = make()
             (i_, m_) = mm._hybrid_pick("корзина", base_items(), "x.ru", None,
@@ -1028,7 +1028,7 @@ def main():
               n_idx == 2 and n_meta["path"] == "llm_wide"
               and rr.kinds() == ["hybrid"])
 
-        # M2: невалидный ответ гибрида — широкий да, _visual_resolve нет, зоны да
+        # Невалидный ответ гибрида — дальше широкий, но не _visual_resolve, затем зоны
         res, rr, mm = cascade("корзина", {
             "hybrid": "Выбираю между 1 и 2", "wide": "нет", "visual": "1",
             "zones": "нет"}, zones=zone1, chat="r2")
@@ -1054,7 +1054,8 @@ def main():
         check("M2: невалидный ответ помечен fail=invalid",
               i_ is None and m_.get("fail") == "invalid")
 
-        # M3: политика сверки подписи — кейс 19.09 «renoir»
+        # Политика сверки подписи: рамка с чужой подписью ветируется при любой
+        # уверенности, строка с чужой подписью принимается (как в широком резолве)
         renoir = [_it(0, "a", "2:43 World Map - Taking Down the Paintress",
                       x=10.0, y=10.0, w=300.0, h=40.0),
                   _it(1, "a", "Главная", x=10.0, y=100.0, w=200.0, h=40.0)]
@@ -1079,7 +1080,7 @@ def main():
         check("N2: порога уверенности больше нет (C — только данные)",
               not hasattr(cc, "HYBRID_MIN_CONF"))
 
-        # M4: видимая подписанная цель поздно в DOM — не выпадает из строк
+        # Видимая подписанная цель, поздно встречающаяся в DOM, не выпадает из строк
         page = [_it(i, "button", "", w=30.0, h=30.0, x=float(i * 40), y=10.0)
                 for i in range(10)]
         page += [_it(10 + i, "a", f"Раздел номер {i}", w=80.0, h=20.0,
@@ -1096,7 +1097,7 @@ def main():
               n_t is not None and (n_off is None or n_t < n_off))
         check("M4: HYBRID_TEXT_MAX = 30", HYBRID_TEXT_MAX == 30)
 
-        # M5/N3/N4: докрутка элемента во вьюпорт — в ТОМ ЖЕ evaluate, что
+        # Докрутка элемента во вьюпорт выполняется в том же evaluate, что и
         # замер «до» (CDP), и в том же Apple Events-вызове (AppleScript);
         # только если элемент целиком вне экрана, behavior:'instant'
         order = []
@@ -1104,7 +1105,7 @@ def main():
 
         class _First:
             def scroll_into_view_if_needed(self, timeout=None):
-                order.append("scroll_api")  # не должен вызываться (N3)
+                order.append("scroll_api")  # не должен вызываться
 
             def click(self, **kw):
                 order.append("click")
@@ -1173,9 +1174,9 @@ def main():
         check("N4: клик-JS AppleScript больше не крутит страницу после замера",
               "scrollIntoView" not in ae[1])
 
-        # N3: условная докрутка в настоящем JS-движке (node, если есть):
-        # видимый элемент — ни одного scrollIntoView, целиком вне экрана —
-        # ровно один, мгновенный; полный JS замера — синтаксически валиден
+        # Условная докрутка в настоящем JS-движке (node, если есть): видимый
+        # элемент — ни одного scrollIntoView, целиком вне экрана — ровно
+        # один, мгновенный; полный JS замера — синтаксически валиден
         import shutil
         import subprocess
         if shutil.which("node"):
@@ -1210,7 +1211,7 @@ def main():
         else:
             print("  [SKIP] node не найден — JS-проверка докрутки пропущена")
 
-        # N1: сомнение и эхо подписи не становятся кликом
+        # Сомнение и эхо подписи не становятся кликом
         rowitems = [_it(0, "a", "Главная", x=10.0, y=10.0, w=200.0, h=40.0),
                     _it(1, "a", "Настройки", vp=False, y=3000.0)]
         (i_, m_), _, _ = run("renoir", rowitems,
@@ -1251,7 +1252,7 @@ def main():
         check("N1 (repro H): сомнение с номером рамки — невалидно",
               i_ is None and m_.get("fail") == "invalid")
 
-        # N2: вето label_mismatch рамки → текстовый широкий (0 → 1 вызов),
+        # Вето label_mismatch рамки → текстовый широкий (0 → 1 вызов),
         # _visual_resolve не зовётся
         res, rr, mm = cascade("корзина", {
             "hybrid": lambda p: f"{num_of(p, 'Cart')} C=0.95",
@@ -1273,7 +1274,7 @@ def main():
               n_idx == 2 and n_meta["path"] == "llm_wide"
               and rr.kinds() == ["hybrid"] and len(rr.wide_calls()) == 1)
 
-        # m5: удачный скриншот — один на резолв (гибрид «нет» → зоны)
+        # Удачный скриншот — один на резолв (гибрид «нет» → зоны)
         shots_ok = []
 
         def _count_ok(host=None, tab_id=None):
@@ -1287,7 +1288,7 @@ def main():
         check("m5: гибрид → зоны — один снимок, кадр переиспользован",
               len(shots_ok) == 1 and rr.kinds() == ["hybrid", "zones"])
 
-        # m1: строка на экране (не влезла в рамки) — row без offscreen
+        # Строка на экране (не влезла в рамки) — row без offscreen
         many_v = [_it(i, "a", f"Раздел {chr(0x410 + i)}",
                       x=float(10 + (i % 12) * 100), y=float(50 + (i // 12) * 60),
                       w=90.0, h=40.0) for i in range(14)]
@@ -1296,7 +1297,7 @@ def main():
               i_ is not None and m_.get("row") is True
               and "offscreen" not in m_ and m_.get("picked_n") == 14)
 
-        # m2: след ярусов и wide_mode на записи клика (режим text)
+        # След ярусов и wide_mode на записи клика (режим text)
         m = make({**CFG, "wide_mode": "text"})
         act, err = m.resolve_click("корзина", None, FakeRouter({
             "wide": lambda p: f"{num_of(p, 'Cart')}"}), chat_id="t1")
@@ -1316,13 +1317,13 @@ def main():
                         for t in recs[0].get("tiers") or []]
               == [("vision_hybrid", "нет"), ("vision_zones", "нет")])
 
-        # m3: цель-иконка — только рамки
+        # Цель-иконка — только рамки
         (i_, m_), rr, _ = run("шестерёнка", base_items(), {"hybrid": "нет"})
         check("m3: цель-иконка — строк нет, только рамки",
               m_ is not None and m_["n_text"] == 0
               and "Элементы без рамки" not in rr.img_calls[0]["prompt"])
 
-        # m5: скриншот не снялся — в том же резолве больше не снимаем
+        # Скриншот не снялся — в том же резолве повторно не снимаем
         shots = []
 
         def _count_shot(host=None, tab_id=None):
@@ -1338,7 +1339,7 @@ def main():
               len(shots) == 1 and not rr.img_calls
               and len(rr.wide_calls()) == 1)
 
-        # m6: центр рамки за кадром (iframe: vp=True, но ниже картинки)
+        # Центр рамки за кадром (iframe: vp=True, но ниже картинки)
         frame = [_it(0, "button", "", x=10.0, y=10.0, w=40.0, h=40.0),
                  _it(1, "a", "Кнопка во фрейме", x=10.0, y=900.0, w=200.0,
                      h=40.0)]
@@ -1352,7 +1353,7 @@ def main():
               v_meta is not None and [c["idx"] for c in v_meta["candidates"]]
               == [0])
 
-        # m8: vision-вызовы рамок и зон — в vision_*, не в текстовых llm_*
+        # Vision-вызовы рамок и зон учитываются в vision_*, не в текстовых llm_*
         m = make({**CFG, "wide_mode": "text"})
         m._visual_resolve("x.ru", None, base_items(), "корзина",
                           FakeRouter({"visual": "нет"}))
@@ -1367,7 +1368,7 @@ def main():
               and m.metrics()["llm_share"] == 0.0
               and m.metrics()["vision_calls"] == 2)
 
-        # Ниты
+        # Форматирование _cand_line: крайние случаи
         check("нит: безымянный с контекстом — «(без подписи, блок: …)»",
               _cand_line(1, _it(0, "button", "", ctx="Корзина"))
               == "1) [button/-] (без подписи, блок: Корзина)")
@@ -1385,8 +1386,8 @@ def main():
               make({**CFG, "wide_mode": "vision"}).wide_mode == "hybrid"
               and make({**CFG, "wide_mode": None}).wide_mode == "hybrid")
 
-        # 8. Windows: ярус сам на диск не пишет, аудит — через pathlib
-        # (base_dir / "audit.jsonl") — проверять нечего, пропущено
+        # Кросс-платформенность: ярус сам на диск не пишет, аудит — через
+        # pathlib (base_dir / "audit.jsonl") — проверять нечего, пропущено
     finally:
         for name, fn in _saved.items():
             if fn is None:
