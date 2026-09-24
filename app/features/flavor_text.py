@@ -200,8 +200,15 @@ def _from_bank(context: str, kind: str, bucket: str,
             if any(not values.get(p)
                    for p in _PLACEHOLDER_RE.findall(phrase)):
                 continue
+            vals = values
+            # «Причина: {detail}.» + detail с точкой на конце («…если
+            # нужна новая.») давало «новая..» — точку фразы оставляем,
+            # хвостовую точку detail срезаем
+            if re.search(r"\{detail\}[.!?…]", phrase):
+                vals = {**values,
+                        "detail": values["detail"].rstrip().rstrip(".")}
             try:
-                text = phrase.format_map(values).strip()
+                text = phrase.format_map(vals).strip()
             except (KeyError, IndexError, ValueError):
                 continue  # неизвестный плейсхолдер — другая фраза
             if text:
@@ -261,7 +268,8 @@ def _from_live(bot, kind: str, bucket: str,
                 "уместно, если это в характере). Без вопросов пользователю.")
     else:
         what = cc.describe(action) if (action and cc) else "команда"
-        err = str(detail or "неизвестная ошибка")
+        err = str(detail or "неизвестная ошибка").rstrip().rstrip(".") \
+            or "неизвестная ошибка"
         task = (f"Действие НЕ удалось: {what}. Причина: {err}.\n"
                 "Напиши одну короткую реплику в характере персоны о неудаче. "
                 f"Суть причины («{err}») сохрани дословно по смыслу — причину "

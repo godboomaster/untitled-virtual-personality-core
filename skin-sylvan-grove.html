@@ -1,0 +1,1906 @@
+<!DOCTYPE html>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     VPC SKIN FILE v1 — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ ПЕРЕД РЕДАКТИРОВАНИЕМ.
+
+     Это самодостаточный скин (визуальная оболочка) интерфейса ИИ-персоны:
+     экран чата (с левым и правым сайдбарами), экран досье и экран комнаты.
+     Файл целиком загружается в приложение и рендерится в изолированной
+     песочнице (sandboxed iframe).
+
+     ЖЁСТКИЕ ПРАВИЛА (нарушение = скин не пройдёт проверку при загрузке):
+
+     1. Атрибуты data-vpc="..." и data-vpc-field="..." — НЕ удалять и
+        НЕ переименовывать. По ним приложение находит, куда подставлять
+        живые данные (сообщения, список персон, память, состояние комнаты).
+        Элементы с этими атрибутами МОЖНО перемещать, оборачивать в любые
+        контейнеры и стилизовать как угодно — лишь бы атрибуты остались.
+
+     2. Блок между маркерами VPC-BRIDGE:START / VPC-BRIDGE:END внизу
+        файла — служебный, его ПЕРЕЗАПИШЕТ приложение. Не редактировать.
+
+     3. Никаких внешних ресурсов: запрещены http/https-ссылки, CDN,
+        <link>, <script src=...>, картинки и шрифты по URL. Сеть
+        заблокирована политикой CSP. Картинки и шрифты — только inline
+        (data-URI) или рисуй чистым CSS/SVG.
+
+     4. ВСЁ ОСТАЛЬНОЕ — свободная зона: любая структура страницы,
+        любые дополнительные элементы, декор, фоны, анимации, свой JS.
+        Скин может выглядеть КАК УГОДНО непохоже на этот шаблон.
+
+     ЭКРАНЫ. В файле три корневых блока:
+       [data-vpc-screen="chat"]    чат: сайдбары + переписка
+       [data-vpc-screen="dossier"] досье персоны (память, дела, обучение,
+                                    файлы, настройки)
+       [data-vpc-screen="room"]    комната персоны
+     Приложение показывает один экран, выставляя на <html> атрибут
+     data-vpc-active="chat|dossier|room". Правила скрытия — в CSS ниже.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<html lang="ru" data-vpc-active="chat">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Дух рощи · VPC Skin</title>
+<style>
+  /* ══════════════ СВОБОДНАЯ ЗОНА: все стили скина ══════════════
+     «Зачарованная роща» — фэнтези-лес: тёмный мох, пергамент,
+     лозы и листья, светлячки, янтарный свет костра. */
+
+  :root {
+    --bg: #121a0f;            /* ночной лес */
+    --bg-2: #182213;          /* глубокая чаща */
+    --panel: #212e1a;         /* мох */
+    --panel-2: #2a3a20;       /* светлый мох */
+    --panel-3: #33462a;       /* приподнятый мох */
+    --line: #41542f;          /* граница-лиана */
+    --line-soft: #31422a;
+    --text: #ede4c9;          /* кремовый пергамент */
+    --dim: #a3ae82;           /* шалфей */
+    --accent: #b9cf7d;        /* молодая листва */
+    --accent-deep: #7f9a4d;   /* глубокая зелень */
+    --amber: #e3b85e;         /* светлячок / костёр */
+    --amber-deep: #c2913c;
+    --plum: #9d7bb5;          /* колдовская слива */
+    --danger: #c96f4a;        /* сухая ржавчина */
+    --paper: #efe5c8;         /* пергамент досье */
+    --paper-2: #e6d9b4;
+    --paper-line: #b3a276;
+    --ink: #3c462a;           /* тушь на пергаменте */
+    --ink-dim: #767b57;
+    --user-bubble: #3c5231;
+    --user-bubble-2: #33482b;
+    --persona-bubble: #27351d;
+    --persona-bubble-2: #222e1a;
+
+    --font-body: 'Segoe UI', system-ui, -apple-system, Roboto, 'Helvetica Neue', sans-serif;
+    --font-disp: Georgia, 'Palatino Linotype', 'Book Antiqua', 'Times New Roman', serif;
+    --font-mono: ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace;
+
+    /* OPTIONAL: SHELL-ТЕМА — палитра каркаса приложения (левый бар с
+       разделами, верхний топбар) на время, пока открыт экран этой персоны. */
+    --vpc-shell-bg: var(--bg);
+    --vpc-shell-panel: var(--panel);
+    --vpc-shell-text: var(--text);
+    --vpc-shell-dim: var(--dim);
+    --vpc-shell-border: var(--line);
+    --vpc-shell-accent: var(--accent);
+    --vpc-shell-topbar: #1a2413;
+    --vpc-shell-font: var(--font-body);
+    --vpc-shell-font-disp: var(--font-disp);
+    --vpc-shell-font-mono: var(--font-mono);
+    --vpc-shell-radius: 12px;
+    --vpc-shell-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  body {
+    background:
+      radial-gradient(1100px 500px at 50% -10%, rgba(185, 207, 125, 0.07), transparent 60%),
+      radial-gradient(700px 400px at 85% 110%, rgba(227, 184, 94, 0.05), transparent 60%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+  }
+
+  ::selection { background: rgba(185, 207, 125, 0.35); }
+
+  /* Тонкие «мшистые» скроллбары */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border-radius: 8px;
+    border: 2px solid var(--bg);
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent-deep); }
+
+  /* ОБЯЗАТЕЛЬНОЕ переключение экранов */
+  [data-vpc-screen] { display: none; }
+  html[data-vpc-active="chat"] [data-vpc-screen="chat"] { display: flex; }
+  html[data-vpc-active="dossier"] [data-vpc-screen="dossier"] { display: flex; }
+  html[data-vpc-active="room"] [data-vpc-screen="room"] { display: flex; }
+
+  /* ─────────────── Декоративные атомы ─────────────── */
+
+  /* Светлячки (создаёт JS в .firefly-field) */
+  .firefly-field {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .firefly {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #ffe9a8;
+    box-shadow: 0 0 8px 2px rgba(255, 226, 140, 0.75), 0 0 18px 6px rgba(255, 226, 140, 0.25);
+    opacity: 0;
+    animation: firefly-drift var(--ff-dur, 9s) ease-in-out var(--ff-del, 0s) infinite;
+  }
+  @keyframes firefly-drift {
+    0%   { opacity: 0; transform: translate(0, 0) scale(0.7); }
+    12%  { opacity: 0.9; }
+    30%  { opacity: 0.25; transform: translate(var(--ff-x1, 14px), var(--ff-y1, -18px)) scale(1); }
+    55%  { opacity: 0.85; transform: translate(var(--ff-x2, -10px), var(--ff-y2, -34px)) scale(0.8); }
+    80%  { opacity: 0.2; }
+    100% { opacity: 0; transform: translate(0, -46px) scale(0.6); }
+  }
+
+  /* Звёзды (создаёт JS в .star-field) */
+  .star-field {
+    position: absolute;
+    inset: 0 0 45% 0;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .star {
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    border-radius: 50%;
+    background: #f5efd8;
+    opacity: 0.55;
+    animation: star-twinkle var(--st-dur, 4s) ease-in-out var(--st-del, 0s) infinite;
+  }
+  @keyframes star-twinkle {
+    0%, 100% { opacity: 0.15; transform: scale(0.8); }
+    50% { opacity: 0.8; transform: scale(1.2); }
+  }
+
+  /* Лоза с листьями, свисающая сверху */
+  .vine-top {
+    position: absolute;
+    top: -2px;
+    left: 0;
+    right: 0;
+    height: 46px;
+    pointer-events: none;
+    z-index: 2;
+    opacity: 0.9;
+    transform-origin: top center;
+    animation: vine-sway 7s ease-in-out infinite alternate;
+  }
+  @keyframes vine-sway {
+    from { transform: rotate(-0.6deg); }
+    to   { transform: rotate(0.6deg); }
+  }
+
+  /* Листовой разделитель ❧ */
+  .leaf-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--accent-deep);
+    margin: 10px 0;
+  }
+  .leaf-divider::before, .leaf-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--line), transparent);
+  }
+
+  /* Заголовки в духе рукописных свитков */
+  .script-title {
+    font-family: var(--font-disp);
+    font-variant: small-caps;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+
+  /* Кнопки-«листья» */
+  .leaf-btn {
+    background: linear-gradient(180deg, #8ba658, #6c8440);
+    border: 1px solid #52642e;
+    border-bottom-width: 3px;
+    color: #fbf6e2;
+    font-family: var(--font-body);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 8px 18px;
+    border-radius: 999px 999px 999px 4px;
+    cursor: pointer;
+    text-shadow: 0 1px 2px rgba(30, 40, 15, 0.5);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+  }
+  .leaf-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+  .leaf-btn:active { transform: translateY(1px); border-bottom-width: 1px; }
+
+  .ghost-btn {
+    background: rgba(185, 207, 125, 0.06);
+    border: 1px solid var(--line);
+    color: var(--dim);
+    font: inherit;
+    padding: 7px 13px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .ghost-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent-deep);
+    background: rgba(185, 207, 125, 0.12);
+  }
+
+  /* Маленькие кнопки действий над элементами */
+  .item-btn {
+    background: rgba(185, 207, 125, 0.07);
+    border: 1px solid var(--line);
+    color: var(--dim);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1;
+    padding: 3px 8px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .item-btn:hover { color: var(--amber); border-color: var(--amber-deep); }
+
+  .item-row { display: flex; align-items: baseline; gap: 8px; }
+  .item-row .grow { flex: 1; min-width: 0; }
+
+  /* Поля ввода — «выемки в коре» */
+  .bark-input, .vpc-form input, .gen-field input, .provider-row input, .chat-input {
+    background: #101709;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    color: var(--text);
+    font: inherit;
+    padding: 9px 12px;
+    outline: none;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .bark-input:focus, .vpc-form input:focus, .gen-field input:focus,
+  .provider-row input:focus, .chat-input:focus {
+    border-color: var(--accent-deep);
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5), 0 0 0 3px rgba(185, 207, 125, 0.12);
+  }
+  ::placeholder { color: #6d7a55; font-style: italic; }
+
+  /* ─────────────── Экран чата ─────────────── */
+
+  .chat { height: 100vh; width: 100%; }
+
+  /* Левый сайдбар — «Роща» со списком персон */
+  .chat-left {
+    width: 232px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--line-soft);
+    background:
+      radial-gradient(300px 200px at 50% 0%, rgba(185, 207, 125, 0.06), transparent 70%),
+      linear-gradient(180deg, var(--panel), #1a2613);
+    overflow-y: auto;
+    padding: 14px 12px 18px;
+    position: relative;
+  }
+
+  .grove-head {
+    text-align: center;
+    padding: 4px 4px 12px;
+    border-bottom: 1px dashed var(--line);
+    margin-bottom: 10px;
+  }
+  .grove-head .script-title { font-size: 17px; display: block; }
+  .grove-count { color: var(--dim); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .grove-count b { color: var(--amber); font-weight: 700; }
+
+  .pl-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    background: rgba(185, 207, 125, 0.03);
+    border: 1px solid transparent;
+    border-radius: 12px;
+    color: var(--text);
+    font: inherit;
+    padding: 9px 11px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  }
+  .pl-item:hover { background: rgba(185, 207, 125, 0.09); transform: translateX(2px); }
+  .pl-item[data-active] {
+    background: linear-gradient(90deg, rgba(185, 207, 125, 0.16), rgba(185, 207, 125, 0.05));
+    border-color: var(--accent-deep);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .pl-leaf { color: var(--accent-deep); font-size: 15px; flex-shrink: 0; }
+  .pl-item[data-active] .pl-leaf { color: var(--amber); }
+  .pl-name {
+    display: block;
+    font-family: var(--font-disp);
+    font-weight: 700;
+    font-size: 14.5px;
+    letter-spacing: 0.02em;
+  }
+  .pl-status { display: block; color: var(--dim); font-size: 11.5px; }
+
+  .grove-foot {
+    margin-top: 14px;
+    text-align: center;
+    color: var(--accent-deep);
+    font-size: 18px;
+    letter-spacing: 8px;
+    opacity: 0.7;
+  }
+
+  /* Центральная колонка */
+  .chat-center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    position: relative;
+  }
+  .chat-center > * { position: relative; z-index: 1; }
+
+  .chat-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--line-soft);
+    background:
+      linear-gradient(180deg, rgba(33, 46, 26, 0.92), rgba(26, 36, 19, 0.92));
+    backdrop-filter: blur(2px);
+  }
+
+  /* Аватар в «лиственном» кольце */
+  .chat-avatar {
+    width: 46px;
+    height: 46px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 2px solid var(--accent-deep);
+    outline: 2px dashed rgba(185, 207, 125, 0.35);
+    outline-offset: 3px;
+    color: var(--amber);
+    font-family: var(--font-disp);
+    font-size: 20px;
+    background:
+      radial-gradient(circle at 35% 30%, rgba(185, 207, 125, 0.25), transparent 60%),
+      var(--panel-2);
+    box-shadow: 0 0 14px rgba(185, 207, 125, 0.25);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .chat-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+
+  .chat-name {
+    font-family: var(--font-disp);
+    font-weight: 700;
+    font-size: 19px;
+    letter-spacing: 0.03em;
+    color: var(--text);
+  }
+  .chat-sub { color: var(--dim); font-size: 12px; }
+  .chat-sub .dot { color: var(--accent-deep); margin: 0 4px; }
+
+  .chat-dossier-btn { margin-left: auto; }
+
+  .chat-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 22px 22px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  /* Сообщения — листья на воде */
+  .msg {
+    max-width: 74%;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    background:
+      radial-gradient(220px 90px at 20% 0%, rgba(185, 207, 125, 0.07), transparent 70%),
+      linear-gradient(180deg, var(--persona-bubble), var(--persona-bubble-2));
+    border-radius: 4px 18px 18px 18px;
+    align-self: flex-start;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    animation: msg-in 0.28s ease both;
+  }
+  @keyframes msg-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .msg[data-role="user"] {
+    align-self: flex-end;
+    background:
+      radial-gradient(220px 90px at 80% 0%, rgba(227, 184, 94, 0.08), transparent 70%),
+      linear-gradient(180deg, var(--user-bubble), var(--user-bubble-2));
+    border-color: #4d6539;
+    border-radius: 18px 4px 18px 18px;
+  }
+
+  .msg-quote {
+    margin-bottom: 7px;
+    padding: 4px 0 4px 10px;
+    border-left: 2px solid var(--amber-deep);
+    color: var(--dim);
+    font-size: 12px;
+    font-style: italic;
+  }
+  .msg-quote b { color: var(--amber); font-style: normal; margin-right: 5px; }
+
+  .msg-text { white-space: pre-wrap; word-break: break-word; }
+  .msg-image {
+    max-width: 260px;
+    display: block;
+    margin-top: 8px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+  .msg-time {
+    margin-top: 5px;
+    color: #77835c;
+    font-size: 10.5px;
+    text-align: right;
+    font-family: var(--font-mono);
+  }
+
+  .msg { position: relative; }
+  .msg-reply-btn {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    opacity: 0;
+    transition: opacity 0.15s, transform 0.15s;
+    background: var(--panel-3);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  }
+  .msg:hover .msg-reply-btn { opacity: 1; }
+  .msg-reply-btn:hover { transform: rotate(-8deg); }
+
+  /* Плашки ответа и вложения над полем ввода */
+  .chat-reply-bar, .chat-attach-bar {
+    align-items: center;
+    gap: 10px;
+    padding: 8px 20px;
+    border-top: 1px dashed var(--line);
+    background: rgba(26, 36, 19, 0.9);
+    color: var(--dim);
+    font-size: 12.5px;
+  }
+  .chat-reply-bar { display: flex; }
+  .chat-reply-bar[hidden] { display: none; }
+  .chat-attach-bar { display: none; }
+  .chat-attach-bar:has([data-vpc="attach-preview"]:not([hidden])) { display: flex; }
+  .reply-rune { color: var(--amber); }
+  .chat-reply-bar b { color: var(--amber); font-family: var(--font-disp); }
+  .chat-reply-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+    font-style: italic;
+  }
+  .chat-attach-thumb {
+    max-height: 48px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+  }
+  .attach-caption { color: var(--dim); font-size: 12px; font-style: italic; }
+
+  /* Индикатор печати — три листочка */
+  .chat-typing {
+    display: none;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 22px;
+    color: var(--dim);
+    font-size: 12.5px;
+    font-style: italic;
+  }
+  .chat-typing[data-active] { display: flex; }
+  .typing-leaf {
+    width: 7px;
+    height: 7px;
+    border-radius: 50% 0 50% 50%;
+    background: var(--accent);
+    animation: leaf-pulse 1.1s ease-in-out infinite;
+  }
+  .typing-leaf:nth-child(2) { animation-delay: 0.18s; }
+  .typing-leaf:nth-child(3) { animation-delay: 0.36s; }
+  @keyframes leaf-pulse {
+    0%, 100% { transform: scale(0.6) rotate(-45deg); opacity: 0.35; }
+    50% { transform: scale(1) rotate(-45deg); opacity: 1; }
+  }
+
+  .chat-bar {
+    display: flex;
+    gap: 9px;
+    align-items: center;
+    padding: 13px 20px;
+    border-top: 1px solid var(--line-soft);
+    background: linear-gradient(180deg, rgba(33, 46, 26, 0.95), rgba(24, 33, 17, 0.95));
+  }
+  .chat-input { flex: 1; border-radius: 999px; padding: 10px 16px; }
+  .chat-send { white-space: nowrap; }
+  .chat-tool {
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 15px;
+  }
+
+  /* Правый сайдбар — «Шёпот рощи» */
+  .chat-right {
+    width: 268px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--line-soft);
+    background:
+      radial-gradient(320px 220px at 50% 0%, rgba(227, 184, 94, 0.05), transparent 70%),
+      linear-gradient(180deg, var(--panel), #1a2613);
+    overflow-y: auto;
+    padding: 16px 16px 22px;
+    position: relative;
+  }
+
+  .ctx-title {
+    font-family: var(--font-disp);
+    font-variant: small-caps;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    font-size: 13.5px;
+    margin: 16px 0 5px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .ctx-title::before { content: '❧'; color: var(--accent-deep); font-size: 12px; }
+  .ctx-title:first-child { margin-top: 0; }
+  .ctx-line { font-size: 13px; }
+  .ctx-note { color: var(--dim); font-size: 12.5px; }
+  .ctx-trend { color: var(--amber); font-size: 12px; margin-left: 4px; }
+
+  .todo-item { padding: 3px 0; }
+  .todo-item[data-done] { opacity: 0.5; }
+  .todo-item[data-done] .grow { text-decoration: line-through; }
+
+  .feature-badge {
+    display: inline-block;
+    border: 1px solid var(--line);
+    background: rgba(185, 207, 125, 0.06);
+    color: var(--dim);
+    font-size: 11px;
+    padding: 2px 9px;
+    margin: 0 5px 6px 0;
+    border-radius: 999px;
+  }
+  .feature-badge::before { content: '✦ '; color: var(--accent-deep); }
+
+  /* Сворачивающиеся списки сайдбара (<details>) */
+  .ctx-details {
+    margin: 14px 0 0;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: rgba(16, 23, 9, 0.35);
+    padding: 8px 11px;
+  }
+  .ctx-details summary {
+    cursor: pointer;
+    color: var(--accent);
+    font-family: var(--font-disp);
+    font-variant: small-caps;
+    letter-spacing: 0.08em;
+    font-size: 13px;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .ctx-details summary::-webkit-details-marker { display: none; }
+  .ctx-details summary::before {
+    content: '❯';
+    color: var(--accent-deep);
+    font-size: 10px;
+    transition: transform 0.2s;
+  }
+  .ctx-details[open] summary::before { transform: rotate(90deg); }
+  .ctx-details summary .cnt {
+    margin-left: auto;
+    color: var(--amber);
+    background: rgba(227, 184, 94, 0.1);
+    border: 1px solid rgba(227, 184, 94, 0.3);
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-family: var(--font-mono);
+    padding: 1px 8px;
+  }
+  .ctx-details[open] summary { margin-bottom: 6px; }
+
+  @media (max-width: 980px) { .chat-right { display: none; } }
+  @media (max-width: 720px) { .chat-left { display: none; } }
+</style>
+<style>
+  /* ─────────────── Экран досье — раскрытый гримуар ─────────────── */
+
+  .dossier {
+    height: 100vh;
+    width: 100%;
+    flex-direction: column;
+    background:
+      radial-gradient(900px 400px at 50% -10%, rgba(157, 123, 181, 0.06), transparent 60%),
+      radial-gradient(1100px 500px at 50% -10%, rgba(185, 207, 125, 0.06), transparent 60%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+  }
+
+  .dossier-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--line-soft);
+    background: linear-gradient(180deg, rgba(33, 46, 26, 0.92), rgba(26, 36, 19, 0.92));
+  }
+  .dossier-close { margin-left: auto; }
+
+  /* Вкладки — цветные «закладки» RPG-меню */
+  .dossier-tabs {
+    display: flex;
+    gap: 6px;
+    padding: 12px 20px 0;
+    border-bottom: 1px solid var(--line-soft);
+    background: linear-gradient(180deg, rgba(26, 36, 19, 0.7), rgba(22, 30, 16, 0.7));
+    flex-wrap: wrap;
+  }
+  .dossier-tab {
+    background: linear-gradient(180deg, var(--paper-2), #d8caa2);
+    border: 1px solid var(--paper-line);
+    border-bottom: none;
+    border-radius: 12px 12px 0 0;
+    color: var(--ink-dim);
+    font-family: var(--font-disp);
+    font-variant: small-caps;
+    letter-spacing: 0.06em;
+    font-size: 13.5px;
+    padding: 8px 16px 9px;
+    cursor: pointer;
+    transform: translateY(1px);
+    transition: transform 0.15s, filter 0.15s, color 0.15s;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  }
+  .dossier-tab:hover { transform: translateY(-1px); filter: brightness(1.04); color: var(--ink); }
+  .dossier-tab.tab-active {
+    transform: translateY(0);
+    color: #fbf6e2;
+    text-shadow: 0 1px 2px rgba(30, 40, 15, 0.55);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 -4px 12px rgba(0, 0, 0, 0.25);
+  }
+  .dossier-tab[data-tab="memory"].tab-active     { background: linear-gradient(180deg, #8ba658, #6c8440); border-color: #52642e; }
+  .dossier-tab[data-tab="tasks"].tab-active      { background: linear-gradient(180deg, #b08d4f, #8a6a38); border-color: #6b532c; }
+  .dossier-tab[data-tab="initiative"].tab-active { background: linear-gradient(180deg, #6f9a80, #527a63); border-color: #40604c; }
+  .dossier-tab[data-tab="learning"].tab-active   { background: linear-gradient(180deg, #9d7bb5, #7a5c90); border-color: #5e4670; }
+  .dossier-tab[data-tab="files"].tab-active      { background: linear-gradient(180deg, #7d94b0, #5c7189); border-color: #475869; }
+  .dossier-tab[data-tab="settings"].tab-active   { background: linear-gradient(180deg, #a89070, #826d51); border-color: #66553e; }
+  .dossier-tab .tab-cnt {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    background: rgba(0, 0, 0, 0.16);
+    border-radius: 999px;
+    padding: 0 7px;
+    margin-left: 2px;
+  }
+  .dossier-tab.tab-active .tab-cnt { background: rgba(0, 0, 0, 0.28); color: #ffe9a8; }
+
+  .dossier-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 22px 24px 30px;
+    position: relative;
+  }
+
+  .dossier-page { display: none; }
+  .dossier-page.page-active {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    align-content: start;
+    animation: page-in 0.3s ease both;
+  }
+  @keyframes page-in {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @media (max-width: 860px) { .dossier-page.page-active { grid-template-columns: 1fr; } }
+
+  /* Пергаментные карточки */
+  .dossier-card {
+    position: relative;
+    color: var(--ink);
+    background:
+      radial-gradient(300px 140px at 90% -10%, rgba(255, 255, 255, 0.5), transparent 60%),
+      radial-gradient(200px 120px at 0% 110%, rgba(179, 162, 118, 0.35), transparent 60%),
+      linear-gradient(180deg, var(--paper), var(--paper-2));
+    border: 1px solid var(--paper-line);
+    border-radius: 14px;
+    padding: 16px 18px 18px;
+    box-shadow:
+      0 8px 22px rgba(0, 0, 0, 0.45),
+      inset 0 0 40px rgba(179, 162, 118, 0.18);
+  }
+  /* Листочек в углу карточки */
+  .dossier-card::after {
+    content: '❦';
+    position: absolute;
+    right: 10px;
+    top: 6px;
+    color: rgba(118, 123, 87, 0.5);
+    font-size: 15px;
+    pointer-events: none;
+  }
+
+  .dossier-card-title {
+    font-family: var(--font-disp);
+    font-variant: small-caps;
+    letter-spacing: 0.08em;
+    font-size: 16px;
+    color: #55632f;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(118, 123, 87, 0.35);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .dossier-card-title::before { content: '❧'; color: #8a915f; font-size: 13px; }
+  .dossier-card-title .card-cnt {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #8a915f;
+    background: rgba(138, 145, 95, 0.14);
+    border: 1px solid rgba(138, 145, 95, 0.35);
+    border-radius: 999px;
+    padding: 0 8px;
+  }
+
+  .dossier-card .item-btn {
+    background: rgba(108, 132, 64, 0.1);
+    border-color: rgba(108, 132, 64, 0.45);
+    color: #6c7a45;
+  }
+  .dossier-card .item-btn:hover { color: #a35b2e; border-color: #a37b45; }
+
+  /* Формы записи на пергаменте */
+  .vpc-form { display: flex; gap: 7px; margin-top: 11px; flex-wrap: wrap; }
+  .vpc-form input {
+    flex: 1;
+    min-width: 0;
+    background: #fbf5e0;
+    border: 1px solid var(--paper-line);
+    border-radius: 9px;
+    color: var(--ink);
+    font: inherit;
+    font-size: 12.5px;
+    padding: 7px 10px;
+    outline: none;
+    box-shadow: inset 0 2px 4px rgba(179, 162, 118, 0.25);
+  }
+  .vpc-form input:focus { border-color: #8a915f; box-shadow: inset 0 2px 4px rgba(179, 162, 118, 0.25), 0 0 0 3px rgba(138, 145, 95, 0.18); }
+  .vpc-form input::placeholder { color: #a19a76; font-style: italic; }
+  .vpc-form button {
+    background: linear-gradient(180deg, #8ba658, #6c8440);
+    border: 1px solid #52642e;
+    border-bottom-width: 2px;
+    color: #fbf6e2;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 7px 13px;
+    border-radius: 9px;
+    cursor: pointer;
+    text-shadow: 0 1px 1px rgba(30, 40, 15, 0.5);
+    transition: filter 0.15s, transform 0.15s;
+  }
+  .vpc-form button:hover { filter: brightness(1.08); transform: translateY(-1px); }
+
+  /* Элементы списков досье */
+  .fact-item {
+    padding: 7px 0;
+    border-bottom: 1px dashed rgba(138, 145, 95, 0.35);
+  }
+  .fact-item:last-child { border-bottom: none; }
+  .fact-category {
+    color: #6c8440;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 700;
+  }
+  .fact-text { font-size: 13px; }
+
+  .reminder-item { padding: 4px 0; }
+  .reminder-item[data-active="false"] { opacity: 0.5; }
+  .reminder-item[data-active="false"] .grow { text-decoration: line-through; }
+  .reminder-time { color: #a3833c; font-family: var(--font-mono); font-size: 11.5px; flex-shrink: 0; }
+  .reminder-repeat { color: var(--ink-dim); font-size: 11px; flex-shrink: 0; }
+
+  .ini-item, .diary-item { padding: 7px 0; border-bottom: 1px dashed rgba(138, 145, 95, 0.3); }
+  .ini-item:last-child, .diary-item:last-child { border-bottom: none; }
+  .ini-type {
+    color: #527a63;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    margin-right: 6px;
+  }
+  .ini-time, .diary-date { color: var(--ink-dim); font-size: 11px; margin-top: 2px; }
+  .diary-date { font-family: var(--font-disp); font-style: italic; }
+
+  .stm-item { padding: 4px 0; }
+  .stm-author {
+    color: #6c8440;
+    font-size: 11px;
+    font-family: var(--font-disp);
+    font-weight: 700;
+    min-width: 66px;
+    flex-shrink: 0;
+  }
+  .stm-item[data-role="user"] .stm-author { color: #a3833c; }
+  .stm-role {
+    color: var(--ink-dim);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border: 1px solid rgba(138, 145, 95, 0.4);
+    border-radius: 999px;
+    padding: 0 7px;
+    flex-shrink: 0;
+  }
+  .stm-time { color: var(--ink-dim); font-size: 10.5px; font-family: var(--font-mono); flex-shrink: 0; }
+  .stm-text { font-size: 12.5px; }
+
+  .course-item {
+    padding: 9px 11px;
+    margin-bottom: 8px;
+    border: 1px solid rgba(138, 145, 95, 0.4);
+    border-radius: 10px;
+    background: rgba(251, 245, 224, 0.55);
+  }
+  .course-subject { font-family: var(--font-disp); font-weight: 700; font-size: 14.5px; }
+  .course-status {
+    color: #6c8440;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    border: 1px solid rgba(108, 132, 64, 0.4);
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+  .course-item[data-status="paused"] .course-status { color: #a3833c; border-color: rgba(163, 131, 60, 0.45); }
+  .course-item[data-status="finished"] .course-status { color: var(--ink-dim); border-color: rgba(118, 123, 87, 0.4); }
+  .course-item[data-status="finished"] { opacity: 0.65; }
+  .course-stats { color: var(--ink-dim); font-size: 12px; margin: 5px 0 3px; }
+  .course-stats b { color: #55632f; }
+
+  .file-row { padding: 8px 0; border-bottom: 1px dashed rgba(138, 145, 95, 0.35); }
+  .file-row:last-child { border-bottom: none; }
+  .file-name { font-family: var(--font-disp); font-weight: 700; }
+  .file-name::before { content: '🜄 '; color: #7d94b0; }
+  .file-meta { color: var(--ink-dim); font-size: 11px; }
+
+  .provider-row { display: flex; align-items: center; gap: 9px; padding: 5px 0; }
+  .provider-name { font-family: var(--font-disp); font-weight: 700; flex-shrink: 0; }
+  .provider-local { color: #6c8440; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0; }
+  .provider-row input {
+    flex: 1;
+    min-width: 0;
+    background: #fbf5e0;
+    border: 1px solid var(--paper-line);
+    border-radius: 9px;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 6px 10px;
+    outline: none;
+  }
+  .provider-row input:focus { border-color: #8a915f; }
+
+  .gen-grid { display: flex; gap: 14px; flex-wrap: wrap; }
+  .gen-field label {
+    display: block;
+    color: #55632f;
+    font-family: var(--font-disp);
+    font-variant: small-caps;
+    letter-spacing: 0.06em;
+    font-size: 12px;
+    margin-bottom: 3px;
+  }
+  .gen-field input {
+    width: 104px;
+    background: #fbf5e0;
+    border: 1px solid var(--paper-line);
+    border-radius: 9px;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    padding: 6px 10px;
+    outline: none;
+  }
+  .gen-field input:focus { border-color: #8a915f; }
+
+  /* Опасная зона — «тёмная чаща» */
+  .danger-card {
+    background:
+      radial-gradient(300px 140px at 90% -10%, rgba(255, 255, 255, 0.25), transparent 60%),
+      linear-gradient(180deg, #e8d3bd, #dcc3a6);
+    border-color: #b3815c;
+  }
+  .danger-card .dossier-card-title { color: #8a4a2c; border-bottom-color: rgba(138, 74, 44, 0.35); }
+  .danger-card .dossier-card-title::before { content: '☠'; color: #a35b2e; }
+  .danger-btn {
+    background: linear-gradient(180deg, #c96f4a, #a3512f);
+    border: 1px solid #7d3c20;
+    border-bottom-width: 3px;
+    color: #fbf0e2;
+    font: inherit;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 9px 18px;
+    border-radius: 999px 4px 999px 999px;
+    cursor: pointer;
+    text-shadow: 0 1px 2px rgba(60, 25, 10, 0.5);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
+    transition: filter 0.15s, transform 0.15s;
+  }
+  .danger-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+
+  /* ─────────────── Экран комнаты — лесная поляна ─────────────── */
+
+  .room { height: 100vh; width: 100%; flex-direction: column; }
+
+  .room-scene {
+    position: relative;
+    flex: 1;
+    min-height: 340px;
+    overflow: hidden;
+    border-bottom: 1px solid var(--line-soft);
+    background:
+      radial-gradient(240px 240px at 78% 18%, rgba(245, 239, 216, 0.16), transparent 55%),
+      linear-gradient(180deg, #101a14 0%, #15241a 38%, #1d2f1c 70%, #16241a 100%);
+  }
+
+  .room-bg-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: 1;
+  }
+
+  /* Луна */
+  .room-moon {
+    position: absolute;
+    top: 9%;
+    right: 20%;
+    width: 74px;
+    height: 74px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 38% 34%, #fbf6e0, #e8ddb5 62%, #d3c795);
+    box-shadow: 0 0 30px 8px rgba(245, 239, 216, 0.28), 0 0 90px 30px rgba(245, 239, 216, 0.1);
+    z-index: 1;
+  }
+  .room-moon::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background:
+      radial-gradient(10px 10px at 30% 55%, rgba(179, 168, 118, 0.5), transparent 70%),
+      radial-gradient(7px 7px at 62% 38%, rgba(179, 168, 118, 0.4), transparent 70%),
+      radial-gradient(5px 5px at 55% 68%, rgba(179, 168, 118, 0.35), transparent 70%);
+  }
+
+  /* Лесные силуэты (inline SVG) */
+  .room-forest {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 78%;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .room-floor {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 15%;
+    background: linear-gradient(180deg, #223618, #15220f);
+    border-top: 1px solid #33482a;
+    z-index: 2;
+  }
+
+  /* Аватар — светящийся дух; приложение двигает через --vpc-x / --vpc-y */
+  .room-avatar {
+    position: absolute;
+    left: var(--vpc-x, 50%);
+    top: var(--vpc-y, 82%);
+    transform: translate(-50%, -100%);
+    transition: left 1.4s cubic-bezier(0.4, 0, 0.2, 1), top 1.4s cubic-bezier(0.4, 0, 0.2, 1);
+    width: 64px;
+    height: 64px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    outline: 2px dashed rgba(185, 207, 125, 0.4);
+    outline-offset: 4px;
+    color: var(--amber);
+    font-family: var(--font-disp);
+    font-size: 26px;
+    background:
+      radial-gradient(circle at 35% 30%, rgba(185, 207, 125, 0.45), transparent 65%),
+      rgba(23, 34, 17, 0.85);
+    box-shadow: 0 0 22px rgba(185, 207, 125, 0.45), 0 0 60px rgba(227, 184, 94, 0.18);
+    z-index: 3;
+    overflow: visible;
+    animation: spirit-hover 3.4s ease-in-out infinite;
+  }
+  @keyframes spirit-hover {
+    0%, 100% { margin-top: 0; }
+    50% { margin-top: -7px; }
+  }
+  .room-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+  /* Отблеск под аватаром */
+  .room-avatar::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: -14px;
+    transform: translateX(-50%);
+    width: 52px;
+    height: 10px;
+    border-radius: 50%;
+    background: radial-gradient(ellipse, rgba(185, 207, 125, 0.35), transparent 70%);
+  }
+
+  .room-pastime-plate {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    padding: 8px 14px;
+    background: rgba(16, 24, 12, 0.78);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 12.5px;
+    color: var(--dim);
+    backdrop-filter: blur(3px);
+    z-index: 4;
+  }
+  .room-pastime-plate::before { content: '❧ '; color: var(--accent-deep); }
+  .room-pastime-plate .plate-name { font-family: var(--font-disp); color: var(--text); font-weight: 700; }
+  .room-pastime-plate .val { color: var(--amber); font-style: italic; }
+
+  /* Питомец — лесной зверёк */
+  .room-pet {
+    position: absolute;
+    right: 13%;
+    bottom: 10%;
+    color: var(--dim);
+    font-size: 11.5px;
+    text-align: center;
+    z-index: 3;
+    animation: pet-hop 2.8s ease-in-out infinite;
+  }
+  @keyframes pet-hop {
+    0%, 100% { transform: translateY(0); }
+    12% { transform: translateY(-5px); }
+    24% { transform: translateY(0); }
+  }
+  .room-pet::before { content: '🐈'; display: block; font-size: 30px; filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.5)); }
+  .room-pet[data-pet="crow"]::before { content: '🐦‍⬛'; }
+  .room-pet span {
+    background: rgba(16, 24, 12, 0.7);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 1px 9px;
+    font-style: italic;
+  }
+
+  /* Виджеты состояния — «камни у ручья» */
+  .room-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    padding: 14px 20px;
+    background: linear-gradient(180deg, rgba(26, 36, 19, 0.9), rgba(22, 30, 16, 0.9));
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .room-stat {
+    background: rgba(185, 207, 125, 0.05);
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    padding: 10px 14px;
+  }
+  .room-stat-label {
+    color: var(--dim);
+    font-family: var(--font-disp);
+    font-variant: small-caps;
+    letter-spacing: 0.08em;
+    font-size: 12px;
+  }
+  .room-stat-label::before { content: '✦ '; color: var(--accent-deep); }
+  .room-stat-value { margin-top: 3px; font-size: 14.5px; color: var(--text); }
+
+  .room-lists {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    padding: 18px 20px 26px;
+    overflow-y: auto;
+    flex: 1;
+  }
+  @media (max-width: 760px) { .room-lists { grid-template-columns: 1fr; } }
+
+  .room-card {
+    border: 1px solid var(--line-soft);
+    border-radius: 14px;
+    background:
+      radial-gradient(280px 130px at 85% -10%, rgba(185, 207, 125, 0.06), transparent 60%),
+      linear-gradient(180deg, var(--panel), #1c2814);
+    padding: 15px 17px 17px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  }
+  .room-card-title {
+    font-family: var(--font-disp);
+    font-variant: small-caps;
+    letter-spacing: 0.08em;
+    font-size: 15.5px;
+    color: var(--accent);
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px dashed var(--line);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .room-card-title::before { content: '❧'; color: var(--accent-deep); font-size: 13px; }
+  .room-card-title .card-cnt {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--amber);
+    background: rgba(227, 184, 94, 0.1);
+    border: 1px solid rgba(227, 184, 94, 0.3);
+    border-radius: 999px;
+    padding: 0 8px;
+  }
+
+  .feed-item { display: flex; gap: 11px; padding: 5px 0; border-bottom: 1px dashed var(--line-soft); }
+  .feed-item:last-child { border-bottom: none; }
+  .feed-time { color: var(--amber-deep); font-family: var(--font-mono); font-size: 11px; flex-shrink: 0; padding-top: 2px; }
+  .feed-text { font-size: 13px; color: var(--text); }
+
+  .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); gap: 10px; }
+  .inv-item {
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    padding: 10px 11px;
+    background: rgba(16, 23, 9, 0.4);
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .inv-item:hover { border-color: var(--accent-deep); transform: translateY(-2px); }
+  .inv-icon { font-size: 22px; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5)); }
+  .inv-name { margin-top: 5px; font-family: var(--font-disp); font-weight: 700; font-size: 13px; }
+  .inv-desc { color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .inv-tag {
+    display: inline-block;
+    margin-top: 5px;
+    color: var(--amber);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border: 1px solid rgba(227, 184, 94, 0.35);
+    border-radius: 999px;
+    padding: 0 7px;
+  }
+
+  .room-card .vpc-form input {
+    background: #101709;
+    border-color: var(--line);
+    color: var(--text);
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5);
+  }
+  .room-card .vpc-form input::placeholder { color: #6d7a55; }
+</style>
+</head>
+<body>
+
+<!-- ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ЭКРАН ЧАТА · БЕСЕДА У КОСТРА ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ -->
+<section class="chat" data-vpc-screen="chat">
+
+  <!-- OPTIONAL: левый сайдбар — обитатели рощи. Клик по элементу
+       переключает персону (обрабатывает bridge). -->
+  <aside class="chat-left">
+    <div class="grove-head">
+      <span class="script-title">Обитатели рощи</span>
+      <span class="grove-count">духов в роще · <b data-vpc-count="personas">0</b></span>
+    </div>
+    <div data-vpc="persona-list"></div>
+    <template data-vpc="persona-item">
+      <button type="button" class="pl-item">
+        <span class="pl-leaf">❧</span>
+        <span>
+          <span class="pl-name" data-vpc-field="name"></span>
+          <span class="pl-status" data-vpc-field="status"></span>
+        </span>
+      </button>
+    </template>
+    <div class="grove-foot">❦ ✦ ❦</div>
+  </aside>
+
+  <div class="chat-center">
+    <div class="firefly-field" aria-hidden="true"></div>
+
+    <!-- Свисающая лоза (декор) -->
+    <svg class="vine-top" viewBox="0 0 1200 46" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 0 H1200" stroke="#33462a" stroke-width="3" fill="none"/>
+      <g fill="#41542f">
+        <path d="M60 0 q4 18 -6 30 q14 -4 16 -22 q2 -8 -10 -8 z"/>
+        <path d="M150 0 q-4 22 8 34 q-16 -6 -18 -26 q-1 -8 10 -8 z"/>
+        <path d="M260 0 q5 15 -5 26 q13 -4 15 -19 q1 -7 -10 -7 z"/>
+        <path d="M420 0 q-5 20 7 32 q-15 -5 -17 -24 q-1 -8 10 -8 z"/>
+        <path d="M560 0 q4 17 -6 28 q14 -4 16 -21 q1 -7 -10 -7 z"/>
+        <path d="M700 0 q-4 21 8 33 q-16 -6 -18 -25 q-1 -8 10 -8 z"/>
+        <path d="M840 0 q5 16 -5 27 q13 -4 15 -20 q1 -7 -10 -7 z"/>
+        <path d="M980 0 q-5 20 7 31 q-15 -5 -17 -23 q-1 -8 10 -8 z"/>
+        <path d="M1110 0 q4 18 -6 30 q14 -4 16 -22 q1 -8 -10 -8 z"/>
+      </g>
+      <g fill="#7f9a4d">
+        <circle cx="60" cy="4" r="2.4"/><circle cx="150" cy="4" r="2.4"/>
+        <circle cx="260" cy="4" r="2.4"/><circle cx="420" cy="4" r="2.4"/>
+        <circle cx="560" cy="4" r="2.4"/><circle cx="700" cy="4" r="2.4"/>
+        <circle cx="840" cy="4" r="2.4"/><circle cx="980" cy="4" r="2.4"/>
+        <circle cx="1110" cy="4" r="2.4"/>
+      </g>
+    </svg>
+
+    <header class="chat-head">
+      <!-- OPTIONAL: аватар персоны. Если это не <img>, приложение
+           подставит первую букву имени текстом. -->
+      <div class="chat-avatar" data-vpc="persona-avatar">?</div>
+      <div>
+        <!-- OPTIONAL: имя, статус, модель персоны -->
+        <div class="chat-name" data-vpc="persona-name">…</div>
+        <div class="chat-sub">
+          <span data-vpc="persona-status">…</span><span class="dot">✦</span><span data-vpc="persona-model">…</span>
+        </div>
+      </div>
+      <!-- OPTIONAL: клик = открыть досье -->
+      <button type="button" class="leaf-btn chat-dossier-btn" data-vpc="open-dossier">❦ Гримуар</button>
+    </header>
+
+    <!-- REQUIRED: контейнер ленты сообщений. Атрибут data-vpc не трогать.
+         Сюда приложение добавляет клоны шаблона сообщения ниже. -->
+    <main class="chat-log" data-vpc="messages"></main>
+
+    <!-- REQUIRED: шаблон ОДНОГО сообщения. Корню клона выставляется
+         data-role="user" или "persona". Пустые поля удаляются из клона. -->
+    <template data-vpc="message">
+      <div class="msg">
+        <!-- OPTIONAL: клик = ответить на это сообщение (bridge знает id) -->
+        <button type="button" class="item-btn msg-reply-btn" data-vpc-item-action="reply" title="Ответить шёпотом">❧</button>
+        <!-- data-vpc-optional: если цитаты нет, приложение удалит этот блок целиком -->
+        <div class="msg-quote" data-vpc-optional>
+          <b data-vpc-field="quote-author"></b>
+          <span data-vpc-field="quote-text"></span>
+        </div>
+        <div class="msg-text" data-vpc-field="text"></div>
+        <img class="msg-image" data-vpc-field="image" alt="" />
+        <div class="msg-time" data-vpc-field="time"></div>
+      </div>
+    </template>
+
+    <!-- OPTIONAL: индикатор «печатает…»; виден при атрибуте data-active -->
+    <div class="chat-typing" data-vpc="typing-indicator">
+      <span class="typing-leaf"></span><span class="typing-leaf"></span><span class="typing-leaf"></span>
+      дух шуршит листвой…
+    </div>
+
+    <!-- OPTIONAL: плашка «ответ на сообщение»; приложение само ставит/снимает
+         hidden и заполняет поля reply-author / reply-text -->
+    <div class="chat-reply-bar" data-vpc="reply-bar" hidden>
+      <span class="reply-rune">❧</span>
+      <b data-vpc-field="reply-author"></b>
+      <span class="chat-reply-text" data-vpc-field="reply-text"></span>
+      <button type="button" class="item-btn" data-vpc-action="cancel-reply" title="Отменить ответ">✕</button>
+    </div>
+
+    <!-- OPTIONAL: превью прикреплённой картинки (файл выбирает bridge) -->
+    <div class="chat-attach-bar">
+      <img class="chat-attach-thumb" data-vpc="attach-preview" alt="" hidden />
+      <span class="attach-caption">к сообщению привязан образ…</span>
+      <button type="button" class="item-btn" data-vpc="cancel-attach" title="Отвязать образ">✕</button>
+    </div>
+
+    <div class="chat-bar">
+      <!-- OPTIONAL: клик по этой кнопке = «очистить диалог» -->
+      <button type="button" class="ghost-btn chat-tool" data-vpc="clear-chat" title="Сжечь переписку">🍂</button>
+      <!-- OPTIONAL: клик = прикрепить картинку -->
+      <button type="button" class="ghost-btn chat-tool" data-vpc="attach-image" title="Привязать образ">❀</button>
+      <!-- REQUIRED: поле ввода. Enter = отправка. -->
+      <input class="chat-input" data-vpc="input" type="text" placeholder="Нашепти духу леса…" />
+      <!-- REQUIRED: кнопка отправки. Клик обрабатывает bridge. -->
+      <button type="button" class="leaf-btn chat-send" data-vpc="send">Шепнуть ➤</button>
+    </div>
+  </div>
+
+  <!-- OPTIONAL: правый сайдбар — шёпот рощи -->
+  <aside class="chat-right">
+    <div class="ctx-title">Присутствие духа</div>
+    <div class="ctx-line"><span data-vpc="persona-status">…</span></div>
+    <div class="ctx-note" data-vpc="ctx-pastime">…</div>
+
+    <div class="ctx-title">Настроение рощи</div>
+    <div class="ctx-line">
+      <span data-vpc="ctx-mood">…</span><span class="ctx-trend" data-vpc="ctx-trend"></span>
+    </div>
+
+    <div class="ctx-title">Порывы ветра</div>
+    <div class="ctx-note" data-vpc="ctx-initiative">…</div>
+    <div class="ctx-note" data-vpc="ctx-last-reply">…</div>
+
+    <div class="ctx-title">Ближайший колокольчик</div>
+    <div class="ctx-note" data-vpc="ctx-next-reminder">…</div>
+
+    <!-- OPTIONAL: строка об активном курсе обучения (пустая — курса нет) -->
+    <div class="ctx-note" data-vpc="ctx-learning"></div>
+
+    <!-- OPTIONAL: раскрывающиеся списки (нативный <details>).
+         [data-vpc-count] в заголовке получает число записей от приложения. -->
+    <details class="ctx-details" open>
+      <summary>Тропы и дела <span class="cnt" data-vpc-count="todos">0</span></summary>
+      <div data-vpc="todo-list"></div>
+      <template data-vpc="todo-item">
+        <div class="ctx-line todo-item item-row">
+          <button type="button" class="item-btn" data-vpc-item-action="toggle-todo" title="Отметить">✓</button>
+          <span class="grow" data-vpc-field="text"></span>
+        </div>
+      </template>
+    </details>
+
+    <details class="ctx-details">
+      <summary>Сумка странника <span class="cnt" data-vpc-count="inventory">0</span></summary>
+      <div data-vpc="inventory-list"></div>
+      <template data-vpc="inventory-item">
+        <div class="ctx-line item-row">
+          <span data-vpc-field="icon"></span>
+          <span class="grow" data-vpc-field="name"></span>
+        </div>
+      </template>
+    </details>
+
+    <details class="ctx-details">
+      <summary>Чары и дарования <span class="cnt" data-vpc-count="features">0</span></summary>
+      <div data-vpc="feature-list"></div>
+      <template data-vpc="feature-item">
+        <span class="feature-badge" data-vpc-field="label"></span>
+      </template>
+    </details>
+
+    <div class="leaf-divider">❦</div>
+    <div class="ctx-note" style="text-align:center; font-style:italic;">
+      роща хранит каждое слово
+    </div>
+  </aside>
+
+</section>
+
+<!-- ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ЭКРАН ДОСЬЕ · ГРИМУАР ДУХА ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ -->
+<section class="dossier" data-vpc-screen="dossier">
+
+  <header class="dossier-head">
+    <div class="chat-avatar" data-vpc="persona-avatar">?</div>
+    <div>
+      <div class="chat-name" data-vpc="persona-name">…</div>
+      <div class="chat-sub">
+        <span data-vpc="persona-model">…</span><span class="dot">✦</span><span data-vpc="persona-status">…</span>
+      </div>
+    </div>
+    <!-- OPTIONAL: клик = закрыть досье, вернуться в чат -->
+    <button type="button" class="ghost-btn dossier-close" data-vpc="close-dossier">❧ к беседе</button>
+  </header>
+
+  <!-- OPTIONAL: вкладки досье. Переключение — JS в свободной зоне внизу
+       (атрибуты data-tab / data-tab-panel — внутренние для скина). -->
+  <nav class="dossier-tabs">
+    <button type="button" class="dossier-tab tab-active" data-tab="memory">
+      Корни памяти <span class="tab-cnt" data-vpc-count="facts">0</span>
+    </button>
+    <button type="button" class="dossier-tab" data-tab="tasks">
+      Тропы <span class="tab-cnt" data-vpc-count="todos">0</span>
+    </button>
+    <button type="button" class="dossier-tab" data-tab="initiative">Порывы ветра</button>
+    <button type="button" class="dossier-tab" data-tab="learning">
+      Учёба у совы <span class="tab-cnt" data-vpc-count="courses">0</span>
+    </button>
+    <button type="button" class="dossier-tab" data-tab="files">
+      Тайники <span class="tab-cnt" data-vpc-count="files">0</span>
+    </button>
+    <button type="button" class="dossier-tab" data-tab="settings">Настройка чар</button>
+  </nav>
+
+  <div class="dossier-body">
+
+    <!-- ══ Страница: Корни памяти ══ -->
+    <div class="dossier-page page-active" data-tab-panel="memory">
+      <div class="dossier-card">
+        <div class="dossier-card-title">
+          Эхо леса · STM <span class="card-cnt" data-vpc-count="stm">0</span>
+        </div>
+        <div data-vpc="stm-list"></div>
+        <template data-vpc="stm-item">
+          <div class="stm-item item-row">
+            <span class="stm-author" data-vpc-field="author"></span>
+            <span class="stm-role" data-vpc-field="role"></span>
+            <span class="grow stm-text" data-vpc-field="text"></span>
+            <span class="stm-time" data-vpc-field="time"></span>
+            <!-- OPTIONAL: клик = удалить реплику из буфера (bridge знает id) -->
+            <button type="button" class="item-btn" data-vpc-item-action="delete-stm" title="Рассеять эхо">✕</button>
+          </div>
+        </template>
+        <!-- OPTIONAL: срезка хвоста буфера (удалить последние N реплик) -->
+        <div class="vpc-form" data-vpc-form>
+          <input data-vpc-input="count" type="number" min="1" placeholder="N" style="max-width: 84px" />
+          <button type="button" data-vpc-action="trim-stm">срезать хвост эха</button>
+        </div>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">
+          Кольца древа · LTM <span class="card-cnt" data-vpc-count="facts">0</span>
+        </div>
+        <div data-vpc="fact-list"></div>
+        <template data-vpc="fact-item">
+          <div class="fact-item">
+            <div class="item-row">
+              <span class="fact-category" data-vpc-field="category"></span>
+              <!-- OPTIONAL: клик = удалить факт (bridge знает id) -->
+              <button type="button" class="item-btn" data-vpc-item-action="delete-fact" title="Высечь из коры">✕</button>
+            </div>
+            <div class="fact-text" data-vpc-field="fact"></div>
+          </div>
+        </template>
+        <!-- OPTIONAL: форма добавления факта -->
+        <div class="vpc-form" data-vpc-form>
+          <input data-vpc-input="category" type="text" placeholder="ветвь (категория)" style="max-width: 150px" />
+          <input data-vpc-input="fact" type="text" placeholder="само знание…" />
+          <button type="button" data-vpc-action="add-fact">вплести</button>
+        </div>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">
+          Записи на коре <span class="card-cnt" data-vpc-count="diary">0</span>
+        </div>
+        <div data-vpc="diary-list"></div>
+        <template data-vpc="diary-item">
+          <div class="diary-item">
+            <div class="diary-date" data-vpc-field="date"></div>
+            <div data-vpc-field="text"></div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ══ Страница: Тропы ══ -->
+    <div class="dossier-page" data-tab-panel="tasks">
+      <div class="dossier-card">
+        <div class="dossier-card-title">
+          Незаконченные тропы <span class="card-cnt" data-vpc-count="todos">0</span>
+        </div>
+        <div data-vpc="todo-list"></div>
+        <template data-vpc="todo-item">
+          <div class="todo-item item-row">
+            <!-- OPTIONAL: клик = отметить выполненным/невыполненным -->
+            <button type="button" class="item-btn" data-vpc-item-action="toggle-todo" title="Отметить">✓</button>
+            <span class="grow" data-vpc-field="text"></span>
+          </div>
+        </template>
+        <div class="vpc-form" data-vpc-form>
+          <input data-vpc-input="text" type="text" placeholder="новая тропа…" />
+          <button type="button" data-vpc-action="add-todo">проложить</button>
+        </div>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">
+          Колокольчики ветра <span class="card-cnt" data-vpc-count="reminders">0</span>
+        </div>
+        <div data-vpc="reminder-list"></div>
+        <template data-vpc="reminder-item">
+          <div class="reminder-item item-row">
+            <!-- OPTIONAL: клик = вкл/выкл напоминание -->
+            <button type="button" class="item-btn" data-vpc-item-action="toggle-reminder" title="Вкл/выкл">◉</button>
+            <span class="reminder-time" data-vpc-field="time"></span>
+            <span class="grow" data-vpc-field="text"></span>
+            <span class="reminder-repeat" data-vpc-field="repeat"></span>
+          </div>
+        </template>
+        <div class="vpc-form" data-vpc-form>
+          <input data-vpc-input="time" type="text" placeholder="18:00" style="max-width: 92px" />
+          <input data-vpc-input="text" type="text" placeholder="о чём звенеть…" />
+          <button type="button" data-vpc-action="add-reminder">повесить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ Страница: Порывы ветра ══ -->
+    <div class="dossier-page" data-tab-panel="initiative">
+      <div class="dossier-card" style="grid-column: 1 / -1;">
+        <div class="dossier-card-title">
+          Летопись порывов <span class="card-cnt" data-vpc-count="initiatives">0</span>
+        </div>
+        <div data-vpc="initiative-list"></div>
+        <template data-vpc="initiative-item">
+          <div class="ini-item">
+            <span class="ini-type" data-vpc-field="type-label"></span>
+            <span data-vpc-field="text"></span>
+            <div class="ini-time">
+              <span data-vpc-field="time"></span> · <span data-vpc-field="outcome"></span>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ══ Страница: Учёба у совы ══ -->
+    <div class="dossier-page" data-tab-panel="learning">
+      <div class="dossier-card" style="grid-column: 1 / -1;">
+        <div class="dossier-card-title">
+          Свитки учений <span class="card-cnt" data-vpc-count="courses">0</span>
+        </div>
+        <div data-vpc="course-list"></div>
+        <template data-vpc="course-item">
+          <!-- Корню клона выставляется data-status="active|paused|finished" -->
+          <div class="course-item">
+            <div class="item-row">
+              <span class="grow course-subject" data-vpc-field="subject"></span>
+              <span class="course-status" data-vpc-field="status"></span>
+            </div>
+            <div class="course-stats">
+              уроков: <b data-vpc-field="lessons"></b> ·
+              тем: <b data-vpc-field="topics"></b> ·
+              слов: <b data-vpc-field="words"></b> ·
+              вопросов теста: <b data-vpc-field="quiz"></b>
+            </div>
+            <div class="ini-time">
+              <span data-vpc-field="frequency"></span> · следующий урок: <span data-vpc-field="next"></span>
+            </div>
+          </div>
+        </template>
+        <!-- OPTIONAL: форма запуска нового курса -->
+        <div class="vpc-form" data-vpc-form>
+          <input data-vpc-input="subject" type="text" placeholder="предмет изучения…" />
+          <input data-vpc-input="frequency" type="text" placeholder="каждые 2 дня" style="max-width: 140px" />
+          <button type="button" data-vpc-action="add-course">начать учёбу</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ Страница: Тайники ══ -->
+    <div class="dossier-page" data-tab-panel="files">
+      <div class="dossier-card" style="grid-column: 1 / -1;">
+        <div class="dossier-card-title">
+          Тайники и свёртки <span class="card-cnt" data-vpc-count="files">0</span>
+        </div>
+        <div data-vpc="file-list"></div>
+        <template data-vpc="file-item">
+          <div class="file-row item-row">
+            <div class="grow">
+              <span class="file-name" data-vpc-field="name"></span>
+              <div class="file-meta">
+                <span data-vpc-field="kind"></span> · <span data-vpc-field="size"></span> · <span data-vpc-field="date"></span>
+              </div>
+              <div class="file-meta" data-vpc-field="description"></div>
+            </div>
+            <!-- OPTIONAL: клик = скачать файл -->
+            <button type="button" class="item-btn" data-vpc-item-action="download-file" title="Достать из тайника">↓</button>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ══ Страница: Настройка чар ══ -->
+    <div class="dossier-page" data-tab-panel="settings">
+      <div class="dossier-card">
+        <div class="dossier-card-title">Сила чар</div>
+        <!-- OPTIONAL: приложение подставляет значения и принимает change -->
+        <div class="gen-grid">
+          <div class="gen-field">
+            <label>Жар чар · temperature</label>
+            <input data-vpc-setting="temperature" type="number" step="0.05" min="0" max="1" />
+          </div>
+          <div class="gen-field">
+            <label>Длина вдоха · maxTokens</label>
+            <input data-vpc-setting="maxTokens" type="number" step="64" min="64" />
+          </div>
+          <div class="gen-field">
+            <label>Пыльца случая · top_p</label>
+            <input data-vpc-setting="topP" type="number" step="0.01" min="0" max="1" />
+          </div>
+        </div>
+      </div>
+
+      <div class="dossier-card">
+        <div class="dossier-card-title">
+          Источники магии <span class="card-cnt" data-vpc-count="providers">0</span>
+        </div>
+        <div data-vpc="provider-list"></div>
+        <template data-vpc="provider-item">
+          <div class="provider-row">
+            <span class="provider-name" data-vpc-field="name"></span>
+            <span class="provider-local" data-vpc-field="local"></span>
+            <!-- Правка этого поля = смена модели провайдера (set-model) -->
+            <input data-vpc-field="model" data-vpc-input="model" data-vpc-onchange="set-model" type="text" spellcheck="false" />
+          </div>
+        </template>
+      </div>
+
+      <div class="dossier-card danger-card">
+        <div class="dossier-card-title">Тёмная чаща</div>
+        <div style="color: var(--ink-dim); font-size: 12.5px; margin-bottom: 10px; font-style: italic;">
+          всё написанное на листьях обратится в пепел и вспорхнёт над костром
+        </div>
+        <!-- OPTIONAL: та же кнопка, что в шапке чата, — клик = очистить диалог -->
+        <button type="button" class="danger-btn" data-vpc="clear-chat">Сжечь всю переписку</button>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ЭКРАН КОМНАТЫ · ЛЕСНАЯ ПОЛЯНА ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ -->
+<section class="room" data-vpc-screen="room">
+
+  <!-- REQUIRED: корень сцены комнаты -->
+  <div class="room-scene" data-vpc="room-scene">
+    <!-- OPTIONAL: пользовательский фон комнаты (<img>, src подставит приложение) -->
+    <img class="room-bg-img" data-vpc="room-bg" alt="" hidden />
+
+    <div class="star-field" aria-hidden="true"></div>
+    <div class="room-moon" aria-hidden="true"></div>
+
+    <!-- Лесные силуэты: три яруса крон (декор, чистый SVG) -->
+    <svg class="room-forest" viewBox="0 0 1200 500" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
+      <!-- Дальний ярус -->
+      <g fill="#16241a">
+        <path d="M40 500 L40 260 L20 260 L55 190 L35 190 L70 110 L105 190 L85 190 L120 260 L100 260 L100 500 Z"/>
+        <path d="M180 500 L180 300 L160 300 L195 230 L175 230 L210 150 L245 230 L225 230 L260 300 L240 300 L240 500 Z"/>
+        <path d="M980 500 L980 280 L960 280 L995 210 L975 210 L1010 130 L1045 210 L1025 210 L1060 280 L1040 280 L1040 500 Z"/>
+        <path d="M1120 500 L1120 310 L1102 310 L1135 245 L1117 245 L1150 170 L1183 245 L1165 245 L1198 310 L1180 310 L1180 500 Z"/>
+        <ellipse cx="420" cy="330" rx="90" ry="70"/>
+        <ellipse cx="760" cy="340" rx="100" ry="75"/>
+      </g>
+      <!-- Средний ярус -->
+      <g fill="#1c2f1e">
+        <path d="M300 500 L300 330 L276 330 L318 250 L294 250 L336 160 L378 250 L354 250 L396 330 L372 330 L372 500 Z"/>
+        <path d="M860 500 L860 340 L838 340 L878 265 L856 265 L896 180 L936 265 L914 265 L954 340 L932 340 L932 500 Z"/>
+        <ellipse cx="540" cy="390" rx="110" ry="85"/>
+        <ellipse cx="80" cy="420" rx="120" ry="90"/>
+        <ellipse cx="1130" cy="430" rx="130" ry="95"/>
+      </g>
+      <!-- Ближние кусты и папоротник -->
+      <g fill="#233a20">
+        <ellipse cx="200" cy="480" rx="140" ry="60"/>
+        <ellipse cx="600" cy="495" rx="180" ry="55"/>
+        <ellipse cx="1000" cy="485" rx="150" ry="62"/>
+        <path d="M480 500 q10 -40 30 -52 q-8 30 -4 52 z"/>
+        <path d="M505 500 q2 -34 22 -48 q-4 28 2 48 z"/>
+        <path d="M690 500 q-12 -38 -32 -50 q10 30 6 50 z"/>
+      </g>
+      <!-- Грибы -->
+      <g>
+        <path d="M395 472 q0 -24 16 -24 q16 0 16 24 z" fill="#a3512f"/>
+        <rect x="407" y="472" width="7" height="16" rx="3" fill="#e6d9b4"/>
+        <circle cx="404" cy="458" r="2.2" fill="#fbf6e0"/>
+        <circle cx="418" cy="462" r="1.8" fill="#fbf6e0"/>
+        <path d="M812 478 q0 -18 12 -18 q12 0 12 18 z" fill="#8a4a2c"/>
+        <rect x="821" y="478" width="5" height="12" rx="2.4" fill="#e6d9b4"/>
+      </g>
+    </svg>
+
+    <div class="room-floor"></div>
+    <div class="firefly-field" aria-hidden="true"></div>
+
+    <!-- REQUIRED: аватар персоны. Приложение двигает его через
+         CSS-переменные --vpc-x / --vpc-y (% сцены). -->
+    <div class="room-avatar" data-vpc="room-avatar">
+      <span data-vpc="persona-avatar">?</span>
+    </div>
+
+    <!-- REQUIRED: подпись текущего занятия -->
+    <div class="room-pastime-plate">
+      <span class="plate-name" data-vpc="persona-name">…</span> · <span class="val" data-vpc="room-pastime">…</span>
+    </div>
+
+    <!-- OPTIONAL: питомец; приложение ставит data-pet="cat|crow" -->
+    <div class="room-pet" data-vpc="room-pet" hidden><span data-vpc="room-pet-label"></span></div>
+  </div>
+
+  <!-- OPTIONAL: виджеты состояния -->
+  <div class="room-stats">
+    <div class="room-stat">
+      <div class="room-stat-label">Дух</div>
+      <div class="room-stat-value" data-vpc="room-mood">…</div>
+    </div>
+    <div class="room-stat">
+      <div class="room-stat-label">Живость</div>
+      <div class="room-stat-value" data-vpc="room-energy">…</div>
+    </div>
+    <div class="room-stat">
+      <div class="room-stat-label">Уголок леса</div>
+      <div class="room-stat-value" data-vpc="room-place">…</div>
+    </div>
+  </div>
+
+  <div class="room-lists">
+    <div class="room-card">
+      <div class="room-card-title">
+        Что шептал ветер <span class="card-cnt" data-vpc-count="feed">0</span>
+      </div>
+      <!-- OPTIONAL: лента активности; строки — клоны шаблона feed-item -->
+      <div data-vpc="room-feed"></div>
+      <template data-vpc="feed-item">
+        <div class="feed-item">
+          <span class="feed-time" data-vpc-field="time"></span>
+          <span class="feed-text" data-vpc-field="text"></span>
+        </div>
+      </template>
+    </div>
+
+    <div class="room-card">
+      <div class="room-card-title">
+        Сумка странника <span class="card-cnt" data-vpc-count="inventory">0</span>
+      </div>
+      <!-- OPTIONAL: инвентарь; предметы — клоны шаблона inventory-item -->
+      <div class="inv-grid" data-vpc="room-inventory"></div>
+      <template data-vpc="inventory-item">
+        <div class="inv-item">
+          <div class="inv-icon" data-vpc-field="icon"></div>
+          <div class="inv-name" data-vpc-field="name"></div>
+          <div class="inv-desc" data-vpc-field="description"></div>
+          <div class="inv-tag" data-vpc-field="tag"></div>
+        </div>
+      </template>
+      <!-- OPTIONAL: форма добавления предмета в инвентарь -->
+      <div class="vpc-form" data-vpc-form>
+        <input data-vpc-input="name" type="text" placeholder="название находки…" />
+        <input data-vpc-input="icon" type="text" placeholder="🌰" style="max-width: 64px" />
+        <button type="button" data-vpc-action="add-inventory-item">спрятать</button>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ══════════════ СВОБОДНАЯ ЗОНА: декоративный JS скина ══════════════ -->
+<script>
+  // Переключатель вкладок досье (атрибуты data-tab / data-tab-panel —
+  // внутренние для скина, не часть контракта). Делегирование на document —
+  // переживает перерисовку списков bridge'ем.
+  document.addEventListener('click', function (e) {
+    var tab = e.target.closest ? e.target.closest('[data-tab]') : null;
+    if (!tab) return;
+    var name = tab.getAttribute('data-tab');
+    document.querySelectorAll('[data-tab]').forEach(function (b) {
+      b.classList.toggle('tab-active', b === tab);
+    });
+    document.querySelectorAll('[data-tab-panel]').forEach(function (p) {
+      p.classList.toggle('page-active', p.getAttribute('data-tab-panel') === name);
+    });
+  });
+
+  // Декор: светлячки и звёзды. Создаются один раз, живут на CSS-анимациях.
+  (function () {
+    function rand(min, max) { return min + Math.random() * (max - min); }
+
+    document.querySelectorAll('.firefly-field').forEach(function (field) {
+      var count = field.closest('.room-scene') ? 22 : 12;
+      for (var i = 0; i < count; i++) {
+        var f = document.createElement('span');
+        f.className = 'firefly';
+        f.style.left = rand(3, 97) + '%';
+        f.style.top = rand(15, 95) + '%';
+        f.style.setProperty('--ff-dur', rand(6, 13).toFixed(1) + 's');
+        f.style.setProperty('--ff-del', (-rand(0, 12)).toFixed(1) + 's');
+        f.style.setProperty('--ff-x1', rand(-24, 24).toFixed(0) + 'px');
+        f.style.setProperty('--ff-y1', rand(-30, -8).toFixed(0) + 'px');
+        f.style.setProperty('--ff-x2', rand(-30, 30).toFixed(0) + 'px');
+        f.style.setProperty('--ff-y2', rand(-56, -24).toFixed(0) + 'px');
+        var s = rand(0.7, 1.5);
+        f.style.width = (4 * s).toFixed(1) + 'px';
+        f.style.height = (4 * s).toFixed(1) + 'px';
+        field.appendChild(f);
+      }
+    });
+
+    document.querySelectorAll('.star-field').forEach(function (field) {
+      for (var i = 0; i < 42; i++) {
+        var st = document.createElement('span');
+        st.className = 'star';
+        st.style.left = rand(1, 99) + '%';
+        st.style.top = rand(2, 96) + '%';
+        st.style.setProperty('--st-dur', rand(2.4, 6).toFixed(1) + 's');
+        st.style.setProperty('--st-del', (-rand(0, 6)).toFixed(1) + 's');
+        var s = rand(0.7, 1.6);
+        st.style.width = s.toFixed(1) + 'px';
+        st.style.height = s.toFixed(1) + 'px';
+        field.appendChild(st);
+      }
+    });
+  })();
+
+  // Декоративная реакция на снапшот состояния: чем активнее персона,
+  // тем ярче мерцают светлячки (лёгкий параллакс настроения).
+  document.addEventListener('vpc:state', function (e) {
+    try {
+      var mood = e && e.detail && (e.detail.mood || (e.detail.persona && e.detail.persona.mood));
+      document.documentElement.style.setProperty(
+        '--grove-glow', mood ? '0.5' : '0.35'
+      );
+    } catch (_) { /* декор не должен ничего ломать */ }
+  });
+</script>
+
+<!-- ==== VPC-BRIDGE:START ====
+     Служебный блок: при загрузке скина приложение ПЕРЕЗАПИШЕТ его
+     своей эталонной версией. Не редактировать, не удалять маркеры. -->
+<script>/* bridge placeholder — will be replaced by the app */</script>
+<!-- ==== VPC-BRIDGE:END ==== -->
+
+</body>
+</html>

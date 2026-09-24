@@ -3224,18 +3224,44 @@ def _probe_of(raw: str, url: str = "", aux: str = "") -> _Probe:
     return _Probe(True, url, doc, rest, aux)
 
 
-def _page_state(scope, aux: str = "") -> _Probe:
+def _scroll_if_off_js(idx: int) -> str:
+    """JS-оператор: элемент разметки целиком вне вьюпорта — мгновенная
+    прокрутка к центру (behavior:'instant' — при CSS scroll-behavior:smooth
+    замер иначе снимался бы посреди анимации); видимый — no-op. Нужен ДО
+    замера отпечатка клика/наведения: прокрутку, которую playwright делает
+    внутри click()/hover() (или JS-клик), closed-loop принимал за эффект
+    действия (позиция прокрутки, hit-тесты вьюпорта) — ложное «сработало»
+    для элементов ниже экрана (их выбирает гибридный ярус)."""
+    return ("try{" + _mark_find_js(idx, var="vpcSe") +
+            "if(vpcSe){var vpcR=vpcSe.getBoundingClientRect();"
+            "if(vpcR.bottom<=0||vpcR.top>=innerHeight||vpcR.right<=0"
+            "||vpcR.left>=innerWidth){vpcSe.scrollIntoView({block:'center',"
+            "inline:'nearest',behavior:'instant'});}}}catch(vpcX){}")
+
+
+def _state_js(scroll_idx: Optional[int] = None) -> str:
+    """JS замера отпечатка; со scroll_idx — сначала условная прокрутка
+    элемента во вьюпорт В ТОМ ЖЕ вызове (ноль лишних round trip'ов)."""
+    if scroll_idx is None:
+        return _DOM_STATE_JS
+    return ("(function(){" + _scroll_if_off_js(scroll_idx)
+            + "return " + _DOM_STATE_JS + ";})()")
+
+
+def _page_state(scope, aux: str = "",
+                scroll_idx: Optional[int] = None) -> _Probe:
     """Замер страницы/фрейма через evaluate. Падение evaluate — это
     «замер не удался», а НЕ признак изменения: URL берём отдельно (playwright
     отдаёт его без JS), и только он с токеном документа решают, была ли
-    навигация."""
+    навигация. scroll_idx — перед замером докрутить элемент во вьюпорт,
+    если он целиком вне экрана (_scroll_if_off_js)."""
     url = ""
     try:
         url = str(getattr(scope, "url", "") or "")
     except Exception:
         url = ""
     try:
-        raw = str(scope.evaluate(_DOM_STATE_JS) or "")
+        raw = str(scope.evaluate(_state_js(scroll_idx)) or "")
     except Exception:
         return _Probe(False, url, "", "", aux)
     return _probe_of(raw, url, aux)
@@ -6578,30 +6604,188 @@ def _locator_any_frame(page, idx: int):
     return None, None
 
 
+class _NavWatch:
+    """Счётчик навигационных запросов (документ) фрейма клика и главного
+    фрейма, начатых после установки. Положительный признак «клик запустил
+    переход», видимый ДО коммита нового документа: у медленного входа
+    (SSO «Кабинет обучающегося», «Sign in») запрос уходит сразу после
+    клика, а старый документ живёт ещё секунды — URL и DOM-отпечаток не
+    меняются, и closed-loop принял бы доставленный клик за «не сработал».
+    Контекстный менеджер: слушатель снимается всегда."""
+
+    def __init__(self, page, scope):
+        self.count = 0
+        self._page = page
+        frames = []
+        for fr in (scope if scope is not page else None,
+                   getattr(page, "main_frame", None)):
+            if fr is not None:
+                frames.append(fr)
+        self._frames = frames
+        self._on = False
+
+    def _handler(self, req) -> None:
+        try:
+            if req.is_navigation_request() and any(
+                    req.frame == fr for fr in self._frames):
+                self.count += 1
+        except Exception:
+            pass  # фрейм отсоединился посреди перехода — не признак
+
+    def pump(self) -> None:
+        """Разобрать накопившиеся события: sync-playwright доставляет их
+        только внутри своих вызовов, а замер-evaluate во время начатого
+        перехода висит до коммита документа (медленный вход — секунды).
+        Короткий серверный таймер отдаёт события сразу."""
+        if self._on:
+            try:
+                self._page.wait_for_timeout(1)
+            except Exception:
+                pass
+
+    def __enter__(self) -> "_NavWatch":
+        try:
+            self._page.on("request", self._handler)
+            self._on = True
+        except Exception:
+            self._on = False  # нет событий — остаются URL/документ/вкладки
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        if self._on:
+            try:
+                self._page.remove_listener("request", self._handler)
+            except Exception:
+                pass
+            self._on = False
+
+
+def _navigated(pre: _Probe, cur: _Probe) -> bool:
+    """Строгий признак «действие доставлено» для неоднозначного исключения
+    playwright: навигация/новая вкладка/смена документа. DOM-отпечаток тут
+    НЕ годится: неудавшийся по actionability клик сам прокручивает страницу
+    (повторы playwright скроллят элемент block:end/center/start), и «отпечаток
+    изменился» выдал бы недоставленный клик за доставленный."""
+    if pre.aux != cur.aux:
+        return True
+    if pre.url and cur.url and pre.url != cur.url:
+        return True
+    return bool(pre.ok and cur.ok and pre.doc != cur.doc)
+
+
+def _pw_error_text(e: BaseException,
+                   timeout_ru: str = "элемент за {sec:g} с так и не стал "
+                                     "доступен для клика (невидим, перекрыт "
+                                     "или неактивен)") -> str:
+    """Человеческий текст ошибки playwright: первая строка без call log и
+    префикса метода («Locator.click: »), таймаут — по-русски (timeout_ru),
+    без хвостовой точки (вызывающие дописывают свою: «…exceeded..» в ответе
+    бота)."""
+    first = str(e).split("Call log")[0].strip().split("\n")[0].strip()
+    first = re.sub(r"^\w+\.\w+:\s*", "", first)
+    m = re.match(r"Timeout (\d+)ms exceeded", first)
+    if m:
+        first = timeout_ru.format(sec=int(m.group(1)) / 1000.0)
+    return first.rstrip(" .")[:120]
+
+
+def _pw_press_enter(loc, scope, pre: _Probe) -> Optional[str]:
+    """Enter в поле без ожидания навигации — та же ловушка, что у клика:
+    playwright по умолчанию ждёт коммита перехода, начатого нажатием
+    (отправка поиска/формы), и медленная выдача роняла УЖЕ отправленный
+    Enter таймаутом. → None — нажато (или страница уже ушла в переход);
+    строка — честная причина, почему не нажалось. Подтверждение отправки
+    (поле очистилось/страница изменилась) — у вызывающего."""
+    try:
+        loc.press("Enter", timeout=CLICK_TIMEOUT_MS, no_wait_after=True)
+        return None
+    except Exception as e:
+        if _navigated(pre, _page_state(scope)):
+            return None
+        return _pw_error_text(
+            e, "поле за {sec:g} с так и не стало доступно для нажатия")
+
+
+def _pw_click_dispatched(e: BaseException) -> bool:
+    """Исключение playwright-клика пришло ПОСЛЕ отправки мыши? Call log
+    пишет «click action done» сразу после mouse down/up; дальше идёт только
+    ожидание навигации («waiting for scheduled navigations to finish») —
+    таймаут там значит «клик доставлен, переход долгий», а не «не нажалось».
+    (no_wait_after=True это ожидание выключает, но в playwright ≥1.5x опция
+    помечена deprecated/«no effect» — проверка страхует и от её отмены.)"""
+    log = str(e).partition("Call log")[2]
+    return "click action done" in log \
+        or "waiting for scheduled navigations" in log
+
+
+def _pw_click_once(loc, st, pre: _Probe, force: bool) -> Optional[str]:
+    """Один playwright-клик без ожидания навигации. → None — клик доставлен
+    (или исключение пришло уже после отправки / страница начала переход);
+    строка — честная причина, почему клик НЕ ушёл (actionability-таймаут
+    до отправки мыши, элемент исчез). Никогда не кликает дважды."""
+    try:
+        loc.click(timeout=CLICK_TIMEOUT_MS, force=force, no_wait_after=True)
+        return None
+    except Exception as e:
+        if _pw_click_dispatched(e):
+            logger.info(f"[BrowserActions] Клик доставлен, исключение после "
+                        f"отправки: {_pw_error_text(e)}")
+            return None
+        if _navigated(pre, st()):
+            logger.info("[BrowserActions] Клик: исключение playwright, но "
+                        "страница уже ушла в переход — считаю доставленным")
+            return None
+        return _pw_error_text(e)
+
+
 def _click_cdp(w: _CdpWorker, host_part: Optional[str], idx: int,
                tab_id: Optional[int]) -> str:
     page = w.page_for(host_part, tab_id)
     loc, scope = _locator_any_frame(page, idx)
     if loc is None:
         raise BrowserUnavailable("элемент потерян — страница изменилась")
+    with _NavWatch(page, scope) as nav:
+        return _click_cdp_watched(w, host_part, idx, tab_id, loc, scope, nav)
+
+
+def _click_cdp_watched(w: _CdpWorker, host_part: Optional[str], idx: int,
+                       tab_id: Optional[int], loc, scope,
+                       nav: _NavWatch) -> str:
     # Попап (новое окно/вкладка от клика — вход в аккаунт и т.п.) саму страницу
     # не меняет: счётчик страниц в отпечатке, иначе честный клик по «Войти»
-    # выглядел бы как «не сработало». Отпечаток — по ТОМУ фрейму, где жил
-    # элемент: клик внутри iframe не меняет DOM главного фрейма
-    def _st() -> _Probe:
-        return _page_state(scope, aux=f"tabs:{len(w._all_pages())}")
+    # выглядел бы как «не сработало». Начатый переход (nav) — туда же: до
+    # коммита медленной навигации URL и DOM старые. Отпечаток — по ТОМУ
+    # фрейму, где жил элемент: клик внутри iframe не меняет DOM главного
+    def _aux() -> str:
+        return f"tabs:{len(w._all_pages())}|nav:{nav.count}"
 
-    pre = _st()
-    try:
-        loc.first.click(timeout=CLICK_TIMEOUT_MS)
-    except Exception:
-        # Элемент перекрыт/не стабилен — кликаем принудительно (без
-        # actionability-проверок playwright)
-        try:
-            loc.first.click(force=True, timeout=CLICK_TIMEOUT_MS)
-        except Exception as e:
-            detail = str(e).split("Call log")[0].strip().split("\n")[0]
-            raise BrowserUnavailable(f"клик не выполнен: {detail[:120]}")
+    def _st() -> _Probe:
+        # Переход уже начат — DOM старого документа не замеряем: evaluate
+        # во время навигации висит до коммита (медленный вход — секунды),
+        # а сменившийся aux и так даёт «изменилось»
+        nav.pump()
+        if nav.count:
+            return _Probe(False, "", "", "", _aux())
+        # aux — ПОСЛЕ evaluate: события запросов разбираются внутри вызовов
+        # playwright, и счётчик, снятый до замера, отставал бы на опрос
+        return _page_state(scope)._replace(aux=_aux())
+
+    # Элемент вне экрана (гибридный ярус выбирает и строки ниже экрана):
+    # автопрокрутка playwright внутри click() сама меняет отпечаток —
+    # докручиваем в том же evaluate, что снимает замер «до» (видимый — no-op)
+    pre = _page_state(scope, scroll_idx=idx)._replace(aux=_aux())
+    # no_wait_after: клик по ссылке/«Войти» playwright по умолчанию считал
+    # незавершённым, пока не закоммитится вызванный им переход, — медленный
+    # вход не укладывался в CLICK_TIMEOUT_MS, и ДОСТАВЛЕННЫЙ клик падал
+    # таймаутом, после чего фолбэк кликал второй раз force'ом. Эффект
+    # (включая начатый переход) проверяет closed-loop ниже
+    why = _pw_click_once(loc.first, _st, pre, force=False)
+    if why is not None:
+        # Элемент перекрыт/не стабилен — мышь НЕ отправлялась (иначе why был
+        # бы None): кликаем принудительно, без actionability-проверок
+        why = _pw_click_once(loc.first, _st, pre, force=True)
+        if why is not None:
+            raise BrowserUnavailable(f"клик не выполнен: {why}")
     logger.info(f"[BrowserActions] Клик idx={idx} "
                 f"({host_part or f'вкладка #{tab_id}' if tab_id else 'активная'})")
     verdict = _wait_effect(_st, pre)
@@ -6663,10 +6847,19 @@ def _click_applescript(host_part: Optional[str], idx: int,
 
     js = ("var d=document.documentElement;"
           + _mark_find_js(idx) +
-          "if(el){el.scrollIntoView({block:'center'});el.click();d.setAttribute('data-vpc-res','ok:clicked');}"
+          "if(el){el.click();d.setAttribute('data-vpc-res','ok:clicked');}"
           "else{d.setAttribute('data-vpc-res','элемент потерян — страница изменилась');}"
           "d.getAttribute('data-vpc-res')")
-    pre = _state()
+    # Прокрутка — в замере «до», а не в клик-JS: scrollIntoView внутри
+    # клика менял позицию прокрутки ПОСЛЕ замера, и closed-loop принимал её
+    # за эффект клика. Условная (только элемент целиком вне экрана) и в том
+    # же Apple Events-вызове, что замер — лишнего round trip'а нет; видимый
+    # элемент больше не дёргается к центру (el.click() видимости не требует)
+    try:
+        pre = _probe_of(_run_apple_events(host_part, _state_js(idx),
+                                          tab_id=tab_id))
+    except BrowserUnavailable:
+        pre = _Probe(False, "", "", "")
     out = _run_apple_events(host_part, js, tab_id=tab_id)
     if not out.startswith("ok:"):
         raise BrowserUnavailable(out or "клик не выполнен")
@@ -6914,7 +7107,7 @@ def _hover_cdp(w: "_CdpWorker", host_part: Optional[str], idx: int,
     loc, scope = _locator_any_frame(page, idx)
     if loc is None:
         raise BrowserUnavailable("элемент потерян — страница изменилась")
-    pre = _page_state(scope)
+    pre = _page_state(scope, scroll_idx=idx)  # докрутка — как в _click_cdp
     try:
         loc.first.hover(timeout=CLICK_TIMEOUT_MS)
     except Exception:
@@ -7057,12 +7250,10 @@ def _fill_cdp(w: _CdpWorker, host_part: Optional[str], idx: int,
         if not submit:
             return "filled"
         pre = _page_state(scope)
-        try:
-            el.press("Enter", timeout=CLICK_TIMEOUT_MS)
-        except Exception as e:
-            detail = str(e).split("Call log")[0].strip().split("\n")[0]
+        why = _pw_press_enter(el, scope, pre)
+        if why is not None:
             raise BrowserUnavailable(
-                f"текст введён, но Enter не нажался: {detail[:100]}")
+                f"текст введён, но Enter не нажался: {why[:100]}")
         # Отправка подтверждается фактом: поле очистилось (чат) или
         # страница изменилась (поиск ушёл в навигацию)
         deadline = time.time() + SUBMIT_VERIFY_SEC
@@ -9200,11 +9391,9 @@ def _chat_fill_send_loc(page, loc, text: str) -> str:
     if _norm_ws(text[:200]) not in _norm_ws(got):
         raise BrowserUnavailable("поле чата не приняло текст")
     pre = _page_state(page)
-    try:
-        loc.press("Enter", timeout=CLICK_TIMEOUT_MS)
-    except Exception as e:
-        detail = str(e).split("Call log")[0].strip().split("\n")[0]
-        raise BrowserUnavailable(f"Enter не нажался: {detail[:100]}")
+    why = _pw_press_enter(loc, page, pre)
+    if why is not None:
+        raise BrowserUnavailable(f"Enter не нажался: {why[:100]}")
     deadline = time.time() + SUBMIT_VERIFY_SEC
     while time.time() < deadline:
         try:
@@ -9510,11 +9699,9 @@ def press_enter(host_part: Optional[str], tab_id: Optional[int] = None) -> str:
                 else "на странице нет полей ввода")
         loc = page.locator("[data-vpc-enter='1']")
         pre = _page_state(page)
-        try:
-            loc.first.press("Enter", timeout=CLICK_TIMEOUT_MS)
-        except Exception as e:
-            detail = str(e).split("Call log")[0].strip().split("\n")[0]
-            raise BrowserUnavailable(f"Enter не нажался: {detail[:100]}")
+        why = _pw_press_enter(loc.first, page, pre)
+        if why is not None:
+            raise BrowserUnavailable(f"Enter не нажался: {why[:100]}")
         deadline = time.time() + SUBMIT_VERIFY_SEC
         while time.time() < deadline:
             try:

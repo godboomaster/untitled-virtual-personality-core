@@ -3658,7 +3658,7 @@ def main():
             _orig_se, _orig_ct3, _orig_ft3)
     check("метрики: свежий менеджер — нули, без деления на ноль",
           make().metrics() == {"choices": 0, "llm_calls": 0, "llm_share": 0.0,
-                               "llm_valid_share": None})
+                               "llm_valid_share": None, "vision_calls": 0})
 
     # Конфиг браузера: валидация backend, per-OS профиль, принудительный бэкенд
     _ba.set_browser_config({"backend": "weird"})
@@ -5457,7 +5457,9 @@ def main():
                 return self.hov if a and a[0] == _ba._mark_sel(7) else "?"
             if self.boom:
                 raise RuntimeError("страница блокирует evaluate")
-            if js is _ba._DOM_STATE_JS:
+            # Замер «до» клика/наведения — тот же _DOM_STATE_JS, обёрнутый
+            # условной докруткой элемента во вьюпорт (_state_js)
+            if js is _ba._DOM_STATE_JS or _ba._DOM_STATE_JS in js:
                 return (self.states.pop(0) if len(self.states) > 1
                         else self.states[0])
             return ""
@@ -6049,12 +6051,71 @@ console.log(%s);
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         "https://x.ru", "x.ru", _vis_items)
     try:
-        m_vis = make()
+        # Секция — про _visual_resolve (режим text: широкий резолв → рамки);
+        # гибридный ярус (дефолт) — смоук-проверки ниже
+        m_vis = make(cfg={**CFG, "wide_mode": "text"})
         act_v4, _ = m_vis.resolve_click("корзина", None, _VisionRouter("2"),
                                         chat_id="vis1")
         check("п.4: vision-фолбэк выбрал элемент по скриншоту",
               act_v4 is not None and act_v4["idx"] == 1
               and act_v4["choose"]["path"] == "vision")
+        # ── Гибридный ярус (wide_mode: hybrid — дефолт), смоук ──
+        m_hy = make()
+        check("гибрид: дефолт wide_mode=hybrid, мусор → hybrid, text — как есть",
+              m_hy.wide_mode == "hybrid"
+              and make(cfg={**CFG, "wide_mode": "??"}).wide_mode == "hybrid"
+              and m_vis.wide_mode == "text")
+        _hy_cap = []
+
+        class _HyRouter(_VisionRouter):
+            def get_response_with_image(self, prompt, img, image_mime=None,
+                                        extra_image=None, force_provider=None):
+                _hy_cap.append(prompt)
+                return super().get_response_with_image(
+                    prompt, img, image_mime=image_mime, extra_image=extra_image,
+                    force_provider=force_provider)
+
+        _hy_items = _vis_items + [
+            _it(5, "a", "Оформление заказа", vp=False, y=2400.0, vw=1280.0),
+            _it(6, "a", "Помощь", vp=False, y=2500.0, vw=1280.0)]
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://x.ru", "x.ru", _hy_items)
+        act_h1, _ = m_hy.resolve_click("корзина", None, _HyRouter("2 C=0.9"),
+                                       chat_id="hy1")
+        check("гибрид: иконка из рамок — один vision-вызов, путь vision_hybrid",
+              act_h1 is not None and act_h1["idx"] == 1
+              and act_h1["choose"]["path"] == "vision_hybrid"
+              and act_h1["choose"]["conf"] == 0.9
+              and len(_hy_cap) == 1 and "1..2" in _hy_cap[0]
+              and "4) [a/-] Помощь" in _hy_cap[0])
+        # Строка вне экрана с «другим названием» и заявленной уверенностью —
+        # выбор принят (DOM-метка, клик сам прокрутит), помечен offscreen
+        act_h2, _ = m_hy.resolve_click("оплата", None, _HyRouter("3 C=0.8"),
+                                       chat_id="hy2")
+        check("гибрид: строка вне экрана — выбор по метке, offscreen в мете",
+              act_h2 is not None and act_h2["idx"] == 5
+              and act_h2["choose"].get("offscreen") is True)
+        # Строка текстового списка сверки подписи не проходит (как прежний
+        # широкий резолв), а РАМКА с чужой подписью — вето всегда; дальше
+        # текстовый широкий резолв (тут «нет») и зоны (в этой секции пусты)
+        # → честный отказ; вето гибрида — в следе ярусов аудита
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://x.ru", "x.ru", _hy_items + [
+                _it(7, "a", "Помощь", x=100.0, y=10.0, w=80.0, h=30.0,
+                    vw=1280.0)])
+        no_h3, err_h3 = m_hy.resolve_click("оплата", None, _HyRouter("3"),
+                                           chat_id="hy3")
+        check("гибрид: рамка с чужой подписью — вето, затем широкий; "
+              "оба в следе ярусов аудита",
+              no_h3 is None and err_h3
+              and any(r.get("wide_mode") == "hybrid"
+                      and [(t.get("path"), t.get("veto"))
+                           for t in r.get("tiers") or []]
+                      == [("vision_hybrid", "label_mismatch"),
+                          ("llm_wide", None)]
+                      for r in _aud_recs("hy3")))
+        _ba.snapshot_elements = lambda host=None, tab_id=None: (
+            "https://x.ru", "x.ru", _vis_items)
         # vision ответила «нет» — честный отказ, как без фолбэка
         no_v4, err_v4 = m_vis.resolve_click("корзина", None,
                                             _VisionRouter("нет"),
@@ -6542,14 +6603,14 @@ console.log(%s);
     m_gate = make()
     _gate_calls = []
 
-    def _fake_zones(goal, host, tab_id, router, op="click"):
+    def _fake_zones(goal, host, tab_id, router, op="click", vis=None):
         _gate_calls.append(goal)
         return ({"x": 10.0, "y": 20.0, "label": "нужная зона", "zone": 2},
                 {"path": "vision_zones",
                  "point": {"x": 10.0, "y": 20.0, "label": "нужная зона",
                            "zone": 2}})
 
-    def _fake_zones_none(goal, host, tab_id, router, op="click"):
+    def _fake_zones_none(goal, host, tab_id, router, op="click", vis=None):
         _gate_calls.append(goal)
         return None, {"path": "vision_zones"}
 
@@ -8080,7 +8141,10 @@ console.log(%s);
                                         _ZoneRouter("2"))
         check("зоны: безымянная зона — законная цель (сверять не с чем)",
               pnt_un is not None and pnt_un["zone"] == 2)
-        no_vz, err_vz = m_vz2.resolve_click("renoir", None, _ZoneRouter("1"),
+        # Первый vision-ответ забирает гибридный ярус (рамка «Новости» —
+        # вето по подписи, затем широкий «нет»), второй — зоны
+        no_vz, err_vz = m_vz2.resolve_click("renoir", None,
+                                            _ZoneRouter("1", "1"),
                                             chat_id="vz-lbl")
         check("зоны: вето по подписи — честный отказ и класс в аудите",
               no_vz is None and err_vz

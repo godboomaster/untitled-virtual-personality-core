@@ -310,9 +310,13 @@ def _draw_candidate_boxes(shot: bytes, cands: List[dict]) -> Optional[bytes]:
                   float(img.width))
         scale = img.width / vw if vw else 1.0
         d = ImageDraw.Draw(img)
+        # 12 цветов — под бюджет гибридного яруса (HYBRID_BOX_MAX); первые
+        # 8 — прежние (визуальный фолбэк их и видел), добавленные — вне
+        # их тонов: лайм, коричневый, почти чёрный, серый
         palette = [(220, 38, 38), (37, 99, 235), (5, 150, 105),
                    (217, 119, 6), (147, 51, 234), (219, 39, 119),
-                   (8, 145, 178), (234, 88, 12)]
+                   (8, 145, 178), (234, 88, 12), (101, 163, 13),
+                   (120, 72, 30), (23, 23, 23), (107, 114, 128)]
         # Кегль и толщина рамки — от ширины картинки: vision-модель даун-
         # скейлит скриншот под своё разрешение, фиксированный мелкий шрифт
         # на широком кадре (фоновая вкладка с большим канвасом) схлопывался
@@ -375,7 +379,8 @@ from app.features.browser_actions import (  # noqa: E402
 def _active_layer(items: List[dict]) -> List[dict]:
     """Кандидаты только из активного слоя страницы — общий фильтр для
     текстового выбора (_choose_element), широкого LLM-резолва
-    (_llm_wide_pick) и vision-рамок (_visual_resolve). Два сигнала снапшота:
+    (_llm_wide_pick), гибридного яруса (_hybrid_pick) и vision-рамок
+    (_vision_box_pool: _hybrid_pick, _visual_resolve). Два сигнала снапшота:
     1) sc — «в слое поверх бэкдропа»: снапшот нашёл затемняющий бэкдроп в
        центре вьюпорта и проверил, чем перекрыт центр каждого элемента;
        требует, чтобы бэкдроп прошёл цветовую эвристику (rgba с 0<α<0.98);
@@ -411,6 +416,121 @@ def _layer_note(it: dict) -> str:
     if it.get("cov"):
         return " — под затемнением"
     return ""
+
+
+def _cand_line(n: int, it: dict, lab_max: int = 120) -> str:
+    """Строка кандидата в текстовом списке для LLM (широкий резолв и
+    текстовая часть гибридного яруса): «N) [тег/роль] подпись» + пометка
+    слоя. lab_max — обрезка подписи (гибрид ужимает её под лимит промпта);
+    тег/роль тоже режем — длинные custom elements (ytd-…-renderer) иначе
+    съедали бюджет промпта."""
+    lab = str(it.get("text") or it.get("aria") or it.get("title") or "")
+    ctx = str(it.get("ctx") or "")
+    if not lab:
+        # Безымянная иконка — сопоставить её с целью может только vision;
+        # контекст блока — внутри той же скобки, без пустой подписи впереди
+        lab = f"(без подписи, блок: {ctx[:60]})" if ctx else "(без подписи)"
+    elif ctx and len(lab) <= 15:
+        # Короткая подпись («закрыть», «×») без контекста блока LLM не
+        # привязать к скоуп-цели («закрыть на корзина» — крестик сам по
+        # себе «корзины» не содержит) — добавляем контекст
+        lab = f"{lab} (блок: {ctx[:60]})"
+    return (f"{n}) [{str(it.get('tag'))[:24]}/{str(it.get('role') or '-')[:24]}] "
+            f"{lab[:lab_max]}{_layer_note(it)}")
+
+
+# Разбор ответа модели на выбор по номеру (_parse_pick_answer). Уверенность:
+# «C=0.8», «С: 0,8», «C=.8», «C=80%» (C — латиница или кириллица)
+_PICK_CONF_RE = re.compile(
+    r"(?<![a-zа-яё])[cс]\s*[=:]\s*(\d+(?:[.,]\d+)?|[.,]\d+)(\s*%)?([.,](?!\d))?",
+    re.IGNORECASE)
+# Строгая грамматика ответа: «[T=]N [C=…][.]» и ничего больше (разметку и
+# «Ответ:» снимаем до сверки) — как fullmatch(\d{1,2}) прежнего широкого
+# резолва. Только она годится для выбора строки текстового списка и
+# безымянной рамки: там подпись с целью не сверяется
+_PICK_STRICT_RE = re.compile(
+    r"(?:[tт]\s*=\s*)?(\d{1,2})\s*[.,;]?\s*"
+    r"(?:[(\[]?\s*[cс]\s*[=:]\s*(?:\d+(?:[.,]\d+)?|[.,]\d+)\s*%?\s*[)\]]?)?"
+    r"\s*\.?\s*", re.IGNORECASE)
+# Голая уверенность без «C=»: «3, 0.8» / «3 80%»
+_PICK_BARE_CONF_RE = re.compile(r"(?<![\d.,])(\d*[.,]\d+(?:\s*%)?|\d+\s*%)")
+# Кавычки — подписи элементов: их цифры («2:43 World Map») не номер ответа
+_PICK_QUOTED_RE = re.compile(r"«[^»]*»|\"[^\"]*\"|“[^”]*”|'[^']*'")
+_PICK_INT_RE = re.compile(r"(?<![\w.,])\d+(?![\w%]|[.,]\d)")
+# Отказ — целым словом: «Нетфликс» — не «нет»
+_PICK_REFUSAL_RE = re.compile(r"(?:нет|no|none)\b", re.IGNORECASE)
+# Отказ фразой без номера: «Подходящего элемента нет», «ничего не подходит»,
+# «Не вижу подходящего», «nothing matches»
+_PICK_REFUSAL_PHRASE_RE = re.compile(
+    r"(?<![a-zа-яё])(?:нет|ничего|nothing|none|no match\w*|not found|"
+    r"не подход\w*|не наш[её]л\w*|не найден\w*|не вижу)(?![a-zа-яё])",
+    re.IGNORECASE)
+# Отрицание/сомнение где угодно в ответе с номером — не выбор: «Не вижу
+# подходящего, возможно 4», «Не уверен, но 3», «I think 3», «Подходящего
+# нет, возможно 3» (подписи в кавычках вырезаны до проверки)
+_PICK_HEDGE_RE = re.compile(
+    r"(?<![a-zа-яё])(?:не|ни|нет|no|none|not|maybe|possibly|perhaps|probably|"
+    r"likely|think|guess|возможно|наверн\w*|кажется|вероятно|скорее)"
+    r"(?![a-zа-яё])", re.IGNORECASE)
+_PICK_PREFIX_RE = re.compile(r"^(?:ответ|answer)\s*[:\-—]?\s*", re.IGNORECASE)
+_PICK_T_RE = re.compile(r"(?<![a-zа-яё])[tт]\s*=\s*", re.IGNORECASE)
+
+
+def _pick_conf(val: str, pct: bool) -> Optional[float]:
+    """Уверенность из текста: проценты → доля; вне [0, 1] — None (не повод
+    браковать номер: уверенность на выбор не влияет, пишется в аудит)."""
+    try:
+        v = float(val.replace(",", "."))
+    except ValueError:
+        return None
+    if pct:
+        v /= 100.0
+    return v if 0.0 <= v <= 1.0 else None
+
+
+def _parse_pick_answer(resp, strict: bool = False
+                       ) -> Tuple[Optional[int], Optional[float], bool]:
+    """Разбор ответа vision/LLM на выбор номера → (номер|None, уверенность|
+    None, «нет»). Отказ — «нет»/«no»/«none» целым словом в начале или
+    фраза-отказ без единой цифры («Подходящего элемента нет»). Сомнение/
+    отрицание при номере («возможно 4», «не уверен, но 3», «I think 3») —
+    невалидно всегда. strict — только грамматика «[T=]N [C=…][.]»
+    (_PICK_STRICT_RE). Нестрогий разбор терпит пояснение после номера
+    («3 — кнопка «Оплата»»), уверенность в любом месте, процентами, «.8»,
+    голой дробью («3, 0.8»); номер — ПЕРВОЕ отдельно стоящее целое, второе
+    ДРУГОЕ целое вне кавычек («3 или 5», «3 — 2:43») — неоднозначно,
+    невалидно (None, None, False), как и номер длиннее двух цифр."""
+    s = re.sub(r"[`*_]", "", str(resp or "")).strip()
+    s = _PICK_PREFIX_RE.sub("", s)
+    if _PICK_REFUSAL_RE.match(s):
+        return None, None, True
+    bare = _PICK_QUOTED_RE.sub(" ", s)
+    if not re.search(r"\d", bare) and _PICK_REFUSAL_PHRASE_RE.search(bare):
+        return None, None, True
+    if _PICK_HEDGE_RE.search(bare):
+        return None, None, False
+    if strict and not _PICK_STRICT_RE.fullmatch(s):
+        return None, None, False
+    s = bare
+    conf = None
+    mc = _PICK_CONF_RE.search(s)
+    if mc:
+        # «C=0.» — число оборвано точкой: уверенность не читаем
+        cut = bool(mc.group(3)) and not re.search(r"[.,]", mc.group(1))
+        conf = None if cut else _pick_conf(mc.group(1), bool(mc.group(2)))
+        s = s[:mc.start()] + " " + s[mc.end():]
+    else:
+        mb = _PICK_BARE_CONF_RE.search(s)
+        if mb:
+            val = mb.group(1)
+            conf = _pick_conf(val.rstrip("% "), val.endswith("%"))
+            s = s[:mb.start()] + " " + s[mb.end():]
+    s = _PICK_T_RE.sub(" ", s)
+    nums = _PICK_INT_RE.findall(s)
+    if not nums or len(nums[0]) > 2 or any(int(x) != int(nums[0])
+                                          for x in nums[1:]):
+        return None, None, False
+    return int(nums[0]), conf, False
 
 
 def _dedup_same_target_cards(items: List[dict]) -> List[dict]:
@@ -911,6 +1031,8 @@ def parse_tab_op(text: str) -> Optional[Tuple[str, Optional[str]]]:
         goal = _TAB_OP_PLACE_PREP_RE.sub("", rest)
         goal = _TAB_OP_MOD_RE.sub("", goal.strip()).strip()
     goal = re.sub(r"\bпожалуйста\b", "", goal, flags=re.IGNORECASE).strip()
+    # Второй носитель в цели («закрой вкладку сайта попов») — тоже не имя
+    goal = _strip_tab_filler(goal)
     goal = goal.strip().strip('"«»').strip(" ,").strip()
     if len(goal) > 40:
         return None
@@ -1066,26 +1188,81 @@ _TAB_LIST_RE = re.compile(
     r"список\s+(?:открытых\s+)?вкладок|"
     r"вкладки\s+(?:открыты|какие)",
     re.IGNORECASE)
+# Слова-«носители» в цели вкладки: «(на) страницу попов», «вкладка
+# ютуба», «сайт гитхаба», «окно почты» — называют ВИД объекта, а не какой
+# именно. В заголовке вкладки их нет, а матч требует совпадения КАЖДОГО
+# слова цели — «страницу попов» не находило вкладку «вуза - ПОПОВ А. А.»
+# (кейс 24.09). Все падежи: вкладк*/страниц*/страничк*/сайт*/окн*/таб*
+_TAB_GOAL_FILLER_RE = re.compile(
+    r"(?<![\wё])(?:вкладк\w*|страниц\w*|страничк\w*|сайт\w*|"
+    r"окн(?:о|а|е|у|ом|ами|ах)?|окошк\w*|таб(?:а|у|е|ом|ы|ов)?|"
+    r"web-?site|site|pages?|tabs?)(?![\wё])",
+    re.IGNORECASE)
+
+
+def _strip_tab_filler(goal: str) -> str:
+    """Цель вкладки без слов-носителей («страницу попов» → «попов»,
+    «вкладка с ютубом» → «с ютубом»). Пусто — цель была одним носителем."""
+    g = _TAB_GOAL_FILLER_RE.sub(" ", goal or "")
+    return " ".join(g.split()).strip(" ,.-—–").strip()
+
+
+_TAB_WORD_RE = re.compile(r"[a-z0-9а-я]+")
+# Окончания, которыми могут различаться формы одного слова при сверке
+# основ («поповым» ~ «ПОПОВ», «попову» ~ «Попова»)
+_TAB_WORD_TAILS = frozenset(("", "ым", "им", "ою", "ею", "ом", "ем",
+                             "ами", "ями", "ах", "ях", "ов", "ев",
+                             "ой", "ей", "ую", "юю", "ая", "ое", "ые", "ие",
+                             "а", "я", "у", "ю", "е", "и", "ы", "о", "ь"))
+
+
+def _fold_yo(s: str) -> str:
+    """ё → е: в заголовках и речи пишут по-разному («Вёрстка»/«верстка»)."""
+    return s.replace("ё", "е")
+
+
+def _tab_word_stem_hit(w: str, words: List[str]) -> bool:
+    """Слово цели ~ слово заголовка/хоста по основе: общий префикс ≥ 4 и
+    ≥ длины короткого без 2 букв, а хвосты обоих — падежные окончания
+    («поповым» ~ «попов», «попову» ~ «попова»; «попкорн» ≠ «попов»)."""
+    from app.features.web_search import _stem
+    sw = _stem(w)
+    for x in words:
+        if len(sw) >= 4 and x.startswith(sw):
+            return True
+        n = min(len(w), len(x))
+        if n < 4:
+            continue
+        p = 0
+        while p < n and w[p] == x[p]:
+            p += 1
+        if (p >= max(4, n - 2) and w[p:] in _TAB_WORD_TAILS
+                and x[p:] in _TAB_WORD_TAILS):
+            return True
+    return False
 
 
 def parse_tab_switch(text: str) -> Optional[Tuple[str, bool]]:
     """«перейди на вкладку ютуб» → («ютуб», True — явная форма);
-    «переключись на гитхаб» → («гитхаб», False — мягкая). None — не команда
+    «переключись на гитхаб» → («гитхаб», False — мягкая);
+    «переключись на страницу попов» → («попов», False) — слова-носители
+    (страница/сайт/окно, любой падеж) из цели срезаются. None — не команда
     переключения вкладки."""
     if not text or len(text) > 80:
         return None
     m = _TAB_SWITCH_RE.match(text)
     if m:
         goal = m.group(1).strip().strip('"«»').strip()
+        goal = _strip_tab_filler(goal).strip('"«»').strip() or goal
         return (goal, True) if goal else None
     m = _TAB_SWITCH_SOFT_RE.match(text)
     if not m:
         return None
-    goal = m.group(1).strip().strip('"«»').strip()
-    # «перейди на эту/текущую страницу» — бессмысленно, не команда
-    if not goal or goal.lower() in ("эту страницу", "текущую страницу",
-                                    "эту вкладку", "текущую вкладку",
-                                    "сайт", "страницу"):
+    goal = _strip_tab_filler(m.group(1).strip().strip('"«»').strip())
+    goal = goal.strip('"«»').strip()
+    # «перейди на эту/текущую страницу», «на сайт» — бессмысленно, не
+    # команда: после среза носителя осталась пустота или «эту/текущую»
+    if not goal or not _TAB_OP_MOD_RE.sub("", goal + " ").strip():
         return None
     return goal, False
 
@@ -1282,6 +1459,15 @@ LEADER_MARGIN = 15.0       # минимальный отрыв от второг
 LLM_TOP_N = 5              # столько кандидатов уходит в LLM-промпт
 FALLBACK_MIN_SCORE = 50.0  # минимум для фолбэка на лучшего без/после LLM
 LLM_WIDE_MAX = 30          # столько элементов снапшота уходит в широкий LLM-резолв
+# Гибридный ярус (wide_mode: hybrid) — один vision-вызов вместо пары
+# «широкий текстовый резолв → vision-рамки»: рамки на скриншоте + текстовый
+# список элементов вне экрана, нумерация сквозная
+# Записи аудита, где выбирался элемент страницы: на них штампуется wide_mode
+_RESOLVE_KINDS = ("click", "download", "hover", "nav", "type",
+                  "resolve_fail")
+HYBRID_BOX_MAX = 12        # рамок на скриншоте (= размер палитры рамок)
+HYBRID_TEXT_MAX = 30       # строк «без рамки» в промпте (бюджет символов — ниже)
+HYBRID_PROMPT_MAX = 6000   # символов промпта (у Google AI Mode жёсткий лимит 8192)
 
 # Синонимы к доступным именам иконочных кнопок: aria-label кнопки —
 # «Меню аккаунта», а пользователь зовёт её «аватар». Ключ — слово цели,
@@ -2390,7 +2576,11 @@ class ComputerControlManager:
                       # Выбор элемента (п.3/п.4 плана): сколько решений принял
                       # детерминированный скоринг и сколько ушло в LLM-фолбэк
                       "choices": 0, "llm_calls": 0,
-                      "llm_valid": 0, "llm_invalid": 0}
+                      "llm_valid": 0, "llm_invalid": 0,
+                      # Vision-ярусы (гибрид/рамки/зоны) — отдельно от
+                      # текстовых llm_*: иначе llm_share превышал 1
+                      "vision_calls": 0, "vision_valid": 0,
+                      "vision_invalid": 0}
         self.base_dir = base_dir or Path(f"data/{context}/computer_control")
         self.base_dir.mkdir(parents=True, exist_ok=True)
         # Последняя вкладка, открытая/тронутая ботом — цель клика по умолчанию
@@ -2471,6 +2661,16 @@ class ComputerControlManager:
         # (слова пользователя не совпали с подписями на странице) — LLM
         # выбирает элемент из компактного списка снапшота; дешевле vision
         self.llm_wide_resolve: bool = bool(cfg.get("llm_wide_resolve", True))
+        # Режим zero-match яруса: hybrid — один vision-вызов видит и рамки
+        # на скриншоте, и текстовый список элементов вне экрана (_hybrid_pick;
+        # без vision — прежняя пара ярусов); text — прежнее поведение:
+        # широкий текстовый резолв, затем vision-рамки. Неизвестное — hybrid.
+        # В hybrid «другое название» («почта» при «Электронная почта») решает
+        # vision_provider (vision-цепочка роутера), а не cc_provider, как в
+        # text; cc_provider остаётся запасным — когда vision лежит или
+        # ответил невалидно
+        wm = str(cfg.get("wide_mode", "hybrid")).strip().lower()
+        self.wide_mode: str = wm if wm in ("hybrid", "text") else "hybrid"
         # Подтверждение по типу действия (риск), поверх общего confirm:
         # {click: false, navigate_known_domain: false, navigate_new_domain: true,
         #  type_text: true, type_text_safe_fields: false, download: true}
@@ -2526,6 +2726,7 @@ class ComputerControlManager:
             "llm_share": round(llm / choices, 3) if choices else 0.0,
             "llm_valid_share": (round(s.get("llm_valid", 0) / llm, 3)
                                 if llm else None),
+            "vision_calls": s.get("vision_calls", 0),
         }
 
     # ── Конфиг → промпт ──────────────────────────────────
@@ -4262,25 +4463,66 @@ class ComputerControlManager:
                 if idx is not None:
                     meta["retried"] = True
                     return url, host, items, idx, tab_id, meta, None
-        if idx is None:
-            # Широкий LLM-резолв (zero-match): скоринг не дал ни одного
-            # кандидата — слова цели не совпали с подписями на странице
-            # («почта» при «Электронная почта»). LLM выбирает из компактного
-            # списка элементов снапшота: дешевле скриншота vision-фолбэка
-            # и закрывает кейс «другое название»
+        # Состояние vision на этот резолв: сбой скриншота / лежащая
+        # vision-цепочка / след ярусов для аудита (см. _vision_ready)
+        vis: Dict[str, object] = {}
+        hmeta = None
+        h_fail = None
+        if idx is None and self.wide_mode == "hybrid":
+            # Гибридный ярус (zero-match): один vision-вызов видит рамки
+            # видимых кандидатов И текстовый список элементов без рамки —
+            # вместо пары «широкий текстовый резолв → vision-рамки». По
+            # аудиту текстовый широкий резолв попадал лишь в ~половине
+            # случаев, а уверенный промах не пускал vision дальше вовсе.
+            # Иконки идут сюда же: безымянным кнопкам достаются рамки
+            hidx, hmeta = self._hybrid_pick(goal, items, host, tab_id,
+                                            router, op=op, vis=vis)
+            self._note_tier(vis, "vision_hybrid", hmeta)
+            if hidx is not None:
+                return (url, host, items, hidx, tab_id,
+                        self._with_tiers(hmeta, vis), None)
+            if hmeta is not None:
+                # Повод спросить текстовый широкий резолв: ответ невалиден
+                # или рамка с подписью ветирована сверкой (label_mismatch) —
+                # «другое название» видимого элемента решит независимая
+                # текстовая модель, один вызов и только на вето
+                h_fail = hmeta.get("fail") or (
+                    "label_mismatch"
+                    if hmeta.get("veto") == "label_mismatch" else None)
+                if not (meta or {}).get("veto"):
+                    # Vision уже посмотрела страницу — её вердикт в аудит;
+                    # более конкретное вето прошлых ярусов не затираем
+                    meta = hmeta
+        # Широкий LLM-резолв (zero-match): скоринг не дал ни одного
+        # кандидата — слова цели не совпали с подписями на странице
+        # («почта» при «Электронная почта»). LLM выбирает из компактного
+        # списка элементов снапшота: дешевле скриншота vision-фолбэка и
+        # закрывает кейс «другое название». В режиме hybrid — когда гибрид
+        # не запускался, vision лежит (hmeta None), ответ гибрида невалиден
+        # или его выбор рамки ветирован сверкой подписи: текстовый ярус идёт
+        # через cc_provider, другой канал. Явное «нет» и вето разрушительного
+        # — вердикт, текстовый не зовём
+        if idx is None and (hmeta is None
+                            or h_fail in ("invalid", "label_mismatch")):
             widx, wmeta = self._llm_wide_pick(goal, items, router, op=op)
+            self._note_tier(vis, "llm_wide", wmeta)
             if widx is not None:
-                return url, host, items, widx, tab_id, wmeta, None
+                return (url, host, items, widx, tab_id,
+                        self._with_tiers(wmeta, vis), None)
             if wmeta is not None:
                 meta = wmeta  # LLM посмотрела страницу — её вердикт в аудит
-        if idx is None:
+        if idx is None and hmeta is None:
             # Визуальный фолбэк (п.4): текстовый скоринг структурно бессилен
             # при иконочных UI (пустые accessible name) — скриншот вьюпорта
-            # с пронумерованными рамками кандидатов в vision-модель
+            # с пронумерованными рамками кандидатов в vision-модель. Гибрид
+            # отработал (любой исход с метой) — рамки он уже показывал: он
+            # надмножество этого яруса. Vision лежит — ярус молчит сам
             vidx, vmeta = self._visual_resolve(host, tab_id, items, goal,
-                                               router, op=op)
+                                               router, op=op, vis=vis)
+            self._note_tier(vis, "vision", vmeta)
             if vidx is not None:
-                return url, host, items, vidx, tab_id, vmeta, None
+                return (url, host, items, vidx, tab_id,
+                        self._with_tiers(vmeta, vis), None)
             if vmeta is not None and not (meta or {}).get("veto"):
                 # Вердикт визуального яруса — в аудит; уже записанное вето
                 # (более конкретная причина) не затираем
@@ -4288,13 +4530,17 @@ class ComputerControlManager:
         if idx is None:
             # Зональный vision-фолбэк: DOM нечитаем совсем (canvas/WebGL,
             # ARIA-скрытая разметка) — рамки вокруг всех кликабельных зон
-            # вьюпорта; выбранная зона кликается по координатам (meta["point"])
+            # вьюпорта; выбранная зона кликается по координатам (meta["point"]).
+            # Vision лежит (vis["down"]) — ярус сам не зовётся
             pnt, pmeta = self._vision_zones(goal, host, tab_id, router,
-                                            op=op)
+                                            op=op, vis=vis)
+            self._note_tier(vis, "vision_zones", pmeta)
             if pnt is not None:
-                return url, host, items, None, tab_id, pmeta, None
+                return (url, host, items, None, tab_id,
+                        self._with_tiers(pmeta, vis), None)
             if pmeta is not None and not (meta or {}).get("veto"):
                 meta = pmeta  # вердикт зонального яруса — в аудит
+        meta = self._with_tiers(meta, vis)
         if idx is None:
             fail_kind = self._resolve_fail_kind(meta)
             # Антибот-стена: ретраи выше уже отработали, дальше — только
@@ -4318,14 +4564,16 @@ class ComputerControlManager:
             # кандидатов) — до клика вслепую спрашиваем зональный vision:
             # общий дизамбигуатор без привязки к сайту
             g_idx, g_meta = self._vision_gate_choice(goal, host, tab_id,
-                                                     idx, meta, router, op=op)
+                                                     idx, meta, router, op=op,
+                                                     vis=vis)
             if g_idx is None and g_meta.get("point"):
-                return url, host, items, None, tab_id, g_meta, None
-        return url, host, items, idx, tab_id, meta, None
+                return (url, host, items, None, tab_id,
+                        self._with_tiers(g_meta, vis), None)
+        return url, host, items, idx, tab_id, self._with_tiers(meta, vis), None
 
     def _vision_gate_choice(self, goal: str, host: str, tab_id,
                             idx: int, meta: Dict[str, object], router,
-                            op: str = "click"):
+                            op: str = "click", vis: Optional[dict] = None):
         """Проверка сомнительного текстового выбора зональным vision —
         чтобы не писать детерминированный фолбэк под каждый сайт.
         Сомнительно: слабый ярус (<55: голый контекст/подстрока/синоним —
@@ -4360,7 +4608,9 @@ class ComputerControlManager:
         why = "ничья одноимённых" if tied else f"слабый скор {top:.1f}"
         logger.info(f"[CompControl] «{goal[:40]}» выбор сомнителен ({why}) — "
                     "проверяю зональным vision")
-        pnt, pmeta = self._vision_zones(goal, host, tab_id, router, op=op)
+        pnt, pmeta = self._vision_zones(goal, host, tab_id, router, op=op,
+                                        vis=vis)
+        self._note_tier(vis, "vision_gate", pmeta)
         if pnt is None:
             return idx, meta
         pmeta["vision_gate"] = why
@@ -4410,19 +4660,7 @@ class ComputerControlManager:
         pool = pool[:LLM_WIDE_MAX]
         if not pool:
             return None, None
-
-        def _line(n: int, it: dict) -> str:
-            lab = str(it.get("text") or it.get("aria") or it.get("title") or "")
-            ctx = str(it.get("ctx") or "")
-            # Короткая подпись («закрыть», «×») без контекста блока LLM не
-            # привязать к скоуп-цели («закрыть на корзина» — крестик сам по
-            # себе «корзины» не содержит) — добавляем контекст
-            if ctx and len(lab) <= 15:
-                lab = f"{lab} (блок: {ctx[:60]})"
-            return (f"{n}) [{it.get('tag')}/{it.get('role') or '-'}] "
-                    f"{lab[:120]}{_layer_note(it)}")
-
-        lines = "\n".join(_line(n, it) for n, it in enumerate(pool, 1))
+        lines = "\n".join(_cand_line(n, it) for n, it in enumerate(pool, 1))
         task = "выбрать поле ввода" if for_field else "нажать"
         scope_hint = ""
         if not for_field:
@@ -4454,6 +4692,7 @@ class ComputerControlManager:
             "llm_response": str(resp or "")[:200]}
         m = re.fullmatch(r"\s*(\d{1,2})\s*", str(resp or ""))
         if m and 1 <= int(m.group(1)) <= len(pool):
+            meta["picked_n"] = int(m.group(1))
             picked = pool[int(m.group(1)) - 1]
             # Zero-match промах: LLM ткнула в крестик/закрытие, хотя в цели
             # намерения закрывать нет («сырный в части слева» → «Закрыть»).
@@ -4482,9 +4721,333 @@ class ComputerControlManager:
                         f"{str(resp or '')[:60]!r}")
         return None, meta
 
+    # ── Общий вход vision-ярусов (гибрид / рамки / зоны) ──
+    # vis — состояние vision на ОДИН резолв (dict, заводит каскад): «скриншот
+    # не снялся» (shot_failed), «vision-цепочка лежит» (down) и след ярусов
+    # (tiers) для аудита. Экземпляр менеджера общий для конкурентных
+    # запросов — поэтому состояние передаётся параметром, а не атрибутом
+
+    def _vision_ready(self, router) -> bool:
+        """Vision включён конфигом и есть у роутера."""
+        if not self.vision_fallback or router is None:
+            return False
+        try:
+            return bool(router.supports_vision())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _vision_shot(host: str, tab_id, vis: dict) -> Optional[bytes]:
+        """Скриншот вьюпорта для vision-яруса — один на резолв: и удачный
+        кадр (vis["shot"]), и неудача запоминаются. screenshot_viewport уже
+        ретраит внутри, а между ярусами одного резолва нет ни кликов, ни
+        прокрутки (доскролл-поиск и повторный снапшот — ДО vision-ярусов,
+        vis заводится после них) — кадр актуален. Ярус, который начнёт
+        крутить страницу, обязан сбросить vis["shot"]."""
+        if vis.get("shot_failed"):
+            return None
+        if vis.get("shot"):
+            return vis["shot"]
+        from app.features import browser_actions as ba
+        try:
+            shot = ba.screenshot_viewport(host, tab_id)
+        except Exception as e:
+            logger.debug(f"[CompControl] Скриншот для vision не снят: {e}")
+            shot = None
+        if not shot:
+            vis["shot_failed"] = True
+            return None
+        vis["shot"] = shot
+        return shot
+
+    def _vision_box_pool(self, host: str, tab_id, items: List[dict],
+                         vis: dict) -> Tuple[Optional[bytes], List[dict], set]:
+        """Кандидаты под рамки (гибрид и _visual_resolve): видимые и не
+        мелкие, активный слой, центр внутри кадра скриншота, без дублей одной
+        карточки. Центр проверяем по самому кадру (высота вьюпорта — из
+        размера картинки и vw): у элементов iframe vp считается по окну
+        фрейма, и рамка рисовалась за краем изображения.
+        → (скриншот, кандидаты, idx схлопнутых дублей); скриншота нет —
+        (None, [], set()): ярус не запускается."""
+        eligible = [it for it in items
+                    if it.get("vp") and (it.get("w") or 0) >= 10
+                    and (it.get("h") or 0) >= 10]
+        # Открытая панель/модалка поверх затемнённого фона (sc=0 — под
+        # бэкдропом; cov — перекрыт чужим слоем): рамки тратим только на
+        # активный слой (кейс 08.09); все вне слоя — не режем в ноль
+        eligible = _active_layer(eligible)
+        if not eligible:
+            return None, [], set()
+        shot = self._vision_shot(host, tab_id, vis)
+        if not shot:
+            return None, [], set()
+        try:
+            import io
+            from PIL import Image
+            iw, ih = Image.open(io.BytesIO(shot)).size
+        except Exception:
+            iw = ih = 0
+        if iw and ih:
+            vw0 = next((float(it.get("vw")) for it in eligible if it.get("vw")),
+                       float(iw))
+            vh = ih * vw0 / iw
+
+            def _inside(it: dict) -> bool:
+                cx = float(it.get("x") or 0) + float(it.get("w") or 0) / 2
+                cy = float(it.get("y") or 0) + float(it.get("h") or 0) / 2
+                return 0 <= cx < float(it.get("vw") or vw0) and 0 <= cy < vh
+
+            eligible = [it for it in eligible if _inside(it)]
+        pool = _dedup_same_target_cards(eligible)
+        dup_ids = ({int(it["idx"]) for it in eligible}
+                   - {int(it["idx"]) for it in pool})
+        return shot, pool, dup_ids
+
+    def _vision_call(self, prompt: str, boxed: bytes, shot: bytes, router,
+                     vis: dict, tier: str) -> Optional[str]:
+        """Vision-вызов с рамками + чистый кадр вторым изображением. None —
+        vision-цепочка лежит: провайдер в карантине/недоступен отвечает
+        None/пусто, а не исключением (supports_vision при vision: auto всё
+        равно True). Такой резолв помечается vis["down"] — остальные
+        vision-ярусы того же резолва не зовутся (та же мёртвая цепочка,
+        до ~150 с каждый), а текстовый широкий резолв на cc_provider — да.
+        Счётчик vision_calls — за каждый состоявшийся vision-ответ (llm_calls
+        — только текстовые вызовы: их доля от выборов — метрика llm_share)."""
+        try:
+            resp = router.get_response_with_image(prompt, boxed,
+                                                  image_mime="image/jpeg",
+                                                  extra_image=shot,
+                                                  force_provider=getattr(router, "vision_provider", None))
+        except Exception as e:
+            logger.debug(f"[CompControl] Vision-вызов ({tier}) не удался: {e}")
+            resp = None
+        if not str(resp or "").strip():
+            vis["down"] = True
+            self._note_tier(vis, tier, {"fail": "vision_down"})
+            logger.info(f"[CompControl] Vision недоступен ({tier}) — "
+                        "остальные vision-ярусы резолва пропускаю")
+            return None
+        self.stats["vision_calls"] += 1
+        return str(resp)
+
+    @staticmethod
+    def _note_tier(vis: Optional[dict], path: str,
+                   meta: Optional[dict]) -> None:
+        """След яруса для аудита (meta["tiers"]): путь, начало ответа,
+        уверенность, вето/сбой, бюджеты гибрида. Раньше в аудит попадал лишь
+        вердикт последнего яруса — «нет» гибрида затирали зоны."""
+        if vis is None or meta is None:
+            return
+        rec: Dict[str, object] = {"path": path}
+        if meta.get("llm_response"):
+            rec["resp"] = str(meta["llm_response"])[:60]
+        for k in ("conf", "veto", "fail", "n_boxes", "n_text", "picked_n"):
+            if meta.get(k) is not None:
+                rec[k] = meta[k]
+        vis.setdefault("tiers", []).append(rec)
+
+    @staticmethod
+    def _with_tiers(meta: Optional[dict], vis: dict) -> Optional[dict]:
+        """След ярусов резолва — в итоговую мету (переживает замену meta)."""
+        if isinstance(meta, dict) and vis.get("tiers"):
+            meta["tiers"] = list(vis["tiers"])
+        return meta
+
+    def _hybrid_pick(self, goal: str, items: List[dict], host: str,
+                     tab_id: Optional[int], router, op: str = "click",
+                     vis: Optional[dict] = None
+                     ) -> Tuple[Optional[int], Optional[dict]]:
+        """Гибридный zero-match ярус (wide_mode: hybrid): ОДИН vision-вызов
+        вместо пары «широкий текстовый резолв → vision-рамки». Модель видит
+        скриншот вьюпорта с пронумерованными рамками видимых кандидатов
+        (1..K) и текстовый список подписанных элементов без рамки — в
+        основном вне экрана (K+1..N), нумерация сквозная. Выбор — DOM-метка
+        (idx), а не координаты: вето и closed-loop проверка клика работают
+        как у остальных ярусов; элемент вне экрана клик сам прокручивает во
+        вьюпорт (до замера отпечатка — см. _click_cdp).
+        → (idx, meta); (None, None) — ярус не запускался (vision выключен/
+        недоступен, нет скриншота/рамок, Pillow не сработал) ИЛИ vision-
+        цепочка лежит (vis["down"]) — каскад идёт прежним путём;
+        (None, meta) — vision ответила «нет», ответ невалиден
+        (meta["fail"]="invalid") или выбор ветирован."""
+        vis = vis if vis is not None else {}
+        if vis.get("down") or not self._vision_ready(router):
+            return None, None
+        # Активный слой поверх затемнённого фона — как у остальных ярусов
+        items = _active_layer(items)
+        # Релевантность цели — тот же скоринг, что у выбора: в zero-match он
+        # обычно пуст, но слабые (ниже порога лидера) баллы — всё равно
+        # сигнал, кого ставить первым
+        try:
+            scored = self._score_candidates(items, goal, host=host, op=op) \
+                or self._score_scoped(items, goal, op=op)
+        except Exception:
+            scored = []
+        score = {int(it["idx"]): s for s, it in scored}
+        pos = {int(it["idx"]): n for n, it in enumerate(items)}
+
+        def _named(it: dict) -> bool:
+            return bool(it.get("text") or it.get("aria") or it.get("title"))
+
+        shot, pool, dup_ids = self._vision_box_pool(host, tab_id, items, vis)
+        # Рамки: релевантность → безымянные (иконки — сопоставить их с целью
+        # может только vision) → крупнее
+        boxes = sorted(pool, key=lambda it: (
+            -score.get(int(it["idx"]), 0.0), _named(it),
+            -(float(it.get("w") or 0) * float(it.get("h") or 0))))
+        boxes = boxes[:HYBRID_BOX_MAX]
+        if not shot or not boxes:
+            # Смотреть на скриншоте нечего — текстовый список дешевле
+            # отработает прежний широкий резолв
+            return None, None
+        boxed = _draw_candidate_boxes(shot, boxes)
+        if boxed is None:
+            return None, None
+        box_ids = {int(it["idx"]) for it in boxes}
+        # Текстовые строки — подписанные элементы без рамки: в основном вне
+        # экрана, плюс видимые, что не влезли в бюджет рамок (дубли карточек,
+        # схлопнутые в рамку, не повторяем). Порядок: релевантность →
+        # видимые раньше (иначе видимая подписанная цель выпадала и из рамок,
+        # и из строк) → псевдокликабельные фрагменты последними (как в
+        # _llm_wide_pick) → DOM. Без строк: llm_wide_resolve=false (текстовый
+        # ярус выключен) и цель-иконка — подписи у иконки нет, строки лишь
+        # подсунут модели чужой подписанный элемент (как пропуск текстового
+        # широкого резолва для иконок, _ICON_WORD_ROOTS)
+        rows: List[dict] = []
+        if self.llm_wide_resolve and not _icon_goal(goal):
+            rows = [it for it in items if _named(it)
+                    and int(it["idx"]) not in box_ids
+                    and int(it["idx"]) not in dup_ids]
+            rows.sort(key=lambda it: (
+                -score.get(int(it["idx"]), 0.0),
+                0 if it.get("vp", True) else 1,
+                1 if _snap_frag(it) else 0,
+                pos.get(int(it["idx"]), 0)))
+            rows = rows[:HYBRID_TEXT_MAX]
+        k = len(boxes)
+        verb = "навести курсор на" if op == "hover" else "нажать"
+        # Цель — в пределах 200 символов: иначе бюджет промпта не жёсткий
+        g_short = goal if len(goal) <= 200 else goal[:200] + "…"
+        scope_hint = ""
+        m_sc = _SCOPE_SPLIT_RE.match(" ".join(g_short.split()))
+        if m_sc:
+            # Скоуп-форма «закрыть на корзина» — как в _llm_wide_pick
+            scope_hint = (f" (элемент «{m_sc.group(1)}», относящийся к "
+                          f"«{m_sc.group(2)}»; может быть подписан "
+                          f"просто «{m_sc.group(1)}»)")
+
+        def _prompt(lab_box: int, lab_row: int, rows_: List[dict]) -> str:
+            parts = [
+                f"Задача: {verb} «{g_short}»{scope_hint}.",
+                "Скриншот страницы браузера. Цветные рамки с номерными "
+                f"бейджами отмечают элементы 1..{k} (номер — в бейдже цвета "
+                "рамки):",
+                "\n".join(_cand_line(n, it, lab_box)
+                          for n, it in enumerate(boxes, 1)),
+                "Если приложен второй скриншот — это та же страница без "
+                "разметки: сверяйся с ним, что закрыто рамками и бейджами."]
+            if rows_:
+                parts.append("Элементы без рамки (в основном ниже экрана):")
+                parts.append("\n".join(
+                    _cand_line(k + n, it, lab_row)
+                    # Видимый, но без рамки (не влез в бюджет рамок)
+                    + (" — на экране, без рамки" if it.get("vp", True) else "")
+                    for n, it in enumerate(rows_, 1)))
+            # Уверенность C — данные для настройки (пишется в аудит), на
+            # приём выбора не влияет. Формат — описанием, без числа-образца:
+            # с примером «C=0.8» модели повторяли именно 0.8
+            parts.append(
+                f"Ответ — ТОЛЬКО номер подходящего элемента (1-{k + len(rows_)}), "
+                "затем через пробел C=<уверенность от 0 до 1>. "
+                "Если ничего не подходит — ответь «нет».")
+            return "\n".join(parts)
+
+        # Лимит промпта: сначала короче подписи, затем без самых слабых строк
+        # (они в хвосте — нумерация оставшихся не сдвигается), в крайнем
+        # случае — ещё короче подписи рамок
+        prompt = _prompt(60, 120, rows)
+        if len(prompt) > HYBRID_PROMPT_MAX:
+            prompt = _prompt(40, 60, rows)
+        while len(prompt) > HYBRID_PROMPT_MAX and rows:
+            rows = rows[:-1]
+            prompt = _prompt(40, 60, rows)
+        if len(prompt) > HYBRID_PROMPT_MAX:
+            prompt = _prompt(20, 60, rows)
+        resp = self._vision_call(prompt, boxed, shot, router, vis,
+                                 "vision_hybrid")
+        if resp is None:
+            return None, None  # vision лежит — каскад: текстовый широкий
+        numbered = boxes + rows
+        # Строгая грамматика — для любого номера; нестрогий разбор («3 —
+        # кнопка «Оплата»», «Тариф 5 ГБ») принимаем, только если он указал на
+        # РАМКУ С ПОДПИСЬЮ: её выбор ниже проходит строгую сверку подписи с
+        # целью, так что эхо чужой подписи не станет кликом. Строка списка и
+        # безымянная рамка сверки не имеют — для них только строгий ответ
+        num, conf, said_no = _parse_pick_answer(resp, strict=True)
+        loose = False
+        if num is None and not said_no:
+            n2, c2, _no2 = _parse_pick_answer(resp)
+            if n2 is not None and 1 <= n2 <= k and _named(boxes[n2 - 1]):
+                num, conf, loose = n2, c2, True
+        # off — строка текстового списка (без рамки: вне экрана или не влезла)
+        meta: Dict[str, object] = {
+            "path": "vision_hybrid",
+            "candidates": [{"idx": int(it["idx"]),
+                            "text": str(it.get("text") or "")[:60],
+                            "score": round(score.get(int(it["idx"]), 0.0), 1),
+                            "off": n > k}
+                           for n, it in enumerate(numbered[:10], 1)],
+            "llm_response": resp[:200], "conf": conf,
+            "wide_mode": "hybrid", "n_boxes": k, "n_text": len(rows)}
+        if said_no:
+            self.stats["vision_valid"] += 1
+            logger.info(f"[CompControl] Гибридный ярус: нет подходящего "
+                        f"элемента для «{goal[:40]}»")
+            return None, meta
+        if num is None or not 1 <= num <= len(numbered):
+            self.stats["vision_invalid"] += 1
+            # Невалидный ответ — не вердикт: каскад ещё спросит текстовый
+            # широкий резолв (другой провайдер), _visual_resolve — нет
+            # (гибрид — его надмножество)
+            meta["fail"] = "invalid"
+            logger.info(f"[CompControl] Гибридный ярус: ответ невалиден: "
+                        f"{resp[:60]!r}")
+            return None, meta
+        self.stats["vision_valid"] += 1
+        picked = numbered[num - 1]
+        row = num > k
+        meta["picked_n"] = num
+        if loose:
+            meta["loose_parse"] = True
+        if row:
+            meta["row"] = True
+        if not picked.get("vp", True):
+            meta["offscreen"] = True
+        # Сверка подписи с целью — по источнику выбора:
+        # • строка текстового списка — как у прежнего широкого резолва: он
+        #   существует ради «другого названия», сверки нет (label_check=False),
+        #   зато ответ — только строгой грамматики (выше);
+        # • рамка с подписью — строго ВСЕГДА, как у прежнего _visual_resolve
+        #   (кейс 19.09: «renoir» → «2:43 World Map…» — галлюцинация по
+        #   картинке). Заявленная уверенность не освобождает: самооценка C
+        #   кучкуется на 0.9–0.95 и у галлюцинаций. «Другое название» у
+        #   видимого элемента не теряется: вето label_mismatch каскад отдаёт
+        #   текстовому широкому резолву (независимая модель, один вызов);
+        # • безымянная рамка (иконка) — сверять не с чем, как в _visual_resolve.
+        # Вето разрушительного — в силе всегда. Ветированный кандидат не
+        # отказ — каскад идёт на следующий ярус
+        if self._veto_model_pick(goal, picked, meta, host, "гибрид", op=op,
+                                 label_check=not row):
+            return None, meta
+        idx = int(picked["idx"])
+        logger.info(f"[CompControl] «{goal[:40]}» выбрано гибридным ярусом: "
+                    f"кандидат {num}{' (строка)' if row else ''} "
+                    f"(idx {idx}, C={conf})")
+        return idx, meta
+
     def _visual_resolve(self, host: str, tab_id: Optional[int],
                         items: List[dict], goal: str, router,
-                        op: str = "click"):
+                        op: str = "click", vis: Optional[dict] = None):
         """Визуальный фолбэк резолва (п.4): весь текстовый скоринг бессилен,
         когда у кандидатов пустые accessible name (иконочные тулбары). Скриншот
         вьюпорта + пронумерованные рамки кандидатов → vision-модель выбирает
@@ -4492,36 +5055,19 @@ class ComputerControlManager:
         Перед нарезкой топ-8 — дедуп дублей одной карточки по ссылке/тексту
         (_dedup_same_target_cards): иначе обёртка+заголовок+строка метаданных
         одной карточки конкурируют за номера и вытесняют соседние элементы.
-        → (idx, meta) или (None, None): фича выключена, нет vision, нет
-        скриншота/кандидатов, ответ невалиден."""
-        if not self.vision_fallback or router is None:
+        → (idx, meta); (None, None) — ярус не запускался (фича выключена,
+        нет vision, нет скриншота/кандидатов) или vision лежит (vis["down"]);
+        (None, meta) — vision ответила «нет»/невалидно или выбор ветирован."""
+        vis = vis if vis is not None else {}
+        if vis.get("down") or not self._vision_ready(router):
             return None, None
-        try:
-            if not router.supports_vision():
-                return None, None
-        except Exception:
-            return None, None
-        # Кандидаты — видимые и не мелкие; безымянные впереди (именно для них
-        # фолбэк), затем по убыванию площади
-        cands = [it for it in items
-                 if it.get("vp") and (it.get("w") or 0) >= 10
-                 and (it.get("h") or 0) >= 10]
-        # Открытая панель/модалка поверх затемнённого фона (sc=0 — элементы
-        # под бэкдропом; cov — перекрытые чужим слоем): рамки тратим только
-        # на активный слой (кейс 08.09: зоны размазаны по странице, на панель
-        # комментариев не хватало бюджета). Все кандидаты вне слоя (ложный
-        # детект) — не режем в ноль (_active_layer)
-        cands = _active_layer(cands)
-        cands = _dedup_same_target_cards(cands)
+        shot, cands, _dups = self._vision_box_pool(host, tab_id, items, vis)
+        # Безымянные впереди (именно для них фолбэк), затем по убыванию площади
         cands.sort(key=lambda it: (bool(it.get("text") or it.get("aria")),
                                    -(float(it.get("w") or 0)
                                      * float(it.get("h") or 0))))
         cands = cands[:8]
-        if not cands:
-            return None, None
-        from app.features import browser_actions as ba
-        shot = ba.screenshot_viewport(host, tab_id)
-        if not shot:
+        if not shot or not cands:
             return None, None
         boxed = _draw_candidate_boxes(shot, cands)
         if boxed is None:
@@ -4533,28 +5079,32 @@ class ComputerControlManager:
             f"Скриншот страницы браузера. Цветные рамки с номерными "
             f"бейджами отмечают элементы 1..{len(cands)} (номер — в бейдже "
             f"цвета рамки):\n{lines}\n"
-            f"Какой из них — «{goal}»? Ответь ТОЛЬКО цифрой. "
+            f"Какой из них — «{goal[:200]}»? Ответь ТОЛЬКО цифрой. "
             "Если ничего не подходит — ответь «нет».\n"
             "Если приложен второй скриншот — это та же страница без "
             "разметки: сверяйся с ним, что закрыто рамками и бейджами.")
-        try:
-            resp = router.get_response_with_image(prompt, boxed,
-                                                  image_mime="image/jpeg",
-                                                  extra_image=shot,
-                                                  force_provider=getattr(router, "vision_provider", None))
-        except Exception as e:
-            logger.debug(f"[CompControl] Визуальный фолбэк не удался: {e}")
-            return None, None
-        m = re.fullmatch(r"\s*(\d{1,2})\s*", str(resp or ""))
-        if not m or not (1 <= int(m.group(1)) <= len(cands)):
-            return None, None
-        picked = cands[int(m.group(1)) - 1]
+        resp = self._vision_call(prompt, boxed, shot, router, vis, "vision")
+        if resp is None:
+            return None, None  # vision лежит — не вердикт «нет»
         meta: Dict[str, object] = {
             "path": "vision",
             "candidates": [{"idx": int(it["idx"]),
                             "text": str(it.get("text") or "")[:60],
                             "score": 0.0} for it in cands],
-            "llm_response": str(resp or "")[:200]}
+            "llm_response": resp[:200]}
+        m = re.fullmatch(r"\s*(\d{1,2})\s*", resp)
+        if not m or not (1 <= int(m.group(1)) <= len(cands)):
+            # Vision посмотрела и сказала «нет» (или ответила невалидно) —
+            # вердикт в аудит: раньше тут был (None, None), и отказ был
+            # неотличим от «ярус не запускался»
+            if resp.strip().lower().startswith("нет"):
+                self.stats["vision_valid"] += 1
+            else:
+                self.stats["vision_invalid"] += 1
+            return None, meta
+        self.stats["vision_valid"] += 1
+        meta["picked_n"] = int(m.group(1))
+        picked = cands[int(m.group(1)) - 1]
         # Галлюцинация номера: модель обязана ответить «нет», когда цели нет
         # среди рамок, но иногда угадывает (кейс 19.09: «renoir» → клик по
         # «2:43 World Map - Taking Down the Paintress…»). Проверка та же, что
@@ -4568,20 +5118,18 @@ class ComputerControlManager:
         return idx, meta
 
     def _vision_zones(self, goal: str, host: str, tab_id, router,
-                      op: str = "click"):
+                      op: str = "click", vis: Optional[dict] = None):
         """Зональный vision-фолбэк — последний шанс, когда DOM нечитаем
         совсем (canvas/WebGL, ARIA-скрытая разметка): рамки вокруг ВСЕХ
         визуально кликабельных зон вьюпорта (не только кандидатов скоринга),
         крупный canvas — сеткой 3×3. Клик по выбранной зоне — по КООРДИНАТАМ
         (DOM-метки у зоны нет), closed-loop внутри click_at_point.
-        → ({"x","y","label"}, meta) или (None, None): фича выключена, нет
-        vision/скриншота/зон, антибот, ответ «нет»/невалиден."""
-        if not self.vision_fallback or router is None:
-            return None, None
-        try:
-            if not router.supports_vision():
-                return None, None
-        except Exception:
+        → ({"x","y","label"}, meta); (None, None) — ярус не запускался
+        (фича выключена, нет vision/скриншота/зон, антибот) или vision лежит
+        (vis["down"]); (None, meta) — ответ «нет»/невалиден или выбор
+        ветирован."""
+        vis = vis if vis is not None else {}
+        if vis.get("down") or not self._vision_ready(router):
             return None, None
         from app.features import browser_actions as ba
         # Капчу vision-кликами не «прожимаем»: антибот прячет семантику
@@ -4592,13 +5140,15 @@ class ComputerControlManager:
                 return None, None
         except Exception:
             pass
+        shot = self._vision_shot(host, tab_id, vis)
+        if not shot:
+            return None, None
         try:
-            shot = ba.screenshot_viewport(host, tab_id)
             boxes = ba.all_clickable_boxes(host, tab_id=tab_id)
         except Exception as e:
             logger.debug(f"[CompControl] Зональный vision-фолбэк недоступен: {e}")
             return None, None
-        if not shot or not boxes:
+        if not boxes:
             return None, None
         boxed = _draw_candidate_boxes(shot, boxes)
         if boxed is None:
@@ -4607,7 +5157,7 @@ class ComputerControlManager:
             f"{n}) {str(b.get('text') or '').strip() or f'зона {n}'}"
             for n, b in enumerate(boxes, 1))
         prompt = (
-            f"Задача: нажать «{goal}».\n"
+            f"Задача: нажать «{goal[:200]}».\n"
             "Скриншот страницы браузера. Цветные рамки с номерными "
             "бейджами — кликабельные зоны "
             f"1..{len(boxes)} (номер — в бейдже цвета рамки):\n{lines}\n"
@@ -4615,24 +5165,26 @@ class ComputerControlManager:
             "Если подходящей зоны нет — ответь «нет».\n"
             "Если приложен второй скриншот — это та же страница без "
             "разметки: сверяйся с ним, что закрыто рамками и бейджами.")
-        try:
-            resp = router.get_response_with_image(prompt, boxed,
-                                                  image_mime="image/jpeg",
-                                                  extra_image=shot,
-                                                  force_provider=getattr(router, "vision_provider", None))
-        except Exception as e:
-            logger.debug(f"[CompControl] Зональный vision-фолбэк не удался: {e}")
-            return None, None
+        resp = self._vision_call(prompt, boxed, shot, router, vis,
+                                 "vision_zones")
+        if resp is None:
+            return None, None  # vision лежит — не вердикт «нет»
         meta: Dict[str, object] = {
             "path": "vision_zones",
             "candidates": [{"idx": n,
                             "text": str(b.get("text") or "")[:60],
                             "score": 0.0}
                            for n, b in enumerate(boxes[:8], 1)],
-            "llm_response": str(resp or "")[:200]}
-        m = re.fullmatch(r"\s*(\d{1,2})\s*", str(resp or ""))
+            "llm_response": resp[:200]}
+        m = re.fullmatch(r"\s*(\d{1,2})\s*", resp)
         if not m or not (1 <= int(m.group(1)) <= len(boxes)):
+            if resp.strip().lower().startswith("нет"):
+                self.stats["vision_valid"] += 1
+            else:
+                self.stats["vision_invalid"] += 1
             return None, meta
+        self.stats["vision_valid"] += 1
+        meta["picked_n"] = int(m.group(1))
         box = boxes[int(m.group(1)) - 1]
         # Та же проверка выбора по номеру, что у визуального фолбэка: зоны
         # DOM-метки не имеют, и клик по ним координатный — галлюцинация
@@ -5505,33 +6057,42 @@ class ComputerControlManager:
         """Оценки соответствия вкладок цели («ютуб», «vpc гитхаб»): алиас
         сайта → хост, далее точное совпадение хоста/заголовка > подстрока в
         хосте > подстрока в заголовке > основы слов. Общий матч для
-        «перейди на вкладку X», «закрой/обнови вкладку X»."""
-        g = " ".join(goal.lower().split())
+        «перейди на вкладку X», «закрой/обнови вкладку X».
+        Слова-носители («страница/вкладка/сайт…» любого падежа — цель
+        LLM-разбора их не срезает) из цели убираются; регистр и ё/е не
+        важны; окончания — по основе («попова» ~ «ПОПОВ»)."""
+        g_raw = " ".join(goal.lower().split())
+        g_bare = _strip_tab_filler(g_raw) or g_raw
         # Алиас («ютуб») → хост сайта: вкладки матчатся по латинскому хосту
         alias_host = ""
-        k = self._lookup(self.sites, g)
+        k = self._lookup(self.sites, g_raw) or (
+            self._lookup(self.sites, g_bare) if g_bare != g_raw else None)
         if k:
             alias_host = (urlparse(self.sites[k]).hostname or "") \
                 .lower().removeprefix("www.")
-        from app.features.web_search import _stem
-        gw = [w for w in re.findall(r"[a-z0-9а-яё]+", g) if len(w) >= 3]
+        g0 = _fold_yo(g_raw)
+        g = _fold_yo(g_bare)
+        gw = [w for w in _TAB_WORD_RE.findall(g) if len(w) >= 3]
         scored: List[Tuple[float, dict]] = []
         for t in tabs:
-            h = t["host"].removeprefix("www.")
-            title = " ".join(t["title"].lower().split())
+            h = t["host"].lower().removeprefix("www.")
+            title = _fold_yo(" ".join(t["title"].lower().split()))
+            words = _TAB_WORD_RE.findall(f"{h} {title}")
             if alias_host and (h == alias_host
                                or h.endswith("." + alias_host)
                                or alias_host.endswith("." + h)):
                 s = 100.0
-            elif g and (g == h or g == title):
+            elif g and (g == h or g == title or g0 == title):
                 s = 95.0
             elif g and g in h:
                 s = 80.0
             elif g and g in title:
                 s = 70.0
-            elif gw and all(_word_in(w, f"{h} {title}")
-                            or _word_in(_stem(w), f"{h} {title}") for w in gw):
+            elif gw and all(any(x.startswith(w) for x in words)
+                            for w in gw):
                 s = 60.0
+            elif gw and all(_tab_word_stem_hit(w, words) for w in gw):
+                s = 50.0  # только по основам — уступает точному префиксу
             else:
                 continue
             scored.append((s, t))
@@ -6092,7 +6653,11 @@ class ComputerControlManager:
             detail = (str(action.pop("_result", "") or "")
                       if action["kind"] == "read" else "")
         except Exception as e:
-            ok, detail = False, str(e)[:200]
+            # Без хвостовой точки: detail вставляется во фразы, которые
+            # ставят свою («Не удалось …: {detail}.», банк «Код ошибки:
+            # {detail}.») — «exceeded..» в ответе. Многоточие не трогаем
+            ok, detail = False, re.sub(r"(?<!\.)\.\s*$", "",
+                                       str(e)[:200].rstrip())
             # Класс ошибки для аудита (п.7): «не уверен, что сработало» —
             # отдельный класс от «элемент не найден»/«браузер недоступен»
             error_class = getattr(e, "error_class", None) or "error"
@@ -6519,6 +7084,8 @@ class ComputerControlManager:
                     "/" + _segs[0] if _segs else "")
         done: List[str] = []
         step_paths: List[str] = []
+        # След vision/широких ярусов эскалации по всем шагам — в аудит
+        step_tiers: List[dict] = []
         steps = list(action["steps"])
 
         def _step_click(step_idx: int):
@@ -6607,6 +7174,7 @@ class ComputerControlManager:
                                                    tab_id, router,
                                                    page_url=url or "")
                 step_paths.append(str(meta.get("path") or "?"))
+                step_tiers.extend(meta.get("tiers") or [])
                 if idx is not None:
                     try:
                         _step_click(idx)
@@ -6650,6 +7218,15 @@ class ComputerControlManager:
             action["choose"] = {"path": ",".join(step_paths),
                                 "candidates": meta.get("candidates") if done else [],
                                 "llm_response": meta.get("llm_response") if done else None}
+            # Поля выбора последнего шага (гибрид: уверенность, номер, бюджеты)
+            # и след ярусов всех шагов — пересборка их не теряет
+            if done:
+                for k in ("conf", "wide_mode", "offscreen", "picked_n",
+                          "n_boxes", "n_text"):
+                    if meta.get(k) is not None:
+                        action["choose"][k] = meta[k]
+            if step_tiers:
+                action["choose"]["tiers"] = step_tiers
         if tab_id is not None:
             # Финальная страница пути — «открывшаяся страница» для следующих
             # команд («скачай на открывшейся странице …»)
@@ -6678,7 +7255,8 @@ class ComputerControlManager:
                           page_url: str = ""):
         """Эскалация резолва шага навигации, когда общий снапшот шага не дал
         кандидата: целевой снапшот по всему DOM (пункт мог не влезть в бюджет
-        общего) → доскролл-поиск → широкий LLM-резолв → vision-фолбэк. Тот же
+        общего) → доскролл-поиск → гибридный ярус (wide_mode: hybrid) либо
+        широкий LLM-резолв → vision-фолбэк. Тот же
         каскад, что у агентного клика в _resolve_element, но на отслеживаемой
         вкладке навигации; выход один, и на нём — тот же инвариант вето.
         → (idx|None, meta); номер сквозной, и клик по нему одинаков, каким
@@ -6724,15 +7302,37 @@ class ComputerControlManager:
             if g_idx is not None:
                 g_meta["via"] = "goal_snapshot"
                 pick, pick_meta, pick_items = g_idx, g_meta, g_items
-        if pick is None:
-            # Широкий LLM-резолв и vision — на общем снапшоте шага
+        vis: Dict[str, object] = {}  # состояние vision на шаг (_vision_ready)
+        hmeta = None
+        if pick is None and self.wide_mode == "hybrid":
+            # Гибридный ярус на общем снапшоте шага — как у агентного клика:
+            # один vision-вызов вместо пары «широкий резолв → vision-рамки»
+            hidx, hmeta = self._hybrid_pick(step, items, host, tab_id, router,
+                                            vis=vis)
+            self._note_tier(vis, "vision_hybrid", hmeta)
+            if hidx is not None:
+                pick, pick_meta = hidx, hmeta
+            elif hmeta is not None:
+                pick_meta = hmeta  # вердикт vision — в путь шага для аудита
+        if pick is None and (hmeta is None
+                             or hmeta.get("fail") == "invalid"
+                             or hmeta.get("veto") == "label_mismatch"):
+            # Широкий LLM-резолв — на общем снапшоте шага: режим text, гибрид
+            # не запускался / vision лежит, ответ гибрида невалиден или его
+            # выбор рамки ветирован сверкой подписи (как в каскаде клика)
             widx, wmeta = self._llm_wide_pick(step, items, router)
+            self._note_tier(vis, "llm_wide", wmeta)
             if widx is not None:
                 pick, pick_meta = widx, wmeta
-        if pick is None:
-            vidx, vmeta = self._visual_resolve(host, tab_id, items, step, router)
+        if pick is None and hmeta is None:
+            # Рамки — только если гибрид не смотрел страницу (он их
+            # надмножество); лежащий vision ярус пропускает сам
+            vidx, vmeta = self._visual_resolve(host, tab_id, items, step,
+                                               router, vis=vis)
+            self._note_tier(vis, "vision", vmeta)
             if vidx is not None:
                 pick, pick_meta = vidx, vmeta
+        pick_meta = self._with_tiers(pick_meta, vis)
         # Единственный выход эскалации шага — инвариант вето здесь же
         if pick is not None and self._veto_destructive(
                 step, self._element_by_idx(pick_items, pick), pick_meta, host):
@@ -6849,6 +7449,17 @@ class ComputerControlManager:
                 record["candidates"] = choose["candidates"]
             if choose.get("llm_response"):
                 record["llm_response"] = choose["llm_response"]
+            # Сравнение режимов zero-match яруса (wide_mode hybrid/text):
+            # уверенность модели, номер ответа, бюджеты гибрида, выбор
+            # строкой вне экрана и след всех ярусов резолва
+            for k in ("conf", "offscreen", "picked_n", "n_boxes", "n_text",
+                      "tiers"):
+                if choose.get(k) is not None:
+                    record[k] = choose[k]
+            if action.get("kind") in _RESOLVE_KINDS:
+                # Режим — из конфига, на каждой записи резолва/клика (не
+                # только когда ярус его пометил): сравнивать режимы по аудиту
+                record["wide_mode"] = self.wide_mode
             if action.get("kind") in ("click", "download", "nav", "type"):
                 record["verify"] = ("ok" if ok else
                                     "uncertain" if error_class == "uncertain"
@@ -6884,6 +7495,10 @@ class ComputerControlManager:
                 extra["candidates"] = meta["candidates"]
             if meta.get("llm_response"):
                 extra["llm_response"] = meta["llm_response"]
+            for k in ("conf", "offscreen", "picked_n", "n_boxes", "n_text",
+                      "tiers"):
+                if meta.get(k) is not None:
+                    extra[k] = meta[k]  # как в _audit — сравнение режимов
             if meta.get("veto"):
                 extra["veto"] = meta["veto"]
                 if meta.get("vetoed"):
