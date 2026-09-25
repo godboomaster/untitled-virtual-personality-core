@@ -1,0 +1,52 @@
+# Ядро как устанавливаемый пакет: аддоны (например, arrodes) зависят от него
+# и ставят его ссылкой на папку: pip install -e ../virtual-persona-core.
+# requirements.txt остаётся: там --extra-index-url для CPU-сборки torch,
+# в pyproject его не указать
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "virtual-persona-core"
+version = "0.1.0"
+description = "Ядро виртуальных персон: память, living persona, напоминания, todo, инициатива, роутер LLM, Telegram, веб-API"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv",
+    "pyyaml",
+    "openai",
+    "chromadb",
+    "sentence-transformers",
+    "httpx",
+    "python-telegram-bot",
+    "python-docx",
+    "pypdf",
+    "pdfplumber",
+    "python-pptx",
+    "openpyxl",
+    "ddgs",
+    "duckduckgo-search",
+    "deep-translator",
+    "markitdown",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "playwright",
+    "psutil",
+    "beautifulsoup4",
+    "pydantic",
+    "pillow",
+    "huggingface_hub",
+    "numpy",
+    "rank-bm25",
+    "requests",
+    "websocket-client",
+]
+
+# Имя пакета app слишком общее; переименовать при публикации
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+# YAML персон и прочие не-.py файлы внутри app/
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.yml", "*.json", "*.txt", "*.md"]

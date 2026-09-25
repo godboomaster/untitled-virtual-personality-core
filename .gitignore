@@ -34,3 +34,7 @@ qa_eval/**/retrieval/
 qa_eval/**/answers/
 qa_eval/**/eval/
 qa_eval/**/qa_parts/
+
+# Сборка пакетов (pip install -e)
+*.egg-info/
+build/
