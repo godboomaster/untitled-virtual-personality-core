@@ -34,9 +34,9 @@ DEFAULT_TIMEOUT = 15.0
 
 # Все задачи локального движка (полный список потребителей Ollama).
 # Значение — ollama_only: задача технически не может уйти в веб-чат.
+# Аддоны добавляют свои задачи через register_task.
 LOCAL_TASKS: dict[str, bool] = {
     "query_rewrite": False,        # рерайтер/улучшатель поисковых запросов
-    "book_search": False,          # книжный RAG: перевод, distill, сплит, кореферентность
     "self_memory": False,          # заметки в личный дневник
     "state_engine": False,         # тики состояния + оценка инициативы
     "world_engine": False,         # мир: NPC из диалога, события, стимулы
@@ -54,6 +54,11 @@ LOCAL_TASKS: dict[str, bool] = {
     "dialogue_harvest": False,     # общий урожай диалога: NPC + mood + моменты/позиции
     "ocr": True,                   # текст с картинок — только Ollama (vision)
 }
+
+def register_task(name: str, ollama_only: bool = False) -> None:
+    # Задача аддона: видна в настройках движков, её движок можно выбрать
+    LOCAL_TASKS[name] = bool(ollama_only)
+
 
 # Бюджет ожидания очереди фона веб-чата (канал side) для локальных задач:
 # занято дольше — откат на Ollama (см. get_response). Столько же, сколько

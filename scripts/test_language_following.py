@@ -121,7 +121,10 @@ def main():
         user_id="u1")[0]["content"]
     check("фолбэк на историю через prepare_messages", "Russian" in sysc_fb)
 
-    sysc_book = pl.prepare_messages("Привет, что там по ритуалу?", book_context="[КОНТЕКСТ:BOOK]\n...")[0]["content"]
+    from app.features.book_addon import with_book_rules
+    sysc_book = pl.prepare_messages(
+        "Привет, что там по ритуалу?",
+        addon_blocks=[with_book_rules("[КОНТЕКСТ:BOOK]\n...")])[0]["content"]
     check("правило книжного RAG больше не требует русского",
           "отвечай на русском" not in sysc_book
           and "Язык ответа — язык сообщения пользователя." in sysc_book)

@@ -1,10 +1,10 @@
 import time
 
 import yaml
-from pathlib import Path
 from typing import Optional, List, Dict
 
 from app.core import timeutil
+from app.core.addons import CORE_PERSONAS_DIR, find_persona_file, persona_dirs
 from app.core.language import detect_dialogue_language, response_language_note
 
 
@@ -47,9 +47,9 @@ class PersonaLayer:
         }
     
     def _load_persona(self, name: str) -> Dict:
-
-        persona_dir = Path(__file__).parent.parent / "personas"
-        persona_path = persona_dir / f"{name}.yaml"
+        # YAML ищется в app/personas и в папках персон установленных аддонов
+        persona_path = find_persona_file(name) or CORE_PERSONAS_DIR / f"{name}.yaml"
+        persona_dir = persona_path.parent
 
         if not persona_path.exists():
             print(f"Файл не найден: {persona_path}.")
@@ -72,9 +72,8 @@ class PersonaLayer:
 
         # Загружаем glossary если указан — НЕ в системный промпт целиком
         # (~17k токенов на каждое сообщение), а динамически по вопросу:
-        # релевантные записи собирает app.features.glossary_context и
-        # bot_instance добавляет их в book_context. Здесь только проверяем,
-        # что файл существует.
+        # релевантные записи собирает книжный аддон и добавляет их в свой
+        # блок промпта. Здесь только проверяем, что файл существует.
         glossary_file = data.get("glossary")
         if glossary_file and not (persona_dir / glossary_file).exists():
             print(f"[PersonaLayer] Glossary не найден: {persona_dir / glossary_file}")
@@ -82,12 +81,23 @@ class PersonaLayer:
         return data
 
     def available_personas(self) -> List[str]:
-        personas_dir = Path(__file__).parent.parent / "personas"
-        if not personas_dir.exists():
-            return []
-        
-        files = list(personas_dir.glob("*.yaml"))
-        return [f.stem for f in files]
+        # Персона — YAML с непустым system_prompt: рядом лежат служебные
+        # файлы (глоссарий, таймлайн), они не персоны
+        names: List[str] = []
+        for personas_dir in persona_dirs():
+            if not personas_dir.exists():
+                continue
+            for f in sorted(personas_dir.glob("*.yaml")):
+                if f.stem in names:
+                    continue
+                try:
+                    with open(f, "r", encoding="utf-8") as fh:
+                        data = yaml.safe_load(fh)
+                except Exception:
+                    continue
+                if isinstance(data, dict) and data.get("system_prompt"):
+                    names.append(f.stem)
+        return names
     
     
     def _get_special_user_note(self, user_id: str) -> Optional[str]:
@@ -123,7 +133,7 @@ class PersonaLayer:
                          inventory_context: Optional[str] = None,
                          inventory_events: Optional[List[str]] = None,
                          learning_context: Optional[str] = None,
-                         book_context: Optional[str] = None,
+                         addon_blocks: Optional[List[str]] = None,
                          env_context: Optional[str] = None,
                          living_context: Optional[str] = None,
                          help_style_context: Optional[str] = None,
@@ -177,17 +187,11 @@ Use the information from the uploaded files in your answer if the user mentions 
                 "DO NOT mention that these are \"retrieved memories\" — just use them as natural context."
             )
 
-        # Контекст из книги (RAG по книжному канону персоны)
-        if book_context:
-            context_block += (
-                f"\n\n{book_context}\n\n"
-                "ПРАВИЛА РАБОТЫ С ФРАГМЕНТАМИ:\n"
-                "1. Фрагменты — твой ЕДИНСТВЕННЫЙ источник фактов о мире книги.\n"
-                "2. Язык ответа — язык сообщения пользователя.\n"
-                "3. НЕ цитируй дословно — пересказывай суть своими словами.\n"
-                "4. НЕ упоминай «база данных», «фрагменты», «поиск» — говори как знаток.\n"
-                "5. Собирай ответ из нескольких фрагментов — не жди что всё в одном."
-            )
+        # Блоки аддонов персоны (напр. книжный RAG) — каждый готов целиком,
+        # вместе со своими правилами
+        for block in addon_blocks or []:
+            if block:
+                context_block += f"\n\n{block}"
 
         # Веб-контекст (результаты поиска в интернете)
         if web_context:
@@ -359,8 +363,7 @@ Ignore the web search entirely.
     def change_persona(self, persona_name: str) -> bool:
         # Сменить персону. Возвращает True если персона успешно загружена.
         
-        persona_path = Path(__file__).parent.parent / "personas" / f"{persona_name}.yaml"
-        if not persona_path.exists():
+        if find_persona_file(persona_name) is None:
             return False
         
         self.persona_name = persona_name

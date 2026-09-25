@@ -16,6 +16,7 @@ from typing import Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from app.core.persona import PersonaLayer, _format_msg_ts
+from app.core.addons import TurnInfo, load_addons
 from app.core.language import detect_language, detect_dialogue_language
 from app.core.memory import MemoryManager
 from app.core.router import ModelRouter
@@ -485,13 +486,16 @@ class BotInstance:
         if self.reminder_manager is not None and self.living is not None:
             self.reminder_manager.set_living(self.living)
 
-        # Book search (RAG по книге для персон)
-        self.book_search = None
-        if self.features.get("book_search", False):
-            from app.features.book_search import BookSearch
-            self.book_search = BookSearch(context=context or persona_name,
-                                          router=self.router)
-            logger.info(f"  [{persona_name}] Book search включён")
+        # Аддоны персоны (features.addons, напр. книжный RAG Арродеса):
+        # свой блок промпта на ход и чистка ответа
+        self.addons = []
+        for addon in load_addons(self.features, persona_name):
+            try:
+                addon.setup(self)
+            except Exception as e:
+                logger.warning(f"  [{persona_name}] Аддон «{addon.name}» не запущен: {e}")
+                continue
+            self.addons.append(addon)
 
         # Proactive messaging (самоинициатива)
         self.proactive = None
@@ -2379,135 +2383,23 @@ class BotInstance:
                 if preferred and len(preferred) <= 40:
                     user_name = preferred
 
-            # Intent classification — нужен ли контекст книги?
-            _book_intent = "book_only"
-            if self.book_search and not light_mode:
-                try:
-                    from app.features.intent_router import classify_intent
-                    _book_intent = classify_intent(user_input, stm_messages)
-                    logger.info(f"[IntentRouter] intent={_book_intent} for: '{user_input[:60]}'")
-                except Exception as ie:
-                    logger.debug(f"Intent classification error: {ie}")
-
-            # Поиск по книге (RAG) — пропускаем при chat_only
-            book_context = None
-            context_mode = "book"
-            _book_frag_count = None  # для валидации маркеров [ФN] в ответе
-            if self.book_search and _book_intent != "chat_only" and not light_mode:
-                try:
-                    context_mode = "mixed" if _book_intent == "mixed" else "book"
-                    from app.features.book_search import detect_volume
-
-                    def _detect_position(text: str):
-                        q = text.lower()
-                        start_kw = ["начал", "в начале", "начало", "первых главах", "первые главы"]
-                        end_kw = ["конц", "в конце", "конец", "последних главах", "последние главы"]
-                        if any(w in q for w in start_kw):
-                            return "start"
-                        if any(w in q for w in end_kw):
-                            return "end"
-                        return None
-
-                    # Volume определяется внутри search() после перевода
-                    volume = None
-                    position = _detect_position(user_input)
-
-                    # Position-запросы → summaries вместо chunk-поиска
-                    if position is not None and volume is not None:
-                        # ВАЖНО: здесь НЕ делать `import json, re` — инлайновый импорт
-                        # сделает re локальным для ВСЕГО process_message, и любой
-                        # re.* выше по функции упадёт с UnboundLocalError
-                        # (json и re уже импортированы на уровне модуля)
-                        # _db_path = "data/arrodes/book" -> context_dir = "data/arrodes"
-                        context_dir = "/".join(self.book_search._db_path.split("/")[:-1])
-                        summaries_path = f"{context_dir}/summaries.json"
-                        try:
-                            with open(summaries_path, encoding="utf-8") as sf:
-                                all_summaries = json.load(sf)
-                        except FileNotFoundError:
-                            summaries_path = "data/arrodes/summaries.json"
-                            with open(summaries_path, encoding="utf-8") as sf:
-                                all_summaries = json.load(sf)
-
-                        # Диапазоны глав по томам книги
-                        VOL_RANGES = {
-                            1: (1, 213), 2: (214, 408), 3: (409, 600),
-                            4: (601, 783), 5: (784, 980), 6: (981, 1138),
-                        }
-                        lo, hi = VOL_RANGES.get(volume, (1, 9999))
-                        total_chapters = hi - lo + 1
-                        n_take = min(20, total_chapters)
-                        if position == "start":
-                            ch_lo, ch_hi = lo, lo + n_take - 1
-                        else:
-                            ch_lo, ch_hi = hi - n_take + 1, hi
-
-                        selected = []
-                        for k, v in all_summaries.items():
-                            m = re.search(r"Chapter (\d+):", k)
-                            if m and ch_lo <= int(m.group(1)) <= ch_hi:
-                                selected.append((int(m.group(1)), k, v))
-                        selected.sort(key=lambda x: x[0])
-
-                        if selected:
-                            lines = [f"[Summaries for Volume {volume}, {'beginning' if position == 'start' else 'end'}]"]
-                            for ch_num, title, summary in selected:
-                                lines.append(f"{title}\n{summary}")
-                            book_context = "\n\n".join(lines)
-                            logger.info(f"[BookContext] Position query: {position} vol={volume}, loaded {len(selected)} chapter summaries ({len(book_context)} chars)")
-                        else:
-                            logger.info(f"[BookContext] Position query: no summaries found for vol={volume} {position}")
-                    else:
-                        # Обычный RAG-поиск
-                        if volume is not None:
-                            logger.info(f"[BookSearch] Detected volume filter: {volume}")
-                        _n = 5 if _book_intent == "mixed" else 25
-                        # История диалога строками — для резолюции местоимений
-                        # (last N messages: user + assistant, текущая не входит).
-                        _coref_history = [
-                            m["content"] for m in stm_messages
-                            if isinstance(m, dict) and m.get("content")
-                        ][-6:]
-                        fragments = self.book_search.search(
-                            user_input, volume=volume, n_results=_n,
-                            history=_coref_history,
-                        )
-                        _book_frag_count = len(fragments) if fragments else 0
-                        translated_query = self.book_search.translate_query(user_input)
-
-                        # Динамический глоссарий: в промпт попадают только записи,
-                        # релевантные вопросу, а не весь глоссарий (~17k токенов
-                        # на каждое сообщение).
-                        from app.features.glossary_context import build_glossary_block
-                        _glos = build_glossary_block(
-                            [user_input, translated_query or ""],
-                            fragments=fragments,
-                        )
-
-                        if fragments:
-                            from app.features.book_context import build_context_block
-                            book_context = build_context_block(
-                                fragments,
-                                original_query=user_input,
-                                translated_query=translated_query,
-                                mode=context_mode
-                            )
-                            if _glos:
-                                book_context = _glos + "\n\n" + book_context
-                            logger.info(f"[BookContext] {len(fragments)} fragments, {len(book_context)} chars for query: '{user_input[:60]}'")
-                        else:
-                            from app.features.book_context import build_context_block
-                            book_context = build_context_block(
-                                [],
-                                original_query=user_input,
-                                translated_query=translated_query,
-                                mode=context_mode
-                            )
-                            if _glos:
-                                book_context = _glos + "\n\n" + book_context
-                            logger.info(f"[BookContext] No fragments for query: '{user_input[:60]}'")
-                except Exception as e:
-                    logger.debug(f"Book search error: {e}")
+            # Блоки аддонов персоны в промпт. В light-режиме аддоны не
+            # вызываются: слабая модель тонет в большом промпте
+            addon_results = {}
+            addon_blocks = []
+            if self.addons and not light_mode:
+                turn = TurnInfo(user_input=user_input, history=stm_messages,
+                                user_id=user_id, chat_id=chat_id,
+                                persona_name=self.persona_name, context=self.context)
+                for addon in self.addons:
+                    try:
+                        res = addon.build_context(turn)
+                    except Exception as e:
+                        logger.warning(f"[Addons] {addon.name}: build_context упал: {e}")
+                        continue
+                    addon_results[addon.name] = res
+                    if res is not None and res.prompt_block:
+                        addon_blocks.append(res.prompt_block)
 
             # Стилевой модификатор помощи по intellect tier: детекция
             # стартовала фоном в начале process_message — здесь только
@@ -2548,7 +2440,7 @@ class BotInstance:
                 inventory_context=inventory_context,
                 inventory_events=inventory_events,
                 learning_context=learning_context,
-                book_context=book_context,
+                addon_blocks=addon_blocks,
                 env_context=env_context,
                 living_context=living_context,
                 help_style_context=help_style_block,
@@ -2612,11 +2504,10 @@ class BotInstance:
             # Очистка ответа от мета-рассуждений и Markdown
             answer = self._clean_response(answer)
 
-            # Webchat-модель нередко обрезается лимитом длины прямо посреди
-            # маркера источника — «…убил его. [Ф1». Висящий хвост ломает баланс
-            # скобок, и garbage-гард ниже выбрасывает целиком валидный ответ
-            # (догенерация для webchat отключена). Чиним обрыв до проверки.
-            answer = self._repair_truncated_markers(answer)
+            # Починка ответа аддонами до garbage-гарда (напр. маркер «[Ф1»,
+            # оборванный лимитом длины, иначе ломает баланс скобок и гард
+            # выбрасывает целиком валидный ответ)
+            answer = self._addons_repair(answer, addon_results)
 
             # Страховка от оборванной/мусорной генерации (маленькие локальные
             # модели иногда выдают обрывки маркеров — «[», «[16.» — или пустоту):
@@ -2637,7 +2528,7 @@ class BotInstance:
                     messages, **settings,
                     force_provider=self.router.answer_provider)
                 if retry:
-                    answer = self._repair_truncated_markers(self._clean_response(retry))
+                    answer = self._addons_repair(self._clean_response(retry), addon_results)
                 else:
                     answer = ""
                 if _is_garbage(answer):
@@ -2660,16 +2551,12 @@ class BotInstance:
                     if new_answer:
                         answer = self._clean_response(new_answer) or answer
 
-            # Срезка маркеров источников [ФN] (книжный режим): строки со
-            # ссылкой на несуществующий фрагмент удаляются как выдуманные.
-            if _book_frag_count is not None:
-                answer = self._strip_fact_markers(answer, _book_frag_count)
-            elif "Ф" in answer:
-                # Поиска не было (chat_only/light) — валидных фрагментов нет,
-                # но веб-чат видит старые RAG-инструкции в истории чата и
-                # копирует стиль: маркеры-мимикрию срезаем, строки не трогаем
-                # (frag_count=0 — любой маркер «вне диапазона»).
-                answer = self._strip_fact_markers(answer, 0)
+            # Финальная чистка ответа аддонами (напр. маркеры источников [ФN])
+            for addon in self.addons:
+                try:
+                    answer = addon.postprocess(answer, addon_results.get(addon.name))
+                except Exception as e:
+                    logger.warning(f"[Addons] {addon.name}: postprocess упал: {e}")
 
             # Обработка todo-маркера
             # (пропускаем для учебно-административных сообщений — setup/continue/тест/
@@ -3145,93 +3032,14 @@ class BotInstance:
             r"^\s*\[\d{2}\.\d{2}(?:\.\d{4})?\s+\d{1,2}:\d{2}\]\s*", "", response)
         return response.strip()
 
-    @staticmethod
-    def _repair_truncated_markers(text: str) -> str:
-        """Срезает маркер [ФN], оборванный лимитом длины на самом хвосте ответа.
-
-        Обрыв приходится на конец текста («…убил его. [Ф1», «…[Ф22, Ф2»),
-        догенерация для webchat отключена — без починки баланс скобок
-        нарушен и garbage-гард выбрасывает валидный ответ целиком.
-        Валидные закрытые маркеры не трогает: у них есть «]» после номера.
-        """
-        if not text or "[" not in text:
-            return text
-        return re.sub(
-            r"\[\s*Ф\s*[0-9]*(?:\s*[,;\-–—]\s*Ф?\s*[0-9]*)*\s*$",
-            "", text.rstrip()).rstrip()
-
-    def _strip_fact_markers(self, response: str, frag_count: int) -> str:
-        """Срезает скрытые маркеры источников [ФN] из книжного ответа.
-
-        Модель помечает каждую фактическую фразу номером фрагмента-источника
-        (см. build_context_block). Правила:
-          - валидный номер (1..frag_count) — маркер просто срезаем;
-          - близкий промах (frag_count+1..frag_count+3) — модель сбилась в
-            счёте фрагментов (в контексте их до 25): срезаем только маркер,
-            строку сохраняем;
-          - дикий номер (n < 1 или n > frag_count+3) — удаляем ВСЮ строку:
-            ссылка на несуществующий источник — сигнал выдумки (модель
-            «подтверждает» деталь фрагментом, которого нет);
-          - когда фрагментов нет (пустой поиск) — любой маркер невалиден,
-            но ответ и так строится на честном неведении, поэтому только
-            срезаем маркеры, не удаляя строки;
-          - коллапс-гард: если удаление диких строк опустошило ответ (не
-            осталось ни одной содержательной строки — обычно выживает только
-            «ритуальный» вопрос, который инструкция освобождает от маркеров),
-            значит модель ошиблась в нумерации всего ответа — возвращаем все
-            строки, срезав лишь сами маркеры.
-        Возвращает очищенный текст; статистика — в лог.
-        """
-        if not response or "Ф" not in response:
-            return response
-
-        # Одиночные, составные и диапазонные маркеры:
-        # [Ф2], [Ф22, Ф23], [Ф22,Ф23], [Ф5–6], [Ф10-11], [Ф1–3, Ф5]
-        marker_re = re.compile(
-            r"\[\s*Ф\s*[0-9]+(?:\s*[,;\-–—]\s*Ф?\s*[0-9]+)*\s*\]")
-        num_re = re.compile(r"[0-9]+")
-        tolerance = 3
-
-        def _clean_line(line: str) -> str:
-            cleaned = marker_re.sub("", line)
-            cleaned = re.sub(r"\s+([.,!?…:;])", r"\1", cleaned)
-            return re.sub(r" {2,}", " ", cleaned).rstrip()
-
-        valid = near_miss = invalid = 0
-        out_lines = []
-        strip_only_lines = []
-        for line in response.splitlines():
-            nums = [int(n) for m in marker_re.findall(line)
-                    for n in num_re.findall(m)]
-            cleaned_line = _clean_line(line)
-            strip_only_lines.append(cleaned_line)
-            if nums and any(n < 1 or n > frag_count for n in nums):
-                if frag_count > 0 and any(n < 1 or n > frag_count + tolerance
-                                          for n in nums):
-                    invalid += 1
-                    logger.info(f"[FactMarkers] Удалена строка с выдуманным источником: {line[:100]}")
-                    continue
-                near_miss += 1
-            elif nums:
-                valid += 1
-            out_lines.append(cleaned_line)
-
-        def _collapse_ws(text: str) -> str:
-            return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-        cleaned = _collapse_ws("\n".join(out_lines))
-        if invalid:
-            def _substantive(text: str) -> bool:
-                return len(re.sub(r"[^0-9A-Za-zА-Яа-яЁё]", "", text)) >= 60
-            if not _substantive(cleaned):
-                logger.warning(
-                    f"[FactMarkers] Удаление {invalid} строк опустошило ответ "
-                    f"(frag_count={frag_count}) — откат: маркеры срезаны, строки сохранены")
-                cleaned = _collapse_ws("\n".join(strip_only_lines))
-        if valid or near_miss or invalid:
-            logger.info(f"[FactMarkers] валидных: {valid}, промахов счёта: "
-                        f"{near_miss}, выдуманных: {invalid}")
-        return cleaned
+    def _addons_repair(self, answer: str, addon_results: dict) -> str:
+        # Починка сырого ответа аддонами — до garbage-гарда
+        for addon in self.addons:
+            try:
+                answer = addon.repair(answer, addon_results.get(addon.name))
+            except Exception as e:
+                logger.warning(f"[Addons] {addon.name}: repair упал: {e}")
+        return answer
 
     @staticmethod
     def _strip_inline_lists(text: str) -> str:

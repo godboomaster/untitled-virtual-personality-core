@@ -8470,7 +8470,7 @@ console.log(%s);
             base_dir=tmp / f"authz_{id(b)}")
         b.scenario_manager = None
         b.proactive = None
-        b.book_search = None
+        b.addons = []
         b.self_memory = None
         b.living = None
         b.todo_manager = None
