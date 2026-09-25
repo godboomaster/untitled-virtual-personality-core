@@ -1,9 +1,8 @@
 """
 Запуск:
     python -m app.main              # Интерактивное меню
-    python -m app.main connor       # Только Коннор
-    python -m app.main arrodes      # Только Арродес
-    python -m app.main all          # Оба бота
+    python -m app.main <персона>    # Только эта персона (нужен <ПЕРСОНА>_BOT_TOKEN в .env)
+    python -m app.main all          # Все персоны, для которых задан токен
     python -m app.main api          # FastAPI-сервер (порт 8000)
 """
 
@@ -13,14 +12,22 @@ import sys
 import logging
 import threading
 from pathlib import Path
+from typing import Dict, Tuple
 from dotenv import load_dotenv
 
-# Загружаем .env (первым — он имеет приоритет над дефолтами .env.config)
+# .env/.env.config текущей папки — приоритет над .env ядра (у отдельного
+# проекта-аддона, запущенного не из корня ядра, свой конфиг и свои токены).
+# Если процесс запущен из корня ядра, это те же файлы, что и ниже —
+# повторная загрузка ничего не меняет.
 _project_root = Path(__file__).parent.parent
+_cwd = Path.cwd()
+load_dotenv(_cwd / ".env")
+load_dotenv(_cwd / ".env.config")
 load_dotenv(_project_root / ".env")
 load_dotenv(_project_root / ".env.config")
 
 from app.bot_instance import BotInstance
+from app.core.persona import PersonaLayer
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -41,12 +48,35 @@ logger = logging.getLogger(__name__)
 # Event loop'ы запущенных ботов — для остановки из главного потока по Ctrl+C
 _running_loops: list = []
 
-BOT_CHOICES = {
-    "1": ("connor", "Коннор (RK800, Telegram)"),
-    "2": ("arrodes", "Арродес (Зеркало, Telegram)"),
-    "3": ("all", "Все боты"),
-    "4": ("api", "API-сервер (FastAPI)"),
-}
+
+def _persona_bot_tokens() -> Dict[str, str]:
+    # Персоны из app/personas (плюс папки аддонов — available_personas()),
+    # для которых в .env задан <ПЕРСОНА>_BOT_TOKEN.
+    layer = PersonaLayer()
+    tokens = {}
+    for name in sorted(layer.available_personas()):
+        token = os.getenv(f"{name.upper()}_BOT_TOKEN")
+        if token:
+            tokens[name] = token
+    return tokens
+
+
+def _persona_label(persona_name: str) -> str:
+    # Подпись пункта меню: «<имя из YAML> (<персона>, Telegram)»
+    display_name = PersonaLayer(persona_name).persona_data.get("name", persona_name)
+    return f"{display_name} ({persona_name}, Telegram)"
+
+
+def _build_menu() -> Dict[str, Tuple[str, str]]:
+    # Нумерованное меню: персоны с заданным токеном, затем all и api.
+    choices = {}
+    n = 0
+    for persona_name in _persona_bot_tokens():
+        n += 1
+        choices[str(n)] = (persona_name, _persona_label(persona_name))
+    choices[str(n + 1)] = ("all", "Все боты")
+    choices[str(n + 2)] = ("api", "API-сервер (FastAPI)")
+    return choices
 
 
 def run_bot(token: str, persona_name: str, context: str = "tg"):
@@ -249,53 +279,28 @@ def run_api():
 
 def start_target(target: str):
     # Запускает выбранную цель.
-    connor_token = os.getenv("CONNOR_BOT_TOKEN")
-    arrodes_token = os.getenv("ARRODES_BOT_TOKEN")
-
     if target == "api":
         run_api()
         return
 
-    if target == "connor":
-        if not connor_token:
-            logger.error("CONNOR_BOT_TOKEN не задан в .env")
-            sys.exit(1)
-        run_bot(connor_token, "connor", context="connor")
-        return
-
-    if target == "arrodes":
-        if not arrodes_token:
-            logger.error("ARRODES_BOT_TOKEN не задан в .env")
-            sys.exit(1)
-        run_bot(arrodes_token, "arrodes", context="arrodes")
-        return
+    bots = _persona_bot_tokens()
 
     if target == "all":
-        if not connor_token and not arrodes_token:
-            logger.error("Не заданы токены CONNOR_BOT_TOKEN и/или ARRODES_BOT_TOKEN в .env")
+        if not bots:
+            logger.error("Не задан ни один <ПЕРСОНА>_BOT_TOKEN в .env")
             sys.exit(1)
 
         threads = []
 
-        # Создание потоков
-        if connor_token:
+        # Создание потоков — по одному на каждую персону с заданным токеном
+        for persona_name, token in bots.items():
             t = threading.Thread(
                 target=run_bot,
-                args=(connor_token, "connor"),
-                kwargs={"context": "connor"},
-                name="bot-connor",
+                args=(token, persona_name),
+                kwargs={"context": persona_name},
+                name=f"bot-{persona_name}",
                 # daemon=True — страховка: если graceful shutdown зависнет,
                 # потоки не заблокируют выход процесса
-                daemon=True,
-            )
-            threads.append(t)
-
-        if arrodes_token:
-            t = threading.Thread(
-                target=run_bot,
-                args=(arrodes_token, "arrodes"),
-                kwargs={"context": "arrodes"},
-                name="bot-arrodes",
                 daemon=True,
             )
             threads.append(t)
@@ -324,21 +329,31 @@ def start_target(target: str):
             alive = [t.name for t in threads if t.is_alive()]
             if alive:
                 logger.warning(f"Потоки не завершились за 30с: {alive} — выходим принудительно")
+        return
+
+    # Конкретная персона
+    token = bots.get(target)
+    if not token:
+        logger.error(f"{target.upper()}_BOT_TOKEN не задан в .env")
+        sys.exit(1)
+    run_bot(token, target, context=target)
 
 
 def show_menu():
     # Интерактивное меню выбора.
-    for key, (_, label) in BOT_CHOICES.items():
+    choices = _build_menu()
+    for key, (_, label) in choices.items():
         print(f"  {key}. {label}")
     print()
-    print("  Или имя напрямую: connor / arrodes / all / api")
+    names = list(_persona_bot_tokens()) + ["all", "api"]
+    print(f"  Или имя напрямую: {' / '.join(names)}")
     print()
 
     choice = input("  >  ").strip().lower()
 
-    if choice in BOT_CHOICES:
-        return BOT_CHOICES[choice][0]
-    if choice in ("connor", "arrodes", "all", "api"):
+    if choice in choices:
+        return choices[choice][0]
+    if choice in names:
         return choice
 
     print(f"  Неизвестный выбор: {choice}")
@@ -349,19 +364,21 @@ def main():
     # 1. Аргумент командной строки
     # 2. Env-переменная BOT_TARGET
     # 3. Интерактивное меню (только если есть TTY)
+    valid_targets = set(_persona_bot_tokens()) | {"all", "api"}
+
     if len(sys.argv) > 1:
         arg = sys.argv[1].strip().lower()
-        if arg in ("connor", "arrodes", "all", "api"):
+        if arg in valid_targets:
             target = arg
-        elif arg in BOT_CHOICES:
-            target = BOT_CHOICES[arg][0]
+        elif arg in _build_menu():
+            target = _build_menu()[arg][0]
         else:
             print(f"Неизвестный аргумент: {arg}")
-            print("Допустимо: connor, arrodes, all, api")
+            print(f"Допустимо: {', '.join(sorted(valid_targets))}")
             sys.exit(1)
     elif os.getenv("BOT_TARGET"):
         target = os.getenv("BOT_TARGET").strip().lower()
-        if target not in ("connor", "arrodes", "all", "api"):
+        if target not in valid_targets:
             print(f"Неизвестный BOT_TARGET: {target}")
             sys.exit(1)
     elif sys.stdin.isatty():
