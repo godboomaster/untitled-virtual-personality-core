@@ -34,6 +34,7 @@ from app.core.config import (
     _collect_api_keys,
     get_available_providers,
 )
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -668,7 +669,7 @@ def _ruin_persona_mood(persona: str) -> None:
         for chat_id in set(proactive._ignore_streak) | {"web_user"}:
             proactive.ruin_mood(chat_id)
         return
-    path = Path(f"data/api_{persona}/ignore_streak.json")
+    path = data_dir() / f"api_{persona}" / "ignore_streak.json"
     streak = {}
     if path.is_file():
         try:

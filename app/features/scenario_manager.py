@@ -52,6 +52,7 @@ from typing import Dict, List, Optional, Tuple
 
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, load_json_safe
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ class ScenarioManager:
                  base_dir: Optional[Path] = None):
         self.context = context
         self.cc = computer_control
-        self.base_dir = base_dir or Path(f"data/{context}")
+        self.base_dir = base_dir or data_dir() / context
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._file = self.base_dir / "scenarios.json"
         # RLock — один лок менеджера на ВСЁ его изменяемое состояние:

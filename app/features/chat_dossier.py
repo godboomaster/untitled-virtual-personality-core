@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from app.core import timeutil
+from app.core.paths import data_dir
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.bounded_cache import BoundedCache
 from app.core.local_router import get_local_router
@@ -208,7 +209,7 @@ class ChatDossier:
         # Чаты, по которым анализ уже идёт (под self._lock): второй анализ
         # того же чата во время первого — пропуск, а не параллельная гонка
         self._analyzing: set = set()
-        self._file = Path(f"data/{context}/chat_dossier.json")
+        self._file = data_dir() / context / "chat_dossier.json"
         self._file.parent.mkdir(parents=True, exist_ok=True)
         self._router = router  # основной роутер бота (побочные — fallback минус primary)
         self._local_router = get_local_router()

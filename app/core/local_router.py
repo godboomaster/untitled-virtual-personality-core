@@ -25,6 +25,7 @@ from typing import Optional
 import httpx
 
 from app.core.config import OLLAMA_MODEL
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ LOCAL_TASKS: dict[str, bool] = {
 LOCAL_WEBCHAT_QUEUE_WAIT_SEC = 3.0
 
 # Выбор пользователя: {task: {"backend": "ollama"|"webchat", "site": ...}}
-_TASKS_FILE = Path("data/local_backends.json")
+_TASKS_FILE = data_dir() / "local_backends.json"
 
 
 def _load_task_config() -> dict:

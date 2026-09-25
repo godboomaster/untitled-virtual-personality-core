@@ -33,6 +33,7 @@ from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.interfaces import MessageSender
 from app.core.language import detect_dialogue_language, language_name
+from app.core.paths import data_dir
 from app.core.presence import web_presence
 from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 from app.features.chat_dossier import ChatDossier
@@ -251,7 +252,7 @@ class ProactiveMessaging:
 
         # Статистика по чатам: chat_id -> {count: int, date: str}
         self._daily_stats: Dict[str, dict] = {}
-        self._stats_file = Path(f"data/{context}/proactive_stats.json")
+        self._stats_file = data_dir() / context / "proactive_stats.json"
         self._stats_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_stats()
 
@@ -266,13 +267,13 @@ class ProactiveMessaging:
 
         # История инициатив по чатам: chat_id -> list of {message, timestamp, topic}
         self._initiative_history: Dict[str, List[dict]] = {}
-        self._history_file = Path(f"data/{context}/initiative_history.json")
+        self._history_file = data_dir() / context / "initiative_history.json"
         self._history_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_history()
 
         # Обратная связь: chat_id -> {successes, failures, current_probability}
         self._feedback: Dict[str, dict] = {}
-        self._feedback_file = Path(f"data/{context}/proactive_feedback.json")
+        self._feedback_file = data_dir() / context / "proactive_feedback.json"
         self._feedback_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_feedback()
 
@@ -289,7 +290,7 @@ class ProactiveMessaging:
 
         # Счетчик проигнорированных инициатив (ignore streak)
         self._ignore_streak: Dict[str, int] = {}
-        self._ignore_file = Path(f"data/{context}/ignore_streak.json")
+        self._ignore_file = data_dir() / context / "ignore_streak.json"
         self._ignore_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_ignore_streak()
 
@@ -2004,7 +2005,7 @@ class ChatActivityTracker:
         # а не из record_activity (на каждое сообщение)
         self._retention_timer = RetentionTimer()
         self._context = context
-        self._chats_file = Path(f"data/{context}/known_chats.json")
+        self._chats_file = data_dir() / context / "known_chats.json"
         self._chats_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_known_chats()
 

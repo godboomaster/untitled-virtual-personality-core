@@ -63,6 +63,7 @@ from app.api.schemas import (
 from app.core.file_reader import extract_text
 from app.core.message_pacing import send_delay
 from app.core.config import Config
+from app.core.paths import data_dir
 from app.core.presence import web_context, web_presence
 from app.core import timeutil
 from app.features.calendar_manager import get_calendar
@@ -775,7 +776,7 @@ async def chat_clear(req: ClearChatRequest):
     # Метка свежести переписки — производная STM: сбрасываем вместе с ней
     # (в корзину не кладём: перепишется первым же новым сообщением)
     await asyncio.to_thread(
-        _pop_json_key, Path(f"data/api_{req.persona}/last_message.json"), chat_key
+        _pop_json_key, data_dir() / f"api_{req.persona}" / "last_message.json", chat_key
     )
     # Постоянные веб-чаты LLM — тоже память диалога: сбрасываем вслед за
     # историей (адреса старых чатов сохранены в снапшоте выше)
@@ -786,11 +787,11 @@ async def chat_clear(req: ClearChatRequest):
 
 
 def _initiative_history_path(persona: str) -> Path:
-    return Path(f"data/api_{persona}/initiative_history.json")
+    return data_dir() / f"api_{persona}" / "initiative_history.json"
 
 
 def _proactive_stats_path(persona: str) -> Path:
-    return Path(f"data/api_{persona}/proactive_stats.json")
+    return data_dir() / f"api_{persona}" / "proactive_stats.json"
 
 
 def _pop_json_key(path: Path, key: str):
@@ -868,7 +869,7 @@ def _restore_daily_stats(bot, persona: str, chat_key: str, entry: dict):
 
 
 def _known_chats_path(persona: str) -> Path:
-    return Path(f"data/api_{persona}/known_chats.json")
+    return data_dir() / f"api_{persona}" / "known_chats.json"
 
 
 def _pop_last_activity(bot, persona: str, chat_key: str) -> float:
@@ -1513,7 +1514,7 @@ async def presence(req: PresenceRequest):
 def _read_last_message_ts(persona: str, chat_id: str) -> float:
     # Метка последнего сообщения чата из data/api_{persona}/last_message.json
     # (синхронное чтение — вызывать через asyncio.to_thread)
-    lm_file = Path(f"data/api_{persona}/last_message.json")
+    lm_file = data_dir() / f"api_{persona}" / "last_message.json"
     if not lm_file.is_file():
         return 0.0
     try:
@@ -1582,7 +1583,7 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
 def _read_ignore_streak(persona: str, chat_id: str) -> int:
     # Ступень «игнора» чата из data/api_{persona}/ignore_streak.json
     # (синхронное чтение — вызывать через asyncio.to_thread)
-    ignore_file = Path(f"data/api_{persona}/ignore_streak.json")
+    ignore_file = data_dir() / f"api_{persona}" / "ignore_streak.json"
     if not ignore_file.is_file():
         return 0
     try:

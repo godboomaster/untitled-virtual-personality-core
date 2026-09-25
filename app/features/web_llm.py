@@ -53,6 +53,7 @@ from urllib.parse import urlsplit
 
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, file_lock, load_json_safe
+from app.core.paths import data_dir
 from app.core.thread_local_attr import ThreadLocalAttr
 
 logger = logging.getLogger(__name__)
@@ -512,7 +513,7 @@ def pop_quarantine_alerts() -> List[dict]:
 # сбрасываются — следующий вызов откроет НОВЫЙ чат. Undo возвращает адреса.
 
 def _state_file(context: str) -> Path:
-    return Path(f"data/{context}/computer_control/web_llm_state.json")
+    return data_dir() / context / "computer_control" / "web_llm_state.json"
 
 
 # ── Лок файла состояния: процессный + межпроцессный ──
@@ -1123,7 +1124,7 @@ class WebChatLLM:
         # Лимит вызовов в час (None — без лимита; дефолт).
         # Персона включает через llm.webchat_limits (роутер передаёт).
         self.quota_per_hour = quota_per_hour
-        self.base_dir = base_dir or Path(f"data/{context}/computer_control")
+        self.base_dir = base_dir or data_dir() / context / "computer_control"
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._state_path = self.base_dir / "web_llm_state.json"
         self._tab_id: Optional[int] = None  # наша служебная вкладка (реестр CDP)

@@ -13,6 +13,7 @@ from typing import List, Optional
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_text
 from app.core.language import detect_language
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class TodoManager:
 
     def __init__(self, context: str = "default"):
         self.context = context
-        self.base_dir = Path(f"data/{context}/todo")
+        self.base_dir = data_dir() / context / "todo"
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 

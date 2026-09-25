@@ -24,6 +24,7 @@ import threading
 import logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +305,7 @@ class ShortTermMemory:
         лока конкурентные add_message из разных чатов чередовали бы чтение
         и запись и теряли чужие метки. Ошибки диска логируются."""
         try:
-            path = Path(f"data/{self.context}/last_message.json")
+            path = data_dir() / self.context / "last_message.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
                 data = load_json_safe(path, default={}, label="Memory.last_message")

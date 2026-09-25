@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.atomic_io import atomic_write_json, load_json_safe
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ _WC_LOCK = threading.Lock()
 # ── Банк: файл ─────────────────────────────────────────────
 
 def _bank_path(context: str) -> Path:
-    return Path(f"data/{context}/flavor_bank.json")
+    return data_dir() / context / "flavor_bank.json"
 
 
 def _load_bank(context: str) -> dict:

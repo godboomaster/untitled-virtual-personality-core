@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, load_json_safe
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class InventoryManager:
     def __init__(self, context: str = "default", max_slots: int = 10):
         self.context = context
         self.max_slots = max_slots
-        self._file = Path(f"data/{context}/inventory.json")
+        self._file = data_dir() / context / "inventory.json"
         self._file.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._items: List[InventoryItem] = []

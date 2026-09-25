@@ -31,6 +31,7 @@ from typing import Dict, List, Optional
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import detect_dialogue_language, language_name
+from app.core.paths import data_dir
 from app.features.env_context import _WMO_DESC, fetch_forecast, is_precip_code, load_location
 
 logger = logging.getLogger(__name__)
@@ -202,7 +203,7 @@ class RhythmManager:
         # пишется в STM и не уходит посреди идущего хода — см. _send
         self._turn_gate = turn_gate
 
-        self._base_dir = Path(f"data/{context}")
+        self._base_dir = data_dir() / context
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._file = self._base_dir / "rhythm_state.json"
         self._lock = threading.Lock()

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 from app.core import timeutil
+from app.core.paths import data_dir
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import detect_language, detect_dialogue_language, language_name
 
@@ -940,7 +941,7 @@ class ReminderManager:
 
     def __init__(self, context: str = "default"):
         self.context = context
-        self._base_dir = Path(f"data/{context}/reminders")
+        self._base_dir = data_dir() / context / "reminders"
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._file = self._base_dir / "reminders.json"
         self._lock = threading.Lock()

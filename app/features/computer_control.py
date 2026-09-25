@@ -53,6 +53,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from app.core.paths import data_dir
+
 logger = logging.getLogger(__name__)
 
 MARKER_RE = re.compile(r"\[(OPEN_URL|OPEN_APP|RUN_TASK):([^\]\n]{1,300})\]")
@@ -2583,7 +2585,7 @@ class ComputerControlManager:
                       # текстовых llm_*: иначе llm_share превышал 1
                       "vision_calls": 0, "vision_valid": 0,
                       "vision_invalid": 0}
-        self.base_dir = base_dir or Path(f"data/{context}/computer_control")
+        self.base_dir = base_dir or data_dir() / context / "computer_control"
         self.base_dir.mkdir(parents=True, exist_ok=True)
         # Последняя вкладка, открытая/тронутая ботом — цель клика по умолчанию
         self._last_host: Optional[str] = None

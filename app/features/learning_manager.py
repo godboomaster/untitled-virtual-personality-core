@@ -20,6 +20,7 @@ from typing import Optional, List, Dict, Any
 
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import language_name
+from app.core.paths import data_dir
 # Общий классификатор ответов «да/нет» — одно определение на проект
 # (см. комментарий перед _LEARN_SYNONYMS)
 from app.features.computer_control import classify_confirmation
@@ -346,7 +347,7 @@ class LearningManager:
 
     def __init__(self, context: str = "default", config: Optional[dict] = None):
         self.context = context
-        self._base_dir = Path(f"data/{context}/learning")
+        self._base_dir = data_dir() / context / "learning"
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._file = self._base_dir / "learning.json"
         self._lock = threading.Lock()

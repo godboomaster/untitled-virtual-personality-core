@@ -22,6 +22,7 @@ import logging
 from pathlib import Path
 
 from app.api.security import safe_segment
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def _write_json(path: Path, data):
 # ════════════ todo (TodoManager — stateless, файловый) ════════════
 
 def _todo_file(context: str, chat_key: str) -> Path:
-    return Path(f"data/{context}/todo/{safe_segment(chat_key)}/todo.txt")
+    return data_dir() / context / "todo" / safe_segment(chat_key) / "todo.txt"
 
 
 def _collect_todo(bot, context, ck, out):
@@ -76,7 +77,7 @@ def _restore_todo(bot, context, ck, data):
 # ════════════ reminders (ReminderManager — in-memory list + фон-цикл) ════════════
 
 def _reminders_file(context: str) -> Path:
-    return Path(f"data/{context}/reminders/reminders.json")
+    return data_dir() / context / "reminders" / "reminders.json"
 
 
 def _collect_reminders(bot, context, ck, out):
@@ -134,7 +135,7 @@ def _restore_reminders(bot, context, ck, data):
 # ════════════ chat_dossier (ChatDossier — кэш _profiles) ════════════
 
 def _dossier_file(context: str) -> Path:
-    return Path(f"data/{context}/chat_dossier.json")
+    return data_dir() / context / "chat_dossier.json"
 
 
 def _collect_dossier(bot, context, ck, out):
@@ -188,7 +189,7 @@ def _restore_dossier(bot, context, ck, data):
 # ════════════ learning (LearningManager — сессии + фон-цикл уроков) ════════════
 
 def _learning_file(context: str) -> Path:
-    return Path(f"data/{context}/learning/learning.json")
+    return data_dir() / context / "learning" / "learning.json"
 
 
 def _collect_learning(bot, context, ck, out):
@@ -246,10 +247,10 @@ def _collect_proactive(bot, context, ck, out):
         if streak:
             out["ignore_streak"] = streak
         return
-    fb = _read_json(Path(f"data/{context}/proactive_feedback.json"), {}).get(ck)
+    fb = _read_json(data_dir() / context / "proactive_feedback.json", {}).get(ck)
     if isinstance(fb, dict) and fb:
         out["proactive_feedback"] = fb
-    streak = _read_json(Path(f"data/{context}/ignore_streak.json"), {}).get(ck)
+    streak = _read_json(data_dir() / context / "ignore_streak.json", {}).get(ck)
     if streak:
         out["ignore_streak"] = streak
 
@@ -263,7 +264,7 @@ def _wipe_proactive(bot, context, ck):
         p._save_ignore_streak()
         return
     for fname in ("proactive_feedback.json", "ignore_streak.json"):
-        path = Path(f"data/{context}/{fname}")
+        path = data_dir() / context / fname
         data = _read_json(path, {})
         if isinstance(data, dict) and ck in data:
             data.pop(ck)
@@ -285,7 +286,7 @@ def _restore_proactive(bot, context, ck, stores):
                        ("ignore_streak.json", streak)):
         if val is None:
             continue
-        path = Path(f"data/{context}/{fname}")
+        path = data_dir() / context / fname
         data = _read_json(path, {})
         if not isinstance(data, dict):
             data = {}
@@ -296,7 +297,7 @@ def _restore_proactive(bot, context, ck, stores):
 # ════════════ rhythm (RhythmManager — отметки дня по чату) ════════════
 
 def _rhythm_file(context: str) -> Path:
-    return Path(f"data/{context}/rhythm_state.json")
+    return data_dir() / context / "rhythm_state.json"
 
 
 def _collect_rhythm(bot, context, ck, out):
@@ -352,7 +353,7 @@ _WORLD_DEFAULT = {
 
 
 def _living_files(context: str) -> dict:
-    base = Path(f"data/{context}/living")
+    base = data_dir() / context / "living"
     return {
         "state": base / "state.json",
         "offline": base / "offline_log.json",
@@ -360,7 +361,7 @@ def _living_files(context: str) -> dict:
         "summarizer": base / "summarizer_state.json",
         "world": base / "world.json",
         "persona_context": base / "persona_context.json",
-        "inventory": Path(f"data/{context}/inventory.json"),
+        "inventory": data_dir() / context / "inventory.json",
     }
 
 
