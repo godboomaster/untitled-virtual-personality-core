@@ -9,10 +9,13 @@ import re
 import time
 from typing import Optional
 from telegram import Update, BotCommand, InputFile, InputMediaPhoto
+from datetime import datetime, timezone
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CommandHandler,
     MessageHandler,
+    TypeHandler,
     ContextTypes,
     filters,
 )
@@ -1150,6 +1153,24 @@ def register_handlers(app: Application, bot: BotInstance):
                 f"chat={msg.chat.type} text={repr(getattr(msg, 'text', None))}"
             )
     app.add_handler(MessageHandler(filters.ALL, debug_all), group=-1)
+
+    # Отбрасываем сообщения, отправленные пока бот был выключен.
+    # drop_pending_updates в start_polling срабатывает не всегда, поэтому
+    # страхуемся по дате: всё старше момента регистрации handlers — игнорируем.
+    # group=-2 — раньше всех остальных handlers, включая debug.
+    started_at = datetime.now(timezone.utc)
+
+    async def drop_stale(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # update.message, а не effective_message: у нажатия кнопки
+        # effective_message — старое сообщение бота, его дата не показатель
+        msg = update.message
+        if msg and msg.date and msg.date < started_at:
+            logger.info(
+                f"[{persona_name}] Пропуск сообщения из офлайна: "
+                f"date={msg.date} text={repr(getattr(msg, 'text', None))[:60]}"
+            )
+            raise ApplicationHandlerStop
+    app.add_handler(TypeHandler(Update, drop_stale), group=-2)
 
     # Messages
     app.add_handler(MessageHandler(_NEW & filters.TEXT & ~filters.COMMAND, h["handle_message"]))
