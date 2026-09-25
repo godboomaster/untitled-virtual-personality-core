@@ -15,8 +15,7 @@ import yaml
 
 from app.api.security import safe_join
 from app.bot_instance import BotInstance
-
-PERSONAS_DIR = Path(__file__).parent.parent / "personas"
+from app.core.addons import persona_dirs
 
 # Палитра меток персон (общий календарь): приглушённые тона, различимые
 # и на светлой, и на тёмной теме. Используется, когда в YAML персоны
@@ -36,12 +35,24 @@ def persona_color(name: str, data: dict) -> str:
     return _COLOR_PALETTE[zlib.crc32(name.encode("utf-8")) % len(_COLOR_PALETTE)]
 
 
+def persona_yaml_path(name: str) -> Path | None:
+    # YAML персоны в первой папке persona_dirs(), где он есть (app/personas,
+    # затем папки персон установленных аддонов). Последний рубеж: чем бы ни
+    # был name (тело запроса, query, вызов из другого модуля) — невалидное
+    # имя (traversal, "/", пусто, не тот алфавит) физически не долетает до
+    # Path(...). См. app/api/security.py
+    for personas_dir in persona_dirs():
+        path = safe_join(personas_dir, name, ".yaml")
+        if path is None:
+            return None
+        if path.is_file():
+            return path
+    return None
+
+
 def _load_persona_yaml(name: str) -> dict | None:
-    # Последний рубеж: чем бы ни был name (тело запроса, query, вызов из
-    # другого модуля) — невалидное имя (traversal, "/", пусто, не тот
-    # алфавит) физически не долетает до Path(...). См. app/api/security.py
-    path = safe_join(PERSONAS_DIR, name, ".yaml")
-    if path is None or not path.is_file():
+    path = persona_yaml_path(name)
+    if path is None:
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -54,14 +65,17 @@ def _load_persona_yaml(name: str) -> dict | None:
 def list_personas() -> list[str]:
     """Имена персон = YAML-файлы с непустым system_prompt.
 
-    В app/personas/ лежат и служебные файлы (глоссарий, таймлайн и т.п.) —
-    они отфильтровываются по отсутствию system_prompt.
+    Папки — app/personas и папки персон установленных аддонов. Там лежат и
+    служебные файлы (глоссарий, таймлайн и т.п.) — они отфильтровываются по
+    отсутствию system_prompt.
     """
+    names = sorted({path.stem for personas_dir in persona_dirs()
+                    for path in personas_dir.glob("*.yaml")})
     result = []
-    for path in sorted(PERSONAS_DIR.glob("*.yaml")):
-        data = _load_persona_yaml(path.stem)
+    for name in names:
+        data = _load_persona_yaml(name)
         if data and data.get("system_prompt"):
-            result.append(path.stem)
+            result.append(name)
     return result
 
 

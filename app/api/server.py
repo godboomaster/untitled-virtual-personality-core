@@ -1808,7 +1808,9 @@ async def persona_yaml(persona: PersonaIdPath):
     # Сырой YAML-файл персоны (просмотр из топбара, read-only)
     if persona not in list_personas():
         raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
-    path = runtime.PERSONAS_DIR / f"{persona}.yaml"
+    path = runtime.persona_yaml_path(persona)
+    if path is None:
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
     # Синхронное чтение файла — в поток пула: иначе на время I/O блокирует
     # весь event loop
     yaml_text = await asyncio.to_thread(path.read_text, encoding="utf-8")

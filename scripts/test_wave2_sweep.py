@@ -11,10 +11,9 @@ test_memory_core.py / test_timeutil.py:
      это время ПОЛЬЗОВАТЕЛЯ (не служебная isoformat-метка): state_engine,
      world_engine, offline_summarizer, inventory_manager, todo_manager,
      chat_dossier, settings_api, persona — с TIMEZONE, отличным от системного;
-  3. Chroma-метрика вне ядра: book_search.BookSearch открывает книжную
-     коллекцию через open_collection (перенос l2→cosine) и логирует WARNING,
-     если перенос не удался; migrate_embeddings.migrate_collection пересоздаёт
-     коллекцию с hnsw:space=cosine;
+  3. Chroma-метрика вне ядра: migrate_embeddings.migrate_collection
+     пересоздаёт коллекцию с hnsw:space=cosine (книжная коллекция
+     BookSearch — в тестах аддона arrodes);
   4. state_engine хранит состояние через atomic_io.load_json_safe/
      atomic_write_json: битый файл состояния — warning + .corrupt-копия +
      дефолт, а не тихая потеря;
@@ -317,7 +316,7 @@ def test_timeutil_usage():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-# ════════════ 3. Chroma-метрика вне ядра (book_search, migrate_embeddings) ════════════
+# ════════════ 3. Chroma-метрика вне ядра (migrate_embeddings) ════════════
 
 class _FakeEmbedder:
     # Дублирует duck-type интерфейс SentenceTransformerEmbeddingFunction
@@ -334,65 +333,13 @@ class _FakeEmbedder:
 
 
 def test_chroma_outside_core():
-    section("3. Chroma-метрика вне ядра: book_search / migrate_embeddings")
+    section("3. Chroma-метрика вне ядра: migrate_embeddings")
     tmp = Path(tempfile.mkdtemp(prefix="wave2_chroma_"))
     orig_cwd = os.getcwd()
     os.chdir(tmp)
     try:
         import chromadb
         from app.core.chroma_space import VECTOR_SPACE, collection_space
-
-        # ── book_search: коллекция уже существует в l2 → open_collection мигрирует ──
-        import app.features.book_search as bsmod
-
-        db_path = tmp / "data" / "arrodes" / "book"
-        db_path.mkdir(parents=True, exist_ok=True)
-        client = chromadb.PersistentClient(path=str(db_path))
-        legacy = client.create_collection("lord_of_mysteries", embedding_function=None)
-        legacy.add(ids=["c1"], documents=["глава про Тингена"],
-                   embeddings=[[1.0, 0.0]], metadatas=[{"chapter": "1"}])
-        check("book_search fixture: коллекция книги действительно создана в l2",
-              collection_space(legacy) == "l2")
-
-        orig_embedder_cls = bsmod.SentenceTransformerEmbeddingFunction
-        bsmod.SentenceTransformerEmbeddingFunction = _FakeEmbedder
-        try:
-            bs = bsmod.BookSearch(context="arrodes", collection_name="lord_of_mysteries")
-            connected = bs._ensure_connection()
-            check("BookSearch._ensure_connection(): подключился (коллекция существует)",
-                  connected is True)
-            check("BookSearch._ensure_connection(): открыл через open_collection — "
-                  "метрика перенесена на cosine",
-                  bs._collection is not None
-                  and collection_space(bs._collection) == VECTOR_SPACE)
-            got = bs._collection.get(include=["documents"])
-            check("BookSearch._ensure_connection(): данные книги целы после переноса",
-                  got["documents"] == ["глава про Тингена"])
-
-            # Отсутствующая коллекция — честный False, не тихое
-            # создание пустой (иначе фолбэк на общую базу персоны сломался бы)
-            bs_missing = bsmod.BookSearch(context="arrodes", collection_name="no_such_collection")
-            check("BookSearch._ensure_connection(): отсутствующая коллекция — False, "
-                  "не создаёт пустую молча",
-                  bs_missing._ensure_connection() is False)
-
-            # WARNING, если перенос не удался: подменяем open_collection в
-            # модуле так, чтобы он возвращал коллекцию, оставшуюся в l2
-            catcher = _LogCatcher()
-            bsmod.logger.addHandler(catcher)
-            bsmod.logger.setLevel(logging.WARNING)
-            orig_open = bsmod.open_collection
-            bsmod.open_collection = lambda *a, **k: legacy  # осталась l2
-            try:
-                bs_fail = bsmod.BookSearch(context="arrodes", collection_name="lord_of_mysteries")
-                bs_fail._ensure_connection()
-                check("BookSearch._ensure_connection(): неудачный перенос — WARNING в лог",
-                      any("метрика" in m and "l2" in m for m in catcher.messages))
-            finally:
-                bsmod.open_collection = orig_open
-                bsmod.logger.removeHandler(catcher)
-        finally:
-            bsmod.SentenceTransformerEmbeddingFunction = orig_embedder_cls
 
         # ── migrate_embeddings: пересоздание коллекции — hnsw:space=cosine ──
         # Модуль на импорте создаёт реальный NEW_EMBEDDER (SentenceTransformer

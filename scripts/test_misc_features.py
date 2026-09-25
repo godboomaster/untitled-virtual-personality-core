@@ -11,8 +11,6 @@ test_state_io.py:
     fetch_page_text проверяет КАЖДЫЙ хоп редиректа, а не только исходный URL;
   - query_rewriter: анафора перед знаком препинания («его?», «него.»)
     распознаётся;
-  - intent_router: OLLAMA_URL берётся из того же источника (env OLLAMA_URL),
-    что и app.core.local_router, а не хардкод localhost;
   - local_router: get_local_router() — потокобезопасная ленивая
     инициализация (double-checked locking, ровно один экземпляр под гонкой);
   - file_sender: код-блок без языкового тега распознаётся и получает
@@ -431,33 +429,6 @@ def test_query_rewriter_punctuation():
           qr._is_self_contained("расскажи про Симона"))
 
 
-# ════════════ E. intent_router: единый источник OLLAMA_URL ════════════
-
-def test_intent_router_ollama_url_source():
-    section("E. intent_router.OLLAMA_URL — общий источник с local_router (env OLLAMA_URL)")
-    import importlib
-    import os as _os
-    from app.core import local_router as lr
-    import app.features.intent_router as ir
-
-    check("intent_router.OLLAMA_URL: дефолт совпадает с local_router.DEFAULT_OLLAMA_URL "
-          "(без env — тот же localhost:11434, не отдельная копия)",
-          ir.OLLAMA_URL == lr.DEFAULT_OLLAMA_URL.rstrip("/") + "/api/generate")
-
-    orig = _os.environ.get("OLLAMA_URL")
-    try:
-        _os.environ["OLLAMA_URL"] = "http://ollama-host:9999"
-        importlib.reload(ir)
-        check("intent_router.OLLAMA_URL: подхватывает env OLLAMA_URL (не хардкод localhost)",
-              ir.OLLAMA_URL == "http://ollama-host:9999/api/generate")
-    finally:
-        if orig is None:
-            _os.environ.pop("OLLAMA_URL", None)
-        else:
-            _os.environ["OLLAMA_URL"] = orig
-        importlib.reload(ir)  # вернуть модуль в дефолтное состояние для остального процесса
-
-
 # ════════════ F. local_router: потокобезопасный singleton ════════════
 
 def test_local_router_singleton_lock():
@@ -564,7 +535,6 @@ def main():
     test_fetch_page_text_redirect_hops()
     test_web_search_dns_rebinding_pinned_connect()
     test_query_rewriter_punctuation()
-    test_intent_router_ollama_url_source()
     test_local_router_singleton_lock()
     test_file_sender_untagged_and_leak()
 

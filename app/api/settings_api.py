@@ -34,6 +34,7 @@ from app.core.config import (
     _collect_api_keys,
     get_available_providers,
 )
+from app.core.addons import CORE_PERSONAS_DIR, persona_dirs
 from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
@@ -757,18 +758,28 @@ def update_persona_proactive(persona: str, patch: dict) -> dict | None:
 
 # ── Конфиг персоны (YAML) ─────────────────────────────────────────────
 
-_PERSONAS_DIR = Path(__file__).parent.parent / "personas"
+# Сюда пишутся новые персоны (создание, копия)
+_PERSONAS_DIR = CORE_PERSONAS_DIR
 
 
 def _persona_yaml_path(persona: str) -> Path | None:
     """Путь к YAML персоны, если имя прошло проверку и путь не выходит за
-    пределы app/personas/ — иначе None (везде ниже это уже означает «персоны
-    нет», как и отсутствующий файл). Общая точка для всех мест этого модуля
-    (get_persona_config/update_persona_config/save_persona_yaml/
-    duplicate_persona и т.д.): их вызывают эндпоинты БЕЗ предварительного
-    _get_bot()/list_personas(), поэтому без этой проверки traversal-имя
-    дошло бы сюда напрямую и читало/писало бы произвольный существующий
-    файл."""
+    пределы папки персон — иначе None (везде ниже это уже означает «персоны
+    нет», как и отсутствующий файл). Существующий файл ищется в app/personas
+    и в папках персон установленных аддонов; нет нигде — путь в
+    _PERSONAS_DIR (туда его создаст create_persona/duplicate_persona).
+    Общая точка для всех мест этого модуля (get_persona_config/
+    update_persona_config/save_persona_yaml/duplicate_persona и т.д.): их
+    вызывают эндпоинты БЕЗ предварительного _get_bot()/list_personas(),
+    поэтому без этой проверки traversal-имя дошло бы сюда напрямую и
+    читало/писало бы произвольный существующий файл."""
+    dirs = [_PERSONAS_DIR] + [d for d in persona_dirs() if d != CORE_PERSONAS_DIR]
+    for personas_dir in dirs:
+        path = safe_join(personas_dir, persona, ".yaml")
+        if path is None:
+            return None
+        if path.is_file():
+            return path
     return safe_join(_PERSONAS_DIR, persona, ".yaml")
 
 
@@ -1011,7 +1022,7 @@ def create_persona(raw: str) -> dict:
     persona_id = str(data.get("id") or "").strip()
     if not persona_id or not PERSONA_ID_RE.match(persona_id):
         return {"ok": False, "detail": "Поле id обязательно: латиница, цифры, _ и - (до 64 символов)"}
-    path = safe_join(_PERSONAS_DIR, persona_id, ".yaml")
+    path = _persona_yaml_path(persona_id)
     if path is None:
         return {"ok": False, "detail": "Поле id обязательно: латиница, цифры, _ и - (до 64 символов)"}
     with yaml_write_lock:
@@ -1066,7 +1077,7 @@ def duplicate_persona(persona: str) -> dict | None:
         dest = None
         while n <= 1000:  # разумный потолок — не крутиться вечно на патологии
             new_id = f"{persona}_copy" if n == 1 else f"{persona}_copy{n}"
-            candidate = safe_join(_PERSONAS_DIR, new_id, ".yaml")
+            candidate = _persona_yaml_path(new_id)
             if candidate is None:
                 # new_id вышел за формат id (например, persona у самого предела
                 # длины) — короче не станет, дальше пробовать бессмысленно

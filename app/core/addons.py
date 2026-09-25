@@ -18,7 +18,6 @@ virtual_persona.personas) — PersonaLayer ищет YAML в app/personas и в �
 
 import logging
 from dataclasses import dataclass, field
-from importlib import import_module
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
@@ -29,12 +28,6 @@ ADDONS_GROUP = "virtual_persona.addons"
 PERSONAS_GROUP = "virtual_persona.personas"
 
 CORE_PERSONAS_DIR = Path(__file__).resolve().parent.parent / "personas"
-
-# Аддоны, которые пока лежат в самом ядре и регистрируются напрямую, без
-# установленного пакета. Entry point с тем же именем важнее
-_BUILTIN_ADDONS = {
-    "arrodes_book": "app.features.book_addon:BookAddon",
-}
 
 # Старый ключ features.book_search: true — то же, что addons: [arrodes_book].
 # Нужен arrodes_master, чей YAML не меняется
@@ -94,23 +87,11 @@ def _entry_points(group: str) -> list:
         return []
 
 
-def _import_target(target: str):
-    # «модуль:атрибут» → объект
-    module_name, _, attr = target.partition(":")
-    obj = import_module(module_name)
-    for part in attr.split(".") if attr else []:
-        obj = getattr(obj, part)
-    return obj
-
-
 def find_addon_class(name: str):
-    # Класс аддона по имени: entry point, затем встроенный список. None — нет такого
+    # Класс аддона по имени из entry points. None — такой не установлен
     for ep in _entry_points(ADDONS_GROUP):
         if ep.name == name:
             return ep.load()
-    target = _BUILTIN_ADDONS.get(name)
-    if target:
-        return _import_target(target)
     return None
 
 

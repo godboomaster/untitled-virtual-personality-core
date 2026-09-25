@@ -28,12 +28,12 @@ logs/
 
 # QA-eval: сгенерированные артефакты прогонов (чанки, промпты, выдача, ответы, оценки)
 # Скрипты, отчёты (*.md) и QA-наборы (*.json) при этом отслеживаются.
-qa_eval/**/chunks/
-qa_eval/**/prompts/
-qa_eval/**/retrieval/
-qa_eval/**/answers/
-qa_eval/**/eval/
-qa_eval/**/qa_parts/
+addons/arrodes/qa_eval/**/chunks/
+addons/arrodes/qa_eval/**/prompts/
+addons/arrodes/qa_eval/**/retrieval/
+addons/arrodes/qa_eval/**/answers/
+addons/arrodes/qa_eval/**/eval/
+addons/arrodes/qa_eval/**/qa_parts/
 
 # Сборка пакетов (pip install -e)
 *.egg-info/
