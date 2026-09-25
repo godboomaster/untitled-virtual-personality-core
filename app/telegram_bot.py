@@ -48,6 +48,14 @@ def _md_to_html(text: str) -> str:
     return _rich_formatter.to_current_html(text)
 
 
+def _process_labeled(bot: BotInstance, text: str, **kwargs) -> tuple:
+    # Ответ и метка провайдера из ОДНОГО потока: router._last_provider
+    # потоко-локальный, из event loop читалось бы чужое значение — начальный
+    # ACTIVE_PROVIDER из __init__ или провайдер фоновой задачи
+    response = bot.process_message(text, **kwargs)
+    return response, bot.router.get_provider_model_info()
+
+
 async def _reply_ai(message, text: str):
     """Отправляет ответ бота. Возвращает список message_id отправленных текстовых сообщений
     (нужно, чтобы регистрировать сообщения-вопросы для reply-to-логики обучения)."""
@@ -732,14 +740,14 @@ def create_handlers(bot: BotInstance) -> dict:
             try:
                 user_name = user.first_name or user.username or f"User_{user_id}"
                 user_tag = get_user_tag(user_id)
-                response = await asyncio.to_thread(
-                    bot.process_message, clean_text,
+                response, provider_label = await asyncio.to_thread(
+                    _process_labeled, bot, clean_text,
                     user_id=user_id, chat_id=chat_id,
                     user_name=user_tag if chat_id != user_id else user_name,
                     reply_context=reply_ctx,
                     reply_to_bot_message_id=reply_to_bot_message_id
                 )
-                logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ получен ({len(response)} символов)")
+                logger.info(f"[{provider_label}] [{persona_name}] Ответ получен ({len(response)} символов)")
                 # Скриншоты режима управления уезжают ВМЕСТЕ с ответом:
                 # первый кадр несёт текст в подписи (одно сообщение вместо
                 # «текст, следом фото»); не влезло в подпись — текст и кадры
@@ -852,8 +860,8 @@ def create_handlers(bot: BotInstance) -> dict:
 
                 try:
                     user_tag = get_user_tag(user_id)
-                    response = await asyncio.to_thread(
-                        bot.process_message, message_with_file,
+                    response, provider_label = await asyncio.to_thread(
+                        _process_labeled, bot, message_with_file,
                         user_id=user_id, chat_id=chat_id,
                         user_name=user_tag,
                         # Подтверждение pending-действия (computer_control) должно
@@ -862,7 +870,7 @@ def create_handlers(bot: BotInstance) -> dict:
                         # где-то в содержимом документа подтверждало бы клик/shell
                         raw_user_text=caption_clean,
                     )
-                    logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на файл получен ({len(response)} символов)")
+                    logger.info(f"[{provider_label}] [{persona_name}] Ответ на файл получен ({len(response)} символов)")
                     photos = bot.pop_pending_photos(chat_id)
                     await _reply_with_photos(update.message, response, photos)
                     await _send_split_parts(bot, update, context, chat_id)
@@ -948,15 +956,15 @@ def create_handlers(bot: BotInstance) -> dict:
 
                 try:
                     user_tag = get_user_tag(user_id)
-                    response = await asyncio.to_thread(
-                        bot.process_message, message_with_image,
+                    response, provider_label = await asyncio.to_thread(
+                        _process_labeled, bot, message_with_image,
                         user_id=user_id, chat_id=chat_id,
                         user_name=user_tag,
                         # См. handle_document: подтверждение pending-действия — только
                         # по подписи, OCR-текст изображения в неё не подмешивается
                         raw_user_text=caption_clean,
                     )
-                    logger.info(f"[{bot.router.get_provider_model_info()}] [{persona_name}] Ответ на изображение получен ({len(response)} символов)")
+                    logger.info(f"[{provider_label}] [{persona_name}] Ответ на изображение получен ({len(response)} символов)")
                     photos = bot.pop_pending_photos(chat_id)
                     await _reply_with_photos(update.message, response, photos)
                     await _send_split_parts(bot, update, context, chat_id)
@@ -1158,8 +1166,9 @@ def register_handlers(app: Application, bot: BotInstance):
 
     # Отбрасываем сообщения, отправленные пока бот был выключен.
     # drop_pending_updates в start_polling срабатывает не всегда, поэтому
-    # страхуемся по дате: всё старше момента регистрации handlers — игнорируем.
-    # group=-2 — раньше всех остальных handlers, включая debug.
+    # страхуемся по дате: всё старше момента регистрации handlers — молча
+    # игнорируем, без записи в лог. group=-2 — раньше всех остальных
+    # handlers, включая debug (он пишет текст сообщения в лог).
     started_at = datetime.now(timezone.utc)
 
     async def drop_stale(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1167,10 +1176,6 @@ def register_handlers(app: Application, bot: BotInstance):
         # effective_message — старое сообщение бота, его дата не показатель
         msg = update.message
         if msg and msg.date and msg.date < started_at:
-            logger.info(
-                f"[{persona_name}] Пропуск сообщения из офлайна: "
-                f"date={msg.date} text={repr(getattr(msg, 'text', None))[:60]}"
-            )
             raise ApplicationHandlerStop
     app.add_handler(TypeHandler(Update, drop_stale), group=-2)
 
