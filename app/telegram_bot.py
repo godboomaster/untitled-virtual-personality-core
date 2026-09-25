@@ -240,10 +240,11 @@ def create_handlers(bot: BotInstance) -> dict:
         display_name = get_user_display(user_id)
         logger.info(f"[{persona_name}] /start от {user_id} ({display_name})")
 
+        start_greeting = bot.persona.persona_data.get("start_greeting")
         if persona_name == "connor":
             greeting = f"Привет, {display_name}. Я — Коннор, андроид модели RK800.\nОбратись ко мне по имени — и я помогу."
-        elif persona_name == "arrodes":
-            greeting = f"Привет, {display_name}. Я — Великий Арродес, древнее зеркало с Моря Хаоса.\nОбратись ко мне по имени — и я отвечу, если сочту нужным."
+        elif start_greeting:
+            greeting = start_greeting.format(name=display_name)
         else:
             greeting = f"Привет, {display_name}. Я — {bot.persona.persona_data.get('name', persona_name)}."
         await update.message.reply_text(greeting)
@@ -719,9 +720,10 @@ def create_handlers(bot: BotInstance) -> dict:
             logger.info(f"[{persona_name}] Обработка от {user_id}: {clean_text[:60]}...")
 
             # Вступительная реплика персоны до генерации ответа
-            if persona_name == "arrodes":
+            pre_reply_text = bot.persona.persona_data.get("pre_reply_text")
+            if pre_reply_text:
                 try:
-                    await update.message.reply_text("Поверхность зеркала потемнела...")
+                    await update.message.reply_text(pre_reply_text)
                 except Exception:
                     return
 

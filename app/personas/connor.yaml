@@ -77,6 +77,7 @@ features:
   trigger_words:
   - коннор
   - connor
+  - жабка
   proactive:
     enabled: true
     check_interval_minutes: 15

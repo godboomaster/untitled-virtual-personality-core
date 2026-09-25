@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 _NL_ESCAPE = "\\n"
 _BACKSLASH_ESCAPE = "\\\\"
 
+# Имена бота для обрезки обращения в начале фразы («коннор, запиши…»).
+# Если персона не передала свои trigger_words — используем этот список
+# (текущее поведение до введения персон-специфичных имён).
+_DEFAULT_TRIGGER_NAMES = ("коннор", "жабка", "arrodes", "connor", "арродес")
+
+
+def _trigger_names_alt(trigger_words: Optional[List[str]]) -> str:
+    # Имена для regex-альтернации |, экранированные под re.
+    names = trigger_words if trigger_words else _DEFAULT_TRIGGER_NAMES
+    return "|".join(re.escape(w) for w in names)
+
 
 def _escape_task(task: str) -> str:
     return task.replace("\\", _BACKSLASH_ESCAPE).replace("\r\n", "\n").replace("\n", _NL_ESCAPE)
@@ -289,8 +300,10 @@ def extract_todo_done_index(text: str) -> Optional[int]:
     return None
 
 
-def extract_task(text: str) -> Optional[str]:
+def extract_task(text: str, trigger_words: Optional[List[str]] = None) -> Optional[str]:
     # Пытается извлечь текст задачи из запроса. Возвращает None если не удалось.
+    # trigger_words — имена персоны, чтобы обрезать обращение в начале фразы
+    # («коннор, запиши…»); без них берётся дефолтный список имён.
     for pattern in _TODO_EXTRACT_PATTERNS:
         match = pattern.search(text)
         if match:
@@ -302,7 +315,8 @@ def extract_task(text: str) -> Optional[str]:
     # Fallback: если триггер есть, но паттерн не сработал — возвращаем весь текст
     if is_todo_request(text):
         # Убираем обращение к боту
-        cleaned = re.sub(r"^(?:(?:коннор|жабка|arrodes|connor)[,\s]+)+", "", text, flags=re.IGNORECASE)
+        alt = _trigger_names_alt(trigger_words)
+        cleaned = re.sub(rf"^(?:(?:{alt})[,\s]+)+", "", text, flags=re.IGNORECASE)
         cleaned = re.sub(r"[,\s]+пожалуйста\s*$", "", cleaned, flags=re.IGNORECASE).strip()
         if cleaned:
             return cleaned

@@ -36,6 +36,17 @@ logger = logging.getLogger(__name__)
 _DEFERRED = "deferred"
 _CANCELLED = "cancelled"
 
+# Имена бота для обрезки обращения в начале фразы («коннор, напомни…»).
+# Если персона не передала свои trigger_words — используем этот список
+# (текущее поведение до введения персон-специфичных имён).
+_DEFAULT_TRIGGER_NAMES = ("коннор", "жабка", "arrodes", "connor", "арродес")
+
+
+def _trigger_names_alt(trigger_words: Optional[List[str]]) -> str:
+    # Имена для regex-альтернации |, экранированные под re.
+    names = trigger_words if trigger_words else _DEFAULT_TRIGGER_NAMES
+    return "|".join(re.escape(w) for w in names)
+
 
 # ─── Парсинг запроса ──────────────────────────────────────
 
@@ -333,11 +344,11 @@ def _remove_spans(text: str, spans) -> str:
     return " ".join("".join(out).split())
 
 
-def _clean_task_fragment(fragment: str) -> str:
+def _clean_task_fragment(fragment: str, trigger_words: Optional[List[str]] = None) -> str:
     """Чистит остаток текста после вырезания времени: убирает «напомни/remind me»,
     обращения, разделители — остаётся текст задачи."""
     s = fragment.strip()
-    s = re.sub(r"^(?:коннор|жабка|arrodes|connor)[,\s]+", "", s, flags=re.IGNORECASE)
+    s = re.sub(rf"^(?:{_trigger_names_alt(trigger_words)})[,\s]+", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\b(?:напомни|напомнить|напоминание|напомните|напомню)\b", "", s, flags=re.IGNORECASE).strip()
     s = re.sub(r"\bremind\w*(?:\s+(?:me|us))?(?:\s+to)?\b", "", s, flags=re.IGNORECASE).strip()
     # «напомни мне завтра в 8 купить хлеб»: «завтра в 8» вырезаются спанами
@@ -440,10 +451,11 @@ def _parse_day_daypart(text: str) -> Optional[tuple]:
     return (delay, spans)
 
 
-def parse_reminder(text: str) -> Optional[tuple]:
+def parse_reminder(text: str, trigger_words: Optional[List[str]] = None) -> Optional[tuple]:
     """
     Пытается распарсить запрос на напоминание.
     Возвращает (task, delay_seconds) или None.
+    trigger_words — имена персоны для обрезки обращения в начале фразы.
 
     Примеры:
         "напомни мне через 30 минут позвонить маме"
@@ -544,7 +556,7 @@ def parse_reminder(text: str) -> Optional[tuple]:
         day_parsed = _parse_day_daypart(text)
         if day_parsed:
             delay_seconds, spans = day_parsed
-            task = _clean_task_fragment(_remove_spans(text, spans))
+            task = _clean_task_fragment(_remove_spans(text, spans), trigger_words)
             return (task if task else None, delay_seconds)
 
     # ── 2. Абсолютное время: "до 12", "в 11:30", "к полудню" ──
@@ -581,7 +593,7 @@ def parse_reminder(text: str) -> Optional[tuple]:
     # Если после времени ничего нет — пробуем взять текст ДО
     if not after_time:
         before_time = text[:time_match_obj.start()].strip()
-        before_time = re.sub(r"^(?:коннор|жабка|arrodes|connor)[,\s]+", "", before_time, flags=re.IGNORECASE)
+        before_time = re.sub(rf"^(?:{_trigger_names_alt(trigger_words)})[,\s]+", "", before_time, flags=re.IGNORECASE)
         # Убираем все вариации "напомни/напоминание"
         before_time = re.sub(r"\b(?:напомни|напомнить|напоминание|напомните|напомню)\b", "", before_time, flags=re.IGNORECASE).strip()
         # Английские вариации: "remind me to call mom" → "call mom"
@@ -815,11 +827,12 @@ _RECURRING_WEEKLY_RE = re.compile(
 )
 
 
-def parse_recurring(text: str) -> Optional[tuple]:
+def parse_recurring(text: str, trigger_words: Optional[List[str]] = None) -> Optional[tuple]:
     """
     Повторяющееся напоминание: «напоминай каждый день в 12:30»,
     «напоминай каждый понедельник в 18», «по пятницам в 9:00 напоминай»,
     «remind me every day at 12:30», «every friday at 6 pm».
+    trigger_words — имена персоны для обрезки обращения в начале фразы.
 
     Возвращает (task, schedule), где
         schedule = {"type": "daily"|"weekly", "hour": int, "minute": int, "weekday": int|None}
@@ -859,7 +872,7 @@ def parse_recurring(text: str) -> Optional[tuple]:
         task = task[:s] + " " + task[e:]
     task = re.sub(r"\b(?:напомни|напоминай|напомнить|напоминание|напомните|напомню|напоминал)\b", " ", task, flags=re.IGNORECASE)
     task = re.sub(r"\bremind\w*(?:\s+(?:me|us))?\b", " ", task, flags=re.IGNORECASE)
-    task = re.sub(r"^(?:коннор|жабка|arrodes|connor|арродес)[,\s]+", " ", task, flags=re.IGNORECASE)
+    task = re.sub(rf"^(?:{_trigger_names_alt(trigger_words)})[,\s]+", " ", task, flags=re.IGNORECASE)
     task = re.sub(r"\b(?:мне|мне\s+про|мне\s+о)\b", " ", task, flags=re.IGNORECASE)
     task = re.sub(r"\b(?:me|us)\b", " ", task, flags=re.IGNORECASE)
     task = re.sub(r"^(?:to|please)\s+", " ", task.strip(), flags=re.IGNORECASE)

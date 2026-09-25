@@ -13,6 +13,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import chromadb
 from app.core.config import Config, get_db_paths
+from app.core.persona import PersonaLayer
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,8 +22,9 @@ EXPORT_TOKEN = os.getenv("EXPORT_TOKEN", "")
 
 
 def _build_db_sources() -> dict:
-    # Источники экспорта: STM/LTM/файлы для каждого контекста из списка ниже
-    contexts = ["connor", "arrodes", "verso", "assistant", "default"]
+    # Источники экспорта: STM/LTM/файлы для каждой установленной персоны
+    # плюс служебный контекст default (у него своя база, но это не персона)
+    contexts = sorted(set(PersonaLayer().available_personas()) | {"default"})
     sources = {}
     for ctx in contexts:
         paths = get_db_paths(ctx)

@@ -18,14 +18,16 @@ import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
 from app.core.chroma_space import open_collection
+from app.core.persona import PersonaLayer
 
 # Новая мультиязычная модель (понимает 50+ языков, включая русский)
 NEW_EMBEDDER = SentenceTransformerEmbeddingFunction(
     model_name="paraphrase-multilingual-MiniLM-L12-v2"
 )
 
-# Все контексты (персоны)
-CONTEXTS = ["connor", "arrodes", "verso", "assistant", "default", "tg"]
+# Все контексты: установленные персоны плюс служебные default/tg (не персоны,
+# но у них есть свои базы)
+CONTEXTS = sorted(set(PersonaLayer().available_personas()) | {"default", "tg"})
 
 # Поддерживаемые коллекции
 COLLECTIONS = ["short_term_memory", "long_term_memory", "file_documents", "file_full_docs"]
