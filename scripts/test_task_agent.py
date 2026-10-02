@@ -486,16 +486,16 @@ def main():
 
     # ── 13. Веб-поиск: страница внутри сайта ищется, а не угадывается ──
     check("search с запросом",
-          parse_agent_action('{"action":"search","query":"преподавателяин вуза"}')
-          == {"action": "search", "query": "преподавателяин вуза"})
+          parse_agent_action('{"action":"search","query":"Соколов ВУЗ"}')
+          == {"action": "search", "query": "Соколов ВУЗ"})
     check("search без запроса → None",
           parse_agent_action('{"action":"search"}') is None)
     results = [
-        {"title": "вуза - СТАСЫШИН В. М. - Технологии баз данных",
-         "url": "https://example.edu/kaf/persons/827/Students/DataBases",
+        {"title": "ВУЗ - СОКОЛОВ А. Б. - Технологии баз данных",
+         "url": "https://portal.university.test/kaf/persons/827/Students/DataBases",
          "snippet": "Курс"},
-        {"title": "вуза - СТАСЫШИНА Т. Л. - Общая информация",
-         "url": "https://example.edu/kaf/persons/1914/", "snippet": ""}]
+        {"title": "ВУЗ - СОКОЛОВА В. Г. - Общая информация",
+         "url": "https://portal.university.test/kaf/persons/1914/", "snippet": ""}]
     queries = []
     real_search = ta.web_search_links
     ta.web_search_links = lambda q, **kw: (queries.append(q) or (results, None))
@@ -503,21 +503,21 @@ def main():
         cc = FakeCC()
         agent = TaskAgent(cc)
         router = ScriptedRouter([
-            {"action": "search", "query": "преподавателяин вуза базы данных"},
-            {"action": "ask", "question": "преподавателяин В. М. или преподавателяина Т. Л.?"}])
+            {"action": "search", "query": "Соколов ВУЗ базы данных"},
+            {"action": "ask", "question": "Соколов А. Б. или Соколова В. Г.?"}])
         reply = agent.start("c12", "открой курс базы данных на странице "
-                            "стасышина вуза", router)
+                            "соколова вуз", router)
         check("первый промпт: действие search и правило про поиск/тёзок",
               '"action":"search"' in router.prompts[0]
               and "search first" in router.prompts[0]
               and "namesakes" in router.prompts[0])
         check("поиск ушёл с запросом модели, браузер не трогали",
-              queries == ["преподавателяин вуза базы данных"] and not cc.executed)
+              queries == ["Соколов ВУЗ базы данных"] and not cc.executed)
         check("второй промпт: ссылки результатов с URL",
-              "https://example.edu/kaf/persons/1914/" in router.prompts[1]
-              and "СТАСЫШИН В. М." in router.prompts[1])
+              "https://portal.university.test/kaf/persons/1914/" in router.prompts[1]
+              and "СОКОЛОВ А. Б." in router.prompts[1])
         check("прогон встал на вопросе о выборе",
-              reply.rstrip().endswith("преподавателяина Т. Л.?") and agent.active("c12"))
+              reply.rstrip().endswith("Соколова В. Г.?") and agent.active("c12"))
         # Результаты остаются в промпте и после ответа пользователя
         router.replies = [{"action": "done", "message": "ok"}]
         agent.feed("c12", "Т. Л.", router)
@@ -917,9 +917,9 @@ def main():
     pizza_q = ("На каком сайте заказать пиццу?\n- Додо Пицца — dodo.ru\n"
                "- Папа Джонс — papajohns.ru")
     found = [{"title": "Додо Пицца", "snippet": "",
-              "url": "https://dodopizza.ru/city"},
+              "url": "https://dodopizza.ru/ensk"},
              {"title": "Папа Джонс", "snippet": "",
-              "url": "https://papajohns.ru/city"}]
+              "url": "https://papajohns.ru/ensk"}]
     ta.web_search_links = lambda q, **kw: (found, None)
     try:
         cc = FormCC()
@@ -966,8 +966,8 @@ def main():
     from app.features.task_agent import _site_hosts
     check("адреса в тексте: сайты да; почта, файлы, числа — нет",
           _site_hosts("dodo.ru, https://www.dominos.ru/menu, a@b.ru, "
-                      "config.py, 3.5, т.д., вуза.рф")
-          == ["dodo.ru", "dominos.ru", "вуза.рф"])
+                      "config.py, 3.5, т.д., вуз.рф")
+          == ["dodo.ru", "dominos.ru", "вуз.рф"])
     ta.web_search_links = lambda q, **kw: ([{"title": "t", "snippet": "",
                                        "url": "https://found.test/p?id=5"}], None)
     try:
@@ -3223,12 +3223,12 @@ def main():
             return json.dumps(self.slots.pop(0) if self.slots else {},
                               ensure_ascii=False)
 
-    DODO = "https://dodopizza.ru/city"
+    DODO = "https://dodopizza.ru/ensk"
     found_live = [
-        {"title": "Додо Пицца �город — доставка пиццы", "snippet":
+        {"title": "Додо Пицца Энск — доставка пиццы", "snippet":
          "Пиццы от 279 ₽", "url": DODO},
         {"title": "Папа Джонс", "snippet": "от 429 ₽",
-         "url": "https://www.papajohns.ru/city"}]
+         "url": "https://www.papajohns.ru/ensk"}]
     ta.web_search_links = lambda q, **kw: (found_live, None)
     try:
         cc = real_cc({DODO: [{"idx": 1, "tag": "a", "role": "link",
@@ -3270,7 +3270,7 @@ def main():
               and "Исходя" not in r and "**" not in r)
         check("вопрос о сайте: модели — цель, выдача и шаг",
               qr.q_prompts and "закажи пиццу" in qr.q_prompts[0]
-              and "papajohns.ru/city" in qr.q_prompts[0]
+              and "papajohns.ru/ensk" in qr.q_prompts[0]
               and "Next step: open a website" in qr.q_prompts[0])
         # Модель вписала адрес не из выдачи — варианты кодом
         agent = TaskAgent(real_cc({DODO: []}),
@@ -3455,7 +3455,7 @@ def main():
           and "the SAME text" not in router.prompts[1])
 
     # ── Независимая проверка review-live-3009b: вопрос о сайте ──
-    PJ = "https://www.papajohns.ru/city"
+    PJ = "https://www.papajohns.ru/ensk"
     ta.web_search_links = lambda q, **kw: (found_live, None)
     try:
         # Вопрос модели со словом «магазин» — не вопрос «где заказать?»
@@ -3467,7 +3467,7 @@ def main():
                                           "зависит магазин"},
             {"action": "open", "target": DODO}])
         agent.start("v1", "закажи пиццу", router, user_id="A")
-        r = agent.feed("v1", "�город", router, user_id="A")
+        r = agent.feed("v1", "Энск", router, user_id="A")
         check("review: вопрос о городе со словом «магазин» — не выбор сайта: "
               "перед открытием вопрос с выдачей",
               "На каком сайте это сделать?" in r and not cc.dispatched)
@@ -3830,7 +3830,7 @@ def main():
     # модель сама перещёлкала размеры и тесто до вопроса о товаре ──
     ta.web_search_links = lambda q, **kw: (found_live, None)
     try:
-        LEFT = DODO + "/geodezicheskaya41/product/chiken-bomboni"
+        LEFT = DODO + "/street1/product/chiken-bomboni"
         cc = real_cc({LEFT: [{"idx": 7, "tag": "a", "role": "link",
                               "text": "Пиццы"}], DODO: []}, url=LEFT)
         cc.sites = {"пицца": "dodopizza.ru", "додо пицца": "dodopizza.ru"}
@@ -4128,7 +4128,7 @@ def main():
         # выбран названием («Додо пицца», без адреса) — разделы не
         # спрашивались; название → адрес: алиас конфига, транслит
         DD = "https://dodopizza.ru"
-        LEFT = DD + "/city/geodezicheskaya41/product/pepperoni-tomat"
+        LEFT = DD + "/ensk/street1/product/pepperoni-tomat"
         cc = real_cc({LEFT: [{"idx": 9, "tag": "button", "role": "button",
                               "text": "Закрыть", "md": 1}], DD: nav},
                      url=LEFT)
@@ -4281,7 +4281,7 @@ def main():
     # запоминается для следующих задач ──
     YAK = "https://yakitoria.test/"
     ta.web_search_links = lambda q, **kw: ([
-        {"title": "Доставка роллов в �городе", "snippet": "",
+        {"title": "Доставка роллов в Энске", "snippet": "",
          "url": YAK}], None)
     try:
         mem_n = mem_live.parent / "names.json"
@@ -4670,51 +4670,51 @@ def main():
     # ── Живой 23:35: на «где заказать?» с выдачей ответ «додо пицца» открыл
     # pizzasinizza.ru — вариант выбирался по числу общих слов, а общим было
     # лишь «пицца» («Dodo Pizza» — латиницей) ──
-    q_nsk = ("Где заказать пиццу? Вот результаты поиска:\n"
-             "- Dodo Pizza (�город) — dodopizza.ru/city\n"
-             "- Papa John's (�город) — papajohns.ru/city\n"
-             "- Пицца Синица (�город) — pizzasinizza.ru/city\n"
-             "- ST Pizza (�город) — stapizza.ru\n"
-             "- Доставьевский (�город) — nsk.dostaevsky.ru/pizza\n"
-             "- 888 PIZZA (�город) — 888pizza.ru")
-    picks = {a: ta._site_pick(q_nsk, a) for a in (
+    q_city = ("Где заказать пиццу? Вот результаты поиска:\n"
+             "- Dodo Pizza (Энск) — dodopizza.ru/ensk\n"
+             "- Papa John's (Энск) — papajohns.ru/ensk\n"
+             "- Пицца Синица (Энск) — pizzasinizza.ru/ensk\n"
+             "- ST Pizza (Энск) — stapizza.ru\n"
+             "- Доставьевский (Энск) — ensk.dostaevsky.ru/pizza\n"
+             "- 888 PIZZA (Энск) — 888pizza.ru")
+    picks = {a: ta._site_pick(q_city, a) for a in (
         "додо пицца", "Доодо пицца", "додо", "синица", "папа джонс", "2",
-        "пицца", "�город", "888 пицца")}
+        "пицца", "энск", "888 пицца")}
     check("живой 23:35: «додо пицца» (и с опечаткой) — dodopizza.ru, не "
           "«Пицца Синица»; «синица», «папа джонс», номер — свои",
           picks["додо пицца"] == picks["Доодо пицца"] == picks["додо"]
           == ["dodopizza.ru"] and picks["синица"] == ["pizzasinizza.ru"]
           and picks["папа джонс"] == picks["2"] == ["papajohns.ru"])
     check("живой 23:35: ответ из общих слов («пицца», город) — не выбор",
-          picks["пицца"] == picks["�город"] == picks["888 пицца"] == [])
-    NSK = [("Dodo Pizza (�город)", "https://dodopizza.ru/city"),
-           ("Пицца Синица (�город)",
-            "https://pizzasinizza.ru/city")]
+          picks["пицца"] == picks["энск"] == picks["888 пицца"] == [])
+    CITY_SITES = [("Dodo Pizza (Энск)", "https://dodopizza.ru/ensk"),
+           ("Пицца Синица (Энск)",
+            "https://pizzasinizza.ru/ensk")]
     ta.web_search_links = lambda q, **kw: ([
-        {"title": t, "snippet": "", "url": u} for t, u in NSK], None)
+        {"title": t, "snippet": "", "url": u} for t, u in CITY_SITES], None)
     try:
-        for target, name in ((NSK[0][1], "Додо открыт"),
-                             (NSK[1][1], "Синица — не открыта")):
+        for target, name in ((CITY_SITES[0][1], "Додо открыт"),
+                             (CITY_SITES[1][1], "Синица — не открыта")):
             cc = real_cc({u: [{"idx": 1, "tag": "a", "role": "link",
-                               "text": "Пиццы"}] for _t, u in NSK})
-            agent = TaskAgent(cc, memory_path=mem_live.parent / "nsk.json")
+                               "text": "Пиццы"}] for _t, u in CITY_SITES})
+            agent = TaskAgent(cc, memory_path=mem_live.parent / "city.json")
             rt = ScriptedRouter([
                 {"action": "search", "query": "заказать пиццу доставка"},
-                {"action": "ask", "question": q_nsk.split("\n- Papa")[0]
-                 + "\n- Пицца Синица (�город) — "
-                   "pizzasinizza.ru/city"},
+                {"action": "ask", "question": q_city.split("\n- Papa")[0]
+                 + "\n- Пицца Синица (Энск) — "
+                   "pizzasinizza.ru/ensk"},
                 {"action": "open", "target": target},
                 {"action": "fail", "message": "стоп"}])
-            agent.start("nsk", "закажи пиццу", rt, user_id="A")
-            agent.feed("nsk", "додо пицца", rt, user_id="A")
-            run_n = (agent.__dict__.get("_finished", {}).get("nsk") or {}
-                     ).get("run") or agent._runs.get("nsk") or {}
+            agent.start("city", "закажи пиццу", rt, user_id="A")
+            agent.feed("city", "додо пицца", rt, user_id="A")
+            run_n = (agent.__dict__.get("_finished", {}).get("city") or {}
+                     ).get("run") or agent._runs.get("city") or {}
             opened = [d.get("value") for d in cc.dispatched
                       if d.get("kind") == "url"]
-            if target == NSK[0][1]:
+            if target == CITY_SITES[0][1]:
                 check(f"живой 23:35 ({name}): «додо пицца» — выбран "
                       "dodopizza.ru, открыт, в словаре «додо пицца» = он",
-                      opened == [NSK[0][1]]
+                      opened == [CITY_SITES[0][1]]
                       and run_n.get("site_pick") == ["dodopizza.ru"]
                       and (run_n.get("site_names") or {}).get("додо пицца")
                       == "dodopizza.ru")

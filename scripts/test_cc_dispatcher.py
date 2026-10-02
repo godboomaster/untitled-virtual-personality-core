@@ -382,8 +382,8 @@ def main():
           ta_goals == ["найди пиццу закажи её"])
     from app.bot_instance import BotInstance as _BI
     check("E1: «скачай отчёт с сайта X» — не разовое скачивание здесь",
-          _BI._cc_parse_page_command("скачай отчёт с сайта вуза") is None
-          or _BI._cc_parse_page_command("скачай отчёт с сайта вуза")[2]
+          _BI._cc_parse_page_command("скачай отчёт с сайта вуз") is None
+          or _BI._cc_parse_page_command("скачай отчёт с сайта вуз")[2]
           != "download")
     check("E1: «скачай этот файл» — по-прежнему разовое скачивание",
           (_BI._cc_parse_page_command("скачай этот файл") or (0, 0, ""))[2]

@@ -88,8 +88,8 @@ def main():
         check("resolve web_search=False — поисковик не зовём",
               m.resolve("figma", web_search=False) is None and searched == [])
         check("resolve web_search=True (LLM-ярус) — поиск и для кириллицы",
-              (m.resolve("вуза", web_search=True) or {}).get("via_search")
-              and searched == ["вуза"])
+              (m.resolve("вуз", web_search=True) or {}).get("via_search")
+              and searched == ["вуз"])
         check("resolve: кавычки/запятая по краям цели срезаются",
               m.resolve("«ютуб»,", web_search=False)
               == {"kind": "url", "value": "https://youtube.com"})

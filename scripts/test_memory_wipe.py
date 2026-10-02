@@ -86,7 +86,7 @@ def make_dossier():
     d.record_event(CK, "утреннее приветствие")
     d.add_personality_note(CK, "любит кофе")
     with d._lock:
-        d._profiles[CK].interests.append(AttributedItem(value="ngtu", user_id="u1"))
+        d._profiles[CK].interests.append(AttributedItem(value="vuz", user_id="u1"))
         d._facts_seen[CK] = {("u1", "a")}
         d._facts_watermark[CK] = 12345.0
     d.record_event("other", "чужое событие")
@@ -226,7 +226,7 @@ assert set(stores) == {"todo", "reminders", "dossier", "learning",
                        "proactive_feedback", "ignore_streak", "rhythm",
                        "living"}, set(stores)
 assert stores["living"]["world"]["npcs"][0]["name"] == "Хэнк"
-assert stores["dossier"]["interests"][0]["value"] == "ngtu", stores["dossier"]
+assert stores["dossier"]["interests"][0]["value"] == "vuz", stores["dossier"]
 assert stores["dossier"]["_facts_watermark"] == 12345.0
 json.dumps(stores)  # снапшот корзины — JSON: срез досье сериализуем
 print("collect: ok", sorted(stores))
@@ -264,9 +264,9 @@ assert any(r.get("chat_id") == CK for r in bot.reminder_manager._reminders)
 assert any(s.get("chat_id") == CK and s.get("topic") == "английский"
            for s in bot.learning_manager._sessions)
 snap = dz.get_profile_snapshot(CK)
-assert snap["interests"] == ["ngtu"] and snap["personality_notes"] == ["любит кофе"], snap
+assert snap["interests"] == ["vuz"] and snap["personality_notes"] == ["любит кофе"], snap
 block = dz.get_context_block(CK)
-assert "ngtu" in block and "утреннее приветствие" in block, block
+assert "vuz" in block and "утреннее приветствие" in block, block
 # Знак экстракции — не ниже момента restore: STM восстанавливается раньше
 # срезов и с новыми метками time.time() — иначе повторная LLM-экстракция
 assert dz._facts_watermark.get(CK) >= t_restore, dz._facts_watermark.get(CK)
@@ -274,7 +274,7 @@ dz.record_event(CK, "после restore")  # профиль — рабочий C
 on_disk = rjson("chat_dossier.json")
 assert CK in on_disk and "_facts_watermark" not in on_disk[CK]
 dz2 = ChatDossier(context=CTX)  # файл после restore читается без потерь
-assert dz2.get_profile_snapshot(CK)["interests"] == ["ngtu"]
+assert dz2.get_profile_snapshot(CK)["interests"] == ["vuz"]
 assert "после restore" in dz2.get_context_block(CK)
 assert bot.proactive._feedback[CK]["successes"] == 9
 assert bot.proactive._ignore_streak[CK] == 3
@@ -292,7 +292,7 @@ assert (BASE / f"todo/{CK}/todo.txt").read_text(encoding="utf-8").strip() == "- 
 # Поведенчески: сообщения, восстановленные в STM до среза досье (метки
 # раньше t_restore), в экстракцию фактов не ставятся — дедуп-кэш пуст
 restored_msgs = [{"role": "user", "sender_id": "u1", "timestamp": t_restore - 0.5,
-                  "content": "Меня зовут Элиас, я живу в �городе"}]
+                  "content": "Меня зовут Элиас, я живу в Энске"}]
 dz.analyze_chat(CK, restored_msgs)
 assert not dz._facts_seen.get(CK), dz._facts_seen.get(CK)
 print("restore (менеджеры): ok — всё вернулось")
@@ -302,7 +302,7 @@ shutil.rmtree(BASE)
 wjson("reminders/reminders.json", [{"id": 1, "chat_id": CK, "text": "врач"},
                                    {"id": 2, "chat_id": "other", "text": "чужое"}])
 wjson("learning/learning.json", [{"chat_id": CK, "topic": "английский"}])
-wjson("chat_dossier.json", {CK: {"interests": ["ngtu"]}})
+wjson("chat_dossier.json", {CK: {"interests": ["vuz"]}})
 wjson("proactive_feedback.json", {CK: {"successes": 2}})
 wjson("ignore_streak.json", {CK: 4})
 wjson("rhythm_state.json", {"chats": {CK: {"night_key": "x"}}, "weather": {}})
@@ -330,12 +330,12 @@ assert rjson("living/world.json")["npcs"] == []
 assert not (BASE / "living/persona_context.json").exists()
 assert rjson("inventory.json") == {"items": []}
 mw.restore_stores(bot2, PERSONA, CK, stores2)
-assert rjson("chat_dossier.json")[CK]["interests"] == ["ngtu"]
+assert rjson("chat_dossier.json")[CK]["interests"] == ["vuz"]
 # Срез досье, снятый с живого менеджера, восстанавливается и файловым
 # фолбэком: служебный водяной знак в файл не попадает, профиль читается
 mw.restore_stores(bot2, PERSONA, CK, {"dossier": stores["dossier"]})
 assert "_facts_watermark" not in rjson("chat_dossier.json")[CK]
-assert ChatDossier(context=CTX).get_profile_snapshot(CK)["interests"] == ["ngtu"]
+assert ChatDossier(context=CTX).get_profile_snapshot(CK)["interests"] == ["vuz"]
 assert rjson("reminders/reminders.json")[1]["text"] == "врач"
 assert rjson("living/world.json")["npcs"][0]["name"] == "Хэнк"
 assert rjson("inventory.json")["items"] == [{"name": "кофе"}]
@@ -362,16 +362,16 @@ def seed_control():
     (CC_DIR / "audit.jsonl.1").write_text(
         rec(1, CK, "https://old.example/") + "\n", encoding="utf-8")
     (CC_DIR / "audit.jsonl").write_text(
-        "\n".join([rec(2, CK, "https://example.edu/kaf/persons/1914/"),
+        "\n".join([rec(2, CK, "https://portal.university.test/kaf/persons/1914/"),
                    rec(3, "other", "https://other.example/"),
                    rec(4, CK, "https://dodopizza.ru/")]) + "\n",
         encoding="utf-8")
     wjson("computer_control/last_tab.json", {
-        "chats": {CK: {"host": "example.edu", "url": "https://example.edu/kaf/",
+        "chats": {CK: {"host": "portal.university.test", "url": "https://portal.university.test/kaf/",
                        "vis": "", "ts": 20},
                   "other": {"host": "other.example",
                             "url": "https://other.example/", "vis": "", "ts": 10}},
-        "host": "example.edu", "url": "https://example.edu/kaf/", "ts": 20})
+        "host": "portal.university.test", "url": "https://portal.university.test/kaf/", "ts": 20})
     wjson("computer_control/task_memory.json", {
         CK: [{"ts": 1, "goal": "закажи пиццу", "sites": ["dodopizza.ru"],
               "qa": [], "result": "дошёл до оформления"}],
@@ -390,7 +390,7 @@ def audit_chats():
 
 seed_control()
 cc = ComputerControlManager(context=CTX, config={"confirm": True})
-assert cc._st(CK).last_host == "example.edu"  # контекст страницы с диска
+assert cc._st(CK).last_host == "portal.university.test"  # контекст страницы с диска
 cc.set_pending(CK, {"kind": "url", "value": "https://x.example/"}, user_id="u")
 ta = TaskAgent(computer_control=cc, context=CTX)
 ta._runs[CK] = {"goal": "закажи пиццу", "busy": False, "cancel": False,
@@ -410,7 +410,7 @@ bot3 = SimpleNamespace(computer_control=cc, task_agent=ta, scenario_manager=sm,
 
 stores3 = mw.collect_stores(bot3, PERSONA, CK)
 ctl = stores3["control"]
-assert len(ctl["audit"]) == 3 and ctl["last_tab"]["host"] == "example.edu"
+assert len(ctl["audit"]) == 3 and ctl["last_tab"]["host"] == "portal.university.test"
 assert ctl["task_memory"][0]["goal"] == "закажи пиццу"
 
 mw.wipe_stores(bot3, PERSONA, CK)
@@ -442,9 +442,9 @@ assert sorted(audit_chats()) == sorted([CK, CK, CK, "other"])
 chats_ts = [json.loads(ln)["ts"] for ln in
             (CC_DIR / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
 assert chats_ts == sorted(chats_ts)  # хвост для сценариев — хронологический
-assert rjson("computer_control/last_tab.json")["chats"][CK]["host"] == "example.edu"
+assert rjson("computer_control/last_tab.json")["chats"][CK]["host"] == "portal.university.test"
 assert rjson("computer_control/task_memory.json")[CK][0]["goal"] == "закажи пиццу"
-assert cc._st(CK).last_host == "example.edu"
+assert cc._st(CK).last_host == "portal.university.test"
 print("режим управления: восстановление из корзины ok")
 
 # Файловый фолбэк: режим управления выключен — менеджеров нет

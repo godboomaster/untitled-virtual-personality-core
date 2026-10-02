@@ -7,7 +7,7 @@
 текущей коллекции → замена с откатом при ошибке).
 
 Usage:
-    cd /Users/user/Documents/virtual-persona-core
+    cd <папка проекта>
     /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 migrate_stm_500.py
 """
 

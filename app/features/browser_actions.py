@@ -7870,7 +7870,7 @@ def _fill_cdp(w: _CdpWorker, host_part: Optional[str], idx: int,
                 ":document.activeElement.value))||''") or "")
         except Exception:
             pass
-    # «Содержит», а не «равно»: виджет может дописать своё («�город, …»).
+    # «Содержит», а не «равно»: виджет может дописать своё (регион, страну).
     # Телефон — по цифрам: маска «+7 (___) ___-__-__» дописывает код сама
     phone_ok = _phone_same(text, got)
     if phone_ok or (phone_ok is None and _norm_ws(text) in _norm_ws(got)):

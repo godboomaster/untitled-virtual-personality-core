@@ -217,15 +217,15 @@ def main():
           parse_open_request("запусти телеграм") == "телеграм"
           and parse_open_request("open youtube") == "youtube")
     check("parse: «мне/сайт/пожалуйста» между глаголом и названием срезаются",
-          parse_open_request("открой мне сайт вуза") == "вуза"
-          and parse_open_request("открой сайт вуза") == "вуза"
+          parse_open_request("открой мне сайт вуз") == "вуз"
+          and parse_open_request("открой сайт вуз") == "вуз"
           and parse_open_request("открой пожалуйста ютуб") == "ютуб"
           and parse_open_request("открой ютуб пожалуйста") == "ютуб")
     check("parse: «открой мне» без названия — не команда",
           parse_open_request("открой мне") is None)
     check("parse: «страницу/вкладку» срезаются, «открой сайт» — не команда",
-          parse_open_request("открой страницу кутузова вуза") == "кутузова вуза"
-          and parse_open_request("открой страницу кутузовой вуза") == "кутузовой вуза"
+          parse_open_request("открой страницу орлова вуз") == "орлова вуз"
+          and parse_open_request("открой страницу орловой вуз") == "орловой вуз"
           # «открой вкладку X» — переключение на открытую вкладку
           # (parse_tab_switch), а не открытие сайта: иначе «открой вкладку
           # с почтой» уходило в поисковик как сайт «с почтой»
@@ -345,33 +345,33 @@ def main():
     finally:
         _ws._get_ddgs, _ws._google_translate = _orig_ddgs, _orig_tr
 
-    # find_site_url: «вуза» — домен вуза (example.edu) аббревиатуру не содержит,
+    # find_site_url: «вуз» — домен вуза (university.test) аббревиатуру не содержит,
     # резолв через заголовок; группа ВК и другой вуз (nntu.ru) отфильтрованы,
     # URL сводится к корню, а не к SEO-подстранице
-    class _FakeDDGSNstu:
+    class _FakeDDGSUniversity:
         def text(self, q, max_results=5):
             return [
-                {"href": "https://vk.ru/nstu_vk",
-                 "title": "вуза НЭТИ | Официальное сообщество"},
-                {"href": "https://www.example.edu/entrance/enrollment_campaign/current_numbers",
-                 "title": "вуза. Конкурсная ситуация 2026"},
+                {"href": "https://vk.ru/university_vk",
+                 "title": "ВУЗ | Официальное сообщество"},
+                {"href": "https://www.university.test/entrance/enrollment_campaign/current_numbers",
+                 "title": "ВУЗ. Конкурсная ситуация 2026"},
                 {"href": "https://www.nntu.ru/content/abiturientam",
-                 "title": "вуза им. Р.Е. Алексеева | Нижегородский"},
+                 "title": "ВУЗ им. Р.Е. Алексеева | Нижегородский"},
             ]
-    _ws._get_ddgs = lambda: _FakeDDGSNstu
-    _ws._google_translate = lambda text: "ngtu" if text == "вуза" else None
+    _ws._get_ddgs = lambda: _FakeDDGSUniversity
+    _ws._google_translate = lambda text: "vuz" if text == "вуз" else None
     try:
-        check("find_site_url: «вуза» → корень example.edu по заголовку (не ВК, не nntu)",
-              _ws.find_site_url("вуза") == "https://www.example.edu/")
+        check("find_site_url: «вуз» → корень university.test по заголовку (не ВК, не nntu)",
+              _ws.find_site_url("вуз") == "https://www.university.test/")
         # Кириллический домен (.рф): punycode хоста декодируется → доменный матч,
         # даже когда в заголовке названия нет
         class _FakeDDGSIdn:
             def text(self, q, max_results=5):
-                return [{"href": "https://xn--c1atqe.xn--p1ai/studies",
+                return [{"href": "https://xn--b1ak9a.xn--p1ai/studies",
                          "title": "Обучающимся"}]
         _ws._get_ddgs = lambda: _FakeDDGSIdn
-        check("find_site_url: punycode-домен (вуза.рф) матчится по домену",
-              _ws.find_site_url("вуза") == "https://xn--c1atqe.xn--p1ai/")
+        check("find_site_url: punycode-домен (вуз.рф) матчится по домену",
+              _ws.find_site_url("вуз") == "https://xn--b1ak9a.xn--p1ai/")
     finally:
         _ws._get_ddgs, _ws._google_translate = _orig_ddgs, _orig_tr
 
@@ -381,7 +381,7 @@ def main():
     class _FakeDDGSMaps:
         def text(self, q, max_results=5):
             return [
-                {"href": "https://www.google.com/maps/@55.0,83.0,12z",
+                {"href": "https://www.google.com/maps/@10.0,20.0,12z",
                  "title": "Google Карты"},
                 {"href": "https://maps.google.com/", "title": "Google Maps"},
                 {"href": "https://ru.wikipedia.org/wiki/Google_Карты",
@@ -395,21 +395,21 @@ def main():
     finally:
         _ws._get_ddgs, _ws._google_translate = _orig_ddgs, _orig_tr
 
-    # find_site_url: падежная форма запроса («кутузовой») матчится с «КУТУЗОВА»
+    # find_site_url: падежная форма запроса («орловой») матчится с «ОРЛОВА»
     # в заголовке через основу слова; страница персоны сохраняется целиком
-    class _FakeDDGSKutuzova:
+    class _FakeDDGSOrlova:
         def text(self, q, max_results=5):
             return [
-                {"href": "https://ru.wikipedia.org/wiki/Лицей_вуза",
-                 "title": "Лицей вуза — Википедия"},
-                {"href": "https://example.edu/kaf/persons/98849",
-                 "title": "вуза - КУТУЗОВА И. А. - Общая информация"},
+                {"href": "https://ru.wikipedia.org/wiki/Лицей_ВУЗ",
+                 "title": "Лицей ВУЗ — Википедия"},
+                {"href": "https://portal.university.test/kaf/persons/98849",
+                 "title": "ВУЗ - ОРЛОВА Д. Е. - Общая информация"},
             ]
-    _ws._get_ddgs = lambda: _FakeDDGSKutuzova
-    _ws._google_translate = lambda text: "kutuzova ngtu" if text == "кутузовой вуза" else None
+    _ws._get_ddgs = lambda: _FakeDDGSOrlova
+    _ws._google_translate = lambda text: "orlova vuz" if text == "орловой вуз" else None
     try:
-        check("find_site_url: «кутузовой вуза» (падеж) → страница Кутузовой целиком",
-              _ws.find_site_url("кутузовой вуза") == "https://example.edu/kaf/persons/98849")
+        check("find_site_url: «орловой вуз» (падеж) → страница Орловой целиком",
+              _ws.find_site_url("орловой вуз") == "https://portal.university.test/kaf/persons/98849")
     finally:
         _ws._get_ddgs, _ws._google_translate = _orig_ddgs, _orig_tr
 
@@ -421,18 +421,18 @@ def main():
     _ws._get_ddgs = lambda: _NoDDGS
     _ws._google_translate = lambda text: None
     _ws.google_web_links = lambda q, n=10: [
-        {"href": "https://ru.wikipedia.org/wiki/X", "title": "преподавателяина — Википедия"},
-        {"href": "https://example.edu/kaf/persons/1914/",
-         "title": "СТАСЫШИНА Т. Л. - Общая информация - вуза"},
-        {"href": "https://vuzopedia.ru/teacher/stasyshina", "title": "преподавателяина"}]
+        {"href": "https://ru.wikipedia.org/wiki/X", "title": "Соколова — Википедия"},
+        {"href": "https://portal.university.test/kaf/persons/1914/",
+         "title": "СОКОЛОВА В. Г. - Общая информация - ВУЗ"},
+        {"href": "https://vuzopedia.ru/teacher/sokolova", "title": "Соколова"}]
     try:
         check("find_site_url: движок google — адрес из веб-выдачи Google",
-              _ws.find_site_url("преподавателяина вуза")
-              == "https://example.edu/kaf/persons/1914/")
+              _ws.find_site_url("Соколова ВУЗ")
+              == "https://portal.university.test/kaf/persons/1914/")
         check("site_choices: выдача резолва без википедии, в порядке выдачи",
-              [u for u, _t in _ws.site_choices("стасышина  вуза")]
-              == ["https://example.edu/kaf/persons/1914/",
-                  "https://vuzopedia.ru/teacher/stasyshina"])
+              [u for u, _t in _ws.site_choices("соколова  вуз")]
+              == ["https://portal.university.test/kaf/persons/1914/",
+                  "https://vuzopedia.ru/teacher/sokolova"])
         _ws.google_web_links = lambda q, n=10: None
         _ws._get_ddgs = lambda: _FakeDDGS
         links, used = _ws.search_links("ютуб", engine="google")
@@ -450,7 +450,7 @@ def main():
     check("parse many: у второй части свой глагол и филлеры",
           parse_open_many("открой ютуб и запусти приложение музыку") == ["ютуб", "музыку"])
     check("parse many: одиночная команда — список из одной",
-          parse_open_many("открой мне сайт вуза") == ["вуза"])
+          parse_open_many("открой мне сайт вуз") == ["вуз"])
     check("parse many: стоп-слово в любой части → None",
           parse_open_many("открой ютуб и дверь") is None)
     check("parse many: хвостовое «пожалуйста» срезается",
@@ -643,30 +643,30 @@ def main():
         _ba._run_apple_events = _orig_ae
         _ba._cdp_available = _orig_cdp
 
-    # Явный адрес в команде открытия («открой на example.edu/827 студентам — …»):
+    # Явный адрес в команде открытия («открой на portal.university.test/827 студентам — …»):
     # длинная фраза → адрес + путь кликами по странице
     from app.features.computer_control import parse_open_with_url
     check("parse url: длинная фраза с явным адресом и путём",
-          parse_open_with_url("открой на example.edu/827 студентам - Технологии "
+          parse_open_with_url("открой на portal.university.test/827 студентам - Технологии "
                               "баз данных - Методические указания")
-          == ("example.edu/827", ["студентам", "Технологии баз данных",
+          == ("portal.university.test/827", ["студентам", "Технологии баз данных",
                                   "Методические указания"]))
     check("parse url: схема сохраняется / нет адреса / не команда",
           parse_open_with_url("открой https://example.com/a б в")
           == ("https://example.com/a", ["б в"])
           and parse_open_with_url("открой ютуб") is None
-          and parse_open_with_url("расскажи про example.edu") is None)
+          and parse_open_with_url("расскажи про portal.university.test") is None)
     check("parse url: без хвоста — пустой путь; дефис внутри слова не рвётся",
-          parse_open_with_url("открой example.edu/827") == ("example.edu/827", [])
-          and parse_open_with_url("открой example.edu англо-русский словарь")
-          == ("example.edu", ["англо-русский словарь"]))
+          parse_open_with_url("открой portal.university.test/827") == ("portal.university.test/827", [])
+          and parse_open_with_url("открой portal.university.test англо-русский словарь")
+          == ("portal.university.test", ["англо-русский словарь"]))
     check("parse url: «X на адрес» — предлог перед адресом не липнет к пути",
-          parse_open_with_url("открой страницу кутузовой на example.edu")
-          == ("example.edu", ["кутузовой"]))
+          parse_open_with_url("открой страницу орловой на portal.university.test")
+          == ("portal.university.test", ["орловой"]))
     check("resolve_url: whitelist доменов работает и для явного адреса",
           m.resolve_url("youtube.com/watch?v=1")
           == {"kind": "url", "value": "https://youtube.com/watch?v=1"}
-          and m.resolve_url("example.edu/827") is None)
+          and m.resolve_url("portal.university.test/827") is None)
 
     # Нет вкладки с выдачей (search_first без поиска) — человеческое сообщение
     # без «None» в тексте (ветка __no_tab__ внутри _run_apple_events)
@@ -705,20 +705,20 @@ def main():
     # Многошаговая навигация (nav): адрес + путь → действие, формулировки,
     # пошаговое исполнение, осечка с честным прогрессом
     mnav = make(cfg={"confirm": True})
-    nav_act = mnav.resolve_nav("example.edu/827",
+    nav_act = mnav.resolve_nav("portal.university.test/827",
                                ["студентам", "Технологии баз данных"])
     check("resolve_nav: адрес + путь → nav-действие",
-          nav_act == {"kind": "nav", "value": "https://example.edu/827",
+          nav_act == {"kind": "nav", "value": "https://portal.university.test/827",
                       "steps": ["студентам", "Технологии баз данных"],
-                      "host": "example.edu/827"})
+                      "host": "portal.university.test/827"})
     check("resolve_nav: без шагов — обычное открытие страницы",
-          mnav.resolve_nav("example.edu/827", [])
-          == {"kind": "url", "value": "https://example.edu/827"})
+          mnav.resolve_nav("portal.university.test/827", [])
+          == {"kind": "url", "value": "https://portal.university.test/827"})
     check("формулировки nav: вопрос и «Готово»",
           mnav.confirm_question(nav_act)
-          == "Открыть example.edu/827 и пройти: студентам → Технологии баз данных?"
+          == "Открыть portal.university.test/827 и пройти: студентам → Технологии баз данных?"
           and mnav.describe_done(nav_act)
-          == "открыл example.edu/827 и прошёл до «Технологии баз данных»")
+          == "открыл portal.university.test/827 и прошёл до «Технологии баз данных»")
 
     import types as _types
     import app.features.computer_control as _cc_mod
@@ -784,22 +784,22 @@ def main():
     _ba.open_new_tab = lambda url, **kw: (_opened.append(url), 42)[1]
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         _snapped.append(tab_id),
-        ("https://example.edu/827", "example.edu", _pages[min(len(_clicks2), 1)]))[1]
+        ("https://portal.university.test/827", "portal.university.test", _pages[min(len(_clicks2), 1)]))[1]
     _ba.click_tagged = lambda host, idx, tab_id=None: (
         _clicks2.append((host, idx, tab_id)), "clicked")[1]
     _cc_mod.time = _types.SimpleNamespace(sleep=lambda s: None, time=_orig_tm.time)
     try:
         mnav._navigate(nav_act)
         check("nav: шаги проходятся кликами по порядку",
-              _clicks2 == [("example.edu", 0, 42), ("example.edu", 3, 42)])
+              _clicks2 == [("portal.university.test", 0, 42), ("portal.university.test", 3, 42)])
         check("nav: вкладка открывается отслеживаемой (id) и вся навигация — по ней",
-              _opened == ["https://example.edu/827"]
+              _opened == ["https://portal.university.test/827"]
               and _snapped == [42, 42])
         check("nav: финальная вкладка запоминается («на открывшейся странице»)",
               mnav._last_tab_id == 42)
         _clicks2.clear()
-        bad_nav = {"kind": "nav", "value": "https://example.edu/827",
-                   "host": "example.edu/827",
+        bad_nav = {"kind": "nav", "value": "https://portal.university.test/827",
+                   "host": "portal.university.test/827",
                    "steps": ["студентам", "несуществующий пункт"]}
         try:
             mnav._navigate(bad_nav)
@@ -808,7 +808,7 @@ def main():
             _nav_err = str(e)
         check("nav: пункт не найден — причина с прогрессом, клики остановлены",
               "несуществующий пункт" in _nav_err and "студентам" in _nav_err
-              and _clicks2 == [("example.edu", 0, 42)])
+              and _clicks2 == [("portal.university.test", 0, 42)])
         # Страница ещё грузится (снапшот падает) — ждём и пробуем снова
         _clicks2.clear()
         _fails = {"n": 0}
@@ -816,19 +816,19 @@ def main():
             if _fails["n"] < 2:
                 _fails["n"] += 1
                 raise _ba.BrowserUnavailable("на странице нет кликабельных элементов")
-            return ("https://example.edu/827", "example.edu",
+            return ("https://portal.university.test/827", "portal.university.test",
                     _pages[min(len(_clicks2), 1)])
         _ba.snapshot_elements = _flaky
-        mnav._navigate({"kind": "nav", "value": "https://example.edu/827",
-                        "host": "example.edu/827", "steps": ["студентам"]})
+        mnav._navigate({"kind": "nav", "value": "https://portal.university.test/827",
+                        "host": "portal.university.test/827", "steps": ["студентам"]})
         check("nav: страница не прогрузилась — повтор снапшота, а не отказ",
-              _fails["n"] == 2 and _clicks2 == [("example.edu", 0, 42)])
+              _fails["n"] == 2 and _clicks2 == [("portal.university.test", 0, 42)])
         # DOM перерисовался между снапшотом и кликом («элемент потерян») —
         # шаг повторяется один раз со свежим снапшотом
         _clicks2.clear()
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             _snapped.append(tab_id),
-            ("https://example.edu/827", "example.edu", _pages[0]))[1]
+            ("https://portal.university.test/827", "portal.university.test", _pages[0]))[1]
         _ct_n = {"n": 0}
         def _ct_flaky(host, idx, tab_id=None):
             _ct_n["n"] += 1
@@ -836,8 +836,8 @@ def main():
                 raise _ba.BrowserUnavailable("элемент потерян — страница изменилась")
             return "clicked"
         _ba.click_tagged = _ct_flaky
-        mnav._navigate({"kind": "nav", "value": "https://example.edu/827",
-                        "host": "example.edu/827", "steps": ["студентам"]})
+        mnav._navigate({"kind": "nav", "value": "https://portal.university.test/827",
+                        "host": "portal.university.test/827", "steps": ["студентам"]})
         check("nav: «элемент потерян» — один повтор шага, успех",
               _ct_n["n"] == 2)
         # Клик без видимого эффекта (closed-loop): клик уже доставлен —
@@ -852,8 +852,8 @@ def main():
         _ba.click_tagged = _ct_uncertain
         _nav_unc = ""
         try:
-            mnav._navigate({"kind": "nav", "value": "https://example.edu/827",
-                            "host": "example.edu/827", "steps": ["студентам"]})
+            mnav._navigate({"kind": "nav", "value": "https://portal.university.test/827",
+                            "host": "portal.university.test/827", "steps": ["студентам"]})
         except _ba.ClickUncertain as e:
             _nav_unc = str(e)
         check("nav: клик без эффекта — без повторного клика, честное «не уверен»",
@@ -862,8 +862,8 @@ def main():
             raise _ba.BrowserUnavailable("элемент потерян — страница изменилась")
         _ba.click_tagged = _ct_dead
         try:
-            mnav._navigate({"kind": "nav", "value": "https://example.edu/827",
-                            "host": "example.edu/827", "steps": ["студентам"]})
+            mnav._navigate({"kind": "nav", "value": "https://portal.university.test/827",
+                            "host": "portal.university.test/827", "steps": ["студентам"]})
             _nav_err2 = ""
         except RuntimeError as e:
             _nav_err2 = str(e)
@@ -881,13 +881,13 @@ def main():
     _orig_pu_np, _orig_fp_np = _ba.page_urls, _ba.follow_popup
     _orig_snap_np, _orig_ct_np = _ba.snapshot_elements, _ba.click_tagged
     _ba.open_new_tab = lambda url, **kw: 42
-    _ba.page_urls = lambda: ["https://example.edu/827"]
+    _ba.page_urls = lambda: ["https://portal.university.test/827"]
     _pop_fired = []
     _ba.follow_popup = lambda pre, **kw: (
         None if _pop_fired else
         (_pop_fired.append(1),
          (515, "news.site.ru", "https://news.site.ru/x"))[1])
-    _nav_np = {42: ("https://example.edu/827", "example.edu",
+    _nav_np = {42: ("https://portal.university.test/827", "portal.university.test",
                     [_it(0, "a", "Студентам")]),
                515: ("https://news.site.ru/x", "news.site.ru",
                      [_it(3, "a", "Расписание")])}
@@ -898,11 +898,11 @@ def main():
         _clicks_np.append((host, idx, tab_id)), "clicked")[1]
     try:
         mnav_np = make(cfg={**CFG, "allow_domains": []})
-        mnav_np._navigate({"kind": "nav", "value": "https://example.edu/827",
-                           "host": "example.edu/827",
+        mnav_np._navigate({"kind": "nav", "value": "https://portal.university.test/827",
+                           "host": "portal.university.test/827",
                            "steps": ["студентам", "расписание"]})
         check("nav-popup: шаг открыл вкладку — маршрут перешёл на неё",
-              _clicks_np == [("example.edu", 0, 42), ("news.site.ru", 3, 515)]
+              _clicks_np == [("portal.university.test", 0, 42), ("news.site.ru", 3, 515)]
               and _snaps_np == [42, 515]
               and mnav_np._last_tab_id == 515)
     finally:
@@ -1111,10 +1111,10 @@ def main():
         act3, _ = ms3.resolve_click("войти", "гитхабе", _BoomRouter())
         check("resolve_click: «на гитхабе» → снапшот вкладки github.com",
               act3 is not None and _snap_calls[-1] == "github.com")
-        # Явный домен без алиаса: «на example.edu» целится напрямую
-        act4, _ = ms3.resolve_click("войти", "example.edu", _BoomRouter())
+        # Явный домен без алиаса: «на portal.university.test» целится напрямую
+        act4, _ = ms3.resolve_click("войти", "portal.university.test", _BoomRouter())
         check("resolve_click: явный домен в site_word — без алиаса",
-              act4 is not None and _snap_calls[-1] == "example.edu")
+              act4 is not None and _snap_calls[-1] == "portal.university.test")
         # «на этой странице»: цель — отслеживаемая вкладка (id в действии)
         ms3._last_tab_id = 555
         act5, _ = ms3.resolve_click("войти", PAGE_REF, _BoomRouter())
@@ -1447,7 +1447,7 @@ def main():
     _orig_snap_bg = _ba.snapshot_elements
     try:
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
-            "https://school.example.com/", "school.example.com",
+            "https://platform.school.test/", "platform.school.test",
             [_it(0, "a", "Главная"), _it(1, "button", "", aria="Меню"),
              _it(2, "button", "", aria="Меню аккаунта")])
         m_bg = SpyManager(context="t", config={**CFG, "allow_domains": []},
@@ -1750,7 +1750,7 @@ def main():
     _orig_sel5, _orig_sub5 = _ba._select_backend, _ba._WORKER.submit
     _ba._select_backend = lambda *a, **kw: "cdp"
     try:
-        _p1 = _ClosablePg("https://school.example.com/", "School 21")
+        _p1 = _ClosablePg("https://platform.school.test/", "School")
         _p2 = _ClosablePg("https://www.youtube.com/", "YouTube")
         _wk = _ba._CdpWorker()
         _wk._all_pages = lambda: [_p1, _p2]
@@ -1789,21 +1789,21 @@ def main():
     # сайт» липкий, иначе фолбэк уводил бы клик на случайный другой сайт
     _orig_snap7, _orig_lp = _ba.snapshot_elements, _ba.list_pages
     _pages_map = {
-        "school.example.com": (
-            "https://school.example.com/", "school.example.com",
+        "platform.school.test": (
+            "https://platform.school.test/", "platform.school.test",
             [_it(0, "button", "ASAP")]),
-        "auth.school.example.com": (
-            "https://auth.school.example.com/auth?redirect_uri=platform",
-            "auth.school.example.com", [_it(0, "button", "Войти")]),
+        "auth.school.test": (
+            "https://auth.school.test/auth?redirect_uri=platform",
+            "auth.school.test", [_it(0, "button", "Войти")]),
         "claude.ai": ("https://claude.ai/login", "claude.ai",
                       [_it(0, "button", "Continue with email")]),
         "accounts.google.com": (
             "https://accounts.google.com/v3/signin", "accounts.google.com",
-            [_it(0, "div", "Yuurei Reishi schoolyuurei@gmail.com"),
+            [_it(0, "div", "Ivan Testov ivan.testov@gmail.com"),
              _it(1, "div", "Использовать другой аккаунт")]),
         # чат с совпадающим текстом — из поиска исключается
         "127.0.0.1": ("http://127.0.0.1:5173/", "127.0.0.1",
-                      [_it(0, "div", "Yuurei Reishi schoolyuurei@gmail.com")]),
+                      [_it(0, "div", "Ivan Testov ivan.testov@gmail.com")]),
     }
     def _snap7(host=None, tab_id=None):
         # Кросс-страничный поиск целится по полному URL (несколько вкладок
@@ -1817,16 +1817,16 @@ def main():
     try:
         mfb = SpyManager(context="t", config={**CFG, "allow_domains": []},
                          base_dir=tmp / "s5-otherpage")
-        mfb._last_host = "school.example.com"
-        # Окно входа СВОЕГО семейства (auth.school.example.com): элемент там —
+        mfb._last_host = "platform.school.test"
+        # Окно входа СВОЕГО семейства (auth.school.test): элемент там —
         # кликаем (мотивация фолбэка сохранена)
         act_fam, err_fam = mfb.resolve_click("войти", None, _BoomRouter())
         check("page-fallback: SSO-окно своего сайта — клик там",
               err_fam is None and act_fam is not None
-              and act_fam["host"] == "auth.school.example.com"
+              and act_fam["host"] == "auth.school.test"
               and act_fam.get("choose", {}).get("path") == "page_fallback")
         # Лидер на ЧУЖОМ сайте, сайт не назван — не кликаем: честный отказ
-        act_x, err_x = mfb.resolve_click("yuurei reishi", None, _BoomRouter())
+        act_x, err_x = mfb.resolve_click("ivan testov", None, _BoomRouter())
         check("page-fallback: чужой сайт без явного «на X» — отказ",
               act_x is None and err_x is not None and "не нашёл" in err_x)
         # Явно названный сайт, элемент — на другой вкладке ТОГО ЖЕ хоста
@@ -1841,13 +1841,13 @@ def main():
               and act_sh.get("choose", {}).get("path") == "page_fallback")
         del _pages_map["accounts.google.com-2"]
         # ...но не по чужим сайтам
-        no_sh, err_sh2 = mfb.resolve_click("yuurei reishi", "claude.ai",
+        no_sh, err_sh2 = mfb.resolve_click("ivan testov", "claude.ai",
                                            _BoomRouter())
         check("page-fallback: сайт назван — чужие хосты не трогаем",
               no_sh is None and err_sh2 is not None and "не нашёл" in err_sh2)
         # Две страницы семейства с явным лидером — не гадаем, честный отказ
-        _pages_map["sso.school.example.com"] = (
-            "https://sso.school.example.com/x", "sso.school.example.com",
+        _pages_map["sso.school.test"] = (
+            "https://sso.school.test/x", "sso.school.test",
             [_it(0, "button", "Войти")])
         no_x, err_x2 = mfb.resolve_click("войти", None, _BoomRouter())
         check("page-fallback: лидеры на двух страницах семейства — отказ",
@@ -2673,28 +2673,28 @@ def main():
         _ba.visible_page_info = lambda: None
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             _sn_v2.append((host, tab_id)),
-            ("https://auth.school.example.com/login?state=1", "auth.school.example.com",
+            ("https://auth.school.test/login?state=1", "auth.school.test",
              [_it(0, "button", "Войти")]))[1]
         m_red = ComputerControlManager(context="t",
                                        config={**CFG, "allow_domains": []},
                                        base_dir=tmp / "s-redir")
         m_red._last_tab_id = 77
-        m_red._last_host = "school.example.com"
+        m_red._last_host = "platform.school.test"
         act_red, err_red = m_red.resolve_key("Space", None, None)
         check("редирект: контекст следует за живым URL вкладки",
               err_red is None and _sn_v2[-1] == (None, 77)
-              and m_red._last_host == "auth.school.example.com"
-              and m_red._last_url == "https://auth.school.example.com/login?state=1")
+              and m_red._last_host == "auth.school.test"
+              and m_red._last_url == "https://auth.school.test/login?state=1")
         # Возврат редиректом на сайт после авторизации подхватывается сам —
         # вкладка та же (tab_id), просто URL снова сменился
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             _sn_v2.append((host, tab_id)),
-            ("https://school.example.com/", "school.example.com",
+            ("https://platform.school.test/", "platform.school.test",
              [_it(0, "button", "Меню")]))[1]
         act_red2, err_red2 = m_red.resolve_key("Space", None, None)
         check("редирект: возврат на сайт после авторизации подхвачен",
               err_red2 is None and _sn_v2[-1] == (None, 77)
-              and m_red._last_host == "school.example.com")
+              and m_red._last_host == "platform.school.test")
         # Служебная страница (веб-чат LLM оказался в той же вкладке)
         # контекстом не становится
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
@@ -2703,7 +2703,7 @@ def main():
              [_it(0, "button", "X")]))[1]
         m_red.resolve_key("Space", None, None)
         check("редирект: служебный хост контекстом не становится",
-              m_red._last_host == "school.example.com")
+              m_red._last_host == "platform.school.test")
     finally:
         _ba.snapshot_elements = _orig_snap_v2
         _ba.visible_page_info = _orig_vis_v2
@@ -2878,10 +2878,10 @@ def main():
     try:
         _ba._select_backend = lambda tab_op=True: "applescript"
         _ba._osascript = lambda script, browser="chrome": \
-            "https://school.example.com/\n"
+            "https://platform.school.test/\n"
         check("visible applescript: активная вкладка переднего окна",
-              _real_visible_page_info() == ("https://school.example.com/",
-                                            "school.example.com"))
+              _real_visible_page_info() == ("https://platform.school.test/",
+                                            "platform.school.test"))
         _ba._osascript = lambda script, browser="chrome": \
             "http://localhost:5173/chat"
         check("visible applescript: чат-UI бота — не кандидат",
@@ -2894,14 +2894,14 @@ def main():
         _ba._as_browser_pids = lambda app=None: [101, 202]
         _ba._bot_page_urls = lambda: ("https://www.youtube.com/results?q=x",)
         _ba._osascript = lambda script, browser="chrome": \
-            "https://school.example.com/\n"
+            "https://platform.school.test/\n"
         check("visible applescript: 2 экземпляра, окно не из пула — None",
               _real_visible_page_info() is None)
         # …а совпало со вкладкой пула (query у SPA другой) — это наш браузер
-        _ba._bot_page_urls = lambda: ("https://school.example.com/?s=1",)
+        _ba._bot_page_urls = lambda: ("https://platform.school.test/?s=1",)
         check("visible applescript: 2 экземпляра, окно из пула — оно",
-              _real_visible_page_info() == ("https://school.example.com/",
-                                            "school.example.com"))
+              _real_visible_page_info() == ("https://platform.school.test/",
+                                            "platform.school.test"))
         _ba._as_browser_pids = lambda app=None: [101]
         _ba._bot_page_urls = lambda: ()
         # CDP-бэкенд на macOS — тоже активная вкладка окна: visibilityState
@@ -2909,10 +2909,10 @@ def main():
         # нельзя было бы отличить активную вкладку от прочих)
         _ba._select_backend = lambda tab_op=True: "cdp"
         _ba._osascript = lambda script, browser="chrome": \
-            "https://school.example.com/\n"
+            "https://platform.school.test/\n"
         check("visible cdp+mac: активная вкладка окна, не visibilityState",
-              _real_visible_page_info() == ("https://school.example.com/",
-                                            "school.example.com"))
+              _real_visible_page_info() == ("https://platform.school.test/",
+                                            "platform.school.test"))
         # AppleScript молчит (нет прав автоматизации) — фолбэк на
         # CDP-эвристику visibilityState
         def _raise_os(*a, **kw):
@@ -2952,8 +2952,8 @@ def main():
 
     # ── page_for: устаревший полный URL (OAuth state/nonce) → origin ──
     check("_origin_of: URL → scheme://host, хост-фрагмент → None",
-          _ba._origin_of("https://auth.school.example.com/auth?state=x&nonce=y")
-          == "https://auth.school.example.com"
+          _ba._origin_of("https://auth.school.test/auth?state=x&nonce=y")
+          == "https://auth.school.test"
           and _ba._origin_of("youtube.com") is None
           and _ba._origin_of("") is None)
 
@@ -2971,13 +2971,13 @@ def main():
 
     _wk_pf = _ba._CdpWorker()
     _wk_pf.ensure_browser = lambda allow_launch=False: None
-    _auth_new = ("https://auth.school.example.com/auth/realms/EduPowerKeycloak/"
-                 "protocol/openid-connect/auth?client_id=school21&state=NEW")
+    _auth_new = ("https://auth.school.test/auth/realms/SchoolRealm/"
+                 "protocol/openid-connect/auth?client_id=school&state=NEW")
     _wk_pf._all_pages = lambda: [
         _PfPage("https://www.youtube.com/"), _PfPage(_auth_new)]
     # URL, захваченный секунду назад (state=OLD), уже не совпадает с живым
-    _stale = ("https://auth.school.example.com/auth/realms/EduPowerKeycloak/"
-              "protocol/openid-connect/auth?client_id=school21&state=OLD"
+    _stale = ("https://auth.school.test/auth/realms/SchoolRealm/"
+              "protocol/openid-connect/auth?client_id=school&state=OLD"
               "&nonce=abc")
     try:
         _pg = _wk_pf.page_for(_stale)
@@ -3000,18 +3000,18 @@ def main():
     # ── page_for: вкладка ушла дальше по редиректам ──
     check("_redirect_origins_of: redirect_uri из query (и двойное кодирование)",
           _ba._redirect_origins_of(
-              "https://auth.school.example.com/auth?client_id=school21"
-              "&redirect_uri=https%3A%2F%2Fschool.example.com%2F&state=x")
-          == ["https://school.example.com"]
+              "https://auth.school.test/auth?client_id=school"
+              "&redirect_uri=https%3A%2F%2Fplatform.school.test%2F&state=x")
+          == ["https://platform.school.test"]
           and _ba._redirect_origins_of(
               "https://idp.example.com/auth?next="
               "https%253A%252F%252Fapp.example.net%252Fcb")
           == ["https://app.example.net"]
           and _ba._redirect_origins_of("youtube.com") == [])
     check("_site_key: auth/platform — одно семейство; IP — None, голый хост — ключ",
-          _ba._site_key("https://auth.school.example.com/auth?state=x")
-          == "school.example.com"
-          and _ba._site_key("https://school.example.com/") == "school.example.com"
+          _ba._site_key("https://auth.school.test/auth?state=x")
+          == "school.test"
+          and _ba._site_key("https://platform.school.test/") == "school.test"
           and _ba._site_key("http://127.0.0.1:8000/") is None
           and _ba._site_key("youtube.com") == "youtube.com")
 
@@ -3071,12 +3071,12 @@ def main():
     # page_for: redirect_uri нет — последний фолбэк на семейство сайта
     _wk_h4 = _ba._CdpWorker()
     _wk_h4.ensure_browser = lambda allow_launch=False: None
-    _pg_pl = _PfPage("https://school.example.com/")
+    _pg_pl = _PfPage("https://platform.school.test/")
     _wk_h4._all_pages = lambda: [_pg_pl]
     try:
         _pg_r4 = _wk_h4.page_for(
-            "https://auth.school.example.com/auth/realms/EduPowerKeycloak/"
-            "protocol/openid-connect/auth?client_id=school21&state=OLD2")
+            "https://auth.school.test/auth/realms/SchoolRealm/"
+            "protocol/openid-connect/auth?client_id=school&state=OLD2")
         check("page_for: без redirect_uri — матч по семейству сайта",
               _pg_r4 is _pg_pl)
     except Exception:
@@ -3317,9 +3317,9 @@ def main():
 
     # Скачивание «скачай X (на сайте)»: парс, резолв через href, dispatch
     from app.features.computer_control import parse_download_request
-    check("parse download: «скачай файл методичку по sql на example.edu»",
-          parse_download_request("скачай файл методичку по sql на example.edu")
-          == ("методичку по sql", "example.edu"))
+    check("parse download: «скачай файл методичку по sql на portal.university.test»",
+          parse_download_request("скачай файл методичку по sql на portal.university.test")
+          == ("методичку по sql", "portal.university.test"))
     check("parse download: «скачай отчёт» / не команда",
           parse_download_request("скачай отчёт") == ("отчёт", None)
           and parse_download_request("расскажи про файлы") is None)
@@ -3330,30 +3330,30 @@ def main():
           == ("отчёт", PAGE_REF))
     _orig_snap3, _orig_href = _ba.snapshot_elements, _ba.href_of_tagged
     _ba.snapshot_elements = lambda host, tab_id=None: (
-        "https://example.edu/x", "example.edu",
+        "https://portal.university.test/x", "portal.university.test",
         [_it(0, "a", "Войти"), _it(1, "a", "Методичка по SQL"),
          _it(2, "img", "СТУДЕНТАМ")])
-    _hrefs = {1: "https://example.edu/a/file_get/329640?nomenu=1", 2: ""}
+    _hrefs = {1: "https://portal.university.test/a/file_get/329640?nomenu=1", 2: ""}
     _ba.href_of_tagged = lambda host, idx, tab_id=None: _hrefs.get(idx, "")
     try:
-        act_dl, err_dl = ms2.resolve_download("методичку по sql", "example.edu",
+        act_dl, err_dl = ms2.resolve_download("методичку по sql", "portal.university.test",
                                               _BoomRouter())
         check("resolve_download: матч → download-действие с href",
               err_dl is None
               and act_dl["kind"] == "download"
-              and act_dl["url"] == "https://example.edu/a/file_get/329640?nomenu=1"
+              and act_dl["url"] == "https://portal.university.test/a/file_get/329640?nomenu=1"
               and act_dl["element"] == "Методичка по SQL"
-              and act_dl["host"] == "example.edu")
-        no_dl, no_dl_err = ms2.resolve_download("студентам", "example.edu",
+              and act_dl["host"] == "portal.university.test")
+        no_dl, no_dl_err = ms2.resolve_download("студентам", "portal.university.test",
                                                 _BoomRouter())
         check("resolve_download: у иконки нет href — честный отказ",
               no_dl is None and no_dl_err is not None and "не ссылка" in no_dl_err)
         check("формулировки download: вопрос и «Готово»",
               ms2.confirm_question(act_dl)
-              == ("Скачать «Методичка по SQL» с example.edu?\n"
-                  "https://example.edu/a/file_get/329640?nomenu=1")
+              == ("Скачать «Методичка по SQL» с portal.university.test?\n"
+                  "https://portal.university.test/a/file_get/329640?nomenu=1")
               and ms2.describe_done(act_dl)
-              == "скачал «Методичка по SQL» с example.edu")
+              == "скачал «Методичка по SQL» с portal.university.test")
         _dls = []
         _orig_dt = _ba.download_in_tab
         _orig_ft2 = _ba.find_tab_id
@@ -3364,8 +3364,8 @@ def main():
             real3 = ComputerControlManager(context="t", base_dir=tmp, config={})
             ok4, _ = real3.execute(act_dl, "c")
             check("dispatch: download уходит в download_in_tab с host и url",
-                  ok4 and _dls == [("example.edu",
-                                    "https://example.edu/a/file_get/329640?nomenu=1",
+                  ok4 and _dls == [("portal.university.test",
+                                    "https://portal.university.test/a/file_get/329640?nomenu=1",
                                     None)])
             check("dispatch: вкладка скачивания запоминается по id",
                   real3._last_tab_id == 888)
@@ -3486,8 +3486,8 @@ def main():
                 " visit_count INTEGER, last_visit_time INTEGER)")
     con.executemany("INSERT INTO urls (url, title, visit_count, last_visit_time)"
                     " VALUES (?,?,?,?)", [
-        ("https://lms.example.edu/login", "Диспейс вуза — личный кабинет", 40, 0),
-        ("https://example.edu/kaf/persons/98849", "вуза - КУТУЗОВА И. А.", 12, 0),
+        ("https://lms.edu.university.test/login", "Курсы ВУЗ — личный кабинет", 40, 0),
+        ("https://portal.university.test/kaf/persons/98849", "ВУЗ - ОРЛОВА Д. Е.", 12, 0),
         ("https://mail.google.com/mail/u/0/#inbox", "Платформа — рассылка", 100, 0),
         ("https://example.com/rare", "Rare example", 1, 0),  # < MIN_VISITS
     ])
@@ -3497,10 +3497,10 @@ def main():
     _bh._history_files = lambda: [("chrome", hist_db)]
     _bh._cache["ts"] = 0.0
     try:
-        check("history: «диспейс» → корень частого сайта",
-              _bh.find_in_history("диспейс") == "https://lms.example.edu/")
+        check("history: «курсы» → корень частого сайта",
+              _bh.find_in_history("курсы") == "https://lms.edu.university.test/")
         check("history: мультисловный запрос (падеж) → страница целиком",
-              _bh.find_in_history("кутузовой вуза") == "https://example.edu/kaf/persons/98849")
+              _bh.find_in_history("орловой вуз") == "https://portal.university.test/kaf/persons/98849")
         check("history: редкий визит (<3) игнорируется",
               _bh.find_in_history("rare example") is None)
         check("history: нет совпадений → None", _bh.find_in_history("никуда") is None)
@@ -3510,8 +3510,8 @@ def main():
         _ws.find_site_url = lambda name, **kw: None  # если сработает поиск — провал
         try:
             check("resolve: история срабатывает раньше поиска DDG",
-                  ms2.resolve("диспейс") == {"kind": "url",
-                                             "value": "https://lms.example.edu/"})
+                  ms2.resolve("курсы") == {"kind": "url",
+                                             "value": "https://lms.edu.university.test/"})
         finally:
             _ws.find_site_url = _orig_find3
     finally:
@@ -4058,8 +4058,8 @@ def main():
     # ── 8c. Ввод текста «введи X в поле Y» ──
     from app.features.computer_control import parse_type_request
     check("type-parse: «введи в поле ПОЛЕ ТЕКСТ» → тело команды",
-          parse_type_request("введи в поле выберите город �город")
-          == "в поле выберите город �город")
+          parse_type_request("введи в поле выберите город энск")
+          == "в поле выберите город энск")
     check("type-parse: «напиши ТЕКСТ в поле ПОЛЕ» → тело",
           parse_type_request("напиши привет в поле поиска")
           == "привет в поле поиска")
@@ -4071,8 +4071,8 @@ def main():
           and parse_type_request("введи нас в курс дела") is None
           and parse_type_request("введи мой город") == "мой город")
     check("type-parse: «введи email» — тело команды",
-          parse_type_request("введи schoolyuurei@gmail.com")
-          == "schoolyuurei@gmail.com")
+          parse_type_request("введи ivan.testov@gmail.com")
+          == "ivan.testov@gmail.com")
 
     st8 = tmp / "s8t"
     mt = ComputerControlManager(context="t", base_dir=st8,
@@ -4084,17 +4084,17 @@ def main():
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         "https://yobidoyobi.ru", "yobidoyobi.ru", _inputs2)
     try:
-        act_t, err_t = mt.resolve_type("�город в поле выберите город",
+        act_t, err_t = mt.resolve_type("энск в поле выберите город",
                                        None, _BoomRouter())
         check("type: «ТЕКСТ в поле ПОЛЕ» — текст и поле разделены верно",
               err_t is None and act_t["idx"] == 0
-              and act_t["text"] == "�город"
+              and act_t["text"] == "энск"
               and act_t["element"] == "Выберите город")
-        act_t2, err_t2 = mt.resolve_type("в поле выберите город �город",
+        act_t2, err_t2 = mt.resolve_type("в поле выберите город энск",
                                          None, _BoomRouter())
         check("type: «в поле ПОЛЕ ТЕКСТ» — префиксный матч подписи",
               err_t2 is None and act_t2["idx"] == 0
-              and act_t2["text"] == "�город"
+              and act_t2["text"] == "энск"
               and act_t2.get("choose", {}).get("path") == "match")
         act_t3, _ = mt.resolve_type("в поле поиск по меню роллы", None,
                                     _BoomRouter())
@@ -4121,10 +4121,10 @@ def main():
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://yobidoyobi.ru", "yobidoyobi.ru",
             [_it(0, "input", "Выберите город", ed=True)])
-        act_t5, _ = mt.resolve_type("�город", None, _BoomRouter())
+        act_t5, _ = mt.resolve_type("энск", None, _BoomRouter())
         check("type: одно поле + одно слово — в единственное поле",
               act_t5 is not None and act_t5["idx"] == 0
-              and act_t5["text"] == "�город")
+              and act_t5["text"] == "энск")
         # Нет полей ввода вообще — честная причина
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://yobidoyobi.ru", "yobidoyobi.ru", [_it(0, "a", "Войти")])
@@ -4133,19 +4133,19 @@ def main():
               err_t6 is not None and "нет полей ввода" in err_t6)
         # «введи email» (одно слово) — явная команда ввода: неудаче честная
         # причина, а не (None, None) → LLM, который «изобразит» заполнение
-        _, err_t10 = mt.resolve_type("schoolyuurei@gmail.com", None, _BoomRouter())
+        _, err_t10 = mt.resolve_type("ivan.testov@gmail.com", None, _BoomRouter())
         check("type: одно слово без полей на странице — причина, не LLM",
               err_t10 is not None and "нет полей ввода" in err_t10)
         def _snap_boom(host=None, tab_id=None):
             raise _ba.BrowserUnavailable("нет отслеживаемой вкладки")
         _ba.snapshot_elements = _snap_boom
-        _, err_t11 = mt.resolve_type("schoolyuurei@gmail.com", None, _BoomRouter())
+        _, err_t11 = mt.resolve_type("ivan.testov@gmail.com", None, _BoomRouter())
         check("type: одно слово при мёртвой странице — причина, не LLM",
               err_t11 is not None and "Не удалось" in err_t11)
         # Одно слово + поля без совпадения подписи — подсказка с видимыми полями
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://yobidoyobi.ru", "yobidoyobi.ru", _inputs2)
-        _, err_t12 = mt.resolve_type("schoolyuurei@gmail.com", None, _BoomRouter())
+        _, err_t12 = mt.resolve_type("ivan.testov@gmail.com", None, _BoomRouter())
         check("type: одно слово + чужие поля — подсказка с полями, не LLM",
               err_t12 is not None and "Не разобрал" in err_t12
               and "Выберите город" in err_t12)
@@ -4163,7 +4163,7 @@ def main():
             _tcalls.append(host),
             ("https://yobidoyobi.ru", "yobidoyobi.ru", _inputs2))[1]
         act_ts, _ = ms_t.resolve_type(
-            "�город в поле выберите город на ёбидоёби", None, _BoomRouter())
+            "энск в поле выберите город на ёбидоёби", None, _BoomRouter())
         check("type: «на ёбидоёби» — сайт срезан по алиасу, снапшот по хосту",
               act_ts is not None and _tcalls[-1] == "yobidoyobi.ru")
         # «в чат» — НЕ сайт (нет алиаса/точки): хвост остаётся в теле команды
@@ -4180,13 +4180,13 @@ def main():
             _fills.append((host, idx, text, tab_id)), "filled")[1]
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://yobidoyobi.ru", "yobidoyobi.ru", _inputs2)
-        act_t9, _ = mt.resolve_type("�город в поле выберите город",
+        act_t9, _ = mt.resolve_type("энск в поле выберите город",
                                     None, _BoomRouter())
         ok9, _ = mt.execute(act_t9, "c8t")
         rec9 = json.loads((st8 / "audit.jsonl").read_text(encoding="utf-8")
                           .strip().splitlines()[-1])
         check("type: execute → fill_tagged, аудит kind=type verify=ok",
-              ok9 and _fills[-1][:3] == ("yobidoyobi.ru", 0, "�город")
+              ok9 and _fills[-1][:3] == ("yobidoyobi.ru", 0, "энск")
               and rec9.get("kind") == "type" and rec9.get("verify") == "ok")
         # Closed-loop: значение поля не совпало — честное «не уверен»
         def _ft_noop(host, idx, text, tab_id=None, submit=False):
@@ -4203,10 +4203,10 @@ def main():
               and rec10.get("error_class") == "uncertain"
               and rec10.get("verify") == "uncertain")
         check("type: describe/confirm/done говорят, что и куда вводится",
-              "ввести «�город»" in ComputerControlManager.describe(act_t9)
+              "ввести «энск»" in ComputerControlManager.describe(act_t9)
               and "Выберите город" in ComputerControlManager.describe(act_t9)
               and ComputerControlManager.confirm_question(act_t9).startswith("Ввести")
-              and "ввёл «�город»" in ComputerControlManager.describe_done(act_t9))
+              and "ввёл «энск»" in ComputerControlManager.describe_done(act_t9))
         # «роллы в поиск» — без слова «поле»: «поиск» сам название поля,
         # сепаратор находит его без LLM
         _orig_hel = _ba.hidden_editable_labels
@@ -4246,25 +4246,25 @@ def main():
     _orig_se6 = _ba.snapshot_elements
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         "https://yobidoyobi.ru", "yobidoyobi.ru", _inputs2)
-    _ec.load_location = lambda: {"mode": "geo", "city": "�город",
-                                 "lat": 55.0, "lon": 82.9}
+    _ec.load_location = lambda: {"mode": "geo", "city": "Энск",
+                                 "lat": 10.0, "lon": 20.0}
     try:
         act_g, err_g = mt.resolve_type("мой город в поле поиск", None,
                                        _BoomRouter())
         check("type+geo: «мой город в поле поиск» — город подставлен",
-              err_g is None and act_g["text"] == "�город"
+              err_g is None and act_g["text"] == "Энск"
               and act_g["idx"] == 1)
         act_g2, err_g2 = mt.resolve_type("город в поле поиск", None,
                                          _BoomRouter())
         check("type+geo: голое «город» — тоже плейсхолдер",
-              err_g2 is None and act_g2["text"] == "�город")
+              err_g2 is None and act_g2["text"] == "Энск")
         # Одно поле на странице: «введи мой город» — без названия поля
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://yobidoyobi.ru", "yobidoyobi.ru",
             [_it(0, "input", "Поиск", ed=True)])
         act_g3, err_g3 = mt.resolve_type("мой город", None, _BoomRouter())
         check("type+geo: «введи мой город» + одно поле — в него",
-              err_g3 is None and act_g3["text"] == "�город"
+              err_g3 is None and act_g3["text"] == "Энск"
               and act_g3["idx"] == 0)
         # Несколько полей и ни одно не названо — подсказка, а не молчание
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
@@ -4280,11 +4280,11 @@ def main():
         check("type+geo: местоположение off — честная причина",
               act_g5 is None and err_g5 is not None
               and "местоположение" in err_g5.lower())
-        # «�город, Россия» (manual-режим) → только город, без страны
+        # «Энск, Россия» (manual-режим) → только город, без страны
         _ec.load_location = lambda: {"mode": "manual",
-                                     "city": "�город, Россия"}
+                                     "city": "Энск, Россия"}
         check("type+geo: «Город, Страна» → только город",
-              mt._home_city() == "�город")
+              mt._home_city() == "Энск")
     finally:
         _ec.load_location = _orig_ll
         _ba.snapshot_elements = _orig_se6
@@ -4759,12 +4759,12 @@ def main():
     sm1 = ScenarioManager(context="sctest1", computer_control=cc1,
                           base_dir=sc_tmp / "sc1")
     # Адрес open от LLM принимается, только если он есть в трассе
-    write_trace(sc_tmp, "c1", [("url", {"value": "https://dodopizza.ru/city"})]
+    write_trace(sc_tmp, "c1", [("url", {"value": "https://dodopizza.ru/ensk"})]
                 + TRACE4[1:])
     llm_json = json.dumps({
         "aliases": ["закажи пиццу"],
         "steps": [
-            {"op": "open", "url": "https://dodopizza.ru/city"},
+            {"op": "open", "url": "https://dodopizza.ru/ensk"},
             {"op": "ask", "slot": "pizza", "question": "Какую пиццу?"},
             {"op": "click", "target": "{pizza}", "host": "dodopizza.ru"},
             {"op": "click", "target": "В корзину", "host": "dodopizza.ru"},
@@ -4940,20 +4940,20 @@ def main():
     sm9 = ScenarioManager(context="sctest9", computer_control=cc9,
                           base_dir=sc_tmp / "sc9")
     trace7 = [("url", {}),
-              ("click", {"element": "меню", "host": "example.edu"}),
-              ("click", {"element": "ВОЙТИ", "host": "example.edu"}),
-              ("click", {"element": "кабинет обучающегося", "host": "example.edu"}),
-              ("click", {"element": "меню", "host": "example.edu"}),
-              ("click", {"element": "Расписание", "host": "example.edu"}),
-              ("click", {"element": "Расписание занятий", "host": "example.edu"})]
+              ("click", {"element": "меню", "host": "university.test"}),
+              ("click", {"element": "ВОЙТИ", "host": "university.test"}),
+              ("click", {"element": "кабинет обучающегося", "host": "university.test"}),
+              ("click", {"element": "меню", "host": "portal.university.test"}),
+              ("click", {"element": "Расписание", "host": "portal.university.test"}),
+              ("click", {"element": "Расписание занятий", "host": "portal.university.test"})]
     write_trace(sc_tmp, "c9", trace7)
     lossy = json.dumps({"aliases": [], "steps": [
-        {"op": "open", "url": "https://example.edu"},
-        {"op": "click", "target": "меню", "host": "example.edu"},
-        {"op": "click", "target": "ВОЙТИ", "host": "example.edu"},
-        {"op": "click", "target": "Расписание", "host": "example.edu"},
+        {"op": "open", "url": "https://university.test"},
+        {"op": "click", "target": "меню", "host": "university.test"},
+        {"op": "click", "target": "ВОЙТИ", "host": "university.test"},
+        {"op": "click", "target": "Расписание", "host": "portal.university.test"},
         {"op": "click", "target": "Расписание занятий",
-         "host": "example.edu"}]}, ensure_ascii=False)
+         "host": "portal.university.test"}]}, ensure_ascii=False)
     sc9, err9 = sm9.build_from_trace("c9", "расписание", FakeRouter(lossy))
     check("sc: LLM потеряла шаги (5 из 7) → фолбэк rule-based со всеми 7",
           sc9 is not None
@@ -4968,7 +4968,7 @@ def main():
     with open(Path(sc_tmp) / "audit.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps({"ts": time.time(), "chat_id": "c10", "ok": False,
                             "verify": "uncertain", "kind": "click",
-                            "element": "бургер-меню", "host": "example.edu",
+                            "element": "бургер-меню", "host": "portal.university.test",
                             "value": "", "detail": "не уверен"},
                            ensure_ascii=False) + "\n")
     check("sc: трасса берёт verify=uncertain (клик JS-меню не теряется)",
@@ -6557,7 +6557,7 @@ console.log(%s);
             _it(86811762, "label", "Яблочный крамбл + 60 ₽", md=True,
                 ctx="Заменить десерт Яблочный крамбл + 60 ₽"),
             _it(86811852, "a", "Яблочный крамбл", cov=True,
-                href="https://dodopizza.ru/city/product/yablochnyi-krambl"),
+                href="https://dodopizza.ru/ensk/product/yablochnyi-krambl"),
             _it(86811853, "div", "Яблочный крамбл 189 ₽", cov=True,
                 ctx="Десерты Яблочный крамбл 189 ₽"),
         ]
@@ -7944,10 +7944,10 @@ console.log(%s);
     check("синонимы бургера: прочие сайты — «меню»/«навигац»",
           _word_in("меню", _goal_with_synonyms("бургер", "dodopizza.ru"))
           and _word_in("навигац", _goal_with_synonyms("три полоски и бургер",
-                                                      "school.example.com")))
+                                                      "platform.school.test")))
     check("синонимы бургера: латинский «burger» для data-testid",
           _word_in("burger", _goal_with_synonyms("бургер",
-                                                 "school.example.com")))
+                                                 "platform.school.test")))
 
     # data-testid безтекстовой иконки — крюк скоринга: бургер платформы
     # (<button data-testid="MobileHeader.BurgerButton">, без текста и aria)
@@ -7959,7 +7959,7 @@ console.log(%s);
         _it(2, "button", "", tid="MobileHeader.BurgerButton"),
     ]
     _sc_tid = ComputerControlManager._score_candidates(
-        _tid_items, "бургер", host="school.example.com")
+        _tid_items, "бургер", host="platform.school.test")
     check("скоринг: data-testid безтекстовой иконки — «бургер» находится",
           len(_sc_tid) == 1
           and _sc_tid[0][1]["tid"] == "MobileHeader.BurgerButton"
@@ -7970,17 +7970,17 @@ console.log(%s);
     # не через кросс-страничный фолбэк на элемент другого сайта
     _orig_snap_tb = _ba.snapshot_elements
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
-        "https://school.example.com/", "school.example.com",
+        "https://platform.school.test/", "platform.school.test",
         list(_tid_items))
     try:
         m_tb = make(cfg={**CFG, "allow_domains": []})
-        m_tb._last_host = "school.example.com"
+        m_tb._last_host = "platform.school.test"
         m_tb._last_tab_id = 7
         act_tb, err_tb = m_tb.resolve_click("три полоски", None, _BoomRouter())
         check("бургер платформы: «три полоски» — клик по testid-бургеру",
               err_tb is None and act_tb is not None
               and act_tb["idx"] == 2
-              and act_tb["host"] == "school.example.com")
+              and act_tb["host"] == "platform.school.test")
     finally:
         _ba.snapshot_elements = _orig_snap_tb
 
@@ -8109,15 +8109,15 @@ console.log(%s);
           and not _looks_like_domain("отчёт.docx")
           and not _looks_like_domain("маргарите")
           and not _looks_like_domain("две штуки.txt")
-          and _looks_like_domain("example.edu")
+          and _looks_like_domain("portal.university.test")
           and _looks_like_domain("example.com/index.html")
           and _looks_like_domain("дом.рф")
           and _looks_like_domain("127.0.0.1:8000"))
     _m_dom = make(cfg={**CFG, "allow_domains": []})
     check("открытие: «config.py» — файл, а не сайт (не https://config.py)",
           _m_dom.resolve_url("config.py") is None
-          and _m_dom.resolve_url("example.edu/827")
-          == {"kind": "url", "value": "https://example.edu/827"})
+          and _m_dom.resolve_url("portal.university.test/827")
+          == {"kind": "url", "value": "https://portal.university.test/827"})
     check("tab_op: «назад в будущее» — фраза, а не команда «назад»",
           parse_tab_op("назад в будущее") is None
           and parse_tab_op("вперёд в прошлое") is None
@@ -8411,14 +8411,14 @@ console.log(%s);
     # берётся от конца подписи, иначе первое слово текста терялось бы
     _fld = [{"idx": 0, "tag": "input", "text": "город", "ed": True}]
     _fa_it, _fa_txt = ComputerControlManager._match_field_anywhere(
-        "кутузова город �город", _fld)
+        "орлова город энск", _fld)
     _fa_it2, _fa_txt2 = ComputerControlManager._match_field_anywhere(
-        "город �город красный проспект", _fld)
+        "город энск центральный проспект", _fld)
     check("поле внутри фразы: первое слово текста не теряется",
           _fa_it is _fld[0]
-          and " ".join(_fa_txt.split()) == "кутузова �город"
+          and " ".join(_fa_txt.split()) == "орлова энск"
           and _fa_it2 is _fld[0]
-          and " ".join(_fa_txt2.split()) == "�город красный проспект")
+          and " ".join(_fa_txt2.split()) == "энск центральный проспект")
 
     # LLM-ярус разбора: сбой резолвера ≠ «это не команда»
     class _IntentRouter:

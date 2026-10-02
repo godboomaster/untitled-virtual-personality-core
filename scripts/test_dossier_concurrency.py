@@ -50,7 +50,7 @@ class SlowRouter:
         self.gate.wait(timeout=10)
         system = messages[0]["content"]
         if "extract facts about the user" in system.lower():
-            return "Name: Алексей\nCity: �город"
+            return "Name: Алексей\nCity: Энск"
         return json.dumps({
             "interests": ["астрономия"],
             "topics": ["телескоп своими руками"],
@@ -63,7 +63,7 @@ def _messages():
     now = time.time() + 1  # новее водяного знака экстракции фактов
     return [
         {"role": "user", "sender_id": "u1", "timestamp": now,
-         "content": "Меня зовут Алексей, я из �города и собираю телескоп"},
+         "content": "Меня зовут Алексей, я из Энска и собираю телескоп"},
         {"role": "assistant", "content": "Круто!"},
         {"role": "user", "sender_id": "u1", "timestamp": now + 1,
          "content": "Вчера шлифовал зеркало для рефлектора, это долго"},

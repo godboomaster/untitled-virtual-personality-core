@@ -69,7 +69,7 @@ def main():
     check("_strip_tab_filler: падежи и латиница",
           _strip_tab_filler("страница попов") == "попов"
           and _strip_tab_filler("Страницу ПОПОВА") == "ПОПОВА"
-          and _strip_tab_filler("вкладке сайта вуза") == "вуза"
+          and _strip_tab_filler("вкладке сайта вуз") == "вуз"
           and _strip_tab_filler("tab github") == "github"
           and _strip_tab_filler("страница") == ""
           # «Странный» — не носитель (граница слова)
@@ -80,10 +80,10 @@ def main():
     ws.find_site_url = lambda name, **kw: None
     bh.find_in_history = lambda name: None
     tabs = [
-        (1, "https://example.edu/student", "example.edu",
+        (1, "https://portal.university.test/student", "portal.university.test",
          "Личный кабинет обучающегося"),
-        (2, "https://example.edu/kaf/persons/123", "example.edu",
-         "вуза - ПОПОВ А. А. - Общая информация"),
+        (2, "https://portal.university.test/kaf/persons/123", "portal.university.test",
+         "ВУЗ - ПОПОВ А. А. - Общая информация"),
         (3, "https://github.com/x", "github.com", "vpc · GitHub"),
     ]
     ba.list_tabs = lambda: list(tabs)
@@ -97,7 +97,7 @@ def main():
             return m.resolve_tab_switch(goal, explicit)
 
         a, e = switch("попов", False)
-        check("switch: «попов» (мягкая) → вкладка вуза - ПОПОВ",
+        check("switch: «попов» (мягкая) → вкладка ВУЗ - ПОПОВ",
               a is not None and a["kind"] == "tab_switch"
               and a["tab_id"] == 2)
         # Цель LLM-разбора приходит с носителем в им. падеже
@@ -131,8 +131,8 @@ def main():
               a is None and e is None)
 
         # Два одинаково подходящих — не выбираем наугад
-        tabs.append((4, "https://example.edu/kaf/persons/456", "example.edu",
-                     "вуза - ПОПОВ Б. В. - Кафедра"))
+        tabs.append((4, "https://portal.university.test/kaf/persons/456", "portal.university.test",
+                     "ВУЗ - ПОПОВ Б. В. - Кафедра"))
         a, e = switch("страницу попов")
         check("switch: два «ПОПОВ» → уточнение, а не случайная",
               a is None and e and "несколько" in e.lower())

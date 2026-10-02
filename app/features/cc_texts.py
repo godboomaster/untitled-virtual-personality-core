@@ -475,7 +475,7 @@ _T = {
     "rs_unknown_place": {
         "ru": "Не знаю, где «{site}»: такого алиаса в sites нет и на домен "
               "не похоже. Открой сайт («открой …»), назови домен («на "
-              "example.edu») или скажи «на этой странице».",
+              "example.com») или скажи «на этой странице».",
         "en": "I don't know where \"{site}\" is: it's not a known site "
               "and doesn't look like a domain. Open the site (\"open …\"), "
               "name the domain (\"on example.com\") or say \"on this "

@@ -15,7 +15,7 @@ migrate_stm_500.py), чтобы порядок операций был один 
     3. заменить содержимое, а при ошибке вставки — откатиться на снапшот.
 
 Usage:
-    cd /Users/user/Documents/virtual-persona-core
+    cd <папка проекта>
     /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 migrate_stm.py
 """
 

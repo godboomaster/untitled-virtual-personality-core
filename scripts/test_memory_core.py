@@ -249,12 +249,12 @@ def test_ltm_thresholds(tmp: Path):
     check(f"коллекция LTM открыта с метрикой {VECTOR_SPACE}",
           collection_space(ltm.collection) == VECTOR_SPACE and ltm.space == VECTOR_SPACE)
 
-    ltm.save_facts("Город: �город", user_id="u1")
+    ltm.save_facts("Город: Энск", user_id="u1")
     ltm.save_facts("Хобби: играет на гитаре", user_id="u1")
 
     # Перефразировка должна укладываться в порог forget на cosine —
     # иначе «забудь про X» молча ничего не находит
-    res = ltm.collection.query(query_texts=["он живёт в �городе"], n_results=1,
+    res = ltm.collection.query(query_texts=["он живёт в Энске"], n_results=1,
                                where={"user_id": "u1"}, include=["distances"])
     distance = res["distances"][0][0]
     check(f"перефразировка попадает в порог forget (d={distance:.3f} <= "
@@ -268,9 +268,9 @@ def test_ltm_thresholds(tmp: Path):
           d_far > FORGET_MAX_DISTANCE)
     check("forget по постороннему запросу ничего не удаляет",
           ltm.forget("квантовая хромодинамика", "u1") is None
-          and sorted(ltm.get_all_facts("u1")) == ["Город: �город", "Хобби: играет на гитаре"])
-    forgotten = ltm.forget("он живёт в �городе", "u1")
-    check("forget удалил найденный факт", forgotten == "Город: �город")
+          and sorted(ltm.get_all_facts("u1")) == ["Город: Энск", "Хобби: играет на гитаре"])
+    forgotten = ltm.forget("он живёт в Энске", "u1")
+    check("forget удалил найденный факт", forgotten == "Город: Энск")
     check("forget не задел остальные факты",
           ltm.get_all_facts("u1") == ["Хобби: играет на гитаре"])
 

@@ -387,7 +387,7 @@ def main():
         # ── 7. Хост в аудите сбоя снапшота; SSO-фолбэк по хосту ──
         ms = make()
         state["snap_raise"] = lambda host: RuntimeError("no tab")
-        a_se, e_se = ms.resolve_click("новости", "example.edu", None,
+        a_se, e_se = ms.resolve_click("новости", "portal.university.test", None,
                                       chat_id="se")
         state["snap_raise"] = None
         r_se = [r for r in _recs(ms, "se") if r.get("kind") == "resolve_fail"]
@@ -396,11 +396,11 @@ def main():
               and r_se[-1].get("fail_reason") == "snapshot_error"
               and r_se[-1].get("host"))
         ms2 = make()
-        state["visible"] = ("https://auth.school.example.com/login?state=abc",
-                            "auth.school.example.com")
+        state["visible"] = ("https://auth.school.test/login?state=abc",
+                            "auth.school.test")
         state["snap_raise"] = (lambda host: RuntimeError("stale url")
                                if host and "://" in str(host) else None)
-        state.update(url="https://auth.school.example.com/", host="auth.school.example.com",
+        state.update(url="https://auth.school.test/", host="auth.school.test",
                      items=[_it(0, "button", "Войти")])
         a_sso, e_sso = ms2.resolve_click("войти", None, None, chat_id="sso")
         state["snap_raise"] = None
@@ -408,7 +408,7 @@ def main():
         state.update(url="https://x.ru", host="x.ru")
         check("SSO: устаревший полный URL → снапшот по хосту",
               e_sso is None and a_sso and a_sso["idx"] == 0
-              and a_sso["host"] == "auth.school.example.com")
+              and a_sso["host"] == "auth.school.test")
 
         # ── 8. Видимая вкладка и клик в невидимой ──
         mt = make()

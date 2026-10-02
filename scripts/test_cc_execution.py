@@ -552,8 +552,8 @@ def main():
 
         patch(ba, "snapshot_elements", _snap_empty)
         m = mgr("nav")
-        act = {"kind": "nav", "value": "https://example.edu/",
-               "host": "example.edu", "steps": ["Студентам", "Расписание"],
+        act = {"kind": "nav", "value": "https://portal.university.test/",
+               "host": "portal.university.test", "steps": ["Студентам", "Расписание"],
                "element": "Студентам → Расписание"}
         okn, detn = m.execute(act, "c10")
         rec = last_audit("nav")

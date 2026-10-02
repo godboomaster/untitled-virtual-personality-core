@@ -152,7 +152,7 @@ def main():
     print("4. Сюжеты и сценарист")
     import app.core.world_engine as we
     importlib.reload(we)
-    check("норм: регистр/пунктуация", we._titles_similar("Расследование Кутузовой!", "расследование кутузовой"))
+    check("норм: регистр/пунктуация", we._titles_similar("Расследование Орловой!", "расследование орловой"))
     check("норм: близкая формулировка", we._titles_similar("Тайна старого маяка", "тайна старого маяка."))
     check("разные линии не матчатся", not we._titles_similar("Расследование", "Ремонт корабля"))
 
@@ -261,11 +261,11 @@ def main():
     importlib.reload(pc)
     layer = pc.PersonaContextLayer("update3_pc", router=None,
                                    manual_binding={"type": "real_world",
-                                                   "location": "city"})
+                                                   "location": "Ensk"})
     got = layer.get("Ты — вымышленный рыцарь из Эльдариона.")  # экстракт скажет fictional
     check("override: тип real_world поверх экстракта",
           got["world_binding"]["type"] == "real_world")
-    check("override: локация из YAML", got["world_binding"].get("location") == "city")
+    check("override: локация из YAML", got["world_binding"].get("location") == "Ensk")
     check("override: помечен как ручной", got["world_binding"].get("manual") is True)
     layer2 = pc.PersonaContextLayer("update3_pc2", router=None,
                                     manual_binding={"type": "мусор"})

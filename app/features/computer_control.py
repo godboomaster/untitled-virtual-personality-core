@@ -2376,7 +2376,7 @@ _TYPE_EXPLICIT_VERBS = frozenset({
 
 
 def parse_type_request(text: str) -> Optional[str]:
-    """«введи в поле выберите город �город» → тело команды. Поле, текст
+    """«введи в поле поиск кофе» → тело команды. Поле, текст
     и сайт здесь НЕ разделяются — это делает resolve_type по снапшоту
     страницы (грамматика не различает «в поле ПОЛЕ ТЕКСТ» и «ТЕКСТ в поле
     ПОЛЕ», а подписи полей на странице — различают). None — не команда ввода."""
@@ -9831,7 +9831,7 @@ class ComputerControlManager:
     @staticmethod
     def _home_city() -> Optional[str]:
         """Город пользователя из местоположения (env_location.json).
-        «�город, Россия» → «�город». None — местоположение выключено."""
+        «Город, Страна» → «Город». None — местоположение выключено."""
         try:
             from app.features import env_context
             city = str(env_context.load_location().get("city") or "")
@@ -10016,7 +10016,7 @@ class ComputerControlManager:
                 item, text = self._match_field_anywhere(body, inputs)
             if item is None and not has_head \
                     and (len(body.split()) == 1 or geo_body) and len(inputs) == 1:
-                # «введи �город» / «введи мой город» + единственное поле
+                # «введи кофе» / «введи мой город» + единственное поле
                 item, text = inputs[0], body
             if item is None:
                 if explicit:

@@ -112,7 +112,7 @@ USER_TEXT_MAX = 1500
 # Веб-поиск агента: сколько ссылок показать модели и длина сниппета. Нужная
 # страница глубоко внутри сайта (страница преподавателя, курс, документ)
 # находится поиском за один раунд, а угадывание домена и хождение по меню
-# вуза — это десяток раундов по минуте и чужой сайт (вуза → ngtu.ru)
+# вуза — это десяток раундов по минуте и чужой сайт с похожим названием
 SEARCH_RESULTS_MAX = 8
 SEARCH_SNIPPET_MAX = 160
 # Память задач: записей на чат в файле, прошлых задач той же темы в промпте,
@@ -1072,7 +1072,7 @@ _OPEN_BOUNCE_MARK = "NOT opened"
 SEEN_WORDS_MAX = 20000
 
 
-# Адрес сайта в тексте модели: «dodo.ru», «https://papajohns.ru/…», «вуза.рф».
+# Адрес сайта в тексте модели: «dodo.ru», «https://papajohns.ru/…», кириллический «сайт.рф».
 # Расширения файлов («config.py», «menu.pdf») адресом не считаем
 _SITE_RE = re.compile(
     r"(?<![\w@.-])(?:https?://)?((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+"
@@ -1102,7 +1102,7 @@ def _last_line(run: dict) -> str:
 
 def _host_in(host: str, hosts) -> bool:
     # Тот же сайт: совпадение или поддомен в любую сторону
-    # (dodopizza.ru ↔ city.dodopizza.ru), но не dodo.ru ↔ dodopizza.ru
+    # (dodopizza.ru ↔ городской поддомен), но не dodo.ru ↔ dodopizza.ru
     h = str(host or "").lower().removeprefix("www.")
     return bool(h) and any(
         h == g or h.endswith("." + g) or g.endswith("." + h)
