@@ -1120,6 +1120,8 @@ export interface HomeEvent {
 
 export interface HomePersonaOverview {
   last_user_ts: number | null; // последнее сообщение оператора в веб-чате
+  // Последняя реплика веб-чата (кто и что, текст обрезан) — превью на странице всех чатов
+  last_message: { role: 'user' | 'bot'; text: string; ts: number } | null;
   state: { pastime: string; location: string; mood: string; energy: number | null; updated_at: number | null } | null;
   events: HomeEvent[]; // свежие сверху
   reminders_active: number;

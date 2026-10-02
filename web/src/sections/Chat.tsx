@@ -10,7 +10,10 @@ import {
 } from '../inboxStore';
 import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
-import { consumeChatPersonaRequest, useChatPersonaRequest } from '../chatNavStore';
+import { consumeChatPersonaRequest, useChatOverviewRequest, useChatPersonaRequest } from '../chatNavStore';
+import { captureRects, playFlip } from '../flip';
+import type { FlipRects } from '../flip';
+import ChatOverview from './ChatOverview';
 import { usePersonaAvatars } from '../avatarStore';
 import PersonaDossier from '../components/PersonaDossier';
 import PersonaYamlModal from '../components/PersonaYamlModal';
@@ -86,7 +89,66 @@ function featureEnabledFromConfig(features: Record<string, unknown> | undefined,
   return false;
 }
 
+// Раздел «Чат»: сначала страница всех чатов, клик по карточке открывает
+// чат персоны (карточки уезжают в список слева). Назад — кнопка «Все чаты»
+// над списком или повторный клик по «Чат» в сайдбаре (так же и в скине).
+// Переход из других секций (карточки главной, уведомление) открывает чат
+// сразу, минуя страницу всех чатов
 export default function Chat() {
+  const { personas } = useMockData();
+  const request = useChatPersonaRequest();
+  const [openId, setOpenId] = useState<string | null>(() =>
+    request && personas.some((p) => p.id === request) ? request : null,
+  );
+  // Прямоугольники карточек/строк на момент смены вида — для FLIP-перехода
+  const [flipFrom, setFlipFrom] = useState<FlipRects | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const open = (id: string) => {
+    setFlipFrom(captureRects(rootRef.current));
+    setOpenId(id);
+  };
+  const back = () => {
+    setFlipFrom(captureRects(rootRef.current));
+    setOpenId(null);
+  };
+
+  // Запрос «открыть чат с персоной», пока открыта страница всех чатов
+  // (в открытом чате его подхватывает сам ChatRoom)
+  useEffect(() => {
+    if (!request || openId !== null || !personas.some((p) => p.id === request)) return;
+    setFlipFrom(null);
+    setOpenId(request);
+    consumeChatPersonaRequest();
+  }, [request, openId, personas]);
+
+  const overviewRequest = useChatOverviewRequest();
+  const seenOverviewRequest = useRef(overviewRequest);
+  useEffect(() => {
+    if (overviewRequest === seenOverviewRequest.current) return;
+    seenOverviewRequest.current = overviewRequest;
+    if (openId !== null) back();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overviewRequest]);
+
+  return (
+    <div className="chat-root" ref={rootRef}>
+      {openId === null ? (
+        <ChatOverview onOpen={open} flipFrom={flipFrom} />
+      ) : (
+        <ChatRoom initialPersonaId={openId} flipFrom={flipFrom} onBack={back} />
+      )}
+    </div>
+  );
+}
+
+interface ChatRoomProps {
+  initialPersonaId: string;
+  flipFrom: FlipRects | null; // карточки страницы всех чатов — старт перехода
+  onBack: () => void;
+}
+
+function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   const { lang, t } = useI18n();
   const {
     personas,
@@ -106,22 +168,30 @@ export default function Chat() {
     roomConfigs,
   } = useMockData();
 
-  // При входе в чат открывается персона с самой свежей перепиской (первая в
-  // списке слева). Если опрос входящих ещё не принёс меток — первая по реестру,
-  // а выбор уточнится, когда метки придут (пока оператор сам не выбрал чат)
-  const [selectedId, setSelectedId] = useState(
-    () => latestActivePersona(personas.map((p) => p.id)) ?? personas[0].id,
-  );
-  const autoSelect = useRef(latestActivePersona(personas.map((p) => p.id)) === null);
-  // Выбор оператора (клик, переход из других секций) — автовыбор больше не нужен
+  // Чат открывается с персоной, выбранной на странице всех чатов (или
+  // запрошенной из другой секции)
+  const [selectedId, setSelectedId] = useState(initialPersonaId);
+  // Выбор оператора (клик, переход из других секций)
   const pickPersona = (id: string) => {
-    autoSelect.current = false;
     setSelectedId(id);
   };
   const avatars = usePersonaAvatars();
   const [panelOpen, setPanelOpen] = useState(true);
   // Левый список персон тоже задвигается (как правая контекстная панель)
   const [personaListOpen, setPersonaListOpen] = useState(true);
+  // Переход со страницы всех чатов: строки списка едут с мест карточек.
+  // Пока едут, список не обрезает их (overflow) и лежит поверх окна чата
+  const personaListRef = useRef<HTMLDivElement>(null);
+  const [arriving, setArriving] = useState(flipFrom !== null);
+  // Один раз на монтирование: StrictMode повторяет эффект, и второй замер
+  // (элемент уже сдвинут первой анимацией) дал бы нулевой переход поверх
+  const flipPlayed = useRef(false);
+  useLayoutEffect(() => {
+    if (!flipFrom || flipPlayed.current) return;
+    flipPlayed.current = true;
+    void playFlip(personaListRef.current, flipFrom).then(() => setArriving(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [dossierOpen, setDossierOpen] = useState(false);
   // Просмотр/редактирование YAML текущей персоны (кнопка в шапке чата)
   const [yamlOpen, setYamlOpen] = useState(false);
@@ -299,15 +369,6 @@ export default function Chat() {
   // Фоновые сообщения (напоминания, инициативы) прилетают в глобальный
   // inbox-стор (поллер в App); здесь только гасим непрочитанные открытой персоны
   const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode } = useInbox();
-  // Автовыбор: первые метки свежести пришли уже после открытия чата
-  useEffect(() => {
-    if (!autoSelect.current) return;
-    const id = latestActivePersona(personas.map((p) => p.id));
-    if (id) {
-      autoSelect.current = false;
-      setSelectedId(id);
-    }
-  }, [lastTs, personas]);
   useEffect(() => {
     markRead(persona.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1586,9 +1647,12 @@ export default function Chat() {
   }
 
   return (
-    <div className="chat-layout">
+    <div className={`chat-layout${flipFrom ? ' chat-layout--arrive' : ''}`}>
       {/* Список персон: клик переключает историю диалога; задвигается кнопкой */}
-      <div className={`chat-persona-list ${personaListOpen ? '' : 'chat-persona-list--collapsed'}`}>
+      <div
+        ref={personaListRef}
+        className={`chat-persona-list ${personaListOpen ? '' : 'chat-persona-list--collapsed'}${arriving ? ' chat-persona-list--flying' : ''}`}
+      >
         <button
           type="button"
           className="chat-context-toggle"
@@ -1598,11 +1662,16 @@ export default function Chat() {
           {personaListOpen ? '«' : '»'}
         </button>
         <div className="chat-persona-list-body">
+          <button type="button" className="chat-persona-back" onClick={onBack} title={t('chat.allChatsTitle')}>
+            <span aria-hidden="true">←</span>
+            {t('chat.allChats')}
+          </button>
           <div className="chat-persona-list-title">{t('chat.personaList')}</div>
           {sortedPersonas.map((p, i) => (
             <button
               key={p.id}
-              className={`chat-persona-item stagger-item ${p.id === selectedId ? 'chat-persona-item--active' : ''}`}
+              data-flip-id={p.id}
+              className={`chat-persona-item${flipFrom ? '' : ' stagger-item'} ${p.id === selectedId ? 'chat-persona-item--active' : ''}`}
               style={{ animationDelay: `${i * 40}ms` }}
               onClick={() => {
                 pickPersona(p.id);

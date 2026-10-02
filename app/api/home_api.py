@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _FEED_PER_KIND = 5  # последних событий каждого вида на персону
 _TEXT_MAX = 280
+_PREVIEW_MAX = 160  # превью последней реплики на странице всех чатов
 
 
 def _ctx_dirs(persona: str) -> list[Path]:
@@ -85,6 +86,36 @@ def _last_user_ts(persona: str, chat_id: str) -> float | None:
     return ts / 1000 if ts > 1e11 else ts  # в метаданных — миллисекунды
 
 
+def _last_message(persona: str, chat_id: str) -> dict | None:
+    """Последняя реплика чата (кто и что) — превью на странице всех чатов.
+    Из STM (Chroma) напрямую, как _last_user_ts: бот не поднимается."""
+    path = _find(persona, "stm/chroma.sqlite3")
+    if path is None:
+        return None
+    try:
+        with _sqlite_ro(path) as db:
+            row = db.execute(
+                """SELECT r.string_value, d.string_value,
+                          COALESCE(t.float_value, t.int_value) AS ts
+                   FROM embedding_metadata c
+                   JOIN embedding_metadata t ON t.id = c.id AND t.key = 'timestamp'
+                   LEFT JOIN embedding_metadata r ON r.id = c.id AND r.key = 'role'
+                   LEFT JOIN embedding_metadata d ON d.id = c.id AND d.key = 'chroma:document'
+                   WHERE c.key = 'chat_id' AND c.string_value = ?
+                   ORDER BY ts DESC LIMIT 1""",
+                (chat_id,),
+            ).fetchone()
+    except sqlite3.Error as e:
+        logger.debug(f"[home] STM {persona}: {e}")
+        return None
+    if not row or not row[1] or not row[2]:
+        return None
+    ts = float(row[2])
+    return {"role": "user" if row[0] == "user" else "bot",
+            "text": _clip(row[1], _PREVIEW_MAX),
+            "ts": ts / 1000 if ts > 1e11 else ts}
+
+
 def _ltm_count(persona: str) -> int:
     path = _find(persona, "ltm/chroma.sqlite3")
     if path is None:
@@ -104,9 +135,9 @@ def _iso_ts(value) -> float | None:
         return None
 
 
-def _clip(text) -> str:
+def _clip(text, limit: int = _TEXT_MAX) -> str:
     text = " ".join(str(text or "").split())
-    return text if len(text) <= _TEXT_MAX else text[: _TEXT_MAX - 1] + "…"
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _looks_like_json(text: str) -> bool:
@@ -174,6 +205,7 @@ def persona_overview(persona: str, config: dict, chat_id: str = "web_user") -> d
 
     return {
         "last_user_ts": _last_user_ts(persona, chat_id),
+        "last_message": _last_message(persona, chat_id),
         "state": state,
         "events": sorted(events, key=lambda e: e["ts"], reverse=True),
         "reminders_active": len(active_reminders),

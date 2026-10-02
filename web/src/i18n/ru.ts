@@ -390,6 +390,16 @@ const ru: Record<string, string> = {
 
   // ===== Чат =====
   'chat.personaList': 'Персоны',
+  'chat.allChats': 'Все чаты',
+  'chat.allChatsTitle': 'К странице всех чатов (или повторный клик по «Чат» в меню)',
+  'chat.overviewEyebrow': 'Каналы связи',
+  'chat.overviewTitle': 'Все чаты',
+  'chat.overviewLead': 'Выберите персону — откроется переписка с ней.',
+  'chat.overviewChats': 'Чатов',
+  'chat.overviewUnread': 'Новых',
+  'chat.previewYou': 'Вы: ',
+  'chat.previewEmpty': '// сообщений пока нет',
+  'chat.yesterday': 'вчера',
   'chat.dossier': 'Досье',
   'chat.dossierTitle': 'Открыть досье персоны',
   'chat.personaYaml': 'Открыть YAML-файл персоны',

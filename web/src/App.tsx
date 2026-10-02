@@ -6,7 +6,7 @@ import { useI18n, useMockData } from './i18n';
 import { useApiOnline } from './apiData';
 import { useInbox, useInboxPolling } from './inboxStore';
 import { ensureNotifyPermission, OPEN_CHAT_EVENT, setUnreadTitle } from './notifications';
-import { requestChatPersona } from './chatNavStore';
+import { requestChatOverview, requestChatPersona } from './chatNavStore';
 import { useDevMode } from './devMode';
 import Start from './sections/Start';
 import Home from './sections/Home';
@@ -78,7 +78,14 @@ export default function App() {
   return (
     <div className="app">
       <DetroitBackground />
-      <Sidebar current={section} onSelect={setSection} />
+      <Sidebar
+        current={section}
+        onSelect={(next) => {
+          // Повторный клик по «Чат» внутри открытого чата — к странице всех чатов
+          if (next === 'chat' && section === 'chat') requestChatOverview();
+          setSection(next);
+        }}
+      />
       <main className="content">
         <header className="topbar">
           <div className="topbar-title">{t(`nav.${section}`)}</div>

@@ -22,6 +22,25 @@ export function consumeChatPersonaRequest() {
   emit();
 }
 
+// Вернуться к странице всех чатов: повторный клик по «Чат» в сайдбаре.
+// Счётчик, а не флаг: каждый клик — новый запрос
+let overviewRequests = 0;
+
+export function requestChatOverview() {
+  overviewRequests += 1;
+  emit();
+}
+
+export function useChatOverviewRequest(): number {
+  return useSyncExternalStore(
+    (cb) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    () => overviewRequests,
+  );
+}
+
 export function useChatPersonaRequest(): string | null {
   return useSyncExternalStore(
     (cb) => {

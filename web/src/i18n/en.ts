@@ -390,6 +390,16 @@ const en = {
 
   // ===== Chat =====
   'chat.personaList': 'Personas',
+  'chat.allChats': 'All chats',
+  'chat.allChatsTitle': 'Back to all chats (or click “Chat” in the menu again)',
+  'chat.overviewEyebrow': 'Channels',
+  'chat.overviewTitle': 'All chats',
+  'chat.overviewLead': 'Pick a persona to open the conversation.',
+  'chat.overviewChats': 'Chats',
+  'chat.overviewUnread': 'New',
+  'chat.previewYou': 'You: ',
+  'chat.previewEmpty': '// no messages yet',
+  'chat.yesterday': 'yesterday',
   'chat.dossier': 'Dossier',
   'chat.dossierTitle': 'Open persona dossier',
   'chat.personaYaml': 'Open persona YAML file',
