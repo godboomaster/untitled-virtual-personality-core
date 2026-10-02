@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { Persona } from '../mockData';
 import { useI18n, useMockData } from '../i18n';
-import { api } from '../api';
+import { api, CLEAR_PARTS } from '../api';
+import type { ClearPart } from '../api';
 import { usePersonaAvatars } from '../avatarStore';
 import { refetchProviders, useApiOnline, useApiProviders, useApiPersonaLlm, refetchPersonaLlm } from '../apiData';
 import Memory from '../sections/Memory';
@@ -29,7 +30,8 @@ const baseTabs: DossierTab[] = ['memory', 'tasks', 'initiative', 'computer'];
 interface PersonaDossierProps {
   persona: Persona; // персона, выбранная в чате
   onClose: () => void;
-  onClearDialog?: () => void; // очистка истории диалога (из чата)
+  // Очистка диалога (из чата): без parts — всё сразу, parts — только эти части
+  onClearDialog?: (parts?: ClearPart[]) => void | Promise<void>;
   onStmChange?: () => void; // STM изменился (удаление реплик) — чату перечитать историю
   stmEpoch?: number; // счётчик завершённых обменов — перечитать STM (бот мог отвечать, пока досье открыто)
 }
@@ -43,8 +45,15 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
   const [tab, setTab] = useState<DossierTab>('memory');
   // Двухшаговое подтверждение очистки диалога
   const [confirmClear, setConfirmClear] = useState(false);
+  // Очистка по частям: какая часть ждёт подтверждения и какая только что стёрта
+  const [confirmPart, setConfirmPart] = useState<ClearPart | null>(null);
+  const [donePart, setDonePart] = useState<ClearPart | null>(null);
   // Корзина очистки: снапшот последнего сброса (для восстановления)
-  const [backup, setBackup] = useState<{ ts?: number; counts?: { stm: number; ltm: number; diary: boolean; initiatives?: number } } | null>(null);
+  const [backup, setBackup] = useState<{
+    ts?: number;
+    counts?: { stm: number; ltm: number; diary: boolean; initiatives?: number };
+    parts?: ClearPart[] | null;
+  } | null>(null);
   const [restoredFlash, setRestoredFlash] = useState(false);
 
   const refreshBackup = () => {
@@ -133,6 +142,7 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
   useEffect(() => {
     setTab('memory');
     setConfirmClear(false);
+    setConfirmPart(null);
     setModels({ ...(modelChoices[persona.id] ?? {}) });
   }, [persona.id]);
 
@@ -302,11 +312,11 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
                           type="button"
                           className="btn btn--danger"
                           onClick={() => {
-                            onClearDialog();
                             setConfirmClear(false);
+                            setConfirmPart(null);
                             // Снапшот пишется на бэкенде в момент очистки —
-                            // даём ему время и обновляем состояние корзины
-                            setTimeout(refreshBackup, 1500);
+                            // после ответа обновляем состояние корзины
+                            void Promise.resolve(onClearDialog()).then(refreshBackup);
                           }}
                         >
                           {t('dossier.yesClear')}
@@ -317,16 +327,72 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
                       </div>
                     </div>
                   )}
+                  {/* То же по частям: каждая кнопка стирает одну часть того,
+                      что стирает «Очистить диалог»; снапшот — в ту же корзину */}
+                  <div className="danger-parts-title">{t('dossier.clearPartsTitle')}</div>
+                  <div className="danger-parts">
+                    {CLEAR_PARTS.map((part) => (
+                      <button
+                        key={part}
+                        type="button"
+                        className={`danger-part${confirmPart === part ? ' danger-part--armed' : ''}`}
+                        title={t(`dossier.partHint.${part}`)}
+                        onClick={() => {
+                          setConfirmClear(false);
+                          setConfirmPart(confirmPart === part ? null : part);
+                        }}
+                      >
+                        <span aria-hidden="true">{donePart === part ? '✓' : '✕'}</span>
+                        {t(`dossier.part.${part}`)}
+                      </button>
+                    ))}
+                  </div>
+                  {confirmPart && (
+                    <div className="dossier-confirm" style={{ marginTop: 10 }}>
+                      <span className="dossier-confirm-text">
+                        {t('dossier.confirmPart', {
+                          part: t(`dossier.part.${confirmPart}`),
+                          hint: t(`dossier.partHint.${confirmPart}`),
+                          name: persona.name,
+                        })}
+                      </span>
+                      <div className="dossier-confirm-actions">
+                        <button
+                          type="button"
+                          className="btn btn--danger"
+                          onClick={() => {
+                            const part = confirmPart;
+                            setConfirmPart(null);
+                            void Promise.resolve(onClearDialog([part])).then(() => {
+                              refreshBackup();
+                              setDonePart(part);
+                              setTimeout(() => setDonePart((d) => (d === part ? null : d)), 2500);
+                            });
+                          }}
+                        >
+                          {t('dossier.yesDelete')}
+                        </button>
+                        <button type="button" className="btn btn--ghost" onClick={() => setConfirmPart(null)}>
+                          {t('common.cancel')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {/* Корзина: восстановление последнего снапшота очистки */}
                   {backup && (
                     <div className="dossier-confirm" style={{ marginTop: 10 }}>
                       <span className="dossier-confirm-text">
-                        {t('dossier.backupInfo', {
-                          ts: backup.ts ? new Date(backup.ts * 1000).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-US') : '—',
-                          stm: backup.counts?.stm ?? 0,
-                          ltm: backup.counts?.ltm ?? 0,
-                          init: backup.counts?.initiatives ?? 0,
-                        })}
+                        {backup.parts && backup.parts.length > 0
+                          ? t('dossier.backupInfoParts', {
+                              ts: backup.ts ? new Date(backup.ts * 1000).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-US') : '—',
+                              parts: backup.parts.map((p) => t(`dossier.part.${p}`)).join(', '),
+                            })
+                          : t('dossier.backupInfo', {
+                              ts: backup.ts ? new Date(backup.ts * 1000).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-US') : '—',
+                              stm: backup.counts?.stm ?? 0,
+                              ltm: backup.counts?.ltm ?? 0,
+                              init: backup.counts?.initiatives ?? 0,
+                            })}
                       </span>
                       <div className="dossier-confirm-actions">
                         <button type="button" className="btn btn--ghost" onClick={restoreBackup}>

@@ -23,7 +23,9 @@ pending-подтверждения, прогон/запись сценария, 
 import json
 import logging
 from pathlib import Path
+from typing import get_args
 
+from app.api.schemas import ClearPart
 from app.api.security import safe_segment
 from app.core.paths import data_dir
 
@@ -669,41 +671,58 @@ def _restore_control(bot, context, ck, data):
 
 # ════════════ публичный интерфейс ════════════
 
-def collect_stores(bot, persona: str, chat_key: str) -> dict:
+# Все части «Очистить диалог»; stm/ltm/diary/webchat и история инициатив
+# стираются в server.chat_clear, срезы ниже — здесь
+ALL_PARTS: tuple[str, ...] = get_args(ClearPart)
+
+# Часть → (сбор в снапшот, стирание). initiatives здесь — отклик и
+# ignore-streak самоинициатив (история и счётчик дня — в server.py)
+_STORES = (
+    ("todo", _collect_todo, _wipe_todo),
+    ("reminders", _collect_reminders, _wipe_reminders),
+    ("dossier", _collect_dossier, _wipe_dossier),
+    ("learning", _collect_learning, _wipe_learning),
+    ("initiatives", _collect_proactive, _wipe_proactive),
+    ("rhythm", _collect_rhythm, _wipe_rhythm),
+    ("living", _collect_living, _wipe_living),
+    ("control", _collect_control, _wipe_control),
+)
+
+
+def collect_stores(bot, persona: str, chat_key: str, parts=None) -> dict:
     # Срезы памяти чата для снапшота корзины (до удаления). Чистое чтение.
+    # parts — только эти части (None — все)
     context = f"api_{persona}"
     ck = str(chat_key)
     out: dict = {}
-    try:
-        _collect_todo(bot, context, ck, out)
-        _collect_reminders(bot, context, ck, out)
-        _collect_dossier(bot, context, ck, out)
-        _collect_learning(bot, context, ck, out)
-        _collect_proactive(bot, context, ck, out)
-        _collect_rhythm(bot, context, ck, out)
-        _collect_living(bot, context, ck, out)
-        _collect_control(bot, context, ck, out)
-    except Exception as e:
-        logger.warning(f"[MemoryWipe] {persona}: срезы собраны частично: {e}")
+    for name, collect, _wipe in _STORES:
+        if parts is not None and name not in parts:
+            continue
+        try:
+            collect(bot, context, ck, out)
+        except Exception as e:
+            logger.warning(f"[MemoryWipe] {persona}: срез {name} не собран: {e}")
     return out
 
 
-def wipe_stores(bot, persona: str, chat_key: str):
-    # Полное стирание памяти чата поверх STM/LTM/дневника (те — в server.py).
+def wipe_stores(bot, persona: str, chat_key: str, parts=None):
+    # Стирание памяти чата поверх STM/LTM/дневника (те — в server.py).
     # Живые менеджеры в приоритете, файлы — фолбэк при выключенных фичах.
+    # parts — только эти части (None — все)
     context = f"api_{persona}"
     ck = str(chat_key)
-    for name, fn in (("todo", _wipe_todo), ("reminders", _wipe_reminders),
-                     ("dossier", _wipe_dossier), ("learning", _wipe_learning),
-                     ("proactive", _wipe_proactive), ("rhythm", _wipe_rhythm),
-                     ("living", _wipe_living), ("control", _wipe_control)):
+    done = []
+    for name, _collect, wipe in _STORES:
+        if parts is not None and name not in parts:
+            continue
         try:
-            fn(bot, context, ck)
+            wipe(bot, context, ck)
+            done.append(name)
         except Exception as e:
             logger.warning(f"[MemoryWipe] {persona}: очистка {name}: {e}")
-    logger.info(f"[MemoryWipe] {persona}: память чата {ck} стёрта полностью "
-                "(todo/reminders/досье/learning/инициативы/ритм/living/"
-                "режим управления)")
+    scope = "полностью" if parts is None else "частично"
+    logger.info(f"[MemoryWipe] {persona}: память чата {ck} стёрта {scope} "
+                f"({'/'.join(done) or '—'})")
 
 
 def restore_stores(bot, persona: str, chat_key: str, stores: dict):

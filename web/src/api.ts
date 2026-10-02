@@ -114,6 +114,13 @@ export interface ApiChatResponse {
   reply_ts?: number | null; // метка ответа в STM (серверные секунды) — место пузыря в ленте
 }
 
+// Части «Очистить диалог» (app/api/schemas.py: ClearPart) — в порядке кнопок досье
+export const CLEAR_PARTS = [
+  'stm', 'ltm', 'diary', 'todo', 'reminders', 'dossier',
+  'learning', 'initiatives', 'rhythm', 'living', 'webchat', 'control',
+] as const;
+export type ClearPart = (typeof CLEAR_PARTS)[number];
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, detail: string) {
@@ -201,19 +208,24 @@ export const api = {
       `/api/chat/history?persona=${encodeURIComponent(persona)}&user_id=${encodeURIComponent(userId)}`,
     ),
 
-  clearChat: (persona: string, userId: string = WEB_USER_ID) =>
+  // Очистка диалога: без parts — всё сразу (переписка, факты, дневник,
+  // инициативы, веб-чаты, дела, напоминания, досье, обучение, ритм, живое
+  // состояние, режим управления); parts — только эти части. Перед сбросом
+  // бэкенд пишет снапшот в корзину (7 дней) — см. restoreClearBackup
+  clearChat: (persona: string, parts?: ClearPart[], userId: string = WEB_USER_ID) =>
     request<{ status: string }>('/api/chat/clear', {
       method: 'POST',
-      // Полный сброс: STM диалога + LTM-факты + дневник персоны.
-      // Перед сбросом бэкенд пишет снапшот в корзину (7 дней) — см. restoreClearBackup
-      body: JSON.stringify({ persona, user_id: userId, chat_id: WEB_CHAT_ID }),
+      body: JSON.stringify({ persona, user_id: userId, chat_id: WEB_CHAT_ID, ...(parts ? { parts } : {}) }),
     }),
 
-  // Корзина очистки: снапшот последнего полного сброса
+  // Корзина очистки: снапшот последнего сброса (parts — стёртые части, null — всё)
   getClearBackup: (persona: string) =>
-    request<{ exists: boolean; ts?: number; counts?: { stm: number; ltm: number; diary: boolean } }>(
-      `/api/personas/${encodeURIComponent(persona)}/clear-backup`,
-    ),
+    request<{
+      exists: boolean;
+      ts?: number;
+      counts?: { stm: number; ltm: number; diary: boolean; initiatives?: number };
+      parts?: ClearPart[] | null;
+    }>(`/api/personas/${encodeURIComponent(persona)}/clear-backup`),
 
   restoreClearBackup: (persona: string) =>
     request<{ status: string; restored: { stm: number; ltm: number; diary: boolean } }>(

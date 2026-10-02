@@ -5950,6 +5950,50 @@ body.is-row-dragging * {
   gap: 8px;
 }
 
+/* Опасная зона: очистка по частям — сетка небольших кнопок */
+.danger-parts-title {
+  margin: 14px 0 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.danger-parts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+.danger-part {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.danger-part:hover,
+.danger-part--armed {
+  border-style: solid;
+  border-color: var(--danger);
+  color: var(--text);
+}
+
+.danger-part--armed {
+  background: var(--bg-hover);
+}
+
 /* Строка статуса в контекстной панели чата */
 .ctx-row {
   display: flex;

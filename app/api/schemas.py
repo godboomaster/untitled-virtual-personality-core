@@ -1,6 +1,6 @@
 # Pydantic-схемы запросов и ответов API.
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -69,10 +69,19 @@ class HistoryMessage(BaseModel):
     sender_id: Optional[str] = None
 
 
+# Части «Очистить диалог» (опасная зона досье): stm — переписка, ltm — факты,
+# diary — дневник, initiatives — история/счётчик/отклик самоинициатив и метка
+# активности, webchat — адреса веб-чатов LLM, остальные — срезы memory_wipe
+ClearPart = Literal["stm", "ltm", "diary", "initiatives", "webchat", "todo",
+                    "reminders", "dossier", "learning", "rhythm", "living", "control"]
+
+
 class ClearChatRequest(BaseModel):
     persona: PersonaId
     chat_id: Optional[str] = None
     user_id: str = "web_user"
+    # None — всё сразу (полная очистка); список — только эти части
+    parts: Optional[list[ClearPart]] = Field(None, min_length=1)
 
 
 class StmDeleteRequest(BaseModel):

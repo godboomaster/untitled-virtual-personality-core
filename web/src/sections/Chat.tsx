@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, useMockData } from '../i18n';
 import type { ChatMessage, InventoryItem, LearningSession, LtmFact, Reminder, TodoItem } from '../mockData';
 import { api, streamChat, StreamInterruptedError } from '../api';
-import type { ApiHistoryMessage, InitiativeData, PersonaConfig, ReminderEntry } from '../api';
+import type { ApiHistoryMessage, ClearPart, InitiativeData, PersonaConfig, ReminderEntry } from '../api';
 import { refetchPersonaLlm, useApiOnline, useApiPersonaLlm, useApiProviders, usePersonaLivingState } from '../apiData';
 import { alertDialog } from '../dialogStore';
 import {
@@ -839,12 +839,16 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // полностью — STM диалога, LTM-факты пользователя и дневник персоны.
   // После ответа бэкенда перечитываем правый сайдбар (sideEpoch):
   // LTM-факты стёрты, списки дел/напоминаний могли измениться
-  const clearStm = () => {
-    setSentByPersona((prev) => ({ ...prev, [persona.id]: [] }));
-    if (!apiOnline) return;
-    setHistoryByPersona((prev) => ({ ...prev, [persona.id]: [] }));
-    api
-      .clearChat(persona.id)
+  // parts — стереть только эти части (кнопки опасной зоны досье); без них —
+  // всё сразу. Лента чата очищается, только если стёрта переписка
+  const clearStm = (parts?: ClearPart[]): Promise<void> => {
+    const stm = !parts || parts.includes('stm');
+    if (stm) setSentByPersona((prev) => ({ ...prev, [persona.id]: [] }));
+    if (!apiOnline) return Promise.resolve();
+    if (stm) setHistoryByPersona((prev) => ({ ...prev, [persona.id]: [] }));
+    return api
+      .clearChat(persona.id, parts)
+      .then(() => undefined)
       .catch(() => {})
       .finally(() => setSideEpoch((e) => e + 1));
   };
@@ -1619,7 +1623,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           screen={activeScreen}
           state={skinChatState}
           onSend={(text, image) => pushMessage(text, image ?? null)}
-          onClear={clearStm}
+          onClear={() => clearStm()}
           onSelectPersona={(id) => {
             pickPersona(id);
             setReplyToId(null);

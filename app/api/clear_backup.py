@@ -46,7 +46,8 @@ def make_backup(persona: str, user_id: str, chat_id: str,
                 daily_stats: dict | None = None,
                 last_activity: float = 0,
                 chat_urls: dict | None = None,
-                stores: dict | None = None) -> Path | None:
+                stores: dict | None = None,
+                parts: list | None = None) -> Path | None:
     # Сохранить снапшот перед очисткой; пустой снапшот не пишем.
     if not stm and not ltm and not diary and not initiatives \
             and not daily_stats and not last_activity and not chat_urls \
@@ -67,6 +68,8 @@ def make_backup(persona: str, user_id: str, chat_id: str,
         "last_activity": last_activity,
         "chat_urls": chat_urls or {},
         "stores": stores or {},
+        # Какие части стёрты (None — полная очистка): подпись корзины в досье
+        "parts": parts,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(
@@ -156,6 +159,7 @@ def backup_info(persona: str, chat_id: str) -> dict:
             "webchat": len(data.get("chat_urls") or {}),
             "stores": len(data.get("stores") or {}),
         },
+        "parts": data.get("parts"),
     }
 
 

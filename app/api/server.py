@@ -1090,41 +1090,59 @@ async def chat_clear(req: ClearChatRequest):
     app/api/memory_wipe.py). Перед сбросом
     делается снапшот в корзину (data/api_{persona}/clear_backups/, 7 дней)
     — см. эндпоинт restore. Не трогаем: сохранённые сценарии
-    (пользовательские плейбуки), базу знаний книги, загруженные файлы."""
+    (пользовательские плейбуки), базу знаний книги, загруженные файлы.
+
+    req.parts — стереть только эти части (опасная зона досье, кнопки по
+    отдельности); в корзину уходят только они, restore вернёт их же."""
     from app.api import clear_backup
     from app.api import memory_wipe
     from app.features import web_llm as _wl
     bot = await _get_bot(req.persona)
     chat_key = req.chat_id or req.user_id
-    # Снапшот ДО удаления — на случай ошибочной очистки
-    stm_msgs = await asyncio.to_thread(bot.memory.stm.get_messages, None, chat_key)
-    ltm_facts = await asyncio.to_thread(bot.memory.ltm.get_all_facts_with_meta, req.user_id)
-    diary_state = bot.self_memory.export_state() if bot.self_memory else None
-    initiatives = await asyncio.to_thread(_pop_initiative_history, bot, req.persona, chat_key)
-    daily_stats = await asyncio.to_thread(_pop_daily_stats, bot, req.persona, chat_key)
-    last_activity = await asyncio.to_thread(_pop_last_activity, bot, req.persona, chat_key)
-    chat_urls = await asyncio.to_thread(_wl.collect_chat_urls, f"api_{req.persona}")
-    stores = await asyncio.to_thread(memory_wipe.collect_stores, bot, req.persona, chat_key)
+    parts = set(req.parts) if req.parts else set(memory_wipe.ALL_PARTS)
+    full = parts == set(memory_wipe.ALL_PARTS)
+    # Снапшот ДО удаления — на случай ошибочной очистки. _pop_* уже снимают
+    # записи инициатив с диска (вернутся из снапшота)
+    stm_msgs = (await asyncio.to_thread(bot.memory.stm.get_messages, None, chat_key)
+                if "stm" in parts else [])
+    ltm_facts = (await asyncio.to_thread(bot.memory.ltm.get_all_facts_with_meta, req.user_id)
+                 if "ltm" in parts else [])
+    diary_state = (bot.self_memory.export_state()
+                   if "diary" in parts and bot.self_memory else None)
+    initiatives, daily_stats, last_activity = [], None, 0
+    if "initiatives" in parts:
+        initiatives = await asyncio.to_thread(_pop_initiative_history, bot, req.persona, chat_key)
+        daily_stats = await asyncio.to_thread(_pop_daily_stats, bot, req.persona, chat_key)
+        last_activity = await asyncio.to_thread(_pop_last_activity, bot, req.persona, chat_key)
+    chat_urls = (await asyncio.to_thread(_wl.collect_chat_urls, f"api_{req.persona}")
+                 if "webchat" in parts else {})
+    stores = await asyncio.to_thread(memory_wipe.collect_stores, bot, req.persona,
+                                     chat_key, None if full else parts)
     await asyncio.to_thread(
         clear_backup.make_backup, req.persona, req.user_id, chat_key,
         stm_msgs, ltm_facts, diary_state, initiatives, daily_stats, last_activity,
         chat_urls=chat_urls, stores=stores,
+        parts=None if full else [p for p in memory_wipe.ALL_PARTS if p in parts],
     )
-    await asyncio.to_thread(bot.memory.clear_stm, chat_key)
-    await asyncio.to_thread(bot.memory.clear_ltm, req.user_id)
-    if bot.self_memory:
+    if "stm" in parts:
+        await asyncio.to_thread(bot.memory.clear_stm, chat_key)
+        # Метка свежести переписки — производная STM: сбрасываем вместе с ней
+        # (в корзину не кладём: перепишется первым же новым сообщением)
+        await asyncio.to_thread(
+            _pop_json_key, data_dir() / f"api_{req.persona}" / "last_message.json", chat_key
+        )
+    if "ltm" in parts:
+        await asyncio.to_thread(bot.memory.clear_ltm, req.user_id)
+    if "diary" in parts and bot.self_memory:
         await asyncio.to_thread(bot.self_memory.clear_all)
-    # Метка свежести переписки — производная STM: сбрасываем вместе с ней
-    # (в корзину не кладём: перепишется первым же новым сообщением)
-    await asyncio.to_thread(
-        _pop_json_key, data_dir() / f"api_{req.persona}" / "last_message.json", chat_key
-    )
-    # Постоянные веб-чаты LLM — тоже память диалога: сбрасываем вслед за
-    # историей (адреса старых чатов сохранены в снапшоте выше)
-    await asyncio.to_thread(_wl.clear_chat_urls, f"api_{req.persona}")
-    # Всё остальное: todo/напоминания/досье/обучение/инициативы/ритм/living
-    await asyncio.to_thread(memory_wipe.wipe_stores, bot, req.persona, chat_key)
-    return {"status": "ok"}
+    # Постоянные веб-чаты LLM — тоже память диалога (адреса старых чатов
+    # сохранены в снапшоте выше)
+    if "webchat" in parts:
+        await asyncio.to_thread(_wl.clear_chat_urls, f"api_{req.persona}")
+    # Остальное: todo/напоминания/досье/обучение/инициативы/ритм/living/управление
+    await asyncio.to_thread(memory_wipe.wipe_stores, bot, req.persona, chat_key,
+                            None if full else parts)
+    return {"status": "ok", "parts": sorted(parts) if not full else "all"}
 
 
 def _initiative_history_path(persona: str) -> Path:
