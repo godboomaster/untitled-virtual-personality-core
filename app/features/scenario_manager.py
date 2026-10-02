@@ -86,31 +86,44 @@ _START_REC_RE = re.compile(
     r"(?:записывать|запись)\s*(?:сценари[йя]\s*)?"
     r"(?:как\s+|под\s+названием\s+)?[«\"']?(.*?)[»\"']?\s*[.!…]*\s*$",
     re.IGNORECASE)
+# Англ.: «save (this) scenario (as) X», «start recording (a scenario) (as) X»
+_SAVE_EN_RE = re.compile(
+    r"^\s*(?:save|remember|record)\s+(?:this\s+|the\s+)?scenario\s*"
+    r"(?:as\s+|named\s+|called\s+)?[«\"']?(.*?)[»\"']?\s*[.!…]*\s*$",
+    re.IGNORECASE)
+_START_REC_EN_RE = re.compile(
+    r"^\s*(?:start|begin)\s+recording(?:\s+(?:a\s+|the\s+)?scenario)?\s*"
+    r"(?:as\s+|named\s+|called\s+)?[«\"']?(.*?)[»\"']?\s*[.!…]*\s*$",
+    re.IGNORECASE)
 # «отмени запись» — снять запись без сохранения
 _STOP_REC_RE = re.compile(
-    r"^\s*(?:отмени|останови|прекрати)\s+(?:запись|записывание)"
-    r"(?:\s+сценари[йя])?\s*[.!…]*\s*$", re.IGNORECASE)
+    r"^\s*(?:(?:отмени|останови|прекрати)\s+(?:запись|записывание)"
+    r"(?:\s+сценари[йя])?|(?:cancel|stop|abort)\s+(?:the\s+)?recording"
+    r"(?:\s+(?:the\s+)?scenario)?)\s*[.!…]*\s*$", re.IGNORECASE)
 # Отмена активного прогона (проверяется только когда прогон идёт)
 _CANCEL_RE = re.compile(
     r"^\s*(?:отмена|отмени|стоп\s+сценарий|отмени\s+сценарий|хватит|"
     r"прекрати|не\s+надо|забудь|выход|выйди|брось|отстань|"
     # Голое «стоп» при ждущем прогоне — отмена, а не ответ на слот
     # (иначе «стоп» вписался бы в поле сайта)
-    r"стоп|остановись|stop|cancel)\s*[.!…]*\s*$",
+    r"стоп|остановись|stop|cancel|abort|quit|exit|never\s*mind|forget\s+it|"
+    r"that[’']?s\s+enough|enough|(?:stop|cancel)\s+(?:the\s+)?scenario)\s*[.!…]*\s*$",
     re.IGNORECASE)
 # Отрицательный ответ на опциональный вопрос («что-то ещё?» — «нет»)
 _NO_RE = re.compile(
     r"^\s*(?:нет|не|ничего|не\s+надо|вс[её]|хватит|достаточно|пропусти|"
-    r"пропустить|no|nope)\s*[.!…]*\s*$", re.IGNORECASE)
+    r"пропустить|no|nope|nah|nothing|none|no\s+thanks|that[’']?s\s+(?:all|it)|"
+    r"skip(?:\s+it)?)\s*[.!…]*\s*$", re.IGNORECASE)
 # Управление после сбоя шага
-_RETRY_RE = re.compile(r"^\s*(?:повтори|ещ[её]\s+раз|retry)\s*[.!…]*\s*$",
-                       re.IGNORECASE)
-_SKIP_RE = re.compile(r"^\s*(?:дальше|пропусти|скип|skip)\s*[.!…]*\s*$",
-                      re.IGNORECASE)
+_RETRY_RE = re.compile(r"^\s*(?:повтори|ещ[её]\s+раз|retry|try\s+again|again|"
+                       r"repeat(?:\s+it)?)\s*[.!…]*\s*$", re.IGNORECASE)
+_SKIP_RE = re.compile(r"^\s*(?:дальше|пропусти|скип|skip(?:\s+it)?|next|move\s+on)"
+                      r"\s*[.!…]*\s*$", re.IGNORECASE)
 # Закрывающая реплика для автопредложения записи
 _CLOSE_RE = re.compile(
     r"^\s*(?:вс[её]|спасибо|готово|отлично|супер|класс|благодарю|ладно|"
-    r"здорово|ок(?:ей)?|ok(?:ay)?)\b", re.IGNORECASE)
+    r"здорово|ок(?:ей)?|ok(?:ay)?|thanks|thank\s+you|done|great|perfect|awesome|"
+    r"cool|nice|alright)\b", re.IGNORECASE)
 
 _SLOT_RE = re.compile(r"\{([^\s{}]+)\}")
 
@@ -271,7 +284,7 @@ class ScenarioManager:
     @staticmethod
     def parse_save_request(text: str) -> Optional[str]:
         # «запомни сценарий (как) X» → имя (может быть пустым — спросим).
-        m = _SAVE_RE.match(str(text or ""))
+        m = _SAVE_RE.match(str(text or "")) or _SAVE_EN_RE.match(str(text or ""))
         if not m:
             return None
         return m.group(1).strip()
@@ -282,7 +295,7 @@ class ScenarioManager:
         None — не команда записи."""
         if not text or len(text) > 60:
             return None
-        m = _START_REC_RE.match(str(text))
+        m = _START_REC_RE.match(str(text)) or _START_REC_EN_RE.match(str(text))
         if not m:
             return None
         return m.group(1).strip()

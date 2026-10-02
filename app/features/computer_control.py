@@ -511,6 +511,7 @@ _YES_WORDS = frozenset({
     "включай", "go", "sure", "хорошо", "ладно", "подтверждаю", "confirm",
     "confirmed", "действуй", "делай", "выполняй", "жми", "нажимай", "вперед",
     "вперёд", "го",
+    "proceed", "alright", "fine", "certainly", "definitely", "yea",
 })
 # Наполнители голого согласия: сами по себе не ответ, но и не «другое
 # содержание» — «да, пожалуйста», «ну давай», «go ahead», «yes please»
@@ -524,17 +525,28 @@ _YES_FILLER = frozenset({
 # и (при идущем листании) его остановка, см. stop_scroll_if_active
 _NO_WORDS = frozenset({
     "нет", "отмена", "отменяй", "стоп", "хватит", "no", "nope", "cancel",
-    "stop",
+    "stop", "abort", "nah", "nevermind",
 })
 # Слова, которые сами по себе не ответ («надо» голое — не «да»), но под
 # отрицанием складываются в отказ: «не надо», «не нужно», «не хочу», «не буду».
-_DESIRE_WORDS = frozenset({"надо", "нужно", "хочу", "буду", "готов", "согласен"})
+_DESIRE_WORDS = frozenset({"надо", "нужно", "хочу", "буду", "готов", "согласен",
+                           "want", "need", "agree"})
 _NEGATORS = frozenset({"не", "not", "never", "никогда"})
 # Клаузы режем по пунктуации/паузам — «подожди, не открывай» это ДВЕ клаузы,
 # отрицание не должно «выходить» за пределы своего куска на чужой да-сигнал.
 _CLAUSE_SPLIT_RE = re.compile(r"[.,!?;:…—–]+")
 _WORD_RE = re.compile(r"[a-zа-яё]+")
 _DONT_RE = re.compile(r"\bdon[’']?t\b", re.IGNORECASE)
+# Английские согласия/отказы из нескольких слов — к одному слову ДО
+# разбора: «it»/«for» не могут быть да-словами сами по себе. Отказы —
+# раньше: «don't do it» (после _DONT_RE — «do not do it») не должно стать
+# «do not yes» по частям
+_EN_NO_PHRASE_RE = re.compile(
+    r"\b(?:never\s+mind|do\s+not(?:\s+do\s+(?:it|that))?(?=\s*[.!…]*\s*$))",
+    re.IGNORECASE)
+_EN_YES_PHRASE_RE = re.compile(
+    r"\b(?:do\s+it|go\s+for\s+it|let[’']?s\s+(?:do\s+it|go)|go\s+on|of\s+course)\b",
+    re.IGNORECASE)
 # YES — только для короткой реплики: да-слово должно быть самим ответом,
 # а не случайным словом внутри длинного текста (например OCR с фото).
 _MAX_YES_WORDS = 10
@@ -587,14 +599,17 @@ def _bare_yes(text: str, names=None) -> bool:
 STOP_CMD_RE = re.compile(
     r"^\s*(?:отмена|отмени(?:\s+(?:задачу|это|всё|все))?|стоп|стой|хватит|"
     r"прекрати|брось|не\s+надо|останови(?:сь)?|остановить|"
-    r"cancel|stop|abort|halt)"
+    r"cancel(?:\s+(?:the\s+task|it|that|this|everything|all))?|"
+    r"stop(?:\s+(?:it|that|this))?|abort|halt|enough|that[’']?s\s+enough|"
+    r"never\s*mind|drop\s+it|don[’']?t)"
     # «хватит листать» / «stop scrolling» / «stop the scroll» — та же остановка
     r"(?:\s+(?:листать|листание|прокрутку|скроллить|мотать|"
     r"(?:the\s+)?scroll(?:ing)?))?\s*[.!…]*\s*$"
     r"|^\s*enough\s+scrolling\s*[.!…]*\s*$", re.IGNORECASE)
 # «не надо»/«хватит» в ответ на вопрос или «да/нет» агента — это «нет» на
 # вопрос, а не отмена всей задачи
-SOFT_STOP_RE = re.compile(r"^\s*(?:не\s+надо|хватит)\s*[.!…]*\s*$",
+SOFT_STOP_RE = re.compile(r"^\s*(?:не\s+надо|хватит|don[’']?t|enough|"
+                          r"that[’']?s\s+enough|never\s*mind)\s*[.!…]*\s*$",
                           re.IGNORECASE)
 
 
@@ -604,6 +619,7 @@ def classify_confirmation(text: str, names=None) -> str:
     if not text:
         return "UNKNOWN"
     norm = _DONT_RE.sub("do not", text)
+    norm = _EN_YES_PHRASE_RE.sub("yes", _EN_NO_PHRASE_RE.sub("no", norm))
     overall = None
     doubt = False
     for clause in _CLAUSE_SPLIT_RE.split(norm):
@@ -644,6 +660,7 @@ _CHOICE_FILLER = frozenset({
     "давай", "выбираю", "беру", "мне", "нужен", "нужна", "нужно", "тот",
     "та", "то", "ту", "й", "я", "е", "ю", "го", "ой",
     "number", "option", "link", "site", "open", "the", "one", "take",
+    "let", "s", "go", "with", "i", "ll", "pick", "choose", "want", "need",
 })
 
 
@@ -1184,16 +1201,24 @@ def _strip_polite(s: str) -> str:
 
 _OPEN_FILLER_RE = re.compile(
     rf"^(?:{_POLITE_ALT}|мне|нам|сайт|страницу|страница|вкладку|вкладка|"
-    r"приложение|программу|программа)[\s,]+", re.IGNORECASE)
-_OPEN_TAIL_RE = _POLITE_TAIL_RE
+    r"приложение|программу|программа|"
+    r"me|us|the|my|website|site)[\s,]+", re.IGNORECASE)
+# Хвост цели: вежливость и английские «for me», «real quick», «right now»
+_OPEN_TAIL_RE = re.compile(
+    rf"(?:[\s,]*(?:{_POLITE_ALT}|for\s+me|real\s+quick|right\s+now|quickly))+"
+    r"\s*[.!?…]*\s*$", re.IGNORECASE)
 
 # Поиск на конкретном сайте: «включи фильм на стриминге»,
 # «открой шоу на ютуб», «open a movie on youtube»
 _SEARCH_ON_SITE_RE = re.compile(
     r"^\s*(включи|включить|найди|найти|поищи|посмотри|посмотреть|глянь|поставь|"
-    r"открой|открыть|запусти|запустить|open|play|watch|find|search|launch|start)"
+    r"открой|открыть|запусти|запустить|open|play|watch|find|search(?:\s+for)?|"
+    r"look\s+(?:up|for)|put\s+on|launch|start)"
     r"\s+(.+?)\s+(?:на|в|во|on|in)\s+(\S+)\s*[.!?…]*\s*$",
     re.IGNORECASE)
+# «search youtube for X» — сайт перед запросом
+_SEARCH_SITE_FOR_EN_RE = re.compile(
+    r"^\s*(?:search|look\s+up)\s+(\S+)\s+for\s+(.+?)\s*[.!?…]*\s*$", re.IGNORECASE)
 # Элементы интерфейса страницы/плеера: «открой комментарии на ютубе»,
 # «включи субтитры» — это клик (или медиа-клавиша), а не поиск ролика с
 # таким названием. Вся цель целиком — одно из этих слов
@@ -1203,7 +1228,8 @@ _UI_ELEMENT_RE = re.compile(
     r"плейлист\w*|меню|чат\w*|уведомлени\w*|профил\w*|аккаунт\w*|корзин\w*|"
     r"фильтр\w*|сортировк\w*|главн\w*(?:\s+страниц\w*)?|"
     r"comments?|settings|subtitles|captions|full\s*screen|description|"
-    r"playlist|sound|notifications|menu|cart|chat)$", re.IGNORECASE)
+    r"playlist|sound|notifications|menu|cart|chat|profile|account|filters?|"
+    r"sort(?:ing)?|home\s*page|main\s+page|chapters)$", re.IGNORECASE)
 # Элементы плеера, которые и без сайта в фразе — про открытую страницу
 # («включи субтитры»), а не про приложение/сайт
 _UI_PLAYER_RE = re.compile(
@@ -1213,7 +1239,8 @@ _UI_PLAYER_RE = re.compile(
 # Глаголы-«поисковики»: с них открывается СТРАНИЦА ПОИСКА сайта, даже если у
 # сайта есть regex first. Остальные глаголы — «открыть непосредственно»:
 # при наличии first открывается сам первый результат
-_SEARCH_PAGE_VERBS = {"найди", "найти", "поищи", "find", "search"}
+_SEARCH_PAGE_VERBS = {"найди", "найти", "поищи", "find", "search", "search for",
+                      "look up", "look for"}
 
 # Номерные результаты выдачи: «третье видео», «2 результат» → recipe:search_pick:N
 _ORDINALS = {
@@ -1225,9 +1252,15 @@ _ORDINALS = {
     "шестой": 6, "шестое": 6, "седьмой": 7, "седьмое": 7,
     "восьмой": 8, "восьмое": 8, "девятый": 9, "девятое": 9,
     "десятый": 10, "десятое": 10,
+    **{w: i for i, w in enumerate(("first", "second", "third", "fourth", "fifth",
+                                   "sixth", "seventh", "eighth", "ninth", "tenth"), 1)},
+    **{f"{i}{suf}": i for i, suf in ((1, "st"), (2, "nd"), (3, "rd"), (4, "th"),
+                                     (5, "th"), (6, "th"), (7, "th"), (8, "th"),
+                                     (9, "th"), (10, "th"))},
 }
 _ORDINAL_TARGET_RE = re.compile(
-    r"^(результат|видео|ролик|ссылка|сайт|фильм|сериал|result|video|link)$", re.IGNORECASE)
+    r"^(результат|видео|ролик|ссылка|сайт|фильм|сериал|result|video|link|"
+    r"clip|site|movie|film|series)$", re.IGNORECASE)
 # Потолок номера (один на все номерные рецепты): «0 результат» давал
 # search_pick:0 — рецепт с бессмысленным номером, «99 видео» — тоже не
 # команда (столько элементов в выдаче не размечается)
@@ -1237,8 +1270,9 @@ _ORDINAL_MAX = 20
 # Хвост-скоп у номерной команды: «третье видео в плейлисте» / «2 результат
 # в выдаче» — скоп срезается; «плейлист» даёт отдельный рецепт
 _ORDINAL_SCOPE_RE = re.compile(
-    r"\s+(?:в|во|на|in)\s+(плейлисте|плейлиста|плейлист|выдаче|поиске|списке|"
-    r"playlist|results|shorts|шортс\w*)\s*$", re.IGNORECASE)
+    r"\s+(?:в|во|на|in|on)\s+(?:the\s+)?(плейлисте|плейлиста|плейлист|выдаче|"
+    r"поиске|списке|playlist|(?:search\s+)?results|search|list|shorts|шортс\w*)"
+    r"\s*$", re.IGNORECASE)
 _ORDINAL_PLAYLIST_SCOPES = {"плейлисте", "плейлиста", "плейлист", "playlist"}
 _ORDINAL_SHORTS_SCOPES = {"shorts"}
 # Само слово «шортс» целью: «первый шортс» — полка shorts без скопа
@@ -1256,10 +1290,18 @@ def ordinal_recipe(name: str) -> Optional[str]:
         scope = m.group(1).lower()
         name = name[:m.start()].strip()
     words = name.lower().split()
+    if words and words[0] == "the":  # «the third video»
+        words = words[1:]
     if len(words) != 2:
         return None
     w1, w2 = words
+    # «video 3» / «result 2» — номер после слова (английский порядок)
+    if w1 not in _ORDINALS and not w1.isdigit() \
+            and (w2.isdigit() or w2 in _ORDINALS) and _ORDINAL_TARGET_RE.match(w1):
+        w1, w2 = w2, w1
     n = _ORDINALS.get(w1) or (int(w1) if w1.isdigit() else None)
+    if n is None and re.fullmatch(r"\d+(?:st|nd|rd|th)", w1):  # «11th video»
+        n = int(w1[:-2])
     if n is None or not 1 <= n <= _ORDINAL_MAX:
         return None
     if w2 in _ORDINAL_SHORTS_WORDS \
@@ -1279,7 +1321,8 @@ def ordinal_recipe(name: str) -> Optional[str]:
 # только эти формы, «дальше»/«вперёд» — слишком общие слова для других команд
 # (листание, навигация по истории и т.п.), их recipe не заберёт
 _NEXT_VIDEO_RE = re.compile(
-    r"^(?:следующее\s+видео|следующий\s+(?:ролик|трек)|next\s+video)"
+    r"^(?:следующее\s+видео|следующий\s+(?:ролик|трек)|"
+    r"(?:(?:play|skip\s+to|go\s+to)\s+)?(?:the\s+)?next\s+(?:video|clip|track|song))"
     r"\s*[.!?…]*\s*$", re.IGNORECASE)
 
 
@@ -1298,7 +1341,7 @@ def next_video_recipe(name: str) -> Optional[str]:
 # ── Агентный клик «нажми X» ─────────────────────────────
 
 _CLICK_REQUEST_RE = re.compile(
-    r"^\s*(?:нажми|нажать|кликни|кликнуть|тыкни|щёлкни|щелкни|click|press|tap)\s+"
+    r"^\s*(?:нажми|нажать|кликни|кликнуть|тыкни|щёлкни|щелкни|click|press|tap|hit)\s+"
     r"(.+?)\s*[.!?…]*\s*$",
     re.IGNORECASE)
 # «(на/по) кнопку/ссылку» в начале цели срезаем — LLM ищет по тексту
@@ -1328,7 +1371,8 @@ _CLICK_SITE_HEAD_NOT_RE = re.compile(
 _CLICK_SITE_HEAD_ADJ_RE = re.compile(r"(?:ое|ее|ье|ые|ие)$", re.IGNORECASE)
 # Открытие/включение элемента интерфейса: «открой комментарии на ютубе»
 _UI_OPEN_RE = re.compile(
-    r"^\s*(?:открой|открыть|включи|включить|покажи|показать|open|show)\s+"
+    r"^\s*(?:открой|открыть|включи|включить|покажи|показать|open|show|"
+    r"turn\s+on|switch\s+on|enable|go)\s+"
     r"(.+?)\s*[.!?…]*\s*$", re.IGNORECASE)
 # Скоуп-клик «выбрать на Цезарь с беконом»: действие + контекст карточки.
 # Срабатывает только когда плоский матч по тексту элемента ничего не нашёл
@@ -1361,20 +1405,27 @@ _NOOP_SITE_WORDS = frozenset({
 _CLOSE_GOAL_RE = re.compile(
     r"\b(?:закры\w*|закро[йеюям]\w*|сверн\w*|сворач\w*)"
     r"\s+(?:модал\w*|попап\w*|диалог\w*|окошк\w*|окн\w*|"
-    r"баннер\w*|уведомлен\w*|подсказк\w*|анкет\w*|форм\w*)", re.IGNORECASE)
+    r"баннер\w*|уведомлен\w*|подсказк\w*|анкет\w*|форм\w*)"
+    r"|\b(?:close|hide|dismiss|minimi[sz]e|collapse)\s+(?:the\s+|this\s+)?"
+    r"(?:modal|pop-?up|dialog|window|banner|notification|tooltip|hint|form|overlay)",
+    re.IGNORECASE)
 # Глагол закрытия в начале цели: «закрой окно», «сверни анкету»,
 # «закрой соусы к бортикам» — объект в группе 1 (пустой — «закрой» без
 # объекта). Корни закрыты окончаниями: открытые «закр\w+»/«скро\w*» подменяли
 # намерение на «закрыть» у «закрепить», «закрась», «закрути», «скролл»
 _CLOSE_VERB_RE = re.compile(
-    r"^(?:закры\w*|закро[йеюям]\w*|скры\w*|скро[йеюя]\w*|сверн\w*|сворач\w*)"
+    r"^(?:закры\w*|закро[йеюям]\w*|скры\w*|скро[йеюя]\w*|сверн\w*|сворач\w*|"
+    r"(?:close|hide|dismiss|minimi[sz]e|collapse)\b)"
     r"\s*(.*)$", re.IGNORECASE)
 # Объект закрытия без привязки («окно», «модальное окно», «попап», «это») —
 # цель сводится к «закрыть»; всё остальное — целевое закрытие по контексту
 _CLOSE_GENERIC_RE = re.compile(
     r"^(?:(?:модальн\w*|всплывающ\w*|текущ\w*|это|этот|эту)\s+)?"
     r"(?:окн\w*|окошк\w*|модал\w*|попап\w*|диалог\w*|баннер\w*|уведомлен\w*|"
-    r"подсказк\w*|анкет\w*|форм\w*|это|его|её|их)\s*$", re.IGNORECASE)
+    r"подсказк\w*|анкет\w*|форм\w*|это|его|её|их)\s*$"
+    r"|^(?:(?:the|this|that|current|modal|pop-?up)\s+)*"
+    r"(?:window|modal|pop-?up|dialog|banner|notification|tooltip|hint|form|overlay|"
+    r"it|this|that|them)\s*$", re.IGNORECASE)
 
 # Свайп-ленты (shorts/reels): шаг прокрутки тут не «показать ещё элементы
 # списка», а «перелистнуть основной контент» — крупнейший скроллящийся
@@ -1610,7 +1661,8 @@ def _goal_in_label(goal: str, label: str, host: Optional[str] = None,
 # не требует — иначе верный выбор vision ветировался как галлюцинация
 _LABEL_FREE_WORDS = frozenset(_ORDINALS) | frozenset({
     "последний", "последнее", "последняя", "предпоследний",
-    "предпоследнее", "предпоследняя"})
+    "предпоследнее", "предпоследняя",
+    "last", "penultimate", "the", "a", "an"})
 _LABEL_FREE_ROOTS = ("закры", "закро", "close", "крест", "сверн", "сворач",
                      "dismiss")
 
@@ -1619,7 +1671,7 @@ _LABEL_FREE_ROOTS = ("закры", "закро", "close", "крест", "све�
 # формы _ORDINALS
 _ORDINAL_WORD_RE = re.compile(
     r"^(?:перв|втор|трет|четв[её]рт|пят|шест|седьм|восьм|девят|десят)"
-    r"(?:ый|ий|ой|ое|ье|ая|ья|ую|ью|ого|ему|ому|ым|ом)$")
+    r"(?:ый|ий|ой|ое|ье|ая|ья|ую|ью|ого|ему|ому|ым|ом)$|^\d+(?:st|nd|rd|th)$")
 # Род элемента при номере («третье ВИДЕО», «вторую ССЫЛКУ»): подпись у такого
 # элемента — заголовок, а не слово «видео»
 _ORDINAL_KIND_ROOTS = ("видео", "ролик", "ссылк", "кнопк", "результат",
@@ -1690,6 +1742,20 @@ _SLIDER_VOLUME_BARE_RE = re.compile(
     r"(?:(?:ползун\w*|слайдер\w*|регулятор\w*)\s+)?"
     r"(громкост\w*|звук\w*|volume)\s+(?:на\s+|в\s+|to\s+)?(\d{1,3})"
     r"\s*(%|процент\w*|percent)?\s*[.!?…]*\s*$", re.IGNORECASE)
+# Английские: «set (the) volume to 50(%)»; «skip/seek/jump to 2 minutes» —
+# абсолютная позиция (с «to», как русское «перемотай ползунок на …»);
+# «drag/set the X slider to 8» — общая форма (как _SLIDER_REQUEST_RE)
+_SLIDER_VOLUME_EN_RE = re.compile(
+    r"^\s*(?:(?:set|turn|put|make|change)\s+)?(?:the\s+)?(volume|sound)"
+    r"(?:\s+(?:slider|level))?\s+(?:to|at)\s+(\d{1,3})\s*(%|percent)?"
+    r"\s*[.!?…]*\s*$", re.IGNORECASE)
+_SLIDER_SEEK_EN_RE = re.compile(
+    r"^\s*(?:seek|skip|jump|go|fast[\s-]?forward|rewind)\s+(?:the\s+video\s+)?"
+    r"to\s+(\d{1,4})\s*(min(?:ute)?s?|sec(?:ond)?s?)"
+    r"(?:\s+(?:in|of)\s+the\s+video)?\s*[.!?…]*\s*$", re.IGNORECASE)
+_SLIDER_REQUEST_EN_RE = re.compile(
+    r"^\s*(drag|slide|move|set|put|change|adjust)\s+(?:the\s+)?(.*?)\s+to\s+(\d{1,4})"
+    r"\s*(%|percent|min(?:ute)?s?|sec(?:ond)?s?)?\s*[.!?…]*\s*$", re.IGNORECASE)
 # «перемотай ползунок на 2 минуты» — ползунок медиа-прогресса (абсолютная
 # позиция). Без слова «ползунок/слайдер» «перемотай на 2 минуты» — не про
 # абсолютную позицию (это может быть и относительный сдвиг) — не берём
@@ -1727,6 +1793,27 @@ def parse_slider_request(
         unit = "min" if ms.group(2).lower().startswith("мин") else "sec"
         # «перемотка» — синоним шкалы прогресса у JS-поиска ползунка
         return ("перемотка", int(ms.group(1)), unit), None
+    mv = _SLIDER_VOLUME_EN_RE.match(text)
+    if mv:
+        return ("volume", int(mv.group(2)), "pct" if mv.group(3) else ""), None
+    ms = _SLIDER_SEEK_EN_RE.match(text)
+    if ms:
+        unit = "min" if ms.group(2).lower().startswith("min") else "sec"
+        return ("перемотка", int(ms.group(1)), unit), None
+    me = _SLIDER_REQUEST_EN_RE.match(text)
+    if me:
+        label = re.sub(r"\s*\b(?:slider|slide\s*bar)\b\s*", " ", me.group(2)).strip()
+        label = label.strip('"«»').strip()
+        # «set the alarm to 7», «move the meeting to 3» — не ползунок: как у
+        # русских «поставь/передвинь», нужен drag/slide или слово шкалы
+        if len(label) > 40 or not (me.group(1).lower() in ("drag", "slide")
+                                   or _SLIDER_WORD_RE.search(text)):
+            return None
+        raw_unit = (me.group(4) or "").lower()
+        unit = ("pct" if raw_unit in ("%", "percent") else
+                "min" if raw_unit.startswith("min") else
+                "sec" if raw_unit.startswith("sec") else "")
+        return (label, int(me.group(3)), unit), None
     m = _SLIDER_REQUEST_RE.match(text)
     if not m:
         return None
@@ -1771,11 +1858,13 @@ _CONTROL_MODE_OFF_RE = re.compile(
 _CONTROL_MODE_EN_ON_RE = re.compile(
     r"^\s*(?:(?:enter|start|enable|activate|turn\s+on|switch\s+(?:on|to)|"
     r"go\s+(?:in)?to)\s+(?:the\s+)?control\s+mode|"
-    r"control\s+mode(?:\s+on)?)\s*[.!…]*\s*$", re.IGNORECASE)
+    r"(?:(?:turn|switch)\s+(?:the\s+)?)?control\s+mode(?:\s+on)?)\s*[.!…]*\s*$",
+    re.IGNORECASE)
 _CONTROL_MODE_EN_OFF_RE = re.compile(
     r"^\s*(?:(?:exit|leave|quit|stop|disable|deactivate|turn\s+off|"
     r"switch\s+off|get\s+out\s+of)\s+(?:the\s+)?control\s+mode|"
-    r"control\s+mode\s+off)\s*[.!…]*\s*$", re.IGNORECASE)
+    r"(?:(?:turn|switch)\s+(?:the\s+)?)?control\s+mode\s+off)\s*[.!…]*\s*$",
+    re.IGNORECASE)
 
 
 def parse_control_mode(text: str) -> Optional[bool]:
@@ -1801,7 +1890,12 @@ _CLOSE_UI_OBJECT_RE = re.compile(
     r"чат\w*|комментари\w*|описани\w*|спис(?:ок|ка|ке)|раздел\w*|секци\w*|"
     r"блок\w*|карточк\w*|превью|субтитр\w*|фильтр\w*|корзин\w*|куки|"
     r"cookies?|оверле\w*|шторк\w*|поиск\w*|предупреждени\w*|сообщени\w*|"
-    r"это|этот|эту|его|её|ее|их)$", re.IGNORECASE)
+    r"это|этот|эту|его|её|ее|их|"
+    r"windows?|modals?|dialogs?|banners?|ads?|advert\w*|notifications?|tooltips?|"
+    r"hints?|forms?|menus?|videos?|players?|mini-?player|panels?|sidebar|chat|"
+    r"comments?|description|list|section|block|cards?|preview|subtitles|captions|"
+    r"filters?|cart|overlay|drawer|search|warning|messages?|it|this|that|them)$",
+    re.IGNORECASE)
 
 
 def parse_close_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
@@ -1811,13 +1905,16 @@ def parse_close_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     if not text or len(text) > 80:
         return None
     text = _strip_polite(text)
-    m = re.match(r"^\s*(закрой|закрыть|скрой|скрыть|сверни|свернуть)\s+(.+?)\s*[.!?…]*\s*$",
+    m = re.match(r"^\s*(закрой|закрыть|скрой|скрыть|сверни|свернуть|"
+                 r"close|hide|dismiss|minimi[sz]e|collapse)\s+(.+?)\s*[.!?…]*\s*$",
                  text, re.IGNORECASE)
     if not m:
         return None
     if re.match(r"(?:(?:эту|этот|эта|текущую|текущий|текущее|все|всё)\s+)?"
                 r"(?:вкладк\w*|страниц\w*|таб\w*)\b", m.group(2),
-                re.IGNORECASE):
+                re.IGNORECASE) \
+            or re.match(r"(?:(?:the|this|that|current|all(?:\s+the)?)\s+)?"
+                        r"(?:tabs?|pages?)\b", m.group(2), re.IGNORECASE):
         return None  # «закрой вкладку/страницу» — команда вкладке (parse_tab_op)
     goal = f"{m.group(1).lower()} {m.group(2).strip()}"
     site = None
@@ -1879,14 +1976,17 @@ _TAB_OP_EN_CLOSE_RE = re.compile(
 _TAB_OP_EN = (
     ("back", re.compile(
         r"^\s*(?:go\s+back|back|go\s+to\s+(?:the\s+)?previous\s+page|"
-        r"previous\s+page)(?:\s+(?:a\s+)?page)?\s*[.!?…]*\s*$",
+        r"previous\s+page)(?:\s+(?:a\s+)?page)?"
+        r"(?:\s+(?:on|in)\s+(?P<site>\S+))?\s*[.!?…]*\s*$",
         re.IGNORECASE)),
     ("forward", re.compile(
-        r"^\s*(?:go\s+)?forward(?:\s+(?:a\s+)?page)?\s*[.!?…]*\s*$",
+        r"^\s*(?:go\s+)?forward(?:\s+(?:a\s+)?page)?"
+        r"(?:\s+(?:on|in)\s+(?P<site>\S+))?\s*[.!?…]*\s*$",
         re.IGNORECASE)),
     ("reload", re.compile(
         r"^\s*(?:refresh|reload)(?:\s+(?:the\s+|this\s+|current\s+)*"
-        r"(?:page|tab))?\s*[.!?…]*\s*$", re.IGNORECASE)),
+        r"(?:page|tab))?(?:\s+(?:on|in)\s+(?P<site>\S+))?\s*[.!?…]*\s*$",
+        re.IGNORECASE)),
 )
 
 
@@ -1919,8 +2019,10 @@ def parse_tab_op(text: str) -> Optional[Tuple[str, Optional[str]]]:
         goal = _strip_tab_filler(m.group(1) or "").strip(_TARGET_EDGE_CHARS)
         return "close", (goal or None)
     for op, rx in _TAB_OP_EN:
-        if rx.match(text):
-            return op, None
+        m_en = rx.match(text)
+        if m_en:
+            site = (m_en.group("site") or "").strip(_TARGET_EDGE_CHARS).lower()
+            return op, (site or None)
     m = re.match(r"^\s*(?:обнови|обновить|перезагрузи|перезагрузить)\b"
                  r"\s*(.*?)\s*[.!?…]*\s*$", text, re.IGNORECASE)
     op = "reload"
@@ -2025,12 +2127,14 @@ def _get_safe_redirects(client, url: str):
 
 PAGE_REF = "__page__"
 _PAGE_REF_RE = re.compile(
-    r"\s+(?:на|в|во|on|in)\s+(?:этой|той|открывшейся|этой\s+же)\s+"
-    r"(?:странице|вкладке)\s*$", re.IGNORECASE)
+    r"\s+(?:(?:на|в|во|on|in)\s+(?:этой|той|открывшейся|этой\s+же)\s+"
+    r"(?:странице|вкладке)|(?:on|in)\s+(?:this|the\s+(?:current|same|open(?:ed)?))"
+    r"\s+(?:page|tab))\s*$", re.IGNORECASE)
 # Тот же оборот в НАЧАЛЕ цели: «открой на этой странице студентам»
 _PAGE_REF_HEAD_RE = re.compile(
-    r"^(?:на|в|во|on|in)\s+(?:этой|той|открывшейся|этой\s+же)\s+"
-    r"(?:странице|вкладке)\s+", re.IGNORECASE)
+    r"^(?:(?:на|в|во|on|in)\s+(?:этой|той|открывшейся|этой\s+же)\s+"
+    r"(?:странице|вкладке)|(?:on|in)\s+(?:this|the\s+(?:current|same|open(?:ed)?))"
+    r"\s+(?:page|tab),?)\s+", re.IGNORECASE)
 
 
 def _strip_page_ref(goal: str) -> Tuple[str, bool]:
@@ -2099,7 +2203,9 @@ _HOVER_REQUEST_RE = re.compile(
     r"(.+?)\s*[.!?…]*\s*$",
     re.IGNORECASE)
 _HOVER_REQUEST_EN_RE = re.compile(
-    r"^\s*hover\s+(?:over\s+)?(.+?)\s*[.!?…]*\s*$", re.IGNORECASE)
+    r"^\s*(?:hover(?:\s+(?:the\s+)?(?:mouse|cursor))?(?:\s+(?:over|on|onto))?|"
+    r"mouse\s+over|move\s+(?:the\s+)?(?:mouse|cursor)\s+(?:over|to|onto|on))"
+    r"\s+(?:the\s+)?(.+?)\s*[.!?…]*\s*$", re.IGNORECASE)
 
 
 def parse_hover_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
@@ -2147,7 +2253,23 @@ _TAB_SWITCH_SOFT_RE = re.compile(
     r"^\s*(?:перейди|перейти|переключись|переключи|переключить)\s+"
     r"(?:на|во)\s+(.{2,60}?)\s*[.!?…]*\s*$",
     re.IGNORECASE)
+# Англ. мягкая форма: вкладка X, если открыта, иначе сайт X (как «перейди на X»)
+_TAB_SWITCH_SOFT_EN_RE = re.compile(
+    r"^\s*(?:(?:go|switch|jump|navigate|head)\s+(?:back\s+|over\s+)?to|visit|"
+    r"pull\s+up|bring\s+up)\s+(?:the\s+)?(.{2,60}?)\s*[.!?…]*\s*$",
+    re.IGNORECASE)
+# «go to sleep / bed / the store» — не сайты
+_TAB_SWITCH_SOFT_EN_NOT_RE = re.compile(
+    r"^(?:sleep|bed|school|work|lunch|dinner|breakfast|church|store|shop|gym|"
+    r"doctor|bathroom|toilet|kitchen|park|hell|heaven|war|jail|court|"
+    r"(?:the\s+)?(?:next|previous|last)\b.*|\d.*|"
+    # «go back to what we were talking about», «go to the top of the page»
+    r"(?:what|where|how|why|when|who|which|that|this|it|me|you|us|them|him|her|"
+    r"our|your|their|top|bottom|end|beginning|start)\b.*)$", re.IGNORECASE)
 _TAB_LIST_RE = re.compile(
+    r"\b(?:what|which)\s+tabs\s+(?:are|do\s+(?:i|you)\s+have)\s+open|"
+    r"\b(?:list|show)\s+(?:me\s+)?(?:(?:the|my|all)\s+)?(?:open\s+)?tabs\b|"
+    r"^\s*(?:open\s+tabs|tabs\s+list)\s*\??\s*$|"
     r"(?:какие|что за)\s+[^.?!]{0,20}?вкладки|"
     r"(?:покажи|назови)\s+(?:у меня\s+)?(?:открыты\w*\s+)?вкладки|"
     r"список\s+(?:открытых\s+)?вкладок|"
@@ -2230,7 +2352,11 @@ def parse_tab_switch(text: str) -> Optional[Tuple[str, bool]]:
         return (goal, True) if goal else None
     m = _TAB_SWITCH_SOFT_RE.match(text)
     if not m:
-        return None
+        m = _TAB_SWITCH_SOFT_EN_RE.match(text)
+        # Имя вкладки/сайта — до 4 слов; длиннее — фраза, а не цель
+        if not m or _TAB_SWITCH_SOFT_EN_NOT_RE.match(m.group(1).strip()) \
+                or len(m.group(1).split()) > 4:
+            return None
     goal = _strip_tab_filler(m.group(1).strip().strip('"«»').strip())
     goal = goal.strip('"«»').strip()
     # «перейди на эту/текущую страницу», «на сайт» — бессмысленно, не
@@ -2249,17 +2375,17 @@ def parse_tab_list_query(text: str) -> bool:
 
 
 _DOWNLOAD_REQUEST_RE = re.compile(
-    r"^\s*(?:скачай|скачать|сохрани|сохранить|download|fetch)\s+"
+    r"^\s*(?:скачай|скачать|сохрани|сохранить|download|fetch|save)\s+"
     r"(.+?)\s*[.!?…]*\s*$",
     re.IGNORECASE)
 # «файл/документ» в начале цели скачивания срезаем; в общий клик-филлер их не
 # добавляем — там «нажми файл» это про меню «Файл»
 _DOWNLOAD_FILLER_RE = re.compile(
-    r"^(?:(?:мне|нам|на|по)\s+)*(?:(?:файл|файлы|документ|документы|pdf|"
-    r"ссылку|ссылка)\s+)?", re.IGNORECASE)
+    r"^(?:(?:мне|нам|на|по|me|the|this|that|a|an)\s+)*(?:(?:файл|файлы|документ|документы|pdf|"
+    r"ссылку|ссылка|file|files|document|documents|link)\s+)?", re.IGNORECASE)
 # «сохрани» — бытовое слово («сохрани это в памяти», «сохрани мой номер»):
 # скачиванием оно становится только с объектом-файлом или явным местом
-_SAVE_VERB_RE = re.compile(r"^\s*(?:сохрани|сохранить)\s", re.IGNORECASE)
+_SAVE_VERB_RE = re.compile(r"^\s*(?:сохрани|сохранить|save)\s", re.IGNORECASE)
 _SAVE_FILE_OBJECT_RE = re.compile(
     r"(?<![а-яёa-z])(?:файл\w*|pdf|пдф\w*|картинк\w*|изображени\w*|фото\w*|"
     r"фотк\w*|снимок|снимк\w*|документ\w*|видео|ролик\w*|скриншот\w*|"
@@ -2331,7 +2457,7 @@ def parse_open_on_page(text: str) -> Optional[str]:
 
 _TYPE_REQUEST_RE = re.compile(
     r"^\s*(?:введи|ввести|напиши|написать|набери|набрать|впиши|вписать|"
-    r"заполни|заполнить|type|enter|fill)\s+(.+?)\s*[.!?…]*\s*$",
+    r"заполни|заполнить|type|enter|fill(?:\s+(?:in|out))?|write|input)\s+(.+?)\s*[.!?…]*\s*$",
     re.IGNORECASE)
 # «ТЕКСТ в поле ПОЛЕ»: сепаратор поля (крайнее вхождение — сам текст тоже
 # может содержать «в поле»)
@@ -2355,7 +2481,8 @@ _GEO_TEXT_RE = re.compile(r"(?:(?:мой|моего|моём|моем|наш)\s+
 # Хвост «…и отправь»: после ввода жмём Enter в том же поле (чаты, где кнопка
 # отправки — безымянная иконка, как в веб-чатах LLM)
 _TYPE_SUBMIT_RE = re.compile(
-    r"\s+(?:и\s+)?(?:отправь|отправить|отправляй|пошли|шли|send|submit)\s*$",
+    r"\s+(?:(?:и\s+)?(?:отправь|отправить|отправляй|пошли|шли|send|submit)|"
+    r"and\s+(?:send|submit)(?:\s+it)?|and\s+(?:press|hit)\s+(?:enter|return))\s*$",
     re.IGNORECASE)
 # «введи X в поиск»: «поиск» — само название поля, слова «поле» нет. Без
 # этого фраза не считалась явной командой ввода и при несовпадении подписей
@@ -2368,7 +2495,8 @@ _TYPE_FIELD_MARK_RE = re.compile(
     r"\s(?:(?:в|во)\s+(?:пол[еяю]\w*|форм\w*|поиск\w*|поисков\w*|чат\w*|"
     r"строк\w*|строчк\w*|окошк\w*|окн[оеа]\w*|комментари\w*|коммент\w*|"
     r"сообщени\w*|адресн\w*|граф[уеы]\w*|ячейк\w*|инпут\w*|input\w*)|"
-    r"into|in\s+(?:the\s+)?(?:field|search|chat|box|input|form))(?![\wё])",
+    r"into|in\s+(?:the\s+)?(?:field|search(?:\s+(?:bar|box|field))?|chat|box|input|form|"
+    r"comments?|message\s+box|address\s+bar))(?![\wё])",
     re.IGNORECASE)
 _TYPE_EXPLICIT_VERBS = frozenset({
     "введи", "ввести", "впиши", "вписать", "набери", "набрать",
@@ -2393,11 +2521,21 @@ def parse_type_request(text: str) -> Optional[str]:
     if parse_control_mode(text) is not None:
         return None
     verb = text.split(None, 1)[0].lower()
+    # «type of music do you like?», «enter the dragon is…» — английская речь,
+    # а не ввод: вопрос или «of/is/was» сразу за глаголом
+    if verb in ("type", "enter", "write", "input") \
+            and (text.rstrip().endswith("?")
+                 or re.match(r"(?:of|is|was|are|were)\b", body, re.IGNORECASE)):
+        return None
     marked = bool(_TYPE_FIELD_MARK_RE.search(f" {body}")
                   or _TYPE_SUBMIT_RE.search(body))
+    # «enter the dragon is a movie» — фраза со связкой без указания поля
+    if verb in ("type", "enter", "write", "input") and not marked \
+            and re.search(r"\b(?:is|was|are|were|do|does|did)\b", body, re.IGNORECASE):
+        return None
     # «напиши рассказ/привет» — просьба к собеседнику, а не ввод в страницу:
     # «напиши» — команда только с указанием поля («в поле/в поиск/в чат…»)
-    if verb in ("напиши", "написать") and not marked:
+    if verb in ("напиши", "написать", "write") and not marked:
         return None
     # Одно слово без поля — явная команда только у «введи/впиши/набери»
     # («заполни анкету» — не текст для ввода)
@@ -2413,6 +2551,11 @@ _OPEN_STOPLIST = {
     "урок", "курс", "тест", "дверь", "дверцу", "окно", "глаза", "рот", "рту",
     "мне", "нам",  # «открой мне» без названия — не команда, пусть спросит LLM
     "сайт", "страницу", "страница", "вкладку", "вкладка",  # «открой сайт» — что именно?
+    # Английские: бытовые объекты, местоимения, «start over / recording»
+    "door", "the door", "window", "eyes", "my eyes", "mouth", "it", "this",
+    "that", "up", "over", "again", "recording", "reminder", "reminders",
+    "task", "list", "inventory", "lesson", "course", "test", "site",
+    "website", "page", "tab", "me", "us",
 }
 _OPEN_TAB_BODY_RE = re.compile(
     r"^(?:(?:нов\w+|эту|текущую|другую|соседнюю|следующую|предыдущую|"
@@ -2777,6 +2920,15 @@ _READ_WHAT_SUBJ_RE = re.compile(
     r"перплексит\w*|копилот\w*|[a-z0-9][a-z0-9.\- ]*)$", re.IGNORECASE)
 
 
+# «what did the bot / chatgpt say?» — только собеседники-модели: латинское
+# имя само по себе («what did mom say») — вопрос о жизни, не чтение вкладки
+_READ_WHAT_EN_RE = re.compile(
+    r"^\s*what\s+did\s+(?:the\s+)?(bot|chat\s*bot|chat|ai|model|assistant|"
+    r"chat\s*gpt|gpt|claude|deepseek|gemini|grok|qwen|perplexity|copilot|"
+    r"[a-z0-9-]+\.[a-z]{2,})\s+(?:say|reply|answer|write|respond|send)"
+    r"(?:\s+(?:me|back))?\s*[.?…]*\s*$", re.IGNORECASE)
+
+
 def parse_read_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     """«прочитай последнее сообщение на почте» → ("last", "почте");
     «прочитай страницу» → ("page", None); «что ответил бот» → ("last", "бот").
@@ -2784,6 +2936,9 @@ def parse_read_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     if not text or len(text) > 120:
         return None
     text = _strip_polite(text)
+    m_en = _READ_WHAT_EN_RE.match(text)
+    if m_en:
+        return "last", m_en.group(1).strip().lower()
     m = _READ_WHAT_RE.match(text)
     if m:
         subj = m.group(1).strip().lower()
@@ -2831,22 +2986,22 @@ _PAGE_VIEW_SEE_RE = re.compile(
     r"(?:\s+на\s+(?:страниц\w*|экран\w*|сайт\w*|вкладк\w*|окн\w*))?"
     r"\s*[?？!…]*\s*$", re.IGNORECASE)
 _PAGE_VIEW_WHAT_EN_RE = re.compile(
-    r"^\s*what(?:'s|\s+is|\s+are)(?:\s+there)?\s+on\s+(?:the\s+|this\s+)?"
-    r"(?:page|screen|site|tab)\s*[?？!…]*\s*$|"
-    r"^\s*what\s+do\s+you\s+see(?:\s+on\s+(?:the\s+)?(?:page|screen))?"
-    r"\s*[?？!…]*\s*$", re.IGNORECASE)
+    r"^\s*what(?:['’]s|\s+is|\s+are)(?:\s+there)?\s+on\s+(?:the\s+|this\s+|my\s+)?"
+    r"(?:page|screen|site|tab)(?:\s+(?:right\s+)?now)?\s*[?？!…]*\s*$|"
+    r"^\s*what\s+(?:do|can)\s+you\s+see(?:\s+on\s+(?:the\s+|this\s+)?(?:page|screen))?"
+    r"(?:\s+(?:right\s+)?now)?\s*[?？!…]*\s*$", re.IGNORECASE)
 # «покажи страницу/экран»: «вкладку» сюда не берём — «покажи вкладку X» это
 # переключение вкладки (_TAB_SWITCH_RE), оно проверяется раньше в fast-path
 _PAGE_VIEW_SHOW_RE = re.compile(
-    r"^\s*(?:покажи|показать|show)\s+(?:мне\s+)?(?:что\s+(?:есть\s+)?на\s+)?"
+    r"^\s*(?:покажи|показать|show)\s+(?:(?:мне|me)\s+)?(?:что\s+(?:есть\s+)?на\s+)?"
     r"(?:страниц\w*|экран|сайт|окн\w*|(?:the\s+)?(?:page|screen|site))"
     r"(?:\s+(?:на|в|во|on|in)\s+(\S+))?\s*[.!?…]*\s*$", re.IGNORECASE)
 _PAGE_VIEW_SHOT_RE = re.compile(
-    r"^\s*(?:(?:сделай|сними|пришли|скинь|покажи|дай|take|send|show|make)"
-    r"\s+(?:мне\s+)?(?:a\s+)?)?"
-    r"(?:скриншот\w*|screenshot)\s*"
-    r"(?:страниц\w*|экран\w*|сайт\w*|окн\w*|of\s+the\s+page)?\s*"
-    r"(?:\s+(?:на|в|во|on|in)\s+(\S+))?\s*[.!?…]*\s*$", re.IGNORECASE)
+    r"^\s*(?:(?:сделай|сними|пришли|скинь|покажи|дай|take|send|show|make|grab|give)"
+    r"\s+(?:(?:мне|me)\s+)?(?:a\s+)?)?"
+    r"(?:скриншот\w*|screenshot|screen\s*shot)\s*"
+    r"(?:страниц\w*|экран\w*|сайт\w*|окн\w*|of\s+the\s+(?:page|screen|site))?\s*"
+    r"(?:\s+(?:на|в|во|on|in|of)\s+(\S+))?\s*[.!?…]*\s*$", re.IGNORECASE)
 # «покажи всю страницу» / «покажи страницу целиком» / «сделай полный
 # скриншот страницы» — ПОЛНОСТРАНИЧНЫЙ захват (скролл-стичинг, альбом
 # кусков + текстовое оглавление). Маркер полноты («всю»/«целиком»/
@@ -2878,13 +3033,32 @@ _ZOOM_STEP_RE = re.compile(
     r"(?:\s+(?:на|в|во)\s+(\S+))?\s*[.!?…]*\s*$", re.IGNORECASE)
 
 
+# Английские формы: «reset (the) zoom», «zoom 100%», «actual size»;
+# «zoom in/out (on Y)», «make the page bigger/smaller»
+_ZOOM_RESET_EN_RE = re.compile(
+    r"^\s*(?:(?:reset|restore)\s+(?:the\s+)?zoom(?:\s+level)?|zoom\s+reset|"
+    r"zoom\s+(?:to\s+)?100\s*%?|(?:actual|normal|default)\s+(?:size|zoom))"
+    r"\s*[.!?…]*\s*$", re.IGNORECASE)
+_ZOOM_STEP_EN_RE = re.compile(
+    r"^\s*(?:zoom\s+(in|out)|make\s+(?:the\s+|this\s+)?(?:page|text|it)\s+"
+    r"(bigger|larger|smaller))"
+    r"(?:\s+(?:on|in)\s+(\S+))?\s*[.!?…]*\s*$", re.IGNORECASE)
+
+
 def parse_zoom_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     """«уменьши масштаб» → ("out", None); «увеличь масштаб на почте» →
     ("in", "почте"); «сбрось масштаб» → ("reset", None). None — не про зум."""
     if not text or len(text) > 60:
         return None
-    if _ZOOM_RESET_RE.match(text):
+    if _ZOOM_RESET_RE.match(text) or _ZOOM_RESET_EN_RE.match(text):
         return "reset", None
+    m = _ZOOM_STEP_EN_RE.match(text)
+    if m:
+        word = (m.group(1) or m.group(2)).lower()
+        site = (m.group(3) or "").strip().strip('"«»').lower() or None
+        if site in _NOOP_SITE_WORDS:
+            site = None
+        return ("in" if word in ("in", "bigger", "larger") else "out"), site
     m = _ZOOM_STEP_RE.match(text)
     if not m:
         return None
@@ -2894,6 +3068,18 @@ def parse_zoom_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     if site in _NOOP_SITE_WORDS:
         site = None
     return direction, site
+
+
+# Полностраничный захват по-английски: «show me the whole/entire/full page»,
+# «show the page in full», «full(-page) screenshot (of Y)», «screenshot of
+# the whole page»
+_PAGE_VIEW_FULL_EN_RE = re.compile(
+    r"^\s*(?:(?:show|send|give)\s+(?:me\s+)?(?:the\s+)?(?:whole|entire|full)\s+"
+    r"(?:page|site|feed)|(?:show|send)\s+(?:me\s+)?the\s+(?:page|site)\s+in\s+full|"
+    r"(?:(?:take|send|make|grab|give)\s+(?:me\s+)?(?:a\s+)?)?full(?:[\s-]+page)?\s+"
+    r"screen\s*shot|(?:(?:take|send)\s+(?:me\s+)?(?:a\s+)?)?screen\s*shot\s+of\s+"
+    r"the\s+(?:whole|entire|full)\s+page)"
+    r"(?:\s+(?:on|in|of)\s+(\S+))?\s*[.!?…]*\s*$", re.IGNORECASE)
 
 
 def parse_page_view_request(text: str) -> Optional[Tuple[Optional[str], bool, bool]]:
@@ -2906,7 +3092,7 @@ def parse_page_view_request(text: str) -> Optional[Tuple[Optional[str], bool, bo
         return None
     # Полностраничный захват — раньше остальных: маркер полноты там
     # обязателен, а «покажи всю страницу» иначе съел бы _PAGE_VIEW_SHOW_RE
-    m = _PAGE_VIEW_FULL_RE.match(text)
+    m = _PAGE_VIEW_FULL_RE.match(text) or _PAGE_VIEW_FULL_EN_RE.match(text)
     if m:
         site = (m.group(1) or "").strip().strip('"«»').lower() or None
         if site in _NOOP_SITE_WORDS:
@@ -3058,8 +3244,15 @@ def parse_search_on_site(text: str) -> Optional[Tuple[str, str, bool]]:
         return None
     m = _SEARCH_ON_SITE_RE.match(_strip_polite(text))
     if not m:
-        return None
-    verb = m.group(1).lower()
+        m_sf = _SEARCH_SITE_FOR_EN_RE.match(_strip_polite(text))
+        if not m_sf:
+            return None
+        query = m_sf.group(2).strip(_TARGET_EDGE_CHARS)
+        site_word = m_sf.group(1).strip(_TARGET_EDGE_CHARS).lower()
+        if not query or len(query) > 80 or site_word[0].isdigit():
+            return None
+        return query, site_word, False
+    verb = " ".join(m.group(1).lower().split())
     query = m.group(2).strip(_TARGET_EDGE_CHARS)
     site_word = m.group(3).strip(_TARGET_EDGE_CHARS).lower()
     query = _SEARCH_QUERY_FILLER_RE.sub("", query).strip(_TARGET_EDGE_CHARS)
@@ -3069,8 +3262,9 @@ def parse_search_on_site(text: str) -> Optional[Tuple[str, str, bool]]:
             or site_word[0].isdigit():
         return None
     # «открой комментарии/настройки на ютубе», «включи звук на ютубе» —
-    # элемент страницы (клик/медиа-клавиша), а не поиск ролика
-    if _UI_ELEMENT_RE.match(query):
+    # элемент страницы (клик/медиа-клавиша), а не поиск ролика; англ. —
+    # с артиклем: «open the comments on youtube»
+    if _UI_ELEMENT_RE.match(re.sub(r"^(?:the|my)\s+", "", query, flags=re.IGNORECASE)):
         return None
     return query, site_word, verb not in _SEARCH_PAGE_VERBS
 
@@ -3078,7 +3272,8 @@ def parse_search_on_site(text: str) -> Optional[Tuple[str, str, bool]]:
 # Standalone «отправь»/«send» — Enter в поле ввода (без ввода текста)
 _SEND_REQUEST_RE = re.compile(
     r"^\s*(?:отправь|отправить|отправляй|пошли|шли|send|submit)"
-    r"(?:\s+(?:сообщение|мессагу|мессадж|ответ|это|его|её|message|it))?"
+    r"(?:\s+(?:сообщение|мессагу|мессадж|ответ|это|его|её|message|it|"
+    r"(?:the|this|my)\s+(?:message|form|reply|comment|answer)|form|this|that))?"
     r"(?:\s+(?:на|в|во|on|in)\s+(\S+))?\s*[.!?…]*\s*$", re.IGNORECASE)
 
 
@@ -3099,16 +3294,17 @@ def parse_send_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
 # плеер (play/pause), игра, модалка. Проверяется ДО parse_click_request:
 # «нажми esc» иначе станет целью клика «esc»
 _KEY_REQUEST_RE = re.compile(
-    r"^\s*(?:нажми|нажать|press)\s+"
-    r"(пробел|space|энтер|интер|enter|return|escape|эскейп|esc|tab|таб|"
+    r"^\s*(?:нажми|нажать|press|hit|tap)\s+(?:the\s+)?"
+    r"(пробел|space\s*bar|space|энтер|интер|enter|return|escape|эскейп|esc|tab|таб|"
     r"backspace|бэкспейс)"
+    r"(?:\s+(?:key|button))?"
     r"(?:\s+(?:на|в|во|on|in)\s+(\S+))?"
     r"(?:[,\s]+(?:пожалуйста|плиз|please))?\s*[.!?…]*\s*$",
     re.IGNORECASE)
 
 # Слово команды → имя клавиши playwright/CDP
 _KEY_MAP = {
-    "пробел": "Space", "space": "Space",
+    "пробел": "Space", "space": "Space", "spacebar": "Space", "space bar": "Space",
     "энтер": "Enter", "интер": "Enter", "enter": "Enter", "return": "Enter",
     "escape": "Escape", "эскейп": "Escape", "esc": "Escape",
     "tab": "Tab", "таб": "Tab",
@@ -3134,7 +3330,7 @@ def parse_key_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     m = _KEY_REQUEST_RE.match(t)
     if not m:
         return None
-    key = _KEY_MAP.get(m.group(1).lower())
+    key = _KEY_MAP.get(" ".join(m.group(1).lower().split()))
     if key is None:
         return None
     site = ((m.group(2) or "").strip().rstrip(",").strip().lower()) or None
@@ -3164,6 +3360,24 @@ _ERASE_REQUEST_RE = re.compile(
     r"(?:\s+(?:на|в|во|on|in)\s+(\S+))?"
     r"\s*[.!?…]*\s*$",
     re.IGNORECASE)
+# Английские: «delete/erase/remove (the last) 3 characters (on Y)»,
+# «press/hit backspace (3 times)»
+_ERASE_NUM_WORDS_EN = {
+    "one": 1, "a": 1, "two": 2, "couple": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20,
+}
+_ERASE_REQUEST_EN_RE = re.compile(
+    r"^\s*(?:(?:delete|erase|remove)\s+(?:the\s+)?(?:last\s+)?"
+    r"(?:(\d+|a\s+couple\s+of|" + "|".join(sorted(_ERASE_NUM_WORDS_EN, key=len, reverse=True))
+    + r")\s+)?(?:characters?|chars?|letters?|symbols?)|"
+    r"(?:press|hit|tap)\s+backspace(?:\s+(\d+|"
+    + "|".join(sorted(_ERASE_NUM_WORDS_EN, key=len, reverse=True)) + r")\s+times?|\s+once|\s+twice)?)"
+    r"(?:\s+(?:on|in)\s+(\S+))?"
+    r"\s*[.!?…]*\s*$",
+    re.IGNORECASE)
 # Потолок за одну команду: «удали 5000 символов» — опечатка, а не намерение
 from app.features.browser_actions import PRESS_TIMES_MAX as _ERASE_MAX  # noqa: E402
 
@@ -3180,8 +3394,20 @@ def parse_erase_request(text: str):
     if is_page:
         t = _PAGE_REF_RE.sub("", t)
     m = _ERASE_REQUEST_RE.match(t)
-    if not m:
+    m_en = None if m else _ERASE_REQUEST_EN_RE.match(t)
+    if not m and not m_en:
         return None
+    if m_en:
+        raw = (m_en.group(1) or m_en.group(2) or "").strip().lower()
+        if not raw and re.search(r"\btwice\b", t, re.IGNORECASE):
+            raw = "2"
+        n = (int(raw) if raw.isdigit()
+             else 2 if raw.startswith("a couple") else _ERASE_NUM_WORDS_EN.get(raw, 1))
+        n = max(1, min(n, _ERASE_MAX))
+        site = ((m_en.group(3) or "").strip().rstrip(",").strip().lower()) or None
+        if site in _NOOP_SITE_WORDS:
+            site = None
+        return ("Backspace", n, "erase"), (PAGE_REF if is_page else site)
     raw = (m.group(1) or "").strip().lower()
     if not raw:
         n = 1
@@ -3234,17 +3460,23 @@ _MEDIA_REQUESTS = [
         r"^\s*(?:(?:включи|верни)\s+звук|со\s+звуком|unmute)"
         r"\s*[.!…]*\s*$", re.IGNORECASE), ("m", 1, "unmute")),
     # Англ. формы: «pause (the video)», «volume up», «turn the sound off»
+    # «play music/a song» — не пробел: шаг цепочки «open youtube and play
+    # music» ищет музыку на сайте (как русское «…и включи музыку»)
     (re.compile(
-        r"^\s*(?:(?:press|hit|click)\s+)?(?:pause|resume|unpause|play)"
-        r"(?:\s+(?:the\s+)?(?:video|music|song|track|playback|it))?"
+        r"^\s*(?:(?:press|hit|click)\s+)?(?:(?:pause|resume|unpause)"
+        r"(?:\s+(?:the\s+)?(?:video|music|song|track|playback|it))?|"
+        r"play(?:\s+(?:the\s+)?(?:video|playback|it))?|"
+        r"continue\s+(?:the\s+)?(?:video|playback))"
         r"\s*[.!…]*\s*$", re.IGNORECASE), ("Space", 1, "toggle")),
     (re.compile(
-        r"^\s*(?:volume\s+down|quieter|(?:turn|bring)\s+(?:it|the\s+volume|"
+        r"^\s*(?:volume\s+down|quieter|make\s+it\s+(?:quieter|softer)|"
+        r"(?:turn|bring)\s+(?:it|the\s+volume|"
         r"the\s+sound)\s+down|turn\s+down\s+(?:the\s+)?(?:volume|sound)|"
         r"(?:lower|decrease|reduce)\s+(?:the\s+)?(?:volume|sound))"
         r"\s*[.!…]*\s*$", re.IGNORECASE), ("ArrowDown", 2, "vol_down")),
     (re.compile(
-        r"^\s*(?:volume\s+up|louder|(?:turn|bring)\s+(?:it|the\s+volume|"
+        r"^\s*(?:volume\s+up|louder|make\s+it\s+louder|"
+        r"(?:turn|bring)\s+(?:it|the\s+volume|"
         r"the\s+sound)\s+up|turn\s+up\s+(?:the\s+)?(?:volume|sound)|"
         r"(?:raise|increase)\s+(?:the\s+)?(?:volume|sound))"
         r"\s*[.!…]*\s*$", re.IGNORECASE), ("ArrowUp", 2, "vol_up")),
@@ -3380,6 +3612,32 @@ _SCROLL_MAX_SEC = 660.0
 _SCROLL_END_GRACE_SEC = 15.0
 
 
+_SCROLL_EN_HEAD_RE = re.compile(r"^\s*(?:keep\s+scrolling|scroll)\b", re.IGNORECASE)
+_SCROLL_EN_KEEP_RE = re.compile(r"^\s*keep\s+scrolling\b", re.IGNORECASE)
+# «scroll further/more/along/through», «scroll on» — частицы без смысла
+# контейнера (как русское «дальше»)
+_SCROLL_EN_PARTICLE_RE = re.compile(
+    r"(?<=\bscroll)\s+on\b|\s+(?:further|more|along|through|again|onwards?)\b",
+    re.IGNORECASE)
+# «the left panel / right side / panel on the left» → сторона
+_SCROLL_EN_SIDE_RE = re.compile(
+    r"\b(left|right)(?:[\s-]+hand)?\s+(?:panel|side|column|section|sidebar|half|"
+    r"part|pane|menu|list)\b|\b(?:panel|side|column|section|sidebar|half|part|pane|"
+    r"menu|list)\s+on\s+the\s+(left|right)\b", re.IGNORECASE)
+
+
+def _scroll_en_normalize(t: str) -> str:
+    """Английская команда листания → форма _SCROLL_START_RE: «keep scrolling»
+    → «scroll», частицы further/more/through — прочь, «the left panel» →
+    «left». Русские фразы не трогаем."""
+    if not _SCROLL_EN_HEAD_RE.match(t):
+        return t
+    t = _SCROLL_EN_KEEP_RE.sub("scroll", t)
+    t = _SCROLL_EN_PARTICLE_RE.sub("", t)
+    t = _SCROLL_EN_SIDE_RE.sub(lambda m: (m.group(1) or m.group(2)).lower(), t)
+    return " ".join(t.split())
+
+
 def parse_scroll_request(text: str) -> Optional[Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]]:
     """«промотай страницу (на ютубе)» → ("start", сайт|None, None, None, None);
     «промотай раздел слева» / «пролистай левый раздел» → ("start", None,
@@ -3398,6 +3656,7 @@ def parse_scroll_request(text: str) -> Optional[Tuple[str, Optional[str], Option
     # «прокрути немного вниз», «чуть ниже», «…, пожалуйста» — наречия меры и
     # вежливость не имя контейнера
     t = " ".join(_SCROLL_SOFT_RE.sub(" ", _strip_polite(t)).split())
+    t = _scroll_en_normalize(t)
     m = _SCROLL_START_RE.match(t)
     if m:
         container = (m.group(1) or "").strip().lower() or None
@@ -3460,8 +3719,24 @@ _SCROLL_TO_GOAL_EN_RE = re.compile(
     r"(?:(?:down|up)\s+)?(?:to|until|till)\s+(?:the\s+)?(.+?)\s*[.!?…]*\s*$",
     re.IGNORECASE)
 _SCROLL_FIND_EN_RE = re.compile(
-    r"^\s*find\s+(.+?)\s+(?:on\s+(?:this|the)\s+(?:page|site)|here)"
+    r"^\s*(?:find|look\s+for|locate)\s+(.+?)\s+(?:on\s+(?:this|the)\s+(?:page|site)|here)"
     r"\s*[.!?…]*\s*$", re.IGNORECASE)
+# «search the page for X»
+_SCROLL_SEARCH_PAGE_EN_RE = re.compile(
+    r"^\s*search\s+(?:this|the)\s+page\s+for\s+(.+?)\s*[.!?…]*\s*$", re.IGNORECASE)
+# «scroll all the way down/up» — край страницы
+_SCROLL_ALL_WAY_EN_RE = re.compile(
+    r"^\s*scroll\s+(?:the\s+page\s+)?all\s+the\s+way\s+(down|up)"
+    r"(?:\s+to\s+the\s+(?:bottom|top|end))?\s*[.!?…]*\s*$", re.IGNORECASE)
+# «go to / jump to the top (of the page)» — край страницы
+_SCROLL_EDGE_GO_EN_RE = re.compile(
+    r"^\s*(?:go|jump|scroll|take\s+me)\s+(?:back\s+)?(?:up\s+|down\s+)?to\s+the\s+"
+    r"(top|bottom|end|beginning|start)(?:\s+of\s+(?:the\s+|this\s+)?page)?\s*[.!?…]*\s*$",
+    re.IGNORECASE)
+# «scroll until you see X» — «you see» не часть цели
+_SCROLL_GOAL_SEE_EN_RE = re.compile(
+    r"^(?:you\s+(?:can\s+)?(?:see|find|reach|get\s+to)|i\s+can\s+see|we\s+see)\s+",
+    re.IGNORECASE)
 # Край страницы как цель: «докрути до конца/низа» / «до начала/верха»
 _SCROLL_EDGE_WORDS = {
     "bottom": ("конца", "конец", "низа", "низ", "дна", "дно", "подвала",
@@ -3479,11 +3754,19 @@ def parse_scroll_to_goal(text: str) -> Optional[str]:
     if not text or len(text) > 90:
         return None
     text = _strip_polite(text)
+    m_all = _SCROLL_ALL_WAY_EN_RE.match(text)
+    if m_all:
+        return "bottom" if m_all.group(1).lower() == "down" else "top"
+    m_edge = _SCROLL_EDGE_GO_EN_RE.match(text)
+    if m_edge:
+        return "bottom" if m_edge.group(1).lower() in ("bottom", "end") else "top"
     m = (_SCROLL_TO_GOAL_RE.match(text) or _SCROLL_FIND_RE.match(text)
-         or _SCROLL_TO_GOAL_EN_RE.match(text) or _SCROLL_FIND_EN_RE.match(text))
+         or _SCROLL_TO_GOAL_EN_RE.match(text) or _SCROLL_FIND_EN_RE.match(text)
+         or _SCROLL_SEARCH_PAGE_EN_RE.match(text))
     if not m:
         return None
     goal = " ".join(m.group(1).strip(_TARGET_EDGE_CHARS).split())
+    goal = _SCROLL_GOAL_SEE_EN_RE.sub("", goal)
     if not 2 <= len(goal) <= 60:
         return None
     return goal
@@ -3494,7 +3777,9 @@ def parse_scroll_to_goal(text: str) -> Optional[str]:
 # тут, рядом с парсерами, — тестируется без telegram-зависимостей)
 _MORE_PHOTOS_RE = re.compile(
     r"^\s*(?:ещё|еще|дальше|продолжай|продолжить|давай\s+дальше|"
-    r"(?:покажи|пришли|скинь|дай)\s+(?:остальн\w+|дальше))"
+    r"(?:покажи|пришли|скинь|дай)\s+(?:остальн\w+|дальше)|"
+    r"more|next|continue|keep\s+going|"
+    r"(?:show|send|give)\s+(?:me\s+)?(?:more|the\s+rest))"
     r"\s*[.!?…]*\s*$", re.IGNORECASE)
 
 
@@ -3572,6 +3857,23 @@ _CART_IDIOM_RE = re.compile(
     r"(?:\s|$)", re.IGNORECASE)
 
 
+_CART_EN_WHERE = r"(?:the\s+|my\s+)?(?:cart|basket|order)"
+_CART_EN_RULES = (
+    ("decrease", re.compile(
+        r"^\s*(?:remove|take\s+out|subtract)\s+(?:one|1|a|an)\s+(.+?)\s+from\s+"
+        + _CART_EN_WHERE + r"\s*[.!?…]*\s*$", re.IGNORECASE)),
+    ("remove", re.compile(
+        r"^\s*(?:remove|delete|take\s+out|drop)\s+(?:the\s+|all\s+(?:the\s+)?)?(.+?)\s+from\s+"
+        + _CART_EN_WHERE + r"\s*[.!?…]*\s*$", re.IGNORECASE)),
+    ("increase", re.compile(
+        r"^\s*add\s+(?:one\s+more|another)\s+(.+?)(?:\s+to\s+" + _CART_EN_WHERE
+        + r")?\s*[.!?…]*\s*$", re.IGNORECASE)),
+    ("edit", re.compile(
+        r"^\s*(?:change|edit|modify)\s+(?:the\s+)?(.+?)\s+in\s+" + _CART_EN_WHERE
+        + r"\s*[.!?…]*\s*$", re.IGNORECASE)),
+)
+
+
 def parse_cart_request(text: str) -> Optional[Tuple[str, str]]:
     """Команда операции с корзиной сайта → (op, product):
     «убери гавайскую из корзины» → ("remove", "гавайскую");
@@ -3583,6 +3885,12 @@ def parse_cart_request(text: str) -> Optional[Tuple[str, str]]:
     t = " ".join(str(text or "").split()).strip()
     if not t or len(t) > 80:
         return None
+    for en_op, rx in _CART_EN_RULES:
+        m_en = rx.match(t)
+        if m_en:
+            product = " ".join(re.sub(r"^(?:the|a|an)\s+", "", m_en.group(1).strip(),
+                                      flags=re.IGNORECASE).split()).strip(" ,.;!?")
+            return (en_op, product) if product and len(product) <= 60 else None
     op = None
     bare = False  # голое «убавь/прибавь X» без количества и «из корзины»
     m = _CART_REMOVE_RE.match(t)
@@ -3730,7 +4038,7 @@ _NC_POLITE_AFTER_VERB_RE = re.compile(
 # Вводные слова в начале: «а», «ну», «давай», «слушай», «теперь»…
 _NC_LEAD_RE = re.compile(
     r"^(?:(?:а|ну|давай(?:те)?|так|слушай|эй|hey|ok(?:ay)?|окей|ок|ладно|"
-    r"теперь|now)(?:\s*[,!]\s*|\s+))+",
+    r"теперь|now|just|so|alright|go\s+ahead\s+and|let[’']?s)(?:\s*[,!]\s*|\s+))+",
     re.IGNORECASE)
 # «(ты) можешь (ли ты) / не мог бы ты» + инфинитив → императив
 _NC_CAN_RE = re.compile(
@@ -3739,9 +4047,21 @@ _NC_CAN_RE = re.compile(
     r"(?P<verb>[а-яё]+(?:ть|ти|чь)(?:ся|сь)?)(?P<rest>(?:\s.*)?)$",
     re.IGNORECASE | re.DOTALL)
 _NC_CAN_EN_RE = re.compile(
-    r"^(?:(?:can|could|would|will)\s+you\s+|"
+    r"^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|"
     r"(?:i\s+(?:want|need)\s+you\s+to|i'?d\s+like\s+you\s+to)\s+)",
     re.IGNORECASE)
+# «would you mind opening youtube» → «open youtube»: герундий командных глаголов
+_NC_MIND_EN_RE = re.compile(
+    r"^(?:would|do)\s+you\s+mind\s+(opening|clicking|pressing|scrolling|typing|"
+    r"closing|playing|pausing|downloading|hovering|searching|reading|refreshing|"
+    r"reloading|switching|going|sending|entering)\b", re.IGNORECASE)
+_NC_GERUND_BASE = {"opening": "open", "clicking": "click", "pressing": "press",
+                   "scrolling": "scroll", "typing": "type", "closing": "close",
+                   "playing": "play", "pausing": "pause", "downloading": "download",
+                   "hovering": "hover", "searching": "search", "reading": "read",
+                   "refreshing": "refresh", "reloading": "reload",
+                   "switching": "switch", "going": "go", "sending": "send",
+                   "entering": "enter"}
 # Частица «-ка»: «открой-ка», «нажми-ка»
 _NC_KA_RE = re.compile(r"(?<=[а-яё])-ка\b", re.IGNORECASE)
 _NC_EDGE_PUNCT = " \t\n\r,.!?;:…"
@@ -3822,6 +4142,9 @@ def normalize_command(text: str, persona_names=()) -> str:
         m = _NC_CAN_RE.match(s)
         if m and m.group("verb").lower() in _NC_INF2IMP:
             s = _NC_INF2IMP[m.group("verb").lower()] + m.group("rest")
+        mm = _NC_MIND_EN_RE.match(s)
+        if mm:
+            s = _NC_GERUND_BASE[mm.group(1).lower()] + s[mm.end():]
         s = _NC_CAN_EN_RE.sub("", s)
         s = re.sub(r"\s+([,.!?])", r"\1", re.sub(r"\s{2,}", " ", s)).strip()
         if s == prev:
@@ -4053,7 +4376,11 @@ def split_compound_command(text: str) -> List[str]:
                 continue
         elif _SC_CLICK_HEAD_RE.match(rest_piece) and not explicit \
                 and not re.search(r"[,;]", sep) \
-                and re.search(r"\band\b", sep, re.IGNORECASE):
+                and re.search(r"\band\b", sep, re.IGNORECASE) \
+                and not (parse_key_request(s[start:m.start()])
+                         or parse_media_request(s[start:m.start()])):
+            # «press enter and …», «hit play and …» — клавиша/медиа законченная
+            # команда, а у подписи клика «Save and close» «and» — часть текста
             continue
         piece = s[start:m.start()].strip(" ,;")
         if piece:
@@ -8764,7 +9091,7 @@ class ComputerControlManager:
         close_obj = close_m.group(1).strip() if close_m else ""
         # «закрыть на джем» (скоуп-форма от разбора) — объект без предлога,
         # иначе целевое закрытие строило «закрыть на на джем»
-        close_obj = re.sub(r"^(?:на|в|во|у)\s+", "", close_obj,
+        close_obj = re.sub(r"^(?:на|в|во|у|on|in|at|the)\s+", "", close_obj,
                            flags=re.IGNORECASE)
         if close_goal:
             # «закрытие модального окна» → «закрыть»: ищем крестик, а не текст.
@@ -8859,7 +9186,7 @@ class ComputerControlManager:
                 # кнопкой не бывает
                 verb = close_m.group(0) if close_m else ""
                 collapse_try = ""
-                if verb.startswith("сверн"):
+                if verb.lower().startswith(("сверн", "minimi", "collapse")):
                     collapse_try = "свернуть"
                     if close_obj and not _CLOSE_GENERIC_RE.fullmatch(close_obj):
                         collapse_try = f"свернуть на {close_obj}"
