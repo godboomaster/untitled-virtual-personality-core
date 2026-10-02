@@ -754,13 +754,24 @@ def _pid_alive(pid: int) -> bool:
             return False
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True  # чужой процесс, но ЖИВОЙ
     except OSError:
         return False
+    # Зомби (завершился, родитель ещё не забрал код выхода) на сигнал 0
+    # отвечает, но не жив: Chrome пула H, завершённый вне бота, держал
+    # SingletonLock «живым» pid — профиль «занят», браузер не поднимался до
+    # перезапуска бота (01.10)
+    try:
+        st = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                            capture_output=True, text=True, timeout=2).stdout
+        if st.strip().startswith("Z"):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _proc_terminate(pid: int):
@@ -1975,6 +1986,14 @@ def _shutdown_pool_h(reason: str):
                         return
                     logger.info(f"[BrowserActions] Завершение пула H ({reason})")
                     _teardown_pool_h(grace_sec=10.0)
+                    # Окно rescue закрыто вместе с Chrome — rescue окончен.
+                    # Иначе срок в общем файле пережил бы перезапуск бота:
+                    # новый процесс поднял бы пул H снова ВИДИМЫМ, а
+                    # карантины, по которым rescue снимается сам, жили в
+                    # памяти прежнего процесса — снять его было бы нечем, и
+                    # до конца срока каждая вкладка пула выскакивала окном
+                    if pool_h_rescue_active():
+                        end_rescue_pool_h()
         except RawCallTimeout as e:
             logger.info(f"[BrowserActions] Завершение пула H пропущено: {e}")
     finally:
@@ -3143,7 +3162,7 @@ _DOM_STATE_JS = (
     "mix(d.getElementsByTagName('*').length);"
     "mix(d.body?d.body.childElementCount:0);"
     "mix(cnt('[aria-expanded=\"true\"]'));"
-    "mix(cnt('[aria-checked=\"true\"],[aria-pressed=\"true\","
+    "mix(cnt('[aria-checked=\"true\"],[aria-pressed=\"true\"],"
     "[aria-selected=\"true\"]'));"
     "mix(cnt(':checked'));"
     "mix(cnt('details[open],dialog[open]'));"
@@ -3182,6 +3201,13 @@ _DOM_STATE_JS = (
     "return window.__vpcDoc+'|'+location.href+'|'+d.readyState+'|'+(h>>>0);"
     "}catch(e2){return '';}})()"
 )
+
+# Отпечаток для проверки КЛИКА: без активного элемента (фокус получает сама
+# нажатая кнопка — пустышка иначе «срабатывала»), прокрутки и hit-тестов
+# вьюпорта. Полный отпечаток — у ввода и ожидания страницы
+_DOM_STATE_CLICK_JS = (
+    _DOM_STATE_JS[:_DOM_STATE_JS.index("var a=d.activeElement;")]
+    + _DOM_STATE_JS[_DOM_STATE_JS.index("var N=1500,D=20;"):])
 
 # Трёхзначный результат замера эффекта: изменилось / не изменилось /
 # замер не удался. «Замер не удался» никогда не равен «сработало» — иначе
@@ -3229,17 +3255,53 @@ def _scroll_if_off_js(idx: int) -> str:
             "inline:'nearest',behavior:'instant'});}}}catch(vpcX){}")
 
 
-def _state_js(scroll_idx: Optional[int] = None) -> str:
+# Состояние checkbox/radio label-обёртки цели ДО клика (window-переменная, не
+# атрибут: атрибут попал бы в отпечаток как «эффект»). По нему фолбэк клика
+# (_LABEL_TOGGLE_BODY_JS) отличает «наш клик уже перещёлкнул контрол» от
+# «клик прошёл мимо label-механики» — иначе кастомный чекбокс щёлкался бы
+# дважды. vpcSe — элемент из _scroll_if_off_js того же вызова
+_LABEL_PRE_JS = (
+    "try{window.__vpcChk='';if(vpcSe){"
+    "var vpcL=vpcSe.closest?vpcSe.closest('label'):null;"
+    "var vpcLI=vpcL?(vpcL.control||vpcL.querySelector("
+    "'input[type=checkbox],input[type=radio]')):null;"
+    "if(vpcLI&&/^(checkbox|radio)$/.test(vpcLI.type||''))"
+    "window.__vpcChk=vpcLI.checked?'1':'0';}}catch(vpcX2){}"
+)
+# Фолбэк клика без видимого эффекта для label-обёрток (e — элемент цели).
+# Сам label повторно НЕ кликаем: цель внутри него, наш клик уже прошёл через
+# label — второй клик перещёлкнул бы контрол обратно. input.click() — только
+# если контрол после нашего клика в прежнем состоянии (клик прошёл мимо
+# label-механики: интерактивный потомок, FAQ-аккордеон), и только из
+# выключенного: 'already' — уже включён, «нажми вопрос» ≠ «закрой его».
+# Состояние «до» неизвестно — не щёлкаем ('unknown' → честное «не уверен»)
+_LABEL_TOGGLE_BODY_JS = (
+    "var l=e.closest?e.closest('label'):null;if(!l)return '';"
+    "var i=l.control||l.querySelector('input[type=checkbox],input[type=radio]');"
+    "var p=window.__vpcChk;window.__vpcChk='';"
+    "if(!i||!/^(checkbox|radio)$/.test(i.type||''))return '';"
+    "var b=!!i.checked;"
+    "if(p!=='1'&&p!=='0')return 'unknown';"
+    "if(b!==(p==='1'))return 'flipped';"
+    "if(b)return 'already';"
+    "i.click();return i.checked!==b?'flipped':'stuck';"
+)
+
+
+def _state_js(scroll_idx: Optional[int] = None, click: bool = False) -> str:
     """JS замера отпечатка; со scroll_idx — сначала условная прокрутка
-    элемента во вьюпорт В ТОМ ЖЕ вызове (ноль лишних round trip'ов)."""
+    элемента во вьюпорт В ТОМ ЖЕ вызове (ноль лишних round trip'ов).
+    click — отпечаток клика (_DOM_STATE_CLICK_JS)."""
+    js = _DOM_STATE_CLICK_JS if click else _DOM_STATE_JS
     if scroll_idx is None:
-        return _DOM_STATE_JS
-    return ("(function(){" + _scroll_if_off_js(scroll_idx)
-            + "return " + _DOM_STATE_JS + ";})()")
+        return js
+    return ("(function(){" + _scroll_if_off_js(scroll_idx) + _LABEL_PRE_JS
+            + "return " + js + ";})()")
 
 
 def _page_state(scope, aux: str = "",
-                scroll_idx: Optional[int] = None) -> _Probe:
+                scroll_idx: Optional[int] = None,
+                click: bool = False) -> _Probe:
     """Замер страницы/фрейма через evaluate. Падение evaluate — это
     «замер не удался», а НЕ признак изменения: URL берём отдельно (playwright
     отдаёт его без JS), и только он с токеном документа решают, была ли
@@ -3251,7 +3313,7 @@ def _page_state(scope, aux: str = "",
     except Exception:
         url = ""
     try:
-        raw = str(scope.evaluate(_state_js(scroll_idx)) or "")
+        raw = str(scope.evaluate(_state_js(scroll_idx, click)) or "")
     except Exception:
         return _Probe(False, url, "", "", aux)
     return _probe_of(raw, url, aux)
@@ -3390,6 +3452,10 @@ def _eval_js_any(host_part: Optional[str], tab_id: Optional[int],
 # рендерятся последними и лежат поверх.
 _DISMISS_OVERLAY_JS = (
     "(function(){"
+    # strict (агент задач): только явные cookie/consent/gdpr-блокеры — любой
+    # другой диалог («Подтвердите заказ [ОК]», «Удалить? [ОК]») модель видит
+    # в снимке и решает сама, через гейт подтверждения
+    "var strict=__STRICT__;"
     "function vis(e){var s=getComputedStyle(e);"
     "return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';}"
     "function fixedish(e){var p=e,d=0;"
@@ -3397,6 +3463,8 @@ _DISMISS_OVERLAY_JS = (
     "if(s==='fixed'||s==='absolute')return true;p=p.parentElement;d++;}"
     "return false;}"
     "var ac=/^(принять|принимаю|принять все|принять всё|согласен|согласна|"
+    "принять (?:все )?(?:файлы )?(?:cookie|куки)|accept (?:all )?cookies|"
+    "allow (?:all )?cookies|"
     "соглашаюсь|ок|ok|okay|accept|accept all|agree|i agree|понятно|хорошо|"
     "разрешаю|разрешить|allow|allow all|отклонить|отклонить все|отклоняю|"
     "reject|reject all|decline|got it)[!.…]*$/i;"
@@ -3408,30 +3476,87 @@ _DISMISS_OVERLAY_JS = (
     # на главную
     "var dis=/^(закрыть|not now|позже|не сейчас|нет,? спасибо|спасибо,? нет|"
     "пропустить|skip)[!.…]*$/i;"
-    "var boxes=document.querySelectorAll('[role=dialog],[aria-modal=true],"
+    "var SEL='[role=dialog],[aria-modal=true],dialog,"
     "[class*=cookie],[class*=Cookie],[class*=consent],[class*=Consent],"
     "[id*=cookie],[id*=consent],[class*=gdpr],[class*=popup],[class*=Popup],"
     "[class*=modal],[class*=Modal],[class*=overlay],[class*=banner],"
-    "[class*=newsletter],[class*=subscribe]');"
+    "[class*=newsletter],[class*=subscribe]';"
+    # Самое внешнее окно вокруг кандидата: у «.modal-footer [ОК][Отмена]» свой
+    # текст пустой, а смысл («Подтвердите заказ на 1 299 ₽») — в .modal
+    "function big(e){var r=e.getBoundingClientRect();"
+    "return r.width>=innerWidth*0.95&&r.height>=innerHeight*0.95;}"
+    "function outer(b){var o=b,p=b.parentElement;"
+    # Окно — модальный предок или всплывающий слой (fixed/absolute), но не
+    # корень приложения на весь экран («app-overlay» — не окно: его текст
+    # сделал бы опасным любой баннер)
+    "while(p&&p!==document.body){try{if(p.matches(SEL)){"
+    "var ps=getComputedStyle(p).position;"
+    "if(mod(p)||((ps==='fixed'||ps==='absolute')&&!big(p)))o=p;}}"
+    "catch(x){}p=p.parentElement;}return o;}"
+    "function ci(e){return (e.getAttribute('class')||'')+' '"
+    "+(e.getAttribute('id')||'');}"
+    "function mod(e){return e.tagName==='DIALOG'||e.getAttribute('role')==="
+    "'dialog'||e.hasAttribute('aria-modal');}"
+    "var boxes=document.querySelectorAll(SEL);"
     "for(var i=boxes.length-1;i>=0;i--){var box=boxes[i];"
     "var r=box.getBoundingClientRect();"
     "if(r.width<40||r.height<30)continue;"
     "if(!vis(box))continue;"
-    "var blocker=/cookie|consent|gdpr|newsletter|subscribe|banner/i.test("
-    "(box.getAttribute('class')||'')+' '+(box.getAttribute('id')||''));"
-    "var modal=box.getAttribute('role')==='dialog'||box.hasAttribute('aria-modal');"
-    "if(!blocker&&!modal&&!fixedish(box))continue;"
+    "var ob=outer(box);"
+    "var cls=ci(box)+' '+ci(ob);"
+    "var blocker=/cookie|consent|gdpr|newsletter|subscribe|banner/i.test(cls);"
+    "var modal=mod(box)||mod(ob);"
+    "if(strict&&!/cookie|consent|gdpr/i.test(cls))continue;"
+    # Только всплывающее окно (fixed/модальное): блок внутри страницы
+    # («Даю согласие…» в форме оформления, «Согласен получать рассылки») —
+    # не оверлей, согласие в нём за человека не даём
+    "if(!modal&&!fixedish(box))continue;"
+    "var bt=(ob.innerText||'').slice(0,3000);"
+    # Опасное окно — согласие в нём необратимое решение человека: сумма,
+    # списание, подписка — всегда; в окне не про cookie — ещё заказ,
+    # оплата, удаление, отправка, очистка, выход. Cookie-баннер с «in order
+    # to»/«оформлять заказы» по-прежнему принимается
+    # Cookie-баннер — по классу/id окна (cookie/gdpr/consent), не по словам
+    # в тексте: «персональные данные», «конфиденциальность», сноска «мы
+    # используем cookie» бывают и в окне удаления/заказа
+    "var cookie=/cookie|gdpr|consent/i.test(cls);"
+    # Всегда опасно: сумма, списание, подписка; удаление аккаунта, выход,
+    # подтверждение/оформление заказа
+    "var money=/\\d[\\d\\s\\u00a0.,]*\\s*(?:₽|руб|\\$|€|£)|[$€£]\\s*\\d|"
+    "автоплат|автопродл|billing|subscri|подписк/i.test(bt);"
+    "var kill=/удал\\S*\\s+(?:ваш\\S*\\s+|мой\\s+|свой\\s+)?(?:аккаунт|"
+    "профил|учётн|учетн)|delete\\s+(?:your\\s+|my\\s+)?(?:account|profile)|"
+    "выйти\\s+из|log ?out|sign ?out|подтверд\\S*\\s+(?:ваш\\S*\\s+)?заказ|"
+    "confirm\\s+(?:your\\s+)?order|оформить\\s+заказ|place\\s+(?:your\\s+)?"
+    "order|отправить\\s+(?:ваш\\S*\\s+)?(?:заявк|письм|сообщ|заказ|анкет|"
+    "отзыв)|опубликова|publish|submit\\s+(?:your\\s+)?application/i.test(bt);"
+    # Вне cookie-окна опасно и остальное про заказ/оплату/удаление/отправку/
+    # публикацию/бронь («cookies … to process payments / удалить cookie» в
+    # самом баннере — нет)
+    "var act=/заказ|оплат|подтверд|списа|удал|очист|выйт|выход|отправ|"
+    "опубликов|брон|заявк|order|\\bpay|confirm|checkout|purchas|delet|"
+    "remov|\\bclear\\b|\\bsend\\b|recipient|publish|\\bbook|submit|"
+    "application|charge/i.test(bt);"
+    "var danger=money||kill||(!cookie&&act);"
+    "if(strict&&danger)continue;"
+    "if(!blocker&&danger)continue;"
     "var bs=box.querySelectorAll('button,a,[role=button],"
     "input[type=button],input[type=submit]');"
     # Утвердительное согласие — на любом модале; отмашка — только на блокере
     "var hit=null,ds=null;"
     "for(var j=0;j<bs.length;j++){var b=bs[j];"
+    # Кнопка формы — отправка формы, а не отмашка оверлея (кроме формы
+    # cookie-баннера); «Разрешить/Allow» — только в cookie-баннере (иначе это
+    # выдача доступа)
+    "if(!cookie&&(b.form||(b.getAttribute('type')||'').toLowerCase()"
+    "==='submit'))continue;"
     "var t=((b.innerText||b.value||'')+'').replace(/\\s+/g,' ').trim();"
     "if(!t)t=(b.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();"
     "if(!t||t.length>40)continue;"
     "var br=b.getBoundingClientRect();"
     "if(br.width<2||br.height<2||!vis(b))continue;"
-    "if(ac.test(t)){hit={e:b,t:t};break;}"
+    "if(ac.test(t)&&!danger&&(cookie||!/^(разреш|allow)/i.test(t)))"
+    "{hit={e:b,t:t};break;}"
     "if(!ds&&dis.test(t))ds={e:b,t:t};}"
     "if(!hit&&blocker)hit=ds;"
     "if(!hit&&blocker){"
@@ -3450,13 +3575,16 @@ _DISMISS_OVERLAY_JS = (
 
 
 def dismiss_overlay(host_part: Optional[str] = None,
-                    tab_id: Optional[int] = None) -> Optional[str]:
+                    tab_id: Optional[int] = None,
+                    consent_only: bool = False) -> Optional[str]:
     """Закрыть типовой оверлей-блокер, если он сейчас на странице (один
     консервативный клик — см. _DISMISS_OVERLAY_JS). → текст нажатого
     контрола; None — оверлея нет, кликнуть не удалось или бэкенд недоступен
-    (это не ошибка: вызывается best effort перед снапшотом)."""
+    (это не ошибка: вызывается best effort перед снапшотом).
+    consent_only — только cookie/consent/gdpr-баннер (агент задач)."""
+    js = _js_fill(_DISMISS_OVERLAY_JS, STRICT=bool(consent_only))
     try:
-        raw = _eval_js_any(host_part, tab_id, _DISMISS_OVERLAY_JS)
+        raw = _eval_js_any(host_part, tab_id, js)
     except Exception as e:
         logger.debug(f"[BrowserActions] Детект оверлеев недоступен: {e}")
         return None
@@ -3612,17 +3740,66 @@ def try_challenge_autoclick(host_part: Optional[str] = None,
         return False
 
 
+# «стоп» пользователя в долгих опросах. Исполнитель режима управления ставит
+# дешёвую проверку на свой поток (stop_scope); задачам воркера её передают
+# явно (open_new_tab). Опрос видит флаг — выходит досрочно, честный ответ
+# «остановлено» собирает вызывающий. Без проверки — поведение как раньше
+_STOP_TL = threading.local()
+
+
+@contextmanager
+def stop_scope(check):
+    prev = getattr(_STOP_TL, "check", None)
+    _STOP_TL.check = check
+    try:
+        yield
+    finally:
+        _STOP_TL.check = prev
+
+
+def current_stop():
+    return getattr(_STOP_TL, "check", None)
+
+
+def stop_hit(stop=None) -> bool:
+    fn = stop or getattr(_STOP_TL, "check", None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn())
+    except Exception:
+        return False
+
+
+def sleep_or_stop(sec: float, stop=None) -> bool:
+    """Слип кусками по 0.1 с; True — пришёл «стоп» (досрочно). Проверки
+    нет — один обычный слип, как раньше."""
+    if (stop or getattr(_STOP_TL, "check", None)) is None:
+        time.sleep(max(0.0, float(sec)))
+        return False
+    end = time.monotonic() + max(0.0, float(sec))
+    while True:
+        if stop_hit(stop):
+            return True
+        left = end - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(0.1, left))
+
+
 def wait_dom_idle(host_part: Optional[str] = None, tab_id: Optional[int] = None,
-                  timeout_sec: float = 2.0, min_wait: float = 0.3) -> None:
+                  timeout_sec: float = 2.0, min_wait: float = 0.3,
+                  stop=None) -> None:
     """Пауза после действия ВМЕСТО фиксированного слипа: ждём, пока
     DOM-отпечаток перестанет меняться (DOM_STABLE_POLLS одинаковых замеров
     подряд с шагом DOM_POLL_MS), в границах [min_wait, timeout_sec]. Живая
     страница (дорендер SPA) даёт подождать дольше слепого слипа, статичная —
-    выйти раньше. Бэкенд без eval — просто фиксированный слип."""
+    выйти раньше. Бэкенд без eval — просто фиксированный слип.
+    stop — проверка «стоп» (None — из stop_scope потока): выход досрочно."""
     try:
         state = _eval_js_any(host_part, tab_id, _DOM_STATE_JS)
     except Exception:
-        time.sleep(max(min_wait, timeout_sec / 2))
+        sleep_or_stop(max(min_wait, timeout_sec / 2), stop)
         return
     t0 = time.monotonic()
     stable = 0
@@ -3631,6 +3808,8 @@ def wait_dom_idle(host_part: Optional[str] = None, tab_id: Optional[int] = None,
         if elapsed >= timeout_sec:
             return
         if stable >= DOM_STABLE_POLLS and elapsed >= min_wait:
+            return
+        if stop_hit(stop):
             return
         time.sleep(DOM_POLL_MS / 1000)
         try:
@@ -4766,6 +4945,45 @@ def _js_fill(template: str, **values) -> str:
 # текст страницы с целью пользователя: раздельные копии этой нормализации
 # в разных шаблонах расходятся по набору правил, и «нажми елка» не находит
 # «Ёлка», «lumieres» не находит Lumière.
+# Состояние переключателя (поле on снапшота): 1 — выбран/нажат/отмечен,
+# 0 — явно не выбран, -1 — неизвестно. Без него модель агента не видит,
+# что опция («добавить ингредиент», чекбокс, чип фильтра, лайк) уже
+# включена, жмёт её снова — и выключает. Признаки общие, без привязки к
+# сайту: aria-pressed/checked/selected; нативный checkbox/radio (сам
+# элемент, label.control или единственный вложенный); data-state/
+# data-selected/…; класс-состояние (selected/checked/active/…) на самом
+# элементе или на обёртке, где он единственный контрол. Отрицания
+# (not-selected, unselected, inactive) — не «выбран»
+_VPC_ON_JS = (
+    "function vpcOnCls(n){var c=(n.getAttribute&&n.getAttribute('class')||'')"
+    ".toString();"
+    "if(/(^|[\\s_-])(not|un|no)[_-]?(selected|checked|active)/i.test(c))return 0;"
+    "return /(^|[\\s_-])(is[_-]?)?(selected|checked|active|chosen|picked|"
+    "toggled|pressed|on)(?=$|[\\s_-])/i.test(c)?1:-1;}"
+    "function vpcOn(e){try{"
+    "var an=['aria-pressed','aria-checked','aria-selected'];"
+    "for(var ai=0;ai<an.length;ai++){var av=e.getAttribute(an[ai]);"
+    "if(av==='true'||av==='mixed')return 1;if(av==='false')return 0;}"
+    "var inp=null,rx=/^(checkbox|radio)$/i;"
+    "if(e.tagName==='INPUT'&&rx.test(e.type))inp=e;"
+    "else if(e.tagName==='LABEL'&&e.control&&rx.test(e.control.type))inp=e.control;"
+    "else{var qi=e.querySelectorAll('input[type=checkbox],input[type=radio]');"
+    "if(qi.length===1)inp=qi[0];}"
+    "if(inp)return inp.checked?1:0;"
+    "var ds=(e.getAttribute('data-state')||'').toLowerCase();"
+    "if(/^(on|checked|active|selected)$/.test(ds))return 1;"
+    "if(/^(off|unchecked|inactive|unselected)$/.test(ds))return 0;"
+    "var dn=['data-selected','data-checked','data-active'];"
+    "for(var di=0;di<dn.length;di++){var dv=e.getAttribute(dn[di]);"
+    "if(dv!==null)return /^(false|0)$/i.test(dv)?0:1;}"
+    "var oc=vpcOnCls(e);if(oc>=0)return oc;"
+    "var pa=e.parentElement;"
+    "if(pa&&pa!==document.body&&pa.querySelectorAll('a[href],button,"
+    "[role=button],input,label,[role=checkbox],[role=switch]').length<=1){"
+    "oc=vpcOnCls(pa);if(oc>=0)return oc;}"
+    "}catch(x){}return -1;}"
+)
+
 _VPC_NORM_CORE_JS = (
     "function __vpcFold(ch){"
     "if(ch==='ё')return 'е';"
@@ -4862,6 +5080,7 @@ _SNAPSHOT_JS = (
     # против нашего «var inner» убивает снапшот целиком (Identifier 'inner'
     # has already been declared)
     "(function(){"
+    + _VPC_ON_JS +
     "var sel='a[href],button,[role=button],input[type=button],input[type=submit],summary,[role=link],"
     "[role=tab],[role=option],[role=menuitem],[role=switch]';"
     # Поля ввода — тоже элементы снапшота (флаг ed): команда «введи X в поле Y»
@@ -4966,7 +5185,9 @@ _SNAPSHOT_JS = (
     "function vpcMd(e){var p=e,d=0;"
     "while(p&&p!==document.body&&d<20){"
     "if(p.getAttribute){"
-    "if(p.getAttribute('role')==='dialog'||p.hasAttribute('aria-modal'))return 1;"
+    # Нативный <dialog> (showModal — верхний слой, z-index auto) — тоже окно
+    "if(p.tagName==='DIALOG'||p.getAttribute('role')==='dialog'"
+    "||p.hasAttribute('aria-modal'))return 1;"
     "var cl=(p.getAttribute('class')||'').toString();"
     "if(/popup|modal|dialog|overlay|sheet|lightbox/i.test(cl))return 1;"
     "var s=getComputedStyle(p);"
@@ -5005,10 +5226,42 @@ _SNAPSHOT_JS = (
     # Внешняя ссылка (уводит на другой хост, например в футере — «Калорийность
     # и состав» на внешний документ) — штраф в скоринге против on-page контролов
     "function vpcExt(e){try{return e.href&&(new URL(e.href)).host!==location.host?1:0;}catch(x){return 0;}}"
+    # Неактивный контрол (disabled, aria-disabled, в fieldset[disabled]/inert):
+    # клик по нему ничего не сделает, а force-клик Playwright всё равно
+    # «нажимал» и отчитывался «сделано»
+    "function vpcDis(e){try{if(e.matches(':disabled'))return 1;}catch(x){}"
+    "return e.closest&&e.closest('[aria-disabled=true],fieldset[disabled],"
+    "[inert]')?1:0;}"
+    # Форма с личными полями (телефон/почта/пароль/адрес) — оформление, а
+    # не поиск: «Поиск адреса» в ней не поисковое поле
+    "function vpcPf(e){var f=e.form||(e.closest&&e.closest('form'));"
+    "if(!f)return 0;try{return f.querySelector('input[type=tel],"
+    "input[type=email],input[type=password],[autocomplete*=address],"
+    "[autocomplete*=tel],[autocomplete*=email],[autocomplete^=cc-],"
+    "[autocomplete*=postal],[name*=address],[name*=phone],[name*=street]')"
+    "?1:0;}catch(x){return 0;}}"
+    # Форма поля — поисковая: поле вне формы, форма role=search, или в ней не
+    # больше двух полей и все кнопки — «найти» (поле «Улица и дом» type=search
+    # в форме заказа и обёртка role=search вокруг формы отзыва — не поиск:
+    # Enter там отправляет заказ/отзыв)
+    "function vpcSo(e){var f=e.form||(e.closest&&e.closest('form'));"
+    "if(!f)return 1;if((f.getAttribute('role')||'')==='search')return 1;"
+    "try{if(f.querySelectorAll('input:not([type=hidden]),textarea,select')"
+    ".length>2)return 0;"
+    "var bs=f.querySelectorAll('button,input[type=submit],input[type=image]');"
+    "for(var i=0;i<bs.length;i++){var t=((bs[i].innerText||bs[i].value||"
+    "bs[i].getAttribute('aria-label')||'')+'').trim();"
+    "if(t&&!/найти|поиск|искать|search|find|^go$/i.test(t))return 0;}}"
+    "catch(x){return 0;}return 1;}"
     "function vpcInfo(e,tg){var b=e.getBoundingClientRect();"
     "var ed=0;try{ed=e.matches(edsel)?1:0;}catch(x){}"
-    "var t=(ed?(vpcLabel(e)||e.value||e.innerText||e.title||''):"
-    "(e.innerText||e.value||e.getAttribute('aria-label')||e.title||e.getAttribute('alt')||e.getAttribute('placeholder')||'')).replace(/\\s+/g,' ').trim();"
+    # Поле ввода подписываем ТОЛЬКО подписью/placeholder: его значение
+    # (введённый пароль, email, текст сообщения) уходит в LLM-резолв и аудит
+    "var t=(ed?(vpcLabel(e)||e.title||e.getAttribute('data-placeholder')||''):"
+    # value — только у кнопок (их надпись); у прочих input (date, range,
+    # hidden-подобных вне edsel) это данные пользователя
+    "(e.innerText||((/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)&&"
+    "!/^(button|submit|reset)$/i.test(e.type||''))?'':e.value)||e.getAttribute('aria-label')||e.title||e.getAttribute('alt')||e.getAttribute('placeholder')||'')).replace(/\\s+/g,' ').trim();"
     # Подпись-бейдж длительности («1:03» на ссылке-превью карточки видео):
     # innerText побеждает aria/title, и обёртка подписывается таймером
     # вместо названия видео — переподписываем из aria-label/title, если
@@ -5052,12 +5305,28 @@ _SNAPSHOT_JS = (
     # ссылок футера («состав» на странице товара). sc — активный слой поверх
     # затемнённого фона (текстовый выбор и vision-рамки режутся до него)
     "md:vpcMd(e),dd:vpcDd(e),sf:vpcSf(e),ext:vpcExt(e),sc:vpcSc(e),cov:vpcCov(e),"
+    # Состояние переключателя (_VPC_ON_JS): 1/0/-1
+    "on:vpcOn(e),"
+    # Кнопка отправки формы (submit/image у формы), принадлежность к форме,
+    # неактивность — агент задач по ним решает, спрашивать ли «да»
+    "sub:(e.form&&/^(submit|image)$/i.test(e.type||''))?1:0,"
+    "fm:(e.form||(e.closest&&e.closest('form')))?1:0,dis:vpcDis(e),"
     "q:(ed&&(e.type==='search'||/search|поиск/i.test((e.id||'')+' '+"
     "(e.getAttribute('class')||'')+' '+(e.getAttribute('name')||'')+' '+"
     "(e.getAttribute('placeholder')||'')))?1:0),"
+    # Строго поисковое поле (агент задач: Enter/submit в нём — без «да»):
+    # type=search/role=searchbox/внутри role=search и не в форме с личными
+    # полями. q по подписи («address-search», «Поиск адреса») — нет
+    "qs:(ed&&(e.type==='search'||e.getAttribute('role')==='searchbox'||"
+    "!!(e.closest&&e.closest('[role=search]')))&&!vpcPf(e)&&vpcSo(e))?1:0,"
     # Чувствительное поле (пароль/email/tel): ввод туда подтверждается
-    # всегда (needs_confirm), «безопасное поле» по одной подписи не считаем
-    "sn:(ed&&/^(password|email|tel)$/.test(e.type))?1:0,"
+    # всегда (needs_confirm), «безопасное поле» по одной подписи не считаем.
+    # autocomplete tel/email/username и inputmode tel/email — тоже: маска
+    # телефона бывает на type=text
+    "sn:(ed&&(/^(password|email|tel)$/.test(e.type)||/one-time-code|cc-|"
+    "password|(?:^|\\s)(?:tel|tel-national|tel-local|email)"
+    "(?:\\s|$)/.test(e.getAttribute('autocomplete')||'')||"
+    "/^(tel|email)$/.test(e.getAttribute('inputmode')||'')))?1:0,"
     "x:Math.round(b.left),y:Math.round(b.top),"
     "vp:(b.bottom>0&&b.right>0&&b.top<window.innerHeight&&b.left<window.innerWidth)?1:0};}"
     # Пилюли-переключатели вида «30 см / Тонкое тесто», оценки,
@@ -5398,6 +5667,17 @@ _SNAPSHOT_JS = (
 )
 
 
+def _state_flags(it: dict) -> dict:
+    """Флаги состояния элемента из JS снапшота: on — переключатель выбран
+    (1/0, -1 — не знаем; раньше терялся здесь, и логика выбранных опций
+    агента была мертва), sub — кнопка отправки формы, fm — в форме, dis —
+    неактивен, qs — строго поисковое поле."""
+    on = it.get("on")
+    return {"on": on if on in (0, 1, -1) and not isinstance(on, bool) else -1,
+            "sub": bool(it.get("sub")), "fm": bool(it.get("fm")),
+            "dis": bool(it.get("dis")), "qs": bool(it.get("qs"))}
+
+
 def _parse_snapshot(raw: str) -> Tuple[str, List[dict]]:
     """JSON снапшота → (url, нормализованные items). Любая неразбериха —
     BrowserUnavailable с человеческим текстом."""
@@ -5439,6 +5719,7 @@ def _parse_snapshot(raw: str) -> Tuple[str, List[dict]]:
                 "dd": bool(it.get("dd")),
                 "sf": bool(it.get("sf")),
                 "ext": bool(it.get("ext")),
+                **_state_flags(it),
                 # Элемент активного слоя (поверх затемнённого фона); у
                 # фреймов/целевого снапшота флага нет — там по умолчанию
                 "sc": bool(it.get("sc", 1)),
@@ -5471,6 +5752,7 @@ FRAME_SNAPSHOT_ITEMS = 25  # бюджет элементов на фрейм (у
 
 _FRAME_SNAPSHOT_JS = (
     "(function(base,lim){"
+    + _VPC_ON_JS +
     "document.querySelectorAll('[data-vpc-idx],[data-vpc-gidx]').forEach(function(e){"
     "e.removeAttribute('data-vpc-idx');e.removeAttribute('data-vpc-gidx')});"
     "var sel='a[href],button,[role=button],input[type=button],input[type=submit],"
@@ -5487,7 +5769,9 @@ _FRAME_SNAPSHOT_JS = (
     "var s=getComputedStyle(e);"
     "if(s.display==='none'||s.visibility==='hidden'||s.opacity==='0')continue;"
     "var ed=0;try{ed=e.matches(edsel)?1:0;}catch(x){}"
-    "var t=(e.innerText||e.value||e.getAttribute('aria-label')||e.title||"
+    # Значение поля ввода в подпись не берём (приватность: снапшот уходит в LLM)
+    "var t=((ed?'':(e.innerText||((/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)&&"
+    "!/^(button|submit|reset)$/i.test(e.type||''))?'':e.value)))||e.getAttribute('aria-label')||e.title||"
     "e.getAttribute('placeholder')||'').replace(/\\s+/g,' ').trim();"
     # Плавающая подпись поля (текстовый сосед перед input) — как vpcLabel
     "if(!t&&ed){var sib=e.previousElementSibling;if(sib){t=(sib.innerText||'').replace(/\\s+/g,' ').trim();if(t.length>40)t='';}}"
@@ -5503,9 +5787,16 @@ _FRAME_SNAPSHOT_JS = (
     "(e.getAttribute('placeholder')||'')))?1:0),"
     # Чувствительное поле (пароль/email/tel): ввод туда подтверждается
     # всегда (needs_confirm), «безопасное поле» по одной подписи не считаем
-    "sn:(ed&&/^(password|email|tel)$/.test(e.type))?1:0,"
-    "x:Math.round(r.left),y:Math.round(r.top),ed:ed,"
-    "md:(e.closest('[role=dialog],[aria-modal=true],[class*=popup],"
+    "sn:(ed&&(/^(password|email|tel)$/.test(e.type)||/one-time-code|cc-|"
+    "password|(?:^|\\s)(?:tel|tel-national|tel-local|email)"
+    "(?:\\s|$)/.test(e.getAttribute('autocomplete')||'')||"
+    "/^(tel|email)$/.test(e.getAttribute('inputmode')||'')))?1:0,"
+    "x:Math.round(r.left),y:Math.round(r.top),ed:ed,on:vpcOn(e),"
+    "sub:(e.form&&/^(submit|image)$/i.test(e.type||''))?1:0,"
+    "fm:(e.form||e.closest('form'))?1:0,"
+    "dis:(function(){try{if(e.matches(':disabled'))return 1;}catch(x){}"
+    "return e.closest('[aria-disabled=true],fieldset[disabled],[inert]')?1:0;})(),"
+    "md:(e.closest('dialog,[role=dialog],[aria-modal=true],[class*=popup],"
     "[class*=modal],[class*=Modal],[class*=dialog],[class*=overlay]')?1:0),"
     "dd:(e.closest('[role=listbox],[role=menu],[role=tree],[role=option],"
     "[role=menuitem],[class*=dropdown-menu],[class*=listbox],"
@@ -5599,6 +5890,7 @@ def _merge_frame_items(page, items: List[dict]) -> List[dict]:
                     "dd": bool(it.get("dd")),
                     "sf": bool(it.get("sf")),
                     "ext": bool(it.get("ext")),
+                    **_state_flags(it),
                     "fr": fhost,
                 })
                 added += 1
@@ -5677,7 +5969,7 @@ def snapshot_elements(host_part: Optional[str] = None,
 # (_mark_base): потребителю не нужно знать, какой снапшот пометил элемент.
 _GOAL_SNAPSHOT_JS = (
     "(function(goal){"
-    + _VPC_NORM_JS +
+    + _VPC_NORM_JS + _VPC_ON_JS +
     "var sel='a[href],button,[role=button],input[type=button],input[type=submit],"
     "summary,[role=link],[role=tab],[role=option],[role=menuitem],[role=switch]';"
     "document.querySelectorAll('[data-vpc-gidx]').forEach(function(e){"
@@ -5705,7 +5997,9 @@ _GOAL_SNAPSHOT_JS = (
     "function vpcMd(e){var p=e,d=0;"
     "while(p&&p!==document.body&&d<20){"
     "if(p.getAttribute){"
-    "if(p.getAttribute('role')==='dialog'||p.hasAttribute('aria-modal'))return 1;"
+    # Нативный <dialog> (showModal — верхний слой, z-index auto) — тоже окно
+    "if(p.tagName==='DIALOG'||p.getAttribute('role')==='dialog'"
+    "||p.hasAttribute('aria-modal'))return 1;"
     "var cl=(p.getAttribute('class')||'').toString();"
     "if(/popup|modal|dialog|overlay|sheet|lightbox/i.test(cl))return 1;"
     "var s=getComputedStyle(p);"
@@ -5738,7 +6032,11 @@ _GOAL_SNAPSHOT_JS = (
     "return 0;}"
     "function vpcExt(e){try{return e.href&&(new URL(e.href)).host!==location.host?1:0;}catch(x){return 0;}}"
     "function info(e,tg){var b=e.getBoundingClientRect();"
-    "var t=(e.innerText||e.value||e.getAttribute('aria-label')||e.title||'')"
+    # Значение поля ввода в подпись не берём (приватность: уходит в LLM);
+    # value кнопок — их надпись
+    "var t=(e.innerText||((/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)&&"
+    "!/^(button|submit|reset)$/i.test(e.type||''))?'':e.value)||"
+    "e.getAttribute('aria-label')||e.title||'')"
     ".replace(/\\s+/g,' ').trim();"
     "var ctx='',p=e.parentElement,d=0;"
     "while(p&&d<6){var pt=(p.innerText||'').replace(/\\s+/g,' ').trim();"
@@ -5754,7 +6052,13 @@ _GOAL_SNAPSHOT_JS = (
     ".replace(/\\s+/g,' ').trim().slice(0,80),"
     "href:e.href||'',w:Math.round(b.width),h:Math.round(b.height),ed:0,"
     "md:vpcMd(e),dd:vpcDd(e),sf:vpcSf(e),ext:vpcExt(e),cov:vpcCov(e),"
-    "x:Math.round(b.left),"
+    "on:vpcOn(e),x:Math.round(b.left),"
+    # Неактивность и отправка формы — как у общего снимка (агент по ним
+    # решает «да»; найденное через find — те же правила)
+    "dis:(function(){try{if(e.matches(':disabled'))return 1;}catch(x){}"
+    "return e.closest('[aria-disabled=true],fieldset[disabled],[inert]')?1:0;})(),"
+    "sub:(e.form&&/^(submit|image)$/i.test(e.type||''))?1:0,"
+    "fm:(e.form||e.closest('form'))?1:0,"
     "vp:(b.bottom>0&&b.right>0&&b.top<window.innerHeight&&b.left<window.innerWidth)?1:0};}"
     # Общая нормализация цели (__vpcN — регистр/дефисы/апострофы/диакритика/
     # ё=е): «айс-ти»≈«Айс ти», «lumieres»≈«Lumière», «елка»≈«Ёлка»
@@ -5965,10 +6269,129 @@ def snapshot_for_goal(host_part: Optional[str], goal: str,
                 "sf": bool(it.get("sf")),
                 "ext": bool(it.get("ext")),
                 "cov": bool(it.get("cov")),
+                **_state_flags(it),
             })
         except (TypeError, ValueError):
             continue
     return url, items
+
+
+# Позиции раздела меню/каталога по разметке — только чтение (ни меток, ни
+# прокрутки). Одностраничное меню (Додо: 165 карточек, разделы — блоки с
+# заголовком h2 «Напитки») в общий снапшот не влезает (бюджет 100, сначала
+# видимое), а «видимое после прокрутки» захватывает и хвост прошлого
+# раздела. Заголовок с текстом раздела — не ссылка, не в навигации и не в
+# закреплённой панели; блок раздела — самый широкий предок заголовка, где
+# нет другого заголовка того же уровня; позиции — кликабельные элементы
+# блока с ценой и словом (внешний из вложенных, без дублей текста).
+_SECTION_ITEMS_JS = (
+    "(function(name){"
+    "function nm(s){return (s||'').replace(/\\s+/g,' ').trim().toLowerCase();}"
+    "var want=nm(name);"
+    "function pinned(e){while(e&&e!==document.body){var ps=getComputedStyle(e).position;"
+    "if(ps==='fixed'||ps==='sticky')return true;e=e.parentElement;}return false;}"
+    "var hs=document.querySelectorAll('h1,h2,h3,h4,h5,[role=heading]'),h=null;"
+    "for(var i=0;i<hs.length;i++){var x=hs[i];if(nm(x.innerText)!==want)continue;"
+    "if(x.closest('a,button,nav,[role=tab],[role=navigation],[role=link]'))continue;"
+    "if(pinned(x))continue;h=x;break;}"
+    "if(!h)return JSON.stringify({found:false});"
+    "var sel=h.getAttribute('role')==='heading'?'[role=heading]':h.tagName.toLowerCase();"
+    "var box=null,p=h.parentElement;"
+    "while(p&&p!==document.body){var others=p.querySelectorAll(sel),hit=false;"
+    "for(var j=0;j<others.length;j++){if(others[j]!==h&&nm(others[j].innerText)"
+    "&&!others[j].closest('a,button,nav')){hit=true;break;}}"
+    "if(hit)break;box=p;p=p.parentElement;}"
+    "if(!box)return JSON.stringify({found:true,items:[]});"
+    "var money=/\\d[\\d\\s\\u00a0.,]*\\s*(?:\\u20bd|\\u0440\\u0443\\u0431|\\$|\\u20ac|\\u00a3)|[$\\u20ac\\u00a3]\\s*\\d/i;"
+    "var word=/[^\\s\\d.,:;()\\u20bd$\\u20ac\\u00a3\\u2013\\u2014-]{3}/;"
+    "var cand=box.querySelectorAll('a[href],button,[role=button],[role=link],article,li,div,span');"
+    "var out=[],taken=[],seen={};"
+    "for(i=0;i<cand.length&&out.length<120;i++){var e=cand[i];"
+    "var inside=false;for(j=0;j<taken.length;j++){if(taken[j].contains(e)){inside=true;break;}}"
+    "if(inside)continue;"
+    "var t=(e.innerText||'').replace(/\\s+/g,' ').trim();"
+    "if(!t||t.length>120||!money.test(t)||!word.test(t.replace(money,' ')))continue;"
+    "var clk=e.matches('a[href],button,[role=button],[role=link],article')"
+    "||getComputedStyle(e).cursor==='pointer';if(!clk)continue;"
+    "var r=e.getBoundingClientRect();if(r.width<2||r.height<2)continue;"
+    "taken.push(e);if(seen[t])continue;seen[t]=1;out.push(t.slice(0,80));}"
+    "return JSON.stringify({found:true,items:out});"
+    "})(__NAME__)"
+)
+
+
+def section_items(host_part: Optional[str], name: str,
+                  tab_id: Optional[int] = None) -> Optional[List[str]]:
+    """Подписи позиций раздела «name» по разметке страницы (_SECTION_ITEMS_JS)
+    — только чтение. None — заголовка раздела нет (раздел — отдельная
+    страница, другой язык подписи) или ответ не разобрать."""
+    safe = _clean_goal_text(name, 60)
+    if not safe:
+        return None
+    raw = _run_js(host_part, _js_fill(_SECTION_ITEMS_JS, NAME=safe),
+                  tab_id=tab_id)
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("found"):
+        return None
+    return [str(x)[:80] for x in data.get("items") or ()
+            if isinstance(x, str) and x.strip()]
+
+
+# Названия разделов меню/каталога по разметке — только чтение: заголовки,
+# у чьего блока (как в _SECTION_ITEMS_JS) не меньше двух позиций с ценой.
+# Запасной источник, когда модель разделов не назвала (живой 00:16: ссылки
+# разделов Додо стояли в начале списка, а показан обзор всей страницы)
+_SECTION_NAMES_JS = (
+    "(function(){"
+    "function nm(s){return (s||'').replace(/\\s+/g,' ').trim();}"
+    "function pinned(e){while(e&&e!==document.body){var ps=getComputedStyle(e).position;"
+    "if(ps==='fixed'||ps==='sticky')return true;e=e.parentElement;}return false;}"
+    "var money=/\\d[\\d\\s\\u00a0.,]*\\s*(?:\\u20bd|\\u0440\\u0443\\u0431|\\$|\\u20ac|\\u00a3)|[$\\u20ac\\u00a3]\\s*\\d/i;"
+    "var word=/[^\\s\\d.,:;()\\u20bd$\\u20ac\\u00a3\\u2013\\u2014-]{3}/;"
+    "var hs=document.querySelectorAll('h1,h2,h3,h4,h5,[role=heading]'),out=[];"
+    "for(var i=0;i<hs.length&&out.length<20;i++){var h=hs[i],name=nm(h.innerText);"
+    "if(!name||name.length>40||out.indexOf(name)>=0)continue;"
+    "if(h.closest('a,button,nav,[role=tab],[role=navigation],[role=link]'))continue;"
+    "if(pinned(h))continue;"
+    "var sel=h.getAttribute('role')==='heading'?'[role=heading]':h.tagName.toLowerCase();"
+    "var box=null,p=h.parentElement;"
+    "while(p&&p!==document.body){var others=p.querySelectorAll(sel),hit=false;"
+    "for(var j=0;j<others.length;j++){if(others[j]!==h&&nm(others[j].innerText)"
+    "&&!others[j].closest('a,button,nav')){hit=true;break;}}"
+    "if(hit)break;box=p;p=p.parentElement;}"
+    "if(!box)continue;"
+    "var cand=box.querySelectorAll('a[href],button,[role=button],[role=link],article,li,div,span');"
+    "var taken=[];"
+    "for(j=0;j<cand.length&&taken.length<2;j++){var e=cand[j],inside=false;"
+    "for(var k=0;k<taken.length;k++){if(taken[k].contains(e)){inside=true;break;}}"
+    "if(inside)continue;"
+    "var t=(e.innerText||'').replace(/\\s+/g,' ').trim();"
+    "if(!t||t.length>120||!money.test(t)||!word.test(t.replace(money,' ')))continue;"
+    "var clk=e.matches('a[href],button,[role=button],[role=link],article')"
+    "||getComputedStyle(e).cursor==='pointer';if(!clk)continue;"
+    "var r=e.getBoundingClientRect();if(r.width<2||r.height<2)continue;"
+    "taken.push(e);}"
+    "if(taken.length>=2)out.push(name);}"
+    "return JSON.stringify(out);"
+    "})()"
+)
+
+
+def section_names(host_part: Optional[str],
+                  tab_id: Optional[int] = None) -> Optional[List[str]]:
+    """Названия разделов страницы по разметке (_SECTION_NAMES_JS) — только
+    чтение. None — ответ не разобрать."""
+    raw = _run_js(host_part, _SECTION_NAMES_JS, tab_id=tab_id)
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, list):
+        return None
+    return [str(x)[:40] for x in data if isinstance(x, str) and x.strip()]
 
 
 def snapshot_clickables(host_part: Optional[str] = None,
@@ -6390,6 +6813,11 @@ _CART_VERIFY_JS = (
 )
 
 
+# Проверка эффекта корзинной операции: бюджет опроса и шаг, с
+CART_VERIFY_SEC = 2.5
+CART_POLL_SEC = 0.25
+
+
 def cart_op(host_part: Optional[str], product: str, op: str,
             tab_id: Optional[int] = None) -> dict:
     """Операция с корзиной сайта: op ∈ remove|decrease|increase|edit.
@@ -6403,6 +6831,20 @@ def cart_op(host_part: Optional[str], product: str, op: str,
         raise BrowserUnavailable("пустое название товара")
     if op not in ("remove", "decrease", "increase", "edit"):
         raise BrowserUnavailable(f"неизвестная операция с корзиной: {op}")
+
+    def _cart_state() -> Optional[dict]:
+        try:
+            v = json.loads(_run_js(
+                host_part, _js_fill(_CART_VERIFY_JS, PROD=prod),
+                tab_id=tab_id, front=False) or "{}")
+        except Exception:
+            return None
+        return v if isinstance(v, dict) else None
+
+    # Количество ДО клика: по нему опрос ниже отличает «корзина ещё не
+    # перерисовалась» от «перерисовалась с новым числом»
+    pre = _cart_state() if op in ("decrease", "increase") else None
+    pre_qty = (pre or {}).get("qty")
     raw = _run_js(host_part,
                   _js_fill(_CART_CLICK_JS, PROD=prod, OP=op),
                   tab_id=tab_id, front=False)
@@ -6418,23 +6860,36 @@ def cart_op(host_part: Optional[str], product: str, op: str,
         raise BrowserUnavailable(raw[4:])
     if not raw.startswith("ok:"):
         raise BrowserUnavailable(f"не разобрался ответ корзины: {raw[:80]}")
-    time.sleep(0.6)  # ре-рендер корзины после клика
+    if op == "edit":
+        return {"status": "ok", "qty": None}
+    # Ре-рендер корзины после клика: у живых магазинов это запрос к
+    # серверу, и за фиксированные 0.6 с товар часто ещё «в корзине» —
+    # ложное «клик не сработал». Опрашиваем до CART_VERIFY_SEC: удаление —
+    # пока карточка не исчезнет, ±1 — пока число не сменится
     qty = None
-    try:
-        ver = json.loads(_run_js(
-            host_part, _js_fill(_CART_VERIFY_JS, PROD=prod),
-            tab_id=tab_id, front=False) or "{}")
-        if op == "remove" and ver.get("present"):
-            raise BrowserUnavailable(
-                f"«{prod}» всё ещё в корзине — клик не сработал")
-        if op in ("decrease", "increase"):
-            qty = ver.get("qty")
-            if op == "decrease" and not ver.get("present"):
-                qty = 0  # минус при количестве 1 убрал товар совсем
-    except BrowserUnavailable:
-        raise
-    except Exception:
-        pass  # клик уже сработал — отчёт без числа не страшен
+    ver: Optional[dict] = None
+    deadline = time.time() + CART_VERIFY_SEC
+    time.sleep(CART_POLL_SEC)
+    while True:
+        ver = _cart_state()
+        if ver is not None:
+            if op == "remove" and not ver.get("present"):
+                break
+            if op in ("decrease", "increase") and (
+                    not ver.get("present") or pre_qty is None
+                    or ver.get("qty") != pre_qty):
+                break
+        if time.time() >= deadline:
+            break
+        time.sleep(CART_POLL_SEC)
+    if ver is None:
+        return {"status": "ok", "qty": None}  # клик ушёл; отчёт без числа
+    if op == "remove" and ver.get("present"):
+        raise BrowserUnavailable(
+            f"«{prod}» всё ещё в корзине — клик не сработал")
+    qty = ver.get("qty")
+    if op == "decrease" and not ver.get("present"):
+        qty = 0  # минус при количестве 1 убрал товар совсем
     return {"status": "ok", "qty": qty}
 
 
@@ -6541,18 +6996,106 @@ def edit_composition_op(host_part: Optional[str], product: str,
         raise BrowserUnavailable(f"не разобрался ответ страницы: {raw[:80]}")
 
 
+# Сверка подписи в момент клика/ввода (expect): номер из снимка мог
+# достаться другому узлу — React переиспользует кнопку («Далее» →
+# «Подтвердить заказ»), а гейт подтверждения проверял старую подпись.
+# Совпадение: подпись из снимка — часть подписей узла (текст/value, aria,
+# title, alt, placeholder, label поля, соседняя плавающая подпись) или текст
+# узла — часть подписи из снимка (пилюля «49 ₽», переподписанная рядом
+# «Сырный 49 ₽»); подпись-номер «#12» не сверяется
+LABEL_CHANGED = "подпись элемента сменилась — не нажимаю"
+_LABEL_MATCH_FN = (
+    "function(e,exp){function n(s){return (s||'').replace(/\\s+/g,' ')"
+    ".trim().toLowerCase();}"
+    "function ws(s){return s.split(/[^0-9a-zа-яё]+/i).filter(function(w){"
+    "return w.length>=2;});}"
+    "function allIn(w,t){if(!w.length)return false;for(var i=0;i<w.length;i++)"
+    "{if(t.indexOf(w[i])<0)return false;}return true;}"
+    "function anc(k){var p=e.parentElement,d=0,o=[];"
+    "while(p&&p!==document.body&&d<k){o.push(n(p.innerText).slice(0,300));"
+    "p=p.parentElement;d++;}return o;}"
+    # «#12» — номер безымянного элемента (подписи не было), не подпись
+    "exp=n(exp);if(!exp||/^#\\d+$/.test(exp))return true;"
+    "var own=n(e.innerText||((/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)&&"
+    "!/^(button|submit|reset|image)$/i.test(e.type||''))?'':e.value));"
+    "var ar=n(e.getAttribute('aria-label')),ti=n(e.title),"
+    "al=n(e.getAttribute('alt'));"
+    "var ps=[own,ar,ti,al,n(e.getAttribute('placeholder')),"
+    "n(e.getAttribute('data-placeholder'))];"
+    "try{if(e.labels)for(var i=0;i<e.labels.length;i++)"
+    "ps.push(n(e.labels[i].innerText));}catch(x){}"
+    "var lb=e.getAttribute('aria-labelledby');"
+    "if(lb)lb.split(/\\s+/).forEach(function(id){"
+    "var t=document.getElementById(id);if(t)ps.push(n(t.innerText));});"
+    "var ed=/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)||e.isContentEditable;"
+    # Поле ввода: подпись может жить в label/соседе/placeholder/name/тексте
+    # родителя — сверка мягкая (ввод сам ничего не отправляет, риск решает
+    # гейт)
+    "if(ed){var sib=e.previousElementSibling;"
+    "if(sib)ps.push(n(sib.innerText).slice(0,60));"
+    "ps.push(n(e.getAttribute('name')));ps=ps.concat(anc(2));"
+    "var hay=ps.join(' | ');return hay.indexOf(exp)>=0||allIn(ws(exp),hay);}"
+    # Кнопка/ссылка — строго: своя подпись та же (или обрезана до 80 в
+    # снимке); «Далее» → «Далее — оплатить 1 299 ₽» уже другая кнопка
+    "var own4=[own,ar,ti,al];"
+    "for(var k=0;k<own4.length;k++){var p0=own4[k];"
+    "if(p0&&(p0===exp||(exp.length>=78&&p0.slice(0,exp.length)===exp)))"
+    "return true;}"
+    # Своей подписи у узла нет — подпись сочинил снимок (иконка по классу,
+    # текст хоста у шеврона): узел по-прежнему без своего текста, та же иконка
+    "if(!own&&!ar&&!ti&&!al)return true;"
+    # Свой текст — часть подписи снимка (пилюля «49 ₽» → «Сырный · 49 ₽»):
+    # все слова подписи — в ряду вокруг узла
+    "if(own&&exp.indexOf(own)>=0){var a=anc(3),w=ws(exp);"
+    "for(var j=0;j<a.length;j++){if(allIn(w,a[j]))return true;}}"
+    "return false;}")
+# Что перекрывает центр элемента (не он сам, не его потомок и не его
+# label): force-клик после отказа actionability ушёл бы в перекрывающий
+# слой (бэкдроп, баннер). '' — не перекрыт или вне экрана
+_COVER_FN = (
+    "function(e){var r=e.getBoundingClientRect();"
+    "if(!r.width||!r.height)return '';"
+    "var x=r.left+r.width/2,y=r.top+r.height/2;"
+    "if(x<0||y<0||x>=innerWidth||y>=innerHeight)return '';"
+    "var root=e.getRootNode?e.getRootNode():document;"
+    "var t=(root.elementFromPoint?root:document).elementFromPoint(x,y);"
+    "if(!t)return '';"
+    "for(var n=t;n;n=n.parentNode||n.host){if(n===e)return '';}"
+    "if(e.contains(t))return '';"
+    "var l=t.closest?t.closest('label'):null;"
+    "if(l&&e.labels&&[].indexOf.call(e.labels,l)>=0)return '';"
+    "return ((t.innerText||t.getAttribute('aria-label')||'')+'')"
+    ".replace(/\\s+/g,' ').trim().slice(0,40)||t.tagName.toLowerCase();}")
+
+
 def click_tagged(host_part: Optional[str], idx: int,
-                 tab_id: Optional[int] = None) -> str:
+                 tab_id: Optional[int] = None,
+                 expect: Optional[str] = None) -> str:
     """Клик по элементу с номером разметки из снапшота этой вкладки (общего
     или целевого — номера сквозные, знать какого не нужно).
     CDP: настоящий playwright-клик (скролл, actionability) с фолбэком на
     force; затем closed-loop проверка эффекта — нет изменений за
     CLICK_VERIFY_SEC → ClickUncertain («не уверен, что сработало»), это
-    отдельный класс ошибок от «элемент не найден»."""
+    отдельный класс ошибок от «элемент не найден».
+    expect — подпись из снимка: не совпала с узлом под номером → клика нет
+    (BrowserUnavailable LABEL_CHANGED)."""
     if _select_backend(tab_op=True) == "cdp":
         return _WORKER.submit(
-            lambda w: _click_cdp(w, host_part, idx, tab_id))
-    return _click_applescript(host_part, idx, tab_id)
+            lambda w: _click_cdp(w, host_part, idx, tab_id, expect))
+    return _click_applescript(host_part, idx, tab_id, expect)
+
+
+def _check_label(loc, expect: Optional[str]) -> None:
+    # Сверка подписи узла с подписью из снимка (см. _LABEL_MATCH_FN); сбой
+    # evaluate — тоже «не нажимаю»: подтверждали другой элемент
+    if not expect:
+        return
+    try:
+        ok = bool(_eval_arg(loc, _LABEL_MATCH_FN, str(expect)))
+    except Exception:
+        ok = False
+    if not ok:
+        raise BrowserUnavailable(LABEL_CHANGED)
 
 
 def _locator_any_frame(page, idx: int):
@@ -6718,18 +7261,23 @@ def _pw_click_once(loc, st, pre: _Probe, force: bool) -> Optional[str]:
 
 
 def _click_cdp(w: _CdpWorker, host_part: Optional[str], idx: int,
-               tab_id: Optional[int]) -> str:
+               tab_id: Optional[int], expect: Optional[str] = None) -> str:
     page = w.page_for(host_part, tab_id)
     loc, scope = _locator_any_frame(page, idx)
     if loc is None:
         raise BrowserUnavailable("элемент потерян — страница изменилась")
+    _check_label(loc.first, expect)
     with _NavWatch(page, scope) as nav:
-        return _click_cdp_watched(w, host_part, idx, tab_id, loc, scope, nav)
+        return _click_cdp_watched(w, host_part, idx, tab_id, loc, scope, nav,
+                                  click_fp=bool(expect))
 
 
 def _click_cdp_watched(w: _CdpWorker, host_part: Optional[str], idx: int,
                        tab_id: Optional[int], loc, scope,
-                       nav: _NavWatch) -> str:
+                       nav: _NavWatch, click_fp: bool = False) -> str:
+    # click_fp — отпечаток клика без фокуса/прокрутки (шаг агента, expect):
+    # пустышка не засчитывается по фокусу. Команды человека и маршруты — по
+    # полному отпечатку (якорь «наверх», тоггл фокусом)
     # Попап (новое окно/вкладка от клика — вход в аккаунт и т.п.) саму страницу
     # не меняет: счётчик страниц в отпечатке, иначе честный клик по «Войти»
     # выглядел бы как «не сработало». Начатый переход (nav) — туда же: до
@@ -6747,12 +7295,12 @@ def _click_cdp_watched(w: _CdpWorker, host_part: Optional[str], idx: int,
             return _Probe(False, "", "", "", _aux())
         # aux — ПОСЛЕ evaluate: события запросов разбираются внутри вызовов
         # playwright, и счётчик, снятый до замера, отставал бы на опрос
-        return _page_state(scope)._replace(aux=_aux())
+        return _page_state(scope, click=click_fp)._replace(aux=_aux())
 
     # Элемент вне экрана (гибридный ярус выбирает и строки ниже экрана):
     # автопрокрутка playwright внутри click() сама меняет отпечаток —
     # докручиваем в том же evaluate, что снимает замер «до» (видимый — no-op)
-    pre = _page_state(scope, scroll_idx=idx)._replace(aux=_aux())
+    pre = _page_state(scope, scroll_idx=idx, click=click_fp)._replace(aux=_aux())
     # no_wait_after: клик по ссылке/«Войти» playwright по умолчанию считает
     # незавершённым, пока не закоммитится вызванный им переход, — медленный
     # вход не укладывается в CLICK_TIMEOUT_MS, и ДОСТАВЛЕННЫЙ клик упал бы
@@ -6761,7 +7309,17 @@ def _click_cdp_watched(w: _CdpWorker, host_part: Optional[str], idx: int,
     why = _pw_click_once(loc.first, _st, pre, force=False)
     if why is not None:
         # Элемент перекрыт/не стабилен — мышь НЕ отправлялась (иначе why был
-        # бы None): кликаем принудительно, без actionability-проверок
+        # бы None): кликаем принудительно, без actionability-проверок. Но
+        # не сквозь чужой слой: force-клик нажал бы то, что сверху
+        try:
+            cover = str(loc.first.evaluate(_COVER_FN) or "")
+        except Exception:
+            cover = ""
+        if cover:
+            # Текст слоя (имена, адреса в окне) в аудит/ответ не несём
+            raise BrowserUnavailable(
+                "клик не выполнен: элемент перекрыт другим слоем (окном или "
+                "баннером)")
         why = _pw_click_once(loc.first, _st, pre, force=True)
         if why is not None:
             raise BrowserUnavailable(f"клик не выполнен: {why}")
@@ -6772,18 +7330,15 @@ def _click_cdp_watched(w: _CdpWorker, host_part: Optional[str], idx: int,
         return "clicked"
     # FAQ-аккордеоны/тогглы — label+checkbox: клик по внутреннему div
     # заголовка проходит мимо label-механики (событие не активирует контрол).
-    # Перещёлкиваем сам input: аккордеон раскрывается CSS :checked — DOM
-    # не меняется, поэтому доказательство — сам факт перещёлкивания
+    # Перещёлкиваем сам input (только если наш клик его не перещёлкнул —
+    # состояние «до» снято в замере pre): аккордеон раскрывается CSS
+    # :checked — DOM не меняется, доказательство — сам факт перещёлкивания.
+    # Сам label второй раз не кликаем — кастомный чекбокс щёлкнулся бы дважды
     toggled = _label_toggle_js(scope, idx)
     if toggled in ("flipped", "already"):
         logger.info(f"[BrowserActions] Клик idx={idx} — через label/input "
                     f"({toggled})")
         return "clicked"
-    if toggled == "label":
-        verdict = _wait_effect(_st, pre)
-        if verdict == EFFECT_CHANGED:
-            logger.info(f"[BrowserActions] Клик idx={idx} — через label")
-            return "clicked"
     raise _uncertain(verdict, "клик отправлен")
 
 
@@ -6794,18 +7349,11 @@ def _label_toggle_js(scope, idx: int) -> Optional[str]:
     (checked перещёлкнулся — само по себе доказательство: аккордеон
     открывается CSS :checked и DOM-отпечаток не меняется), 'already' (уже
     был включён — обратно не перещёлкиваем: «нажми вопрос» ≠ «закрой его»),
-    'label' (input нет, кликнули label — проверять отпечатком вызывающему),
-    None/'stuck' — не label-конструкция или контрол не поддался."""
+    None/'stuck'/'unknown' — не label-конструкция, контрол не поддался или
+    состояние до клика неизвестно (повторно не щёлкаем). Сам label второй
+    раз не кликается никогда — см. _LABEL_TOGGLE_BODY_JS."""
     js = ("(function(){var e=document.querySelector('" + _mark_sel(idx)
-          + "');if(!e)return '';"
-          "var l=e.closest?e.closest('label'):null;if(!l)return '';"
-          "var i=l.querySelector('input[type=checkbox],input[type=radio]');"
-          "if(i){var b=!!i.checked;"
-          # Уже открыт/включён — не перещёлкиваем обратно: «нажми вопрос
-          # аккордеона» значит «хочу видеть раскрытым», а не тоггл туда-сюда
-          "if(b)return 'already';"
-          "i.click();return i.checked!==b?'flipped':'stuck';}"
-          "l.click();return 'label';})()")
+          + "');if(!e)return '';" + _LABEL_TOGGLE_BODY_JS + "})()")
     try:
         return str(scope.evaluate(js) or "") or None
     except Exception:
@@ -6813,19 +7361,26 @@ def _label_toggle_js(scope, idx: int) -> Optional[str]:
 
 
 def _click_applescript(host_part: Optional[str], idx: int,
-                       tab_id: Optional[int]) -> str:
+                       tab_id: Optional[int],
+                       expect: Optional[str] = None) -> str:
     """JS-клик по номеру разметки (_mark_find_js — общая и целевая разметка
     разом) + та же closed-loop проверка состояния (та же трёхзначная
     модель: неудавшийся Apple-Events замер — не подтверждение клика)."""
     def _state() -> _Probe:
         try:
             return _probe_of(
-                _run_apple_events(host_part, _DOM_STATE_JS, tab_id=tab_id))
+                _run_apple_events(host_part, _DOM_STATE_CLICK_JS if expect
+                                  else _DOM_STATE_JS, tab_id=tab_id))
         except BrowserUnavailable:
             return _Probe(False, "", "", "")
 
     js = ("var d=document.documentElement;"
           + _mark_find_js(idx) +
+          ("if(el&&!(" + _LABEL_MATCH_FN + ")(el,"
+           + json.dumps(str(expect), ensure_ascii=False) + ")){"
+           "d.setAttribute('data-vpc-res'," + json.dumps(LABEL_CHANGED,
+                                                        ensure_ascii=False)
+           + ");}else " if expect else "") +
           "if(el){el.click();d.setAttribute('data-vpc-res','ok:clicked');}"
           "else{d.setAttribute('data-vpc-res','элемент потерян — страница изменилась');}"
           "d.getAttribute('data-vpc-res')")
@@ -6835,7 +7390,8 @@ def _click_applescript(host_part: Optional[str], idx: int,
     # же Apple Events-вызове, что замер — лишнего round trip'а нет; видимый
     # элемент не дёргается к центру (el.click() видимости не требует)
     try:
-        pre = _probe_of(_run_apple_events(host_part, _state_js(idx),
+        pre = _probe_of(_run_apple_events(host_part,
+                                          _state_js(idx, click=bool(expect)),
                                           tab_id=tab_id))
     except BrowserUnavailable:
         pre = _Probe(False, "", "", "")
@@ -6848,21 +7404,19 @@ def _click_applescript(host_part: Optional[str], idx: int,
     if verdict == EFFECT_CHANGED:
         return out[3:]
     # label+checkbox/radio (FAQ-аккордеоны): клик по внутреннему div мимо
-    # label-механики — перещёлкиваем сам контрол; 'flipped' — checked
-    # перещёлкнулся, это само по себе доказательство (CSS :checked без
-    # изменения DOM-отпечатка)
-    toggle = (_mark_find_js(idx, var="e") +
-              "if(!e){''}else{var l=e.closest?e.closest('label'):null;"
-              "if(!l){''}else{var inp=l.querySelector('input[type=checkbox],input[type=radio]');"
-              "if(inp){var b=!!inp.checked;if(b){'already'}else{inp.click();inp.checked!==b?'flipped':'stuck'}}"
-              "else{l.click();'label'}}}")
-    tres = _run_apple_events(host_part, toggle, tab_id=tab_id)
+    # label-механики — перещёлкиваем сам контрол, но только если наш клик
+    # его не перещёлкнул (состояние «до» — из замера pre, _LABEL_PRE_JS);
+    # 'flipped' — checked перещёлкнулся, это само по себе доказательство
+    # (CSS :checked без изменения DOM-отпечатка). Сам label повторно не
+    # кликаем: цель внутри него, второй клик вернул бы контрол обратно
+    toggle = ("(function(){" + _mark_find_js(idx, var="e") +
+              "if(!e)return '';" + _LABEL_TOGGLE_BODY_JS + "})()")
+    try:
+        tres = _run_apple_events(host_part, toggle, tab_id=tab_id)
+    except BrowserUnavailable:
+        tres = ""
     if tres in ("flipped", "already"):
         return out[3:]
-    if tres == "label":
-        verdict = _wait_effect(_state, pre)
-        if verdict == EFFECT_CHANGED:
-            return out[3:]
     raise _uncertain(verdict, "клик отправлен")
 
 
@@ -6896,8 +7450,12 @@ _ALL_CLICKABLE_BOXES_JS = (
     "&&r.top<innerHeight&&r.left<innerWidth;}"
     "function norm(s){return (s||'').replace(/\\s+/g,' ').trim();}"
     "function nm(e){"
-    "var t=norm(e.getAttribute('aria-label'))||norm(e.innerText)||"
-    "norm(e.value);"
+    # Значения полей ввода (и текст contenteditable) в подписи зон не
+    # попадают: подписи уходят в vision-модель. value кнопок — их надпись
+    "var t=norm(e.getAttribute('aria-label'))||"
+    "(e.isContentEditable?'':norm(e.innerText))||"
+    "((/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)&&"
+    "!/^(button|submit|reset)$/i.test(e.type||''))?'':norm(e.value));"
     "if(/^\\d{1,2}:\\d{2}$/.test(t))t='';"
     "if(!t){var im=e.querySelector('img');if(im)t=norm(im.alt);}"
     "if(!t){var ca=e.querySelector('[aria-label]');"
@@ -6954,7 +7512,18 @@ _ALL_CLICKABLE_BOXES_JS = (
     "var L=Math.max(0,x),T=Math.max(0,y),"
     "R=Math.min(innerWidth,x+w),B=Math.min(innerHeight,y+h);"
     "if(R-L<__MIN__||B-T<__MIN__)return;"
-    "out.push({x:L,y:T,w:R-L,h:B-T,text:text});}"
+    "out.push({x:L,y:T,w:R-L,h:B-T,text:text,"
+    "sig:psig(L+(R-L)/2,T+(B-T)/2)});}"
+    # sig — отпечаток центра зоны в момент скриншота (формат _POINT_SIG_JS):
+    # перед координатным кликом после подтверждения его сверяет
+    # _check_point_sig — страница прокрутилась/перерисовалась → отказ.
+    # Не снялся — null (сверки тогда не будет, как у старых действий)
+    "function psig(cx,cy){try{var e=document.elementFromPoint(cx,cy);"
+    "var s='';if(e){var st=(e.getAttribute('aria-label')||e.title||"
+    "e.innerText||e.getAttribute('alt')||'').replace(/\\s+/g,' ').trim()"
+    ".slice(0,30);s=e.tagName.toLowerCase()+'#'+(e.id||'')+'|'+st;}"
+    "return {sx:Math.round(window.scrollX||0),"
+    "sy:Math.round(window.scrollY||0),el:s};}catch(x4){return null;}}"
     "all.forEach(function(e){"
     "var r=e.getBoundingClientRect();if(!vis(e,r))return;"
     "var t=nm(e);"
@@ -7040,10 +7609,76 @@ def _check_point(page, x, y) -> Tuple[float, float]:
     return x, y
 
 
+# Отпечаток точки координатного клика: прокрутка + элемент под точкой
+# (тег/id/подпись). Снимается при резолве (скриншот зон) и сверяется перед
+# кликом: между ними лежит подтверждение пользователя, и страница за эти
+# секунды могла прокрутиться/перерисоваться — клик по старым координатам
+# попал бы в чужой элемент. Шаблон — функция (аргумент — [x, y])
+_POINT_SIG_JS = (
+    "(xy)=>{var e=document.elementFromPoint(xy[0],xy[1]);"
+    "var s='';if(e){var t=(e.getAttribute('aria-label')||e.title||"
+    "e.innerText||e.getAttribute('alt')||'').replace(/\\s+/g,' ').trim()"
+    ".slice(0,30);s=e.tagName.toLowerCase()+'#'+(e.id||'')+'|'+t;}"
+    "return JSON.stringify({sx:Math.round(window.scrollX||0),"
+    "sy:Math.round(window.scrollY||0),el:s});}"
+)
+# Допуск прокрутки (субпиксельный дрейф/липкие шапки), px
+POINT_SCROLL_TOL_PX = 4
+
+
+def _point_sig_of(scope, x: float, y: float) -> Optional[dict]:
+    try:
+        raw = str(_eval_arg(scope, _POINT_SIG_JS, [float(x), float(y)]) or "")
+        sig = json.loads(raw) if raw else None
+    except Exception:
+        return None
+    return sig if isinstance(sig, dict) else None
+
+
+def point_signature(host_part: Optional[str], x: float, y: float,
+                    tab_id: Optional[int] = None) -> Optional[dict]:
+    """Отпечаток точки {sx, sy, el} для сверки перед координатным кликом
+    (см. _POINT_SIG_JS). None — бэкенд не CDP/страница не ответила: сверка
+    тогда не делается (как раньше — только границы вьюпорта)."""
+    if _select_backend(tab_op=True) != "cdp":
+        return None
+    return _WORKER.submit(
+        lambda w: _point_sig_of(w.page_for(host_part, tab_id), x, y))
+
+
+def _check_point_sig(page, x: float, y: float,
+                     expect: Optional[dict]) -> None:
+    """Сверка отпечатка точки с снятым при резолве: прокрутка ушла или под
+    точкой другой элемент → BrowserUnavailable (клик НЕ отправлен), без
+    молчаливого клика мимо подтверждённой цели."""
+    if not isinstance(expect, dict):
+        return
+    cur = _point_sig_of(page, x, y)
+    if cur is None:
+        return  # замер не удался — не повод отказывать, closed-loop останется
+    try:
+        moved = (abs(float(cur.get("sy", 0)) - float(expect.get("sy", 0)))
+                 > POINT_SCROLL_TOL_PX
+                 or abs(float(cur.get("sx", 0)) - float(expect.get("sx", 0)))
+                 > POINT_SCROLL_TOL_PX)
+    except (TypeError, ValueError):
+        moved = False
+    if moved:
+        raise BrowserUnavailable(
+            "страница прокрутилась после выбора точки — по старым "
+            "координатам не нажимаю, повтори команду")
+    if expect.get("el") and cur.get("el") != expect.get("el"):
+        raise BrowserUnavailable(
+            "под выбранной точкой теперь другой элемент — по старым "
+            "координатам не нажимаю, повтори команду")
+
+
 def _click_point_cdp(w: "_CdpWorker", host_part: Optional[str],
-                     x: float, y: float, tab_id: Optional[int]) -> str:
+                     x: float, y: float, tab_id: Optional[int],
+                     expect: Optional[dict] = None) -> str:
     page = w.page_for(host_part, tab_id)
     x, y = _check_point(page, x, y)
+    _check_point_sig(page, x, y, expect)
     pre = _page_state(page)
     page.mouse.click(x, y)
     _verify_effect(lambda: _page_state(page), pre,
@@ -7052,15 +7687,17 @@ def _click_point_cdp(w: "_CdpWorker", host_part: Optional[str],
 
 
 def click_at_point(host_part: Optional[str], x: float, y: float,
-                   tab_id: Optional[int] = None) -> str:
+                   tab_id: Optional[int] = None,
+                   expect: Optional[dict] = None) -> str:
     """Клик по координатам вьюпорта (CSS px) — зона vision-фолбэка без
     DOM-метки (canvas/WebGL). Только CDP (AppleScript-мост координатный
     клик не умеет). Closed-loop обязателен: текстового подтверждения,
-    что нажали именно цель, у координатного клика нет."""
+    что нажали именно цель, у координатного клика нет. expect — отпечаток
+    point_signature со времени резолва: не совпал — отказ до клика."""
     if _select_backend(tab_op=True) != "cdp":
         raise _no_backend("клик по координатам")
     return _WORKER.submit(
-        lambda w: _click_point_cdp(w, host_part, x, y, tab_id))
+        lambda w: _click_point_cdp(w, host_part, x, y, tab_id, expect))
 
 
 # «наведи (курсор) на X» — hover без клика: раскрыть hover-меню, hover-
@@ -7123,9 +7760,11 @@ def hover_tagged(host_part: Optional[str], idx: int,
 
 
 def _hover_point_cdp(w: "_CdpWorker", host_part: Optional[str],
-                     x: float, y: float, tab_id: Optional[int]) -> str:
+                     x: float, y: float, tab_id: Optional[int],
+                     expect: Optional[dict] = None) -> str:
     page = w.page_for(host_part, tab_id)
     x, y = _check_point(page, x, y)
+    _check_point_sig(page, x, y, expect)
     pre = _page_state(page)
     page.mouse.move(x, y)
     # Меню раскрывается с transition — короткое окно на DOM-реакцию; без
@@ -7137,13 +7776,15 @@ def _hover_point_cdp(w: "_CdpWorker", host_part: Optional[str],
 
 
 def hover_at_point(host_part: Optional[str], x: float, y: float,
-                   tab_id: Optional[int] = None) -> str:
+                   tab_id: Optional[int] = None,
+                   expect: Optional[dict] = None) -> str:
     """Наведение по координатам вьюпорта (CSS px) — зона vision-фолбэка
-    без DOM-метки. Только CDP."""
+    без DOM-метки. Только CDP. expect — отпечаток точки со времени
+    резолва (как у click_at_point)."""
     if _select_backend(tab_op=True) != "cdp":
         raise _no_backend("наведение по координатам")
     return _WORKER.submit(
-        lambda w: _hover_point_cdp(w, host_part, x, y, tab_id))
+        lambda w: _hover_point_cdp(w, host_part, x, y, tab_id, expect))
 
 
 def _norm_ws(s: str) -> str:
@@ -7152,7 +7793,8 @@ def _norm_ws(s: str) -> str:
 
 
 def fill_tagged(host_part: Optional[str], idx: int, text: str,
-                tab_id: Optional[int] = None, submit: bool = False) -> str:
+                tab_id: Optional[int] = None, submit: bool = False,
+                expect: Optional[str] = None) -> str:
     """Ввод текста в поле с номером разметки из снапшота вкладки.
     CDP: фокус кликом → очистка → посимвольный ввод (реальные key-события,
     их ждут suggest-виджеты вроде выбора города), фолбэк на fill().
@@ -7166,17 +7808,20 @@ def fill_tagged(host_part: Optional[str], idx: int, text: str,
         raise BrowserUnavailable("пустой текст — нечего вводить")
     if _select_backend(tab_op=True) == "cdp":
         return _WORKER.submit(
-            lambda w: _fill_cdp(w, host_part, idx, text, tab_id, submit))
-    return _fill_applescript(host_part, idx, text, tab_id, submit)
+            lambda w: _fill_cdp(w, host_part, idx, text, tab_id, submit,
+                                expect))
+    return _fill_applescript(host_part, idx, text, tab_id, submit, expect)
 
 
 def _fill_cdp(w: _CdpWorker, host_part: Optional[str], idx: int,
-              text: str, tab_id: Optional[int], submit: bool = False) -> str:
+              text: str, tab_id: Optional[int], submit: bool = False,
+              expect: Optional[str] = None) -> str:
     page = w.page_for(host_part, tab_id)
     loc, scope = _locator_any_frame(page, idx)
     if loc is None:
         raise BrowserUnavailable("элемент потерян — страница изменилась")
     el = loc.first
+    _check_label(el, expect)
     try:
         el.click(timeout=CLICK_TIMEOUT_MS)   # фокус: suggest слушает focus
         el.fill("", timeout=CLICK_TIMEOUT_MS)  # сброс старого значения + input
@@ -7225,8 +7870,10 @@ def _fill_cdp(w: _CdpWorker, host_part: Optional[str], idx: int,
                 ":document.activeElement.value))||''") or "")
         except Exception:
             pass
-    # «Содержит», а не «равно»: виджет может дописать своё («�город, …»)
-    if _norm_ws(text) in _norm_ws(got):
+    # «Содержит», а не «равно»: виджет может дописать своё («�город, …»).
+    # Телефон — по цифрам: маска «+7 (___) ___-__-__» дописывает код сама
+    phone_ok = _phone_same(text, got)
+    if phone_ok or (phone_ok is None and _norm_ws(text) in _norm_ws(got)):
         if not submit:
             return "filled"
         pre = _page_state(scope)
@@ -7251,13 +7898,36 @@ def _fill_cdp(w: _CdpWorker, host_part: Optional[str], idx: int,
         raise FillUncertain(
             "текст введён, Enter нажат, но поле не очистилось и страница "
             "не изменилась — не уверен, что сообщение отправилось")
+    if phone_ok is False:
+        # Цифры в поле другие (маска съела/сдвинула цифру): сами цифры не
+        # показываем — это телефон человека, а текст ошибки уходит модели
+        want_d, got_d = re.sub(r"\D", "", text), re.sub(r"\D", "", got)
+        raise BrowserUnavailable(
+            f"значение не совпало: в поле {len(got_d)} цифр, а вводилось "
+            f"{len(want_d)} — у поля, похоже, маска с кодом страны; введи "
+            "номер без +7/8 (только 10 цифр)")
     raise FillUncertain(
         "текст отправлен в поле, но его значение не совпало — "
         "не уверен, что ввод сработал")
 
 
+def _phone_same(text: str, got: str) -> Optional[bool]:
+    """Вводимое — телефон (только цифры, пробелы, +, скобки, дефисы; 10–13
+    цифр): совпадает ли с полем по последним 10 цифрам (+7/8 и маска
+    «+7 (___)» не мешают). None — это не телефон, сравнивать как текст."""
+    t = str(text or "").strip()
+    if not re.fullmatch(r"\+?[\d\s()\-]{10,20}", t):
+        return None
+    want = re.sub(r"\D", "", t)
+    if not 10 <= len(want) <= 13:
+        return None
+    have = re.sub(r"\D", "", str(got or ""))
+    return len(have) >= 10 and have[-10:] == want[-10:]
+
+
 def _fill_applescript(host_part: Optional[str], idx: int, text: str,
-                      tab_id: Optional[int], submit: bool = False) -> str:
+                      tab_id: Optional[int], submit: bool = False,
+                      expect: Optional[str] = None) -> str:
     """JS-ввод по номеру разметки: native setter (React-совместимо) + события
     input/change, значение читается обратно — то же closed-loop правило.
     Элемент ищем циклом (_mark_find_js), как в _click_applescript."""
@@ -7266,6 +7936,11 @@ def _fill_applescript(host_part: Optional[str], idx: int, text: str,
     js = ("var d=document.documentElement;"
           + _mark_find_js(idx) +
           "if(!el){d.setAttribute('data-vpc-res','элемент потерян — страница изменилась');}"
+          + ("else if(!(" + _LABEL_MATCH_FN + ")(el,"
+             + json.dumps(str(expect), ensure_ascii=False) + ")){"
+             "d.setAttribute('data-vpc-res'," + json.dumps(
+                 LABEL_CHANGED, ensure_ascii=False) + ");}"
+             if expect else "") +
           "else{el.scrollIntoView({block:'center'});el.focus();"
           "var txt=" + json.dumps(text, ensure_ascii=False) + ";"
           "if(el.isContentEditable){el.innerText=txt;}"
@@ -7471,6 +8146,9 @@ _POOL_H_PROC: Optional[subprocess.Popen] = None  # Chrome пула H (V гоня
 # не требует — только запуск и убийство.
 POOL_H_LIFECYCLE_WAIT_SEC = 30.0  # потолок ожидания вне вызова (teardown/rescue)
 POOL_H_RESTART_WAIT_SEC = 10.0    # restart_browser(H): зовут с пути залипшего вызова
+# Пробник зависания пула H (/json/version): здоровый Chrome отвечает за
+# миллисекунды, молчание дольше — его главный поток занят намертво
+POOL_H_HANG_PROBE_SEC = 10.0
 # Пул V: цикл идёт в потоке воркера, и ожидание чужого запуска/убийства
 # обязано уложиться в бюджет submit (SUBMIT_PROBE/LAUNCH/KILL_TIMEOUT_SEC),
 # иначе воркер считается зависшим и пересоздаётся
@@ -8071,7 +8749,11 @@ def _raw_call(method: str, params: Optional[dict] = None,
     try:
         return cl.call(method, params, sid, timeout=left)
     except RawCallTimeout:
-        raise  # бюджет одного вызова: соединение и соседние вкладки живы
+        # Бюджет одного вызова: соединение и соседние вкладки живы — если
+        # не завис сам Chrome (проверка в фоне)
+        if pool == _POOL_H:
+            _pool_h_hang_suspect()
+        raise
     except BrowserUnavailable as e:
         if _retried or tab_id is None or not _session_gone(e):
             raise
@@ -8237,13 +8919,69 @@ def _pool_of_tab(tab: dict) -> str:
 
 def _pool_h_alive() -> bool:
     # Пробник: Chrome пула H отвечает на /json/version.
+    return _pool_h_responds(2.0)
+
+
+def _pool_h_responds(timeout: float) -> bool:
     import urllib.request
     try:
         with urllib.request.urlopen(
-                _pool_h_cdp_url().rstrip("/") + "/json/version", timeout=2) as r:
+                _pool_h_cdp_url().rstrip("/") + "/json/version",
+                timeout=timeout) as r:
             return 200 <= r.status < 500
     except Exception:
         return False
+
+
+def _pool_h_hung() -> bool:
+    """Chrome пула H жив, но молчит и на /json/version дольше
+    POOL_H_HANG_PROBE_SEC — завис намертво. 02.10 так висел 25+ минут
+    (главный поток бесконечно пересылал себе клавишу): каждый вызов ждал
+    таймаута, переподключение упиралось в его SingletonLock («профиль
+    занят»), а Chrome с отладочным портом бот не трогал — пул H стоял до
+    ручного kill. Долгий evaluate за зависание не сойдёт: HTTP-обработчик
+    DevTools страниц не ждёт. Только Chrome пула H (его порт и профиль в
+    командной строке) — чужой процесс на профиле не трогаем."""
+    pid = _pool_h_chrome_pid()
+    if not pid or not _pid_alive(pid):
+        return False
+    try:
+        cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return False
+    port = urlparse(_pool_h_cdp_url()).port or 9223
+    if f"--remote-debugging-port={port}" not in cmd \
+            or f"--user-data-dir={_pool_h_profile()}" not in cmd:
+        return False
+    return not _pool_h_responds(POOL_H_HANG_PROBE_SEC)
+
+
+_POOL_H_HANG_CHECK = threading.Lock()  # одна проверка зависания за раз
+
+
+def _pool_h_hang_suspect():
+    """Вызов пула H не дождался ответа: в фоне проверить, не завис ли сам
+    Chrome, и перезапустить его (поднимется лениво на следующем вызове).
+    В фоне — чтобы не удлинять и без того упавший вызов пробником и
+    перезапуском; проверку уже ведёт другой поток — не дублируем."""
+    if not _POOL_H_HANG_CHECK.acquire(blocking=False):
+        return
+
+    def _check():
+        try:
+            if _pool_h_hung():
+                logger.warning("[BrowserActions] Пул H: Chrome завис (CDP не "
+                               f"отвечает и {int(POOL_H_HANG_PROBE_SEC)}с) — "
+                               "перезапуск")
+                restart_browser(reason="Chrome завис", pool=_POOL_H)
+        except Exception as e:
+            logger.info(f"[BrowserActions] Проверка зависания пула H: {e}")
+        finally:
+            _POOL_H_HANG_CHECK.release()
+
+    threading.Thread(target=_check, name="pool-h-hang-check",
+                     daemon=True).start()
 
 
 def _chrome_version(exe: str) -> Optional[str]:
@@ -8286,16 +9024,57 @@ def _ensure_pool_h_browser():
     одна межпроцессная критическая секция, иначе «не жив» могло оказаться
     окном чужого перезапуска."""
     if _pool_h_alive():
+        pid = _pool_h_chrome_pid()
+        if _POOL_H_RUNNING_MODE is None or (pid and pid != _POOL_H_MODE_PID):
+            _adopt_pool_h_mode(pid)
         if _POOL_H_RUNNING_MODE is None or \
                 _POOL_H_RUNNING_MODE == _pool_h_desired_mode():
             return
         # Режим поменялся (rescue on/off) — перезапускаем в нужном
         logger.info("[BrowserActions] Пул H: смена режима — перезапуск")
         _teardown_pool_h(grace_sec=3.0)
+    elif _pool_h_hung():
+        # Иначе запуск ниже упёрся бы в SingletonLock зависшего Chrome
+        logger.warning("[BrowserActions] Пул H: Chrome завис (CDP не "
+                       "отвечает) — перезапуск")
+        _teardown_pool_h(grace_sec=3.0)
     if not _BCFG.get("launch", True):
         raise BrowserUnavailable(
             f"headless-браузер бота ({_pool_h_cdp_url()}) недоступен")
     _launch_pool_h_chrome()
+
+
+def _adopt_pool_h_mode(pid: Optional[int]):
+    """Chrome пула H поднят не этим процессом (сосед или прошлый запуск
+    бота) — его режим узнаём по командной строке. Раньше такой Chrome
+    принимался как есть: видимый, оставшийся от rescue до перезапуска бота,
+    так и жил видимым — каждая новая вкладка пула H (это отдельное окно, см.
+    _raw_open) выскакивала на экран, а смену режима никто не проверял. А
+    свой режим от прежнего Chrome к Chrome соседа не относится: по нему
+    перезапуск убил бы чужой rescue-Chrome вместе с окном капчи.
+    Видимые hidden и headed по флагам не различить: если сейчас нужен
+    hidden — прячем окно и считаем его hidden. Не узнать (Windows, нет
+    SingletonLock) — режим неизвестен, Chrome принимается как раньше."""
+    global _POOL_H_RUNNING_MODE, _POOL_H_MODE_PID
+    _POOL_H_RUNNING_MODE, _POOL_H_MODE_PID = None, pid
+    if not pid:
+        return
+    try:
+        cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return
+    if not cmd.strip():
+        return
+    if "--headless" in cmd:
+        _POOL_H_RUNNING_MODE = "headless"
+    elif _pool_h_desired_mode() == "hidden":
+        _hide_pool_window(pid)
+        _POOL_H_RUNNING_MODE = "hidden"
+    else:
+        _POOL_H_RUNNING_MODE = "headed"
+    logger.info(f"[BrowserActions] Пул H: подхвачен запущенный Chrome "
+                f"(pid {pid}, режим {_POOL_H_RUNNING_MODE})")
 
 
 def _launch_pool_h_chrome():
@@ -8310,7 +9089,7 @@ def _launch_pool_h_chrome():
 
 
 def _launch_pool_h_chrome_locked():
-    global _POOL_H_PROC, _POOL_H_RUNNING_MODE
+    global _POOL_H_PROC, _POOL_H_RUNNING_MODE, _POOL_H_MODE_PID
     exe = _resolve_executable()
     if not exe:
         raise BrowserUnavailable(
@@ -8359,6 +9138,7 @@ def _launch_pool_h_chrome_locked():
         while time.monotonic() < deadline:
             if _pool_h_alive():
                 _POOL_H_RUNNING_MODE = mode
+                _POOL_H_MODE_PID = _pool_h_chrome_pid()
                 logger.info("[BrowserActions] Пул H запущен, CDP доступен")
                 if mode == "hidden":
                     _hide_pool_window(proc.pid)
@@ -8568,30 +9348,104 @@ def _set_pool_v_window_visible(visible: bool):
 # (web_llm._challenge_check), rescue завершается → пул H возвращается в
 # headless. Rescue истекает сам (если пользователь так и не пришёл).
 _POOL_H_RUNNING_MODE: Optional[str] = None  # режим, в котором H реально запущен
+_POOL_H_MODE_PID: Optional[int] = None  # pid Chrome, к которому он относится
 _POOL_H_MODE_OVERRIDE: Optional[str] = None  # "headed" на время rescue
 _POOL_H_RESCUE_UNTIL = 0.0
+_POOL_H_RESCUE_SHARED = False  # срок своего rescue записан в общий файл
 POOL_H_RESCUE_MIN = 15.0
+_RESCUE_SUFFIX = ".bot-rescue"
+
+
+# Rescue общий для процессов бота, как и сам Chrome пула H: срок лежит в
+# файле-соседе профиля. Иначе процесс, не включавший rescue, счёл бы видимый
+# Chrome «не тем режимом» и перезапустил headless — вместе с окном, где
+# пользователь решает капчу. Конец rescue в любом процессе (капча пройдена,
+# вход восстановлен) завершает его для всех.
+def _pool_h_rescue_path() -> str:
+    udd = os.path.abspath(os.path.expanduser(_pool_h_profile()))
+    return udd.rstrip("/\\") + _RESCUE_SUFFIX
+
+
+def _shared_rescue_until() -> Optional[float]:
+    # Срок из общего файла: 0.0 — файла нет, None — не прочитать.
+    try:
+        with open(_pool_h_rescue_path()) as f:
+            return float(f.read().strip() or 0)
+    except FileNotFoundError:
+        return 0.0
+    except (OSError, ValueError):
+        return None
+
+
+def _write_shared_rescue(until: float) -> bool:
+    path = _pool_h_rescue_path()
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write(f"{until:.3f}")
+        os.replace(tmp, path)
+        return True
+    except OSError as e:
+        logger.debug(f"[BrowserActions] Срок rescue не записан в общий файл "
+                     f"({e}) — rescue только у этого процесса")
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _clear_shared_rescue():
+    try:
+        os.unlink(_pool_h_rescue_path())
+    except OSError:
+        pass
+
+
+def _pool_h_rescue_until() -> float:
+    shared = _shared_rescue_until()
+    own = _POOL_H_RESCUE_UNTIL if _POOL_H_MODE_OVERRIDE else 0.0
+    if shared is None or not _POOL_H_RESCUE_SHARED:
+        # Файл не прочитать или свой срок в него не записался — свой срок
+        return max(own, shared or 0.0)
+    return shared  # свой rescue мог завершить сосед — файла уже нет
 
 
 def _pool_h_desired_mode() -> str:
-    global _POOL_H_MODE_OVERRIDE, _POOL_H_RESCUE_UNTIL
-    if _POOL_H_MODE_OVERRIDE and time.time() < _POOL_H_RESCUE_UNTIL:
-        return _POOL_H_MODE_OVERRIDE
-    _POOL_H_MODE_OVERRIDE = None  # rescue истёк
+    global _POOL_H_MODE_OVERRIDE, _POOL_H_RESCUE_SHARED
+    if time.time() < _pool_h_rescue_until():
+        return "headed"
+    _POOL_H_MODE_OVERRIDE = None  # rescue истёк или завершён
+    _POOL_H_RESCUE_SHARED = False
     return str(_BCFG.get("pool_h_mode") or "headless").lower()
 
 
+def _pool_h_mode_stale() -> bool:
+    """Chrome H подключён, но запущен не в том режиме, что нужен сейчас
+    (видимый после окончания rescue)."""
+    return (_RAW_CLIENTS.get(_POOL_H) is not None
+            and _POOL_H_RUNNING_MODE is not None
+            and _POOL_H_RUNNING_MODE != _pool_h_desired_mode())
+
+
 def pool_h_rescue_active() -> bool:
-    return bool(_POOL_H_MODE_OVERRIDE) and time.time() < _POOL_H_RESCUE_UNTIL
+    return time.time() < _pool_h_rescue_until()
+
+
+def pool_h_rescue_owned() -> bool:
+    # Идущий rescue включил ЭТОТ процесс (карантины, ради которых его
+    # включали, — в памяти именно этого процесса)
+    return bool(_POOL_H_MODE_OVERRIDE) and pool_h_rescue_active()
 
 
 def rescue_pool_h(duration_min: float = POOL_H_RESCUE_MIN) -> bool:
     """Перезапустить пул H ВИДИМЫМ (rescue: пользователь решает капчу руками).
     Вкладки веб-чатов умирают — web_llm переоткроет их по URL (self-healing).
     → True, если видимый браузер поднялся."""
-    global _POOL_H_MODE_OVERRIDE, _POOL_H_RESCUE_UNTIL
+    global _POOL_H_MODE_OVERRIDE, _POOL_H_RESCUE_UNTIL, _POOL_H_RESCUE_SHARED
     _POOL_H_MODE_OVERRIDE = "headed"
     _POOL_H_RESCUE_UNTIL = time.time() + duration_min * 60
+    _POOL_H_RESCUE_SHARED = _write_shared_rescue(_POOL_H_RESCUE_UNTIL)
     logger.warning(f"[BrowserActions] Rescue пула H на {int(duration_min)} мин — "
                    "перезапуск в видимом режиме")
     try:
@@ -8606,6 +9460,8 @@ def rescue_pool_h(duration_min: float = POOL_H_RESCUE_MIN) -> bool:
         logger.warning(f"[BrowserActions] Rescue-перезапуск пула H не удался: {e}")
         _POOL_H_MODE_OVERRIDE = None
         _POOL_H_RESCUE_UNTIL = 0.0
+        _POOL_H_RESCUE_SHARED = False
+        _clear_shared_rescue()
         return False
 
 
@@ -8613,9 +9469,11 @@ def end_rescue_pool_h():
     """Капча пройдена (web_llm увидел чистую страницу): пул H возвращается в
     штатный режим лениво, при следующем обращении (mode-mismatch в
     _ensure_pool_h_browser перезапустит)."""
-    global _POOL_H_MODE_OVERRIDE, _POOL_H_RESCUE_UNTIL
+    global _POOL_H_MODE_OVERRIDE, _POOL_H_RESCUE_UNTIL, _POOL_H_RESCUE_SHARED
     _POOL_H_MODE_OVERRIDE = None
     _POOL_H_RESCUE_UNTIL = 0.0
+    _POOL_H_RESCUE_SHARED = False
+    _clear_shared_rescue()
     logger.info("[BrowserActions] Rescue пула H завершён — возврат в штатный режим")
 
 
@@ -8652,6 +9510,17 @@ def _raw_open(url: str, pool: str = _POOL_V) -> int:
     скрытой: rAF не тикает, React-лента чата не рендерится, и отправленное
     сообщение не появляется в ленте. В пуле V (headed) —
     background:True: фокус/окно пользователя не трогаем."""
+    if pool == _POOL_H and _pool_h_mode_stale():
+        # Rescue окончен, а Chrome H всё ещё видимый: смену режима проверяет
+        # только _ensure_pool_h_browser, а он зовётся лишь при ПОДКЛЮЧЕНИИ —
+        # с живым сокетом H оставался видимым бессрочно, и каждая новая
+        # вкладка (здесь это отдельное окно) выскакивала на экран. Сбрасываем
+        # сокет: ближайший _raw_call перезапустит Chrome в штатном режиме.
+        # Здесь, а не в любом вызове — перезапуск убивает вкладки, а новая
+        # вкладка — начало вызова веб-чата, не его середина
+        logger.info("[BrowserActions] Пул H: rescue окончен, Chrome ещё "
+                    "видимый — возврат в штатный режим")
+        _reset_raw_pool(_POOL_H)
     if pool == _POOL_H:
         tid = _raw_call("Target.createTarget",
                         {"url": "about:blank", "background": False,
@@ -8684,6 +9553,22 @@ def _raw_forget(tab_id: int) -> Optional[dict]:
 
 def _raw_drop(tab_id: int):
     _raw_forget(tab_id)
+
+
+def open_headless_tab(url: str) -> int:
+    """Служебная вкладка строго в УЖЕ поднятом пуле H: Chrome не запускаем
+    и в пул V не деградируем (в отличие от open_new_tab(background=True)) —
+    для разовых фоновых чтений вроде поисковой выдачи, где видимая вкладка
+    или холодный запуск браузера хуже, чем отказ. Пул H не жив —
+    BrowserUnavailable. Закрывать — close_background_tab."""
+    if pool_h_rescue_active():
+        # Пул H сейчас ВИДИМЫЙ, а вкладка пула — отдельное окно (_raw_open):
+        # каждый фоновый поиск выскакивал бы на экран окном выдачи. По
+        # контракту (видимая вкладка хуже отказа) — отказ
+        raise BrowserUnavailable("браузер бота в видимом режиме (rescue)")
+    if not _pool_h_alive():
+        raise BrowserUnavailable("headless-браузер бота не запущен")
+    return _raw_open(url, pool=_POOL_H)
 
 
 def close_background_tab(tab_id: Optional[int]) -> bool:
@@ -8787,12 +9672,19 @@ def _raw_url(tab_id: int) -> str:
     return str((info.get("targetInfo") or {}).get("url") or "")
 
 
-def _raw_enter(tab_id: int):
-    # Доверенный Enter (Input-домен) — как keyboard.press у playwright.
-    for ev_type in ("rawKeyDown", "keyUp"):
+def _raw_enter(tab_id: int, with_text: bool = False):
+    # Доверенный Enter (Input-домен). with_text — keyDown с символом «\r»,
+    # как keyboard.press у playwright: duck.ai отправляет только по нему,
+    # rawKeyDown без символа там не срабатывает (замер 01.10); остальным
+    # сайтам — как было
+    events = ((("keyDown", {"text": "\r", "unmodifiedText": "\r"}),
+               ("keyUp", {})) if with_text
+              else (("rawKeyDown", {}), ("keyUp", {})))
+    for ev_type, extra in events:
         _raw_tab_call(tab_id, "Input.dispatchKeyEvent",
-                      {"type": ev_type, "key": "Enter", "code": "Enter",
-                       "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13})
+                      dict({"type": ev_type, "key": "Enter", "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13}, **extra))
 
 
 def _raw_insert_text(tab_id: int, text: str):
@@ -8831,7 +9723,8 @@ def _raw_state(tab_id: int) -> _Probe:
         return _Probe(False, "", "", "")
 
 
-def _raw_chat_fill_send(tab_id: int, input_sel: str, text: str) -> str:
+def _raw_chat_fill_send(tab_id: int, input_sel: str, text: str,
+                        enter_text: bool = False) -> str:
     """Ввод+отправка в фоновой вкладке: JS-fill + Enter, closed-loop
     подтверждение (поле очистилось/страница изменилась) как у playwright."""
     sel = json.dumps(input_sel, ensure_ascii=False)
@@ -8867,7 +9760,7 @@ def _raw_chat_fill_send(tab_id: int, input_sel: str, text: str) -> str:
     if _norm_ws(text[:200]) not in _norm_ws(got):
         raise BrowserUnavailable("поле чата не приняло текст")
     pre = _raw_state(tab_id)
-    _raw_enter(tab_id)
+    _raw_enter(tab_id, with_text=enter_text)
     deadline = time.time() + SUBMIT_VERIFY_SEC
     while time.time() < deadline:
         try:
@@ -9057,7 +9950,10 @@ def _gateway_status(page, budget_sec: float = GATEWAY_PROBE_SEC) -> Optional[int
             return st if st in _GATEWAY_STATUSES else None
         if time.monotonic() >= deadline:
             return None
-        time.sleep(0.5)
+        # «стоп» (проверка — из open_new_tab вызывающего): вкладка уже
+        # открыта, статус шлюза больше не ждём
+        if sleep_or_stop(0.5):
+            return None
 
 
 def _open_page_gateway_retry(worker, ctx, url: str):
@@ -9148,8 +10044,14 @@ def open_new_tab(url: str, background: bool = False, pool: str = _POOL_V,
                               timeout=SUBMIT_NAV_TIMEOUT_SEC)
     backend = _select_backend(tab_op=False)
     if backend == "cdp":
-        return _WORKER.submit(lambda w: w.new_page(url, focus=focus),
-                              timeout=SUBMIT_NAV_TIMEOUT_SEC)
+        # Проверка «стоп» вызывающего — в поток воркера: опрос статуса шлюза
+        # (_gateway_status, до GATEWAY_PROBE_SEC) выходит по «стоп» досрочно
+        stop = current_stop()
+
+        def _job(w):
+            with stop_scope(stop):
+                return w.new_page(url, focus=focus)
+        return _WORKER.submit(_job, timeout=SUBMIT_NAV_TIMEOUT_SEC)
     if backend == "safari":
         return _safari_open_tab(url, focus=focus)
     return _open_tab_applescript(url, focus=focus)
@@ -9280,6 +10182,43 @@ _READ_PAGE_JS = (
 )
 
 
+# Чтение для агента задач: верхнее открытое окно/шторка (корзина, окно
+# товара — они вне main и перекрывают его), иначе main/article/body; длинный
+# текст — начало и конец (итог корзины/заказа внизу страницы)
+_READ_TASK_JS = (
+    "(function(){"
+    "function vis(e){var s=getComputedStyle(e),r=e.getBoundingClientRect();"
+    "return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'"
+    "&&r.width>200&&r.height>150;}"
+    # Шторка (или её обёртка) всплывающая; корень приложения на весь экран
+    # (absolute app root) — не признак шторки, выше него не смотрим
+    "function fl(e){var p=e,d=0;while(p&&p!==document.body&&d<6){"
+    "var r=p.getBoundingClientRect();"
+    "if(p!==e&&r.width>=innerWidth*0.95&&r.height>=innerHeight*0.95)"
+    "return false;"
+    "var s=getComputedStyle(p).position;"
+    "if(s==='fixed'||s==='absolute'||s==='sticky')return true;"
+    "p=p.parentElement;d++;}return false;}"
+    # Самые внешние видимые кандидаты: вложенная строка корзины/кнопка
+    # «В корзину» с классом cart — не окно
+    "function tops(q){var l=[].slice.call(document.querySelectorAll(q))"
+    ".filter(vis),o=[];for(var i=0;i<l.length;i++){var inn=false;"
+    "for(var j=0;j<l.length;j++){if(j!==i&&l[j].contains(l[i])){inn=true;"
+    "break;}}if(!inn)o.push(l[i]);}return o;}"
+    "var c=tops('[role=dialog],[aria-modal=true],dialog[open]');"
+    "var e=c.length?c[c.length-1]:null;"
+    # Шторка по классу — только всплывающая (fixed/absolute), не статичный
+    # блок страницы корзины или карточка каталога
+    "if(!e){c=tops('[class*=drawer],[class*=Drawer],[class*=cart],"
+    "[class*=Cart],[class*=basket],[class*=modal],[class*=Modal],"
+    "[class*=popup]').filter(fl);if(c.length)e=c[c.length-1];}"
+    "if(!e)e=document.querySelector('main,article,[role=main]')||document.body;"
+    "var t=(e?(e.innerText||''):'').replace(/\\n{3,}/g,'\\n\\n').trim();"
+    "if(t.length>6000)t=t.slice(0,4200)+'\\n…\\n'+t.slice(-1600);"
+    "return t;})()"
+)
+
+
 _ENTER_TARGET_JS = (
     # Цель для Enter («отправь» без «введи»): единственное видимое НЕПУСТОЕ
     # поле (туда уже что-то ввели); иначе поле в фокусе; иначе единственное
@@ -9388,15 +10327,17 @@ def _chat_fill_send_loc(page, loc, text: str) -> str:
 
 
 def chat_fill_send(host_part: Optional[str], tab_id: Optional[int],
-                   input_sel: str, text: str) -> str:
+                   input_sel: str, text: str, enter_text: bool = False) -> str:
     """Быстрый ввод в поле чата по селектору адаптера (fill — мгновенно,
     посимвольный набор для длинных промптов не годится) + Enter. Отправка
-    подтверждается: поле очистилось или страница изменилась."""
+    подтверждается: поле очистилось или страница изменилась. enter_text —
+    фоновой вкладке Enter с символом «\r» (см. _raw_enter)."""
     text = str(text or "").strip()
     if not text:
         raise BrowserUnavailable("пустой текст — нечего отправлять")
     if is_raw_tab(tab_id):
-        return _raw_chat_fill_send(int(tab_id), input_sel, text)
+        return _raw_chat_fill_send(int(tab_id), input_sel, text,
+                                   enter_text=enter_text)
     backend = _select_backend(tab_op=True)
     if backend == "safari":
         return _safari_chat_fill_send(host_part, tab_id, input_sel, text)
@@ -9935,6 +10876,21 @@ _SET_SLIDER_JS = (
     "if(!live.length&&!tiny.length)return '{\"st\":\"none\"}';"
     "var words=norm(label).split(' ').filter(function(w){return w.length>=3;})"
     ".map(function(w){return w.length>=6?w.slice(0,w.length-1):w;});"
+    # Родовые слова («слайдер», «ползунок») подписи не различают: «ползунок»
+    # иначе совпал бы с «Ползунок поиска» у плеера. Без них и при одном
+    # слайдере на странице берём его; при нескольких — no-match со списком
+    "var gen=/^(слайде|слайдер|ползун|регулят|бегун|slider|range|шкал)/;"
+    "var wasGen=words.some(function(w){return gen.test(w);});"
+    "words=words.filter(function(w){return !gen.test(w);});"
+    # Синонимы: подпись плеера пишет «Громкость»/«Volume»/«Seek slider»,
+    # а пользователь — «звук»/«перемотка»; группа добавляет свои корни
+    "var syn=[['звук','громк','volum'],"
+    "['прогрес','перемот','воспроизв','seek','progres','таймлайн','timelin']];"
+    "var add=[];words.forEach(function(w){syn.forEach(function(g){"
+    "if(g.some(function(s){return w.indexOf(s)===0||"
+    "(w.length>=4&&s.indexOf(w)===0);}))"
+    "g.forEach(function(s){if(words.indexOf(s)<0&&add.indexOf(s)<0)add.push(s);});"
+    "});});words=words.concat(add);"
     "function ownLab(el){var t=norm(el.getAttribute('aria-label'))||"
     "norm(el.title);"
     "if(!t){var lb=el.getAttribute('aria-labelledby');"
@@ -9960,7 +10916,7 @@ _SET_SLIDER_JS = (
     "var best=pick(live),tinyF=false;"
     "if(!best&&tiny.length){best=pick(tiny);tinyF=!!best;}"
     "if(!best){"
-    "if(words.length&&(live.length+tiny.length)>1){"
+    "if((words.length||wasGen)&&(live.length+tiny.length)>1){"
     "var have=[],all2=live.concat(tiny);"
     "for(var h2=0;h2<all2.length&&have.length<6;h2++){"
     "var hl=ownLab(all2[h2]);"
@@ -10028,6 +10984,12 @@ _MEDIA_VOLUME_JS = (
     # Остальное — шаг громкости («-0.2»/«0.2»); нечисловая операция — явная
     # ошибка, а не молчаливый no-op: иначе незаведённая операция маскируется
     # под успешный d=0
+    # «=0.3» — абсолютная громкость (слайдер громкости при живом видео:
+    # надёжнее перетаскивания свёрнутого ползунка плеера)
+    "if(op.charAt(0)==='='){var a=parseFloat(op.slice(1));"
+    "if(isNaN(a))return 'неизвестная операция со звуком: '+op;"
+    "a=Math.min(1,Math.max(0,a));if(a>0)v.muted=false;v.volume=a;"
+    "return 'vol:'+Math.round(a*100);}"
     "var d=parseFloat(op);"
     "if(isNaN(d))return 'неизвестная операция со звуком: '+op;"
     "v.muted=false;"
@@ -10226,6 +11188,12 @@ def _keyboard_set_slider(page, value: float) -> None:
         page.keyboard.press(key)
 
 
+# Ожидание перед чтением значения слайдера: первое и при повторе (виджеты
+# с задержкой перерисовки/сброса значения)
+SLIDER_SETTLE_SEC = 0.35
+SLIDER_RETRY_SETTLE_SEC = 0.9
+
+
 def set_slider(host_part: Optional[str], label: str, value: int,
                tab_id: Optional[int] = None, unit: str = "") -> str:
     """Перетащить слайдер: «рабочие часы в день» → 8. Возвращает фактически
@@ -10242,8 +11210,8 @@ def set_slider(host_part: Optional[str], label: str, value: int,
                            json.dumps(unit or "", ensure_ascii=False))
     backend = _select_backend(tab_op=True)
 
-    def _verify(page_eval) -> str:
-        time.sleep(0.35)  # фреймворк может перерисовать и сбросить значение
+    def _verify(page_eval, settle: float = SLIDER_SETTLE_SEC) -> str:
+        time.sleep(settle)  # фреймворк может перерисовать и сбросить значение
         got = str(page_eval(_SLIDER_VERIFY_JS) or "").strip()
         return got
 
@@ -10261,6 +11229,11 @@ def set_slider(host_part: Optional[str], label: str, value: int,
                 st = {"st": ""}
             if st.get("st") == "range":
                 got = _verify(_seval)
+                if not (got and _slider_accepted(got, st.get("v"))):
+                    # Абсолютное значение идемпотентно — один повтор с
+                    # долгим ожиданием (фреймворк дорисовывает с задержкой)
+                    _seval(js)
+                    got = _verify(_seval, SLIDER_RETRY_SETTLE_SEC)
                 if got and _slider_accepted(got, st.get("v")):
                     logger.info(f"[BrowserActions] Слайдер «{label[:30]}» → "
                                 f"{got} "
@@ -10287,6 +11260,26 @@ def set_slider(host_part: Optional[str], label: str, value: int,
             _slider_unmark(page.evaluate)  # метка уходит на любом выходе
 
     def _op_marked(page):
+        st = _apply(page)
+        got = _verify(page.evaluate)
+        if not (got and _slider_accepted(got, st.get("v"))):
+            # Абсолютное значение идемпотентно: один повтор (заново
+            # выставить) с долгим ожиданием — React-виджеты и плееры
+            # дорисовывают с задержкой, 0.35 с им мало
+            logger.info(f"[BrowserActions] Слайдер «{label[:30]}»: "
+                        f"значение не принято ({got or '—'}) — повтор")
+            st = _apply(page)
+            got = _verify(page.evaluate, SLIDER_RETRY_SETTLE_SEC)
+        if got and _slider_accepted(got, st.get("v")):
+            logger.info(f"[BrowserActions] Слайдер «{label[:30]}» → {got} "
+                        f"({host_part or f'вкладка #{tab_id}'})")
+            return got
+        # Виджет значение не принял (вернул прежнее/пусто)
+        raise BrowserUnavailable(
+            f"слайдер не принял значение (осталось {got or 'прежним'})")
+
+    def _apply(page) -> dict:
+        # Найти/пометить слайдер и выставить значение → ответ JS
         raw = str(page.evaluate(js) or "")
         try:
             st = json.loads(raw)
@@ -10317,24 +11310,20 @@ def set_slider(host_part: Optional[str], label: str, value: int,
                 # Кастомный слайдер: доверенный клик по точке трека
                 # (большинство виджетов прыгают в позицию клика)
                 page.mouse.click(x, y)
-        got = _verify(page.evaluate)
-        if got and _slider_accepted(got, st.get("v")):
-            logger.info(f"[BrowserActions] Слайдер «{label[:30]}» → {got} "
-                        f"({host_part or f'вкладка #{tab_id}'})")
-            return got
-        # Виджет значение не принял (вернул прежнее/пусто)
-        raise BrowserUnavailable(
-            f"слайдер не принял значение (осталось {got or 'прежним'})")
+        return st
 
     return _WORKER.submit(_op)
 
 
 def read_text(host_part: Optional[str], tab_id: Optional[int] = None,
-              mode: str = "last") -> str:
+              mode: str = "last", task: bool = False) -> str:
     """Текст со страницы без побочек (front=False — вкладку не выдёргиваем).
     mode=last — последнее сообщение чата (роль-префикс), page — основной
-    текст (main/article). Нечего читать — BrowserUnavailable с честным текстом."""
-    js = _READ_PAGE_JS if mode == "page" else _READ_LAST_JS
+    текст (main/article). task (агент задач, mode=page) — открытое окно/
+    шторка первыми, начало и конец длинного текста.
+    Нечего читать — BrowserUnavailable с честным текстом."""
+    js = (_READ_TASK_JS if mode == "page" and task
+          else _READ_PAGE_JS if mode == "page" else _READ_LAST_JS)
     out = str(_eval_in_tab(host_part, tab_id, js) or "").strip()
     if not out:
         raise BrowserUnavailable(

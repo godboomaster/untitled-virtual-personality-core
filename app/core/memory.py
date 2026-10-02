@@ -18,6 +18,7 @@ from app.core.memory_config import (
     is_public_category
 )
 from app.core.users import get_user_tag
+from app.core.language import detect_dialogue_language, detect_language, user_language_line
 import time
 import json
 import threading
@@ -27,6 +28,13 @@ from concurrent.futures import ThreadPoolExecutor
 from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _facts_language_line(lang: Optional[str]) -> str:
+    # Язык значений фактов; названия категорий и маркеры — всегда английские
+    return (f"{user_language_line(lang)} Category names and markers like "
+            "[NO_FACTS] always stay in English exactly as given; only the "
+            "values are free text.")
 
 # Сколько чатов держать в оперативных буферах STM (LRU). Вытесненный буфер
 # не теряется: при следующем обращении к чату он перечитывается из ChromaDB
@@ -676,10 +684,24 @@ class LongTermMemory:
         # пока у пользователя что-то выполняется. См. _submit_serial.
         self._serial: Dict[str, deque] = {}
         self._serial_lock = threading.Lock()
+        # Последний язык диалога пользователя (user_id → 'ru'/'en') — для
+        # фоновых промптов экстракции/слияния/консолидации (MemoryManager
+        # обновляет его на каждом сообщении пользователя)
+        self._user_langs: Dict[str, str] = {}
 
         # Режимы приватности LTM per user: "smart" (по умолчанию) | "strict"
         self._privacy_file = Path(db_path).parent / "ltm_privacy.json"
         self._privacy_modes: Dict[str, str] = self._load_privacy_modes()
+
+    def note_user_language(self, user_id, text: str):
+        lang = detect_language(text)
+        if lang:
+            if not hasattr(self, "_user_langs"):
+                self._user_langs = {}
+            self._user_langs[str(user_id)] = lang
+
+    def user_language(self, user_id) -> Optional[str]:
+        return getattr(self, "_user_langs", {}).get(str(user_id))
 
     def _exclude(self):
         """Кого пропускать в цепочке: текущий основной провайдер основного
@@ -807,11 +829,14 @@ class LongTermMemory:
         return is_public_category(category)
     
     def extract_facts_async(self, user_message: str, user_id: str = "default", stm_context: str = None,
-                            origin_chat: str = None, user_name: str = None):
+                            origin_chat: str = None, user_name: str = None, lang: str = None):
         """
         Запускает извлечение фактов в фоновом потоке.
         origin_chat — чат, где факт был рассказан (для скоупа приватности).
+        lang — язык диалога пользователя ('ru'/'en'); None — последний
+        известный язык пользователя (user_language) или по тексту.
         """
+        lang = lang or self.user_language(user_id)
         # Эпоха — в момент постановки, а не старта задачи: задача может ждать
         # свободный поток пула, и очистка за это время не должна «пропустить»
         # факты из сообщений, сказанных до неё
@@ -819,7 +844,7 @@ class LongTermMemory:
 
         def _extract_and_save():
             try:
-                facts_raw = self.extract_facts(user_message, stm_context)
+                facts_raw = self.extract_facts(user_message, stm_context, lang=lang)
                 if facts_raw:
                     facts_dict = parse_and_filter_facts(facts_raw)
                     if facts_dict:
@@ -833,7 +858,7 @@ class LongTermMemory:
                         for category, value in safe_facts.items():
                             fact_text = f"{category}: {value}"
                             if self.save_facts(fact_text, user_id, origin_chat=origin_chat,
-                                               user_name=user_name, epoch=epoch):
+                                               user_name=user_name, epoch=epoch, lang=lang):
                                 saved += 1
                         print(f"  [LTM] Сохранено фактов: {saved}")
                     else:
@@ -851,7 +876,8 @@ class LongTermMemory:
         self._submit_serial(user_id, _extract_and_save)
         print(f"  [LTM] Extraction запущен в фоне: '{user_message[:40]}...'")
     
-    def extract_facts(self, user_message: str, stm_context: str = None) -> Optional[str]:
+    def extract_facts(self, user_message: str, stm_context: str = None,
+                      lang: str = None) -> Optional[str]:
         """
         Использует LLM для извлечения важных фактов из сообщения.
         Возвращает строку фактов или None.
@@ -868,7 +894,8 @@ class LongTermMemory:
                 "content": (
                     "You are a fact extractor. Answer strictly by instruction. "
                     "Write facts comma-separated. "
-                    "If there are no facts — write only [NO_FACTS]."
+                    "If there are no facts — write only [NO_FACTS].\n"
+                    f"{_facts_language_line(lang or detect_language(user_message))}"
                 )
             },
             {"role": "user", "content": prompt}
@@ -923,7 +950,8 @@ class LongTermMemory:
             return None
     
     def save_facts(self, facts_text: str, user_id: str = "default", origin_chat: str = None,
-                   user_name: str = None, epoch: Tuple[int, int] = None) -> bool:
+                   user_name: str = None, epoch: Tuple[int, int] = None,
+                   lang: str = None) -> bool:
         """Потокобезопасная обёртка над _save_facts_impl.
 
         LLM-слияния APPEND-категорий считаются заранее, вне _facts_lock
@@ -935,7 +963,8 @@ class LongTermMemory:
         facts_list = split_facts_text(facts_text)
         # Эпоха — и до планирования (не звать LLM-слияние ради стёртой
         # памяти), и под локом (очистка могла случиться во время слияния)
-        merges = {} if self._epoch_stale(user_id, epoch) else self._plan_merges(facts_list, user_id)
+        merges = ({} if self._epoch_stale(user_id, epoch)
+                  else self._plan_merges(facts_list, user_id, lang=lang))
         with self._facts_lock:
             if self._epoch_stale(user_id, epoch):
                 print(f"  [LTM] Память {user_id} очищена во время экстракции — "
@@ -966,7 +995,8 @@ class LongTermMemory:
                             existing_by_cat[cat_key] = (results["ids"][idx], val.strip())
         return existing_docs, existing_by_cat
 
-    def _plan_merges(self, facts_list: List[str], user_id: str) -> Dict[Tuple[str, str, str], Optional[str]]:
+    def _plan_merges(self, facts_list: List[str], user_id: str,
+                     lang: str = None) -> Dict[Tuple[str, str, str], Optional[str]]:
         """Слияния APPEND-категорий (возможно, через LLM) — до захвата
         _facts_lock. Ключ — (категория, старое значение, новое значение):
         если к записи старое значение в базе успело смениться, план не
@@ -987,7 +1017,8 @@ class LongTermMemory:
             old_val = existing_by_cat[cat][1]
             key = (cat, old_val, new_val)
             if key not in plan:
-                plan[key] = self._merge_append_fact(cat, old_val, new_val)
+                plan[key] = self._merge_append_fact(
+                    cat, old_val, new_val, lang=lang or self.user_language(user_id))
         return plan
 
     def _save_facts_impl(self, facts_list: List[str], user_id: str = "default", origin_chat: str = None,
@@ -1084,7 +1115,7 @@ class LongTermMemory:
             print(f"  [LTM] Сохранено {added} фактов (из {len(facts_list)})")
 
     def _merge_append_fact(self, category: str, existing: str, new_value: str,
-                           allow_llm: bool = True) -> Optional[str]:
+                           allow_llm: bool = True, lang: str = None) -> Optional[str]:
         """
         Гибридное слияние фактов APPEND-категории.
         Сначала пробует ручное объединение, если сложно — вызывает LLM.
@@ -1102,7 +1133,7 @@ class LongTermMemory:
         
         # 3. Если есть подозрение на дубликаты или сложный случай — LLM
         if allow_llm:
-            return self._merge_with_llm(category, existing, new_value)
+            return self._merge_with_llm(category, existing, new_value, lang=lang)
         seen, items = set(), []
         for item in existing.split(",") + new_value.split(","):
             item = item.strip()
@@ -1111,7 +1142,8 @@ class LongTermMemory:
                 items.append(item)
         return ", ".join(items) or None
 
-    def _merge_with_llm(self, category: str, existing: str, new_value: str) -> Optional[str]:
+    def _merge_with_llm(self, category: str, existing: str, new_value: str,
+                        lang: str = None) -> Optional[str]:
         """
         Умное слияние фактов APPEND-категории через LLM.
         Возвращает объединённое значение или None при ошибке.
@@ -1121,7 +1153,8 @@ class LongTermMemory:
         messages = [
             {
                 "role": "system",
-                "content": "You merge values for long-term memory. Output ONLY the final merged value."
+                "content": ("You merge values for long-term memory. Output ONLY the final merged value.\n"
+                            + _facts_language_line(lang or detect_language(new_value)))
             },
             {"role": "user", "content": prompt}
         ]
@@ -1188,7 +1221,8 @@ class LongTermMemory:
                 "content": (
                     "You consolidate long-term memory. "
                     "Output clean facts, one per line: Category: value. "
-                    "No explanations, no markdown, no bullet points."
+                    "No explanations, no markdown, no bullet points.\n"
+                    f"{_facts_language_line(self.user_language(user_id))}"
                 )
             },
             {"role": "user", "content": prompt}
@@ -1620,6 +1654,8 @@ class MemoryManager:
                      интервал 6 вместо 15; None — определить по роутеру.
         """
         self.stm.add_message(role, content, user_id, chat_id, user_name)
+        if role == "user":
+            self.ltm.note_user_language(user_id, content)
 
         # Батч-экстракция: считаем ВСЕ сообщения диалога; вызов — на
         # пользовательском, когда новых накопилось ≥ every. Батч — все
@@ -1650,12 +1686,17 @@ class MemoryManager:
                     if msg.get("sender_id") in (None, user_id)
                 ]
                 batch_text = "\n".join(
-                    f"{'Пользователь' if msg['role'] == 'user' else 'Ассистент'}: {msg['content']}"
+                    f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['content']}"
                     for msg in own[-count:]
                 )
                 if batch_text.strip():
+                    # Язык — по репликам самого пользователя (метки ролей
+                    # латиницей сбили бы детект по всему батчу)
+                    batch_lang = detect_dialogue_language(
+                        "", own[-count:], sender_id=user_id) or self.ltm.user_language(user_id)
                     self.ltm.extract_facts_async(batch_text, user_id, None,
-                                                 origin_chat=chat_id, user_name=user_name)
+                                                 origin_chat=chat_id, user_name=user_name,
+                                                 lang=batch_lang)
 
         if role == "user" and self.enable_ltm_extraction:
             # Периодическая консолидация LTM

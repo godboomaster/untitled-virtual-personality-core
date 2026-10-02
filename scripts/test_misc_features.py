@@ -446,7 +446,7 @@ def test_local_router_singleton_lock():
         self.base_url = "http://localhost:11434"
         self.model = "test-model"
         self.timeout = 1.0
-        self._task_cfg = {}
+        self._personas = {}
         self._client = None
         self._last_check = 0.0
         self._available = False

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import InfoButton from '../components/InfoButton';
+import Select from '../components/Select';
 import { useI18n, useMockData } from '../i18n';
 import { api, ApiError } from '../api';
 import type { LocalStatus, LocationConfig, TimezoneConfig } from '../api';
@@ -267,37 +268,36 @@ export default function ApiKeys() {
           <div className="field-grid" style={{ marginTop: 12 }}>
             <div>
               <label className="field-label" htmlFor="notify-sound">{t('settings.notifySound')}</label>
-              <select
+              <Select
                 id="notify-sound"
-                className="input"
                 value={notifySound}
-                onChange={(e) => {
-                  const id = e.target.value as NotifySoundId;
+                options={(['ding', 'pop', 'chime', 'bell', 'none'] as const).map((id) => ({
+                  value: id,
+                  label: t(`settings.notifySound.${id}`),
+                }))}
+                onChange={(v) => {
+                  const id = v as NotifySoundId;
                   setNotifySound(id);
                   setNotifySoundId(id);
                   previewNotifySound(); // смена звука — сразу послушать его
                 }}
-              >
-                {(['ding', 'pop', 'chime', 'bell', 'none'] as const).map((id) => (
-                  <option key={id} value={id}>{t(`settings.notifySound.${id}`)}</option>
-                ))}
-              </select>
+              />
             </div>
             <div>
               <label className="field-label" htmlFor="notify-icon">{t('settings.notifyIcon')}</label>
-              <select
+              <Select
                 id="notify-icon"
-                className="input"
                 value={notifyIcon}
-                onChange={(e) => {
-                  const mode = e.target.value as NotifyIconMode;
+                options={[
+                  { value: 'persona', label: t('settings.notifyIcon.persona') },
+                  { value: 'app', label: t('settings.notifyIcon.app') },
+                ]}
+                onChange={(v) => {
+                  const mode = v as NotifyIconMode;
                   setNotifyIcon(mode);
                   setNotifyIconMode(mode);
                 }}
-              >
-                <option value="persona">{t('settings.notifyIcon.persona')}</option>
-                <option value="app">{t('settings.notifyIcon.app')}</option>
-              </select>
+              />
             </div>
           </div>
           <div style={{ marginTop: 12 }}>
@@ -439,17 +439,15 @@ export default function ApiKeys() {
           <div className="field">
             <label className="field-label">{t('settings.timezoneLabel')}</label>
             {tzOptions.length > 0 ? (
-              <select
-                className="input"
+              <Select
                 value={tzDraft}
                 disabled={tzSaving}
-                onChange={(e) => applyTimezone(e.target.value)}
-              >
-                <option value="">{t('settings.timezoneAuto')}</option>
-                {tzOptions.map((z) => (
-                  <option key={z} value={z}>{z}</option>
-                ))}
-              </select>
+                options={[
+                  { value: '', label: t('settings.timezoneAuto') },
+                  ...tzOptions.map((z) => ({ value: z, label: z })),
+                ]}
+                onChange={applyTimezone}
+              />
             ) : (
               <div className="apikey-form">
                 <input

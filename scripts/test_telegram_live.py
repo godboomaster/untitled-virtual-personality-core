@@ -246,7 +246,7 @@ def main():
     bot.setup_rhythm = lambda sender: None
     bot.setup_learning = lambda sender: None
     bot._reformulate_task = lambda t: t
-    bot._enrich_inventory_item = lambda name, desc="", expires=None: (desc or "обычный", None)
+    bot._enrich_inventory_item = lambda name, desc="", expires=None, lang=None: (desc or "обычный", None)
     gate = bot._get_turn_gate()
 
     # Учёт ходов: каждый открытый кадр должен быть закрыт
@@ -345,7 +345,9 @@ def main():
     def msg_update(*, cid=42, uid=42, kind="private", text=None, caption=None,
                    photo=None, document=None, reply_to=None, field="message",
                    thread_id=None):
-        m = {"message_id": next(uid_seq), "date": int(time.time()),
+        # +1: дата в Bot API — целые секунды, а drop_stale отбрасывает всё
+        # старше момента регистрации handlers (с долями секунды)
+        m = {"message_id": next(uid_seq), "date": int(time.time()) + 1,
              "chat": chat(cid, kind), "from": user(uid)}
         if field == "channel_post":
             m.pop("from")
@@ -473,6 +475,8 @@ def main():
               gf and gf[-1][1]["file_id"] == "ph_big"
               and img_calls and img_calls[-1][1] == IMAGE_BYTES
               and "что тут?" in img_calls[-1][0])
+        check("фото: в vision-промпте — язык пользователя (по подписи)",
+              img_calls and "The user speaks Russian" in img_calls[-1][0])
         texts = sent_texts(n0)
         check("фото: «Смотрю…» и ответ доставлены по порядку",
               len(texts) == 2 and texts[0] == "Смотрю на изображение..."

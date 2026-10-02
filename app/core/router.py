@@ -241,10 +241,18 @@ class ModelRouter:
         self.pinned_provider: str | None = None
         # Провайдеры по назначению (llm.answer_provider/cc_provider/
         # vision_provider в YAML персоны): None — обычная цепочка
-        self.answer_provider: str | None = None  # текст ответа пользователю
+        self.answer_provider: str | None = None  # реплики персоны в режиме
+                                                  # управления: реплики о
+                                                  # действиях и пересказ страницы
         self.cc_provider: str | None = None      # решения режима управления
         self.vision_provider: str | None = None  # vision-фолбэк (картинки)
         self.fallback_order: list[str] | None = None
+        # Провайдеры, исключённые персоной из своей автоматической цепочки
+        # (llm.exclude в YAML персоны): токены в формате fallback/primary
+        # ('local', 'webchat:<сайт>', id из PROVIDER_CONFIGS). Эффективный
+        # основной провайдер (self.active_provider) из цепочки не выбывает,
+        # даже если сам в этом множестве (см. set_persona_llm/_get_full_order).
+        self.excluded: set[str] = set()
         self.model_overrides: dict[str, str] = {}
         # Веб-чаты как провайдеры без ключей (WEBCHAT_SITES=qwen,deepseek —
         # порядок перебора; legacy WEBCHAT_SITE — один сайт). Пусто — выключены.
@@ -503,8 +511,9 @@ class ModelRouter:
             else:
                 provider_order = [p for p in provider_order if p != exclude_provider]
 
-        # Провайдер по назначению (текст ответа / решения управления): сначала
-        # он, цепочка ниже — fallback. Не дублируем, если он же исключён.
+        # Провайдер по назначению (реплики персоны в режиме управления /
+        # решения режима управления): сначала он, цепочка ниже — fallback.
+        # Не дублируем, если он же исключён.
         if force_provider and force_provider != exclude_provider \
                 and internet_available():
             answer = self._call_forced(force_provider, messages, temperature,
@@ -519,7 +528,8 @@ class ModelRouter:
         # модель (Ollama), без минут таймаутов по мёртвым провайдерам. Не
         # ответила/не установлена — идём по обычной цепочке (вдруг probe солгал).
         tried_local = False
-        if exclude_provider != "local" and not internet_available():
+        if exclude_provider != "local" and not self._is_excluded("local") \
+                and not internet_available():
             tried_local = True
             answer = self._try_local(messages, temperature, max_tokens, top_p, timeout)
             if answer:
@@ -540,6 +550,7 @@ class ModelRouter:
                 exclude_provider not in ("webchat", self.active_provider):
             sites = self.webchat_sites if self.active_provider == "webchat" \
                 else [self.active_provider.split(":", 1)[1]]
+            sites = self._filter_excluded_sites(sites)
             if isinstance(exclude_provider, str) and \
                     exclude_provider.startswith("webchat:"):
                 ex_site = exclude_provider.split(":", 1)[1]
@@ -643,7 +654,8 @@ class ModelRouter:
         # заведомо мертва. Не ответила — идём по обычной цепочке (вдруг probe
         # солгал). Локальная не стримится — ответ одним куском через on_token.
         tried_local = False
-        if exclude_provider != "local" and not internet_available():
+        if exclude_provider != "local" and not self._is_excluded("local") \
+                and not internet_available():
             tried_local = True
             answer = self._try_local(messages, temperature, max_tokens, top_p, timeout, on_token)
             if answer:
@@ -670,6 +682,7 @@ class ModelRouter:
                 exclude_provider not in ("webchat", self.active_provider):
             sites = self.webchat_sites if self.active_provider == "webchat" \
                 else [self.active_provider.split(":", 1)[1]]
+            sites = self._filter_excluded_sites(sites)
             if isinstance(exclude_provider, str) and \
                     exclude_provider.startswith("webchat:"):
                 ex_site = exclude_provider.split(":", 1)[1]
@@ -1047,6 +1060,34 @@ class ModelRouter:
             logger.warning(f"[Router] назначенный провайдер {provider}: {e}")
         return None
 
+    def get_response_assigned(self, provider: str, messages,
+                              temperature: float = 0.7, max_tokens: int = 2000,
+                              top_p: float = 0.9, timeout: float = 60.0,
+                              webchat_channel: str = "main",
+                              user_path: bool = False) -> str | None:
+        """Публичная обёртка над _call_forced: ОДНА попытка через провайдер
+        по назначению (llm.answer_provider/cc_provider), БЕЗ обычной цепочки
+        — в отличие от get_response(force_provider=...), здесь нет фоллбека:
+        решение, что делать при None (честный шаблон, другой источник и
+        т.п.), остаётся за вызывающим кодом (см. flavor_text._from_live —
+        реплики персоны в режиме управления не должны утыкаться в долгую
+        цепочку, пока пользователь ждёт готовую фразу).
+
+        Без интернета веб-чат/облако заведомо мертвы — сразу None, без
+        минут таймаута по мёртвым провайдерам; 'local' (Ollama) офлайн
+        работает — его пробуем и без сети.
+
+        user_path=True — вызов на пути ответа пользователю (см. докстринг
+        get_response): один разовый канал вместо длинной очереди фона."""
+        self._reset_last_provider()
+        if not provider:
+            return None
+        if provider != "local" and not internet_available():
+            return None
+        return self._call_forced(provider, messages, temperature, max_tokens,
+                                 top_p, timeout, webchat_channel,
+                                 user_path=user_path)
+
     def _call_forced_vision(self, provider: str, text_prompt: str,
                             image_bytes: bytes, timeout: float,
                             image_mime: str, extra_image) -> str | None:
@@ -1099,7 +1140,8 @@ class ModelRouter:
                         webchat_modes: dict | None = None,
                         answer_provider: str | None = None,
                         cc_provider: str | None = None,
-                        vision_provider: str | None = None):
+                        vision_provider: str | None = None,
+                        exclude: list[str] | None = None):
         """Персональный override провайдеров (YAML персоны, секция llm).
 
         primary — основной провайдер персоны ('local', 'webchat' (все сайты),
@@ -1112,7 +1154,12 @@ class ModelRouter:
         webchat_limits — {сайт: {"enabled": bool, "per_hour": int}}: лимит
         вызовов в час на сайт; enabled:false — снять; None — как есть.
         webchat_modes — {сайт: headless|hidden|headed}: в каком пуле Chrome
-        держать вкладку сайта (web_extended); None — дефолты."""
+        держать вкладку сайта (web_extended); None — дефолты.
+        exclude — провайдеры, которые персона убирает из СВОЕЙ автоматической
+        цепочки (id из PROVIDER_CONFIGS, 'local', 'webchat'/'webchat:<сайт>');
+        None/пустой список — исключений нет. Эффективный основной провайдер
+        (primary/pinned) никогда не исключается — назначенные по цели
+        провайдеры (answer/cc/vision_provider) исключение тоже не касается."""
         from app.features.web_llm import ADAPTERS as _WC_ADAPTERS
 
         if webchat_modes is not None:
@@ -1146,8 +1193,10 @@ class ModelRouter:
                 return p if p.split(":", 1)[1] in _WC_ADAPTERS else None
             return p if p in PROVIDER_CONFIGS or p == "local" else None
 
-        # Провайдеры по назначению: answer — текст ответа пользователю,
-        # cc — внутренние решения режима управления (разбор команды, резолв
+        # Провайдеры по назначению: answer — реплики персоны в режиме
+        # управления (реплики о действиях и пересказ страницы, см.
+        # flavor_text._from_live и _persona_page_view_reply), cc —
+        # внутренние решения режима управления (разбор команды, резолв
         # элементов страницы), vision — картинки.
         # None/неизвестный токен — обычная цепочка.
         for attr, val in (("answer_provider", answer_provider),
@@ -1172,6 +1221,20 @@ class ModelRouter:
             self.fallback_order = norm
         else:
             self.fallback_order = None
+
+        if exclude:
+            norm_ex: set[str] = set()
+            for p in exclude:
+                if p == "webchat":
+                    # Голый 'webchat' в exclude — все текущие сайты персоны
+                    norm_ex.update(f"webchat:{s}" for s in self.webchat_sites)
+                    continue
+                tok = _norm_token(p)
+                if tok:
+                    norm_ex.add(tok)
+            self.excluded = norm_ex
+        else:
+            self.excluded = set()
 
         self.model_overrides = {
             p: str(m).strip()
@@ -1233,10 +1296,26 @@ class ModelRouter:
             logger.warning("Ни один облачный провайдер не имеет ключей — уйдём в локальный fallback")
         return order
 
+    def _is_excluded(self, token: str) -> bool:
+        """Провайдер исключён персоной (llm.exclude) и НЕ является её текущим
+        эффективным основным провайдером — тот исключению не подвержен, даже
+        если буквально попал в список (см. set_persona_llm)."""
+        return token in self.excluded and token != self.active_provider
+
+    def _filter_excluded_sites(self, sites: list) -> list:
+        """Убрать из списка сайтов веб-чата исключённые персоной (llm.exclude),
+        кроме случая, когда сайт сам является закреплённым основным
+        провайдером (primary/pinned 'webchat:<сайт>' исключению не подвержен)."""
+        if not self.excluded:
+            return sites
+        return [s for s in sites if not self._is_excluded(f"webchat:{s}")]
+
     def _webchat_tokens(self) -> list[str]:
         # Токены webchat:<сайт> для цепочки: все включённые сайты плюс сайты
         # из персонального primary/fallback (персона может включить себе
-        # сайт, которого нет в глобальном списке).
+        # сайт, которого нет в глобальном списке). Сайты, исключённые
+        # персоной (llm.exclude), сюда не попадают — кроме сайта, который сам
+        # является закреплённым основным провайдером.
         sites = list(self.webchat_sites)
         extra = list(self.fallback_order or [])
         if self.pinned_provider:
@@ -1246,6 +1325,7 @@ class ModelRouter:
                 site = tok.split(":", 1)[1]
                 if site not in sites:
                     sites.append(site)
+        sites = self._filter_excluded_sites(sites)
         return [f"webchat:{s}" for s in sites]
 
     def _get_full_order(self) -> list:
@@ -1255,7 +1335,12 @@ class ModelRouter:
         он пробуется первой отдельной веткой и в цепочку не дублируется);
         без списка — веб-чаты после облачных, local последним. Основной
         'local'/'webchat*' сюда не попадает: он пробуется первым отдельной
-        веткой в get_response."""
+        веткой в get_response.
+
+        Провайдеры, исключённые персоной (llm.exclude), из результата
+        убираются — кроме эффективного основного провайдера (см. _is_excluded):
+        webchat:<сайт> отфильтрован уже в _webchat_tokens, а cloud id/'local'
+        убираются финальным проходом ниже."""
         clouds = self._get_provider_order()
         wc_tokens = self._webchat_tokens()
         active_is_local = self.active_provider == "local"
@@ -1276,6 +1361,8 @@ class ModelRouter:
         for p in tail:
             if p not in order:
                 order.append(p)
+        if self.excluded:
+            order = [p for p in order if not self._is_excluded(p)]
         return order
 
     def supports_vision(self) -> bool:
@@ -1399,6 +1486,7 @@ class ModelRouter:
                 or str(self.active_provider).startswith("webchat:")):
             sites = self.webchat_sites if self.active_provider == "webchat" \
                 else [self.active_provider.split(":", 1)[1]]
+            sites = self._filter_excluded_sites(sites)
             tried_webchats.update(sites)
             answer = self._try_webchat_image(text_prompt, image_bytes, timeout,
                                              sites=sites,

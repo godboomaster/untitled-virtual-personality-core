@@ -71,13 +71,13 @@ def main():
 
     # ── Фейковый роутер: ответ по виду промпта, все вызовы пишутся ──
     def _kind(prompt: str) -> str:
-        if "C=<уверенность от 0 до 1>" in prompt:
+        if "C=<confidence from 0 to 1>" in prompt:
             return "hybrid"
-        if "Какой из них" in prompt:
+        if "Which of them is" in prompt:
             return "visual"
-        if "кликабельные зоны" in prompt:
+        if "clickable zones" in prompt:
             return "zones"
-        if "Элементы страницы:" in prompt:
+        if "Page elements:" in prompt:
             return "wide"
         return "other"
 
@@ -304,17 +304,17 @@ def main():
         # ════════════════ 1b. _cand_line ════════════════
         print("\n── 1b. _cand_line ──")
         check("_cand_line: безымянный → «(без подписи)»",
-              _cand_line(3, _it(0, "button", "")) == "3) [button/-] (без подписи)")
+              _cand_line(3, _it(0, "button", "")) == "3) [button/-] (no label)")
         check("_cand_line: короткая подпись + ctx → «(блок: …)»",
               _cand_line(1, _it(0, "button", "×", ctx="Корзина"))
-              == "1) [button/-] × (блок: Корзина)")
+              == "1) [button/-] × (block: Корзина)")
         check("_cand_line: обрезка подписи lab_max",
               _cand_line(2, _it(0, "a", "я" * 300), 40)
               == "2) [a/-] " + "я" * 40)
         check("_cand_line: пометка слоя (открытое окно) и роль",
               _cand_line(4, _it(0, "div", "Подтвердить заказ", role="button",
                                 md=True))
-              == "4) [div/button] Подтвердить заказ — в открытом окне")
+              == "4) [div/button] Подтвердить заказ — in an open dialog")
 
         # ════════════════ 2. Построение кандидатов и промпта ════════════════
         print("\n── 2. Кандидаты и промпт ──")
@@ -333,14 +333,14 @@ def main():
         check("промпт: нумерация сквозная 1..N без пропусков",
               [n for n, _ in ln] == list(range(1, len(ln) + 1)) and len(ln) == 6)
         check("промпт: рамки 1..4, строки 5..6 «вне экрана»",
-              "элементы 1..4" in p0 and "(1-6)" in p0
-              and "Элементы без рамки (в основном ниже экрана):" in p0
+              "elements 1..4" in p0 and "(1-6)" in p0
+              and "Elements without a box (mostly below the screen):" in p0
               and num_of(p0, "Оформление заказа") in (5, 6)
               and num_of(p0, "Моя корзина покупок") in (5, 6))
         check("промпт: безымянные иконки получили рамки первыми (1, 2)",
-              [lab for n, lab in ln[:2]] == ["(без подписи)", "(без подписи)"])
+              [lab for n, lab in ln[:2]] == ["(no label)", "(no label)"])
         check("промпт: строка вне экрана без пометки «на экране»",
-              "Оформление заказа — на экране" not in p0)
+              "Оформление заказа — on screen" not in p0)
         check("промпт: релевантная строка (со словом цели) первой среди строк",
               num_of(p0, "Моя корзина покупок") == 5)
 
@@ -348,7 +348,7 @@ def main():
         items_map = base_items()
         want_by_label = {"Cart": 2, "Помощь": 3, "Оформление заказа": 4,
                          "Моя корзина покупок": 5}
-        icon_nums = [n for n, lab in ln if lab == "(без подписи)"]
+        icon_nums = [n for n, lab in ln if lab == "(no label)"]
         ok_map = True
         for n, lab in ln:
             mm = make()
@@ -357,7 +357,7 @@ def main():
             mm._veto_model_pick = lambda *a, **kw: False
             rr = FakeRouter({"hybrid": f"{n} C=0.9"})
             idx, meta = mm._hybrid_pick("корзина", items_map, "x.ru", 7, rr)
-            if lab == "(без подписи)":
+            if lab == "(no label)":
                 want = {1: 0, 2: 1}[icon_nums.index(n) + 1]
             else:
                 want = want_by_label[lab]
@@ -376,11 +376,11 @@ def main():
         r = FakeRouter({"hybrid": "нет"})
         _, meta = m._hybrid_pick("корзина", many, "x.ru", None, r)
         p = r.img_calls[0]["prompt"]
-        n_on_screen_rows = p.count(" — на экране, без рамки")
+        n_on_screen_rows = p.count(" — on screen, no box")
         check(f"бюджет: рамок ≤ {HYBRID_BOX_MAX}, строк ≤ {HYBRID_TEXT_MAX}",
               meta["n_boxes"] == HYBRID_BOX_MAX
               and meta["n_text"] == HYBRID_TEXT_MAX
-              and f"элементы 1..{HYBRID_BOX_MAX}" in p
+              and f"elements 1..{HYBRID_BOX_MAX}" in p
               and f"(1-{HYBRID_BOX_MAX + HYBRID_TEXT_MAX})" in p
               and len(lines_of(p)) == HYBRID_BOX_MAX + HYBRID_TEXT_MAX)
         check("бюджет: видимые без рамки идут строками с пометкой «на экране»",
@@ -406,10 +406,10 @@ def main():
         m._hybrid_pick("корзина", big + [partial, icon], "x.ru", None, r)
         p = r.img_calls[0]["prompt"]
         check("ранжирование: частичный матч — рамка 1, иконка — рамка 2",
-              num_of(p, "Оформить (блок:") == 1
-              and num_of(p, "(без подписи)") == 2)
+              num_of(p, "Оформить (block:") == 1
+              and num_of(p, "(no label)") == 2)
         check("ранжирование: не влезшие в рамки крупные — строками",
-              p.count(" — на экране, без рамки") == 14 - (HYBRID_BOX_MAX - 2))
+              p.count(" — on screen, no box") == 14 - (HYBRID_BOX_MAX - 2))
 
         # Активный слой: под бэкдропом (sc=False) и перекрытые (cov) — вон
         layer = [_it(0, "button", "Закрыть окно", md=True, x=500.0, y=300.0),
@@ -502,9 +502,9 @@ def main():
         p = r.img_calls[0]["prompt"]
         check("скоуп: «закрыть на корзина» — подсказка про элемент «закрыть» "
               "и контекст блока у «×»",
-              "Задача: нажать «закрыть на корзина» (элемент «закрыть», "
-              "относящийся к «корзина»; может быть подписан просто «закрыть»)"
-              in p and "× (блок: Корзина)" in p)
+              'Task: click "закрыть на корзина" (the element "закрыть" '
+              'belonging to "корзина"; it may be labelled just "закрыть")'
+              in p and "× (block: Корзина)" in p)
 
         # op=hover — формулировка задачи
         m = make()
@@ -512,8 +512,8 @@ def main():
         m._hybrid_pick("корзина", base_items(), "x.ru", None, r, op="hover")
         p = r.img_calls[0]["prompt"]
         check("hover: «Задача: навести курсор на «корзина»»",
-              p.startswith("Задача: навести курсор на «корзина».")
-              and "нажать" not in p.split("\n")[0])
+              p.startswith('Task: hover the cursor over "корзина".')
+              and "click" not in p.split("\n")[0])
 
         # llm_wide_resolve=false — только рамки, без текстового списка
         m = make({**CFG, "llm_wide_resolve": False})
@@ -521,7 +521,7 @@ def main():
         _, meta = m._hybrid_pick("корзина", base_items(), "x.ru", None, r)
         check("llm_wide_resolve=false: строк нет, только рамки",
               meta is not None and meta["n_text"] == 0 and meta["n_boxes"] == 4
-              and "Элементы без рамки" not in r.img_calls[0]["prompt"])
+              and "Elements without a box" not in r.img_calls[0]["prompt"])
 
         # Палитра 12 цветов: бейджи 12 рамок — 12 разных цветов палитры
         pal = [(220, 38, 38), (37, 99, 235), (5, 150, 105), (217, 119, 6),
@@ -893,7 +893,9 @@ def main():
         # Строка текстового списка не проходит сверку подписи (как широкий
         # резолв) — вето по подписи проверяем на РАМКЕ. После вето каскад
         # спрашивает широкий (тут «нет») — итоговая причина от него, а
-        # вердикт гибрида с уверенностью — в следе ярусов
+        # вердикт гибрида с уверенностью — в следе ярусов. Слов цели в
+        # zero_items нет вовсе — «нет» модели это not_in_snapshot, а не
+        # llm_veto (_resolve_fail_kind, goal_absent)
         m = make()
         act, err = m.resolve_click("оплата", None, FakeRouter({
             "hybrid": lambda p: f"{num_of(p, 'Помощь')} C=0.3"}),
@@ -903,7 +905,7 @@ def main():
         t0 = (rec.get("tiers") or [{}])[0]
         check("аудит отказа (_audit_resolve): рамка с чужой подписью, C=0.3 — "
               "вето в следе (conf, picked_n, бюджеты), затем широкий «нет»",
-              act is None and rec.get("fail_reason") == "llm_veto"
+              act is None and rec.get("fail_reason") == "not_in_snapshot"
               and rec.get("wide_mode") == "hybrid"
               and rec.get("path") == "llm_wide"
               and [t.get("path") for t in rec.get("tiers") or []]
@@ -918,8 +920,9 @@ def main():
                                    chat_id="a3")
         rec = next((r for r in aud(m, "a3")
                     if r.get("kind") == "resolve_fail"), {})
-        check("аудит отказа: гибрид «нет» — llm_veto, wide_mode, без conf",
-              act is None and rec.get("fail_reason") == "llm_veto"
+        check("аудит отказа: гибрид «нет» при цели вне снапшота — "
+              "not_in_snapshot, wide_mode, без conf",
+              act is None and rec.get("fail_reason") == "not_in_snapshot"
               and rec.get("wide_mode") == "hybrid" and "conf" not in rec
               and rec.get("llm_response") == "нет")
 
@@ -929,10 +932,10 @@ def main():
         rec = next((r for r in aud(m, "a4")
                     if r.get("kind") == "resolve_fail"), {})
         check("аудит (text): _visual_resolve «нет» → path=vision, "
-              "llm_response=«нет», llm_veto",
+              "llm_response=«нет», цели нет в снапшоте → not_in_snapshot",
               act is None and rec.get("path") == "vision"
               and rec.get("llm_response") == "нет"
-              and rec.get("fail_reason") == "llm_veto"
+              and rec.get("fail_reason") == "not_in_snapshot"
               and rec.get("wide_mode") == "text")  # режим взят из конфига
 
         m = make({**CFG, "wide_mode": "text"})
@@ -1075,7 +1078,7 @@ def main():
               i_ == 4 and m_.get("row") is True and not m_.get("veto"))
         (i_, m_), rr, _ = run("корзина", base_items(), {"hybrid": "нет"})
         check("M3: формат уверенности в промпте — без числа-образца",
-              "C=<уверенность от 0 до 1>" in rr.img_calls[0]["prompt"]
+              "C=<confidence from 0 to 1>" in rr.img_calls[0]["prompt"]
               and not re.search(r"C=0[.,]\d", rr.img_calls[0]["prompt"]))
         check("N2: порога уверенности больше нет (C — только данные)",
               not hasattr(cc, "HYBRID_MIN_CONF"))
@@ -1321,7 +1324,7 @@ def main():
         (i_, m_), rr, _ = run("шестерёнка", base_items(), {"hybrid": "нет"})
         check("m3: цель-иконка — строк нет, только рамки",
               m_ is not None and m_["n_text"] == 0
-              and "Элементы без рамки" not in rr.img_calls[0]["prompt"])
+              and "Elements without a box" not in rr.img_calls[0]["prompt"])
 
         # Скриншот не снялся — в том же резолве повторно не снимаем
         shots = []
@@ -1369,9 +1372,9 @@ def main():
               and m.metrics()["vision_calls"] == 2)
 
         # Форматирование _cand_line: крайние случаи
-        check("нит: безымянный с контекстом — «(без подписи, блок: …)»",
+        check("нит: безымянный с контекстом — «(no label, block: …)»",
               _cand_line(1, _it(0, "button", "", ctx="Корзина"))
-              == "1) [button/-] (без подписи, блок: Корзина)")
+              == "1) [button/-] (no label, block: Корзина)")
         check("нит: длинный тег/роль обрезаны до 24 символов",
               _cand_line(1, _it(0, "t" * 50, "Ок", role="r" * 50))
               == f"1) [{'t' * 24}/{'r' * 24}] Ок")

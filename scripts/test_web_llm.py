@@ -96,10 +96,10 @@ def main():
         {"role": "user", "content": "как дела?"},
     ])
     check("join: system — блоком инструкций, роли с префиксами, image пропущен",
-          joined.startswith("Инструкции") and "Ты — Коннор." in joined
-          and "Пользователь: привет" in joined
-          and "Ассистент: здорово" in joined
-          and joined.endswith("Пользователь: как дела?")
+          joined.startswith("Instructions") and "Ты — Коннор." in joined
+          and "User: привет" in joined
+          and "Assistant: здорово" in joined
+          and joined.endswith("User: как дела?")
           and "image" not in joined)
 
     # ── 2. extract_json ──
@@ -347,7 +347,7 @@ def main():
                    "нов", "новый ответ", "новый ответ", "новый ответ"])
     def _lbt_v(host, tid, sels=None, **kw):
         if sels and list(sels) == (llm_v.adapter.get("user") or []):
-            return "Пользователь: hi"
+            return "User: hi"
         return next(txts_v)
     ba.last_block_text = _lbt_v
     try:
@@ -409,7 +409,7 @@ def main():
     ba.count_blocks = lambda *a, **kw: next(cnts)
     def _lbt_rec(host, tid, sels=None, **kw):
         if sels and list(sels) == (llm5.adapter.get("user") or []):
-            return "Пользователь: hi"
+            return "User: hi"
         return next(txts)
     ba.last_block_text = _lbt_rec
     try:
@@ -445,7 +445,7 @@ def main():
     ba.count_blocks = lambda *a, **kw: next(cnts6)
     def _lbt6(host, tid, sels=None, **kw):
         if sels and list(sels) == (llm6.adapter.get("user") or []):
-            return "Пользователь: hi"
+            return "User: hi"
         return next(txts6)
     ba.last_block_text = _lbt6
     try:
@@ -487,7 +487,7 @@ def main():
     ba.count_blocks = lambda *a, **kw: next(cnts7)
     def _lbt7(host, tid, sels=None, **kw):
         if sels and list(sels) == (llm7.adapter.get("user") or []):
-            return "Пользователь: hi"
+            return "User: hi"
         return next(txts7)
     ba.last_block_text = _lbt7
     try:
@@ -524,7 +524,7 @@ def main():
 
     def _lbt8(host, tid, sels, **kw):
         if sels and "user" in sels[0]:
-            return "Пользователь: hi" if flow8["delivered"] else "старый чужой"
+            return "User: hi" if flow8["delivered"] else "старый чужой"
         return "ответ" if flow8["delivered"] else ""
 
     ba.chat_fill_send = _send8
@@ -642,6 +642,180 @@ def main():
         ba.open_new_tab, ba.tab_url = _oq, _uq
         wl.clear_quarantine("qwen")
 
+    # ── 6h. Разлогин: поля ввода нет, страница входа → карантин login
+    #       (не «refused» и без перезапуска браузера); проба раз в
+    #       LOGIN_PROBE_SEC снимает карантин, когда вход восстановлен ──
+    wl.clear_quarantine("deepseek")
+    wl.pop_quarantine_alerts()
+    wl._LOGIN_PROBE_AT.clear()
+    _saved = {k: getattr(ba, k) for k in (
+        "open_new_tab", "tab_url", "eval_js", "detect_antibot",
+        "chat_fill_send", "pool_h_rescue_active", "end_rescue_pool_h")}
+    page = {"url": "https://chat.deepseek.com/sign_in", "comp": False,
+            "pwd": True, "btn": True}
+
+    def _eval_login(host, tab_id, js, *a, **kw):
+        return json.dumps(page) if "comp:" in js else ""
+    sends = []
+    ba.open_new_tab = lambda url, **kw: 42
+    ba.tab_url = lambda *a, **kw: "https://chat.deepseek.com/sign_in"
+    ba.eval_js = _eval_login
+    ba.detect_antibot = lambda *a, **kw: None
+    ba.chat_fill_send = lambda *a, **kw: (sends.append(1), (_ for _ in ()).throw(
+        ba.BrowserUnavailable("поле чата не приняло ввод")))[1]
+    ba.pool_h_rescue_active = lambda: False
+    ba.end_rescue_pool_h = lambda: None
+    try:
+        llm_l = wl.WebChatLLM("deepseek", base_dir=tmp / "dl1", channel="cc")
+        restarts_l = []
+        llm_l._restart_stuck_browser = lambda *a, **kw: restarts_l.append(1)
+        check("login: состояние вкладки — страница входа распознана",
+              llm_l._login_state(ba, 42)[0] == "login")
+        res_l = llm_l.get_response([{"role": "user", "content": "hi"}])
+        alerts_l = wl.pop_quarantine_alerts()
+        check("login: отправка сорвалась на странице входа → карантин login, "
+              "браузер не перезапускается",
+              res_l is None and wl.quarantine_kind("deepseek") == "login"
+              and not restarts_l
+              and [a["kind"] for a in alerts_l] == ["login"])
+        n_sends = len(sends)
+        check("login: следующий вызов до интервала пробы — мгновенный пропуск",
+              llm_l.get_response([{"role": "user", "content": "hi"}]) is None
+              and len(sends) == n_sends)
+        # Чистая от капчи страница входа НЕ снимает карантин разлогина
+        llm_l._challenge_check(ba, 42)
+        check("login: _challenge_check на странице входа карантин не снимает",
+              wl.quarantine_kind("deepseek") == "login")
+        # Интервал пробы истёк, вход всё ещё не выполнен → молча продлён
+        wl._LOGIN_PROBE_AT["deepseek"] = 0.0
+        llm_l.get_response([{"role": "user", "content": "hi"}])
+        check("login: проба на странице входа — без отправки, карантин продлён, "
+              "повторного уведомления нет",
+              len(sends) == n_sends and wl.quarantine_kind("deepseek") == "login"
+              and not wl.pop_quarantine_alerts())
+        # Человек вошёл: поле ввода на месте → проба снимает карантин
+        page.update(url="https://chat.deepseek.com/", comp=True, pwd=False,
+                    btn=False)
+        wl._LOGIN_PROBE_AT["deepseek"] = 0.0
+        llm_l.get_response([{"role": "user", "content": "hi"}])
+        check("login: вход восстановлен — проба снимает карантин",
+              not wl.site_quarantined("deepseek"))
+        # Непохожая на вход страница без поля — «неизвестно», старое поведение
+        page.update(url="https://chat.deepseek.com/", comp=False, pwd=False,
+                    btn=False)
+        check("login: без признаков входа — «unknown», не разлогин",
+              llm_l._login_state(ba, 42)[0] == "unknown")
+        # Окно подтверждения возраста поверх видимого поля — тоже «нужен
+        # человек»: бот за него 18+ не подтверждает
+        page.update(comp=True, age="Age verification. Confirm your age")
+        st_age = llm_l._login_state(ba, 42)
+        check("age: окно возраста поверх чата → нужен человек",
+              st_age[0] == "login" and "возраст" in st_age[1])
+        llm_l._on_logged_out(st_age[1])
+        al_age = wl.pop_quarantine_alerts()
+        check("age: карантин с причиной про возраст (для текста уведомления)",
+              al_age and "возраст" in al_age[0]["reason"])
+        page.update(age="")
+        # Недоставленное «выкинул из аккаунта» выбрасывается при входе
+        wl.clear_quarantine("deepseek")
+        llm_l._on_logged_out("страница входа: поле пароля")
+        llm_l._login_restored(ba)
+        check("login: вход восстановлен — недоставленное уведомление снято",
+              not wl.pop_quarantine_alerts())
+        # A/B-панель: клик по первому «I prefer this response»
+        ba.eval_js = lambda host, tab_id, js, *a, **kw: (
+            "clicked:2" if "prefer this response" in js else "")
+        check("ab: панель выбора из двух ответов — выбран первый",
+              llm_l._resolve_ab_choice(ba, 42) is True)
+        ba.eval_js = lambda *a, **kw: ""
+        check("ab: панели нет — ничего не жмём",
+              llm_l._resolve_ab_choice(ba, 42) is False)
+    finally:
+        for k, v in _saved.items():
+            setattr(ba, k, v)
+        wl.clear_quarantine("deepseek")
+        wl.pop_quarantine_alerts()
+
+    # ── 6i. Пул H после rescue: видимый Chrome с живым сокетом возвращается
+    #       в штатный режим при открытии новой вкладки (раньше — никогда) ──
+    _sv_cl = ba._RAW_CLIENTS[ba._POOL_H]
+    _sv_mode, _sv_ov = ba._POOL_H_RUNNING_MODE, ba._POOL_H_MODE_OVERRIDE
+    _sv_reset, _sv_call = ba._reset_raw_pool, ba._raw_call
+    events = []
+    try:
+        ba._RAW_CLIENTS[ba._POOL_H] = object()
+        ba._POOL_H_RUNNING_MODE = "headed"
+        ba._POOL_H_MODE_OVERRIDE = None  # rescue окончен
+        ba._reset_raw_pool = lambda pool, forget_tabs=True: events.append(("reset", pool))
+        ba._raw_call = lambda method, params=None, **kw: (
+            events.append(("call", method)),
+            {"targetId": "t1", "sessionId": "s1"})[1]
+        check("pool H: видимый после rescue — режим устарел",
+              ba._pool_h_mode_stale())
+        ba._raw_open("about:blank", pool=ba._POOL_H)
+        check("pool H: новая вкладка сначала сбрасывает сокет (перезапуск "
+              "в штатном режиме), потом создаётся",
+              events[:2] == [("reset", ba._POOL_H),
+                             ("call", "Target.createTarget")])
+        events.clear()
+        ba._POOL_H_RUNNING_MODE = "headless"
+        ba._raw_open("about:blank", pool=ba._POOL_H)
+        check("pool H: режим совпадает — сокет не трогаем",
+              ("reset", ba._POOL_H) not in events)
+    finally:
+        ba._RAW_CLIENTS[ba._POOL_H] = _sv_cl
+        ba._POOL_H_RUNNING_MODE, ba._POOL_H_MODE_OVERRIDE = _sv_mode, _sv_ov
+        ba._reset_raw_pool, ba._raw_call = _sv_reset, _sv_call
+        with ba._RAW_TABS_LOCK:
+            for _t in [t for t, v in ba._RAW_TABS.items()
+                       if v.get("targetId") == "t1"]:
+                ba._RAW_TABS.pop(_t, None)
+
+    # ── 6j. Rescue, которому чинить нечего: реплика пользователя («готово»)
+    #       завершает его; карантин капчи/входа или rescue соседа — нет.
+    #       Поиск Google во время rescue окон выдачи не открывает ──
+    _rescue_file = Path(ba._pool_h_rescue_path())  # временный (см. ниже)
+    _sv_r = (ba._pool_h_alive, ba._raw_open, ba._POOL_H_MODE_OVERRIDE,
+             ba._POOL_H_RESCUE_UNTIL, ba._POOL_H_RESCUE_SHARED)
+    opened = []
+    ba._pool_h_alive = lambda: True
+    ba._raw_open = lambda url, pool=None: (opened.append(url), 7)[1]
+    try:
+        # как rescue_pool_h, без перезапуска Chrome
+        ba._POOL_H_MODE_OVERRIDE = "headed"
+        ba._POOL_H_RESCUE_UNTIL = wl.time.time() + 600
+        ba._POOL_H_RESCUE_SHARED = ba._write_shared_rescue(
+            ba._POOL_H_RESCUE_UNTIL)
+        try:
+            ba.open_headless_tab("https://www.google.com/search?q=x")
+            refused = False
+        except ba.BrowserUnavailable:
+            refused = True
+        check("rescue: поиск Google не открывает окно выдачи — отказ "
+              "(поиск уйдёт в другой поисковик)", refused and not opened)
+        wl.quarantine_site("qwen", "widget: turnstile")
+        check("rescue: капча в карантине — реплика rescue не завершает",
+              wl.finish_idle_rescue() is False and ba.pool_h_rescue_active())
+        wl.clear_quarantine("qwen")
+        wl.quarantine_site("qwen", "лимит", ttl=600, kind="ratelimit")
+        check("rescue: чинить нечего (лимит руками не снять) — реплика "
+              "завершает rescue, общий файл удалён",
+              wl.finish_idle_rescue() is True
+              and not ba.pool_h_rescue_active()
+              and not _rescue_file.exists())
+        ba.open_headless_tab("https://www.google.com/search?q=x")
+        check("rescue окончен — поиск Google снова через пул H", len(opened) == 1)
+        # Rescue соседа: свой override пуст, срок — только в общем файле
+        _rescue_file.write_text(str(wl.time.time() + 600))
+        check("rescue соседа — реплика его не завершает",
+              wl.finish_idle_rescue() is False and ba.pool_h_rescue_active())
+    finally:
+        (ba._pool_h_alive, ba._raw_open, ba._POOL_H_MODE_OVERRIDE,
+         ba._POOL_H_RESCUE_UNTIL, ba._POOL_H_RESCUE_SHARED) = _sv_r
+        _rescue_file.unlink(missing_ok=True)
+        wl.clear_quarantine("qwen")
+        wl.pop_quarantine_alerts()
+
     # ── 6f. «Реформулировка вместо ответа»: страница чата непрогрета —
     #       baseline=0, хотя в ленте уже лежит СТАРЫЙ завершённый ответ
     #       (реплика coref), и baseline-путь вернул бы именно её. Якорный
@@ -659,7 +833,7 @@ def main():
     ba.count_blocks = lambda *a, **kw: 0  # история ещё не отрендерилась
     def _lbt10(host, tid, sels=None, **kw):
         if sels and list(sels) == (llm10.adapter.get("user") or []):
-            return "Пользователь: привет"   # подтверждение отправки
+            return "User: привет"   # подтверждение отправки
         return "старая реформулировка"      # её вернул бы baseline-путь
     ba.last_block_text = _lbt10
     # done=False до завершения генерации — стабильность не считается
@@ -694,7 +868,7 @@ def main():
     ba.count_blocks = lambda *a, **kw: next(cnts11)
     def _lbt11(host, tid, sels=None, **kw):
         if sels and list(sels) == (llm11.adapter.get("user") or []):
-            return "Пользователь: привет"
+            return "User: привет"
         return next(txts11)
     ba.last_block_text = _lbt11
     try:
@@ -716,6 +890,7 @@ def main():
         r.active_provider = None
         r.pinned_provider = None
         r.fallback_order = None
+        r.excluded = set()
         r.model_overrides = {}
         r.webchat_sites = list(sites)
         r._webchats = {}
@@ -758,6 +933,47 @@ def main():
     r.set_persona_llm("zai", ["webchat:deepseek", "webchat:qwen", "local"])
     check("router: порядок нескольких веб-чатов в fallback сохраняется",
           r._get_full_order() == ["zai", "webchat:deepseek", "webchat:qwen", "local"])
+
+    # ── 8b. llm.exclude: персона убирает провайдер из СВОЕЙ автоматической
+    # цепочки (в отличие от exclude_provider — разового параметра вызова,
+    # см. секцию 10) ──
+    r.set_persona_llm("zai", ["webchat:deepseek", "webchat:qwen", "local"],
+                      exclude=["webchat:qwen"])
+    check("llm.exclude: токен нормализован в webchat:<сайт>",
+          r.excluded == {"webchat:qwen"})
+    check("llm.exclude: исключённый сайт выпал из цепочки, остальное на месте",
+          r._get_full_order() == ["zai", "webchat:deepseek", "local"])
+
+    r.set_persona_llm("zai", ["webchat:deepseek", "webchat:qwen", "local"],
+                      exclude=["zai"])
+    check("llm.exclude: собственный primary исключить нельзя — цепочка как без исключения",
+          r._get_full_order() == ["zai", "webchat:deepseek", "webchat:qwen", "local"])
+
+    r.set_persona_llm("zai", ["webchat:deepseek", "webchat:qwen", "local"],
+                      exclude=["local"])
+    check("llm.exclude: local (не primary) исключён из хвоста цепочки",
+          r._get_full_order() == ["zai", "webchat:deepseek", "webchat:qwen"])
+
+    r.set_persona_llm("zai", ["webchat:deepseek", "webchat:qwen", "local"],
+                      exclude=["webchat"])
+    check("llm.exclude: голый webchat разворачивается в текущие сайты персоны",
+          r.excluded == {"webchat:deepseek", "webchat:qwen"})
+    check("llm.exclude: все веб-чаты выпали из цепочки",
+          r._get_full_order() == ["zai", "local"])
+
+    r.set_persona_llm("zai", ["webchat:deepseek", "webchat:qwen", "local"])
+    check("llm.exclude: не передан (None) — исключения сброшены",
+          r.excluded == set()
+          and r._get_full_order() == ["zai", "webchat:deepseek", "webchat:qwen", "local"])
+
+    r8 = _stub_router(["qwen", "deepseek"])
+    r8.active_provider = "webchat"
+    r8.excluded = {"webchat:qwen"}
+    check("llm.exclude: _filter_excluded_sites убирает сайт даже под общим primary=webchat",
+          r8._filter_excluded_sites(r8.webchat_sites) == ["deepseek"])
+    r8.active_provider = "webchat:qwen"
+    check("llm.exclude: _filter_excluded_sites не трогает сайт-primary (webchat:qwen)",
+          r8._filter_excluded_sites(["qwen"]) == ["qwen"])
 
     # ── 9. get_response через webchat (стабы вместо живого WebChatLLM) ──
     class _StubWebchat:
@@ -825,6 +1041,61 @@ def main():
           ans == "ответ" and q_stub.calls == 0 and d_stub.calls == 1
           and r2._last_provider == "webchat:deepseek")
 
+    # ── 10d. llm.exclude через get_response: исключённый сайт персона
+    # никогда не пробует сама (в отличие от 10b/10c — те про разовый
+    # exclude_provider вызова, не про постоянную настройку персоны) ──
+    r7 = _stub_router(["qwen", "deepseek"])
+    r7.active_provider = "webchat"
+    r7.pinned_provider = "webchat"
+    q7, d7 = _StubWebchat("qwen", "ответ qwen"), _StubWebchat("deepseek", "ответ deepseek")
+    r7._webchats = {"qwen": q7, "deepseek": d7}
+    r7._try_local = lambda *a, **kw: None
+    r7.set_persona_llm(None, exclude=["webchat:qwen"])
+    ans = r7.get_response([{"role": "user", "content": "x"}])
+    check("llm.exclude: исключённый сайт не пробуется даже как часть общего primary=webchat",
+          ans == "ответ deepseek" and q7.calls == 0 and d7.calls == 1)
+
+    # Исключён сайт, который сам — закреплённый primary: исключение не действует
+    r7b = _stub_router(["qwen", "deepseek"])
+    q7b = _StubWebchat("qwen", "ответ от закреплённого")
+    r7b._webchats = {"qwen": q7b}
+    r7b._try_local = lambda *a, **kw: None
+    r7b.set_persona_llm("webchat:qwen", exclude=["webchat:qwen"])
+    ans = r7b.get_response([{"role": "user", "content": "x"}])
+    check("llm.exclude: primary=webchat:qwen игнорирует своё же исключение — отвечает",
+          ans == "ответ от закреплённого" and q7b.calls == 1)
+
+    # exclude=[] снимает исключения
+    r7.set_persona_llm(None, exclude=[])
+    check("llm.exclude: пустой список снимает исключения", r7.excluded == set())
+
+    # Офлайн-шорткат (get_response): исключённый local (не primary) не трогается
+    r7c = _stub_router([])
+    r7c.set_persona_llm(None, exclude=["local"])
+    r7c.active_provider = "не-local-и-не-облако"  # точно не primary=local
+    local_calls_c = []
+    r7c._try_local = lambda *a, **kw: local_calls_c.append(1) or None
+    _net_router.internet_available = lambda: False
+    try:
+        ans = r7c.get_response([{"role": "user", "content": "x"}])
+    finally:
+        _net_router.internet_available = lambda: True
+    check("llm.exclude: офлайн-шорткат не трогает исключённый local (не primary)",
+          not local_calls_c)
+
+    # Но local — сам primary: своё же исключение не действует, шорткат пробует его
+    r7d = _stub_router([])
+    r7d.set_persona_llm("local", exclude=["local"])
+    local_calls_d = []
+    r7d._try_local = lambda *a, **kw: local_calls_d.append(1) or "офлайн-ответ"
+    _net_router.internet_available = lambda: False
+    try:
+        ans = r7d.get_response([{"role": "user", "content": "x"}])
+    finally:
+        _net_router.internet_available = lambda: True
+    check("llm.exclude: primary=local — исключение самого себя не действует",
+          ans == "офлайн-ответ" and local_calls_d == [1])
+
     # ── 11. Каналы: side-чат изолирован от main ──
     llm_m = wl.WebChatLLM("qwen", base_dir=tmp / "ch")
     llm_s = wl.WebChatLLM("qwen", base_dir=tmp / "ch", channel="side")
@@ -838,11 +1109,87 @@ def main():
           llm_s._chat_url() == "https://chat.qwen.ai/c/side"
           and llm_m._chat_url() == "https://chat.qwen.ai/c/main")
 
-    # ── 11a. Стейтless-канал «cc»: чат не запоминается ──
+    # ── 11a. Канал «cc»: свой ключ состояния; свежий тред на каждый вызов
+    #        — только на поисковике (google); на чат-сайтах постоянный чат
+    #        канала (01.10: свежие чаты cc — 60 за ~50 минут, аккаунт
+    #        deepseek заблокировали на 3 дня) ──
     llm_cc = wl.WebChatLLM("qwen", base_dir=tmp / "ch", channel="cc")
-    check("cc: stateless-флаг и свой ключ состояния; main/side не тронуты",
-          llm_cc.stateless is True and llm_cc._state_key == "qwen#cc"
+    check("cc: свой ключ состояния; на чат-сайте не stateless, на google — "
+          "stateless; main/side не тронуты",
+          llm_cc.stateless is False and llm_cc._state_key == "qwen#cc"
+          and wl.WebChatLLM("google", base_dir=tmp / "ch",
+                            channel="cc").stateless is True
           and llm_m.stateless is False and llm_s.stateless is False)
+    llm_dc = wl.WebChatLLM("deepseek", base_dir=tmp / "dcc", channel="cc")
+    flow_c = {"open": [], "nav": [], "sent": 0}
+    _saved_c = (ba.open_new_tab, ba.navigate_tab, ba.chat_fill_send,
+                ba.last_block_text, ba.count_blocks, ba.tab_url)
+    ba.open_new_tab = lambda url, **kw: (flow_c["open"].append(url), 42)[1]
+    ba.navigate_tab = lambda url, tab_id=None: flow_c["nav"].append(url)
+    ba.tab_url = lambda *a, **kw: ("https://chat.deepseek.com/a/chat/s/cc1"
+                                   if flow_c["sent"] else
+                                   wl.ADAPTERS["deepseek"]["home"])
+    ba.chat_fill_send = lambda *a, **kw: (
+        flow_c.__setitem__("sent", flow_c["sent"] + 1), "sent")[1]
+    ba.count_blocks = lambda *a, **kw: 1  # deepseek: один обмен в DOM
+
+    def _lbt_c(host, tid, sels=None, **kw):
+        if sels and list(sels) == (llm_dc.adapter.get("user") or []):
+            return "User: hi"
+        return f"ответ {flow_c['sent']}" if flow_c["sent"] else "старый"
+    ba.last_block_text = _lbt_c
+    try:
+        a1 = llm_dc.get_response([{"role": "user", "content": "hi"}])
+        a2 = llm_dc.get_response([{"role": "user", "content": "hi"}])
+        check("cc на deepseek: один чат на канал — второй вызов в "
+              "сохранённый чат (без перехода на home), адрес запомнен",
+              a1 == "ответ 1" and a2 == "ответ 2"
+              and flow_c["open"] == [wl.ADAPTERS["deepseek"]["home"]]
+              and flow_c["nav"] == []
+              and llm_dc._chat_url()
+              == "https://chat.deepseek.com/a/chat/s/cc1")
+    finally:
+        (ba.open_new_tab, ba.navigate_tab, ba.chat_fill_send,
+         ba.last_block_text, ba.count_blocks, ba.tab_url) = _saved_c
+
+    # ── 11a'. duck.ai (01.10): постоянный чат, модель Gemma 4 31B, промпт
+    #         длиннее 16 тыс. — сразу следующему провайдеру; «временно
+    #         недоступен» (анти-бот) — карантин, не сброс чата ──
+    llm_dk = wl.WebChatLLM("duckai", base_dir=tmp / "dk", channel="cc")
+    check("duck.ai: cc — постоянный чат; модель в JS — gemma4-31b",
+          llm_dk.stateless is False
+          and '"tinfoil/gemma4-31b"' in (llm_dk._mode_js() or ""))
+    touched = []
+    _saved_dk = (ba.open_new_tab, ba.chat_fill_send, ba.tab_url)
+    ba.open_new_tab = lambda *a, **kw: touched.append("open") or 42
+    ba.chat_fill_send = lambda *a, **kw: touched.append("send") or "sent"
+    ba.tab_url = lambda *a, **kw: touched.append("url") or ""
+    try:
+        long_ans = llm_dk.get_response([{"role": "user", "content": "я" * 16001}])
+        check("duck.ai: промпт > 16 тыс. — None без вкладки и отправки",
+              long_ans is None and touched == [])
+    finally:
+        ba.open_new_tab, ba.chat_fill_send, ba.tab_url = _saved_dk
+    seen_kw = []
+    _cfs_dk = ba.chat_fill_send
+    ba.chat_fill_send = lambda *a, **kw: seen_kw.append(kw) or "sent"
+    try:
+        llm_dk._fill_send(ba, "duck.ai", 42, "привет")
+        wl.WebChatLLM("qwen", base_dir=tmp / "dk")._fill_send(
+            ba, "chat.qwen.ai", 42, "привет")
+        check("duck.ai: Enter с символом «\\r» (enter_text) — только ему; "
+              "qwen — вызов как раньше",
+              seen_kw == [{"enter_text": True}, {}])
+    finally:
+        ba.chat_fill_send = _cfs_dk
+    dk_err = ("Упс... Сервис Duck.ai временно недоступен. Если ошибка "
+              "повторится, отправьте код 02f8 на адрес aichat-error@duckduckgo.com.")
+    check("duck.ai: «временно недоступен» — ошибка сайта и признак отказа "
+          "(карантин), обычный ответ со словом «недоступен» — нет",
+          any(rx.search(dk_err) for rx in wl._CHAT_ERROR_RES)
+          and wl._OVERLOAD_RE.search(dk_err) is not None
+          and not any(rx.search("Сайт банка временно недоступен, попробуй "
+                                "позже") for rx in wl._CHAT_ERROR_RES))
 
     # ── 11b. Роутер: webchat_channel="side" — отдельный экземпляр ──
     r3 = _stub_router(["qwen"])
@@ -1421,20 +1768,26 @@ def main():
 
 def _with_temp_browser_locks(fn):
     """Лок-файлы Chrome пулов (<профиль>.bot-lifecycle.lock/.bot-users.lock)
-    — во временный каталог на весь прогон: тест ходит в сырой пул V (и
-    воркер) с конфигом по умолчанию и иначе создавал бы/держал лок-файлы рядом
-    с НАСТОЯЩИМИ профилями — теми же, что у живого бота."""
+    и общий срок rescue (<профиль>.bot-rescue) — во временный каталог на весь
+    прогон: тест ходит в сырой пул V (и воркер) с конфигом по умолчанию и
+    иначе создавал бы/держал лок-файлы рядом с НАСТОЯЩИМИ профилями — теми
+    же, что у живого бота, а снятие карантина (_challenge_check) удаляло бы
+    файл rescue живого бота, завершая его rescue."""
     import app.features.browser_actions as _ba_locks
     d = tempfile.mkdtemp(prefix="browser_locks_")
-    saved = (_ba_locks._pool_h_life_path, _ba_locks._pool_v_life_path)
+    saved = (_ba_locks._pool_h_life_path, _ba_locks._pool_v_life_path,
+             _ba_locks._pool_h_rescue_path)
     _ba_locks._pool_h_life_path = lambda: os.path.join(
         d, "h" + _ba_locks._LIFE_SUFFIX)
     _ba_locks._pool_v_life_path = lambda: os.path.join(
         d, "v" + _ba_locks._LIFE_SUFFIX)
+    _ba_locks._pool_h_rescue_path = lambda: os.path.join(
+        d, "h" + _ba_locks._RESCUE_SUFFIX)
     try:
         return fn()
     finally:
-        _ba_locks._pool_h_life_path, _ba_locks._pool_v_life_path = saved
+        (_ba_locks._pool_h_life_path, _ba_locks._pool_v_life_path,
+         _ba_locks._pool_h_rescue_path) = saved
         for pool in ("h", "v"):
             _ba_locks._pool_user_release(pool)
 

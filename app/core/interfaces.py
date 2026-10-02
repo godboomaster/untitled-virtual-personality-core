@@ -10,6 +10,12 @@ from typing import Protocol, Optional
 class MessageSender(Protocol):
     # Контракт отправки сообщений.
 
+    # Транспорт доставляет сам файл (иначе вызывающий шлёт содержимое текстом)
+    supports_documents: bool
+    # У отправленных сообщений есть id, на которые пользователь отвечает reply
+    # (иначе reply-логика — «ответ именно на этот вопрос» — недоступна)
+    supports_replies: bool
+
     async def send_message(
         self,
         chat_id: str,

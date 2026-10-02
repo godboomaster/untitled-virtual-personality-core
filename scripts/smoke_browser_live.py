@@ -148,12 +148,17 @@ def main() -> int:
         context="smoke", config={"click": True, "vision_fallback": True},
         base_dir=tmp)
 
-    def run(goal, **kw):
-        # resolve_click + execute как в проде → (ok, detail, action)
+    def run(goal, confirm=False, **kw):
+        # resolve_click + execute как в проде → (ok, detail, action).
+        # confirm=True — человек ответил «да» на вопрос: неуверенный выбор
+        # (опечатка, fuzzy) без токена подтверждения execute не исполнит
         act, err = mgr.resolve_click(goal, None, router,
                                      chat_id=kw.get("chat", "smoke"))
         if act is None:
             return False, err, None
+        if confirm and mgr.confirm_reason(act):
+            act["_asked"] = mgr.confirm_reason(act)
+            mgr.grant_confirmation(act, "smoke", by="smoke")
         ok, detail = mgr.execute(act, "smoke", router=router)
         return ok, detail, act
 
@@ -233,10 +238,12 @@ def main() -> int:
         # 1.7. FAQ-аккордеон label+checkbox: заголовок глушит клики —
         # основной клик не меняет DOM, контрол перещёлкивает фолбэк; цель с
         # опечаткой «кэшбек» (на странице «кешбэк») — fuzzy-ярус скоринга
-        ok1e, d1e, _ = run("что такое кэшбек")
+        # Опечатка — выбор неуверенный: бот спрашивает «да», после «да» жмёт
+        ok1e, d1e, a1e = run("что такое кэшбек", confirm=True)
         acc = ba.eval_js(None, tab_id,
                          "document.querySelector('.faq input').checked")
-        check(f"аккордеон: «что такое кэшбек» (опечатка) — открыт"
+        check(f"аккордеон: «что такое кэшбек» (опечатка) — вопрос, после "
+              f"«да» открыт (причина: {(a1e or {}).get('_asked')})"
               f"{'' if ok1e else ' — ' + str(d1e)}",
               ok1e and str(acc).lower() == "true")
         ok1f, d1f, _ = run("что такое кешбэк")

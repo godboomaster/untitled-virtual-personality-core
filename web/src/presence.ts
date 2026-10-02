@@ -20,10 +20,25 @@ export const tabActive = () => !document.hidden && document.hasFocus();
 let focusedPersona: string | null = null;
 export const getFocusedPersona = () => focusedPersona;
 
+// Подписка на смену персоны открытого чата (комната показывает позу
+// «с тобой», пока чат этой персоны открыт) — без поллинга
+const focusListeners = new Set<() => void>();
+export function onFocusedPersonaChange(cb: () => void): () => void {
+  focusListeners.add(cb);
+  return () => {
+    focusListeners.delete(cb);
+  };
+}
+function setFocusedPersona(next: string | null) {
+  if (focusedPersona === next) return;
+  focusedPersona = next;
+  focusListeners.forEach((l) => l());
+}
+
 export function usePresenceReporting(apiOnline: boolean, persona: string | null) {
   useEffect(() => {
     if (!apiOnline || !persona) return;
-    focusedPersona = persona;
+    setFocusedPersona(persona);
     const report = () => {
       api.setPresence(tabActive(), persona).catch(() => {});
     };
@@ -35,7 +50,7 @@ export function usePresenceReporting(apiOnline: boolean, persona: string | null)
       document.removeEventListener('visibilitychange', report);
       window.removeEventListener('focus', report);
       window.removeEventListener('blur', report);
-      if (focusedPersona === persona) focusedPersona = null;
+      if (focusedPersona === persona) setFocusedPersona(null);
       // Переключили персону/чат или ушли с экрана чата — снимаем отметку у
       // СТАРОГО ключа сразу, не дожидаясь TTL: иначе фон той персоны стоял бы
       // ещё до минуты после того, как её чат закрыли

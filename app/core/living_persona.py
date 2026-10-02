@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from app.core.atomic_io import atomic_write_json
 from app.core.bounded_cache import BoundedCache
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
@@ -38,9 +39,11 @@ from app.core.state_engine import StateEngine, INITIATIVE_THRESHOLD
 from app.core.world_engine import WorldEngine
 from app.core.offline_summarizer import OfflineSummarizer
 from app.core.presence import web_presence
-from app.core import timeutil
+from app.core import room, timeutil
 from app.core.relationship import RelationshipMemory
-from app.core.language import detect_dialogue_language
+from app.core.language import (
+    detect_dialogue_language, persona_language, user_language_line,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,50 @@ MAX_CHAT_KEYS = 200
 # «за последние часы случилось» не должно падать в разгар переписки —
 # событие остаётся дью и сработает на следующем тике, когда чат затихнет
 EVENT_DEFER_QUIET_MINUTES = 30
+
+# Сигналы комнаты (заглянул/фокус-сессия) в контексте ответа: только
+# свежие — через час «пользователь заглянул» уже не повод
+ROOM_SIGNAL_CONTEXT_SEC = 3600
+
+# Язык пользователя по чатам переживает рестарт: data/<context>/living/
+# user_lang.json {"chats": {chat_id: lang}, "last": lang}. Пишет только
+# владелец контекста (LivingPersona), читает и API-процесс комнаты
+# (stored_chat_language) — тексты сигналов комнаты на языке чата
+USER_LANG_FILE = "user_lang.json"
+MAX_STORED_LANGS = 1000
+
+# Промпт размещения нового предмета в комнате (задача room_placement):
+# один короткий вызов на предмет, не чаще одного предмета за тик
+_ROOM_PLACEMENT_PROMPT = """Character: {persona_name}. Personality (brief): {personality_summary}
+Spots in their room: {spots}
+Zones where a thing can be put/placed: desk, shelf, window, floor, wall, bed.
+
+An item appeared in the character's inventory: "{item}"{description}.
+Decide where this item is in the room. Return STRICTLY JSON without markdown:
+{{"place": true|false, "zone": "desk|shelf|window|floor|wall|bed", "spot": null | {{"label": "<what the character does at the item, 2-5 words>", "place": "<where they are at that moment: at the guitar, behind the easel>", "pose": "stand|sit|read|write|look|sleep"}}}}
+
+RULES:
+- place: false — if this is not a thing for the room (food, money, an abstraction, a small thing in a pocket, a living creature)
+- spot — ONLY if the character will spend a long time DOING something at the item (guitar, easel, telescope, workbench); for ordinary things spot: null
+- zone — where the thing naturally goes: books — shelf, paintings/posters — wall, plants — window
+{language_line}"""
+
+
+def _user_lang_path(context: str) -> Path:
+    return Path(get_db_paths(context)["stm"]).parent / "living" / USER_LANG_FILE
+
+
+def stored_chat_language(context: str, chat_id: Optional[str] = None) -> Optional[str]:
+    """Сохранённый язык пользователя чата ('ru'/'en'); chat_id не задан или
+    чата нет — последний язык по всем чатам. Для другого процесса (API
+    комнаты): только чтение файла с кешем по mtime."""
+    try:
+        data = room.read_json_cached(_user_lang_path(context), {}) or {}
+        chats = data.get("chats") or {}
+        lang = chats.get(str(chat_id)) if chat_id else None
+        return lang or data.get("last") or None
+    except Exception:
+        return None
 
 # Топическая зацепка факта жизни к реплике пользователя: совпадение
 # содержательных слов — тот же подход, что _extract_topics в proactive.
@@ -97,32 +144,33 @@ def _topics_overlap(a: str, b: str) -> bool:
 
 # Промпт урожая диалога: за один проход NPC/места, mood и моменты/темы/
 # позиции — на веб-чате раздельный разбор стоил бы три side-вызова подряд.
-_HARVEST_PROMPT = """Проанализируй фрагмент диалога между персонажем ({persona_name}) и пользователем. Один проход — несколько выводов сразу. Верни СТРОГО JSON без markdown:
+_HARVEST_PROMPT = """Analyze the dialogue fragment between the character ({persona_name}) and the user. One pass — several conclusions at once. Return STRICTLY JSON without markdown:
 
 {{
-  "new_npcs": [{{"name": "...", "role": "...", "context": "как упомянут"}}],
+  "new_npcs": [{{"name": "...", "role": "...", "context": "how they were mentioned"}}],
   "new_places": [{{"name": "...", "type": "...", "context": "..."}}],
-  "mood_impact": {{"valence_delta": <float -0.3..0.3>, "tag": "<1-2 слова настроения или пустая строка>"}},
-  "moments": ["<общий момент/внутренняя шутка, до 10 слов>", ...],
-  "topics": ["<общая тема интересов>", ...],
-  "stance_changes": [{{"topic": "<тема>", "position": "<текущая позиция персонажа, коротко>"}}]
+  "mood_impact": {{"valence_delta": <float -0.3..0.3>, "tag": "<1-2 words of mood or an empty string>"}},
+  "moments": ["<a shared moment/inside joke, up to 10 words>", ...],
+  "topics": ["<a shared topic of interest>", ...],
+  "stance_changes": [{{"topic": "<topic>", "position": "<the character's current position, brief>"}}]
 }}
 
-ПРАВИЛА:
-- new_npcs/new_places — НОВЫЕ персонажи/места мира вокруг собеседников (друзья, коллеги, кафе, города), которых нет в известных списках; НЕ сами собеседники
-- mood_impact — как реплики повлияли на состояние ПЕРСОНАЖА (теплота/интерес к нему — плюс, резкость/пренебрежение — минус); нейтральная беседа — 0.0 и ""
-- moments/topics/stance_changes — только НОВОЕ, чего нет в известных списках; персонаж высказал или пересмотрел мнение → stance_changes
-- чего-то нет — пустые списки/нулевая дельта (это нормально)
+RULES:
+- new_npcs/new_places — NEW characters/places of the world around the interlocutors (friends, colleagues, cafes, cities) that are not in the known lists; NOT the interlocutors themselves
+- mood_impact — how the lines affected the CHARACTER's state (warmth/interest towards them — plus, harshness/neglect — minus); a neutral conversation — 0.0 and ""
+- moments/topics/stance_changes — only NEW things that are not in the known lists; the character expressed or reconsidered an opinion → stance_changes
+- if something is absent — empty lists/zero delta (this is normal)
 
-Персонаж (кратко): {personality_summary}
-Известные NPC: {known_npcs}
-Известные места: {known_places}
-Известные моменты: {known_moments}
-Известные темы: {known_topics}
-Текущие позиции персонажа: {known_stances}
+Character (brief): {personality_summary}
+Known NPCs: {known_npcs}
+Known places: {known_places}
+Known moments: {known_moments}
+Known topics: {known_topics}
+The character's current positions: {known_stances}
 
-Диалог:
-{dialog}"""
+Dialogue:
+{dialog}
+{language_line}"""
 
 
 class LivingPersonaConfig:
@@ -192,6 +240,11 @@ class LivingPersonaConfig:
 
         # Комната/настроение в вебе: с включённой жизнью оживает по умолчанию
         self.ui_room_mood_sync = bool(features.get("ui_room_mood_sync", life_on))
+        # Комната (веб): LLM решает, где стоит новый предмет инвентаря
+        # (false — эвристика «на стол» без вызова модели); клик по персоне
+        # в комнате доходит до основной LLM только при room_pokes_to_llm
+        self.room_llm_placement = bool(features.get("room_llm_placement", True))
+        self.room_pokes_to_llm = bool(features.get("room_pokes_to_llm", False))
 
     @property
     def enabled(self) -> bool:
@@ -236,6 +289,16 @@ class LivingPersona:
         # Вытеснение безобидно: язык определится заново на следующем
         # сообщении, счётчик урожая обнулится (урожай случится чуть позже).
         self._chat_user_lang = BoundedCache(max_entries=MAX_CHAT_KEYS)
+        # Постоянная копия (user_lang.json): язык чата переживает рестарт
+        # и вытеснение из кеша; last — последний язык по всем чатам
+        # (для генераций уровня персоны: засев мира, сценарист, выжимка)
+        self._lang_lock = threading.Lock()
+        self._stored_langs: Dict[str, str] = {}
+        self._last_user_lang: Optional[str] = None
+        self._load_user_langs()
+        # Язык чата по его STM (bot.chat_user_language): (chat_id) -> lang.
+        # Фолбэк, когда языка нет ни в кеше, ни в файле
+        self.get_chat_user_language: Optional[Callable[[str], Optional[str]]] = None
         # Планировщик урожая диалога: chat_id -> ts последнего вызова /
         # сообщений пользователя с последнего вызова
         self._harvest_at = BoundedCache(max_entries=MAX_CHAT_KEYS)
@@ -292,6 +355,9 @@ class LivingPersona:
         self._task: Optional[asyncio.Task] = None
         self._seeded_this_run = False
 
+        # Комната: сигналы из API-процесса (заглянул/фокус) по своему курсору
+        self._room_signals = room.SignalConsumer(context)
+
         # Счётчики для наблюдаемости.
         # In-memory: обнуляются при рестарте процесса; снапшот — get_state_for_ui,
         # дневная история — metrics_log.jsonl (_persist_metrics_daily)
@@ -307,14 +373,88 @@ class LivingPersona:
     def persona_context(self) -> dict:
         # Актуальная выжимка (переизвлекается при правке system_prompt).
         with self._pc_lock:
+            # Выжимка — уровень персоны: язык последнего собеседника
+            lang = self.global_language()
             if self._persona_context is None:
                 self._persona_context = self.persona_context_layer.get(
-                    self.persona.system_prompt)
+                    self.persona.system_prompt, lang)
             else:
                 # Дешёвая проверка: не поменялся ли промпт (по хэшу в слое)
                 self._persona_context = self.persona_context_layer.get(
-                    self.persona.system_prompt)
+                    self.persona.system_prompt, lang)
             return self._persona_context
+
+    # ── Язык пользователя ────────────────────────────────
+
+    def _load_user_langs(self):
+        try:
+            data = room.read_json_cached(_user_lang_path(self.context), {}) or {}
+        except Exception:
+            data = {}
+        chats = data.get("chats") if isinstance(data, dict) else None
+        if isinstance(chats, dict):
+            self._stored_langs = {str(k): v for k, v in chats.items()
+                                  if v in ("ru", "en")}
+        last = data.get("last") if isinstance(data, dict) else None
+        self._last_user_lang = last if last in ("ru", "en") else None
+
+    def _remember_language(self, chat_id: str, lang: str):
+        """Язык чата → кеш + файл (запись только при смене: на пути
+        сообщения это дешёвая проверка словаря)."""
+        cid = str(chat_id)
+        self._chat_user_lang[cid] = lang
+        with self._lang_lock:
+            if self._stored_langs.get(cid) == lang and self._last_user_lang == lang:
+                return
+            self._stored_langs.pop(cid, None)
+            self._stored_langs[cid] = lang
+            if len(self._stored_langs) > MAX_STORED_LANGS:
+                for k in list(self._stored_langs)[:len(self._stored_langs) - MAX_STORED_LANGS]:
+                    self._stored_langs.pop(k, None)
+            self._last_user_lang = lang
+            payload = {"chats": dict(self._stored_langs), "last": lang}
+        try:
+            path = _user_lang_path(self.context)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(path, payload)
+        except Exception as e:
+            logger.debug(f"[Living] Язык чата не сохранён: {e}")
+
+    def chat_language(self, chat_id: Optional[str]) -> Optional[str]:
+        """Язык пользователя чата ('ru'/'en') для фоновых генераций этого
+        чата: кеш → user_lang.json (переживает рестарт) → STM чата через
+        get_chat_user_language → язык системного промпта персоны."""
+        cid = str(chat_id or "")
+        if cid:
+            lang = self._chat_user_lang.get(cid)
+            if lang:
+                return lang
+            with self._lang_lock:
+                lang = self._stored_langs.get(cid)
+            if lang:
+                self._chat_user_lang[cid] = lang
+                return lang
+            if self.get_chat_user_language is not None:
+                try:
+                    lang = self.get_chat_user_language(cid)
+                except Exception:
+                    lang = None
+                if lang:
+                    self._chat_user_lang[cid] = lang
+                    return lang
+        return persona_language(getattr(self.persona, "system_prompt", "") or "")
+
+    def global_language(self, chat_id: Optional[str] = None) -> Optional[str]:
+        """Язык для генераций уровня персоны (не привязанных к чату): язык
+        чата-инициатора, если он есть, иначе последний язык пользователя по
+        всем чатам, иначе язык системного промпта персоны."""
+        if chat_id:
+            return self.chat_language(chat_id)
+        with self._lang_lock:
+            last = self._last_user_lang
+        if last:
+            return last
+        return persona_language(getattr(self.persona, "system_prompt", "") or "")
 
     def external_stimuli_allowed(self) -> bool:
         """Жёсткий gate: реальный интернет только для real_world-персон.
@@ -339,7 +479,7 @@ class LivingPersona:
         try:
             user_lang = detect_dialogue_language("", messages)
             if user_lang:
-                self._chat_user_lang[str(chat_id)] = user_lang
+                self._remember_language(str(chat_id), user_lang)
         except Exception as e:
             logger.warning(f"[Living] Язык чата не обновлён: {e}")
 
@@ -372,7 +512,7 @@ class LivingPersona:
         """Один локальный вызов по свежему диалогу → раздача трём движкам:
         новые NPC/места — миру, mood_impact — состоянию, моменты/темы/
         позиции — памяти отношений. Фоновый поток, никогда не бросает."""
-        local = get_local_router()
+        local = get_local_router(self.context)
         if not local.is_available(task="dialogue_harvest"):
             return
         lines = []
@@ -388,27 +528,31 @@ class LivingPersona:
             pc = self.persona_context()
         except Exception:
             pc = {}
-        known_npcs = known_places = "(нет)"
+        known_npcs = known_places = "(none)"
         if self.config.world_enabled:
             try:
                 snap = self.world_engine.get_world_snapshot()
-                known_npcs = "; ".join(n["name"] for n in snap["npcs"][:15]) or "(нет)"
-                known_places = "; ".join(p["name"] for p in snap["places"][:15]) or "(нет)"
+                known_npcs = "; ".join(n["name"] for n in snap["npcs"][:15]) or "(none)"
+                known_places = "; ".join(p["name"] for p in snap["places"][:15]) or "(none)"
             except Exception:
                 pass
         known_moments, known_topics, known_stances = \
             self.relationship.known_lists(chat_id)
+        # Язык разбираемого диалога; нет букв — язык чата
+        user_lang = (detect_dialogue_language("", messages)
+                     or self.chat_language(chat_id))
         try:
             response = local.get_response(
                 messages=[
-                    {"role": "system", "content": "Ты возвращаешь только валидный JSON без пояснений."},
+                    {"role": "system", "content": "You return only valid JSON without explanations."},
                     {"role": "user", "content": _HARVEST_PROMPT.format(
-                        persona_name=self.persona.persona_name or "персонаж",
+                        persona_name=self.persona.persona_name or "the character",
                         personality_summary=(pc or {}).get("personality_summary", "")[:300],
                         known_npcs=known_npcs, known_places=known_places,
                         known_moments=known_moments, known_topics=known_topics,
                         known_stances=known_stances,
-                        dialog="\n".join(lines))},
+                        dialog="\n".join(lines),
+                        language_line=user_language_line(user_lang))},
                 ],
                 temperature=0.2,
                 max_tokens=500,
@@ -509,8 +653,8 @@ class LivingPersona:
                     lines = []
                     for p in plans[:2]:
                         hrs = max(0.0, (p.get("due_at", 0) - time.time()) / 3600)
-                        when = ("сегодня" if hrs < 18 else
-                                "завтра" if hrs < 42 else f"через ~{int(hrs // 24)} дн.")
+                        when = ("today" if hrs < 18 else
+                                "tomorrow" if hrs < 42 else f"in ~{int(hrs // 24)} days")
                         line = f"- {p.get('title', '')} ({when})"
                         if p.get("detail"):
                             line += f" — {p['detail']}"
@@ -522,6 +666,14 @@ class LivingPersona:
                         "as a report.")
             except Exception:
                 pass
+        # Комната: пользователь заглянул / посидел рядом (фокус-сессия) —
+        # один раз в ближайший ответ, дальше запись consumed
+        try:
+            room_block = self._room_signals_block(chat_id)
+            if room_block:
+                parts.append(room_block)
+        except Exception:
+            pass
         # Отношения с пользователем: стадия + общие темы/моменты
         try:
             rel = self.relationship.get_context_block(chat_id)
@@ -530,6 +682,138 @@ class LivingPersona:
         except Exception:
             pass
         return "\n\n".join(p for p in parts if p) or None
+
+    # ── Комната (веб) ─────────────────────────────────────
+
+    def _room_signals_block(self, chat_id: str) -> Optional[str]:
+        now = time.time()
+        fresh = []
+        for e in self.state_engine.unconsumed(chat_id, limit=20):
+            if e.get("type") != "room_signal":
+                continue
+            try:
+                ts = timeutil.to_ts(datetime.fromisoformat(e["timestamp"]))
+            except (ValueError, TypeError, KeyError):
+                continue
+            # Свежесть — по времени самого сигнала (payload.ts), а не записи
+            # в лог: сигнал забирается только на тике (раз в ~20 мин), после
+            # простоя владельца — и через часы; «только что» ему уже не место
+            try:
+                ts = float((e.get("payload") or {}).get("ts") or ts)
+            except (TypeError, ValueError):
+                pass
+            if now - ts <= ROOM_SIGNAL_CONTEXT_SEC:
+                fresh.append(e)
+        if not fresh:
+            return None
+        self.state_engine.mark_consumed([e["id"] for e in fresh])
+        lines = "\n".join(f"- {(e.get('payload') or {}).get('event', '')}"
+                           for e in fresh[-2:])
+        return ("[JUST NOW, NEAR YOU]\n" + lines + "\n"
+                "The user is nearby in your room. You may react to it lightly "
+                "if it fits — never as a report, never mention any system.")
+
+    def _room_config(self) -> dict:
+        name = getattr(self.persona, "persona_name", "") or ""
+        data = room.load_persona_data(name)
+        if data is None:
+            data = getattr(self.persona, "persona_data", None) or {}
+        return room.resolve_room_config(data)
+
+    def _room_layout(self) -> dict:
+        base = room.persona_room_dir(getattr(self.persona, "persona_name", "") or "")
+        if base is None:
+            return {}
+        data = room.read_json_cached(base / "layout.json", {})
+        return data if isinstance(data, dict) else {}
+
+    def room_spots(self, inventory_names: Optional[List[str]] = None) -> List[dict]:
+        """Допустимые места комнаты для тика: конфиг room: + места вокруг
+        предметов (размещения этого контекста + раскладка из веба) + away.
+        Все чтения — с кешем по mtime, вызов дешёвый."""
+        return room.allowed_spots(self._room_config(),
+                                  room.read_placements(self.context),
+                                  self._room_layout(), inventory_names)
+
+    def _consume_room_signals(self):
+        """Сигналы комнаты из API-процесса → offline_log (room_signal):
+        оттуда их видит основная LLM (get_living_context) и дневник."""
+        consumer = getattr(self, "_room_signals", None)
+        if consumer is None or not self.config.state_enabled:
+            return
+        for sig in consumer.consume():
+            text = str(sig.get("text") or "").strip()
+            chat_id = str(sig.get("chat_id") or "").strip()
+            if not text or not chat_id:
+                continue
+            self.state_engine.log_event(
+                chat_id, "room_signal", {"event": text, "kind": sig.get("type"),
+                                         "ts": sig.get("ts")})
+
+    def _place_room_items(self, pc: Optional[dict] = None):
+        """Новые предметы инвентаря без размещения → где они в комнате.
+        LLM (задача room_placement) — не больше одного предмета за тик;
+        модель недоступна или room_llm_placement: false — эвристика «на
+        стол» для всех сразу (без вызовов). Удалённые предметы лениво
+        выбрасываются из размещений."""
+        if self.inventory_manager is None:
+            return
+        try:
+            items = self.inventory_manager.get_items()
+        except Exception:
+            return
+        names = {i.name: i for i in items}
+        placements = dict(room.read_placements(self.context))
+        changed = False
+        for stale in [n for n in placements if n not in names]:
+            placements.pop(stale, None)
+            changed = True
+        pending = [n for n in names if n not in placements]
+        if pending:
+            local = get_local_router(self.context)
+            use_llm = (getattr(self.config, "room_llm_placement", True)
+                       and local.is_available(task="room_placement"))
+            if use_llm:
+                name = pending[0]
+                decision = self._llm_room_placement(local, names[name], pc,
+                                                    self.global_language())
+                placements[name] = decision or room.heuristic_placement()
+            else:
+                for name in pending:
+                    placements[name] = room.heuristic_placement()
+            changed = True
+        if changed:
+            room.save_placements(self.context, placements)
+
+    def _llm_room_placement(self, local, item, pc: Optional[dict],
+                            user_language: Optional[str] = None) -> Optional[dict]:
+        spots = ", ".join(f"{s['key']} ({s['place']})"
+                          for s in self._room_config().get("spots", []))
+        desc = str(getattr(item, "description", "") or "").strip()
+        try:
+            response = local.get_response(
+                messages=[
+                    {"role": "system", "content": "You return only valid JSON without explanations."},
+                    {"role": "user", "content": _ROOM_PLACEMENT_PROMPT.format(
+                        persona_name=getattr(self.persona, "persona_name", "") or "the character",
+                        personality_summary=(pc or {}).get("personality_summary", "")[:300],
+                        spots=spots or "desk, window, shelf",
+                        item=str(item.name)[:80],
+                        description=f" — {desc[:160]}" if desc else "",
+                        language_line=user_language_line(user_language))},
+                ],
+                temperature=0.2,
+                max_tokens=150,
+                task="room_placement",
+            )
+            from app.core.persona_context import _extract_json
+            data = _extract_json(response or "")
+        except Exception as e:
+            logger.debug(f"[Living] Размещение предмета не удалось: {e}")
+            return None
+        if not isinstance(data, dict):
+            return None
+        return room.normalize_placement(data, "llm")
 
     def get_state_for_ui(self, chat_id: str) -> dict:
         """Снимок для вкладок комната/настроение (ui_room_mood_sync).
@@ -633,14 +917,16 @@ class LivingPersona:
                     and not self._seeded_this_run):
                 await asyncio.to_thread(
                     self.world_engine.seed_from_system_prompt,
-                    self.persona.system_prompt, self.router)
+                    self.persona.system_prompt, self.router,
+                    self.global_language())
                 self._seeded_this_run = True
             # Мир мог быть засеян без сюжетов — одноразовый бэкфилл,
             # чтобы сценаристу было что двигать
             if self.config.world_enabled and not self.primitive:
                 await asyncio.to_thread(
                     self.world_engine.ensure_storylines,
-                    self.persona.system_prompt, self.router)
+                    self.persona.system_prompt, self.router,
+                    self.global_language())
         except Exception as e:
             logger.warning(f"[Living] Инициализация не удалась (повторим позже): {e}")
 
@@ -695,6 +981,12 @@ class LivingPersona:
         Возвращает сигналы инициативы [(chat_id, score, reason)] — их
         планированием на loop занимается асинхронный _loop()."""
         signals: List[tuple] = []
+        # Сигналы комнаты (заглянул/фокус-сессия) — ДО любых пропусков по
+        # присутствию/троттлингу: это дешёвая запись в лог, не вызов модели
+        try:
+            self._consume_room_signals()
+        except Exception as e:
+            logger.debug(f"[Living] Сигналы комнаты не забраны: {e}")
         # Присутствие — по чатам, а не «по персоне целиком»: чат с открытой
         # веб-вкладкой пропускается ниже в цикле (вместе с его суммаризацией
         # и скорингом инициативы), остальные чаты той же персоны, в т.ч.
@@ -704,6 +996,13 @@ class LivingPersona:
         # и это тяжёлые вызовы модели — при живом пользователе ждём.
         persona_busy = web_presence.any_active(self.context)
         pc = self.persona_context()
+        # Новые предметы → место в комнате (уровень персоны; вызов модели
+        # при живом пользователе ждёт, как стимулы и сценарист)
+        if not persona_busy and getattr(self, "inventory_manager", None) is not None:
+            try:
+                self._place_room_items(pc)
+            except Exception as e:
+                logger.debug(f"[Living] Размещение предметов не удалось: {e}")
         chats = self._known_chats()
         if not chats:
             return signals
@@ -742,7 +1041,7 @@ class LivingPersona:
                     episode = self.summarizer.daily_summarize(
                         chat_id, entries, self.persona,
                         self.state_engine, self.self_memory,
-                        user_language=self._chat_user_lang.get(str(chat_id)))
+                        user_language=self.chat_language(chat_id))
                     if episode:
                         self.metrics["episodes_written"] += 1
         except Exception as e:
@@ -755,7 +1054,8 @@ class LivingPersona:
                     and self.summarizer.should_run_screenwriter(
                         self.world_engine)):
                 advanced = self.summarizer.advance_storylines(
-                    self.persona, self.world_engine)
+                    self.persona, self.world_engine,
+                    user_language=self.global_language())
                 if advanced:
                     self.metrics["screenwriter_runs"] += 1
         except Exception as e:
@@ -766,6 +1066,9 @@ class LivingPersona:
     def _tick_chat(self, chat_id: str, pc: dict, fetch_stimulus: bool) -> Optional[tuple]:
         """Тик одного чата. Возвращает (chat_id, score, reason), если скоринг
         инициативы превысил порог — сигнал обработает _loop() на event loop."""
+        # Язык пользователя этого чата: свободный текст состояния и событий
+        # пишется на нём (иначе он тянет ответ персоны на язык промптов)
+        user_lang = self.chat_language(chat_id)
         # Предметы инвентаря: primitive передаёт их как «окружение» в тик
         # состояния (времяпровождение в терминах действий с предметами), для
         # остальных — источник объектов офлайн-событий
@@ -785,6 +1088,14 @@ class LivingPersona:
                                 self.world_engine.get_world_snapshot()["places"]]
             except Exception:
                 known_places = None
+
+        # Места комнаты (веб): модель выбирает spot/pose тем же вызовом
+        try:
+            spots = self.room_spots(inventory_items if self.inventory_manager is not None
+                                    else None)
+        except Exception as e:
+            logger.debug(f"[Living] Места комнаты не собраны: {e}")
+            spots = None
 
         # 1. Тик состояния. Если подписан proactive — скоринг
         # инициативы идёт тем же вызовом модели (один вместо двух).
@@ -831,11 +1142,12 @@ class LivingPersona:
             state, score = self.state_engine.tick_and_score(
                 chat_id, pc, storylines_ctx, last_world_fact=last_fact,
                 silence_hours=silence_h, since_initiative_hours=since_init_h,
-                proactive_settings=proactive_cfg, known_places=known_places)
+                proactive_settings=proactive_cfg, known_places=known_places,
+                spots=spots, user_language=user_lang)
         else:
             state = self.state_engine.tick(
                 chat_id, pc, storylines_ctx, last_world_fact=last_fact,
-                known_places=known_places)
+                known_places=known_places, spots=spots, user_language=user_lang)
         self.metrics["ticks_total"] += 1
 
         # 2. Офлайн-событие мира по расписанию; для primitive это физическое
@@ -873,7 +1185,8 @@ class LivingPersona:
 
             event = self.world_engine.generate_offline_event(
                 chat_id, pc, state, stimulus_text,
-                inventory_items=inventory_items, resolve_plan=due_plan)
+                inventory_items=inventory_items, resolve_plan=due_plan,
+                user_language=user_lang)
             self.world_engine.schedule_next_event(chat_id)
             if event:
                 payload = self.world_engine.apply_event(chat_id, event)
@@ -894,7 +1207,8 @@ class LivingPersona:
 
         # 3. Новый fetch стимула, если пул пуст (только real_world — gate выше)
         if fetch_stimulus and not self.world_engine.has_unused_stimulus():
-            self.world_engine.fetch_external_stimulus(pc)
+            # Стимул — уровня персоны, но fetch запускает тик этого чата
+            self.world_engine.fetch_external_stimulus(pc, user_language=user_lang)
 
         # 4. Скоринг инициативы уже посчитан в шаге 1 — порог → сигнал.
         # Последний скор держим в метриках — иначе порог инициативы

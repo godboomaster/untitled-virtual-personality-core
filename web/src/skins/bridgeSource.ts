@@ -4,54 +4,164 @@
 
    Bridge живёт внутри sandboxed iframe скина и отвечает за:
    - приём снапшота данных от хоста (postMessage {vpc:'host', type:'state'})
-     и наполнение hook-точек [data-vpc] / [data-vpc-field];
+     и наполнение hook-точек [data-vpc] / [data-vpc-field] / [data-vpc-label];
+     лента сообщений сверяется по id (узлы переиспользуются), остальные
+     списки перерисовываются, только когда изменились их данные;
+   - окружение: data-theme / lang / data-vpc-time-of-day на <html>;
    - отправку событий хосту: ready / send / clear / select-persona /
-     open-dossier / close-dossier / action / set-setting / zoom-image / error.
+     open-dossier / close-dossier / action / set-setting / zoom-image /
+     key / error;
+   - программный API для JS скина: window.vpc (см. contract.ts).
 
    JS написан без шаблонных литералов и стрелок нарочно: файл встраивается
    в TS как строка и исполняется в любом современном браузере. */
 
+import { SKIN_CONTRACT_VERSION } from './meta';
+
 export const BRIDGE_START = '<!-- ==== VPC-BRIDGE:START';
 export const BRIDGE_END = 'VPC-BRIDGE:END ==== -->';
+
+// Место для метки документа (prepareSkin подставляет её вместо заглушки):
+// bridge прикладывает метку к каждому событию, хост по ней отсеивает
+// события прошлых документов того же iframe
+export const BRIDGE_GEN_PLACEHOLDER = '__VPC_GEN__';
 
 export const BRIDGE_SOURCE = String.raw`
 (function () {
   'use strict';
+
+  var APP_CONTRACT = ${SKIN_CONTRACT_VERSION};
+  var SKIN_CONTRACT = parseInt(document.documentElement.getAttribute('data-vpc-contract') || '1', 10) || 1;
+  var GEN = '__VPC_GEN__';
+  // Лимит data-URL картинки у хоста (SkinFrame.IMAGE_MAX_CHARS)
+  var IMAGE_MAX_CHARS = 8 * 1024 * 1024;
 
   function qs(sel, root) { return (root || document).querySelector(sel); }
   function qsa(sel, root) {
     return Array.prototype.slice.call((root || document).querySelectorAll(sel));
   }
   function post(msg) {
+    msg.gen = GEN;
     try { parent.postMessage(msg, '*'); } catch (e) { /* нет родителя — ок */ }
   }
 
-  // ── Заполнение полей [data-vpc-field] внутри клона шаблона ──
-  function fillFields(root, data) {
-    var els = qsa('[data-vpc-field]', root);
-    // Поле может быть на самом корне клона (напр. <div data-vpc-field="text">)
-    if (root.hasAttribute && root.hasAttribute('data-vpc-field')) { els.unshift(root); }
-    els.forEach(function (el) {
-      var name = el.getAttribute('data-vpc-field');
-      var value = data[name];
-      if (value == null || value === '') { el.remove(); return; }
-      if (name === 'image') {
-        if (el.tagName === 'IMG') { el.src = value; }
-        else { el.style.backgroundImage = 'url("' + String(value).replace(/"/g, '%22') + '")'; }
-        el.hidden = false;
-        return;
+  // ── Сигнатуры данных: пропуск перерисовки неизменившихся частей ──
+  // Длинные data-URL (картинки) заменяются отпечатком: длина + начало,
+  // конец и выборка символов — чтобы не гонять мегабайты через stringify.
+  // Обычный текст сравнивается целиком: правка в середине длинной строки
+  // той же длины отпечаток бы не заметил
+  function fingerprint(s) {
+    var step = Math.max(1, Math.floor(s.length / 256));
+    var out = s.length + '#' + s.slice(0, 64);
+    for (var i = 64; i < s.length - 64; i += step) { out += s.charAt(i); }
+    return out + s.slice(-64);
+  }
+  function sig(v) {
+    try {
+      return JSON.stringify(v, function (k, x) {
+        return typeof x === 'string' && x.length > 512 && x.slice(0, 5) === 'data:' ? fingerprint(x) : x;
+      });
+    } catch (e) { return String(Math.random()); }
+  }
+
+  // ── Подписи UI: [data-vpc-label] (текст), -placeholder / -title / -aria
+  // (атрибуты). Нет ключа в снапшоте — остаётся исходный текст скина ──
+  var labels = {};
+  var labelsSig = null;
+  var LABEL_ATTRS = [
+    ['data-vpc-label-placeholder', 'placeholder'],
+    ['data-vpc-label-title', 'title'],
+    ['data-vpc-label-aria', 'aria-label']
+  ];
+  function withRoot(sel, root) {
+    var els = qsa(sel, root || document);
+    if (root && root.matches && root.matches(sel)) { els.unshift(root); }
+    return els;
+  }
+  function applyLabels(root) {
+    withRoot('[data-vpc-label]', root).forEach(function (el) {
+      if (el.__vpcLabel === undefined) { el.__vpcLabel = el.textContent; }
+      var v = labels[el.getAttribute('data-vpc-label')];
+      var s = v != null ? String(v) : el.__vpcLabel;
+      if (el.textContent !== s) { el.textContent = s; }
+    });
+    LABEL_ATTRS.forEach(function (pair) {
+      withRoot('[' + pair[0] + ']', root).forEach(function (el) {
+        var store = '__vpcAttr_' + pair[1];
+        if (el[store] === undefined) { el[store] = el.getAttribute(pair[1]); }
+        var v = labels[el.getAttribute(pair[0])];
+        var s = v != null ? String(v) : el[store];
+        if (s == null) { el.removeAttribute(pair[1]); }
+        else if (el.getAttribute(pair[1]) !== s) { el.setAttribute(pair[1], s); }
+      });
+    });
+  }
+
+  /* ── Клон <template> с реестром полей ──
+     Поле с пустым значением вынимается из DOM (как и раньше), но на его
+     месте остаётся комментарий-якорь: при следующем обновлении ТОГО ЖЕ
+     узла поле возвращается на место. Так элементы списков можно обновлять
+     на месте, не пересоздавая (анимации появления не повторяются). ── */
+  function makeClone(tpl) {
+    var node = tpl.content.firstElementChild.cloneNode(true);
+    node.__vpc = {
+      fields: withRoot('[data-vpc-field]', node).map(function (el) {
+        return { el: el, name: el.getAttribute('data-vpc-field'), anchor: null, root: el === node };
+      }),
+      optional: qsa('[data-vpc-optional]', node).map(function (el) {
+        return { el: el, anchor: null, root: false };
+      })
+    };
+    applyLabels(node);
+    return node;
+  }
+  function detach(rec) {
+    if (rec.root || !rec.el.parentNode) return;
+    if (!rec.anchor) { rec.anchor = document.createComment('vpc'); }
+    rec.el.parentNode.replaceChild(rec.anchor, rec.el);
+  }
+  function attach(rec) {
+    if (rec.anchor && rec.anchor.parentNode) { rec.anchor.parentNode.replaceChild(rec.el, rec.anchor); }
+  }
+
+  // Значение одного поля: картинка, инпут, полоса прогресса или текст
+  function setField(el, name, value) {
+    if (name === 'image') {
+      if (el.tagName === 'IMG') {
+        if (el.getAttribute('src') !== value) { el.src = value; }
+      } else {
+        el.style.backgroundImage = 'url("' + String(value).replace(/"/g, '%22') + '")';
       }
-      // Поля-инпуты (напр. модель провайдера) получают value, остальные — текст
-      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
-        el.value = String(value);
-        return;
-      }
-      // Элемент с data-vpc-bar — заполняемая полоса прогресса (значение = %)
-      if (el.hasAttribute('data-vpc-bar')) {
-        el.style.width = String(value) + '%';
-        return;
-      }
-      el.textContent = String(value);
+      el.hidden = false;
+      return;
+    }
+    // Поля-инпуты (напр. модель провайдера) получают value, остальные — текст;
+    // поле в фокусе не трогаем — пользователь его правит
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
+      if (document.activeElement !== el) { el.value = String(value); }
+      return;
+    }
+    // Элемент с data-vpc-bar — заполняемая полоса прогресса (значение = %)
+    if (el.hasAttribute('data-vpc-bar')) {
+      el.style.width = String(value) + '%';
+      return;
+    }
+    var s = String(value);
+    if (el.textContent !== s) { el.textContent = s; }
+  }
+
+  // Заполнение полей [data-vpc-field] клона (корень клона тоже может быть полем)
+  function fillNode(node, data) {
+    var reg = node.__vpc;
+    reg.fields.forEach(function (f) {
+      var value = data[f.name];
+      if (value == null || value === '') { detach(f); return; }
+      attach(f);
+      setField(f.el, f.name, value);
+    });
+    // Опустевшие необязательные контейнеры (напр. цитата без содержимого)
+    reg.optional.forEach(function (o) {
+      if (o.el.querySelector('[data-vpc-field]')) { attach(o); } else { detach(o); }
     });
   }
 
@@ -108,36 +218,115 @@ export const BRIDGE_SOURCE = String.raw`
     if (root.hasAttribute && root.hasAttribute('data-vpc-onchange')) { bindOnchange(root); }
   }
 
-  // ── Опустевшие необязательные контейнеры (напр. цитата без содержимого) ──
-  function pruneOptional(root) {
-    qsa('[data-vpc-optional]', root).forEach(function (el) {
-      if (!el.querySelector('[data-vpc-field]')) { el.remove(); }
-    });
+  // ── Прокрутка ленты ──
+  // Прокручивается ближайший предок с overflow auto/scroll (обычно сам
+  // контейнер ленты), иначе — страница
+  function scrollerOf(el) {
+    for (var n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+      var oy = getComputedStyle(n).overflowY;
+      if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') return n;
+    }
+    return document.scrollingElement || document.documentElement;
   }
+  function distanceToBottom(s) { return s.scrollHeight - s.scrollTop - s.clientHeight; }
+  var NEAR_BOTTOM = 40; // px: ближе — пользователь «у низа», ленту докручиваем
 
-  // ── Лента сообщений ──
-  function renderMessages(messages) {
+  /* ── Лента сообщений: сверка по id ──
+     Узлы сообщений переиспользуются: новые дописываются, изменившиеся
+     обновляются на месте, пропавшие удаляются. Чужие узлы в контейнере
+     (вставленные JS скина) убираются, как и при полной перерисовке.
+     Лента докручивается вниз, только если пользователь был у низа, при
+     первом рендере / смене персоны или после его собственной отправки. */
+  var feed = { box: null, scroller: null, nodes: {}, pinned: true };
+  function msgKey(m) { return (m.role === 'user' ? 'u' : 'p') + '\n' + String(m.text == null ? '' : m.text); }
+  var stickUntil = 0; // до этого момента — докручивать (своя отправка)
+
+  function renderMessages(messages, fresh) {
     var box = qs('[data-vpc="messages"]');
     var tpl = qs('template[data-vpc="message"]');
-    if (!box || !tpl || !tpl.content.firstElementChild) return;
-    box.innerHTML = '';
+    if (!box || !tpl || !tpl.content.firstElementChild) return [];
+    if (feed.box !== box) {
+      fresh = true;
+      feed.box = box;
+      // Картинка догрузилась и выросла высота — держим низ, если были у низа
+      box.addEventListener('load', function () {
+        if (feed.pinned && feed.scroller) { feed.scroller.scrollTop = feed.scroller.scrollHeight; }
+      }, true);
+    }
+    if (fresh) { feed.nodes = {}; }
+    var scroller = scrollerOf(box);
+    feed.scroller = scroller;
+    var stick = fresh || Date.now() < stickUntil || distanceToBottom(scroller) <= NEAR_BOTTOM;
+
+    var prev = feed.nodes;
+    // Лента персоны была пуста, а пришло сразу несколько сообщений — это
+    // догрузилась история, а не новые реплики
+    var hadNodes = Object.keys(prev).length > 0;
+    var fromHistory = !hadNodes && messages.length > 1;
+    var next = {};
+    var added = [];
+    var changed = false;
+    var cursor = box.firstChild;
     messages.forEach(function (m) {
-      var node = tpl.content.firstElementChild.cloneNode(true);
-      node.setAttribute('data-role', m.role === 'user' ? 'user' : 'persona');
-      node.setAttribute('data-item-id', String(m.id));
-      fillFields(node, {
-        text: m.text,
-        time: m.time,
-        image: m.image,
-        'quote-author': m.quote && m.quote.author,
-        'quote-text': m.quote && m.quote.text
-      });
-      pruneOptional(node);
-      bindInner(node); // кнопка «ответить» (data-vpc-item-action="reply") и т.п.
-      box.appendChild(node);
+      var id = String(m.id);
+      var rec = prev[id];
+      if (!rec || next[id]) {
+        rec = { node: makeClone(tpl), sig: null, key: '' };
+        bindInner(rec.node); // кнопка «ответить» (data-vpc-item-action="reply") и т.п.
+        if (!fresh && !fromHistory) { added.push(m); }
+      }
+      rec.key = msgKey(m);
+      var s = sig(m);
+      if (rec.sig !== s) {
+        rec.sig = s;
+        rec.node.setAttribute('data-role', m.role === 'user' ? 'user' : 'persona');
+        rec.node.setAttribute('data-item-id', id);
+        fillNode(rec.node, {
+          text: m.text,
+          time: m.time,
+          image: m.image,
+          'quote-author': m.quote && m.quote.author,
+          'quote-text': m.quote && m.quote.text
+        });
+        changed = true;
+      }
+      next[id] = rec;
+      if (rec.node === cursor) { cursor = cursor.nextSibling; }
+      else { box.insertBefore(rec.node, cursor); changed = true; }
     });
-    box.scrollTop = box.scrollHeight;
+    while (cursor) {
+      var after = cursor.nextSibling;
+      box.removeChild(cursor);
+      cursor = after;
+      changed = true;
+    }
+    feed.nodes = next;
+
+    // Сообщение сменило id (локальная копия → реплика из перечитанной
+    // истории): пропавший узел с тем же автором и текстом — это оно же,
+    // событие 'message' не повторяем
+    if (added.length) {
+      var gone = {};
+      Object.keys(prev).forEach(function (pid) {
+        if (next[pid] !== prev[pid]) { gone[prev[pid].key] = (gone[prev[pid].key] || 0) + 1; }
+      });
+      added = added.filter(function (m) {
+        var k = msgKey(m);
+        if (gone[k]) { gone[k] -= 1; return false; }
+        return true;
+      });
+    }
+
+    if (stick && (changed || fresh)) { scroller.scrollTop = scroller.scrollHeight; }
+    if (added.length) { stickUntil = 0; }
+    feed.pinned = distanceToBottom(scroller) <= NEAR_BOTTOM;
+    return added;
   }
+
+  // Пользователь прокручивает ленту — запоминаем, у низа ли он
+  document.addEventListener('scroll', function () {
+    if (feed.scroller) { feed.pinned = distanceToBottom(feed.scroller) <= NEAR_BOTTOM; }
+  }, true);
 
   /* ── Реестр повторяющихся списков: контейнер + <template> + маппинг.
      rootFn — атрибуты корня клона (data-active, data-done…),
@@ -265,6 +454,10 @@ export const BRIDGE_SOURCE = String.raw`
   function renderList(cfg, payload) {
     var items = cfg.get(payload);
     if (!items) return;
+    // Данные списка не изменились — DOM не трогаем
+    var s = sig(items);
+    if (cfg.sig === s) return;
+    cfg.sig = s;
     // Контейнеров с одним hook может быть несколько (напр. дела в сайдбаре и в досье);
     // шаблон ищем сначала в том же экране, что и контейнер, затем — глобально
     qsa(cfg.box).forEach(function (box) {
@@ -273,10 +466,9 @@ export const BRIDGE_SOURCE = String.raw`
       if (!tpl || !tpl.content.firstElementChild) return;
       box.innerHTML = '';
       items.forEach(function (item) {
-        var node = tpl.content.firstElementChild.cloneNode(true);
+        var node = makeClone(tpl);
         if (item && item.id != null) { node.setAttribute('data-item-id', String(item.id)); }
-        fillFields(node, cfg.map(item));
-        pruneOptional(node);
+        fillNode(node, cfg.map(item));
         if (cfg.root) cfg.root(node, item);
         bindInner(node);
         if (cfg.click) {
@@ -345,25 +537,93 @@ export const BRIDGE_SOURCE = String.raw`
     'room-mood': function (p) { return p.room && p.room.mood; },
     'room-energy': function (p) { return p.room && p.room.energy; },
     'room-place': function (p) { return p.room && p.room.pastimePlace; },
-    'room-pet-label': function (p) { return p.room && p.room.petLabel; }
+    'room-pet-label': function (p) { return p.room && p.room.petLabel; },
+    // Окружение: локальное время и погода (если бэкенд её знает)
+    'local-time': function (p) { return p.env && p.env.localTime; },
+    'weather': function (p) { return p.env && p.env.weather && p.env.weather.text; },
+    'weather-temp': function (p) {
+      var w = p.env && p.env.weather;
+      return w && w.tempC != null ? (w.tempC > 0 ? '+' : '') + w.tempC + '°C' : null;
+    }
   };
+
+  // Слоты окружения очищаются, когда данных больше нет (погоду выключили);
+  // остальные при null сохраняют текст скина
+  var ENV_SLOTS = { 'local-time': 1, 'weather': 1, 'weather-temp': 1 };
+
+  function setText(el, value) {
+    var s = String(value);
+    if (el.textContent !== s) { el.textContent = s; }
+  }
+  // src картинки меняем, только если он другой (без повторного декодирования)
+  function setImg(el, src) {
+    if (src && el.tagName === 'IMG') {
+      if (el.getAttribute('src') !== src) { el.src = src; }
+      el.hidden = false;
+    } else {
+      el.hidden = true;
+    }
+  }
+
+  // Окружение: тема, язык, время суток, погода, подписи UI
+  function applyEnv(env) {
+    if (!env || typeof env !== 'object') return;
+    var html = document.documentElement;
+    if (env.theme === 'light' || env.theme === 'dark') { html.setAttribute('data-theme', env.theme); }
+    if (env.locale) { html.setAttribute('lang', String(env.locale)); }
+    if (env.timeOfDay) { html.setAttribute('data-vpc-time-of-day', String(env.timeOfDay)); }
+    if (env.weather && env.weather.condition) { html.setAttribute('data-vpc-weather', String(env.weather.condition)); }
+    else { html.removeAttribute('data-vpc-weather'); }
+    var ls = sig(env.labels || {});
+    if (ls !== labelsSig) {
+      labelsSig = ls;
+      labels = env.labels && typeof env.labels === 'object' ? env.labels : {};
+      applyLabels(null);
+    }
+  }
+
+  // ── JS API скина: window.vpc ──
+  var listeners = {};
+  var lastState = null;
+  function emit(ev, detail) {
+    var fns = listeners[ev];
+    if (!fns || !fns.length) return;
+    fns.slice().forEach(function (fn) {
+      try { fn(detail, lastState); }
+      catch (e) {
+        // Ошибка обработчика скина — такая же, как необработанная в его JS
+        post({ vpc: 'skin', type: 'error', message: 'vpc.on(' + ev + '): ' + String((e && e.message) || e) });
+      }
+    });
+  }
+  function moodOf(p) {
+    return (p.persona && p.persona.mood) || (p.room && p.room.mood) || (p.context && p.context.mood) || null;
+  }
 
   function applyState(p) {
     if (!p || typeof p !== 'object') return;
+    var prev = lastState;
+    lastState = p;
+    var personaId = p.persona ? p.persona.id : null;
+    var personaChanged = !prev || (prev.persona ? prev.persona.id : null) !== personaId;
+
+    applyEnv(p.env);
 
     Object.keys(TEXT_SLOTS).forEach(function (slot) {
       var value = TEXT_SLOTS[slot](p);
-      if (value == null) return;
-      qsa('[data-vpc="' + slot + '"]').forEach(function (el) { el.textContent = String(value); });
+      if (value == null) {
+        if (!ENV_SLOTS[slot]) return;
+        value = '';
+      }
+      qsa('[data-vpc="' + slot + '"]').forEach(function (el) { setText(el, value); });
     });
 
     // Аватар: <img> получает src, иначе — первая буква имени
     qsa('[data-vpc="persona-avatar"]').forEach(function (el) {
       if (el.tagName === 'IMG') {
-        if (p.persona && p.persona.avatar) { el.src = p.persona.avatar; el.hidden = false; }
-        else { el.hidden = true; }
+        setImg(el, p.persona && p.persona.avatar);
       } else {
-        el.textContent = p.persona && p.persona.name ? p.persona.name.charAt(0) : '?';
+        setText(el, p.persona && p.persona.name ? p.persona.name.charAt(0) : '?');
       }
     });
 
@@ -396,7 +656,7 @@ export const BRIDGE_SOURCE = String.raw`
       });
     }
 
-    if (p.messages) { renderMessages(p.messages); }
+    var added = p.messages ? renderMessages(p.messages, personaChanged) : [];
     LISTS.forEach(function (cfg) { renderList(cfg, p); });
 
     // Инпуты настроек: значения из снапшота (не трогаем поле в фокусе).
@@ -430,14 +690,8 @@ export const BRIDGE_SOURCE = String.raw`
         el.style.setProperty('--vpc-x', (p.room.x == null ? 50 : p.room.x) + '%');
         if (p.room.y != null) { el.style.setProperty('--vpc-y', p.room.y + '%'); }
       });
-      qsa('[data-vpc="room-bg"]').forEach(function (el) {
-        if (p.room.bg && el.tagName === 'IMG') { el.src = p.room.bg; el.hidden = false; }
-        else { el.hidden = true; }
-      });
-      qsa('[data-vpc="room-sprite"]').forEach(function (el) {
-        if (p.room.sprite && el.tagName === 'IMG') { el.src = p.room.sprite; el.hidden = false; }
-        else { el.hidden = true; }
-      });
+      qsa('[data-vpc="room-bg"]').forEach(function (el) { setImg(el, p.room.bg); });
+      qsa('[data-vpc="room-sprite"]').forEach(function (el) { setImg(el, p.room.sprite); });
       qsa('[data-vpc="room-pet"]').forEach(function (el) {
         if (p.room.pet && p.room.pet !== 'none') {
           el.setAttribute('data-pet', p.room.pet);
@@ -448,9 +702,81 @@ export const BRIDGE_SOURCE = String.raw`
 
     // Декоративный JS скина может реагировать на это событие
     try { document.dispatchEvent(new CustomEvent('vpc:state', { detail: p })); } catch (e) { /* старый движок */ }
+
+    // События window.vpc: первый снапшот тоже считается изменением;
+    // 'message' — только сообщения, появившиеся после первого рендера персоны
+    emit('state', p);
+    if (personaChanged) { emit('persona', p.persona || null); }
+    if (!prev || !!prev.typing !== !!p.typing) { emit('typing', !!p.typing); }
+    var mood = moodOf(p);
+    if (!prev || moodOf(prev) !== mood) { emit('mood', mood); }
+    var theme = p.env && p.env.theme;
+    if (theme && (!prev || !prev.env || prev.env.theme !== theme)) { emit('theme', theme); }
+    added.forEach(function (m) { emit('message', m); });
   }
 
   // ── События скина → хост ──
+  // Картинка больше лимита хоста ужимается холстом (до 2048 px, JPEG);
+  // done(null) — ужать не вышло
+  function fitImage(src, done) {
+    if (src.length <= IMAGE_MAX_CHARS) { done(src); return; }
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var w = img.naturalWidth || 1;
+        var h = img.naturalHeight || 1;
+        var k = Math.min(1, 2048 / Math.max(w, h));
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(w * k));
+        c.height = Math.max(1, Math.round(h * k));
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff'; // у JPEG нет прозрачности
+        ctx.fillRect(0, 0, c.width, c.height);
+        ctx.drawImage(img, 0, 0, c.width, c.height);
+        var q = 0.9;
+        var out = c.toDataURL('image/jpeg', q);
+        while (out.length > IMAGE_MAX_CHARS && q > 0.4) {
+          q -= 0.2;
+          out = c.toDataURL('image/jpeg', q);
+        }
+        done(out.length <= IMAGE_MAX_CHARS ? out : null);
+      } catch (e) { done(null); }
+    };
+    img.onerror = function () { done(null); };
+    img.src = src;
+  }
+
+  /* Отправка сообщения (поле ввода скина или vpc.send). Хост отвечает
+     {vpc:'host', type:'send-result', sid, ok}; при отказе (лимит частоты,
+     картинка не подошла) restore(text, image) возвращает текст и картинку
+     в поле ввода. После своей отправки лента докручивается вниз, даже
+     если пользователь листал историю */
+  var sendSeq = 0;
+  var pendingSends = {};
+  function sendMessage(text, image, restore) {
+    if (!text && !image) return false;
+    var sid = ++sendSeq;
+    stickUntil = Date.now() + 3000;
+    function go(img) {
+      if (image && !img) {
+        if (restore) { restore(text, null); }
+        return;
+      }
+      var msg = { vpc: 'skin', type: 'send', text: text, sid: sid };
+      if (img) { msg.image = img; }
+      pendingSends[sid] = { text: text, image: img, restore: restore || null };
+      post(msg);
+    }
+    if (image) { fitImage(String(image), go); } else { go(null); }
+    return true;
+  }
+  function onSendResult(d) {
+    var rec = pendingSends[d.sid];
+    if (!rec) return;
+    delete pendingSends[d.sid];
+    if (d.ok === false && rec.restore) { rec.restore(rec.text, rec.image); }
+  }
+
   function bind() {
     var input = qs('[data-vpc="input"]');
     var sendBtn = qs('[data-vpc="send"]');
@@ -477,7 +803,11 @@ export const BRIDGE_SOURCE = String.raw`
           var f = fi.files && fi.files[0];
           if (!f || !f.type || f.type.indexOf('image/') !== 0) { return; }
           var reader = new FileReader();
-          reader.onload = function () { pendingImage = String(reader.result); showAttach(); };
+          reader.onload = function () {
+            fitImage(String(reader.result), function (img) {
+              if (img) { pendingImage = img; showAttach(); }
+            });
+          };
           reader.readAsDataURL(f);
         };
         fi.click();
@@ -487,13 +817,18 @@ export const BRIDGE_SOURCE = String.raw`
       el.addEventListener('click', function () { pendingImage = null; showAttach(); });
     });
 
+    // Хост отказал в отправке — вернуть текст и картинку, если пользователь
+    // ещё не начал новое сообщение
+    function restoreInput(text, image) {
+      if (input && !String(input.value || '').trim()) { input.value = text; }
+      if (image && !pendingImage) {
+        pendingImage = image;
+        showAttach();
+      }
+    }
     function send() {
       if (!input) return;
-      var text = String(input.value || '').trim();
-      if (!text && !pendingImage) return;
-      var msg = { vpc: 'skin', type: 'send', text: text };
-      if (pendingImage) { msg.image = pendingImage; }
-      post(msg);
+      if (!sendMessage(String(input.value || '').trim(), pendingImage, restoreInput)) return;
       input.value = '';
       pendingImage = null;
       showAttach();
@@ -592,11 +927,82 @@ export const BRIDGE_SOURCE = String.raw`
     });
   }
 
+  /* Программный API для JS скина. Bridge стоит в конце <body>, поэтому
+     скрипт скина, выполненный раньше, берёт window.vpc в обработчике
+     DOMContentLoaded или события document 'vpc:ready' (detail — сам API). */
+  var api = {
+    contract: APP_CONTRACT, // версия контракта, которую понимает приложение
+    skinContract: SKIN_CONTRACT, // версия из <meta name="vpc-skin-contract"> (нет меты — 1)
+    on: function (ev, fn) {
+      if (typeof fn !== 'function') { return function () {}; }
+      var key = String(ev);
+      (listeners[key] = listeners[key] || []).push(fn);
+      return function () {
+        var arr = listeners[key];
+        var i = arr ? arr.indexOf(fn) : -1;
+        if (i >= 0) { arr.splice(i, 1); }
+      };
+    },
+    send: function (text, image) {
+      return sendMessage(String(text == null ? '' : text).trim(), image || null, null);
+    },
+    action: function (name, values, id) {
+      var vals = {};
+      if (values && typeof values === 'object') {
+        Object.keys(values).forEach(function (k) { vals[k] = String(values[k]); });
+      }
+      post({ vpc: 'skin', type: 'action', action: String(name), id: id == null ? null : String(id), values: vals });
+    },
+    setSetting: function (key, value) {
+      post({ vpc: 'skin', type: 'set-setting', key: String(key), value: String(value) });
+    },
+    selectPersona: function (id) { post({ vpc: 'skin', type: 'select-persona', id: String(id) }); },
+    openDossier: function () { post({ vpc: 'skin', type: 'open-dossier' }); },
+    closeDossier: function () { post({ vpc: 'skin', type: 'close-dossier' }); },
+    zoom: function (src) { post({ vpc: 'skin', type: 'zoom-image', src: String(src) }); }
+  };
+  Object.defineProperty(api, 'state', { get: function () { return lastState; }, enumerable: true });
+  try {
+    Object.defineProperty(window, 'vpc', { value: Object.freeze(api), writable: false, configurable: false });
+  } catch (e) { window.vpc = api; }
+  try { document.dispatchEvent(new CustomEvent('vpc:ready', { detail: api })); } catch (e) { /* старый движок */ }
+
+  /* Горячие клавиши приложения работают и при фокусе внутри скина:
+     Escape и сочетания с Ctrl/Meta/Alt пересылаются хосту. Обычный набор
+     текста не уходит; в полях ввода не уходят и стандартные сочетания
+     правки (Ctrl/Cmd + A/C/V/X/Z/Y, стрелки…) и Alt-символы macOS.
+     Скин может оставить клавишу себе через preventDefault(). */
+  var EDIT_KEYS = { a: 1, c: 1, v: 1, x: 1, y: 1, z: 1 };
+  window.addEventListener('keydown', function (e) {
+    if (e.defaultPrevented || e.isComposing) return;
+    var k = e.key;
+    if (!k || k === 'Control' || k === 'Meta' || k === 'Alt' || k === 'Shift') return;
+    if (k !== 'Escape' && !e.ctrlKey && !e.metaKey && !e.altKey) return;
+    var t = e.target;
+    var editable = t && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT');
+    if (editable && k !== 'Escape') {
+      if (!e.ctrlKey && !e.metaKey) return;
+      if (EDIT_KEYS[k.toLowerCase()] || /^(Arrow|Home|End|Backspace|Delete)/.test(k)) return;
+    }
+    post({
+      vpc: 'skin', type: 'key', key: k, code: e.code,
+      ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey
+    });
+  });
+
   window.addEventListener('message', function (e) {
     var d = e.data;
     if (!d || d.vpc !== 'host') return;
     if (d.type === 'state') { applyState(d.payload); }
+    else if (d.type === 'send-result') { onSendResult(d); }
   });
+
+  /* Ссылки не уводят документ скина: переход iframe на чужую страницу
+     хост считает поломкой скина и отключает его. Якоря (#…) работают */
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (a && String(a.getAttribute('href') || '').charAt(0) !== '#') { e.preventDefault(); }
+  }, true);
 
   window.addEventListener('error', function (e) {
     post({ vpc: 'skin', type: 'error', message: String(e.message || 'unknown error') });

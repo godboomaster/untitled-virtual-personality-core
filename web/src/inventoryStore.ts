@@ -30,9 +30,34 @@ function persist() {
   }
 }
 
+// Перетаскивание метки офлайн зовёт setPersonaItems на каждый pointermove —
+// запись в localStorage (вместе с картинками предметов) склеиваем в одну
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+function flushPersist() {
+  if (!persistTimer) return;
+  clearTimeout(persistTimer);
+  persistTimer = null;
+  persist();
+}
+if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPersist);
+
 // Заменить список предметов персоны и уведомить подписчиков
 export function setPersonaItems(personaId: string, items: InventoryItem[]) {
   state = { ...state, [personaId]: items };
+  if (!persistTimer) {
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      persist();
+    }, 500);
+  }
+  listeners.forEach((l) => l());
+}
+
+// Смена id персоны: правки инвентаря переезжают под новый id
+export function renamePersonaItems(oldId: string, newId: string) {
+  if (!(oldId in state)) return;
+  const { [oldId]: items, ...rest } = state;
+  state = { ...rest, [newId]: items };
   persist();
   listeners.forEach((l) => l());
 }

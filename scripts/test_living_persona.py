@@ -225,6 +225,88 @@ def main():
     finally:
         ws_mod.search_web = orig_search
 
+    # 13. Язык пользователя: промпты на английском + строка языка чата
+    import re as _re
+    from app.core.language import user_language_line
+    cyr = _re.compile(r"[а-яё]", _re.IGNORECASE)
+    check("язык: без сообщений — язык системного промпта персоны",
+          living.chat_language("fresh_chat") == "ru")
+    living.on_user_message("en_chat", [{"role": "user", "content": "Hi, how are you today?"}])
+    check("язык: чат запомнил английский", living.chat_language("en_chat") == "en")
+    check("язык: глобальный — последний язык пользователя", living.global_language() == "en")
+    living2 = lp_mod.LivingPersona(
+        context="smoke", persona=persona, router=None, config=config)
+    check("язык: переживает рестарт (user_lang.json)",
+          living2.chat_language("en_chat") == "en" and living2.global_language() == "en")
+    check("язык: файл читается другим процессом (stored_chat_language)",
+          lp_mod.stored_chat_language("smoke", "en_chat") == "en")
+
+    captured_prompts = []
+
+    class _CapLocal:
+        def is_available(self, task=None):
+            return True
+
+        def get_response(self, messages, **kw):
+            captured_prompts.append(messages)
+            return '{"event": "Walked in the park.", "mood_impact": {"valence_delta": 0.1, "tag": "calm"}}'
+
+    we_lang = lp_mod.WorldEngine("smoke_lang", "tester")
+    we_lang.local = _CapLocal()
+    we_lang.generate_offline_event("en_chat", pc, {"energy": 50}, None, user_language="en")
+    sys_msg, user_msg = captured_prompts[-1][0]["content"], captured_prompts[-1][1]["content"]
+    check("событие мира: строка языка пользователя в конце промпта",
+          user_msg.rstrip().endswith(user_language_line("en")))
+    import app.core.world_engine as we_mod
+    check("событие мира: шаблон и системное сообщение без кириллицы",
+          not cyr.search(sys_msg) and not cyr.search(we_mod._WORLD_EVENT_PROMPT))
+
+    se_lang = lp_mod.StateEngine("smoke_lang", "tester")
+    se_lang.local = _CapLocal()
+    captured_prompts.clear()
+    se_lang._tick_via_gemma("en_chat", se_lang.get_state("en_chat"), pc, [], "",
+                            user_language="ru")
+    check("тик состояния: строка языка пользователя (ru) в промпте",
+          captured_prompts and user_language_line("ru") in captured_prompts[-1][1]["content"])
+    h_en = se_lang._heuristic_tick(se_lang.get_state("en_chat"), {}, user_language="en")
+    check("эвристика: английские тексты для английского чата",
+          not cyr.search(h_en["pastime"]) and not cyr.search(h_en["mood"]["tag"]))
+
+    # ── Настроение: короткий тег, день, постепенный возврат, лог без шума ──
+    import app.core.state_engine as se_mod
+    check("mood: описание из выжимки сжимается в тег",
+          se_mod.short_mood_tag("Normal day (friendly, no big deal either way)") == "normal day"
+          and se_mod.short_mood_tag("Машинное спокойствие и аналитическая сосредоточенность")
+          == "машинное спокойствие")
+    base = {"valence": 0.1, "arousal": 0.3, "tag": "calm"}
+    days = {se_mod.day_mood(f"p:c{i}", base)["label"] for i in range(40)}
+    check("mood: дни бывают хорошими, обычными и тяжёлыми", days == {"good", "ordinary", "rough"})
+    check("mood: настроение дня стабильно в пределах суток",
+          se_mod.day_mood("p:c1", base) == se_mod.day_mood("p:c1", base))
+
+    se_mood = lp_mod.StateEngine("smoke_mood", "tester", use_gemma=False)
+    pc_mood = {"baseline_mood": base}
+    day = se_mood.day_mood("m", pc_mood)
+    se_mood.get_state("m")["mood"].update({"valence": day["valence"], "tag": "calm"})
+    se_mood.apply_mood_impact("m", -0.5, "Deep hurt (after being ignored)")
+    m = se_mood.get_state("m")["mood"]
+    check("mood: толчок — округлённый valence, короткий тег, тренд вниз",
+          m["tag"] == "deep hurt" and m["valence"] == round(day["valence"] - 0.5, 2)
+          and m["trend"] == "down")
+    st = se_mood.tick("m", pc_mood)
+    check("mood: тик после толчка не сбрасывает обиду сразу",
+          st["mood"]["tag"] == "deep hurt" and st["mood"]["valence"] < day["valence"] - 0.3
+          and st["mood"]["trend"] == "up" and st["mood_day"]["label"] == day["label"])
+    for _ in range(25):
+        st = se_mood.tick("m", pc_mood)
+    check("mood: выдохшийся толчок уступает темпераменту",
+          st["mood"]["tag"] == "calm" and abs(st["mood"]["valence"] - day["valence"]) < 0.1)
+    n_before = len(se_mood.recent_entries("m", limit=500))
+    se_mood.tick("m", pc_mood)
+    check("mood: дрейф на копейки не пишется в offline_log",
+          len(se_mood.recent_entries("m", limit=500)) == n_before
+          or "mood" not in se_mood.recent_entries("m", 1)[-1]["payload"]["diff"])
+
     print(f"\n{'SMOKE PASSED' if ok > 0 else 'SMOKE FAILED'}: {max(ok, 0)} проверок пройдено")
     return 0 if ok > 0 else 1
 

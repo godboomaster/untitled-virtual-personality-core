@@ -12,6 +12,7 @@ import ComputerControl from '../sections/ComputerControl';
 import LearningPanel from './LearningPanel';
 import FilesPanel from './FilesPanel';
 import InfoButton from '../components/InfoButton';
+import Collapsible from './Collapsible';
 
 /* Встроенное «Досье персоны»: память, напоминания и задачи, инициатива и
    настройки выбранной в чате персоны. Рендерится в потоке вместо окна
@@ -191,83 +192,96 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
               {/* Настройки ядра: провайдеры, генерация, флаги */}
               <Settings embedded personaId={persona.id} />
 
-              {/* Модели провайдеров: реальные с бэкенда (только чтение) или мок-редактор */}
+              {/* Модели провайдеров: реальные с бэкенда или мок-редактор.
+                  Сворачиваемый блок; в свёрнутом заголовке — свои модели персоны */}
               <div className="card">
-                <h2 className="card-title">
-                  {t('dossier.modelsTitle')}
-                  <InfoButton helpKey="settings.activeProvider" />
-                </h2>
-                {apiOnline && apiProviders ? (
-                  <>
-                    <ul className="memory-list">
-                      {apiProviders.map((p) => {
-                        // Своя модель персоны (пусто — глобальная из placeholder).
-                        // Ollama — синглтон, ей персональный override недоступен:
-                        // её поле редактирует глобальную модель.
-                        const own = llmModels[p.id] ?? '';
-                        return (
-                          <li key={p.id} className="pmodel-row">
-                            <span className="provider-name">{p.name}</span>
-                            {p.local && <span className="badge">{t('settings.localBadge')}</span>}
-                            <input
-                              key={`${p.id}:${p.local ? p.model : own}`}
-                              className="input pmodel-input"
-                              list={`pmodels-api-${p.id}`}
-                              placeholder={p.model || t('dossier.modelPh')}
-                              defaultValue={p.local ? p.model : own}
-                              spellCheck={false}
-                              onBlur={(e) => {
-                                const v = e.target.value.trim();
-                                if (p.local) {
-                                  if (v && v !== p.model) {
-                                    api.setProviderModel(p.id, v).then(refetchProviders).catch(() => {});
+                <Collapsible
+                  title={t('dossier.modelsTitle')}
+                  headExtra={<InfoButton helpKey="settings.activeProvider" />}
+                  storageKey="vpc-dossier-open-models"
+                  summary={
+                    apiOnline && apiProviders
+                      ? (() => {
+                          const own = apiProviders
+                            .filter((p) => !p.local && llmModels[p.id])
+                            .map((p) => `${p.name}: ${llmModels[p.id]}`);
+                          return own.length ? own.join(' · ') : t('dossier.modelsAllGlobal');
+                        })()
+                      : undefined
+                  }
+                >
+                  {apiOnline && apiProviders ? (
+                    <>
+                      <ul className="memory-list">
+                        {apiProviders.map((p) => {
+                          // Своя модель персоны (пусто — глобальная из placeholder).
+                          // Ollama — синглтон, ей персональный override недоступен:
+                          // её поле редактирует глобальную модель.
+                          const own = llmModels[p.id] ?? '';
+                          return (
+                            <li key={p.id} className="pmodel-row">
+                              <span className="provider-name">{p.name}</span>
+                              {p.local && <span className="badge">{t('settings.localBadge')}</span>}
+                              <input
+                                key={`${p.id}:${p.local ? p.model : own}`}
+                                className="input pmodel-input"
+                                list={`pmodels-api-${p.id}`}
+                                placeholder={p.model || t('dossier.modelPh')}
+                                defaultValue={p.local ? p.model : own}
+                                spellCheck={false}
+                                onBlur={(e) => {
+                                  const v = e.target.value.trim();
+                                  if (p.local) {
+                                    if (v && v !== p.model) {
+                                      api.setProviderModel(p.id, v).then(refetchProviders).catch(() => {});
+                                    } else {
+                                      e.target.value = p.model;
+                                    }
                                   } else {
-                                    e.target.value = p.model;
+                                    saveOwnModel(p.id, v, own, e.target);
                                   }
-                                } else {
-                                  saveOwnModel(p.id, v, own, e.target);
-                                }
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                              }}
-                            />
-                            <datalist id={`pmodels-api-${p.id}`}>
-                              {(providerModels[p.id] ?? []).map((m) => (
-                                <option key={m} value={m} />
-                              ))}
-                            </datalist>
-                            {own && !p.local && <span className="badge badge--success">{t('dossier.modelOwnBadge')}</span>}
-                            {p.id === effPrimary && <span className="badge badge--active">{t('settings.mainBadge')}</span>}
-                          </li>
-                        );
-                      })}
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                }}
+                              />
+                              <datalist id={`pmodels-api-${p.id}`}>
+                                {(providerModels[p.id] ?? []).map((m) => (
+                                  <option key={m} value={m} />
+                                ))}
+                              </datalist>
+                              {own && !p.local && <span className="badge badge--success">{t('dossier.modelOwnBadge')}</span>}
+                              {p.id === effPrimary && <span className="badge badge--active">{t('settings.mainBadge')}</span>}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                      <div className="field-hint">{t('dossier.modelsHint')}</div>
+                    </>
+                  ) : (
+                    <ul className="memory-list">
+                      {llmProviders.map((p) => (
+                        <li key={p.id} className="pmodel-row">
+                          <span className="provider-name">{p.name}</span>
+                          {p.local && <span className="badge">{t('settings.localBadge')}</span>}
+                          <input
+                            className="input pmodel-input"
+                            list={`pmodels-${p.id}`}
+                            placeholder={t('dossier.modelPh')}
+                            value={modelFor(p.id, p.model)}
+                            onChange={(e) => setModelFor(p.id, e.target.value)}
+                            spellCheck={false}
+                          />
+                          <datalist id={`pmodels-${p.id}`}>
+                            {(providerModels[p.id] ?? []).map((m) => (
+                              <option key={m} value={m} />
+                            ))}
+                          </datalist>
+                        </li>
+                      ))}
                     </ul>
-                    <div className="field-hint">{t('dossier.modelsHint')}</div>
-                  </>
-                ) : (
-                  <ul className="memory-list">
-                    {llmProviders.map((p) => (
-                      <li key={p.id} className="pmodel-row">
-                        <span className="provider-name">{p.name}</span>
-                        {p.local && <span className="badge">{t('settings.localBadge')}</span>}
-                        <input
-                          className="input pmodel-input"
-                          list={`pmodels-${p.id}`}
-                          placeholder={t('dossier.modelPh')}
-                          value={modelFor(p.id, p.model)}
-                          onChange={(e) => setModelFor(p.id, e.target.value)}
-                          spellCheck={false}
-                        />
-                        <datalist id={`pmodels-${p.id}`}>
-                          {(providerModels[p.id] ?? []).map((m) => (
-                            <option key={m} value={m} />
-                          ))}
-                        </datalist>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                  )}
+                </Collapsible>
               </div>
 
               {/* Опасная зона: очистка диалога с подтверждением */}

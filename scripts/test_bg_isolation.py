@@ -30,8 +30,13 @@ def main():
           "burst" in wl._STATELESS_CHANNELS
           and "burst" not in wl._NO_TIMEOUT_FLOOR_CHANNELS)
     chat_burst = wl.WebChatLLM("deepseek", base_dir=tmp, channel="burst")
-    check("burst-инстанс: stateless=True",
-          chat_burst.stateless is True
+    # Свежий чат на каждый вызов — только на поисковике (_FRESH_THREAD_SITES):
+    # на чат-сайте у burst свой постоянный чат (01.10: свежие чаты на каждый
+    # вызов — блокировка аккаунта deepseek)
+    check("burst-инстанс: на deepseek постоянный чат, на google — stateless",
+          chat_burst.stateless is False
+          and wl.WebChatLLM("google", base_dir=tmp,
+                            channel="burst").stateless is True
           and chat_burst.last_call_lock_miss is False)
 
     # ── 2. last_call_lock_miss: промах по локу отличим от прочих None ──

@@ -1,126 +1,38 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useI18n, useMockData } from '../i18n';
+import { useI18n } from '../i18n';
 import { api, ApiError } from '../api';
 import type { PersonaDraft } from '../api';
 import FormModal from './FormModal';
-import InfoButton from './InfoButton';
+import Select from './Select';
+import PersonaFormFields from './PersonaFormFields';
+import { defaultForm, formFromYaml, simpleFlags, transliterate, yamlWithForm } from './personaYamlSync';
+import type { FormState } from './personaYamlSync';
 
 /* Модалка создания персоны в виде YAML-редактора конфига: слева форма,
    повторяющая структуру persona.yaml (базовое / features / system_prompt /
-   settings), справа — живое превью генерируемого YAML. Кнопки архетипов —
-   подсказки: подставляют значения в поля, после чего всё редактируется. */
-
-// Все флаги features как в реальных yaml-конфигах персон (app/personas/*.yaml);
-// флаги мессенджер-бота export_server/restore_memory сюда не входят — в вебе они не действуют
-const simpleFlags = [
-  'rate_limit',
-  'moderation',
-  'punish_block',
-  'web_search',
-  'file_upload',
-  'self_memory',
-  'todo',
-  'reminder',
-  'inventory',
-] as const;
-
-// Все ключи features, включая вложенные learning и proactive
-type FeatureKey = (typeof simpleFlags)[number] | 'learning' | 'proactive';
-
-const allFeatureKeys: FeatureKey[] = [...simpleFlags, 'learning', 'proactive'];
-
-// Уровень интеллекта (app/core/intellect.py): 'none' — блок intellect в yaml
-// не пишется вовсе, персона работает в legacy-режиме без уровневых механик
-type IntellectTier = 'none' | 'primitive' | 'normal' | 'bot';
-
-// Дефолты LLM-настроек по уровню интеллекта: bot — высокая точность
-// (temperature/top_p), но max_tokens выше — полный разбор сложной просьбы
-// (код, расчёты) требует длинных ответов; normal — тёплый, свободный стиль;
-// primitive — стереотипная короткая речь инстинктивного существа.
-// Подставляются при выборе tier, дальше правятся вручную.
-const tierSettings: Record<Exclude<IntellectTier, 'none'>, { temperature: number; maxTokens: number; topP: number }> = {
-  primitive: { temperature: 0.5, maxTokens: 800, topP: 0.85 },
-  normal: { temperature: 0.85, maxTokens: 3000, topP: 0.92 },
-  bot: { temperature: 0.7, maxTokens: 4000, topP: 0.9 },
-};
-
-// Пресеты архетипов-подсказок: какие флаги и tier подставить в поля
-// (LLM-настройки берутся из tierSettings по tier архетипа)
-const archetypePresets: Record<string, { on: FeatureKey[]; tier: Exclude<IntellectTier, 'none'> }> = {
-  analyst: { on: ['web_search', 'file_upload', 'self_memory'], tier: 'bot' },
-  companion: { on: ['self_memory', 'reminder', 'inventory', 'proactive'], tier: 'normal' },
-  keeper: { on: ['file_upload', 'self_memory', 'inventory', 'learning'], tier: 'normal' },
-  assistant: { on: ['todo', 'reminder'], tier: 'bot' },
-};
-
-// Транслитерация имени в id (латиница, snake_case)
-function transliterate(s: string): string {
-  const map: Record<string, string> = {
-    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'yo', ж: 'zh', з: 'z',
-    и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r',
-    с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch',
-    ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
-  };
-  return s
-    .toLowerCase()
-    .split('')
-    .map((ch) => map[ch] ?? (/[a-z0-9]/.test(ch) ? ch : '_'))
-    .join('')
-    .replace(/_+/g, '_')
-    .replace(/^_|_$/g, '');
-}
-
-// Состояние формы конфига
-interface FormState {
-  id: string;
-  name: string;
-  version: string;
-  description: string;
-  stmSize: number;
-  intellectTier: IntellectTier;
-  features: Record<FeatureKey, boolean>;
-  learning: { quizEvery: number; silenceThreshold: number; minInterval: number; maxInterval: number };
-  proactive: { checkInterval: number; silenceThresholdMin: number; probability: number; maxDaily: number };
-  triggerWords: string;
-  systemPrompt: string;
-  temperature: number;
-  maxTokens: number;
-  topP: number;
-}
+   settings), справа — YAML: живое превью формы, либо вставленный/загруженный
+   текст — тогда поля формы заполняются из него и правки полей пишутся в него же
+   (personaYamlSync). Флаги features — как в app/personas/*.yaml; флаги
+   мессенджер-бота export_server/restore_memory в форму не входят — в вебе они
+   не действуют, но во вставленном YAML сохраняются. */
 
 interface PersonaCreateModalProps {
-  initial?: { name?: string; archetypeId?: string }; // предзаполнение (legacy, из Home)
+  initial?: { name?: string }; // предзаполнение (legacy, из Home)
   onClose: () => void;
   onCreate: () => void; // персона создана на бэкенде — родитель обновляет список
 }
 
 export default function PersonaCreateModal({ initial, onClose, onCreate }: PersonaCreateModalProps) {
   const { t } = useI18n();
-  const { personaArchetypes } = useMockData();
-  const [form, setForm] = useState<FormState>(() => ({
-    id: transliterate(initial?.name ?? ''),
-    name: initial?.name ?? '',
-    version: '1.0',
-    description: '',
-    stmSize: 50,
-    intellectTier: 'normal',
-    features: Object.fromEntries(allFeatureKeys.map((k) => [k, k === 'self_memory'])) as Record<FeatureKey, boolean>,
-    learning: { quizEvery: 3, silenceThreshold: 3, minInterval: 600, maxInterval: 604800 },
-    proactive: { checkInterval: 30, silenceThresholdMin: 30, probability: 1.0, maxDaily: 20 },
-    triggerWords: '',
-    systemPrompt: '',
-    // начальные LLM-дефолты соответствуют выбранному tier (normal)
-    temperature: tierSettings.normal.temperature,
-    maxTokens: tierSettings.normal.maxTokens,
-    topP: tierSettings.normal.topP,
-  }));
+  const [form, setForm] = useState<FormState>(() => defaultForm(initial?.name));
   const [idTouched, setIdTouched] = useState(false); // id авто, пока оператор не правил вручную
   const [copied, setCopied] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
-  // Режим «готовый YAML»: текст вставлен через Ctrl+V или загружен файлом —
-  // форма игнорируется, на бэкенд уходит rawYaml как есть
+  // Режим «готовый YAML»: текст вставлен, загружен файлом или правлен вручную —
+  // на бэкенд уходит rawYaml, форма синхронизирована с ним в обе стороны
   const [rawYaml, setRawYaml] = useState<string | null>(null);
+  const [yamlError, setYamlError] = useState(''); // текст не разбирается — форма не синхронизируется
   const fileRef = useRef<HTMLInputElement>(null);
 
   // ── Черновики (бэкенд data/persona_drafts). drafts=null — бэк недоступен, UI скрыт ──
@@ -230,24 +142,29 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
     ].join('\n');
   };
 
-  // Частичное обновление формы
-  const patch = (p: Partial<FormState>) => setForm((f) => ({ ...f, ...p }));
+  // Частичное обновление формы; в режиме готового YAML правка сразу вносится в текст
+  const patch = (p: Partial<FormState>) => {
+    const next = { ...form, ...p };
+    setForm(next);
+    if (rawYaml !== null && !yamlError) setRawYaml(yamlWithForm(rawYaml, form, next));
+  };
 
-  // Архетип-подсказка: подставляет описание, черновик промпта, флаги и настройки
-  const applyArchetype = (archetypeId: string) => {
-    const preset = archetypePresets[archetypeId];
-    const desc = personaArchetypes.find((a) => a.id === archetypeId)?.desc ?? '';
-    patch({
-      description: desc,
-      systemPrompt: promptDraft(form.name, desc),
-      ...(preset
-        ? {
-            features: Object.fromEntries(allFeatureKeys.map((k) => [k, preset.on.includes(k)])) as Record<FeatureKey, boolean>,
-            intellectTier: preset.tier,
-            ...tierSettings[preset.tier],
-          }
-        : {}),
-    });
+  // Новый текст YAML (вставка, файл, ручная правка) → поля формы
+  const setRawText = (text: string) => {
+    setRawYaml(text);
+    const r = formFromYaml(text, defaultForm());
+    if ('error' in r) {
+      setYamlError(r.error);
+      return;
+    }
+    setYamlError('');
+    setForm(r.form);
+    setIdTouched(true); // id из YAML не перезатирать транслитом имени
+  };
+
+  const backToForm = () => {
+    setRawYaml(null);
+    setYamlError('');
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -282,7 +199,7 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
   // Вставка готового YAML: из буфера (кнопка) или Ctrl+V по панели превью
   const pasteYamlText = (text: string) => {
     if (!text.trim()) return;
-    setRawYaml(text);
+    setRawText(text);
     setCreateError('');
   };
 
@@ -290,9 +207,9 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
     // Буфер может быть недоступен (не secure context) — тогда просто
     // переключаем панель в режим вставки: пустое поле ждёт Ctrl+V
     if (navigator.clipboard?.readText) {
-      navigator.clipboard.readText().then((text) => pasteYamlText(text || yaml)).catch(() => setRawYaml(yaml));
+      navigator.clipboard.readText().then((text) => pasteYamlText(text || yaml)).catch(() => setRawText(yaml));
     } else {
-      setRawYaml(yaml);
+      setRawText(yaml);
     }
   };
 
@@ -322,21 +239,20 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
             <div className="field">
               <label className="field-label">{t('pc.drafts')}</label>
               <div className="pcreate-draft-row">
-                <select
-                  className="input"
+                <Select
                   value={draftId ?? ''}
-                  onChange={(e) => {
-                    const d = drafts.find((x) => x.id === e.target.value);
+                  options={[
+                    { value: '', label: t('pc.draftSelect') },
+                    ...drafts.map((d) => ({
+                      value: d.id,
+                      label: (d.name || d.id) + ' · ' + new Date(d.updated_at * 1000).toLocaleString(),
+                    })),
+                  ]}
+                  onChange={(v) => {
+                    const d = drafts.find((x) => x.id === v);
                     if (d) loadDraft(d);
                   }}
-                >
-                  <option value="">{t('pc.draftSelect')}</option>
-                  {drafts.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {(d.name || d.id) + ' · ' + new Date(d.updated_at * 1000).toLocaleString()}
-                    </option>
-                  ))}
-                </select>
+                />
                 {draftId && (
                   <button type="button" className="btn btn--danger" onClick={() => removeDraft(draftId)}>
                     {t('common.delete')}
@@ -346,307 +262,16 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
             </div>
           )}
 
-          {/* Шаблон-подсказка: подставляет значения в поля */}
-          <div className="field">
-            <label className="field-label">{t('pc.fromTemplate')}</label>
-            <div className="room-options">
-              {personaArchetypes.map((a) => (
-                <button key={a.id} type="button" className="room-option" onClick={() => applyArchetype(a.id)}>
-                  {a.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="pcreate-sec">{t('pc.secBasic')}</div>
-          <div className="field-grid">
-            <div className="field">
-              <label className="field-label" htmlFor="pc-name">
-                {t('pc.nameRequired')}
-                <InfoButton helpKey="pc.name" />
-              </label>
-              <input
-                id="pc-name"
-                className="input"
-                placeholder={t('pc.namePh')}
-                value={form.name}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  patch(idTouched ? { name: v } : { name: v, id: transliterate(v) });
-                }}
-                autoFocus
-              />
-            </div>
-            <div className="field">
-              <label className="field-label" htmlFor="pc-id">
-                id
-                <InfoButton helpKey="pc.id" />
-              </label>
-              <input
-                id="pc-id"
-                className="input"
-                placeholder="persona_id"
-                value={form.id}
-                onChange={(e) => {
-                  patch({ id: e.target.value });
-                  setIdTouched(true);
-                }}
-                spellCheck={false}
-              />
-            </div>
-          </div>
-          <div className="field">
-            <label className="field-label" htmlFor="pc-desc">
-              description
-              <InfoButton helpKey="pc.description" />
-            </label>
-            <input
-              id="pc-desc"
-              className="input"
-              placeholder={t('pc.descPh')}
-              value={form.description}
-              onChange={(e) => patch({ description: e.target.value })}
-            />
-          </div>
-          <div className="field-grid">
-            <div className="field">
-              <label className="field-label" htmlFor="pc-stm">
-                stm_size
-                <InfoButton helpKey="pc.stmSize" />
-              </label>
-              <input
-                id="pc-stm"
-                className="input"
-                type="number"
-                value={form.stmSize}
-                onChange={(e) => patch({ stmSize: Number(e.target.value) })}
-              />
-            </div>
-            <div className="field">
-              <label className="field-label" htmlFor="pc-version">
-                version
-                <InfoButton helpKey="pc.version" />
-              </label>
-              <input
-                id="pc-version"
-                className="input"
-                value={form.version}
-                onChange={(e) => patch({ version: e.target.value })}
-                spellCheck={false}
-              />
-            </div>
-          </div>
-
-          {/* Уровень интеллекта: отдельное измерение поверх features,
-              поэтому живёт вне секции features (как в yaml — до блока features) */}
-          <div className="field">
-            <label className="field-label" htmlFor="pc-intellect">
-              intellect.tier
-              <InfoButton helpKey="pc.intellect" />
-            </label>
-            <select
-              id="pc-intellect"
-              className="input"
-              value={form.intellectTier}
-              onChange={(e) => {
-                const tier = e.target.value as IntellectTier;
-                patch({ intellectTier: tier, ...(tier !== 'none' ? tierSettings[tier] : {}) });
-              }}
-            >
-              <option value="normal">normal — человек</option>
-              <option value="primitive">primitive — нечеловеческое мышление</option>
-              <option value="bot">bot — высокий интеллект</option>
-              <option value="none">{t('pc.intellectNone')}</option>
-            </select>
-          </div>
-
-          <div className="pcreate-sec">
-            {t('pc.secFeatures')}
-            <InfoButton helpKey="pc.features" />
-          </div>
-          {/* Поле owner намеренно отсутствует: пользователь всегда один и всегда владелец */}
-          <div className="field">
-            <div className="features-grid">
-              {simpleFlags.map((k) => (
-                <label key={k} className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={form.features[k]}
-                    onChange={() => patch({ features: { ...form.features, [k]: !form.features[k] } })}
-                  />
-                  <span>{k}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* Вложенный блок learning: sub-поля видны при включении */}
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={form.features.learning}
-              onChange={() => patch({ features: { ...form.features, learning: !form.features.learning } })}
-            />
-            <span>
-              learning
-              <InfoButton helpKey="pc.learning" />
-            </span>
-          </label>
-          {form.features.learning && (
-            <div className="pcreate-sub">
-              <div className="field-grid">
-                <div className="field" style={{ marginBottom: 8 }}>
-                  <label className="field-label">quiz_every</label>
-                  <input
-                    className="input"
-                    type="number"
-                    value={form.learning.quizEvery}
-                    onChange={(e) => patch({ learning: { ...form.learning, quizEvery: Number(e.target.value) } })}
-                  />
-                </div>
-                <div className="field" style={{ marginBottom: 8 }}>
-                  <label className="field-label">silence_threshold</label>
-                  <input
-                    className="input"
-                    type="number"
-                    value={form.learning.silenceThreshold}
-                    onChange={(e) => patch({ learning: { ...form.learning, silenceThreshold: Number(e.target.value) } })}
-                  />
-                </div>
-                <div className="field" style={{ marginBottom: 8 }}>
-                  <label className="field-label">min_interval_seconds</label>
-                  <input
-                    className="input"
-                    type="number"
-                    value={form.learning.minInterval}
-                    onChange={(e) => patch({ learning: { ...form.learning, minInterval: Number(e.target.value) } })}
-                  />
-                </div>
-                <div className="field" style={{ marginBottom: 8 }}>
-                  <label className="field-label">max_interval_seconds</label>
-                  <input
-                    className="input"
-                    type="number"
-                    value={form.learning.maxInterval}
-                    onChange={(e) => patch({ learning: { ...form.learning, maxInterval: Number(e.target.value) } })}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Вложенный блок proactive: sub-поля видны при включении */}
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={form.features.proactive}
-              onChange={() => patch({ features: { ...form.features, proactive: !form.features.proactive } })}
-            />
-            <span>
-              proactive
-              <InfoButton helpKey="pc.proactive" />
-            </span>
-          </label>
-          {form.features.proactive && (
-            <div className="pcreate-sub">
-              <div className="field-grid">
-                <div className="field" style={{ marginBottom: 8 }}>
-                  <label className="field-label">check_interval_minutes</label>
-                  <input
-                    className="input"
-                    type="number"
-                    value={form.proactive.checkInterval}
-                    onChange={(e) => patch({ proactive: { ...form.proactive, checkInterval: Number(e.target.value) } })}
-                  />
-                </div>
-                <div className="field" style={{ marginBottom: 8 }}>
-                  <label className="field-label">silence_threshold_minutes</label>
-                  <input
-                    className="input"
-                    type="number"
-                    value={form.proactive.silenceThresholdMin}
-                    onChange={(e) => patch({ proactive: { ...form.proactive, silenceThresholdMin: Number(e.target.value) } })}
-                  />
-                </div>
-                <div className="field" style={{ marginBottom: 8 }}>
-                  <label className="field-label">initiative_probability</label>
-                  <input
-                    className="input"
-                    type="number"
-                    step="0.05"
-                    value={form.proactive.probability}
-                    onChange={(e) => patch({ proactive: { ...form.proactive, probability: Number(e.target.value) } })}
-                  />
-                </div>
-                <div className="field" style={{ marginBottom: 8 }}>
-                  <label className="field-label">max_daily_initiatives</label>
-                  <input
-                    className="input"
-                    type="number"
-                    value={form.proactive.maxDaily}
-                    onChange={(e) => patch({ proactive: { ...form.proactive, maxDaily: Number(e.target.value) } })}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="field">
-            <label className="field-label" htmlFor="pc-trigger">
-              {t('pc.triggerLabel')}
-              <InfoButton helpKey="pc.triggerWords" />
-            </label>
-            <input
-              id="pc-trigger"
-              className="input"
-              placeholder={t('pc.triggerPh')}
-              value={form.triggerWords}
-              onChange={(e) => patch({ triggerWords: e.target.value })}
-              spellCheck={false}
-            />
-          </div>
-
-          <div className="pcreate-sec">{t('pc.secPrompt')}</div>
-          <div className="field">
-            <label className="field-label" htmlFor="pc-prompt">
-              system_prompt
-              <InfoButton helpKey="pc.systemPrompt" />
-            </label>
-            <textarea
-              id="pc-prompt"
-              className="input pcreate-textarea pcreate-prompt"
-              rows={8}
-              placeholder={t('pc.promptPh')}
-              value={form.systemPrompt}
-              onChange={(e) => patch({ systemPrompt: e.target.value })}
-              spellCheck={false}
-            />
-          </div>
-
-          <div className="pcreate-sec">{t('pc.secSettings')}</div>
-          <div className="field-grid">
-            <div className="field">
-              <label className="field-label">
-                temperature
-                <InfoButton helpKey="settings.temperature" />
-              </label>
-              <input className="input" type="number" step="0.05" value={form.temperature} onChange={(e) => patch({ temperature: Number(e.target.value) })} />
-            </div>
-            <div className="field">
-              <label className="field-label">
-                max_tokens
-                <InfoButton helpKey="settings.maxTokens" />
-              </label>
-              <input className="input" type="number" value={form.maxTokens} onChange={(e) => patch({ maxTokens: Number(e.target.value) })} />
-            </div>
-            <div className="field">
-              <label className="field-label">
-                top_p
-                <InfoButton helpKey="settings.topP" />
-              </label>
-              <input className="input" type="number" step="0.05" value={form.topP} onChange={(e) => patch({ topP: Number(e.target.value) })} />
-            </div>
-          </div>
+          <PersonaFormFields
+            form={form}
+            patch={patch}
+            onNameChange={(v) => patch(idTouched ? { name: v } : { name: v, id: transliterate(v) })}
+            onIdChange={(v) => {
+              patch({ id: v });
+              setIdTouched(true);
+            }}
+            autoFocusName
+          />
           {/* Провайдер и модель в форме не задаются: они настраиваются потом в досье персоны */}
           {createError && <div className="field-hint">// {createError}</div>}
         </div>
@@ -654,7 +279,7 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
         {/* Правая панель: YAML всегда редактируем (textarea). Пока оператор
             не трогал текст — это живое превью формы; любая правка/вставка
             переводит панель в ручной режим (rawYaml): на бэкенд уйдёт он,
-            форма слева перестаёт влиять на текст */}
+            поля слева заполняются из него, а их правки пишутся в текст */}
         <div className="pcreate-yaml-col">
           <div className="pcreate-yaml-head">
             <span className="field-label" style={{ marginBottom: 0 }}>
@@ -668,7 +293,7 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
                 {t('pc.loadYaml')}
               </button>
               {rawYaml !== null && (
-                <button type="button" className="btn btn--ghost" onClick={() => setRawYaml(null)}>
+                <button type="button" className="btn btn--ghost" onClick={backToForm}>
                   {t('pc.backToForm')}
                 </button>
               )}
@@ -696,10 +321,14 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
           <textarea
             className="input pcreate-yaml pcreate-yaml--edit"
             value={rawYaml ?? yaml}
-            onChange={(e) => setRawYaml(e.target.value)}
+            onChange={(e) => setRawText(e.target.value)}
             spellCheck={false}
           />
-          {rawYaml !== null && <div className="field-hint">{t('pc.rawYamlHint')}</div>}
+          {rawYaml !== null && (
+            <div className="field-hint">
+              {yamlError ? t('pc.yamlParseError', { msg: yamlError }) : t('pc.rawYamlHint')}
+            </div>
+          )}
         </div>
       </div>
     </FormModal>

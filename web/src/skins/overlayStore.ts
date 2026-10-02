@@ -4,7 +4,7 @@
    Живёт поверх моковых данных в localStorage, привязано к id персоны.
    Паттерн — как у skinStore. */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const PREFIX = 'vpc-overlay:';
 const CHANGE_EVENT = 'vpc-overlays-updated';
@@ -73,8 +73,28 @@ function load(personaId: string): PersonaOverlay {
   }
 }
 
-function store(personaId: string, overlay: PersonaOverlay) {
-  localStorage.setItem(PREFIX + personaId, JSON.stringify(overlay));
+// false — не записалось (квота localStorage общая с офлайн-библиотекой
+// скинов, или хранилище недоступно): правка не применена
+function store(personaId: string, overlay: PersonaOverlay): boolean {
+  try {
+    localStorage.setItem(PREFIX + personaId, JSON.stringify(overlay));
+  } catch {
+    return false;
+  }
+  window.dispatchEvent(new Event(CHANGE_EVENT));
+  return true;
+}
+
+// Смена id персоны: локальные правки досье переезжают под новый id
+export function renameOverlay(oldId: string, newId: string) {
+  const raw = localStorage.getItem(PREFIX + oldId);
+  if (raw === null) return;
+  try {
+    localStorage.setItem(PREFIX + newId, raw);
+    localStorage.removeItem(PREFIX + oldId);
+  } catch {
+    return;
+  }
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
@@ -105,8 +125,13 @@ export interface PersonaOverlayApi extends PersonaOverlay {
   setGen: (key: 'temperature' | 'maxTokens' | 'topP' | 'stmSize', value: number) => void;
 }
 
-export function usePersonaOverlay(personaId: string): PersonaOverlayApi {
+// onStoreError — правку не удалось сохранить (показать человеку)
+export function usePersonaOverlay(personaId: string, onStoreError?: () => void): PersonaOverlayApi {
   const [, setTick] = useState(0);
+  const onErrorRef = useRef(onStoreError);
+  useEffect(() => {
+    onErrorRef.current = onStoreError;
+  });
 
   useEffect(() => {
     const bump = () => setTick((n) => n + 1);
@@ -119,7 +144,9 @@ export function usePersonaOverlay(personaId: string): PersonaOverlayApi {
   }, []);
 
   const mutate = useCallback(
-    (fn: (o: PersonaOverlay) => PersonaOverlay) => store(personaId, fn(load(personaId))),
+    (fn: (o: PersonaOverlay) => PersonaOverlay) => {
+      if (!store(personaId, fn(load(personaId)))) onErrorRef.current?.();
+    },
     [personaId],
   );
 

@@ -104,7 +104,7 @@ def main():
     # с bypass генерация идёт (мокаем _build_monolog_prompt и _side_response)
     p.config.silence_threshold_minutes = 510
     p.memory = SimpleNamespace(stm=SimpleNamespace(
-        get_last=lambda n, chat_id=None: [{"role": "user", "content": "hi"}]))
+        get_last=lambda n, chat_id=None: [{"role": "user", "content": "привет"}]))
     p.get_last_message_time = lambda chat_id: time.time() - 3600
     p.local_router = None
     p.persona.get_settings = lambda: {}

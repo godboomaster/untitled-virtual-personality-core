@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════════════════════════
-     VPC SKIN FILE v1 · ЭКРАН КОМНАТЫ — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ.
+     VPC SKIN FILE · КОНТРАКТ v2 · ЭКРАН КОМНАТЫ — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ.
 
      Это самодостаточный файл ОДНОГО экрана скина (визуальной оболочки)
      ИИ-персоны: её комната (сцена, аватар, состояние, лента событий,
@@ -25,7 +25,12 @@
         заблокирована политикой CSP. Картинки и шрифты — только inline
         (data-URI) или рисуй чистым CSS/SVG.
 
-     4. ВСЁ ОСТАЛЬНОЕ — свободная зона: любая структура страницы,
+     4. Мета vpc-skin-contract в <head> (сейчас content="2") — версия
+        контракта, на который рассчитан файл. Не повышай её сам: скин
+        с версией новее приложения не загрузится. Нет меты — контракт v1.
+        Имя/автор/версия скина — мета vpc-skin-name / -author / -version.
+
+     5. ВСЁ ОСТАЛЬНОЕ — свободная зона: любая структура страницы,
         любые дополнительные элементы, декор, фоны, анимации, свой JS.
         Скин может выглядеть КАК УГОДНО непохоже на этот шаблон.
 
@@ -68,6 +73,25 @@
 
        Счётчики: [data-vpc-count="inventory"], [data-vpc-count="feed"].
 
+       Окружение (v2): слоты local-time («HH:MM»), weather (строка погоды,
+       если задано местоположение), weather-temp («+7°C»).
+
+     ТЕМА, ЯЗЫК, ВРЕМЯ СУТОК (v2). Приложение ставит на <html>:
+       data-theme="light|dark"  — тема приложения. Скин ОБЯЗАН выглядеть
+                                  прилично в обеих: переопредели палитру
+                                  в html[data-theme="light"] { ... }
+       lang="ru|en"             — язык интерфейса
+       data-vpc-time-of-day="morning|day|evening|night" — удобно менять
+                                  освещение сцены
+       data-vpc-weather="clear|cloudy|fog|rain|snow|storm" (если известна)
+
+     ПОДПИСИ (v2): элемент [data-vpc-label="ключ"] получает локализованный
+       текст приложения (содержимое заменяется ЦЕЛИКОМ — ставь на отдельный
+       <span>); исходный текст — фолбэк, если подписи нет. Атрибуты:
+       data-vpc-label-placeholder / -title / -aria="ключ". Ключи экрана:
+       room-mood, room-energy, room-place, room-feed, inventory,
+       item-name, item-icon, add-item.
+
      SHELL-ТЕМА КАРКАСА (OPTIONAL): пока открыт экран персоны со скином,
      приложение перекрашивает и свой каркас — левый бар с разделами и
      верхний топбар. Для этого в :root скина объявляются переменные
@@ -79,15 +103,34 @@
      Держи эти переменные ОДИНАКОВЫМИ во всех трёх файлах скина —
      иначе каркас будет менять палитру при переходе между экранами.
 
-     СВОЙ JS: можно, в блоке «СВОБОДНАЯ ЗОНА» внизу. Доступно событие
-     document 'vpc:state' (e.detail — весь снапшот данных) для
-     декоративных реакций. Отправлять сообщения и клики самому не нужно —
-     их обрабатывает bridge-скрипт.
+     СВОЙ JS: можно, в блоке «СВОБОДНАЯ ЗОНА» внизу. Клики по hook-точкам
+     обрабатывает bridge-скрипт. Для декоративных реакций:
+       document 'vpc:state'  (e.detail — весь снапшот данных);
+       window.vpc (v2) — bridge стоит в конце <body>, поэтому бери его
+       в обработчике DOMContentLoaded или события document 'vpc:ready':
+         vpc.contract / vpc.skinContract  версии контракта (прил. / скина)
+         vpc.state                        последний снапшот
+         vpc.on(event, fn(detail, state)) → функция отписки; события:
+           'state'   каждый снапшот
+           'mood'    смена настроения
+           'theme'   смена темы ('light' | 'dark')
+           'persona' смена персоны
+         vpc.action(name, values, id?)    действие записи
+                                          (напр. 'add-inventory-item')
+         vpc.zoom(src)                    показать картинку крупно
+     Списки перерисовываются, только когда изменились их данные.
+     Горячие клавиши (Escape, сочетания с Ctrl/Cmd/Alt) уходят
+     приложению; оставить клавишу себе — e.preventDefault().
      ═══════════════════════════════════════════════════════════════════════ -->
 <html lang="ru" data-vpc-active="room">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Метаданные скина: контракт (обязательно для v2), имя, автор, версия -->
+<meta name="vpc-skin-contract" content="2" />
+<meta name="vpc-skin-name" content="VPC Default" />
+<meta name="vpc-skin-author" content="Virtual Persona Core" />
+<meta name="vpc-skin-version" content="1.0" />
 <title>VPC Skin — Room</title>
 <style>
 
@@ -102,6 +145,11 @@
     --accent: #7ee787;
     --user-bubble: #22304a;
     --persona-bubble: #1d1d24;
+    --scene-top: #14141a;
+    --scene-bottom: #101014;
+    --floor: #191920;
+    --plate: rgba(10, 10, 14, 0.8);
+    --avatar-bg: rgba(0, 0, 0, 0.35);
 
     /* OPTIONAL: SHELL-ТЕМА — палитра каркаса приложения (левый бар с
        разделами, верхний топбар) на время, пока открыт экран этой персоны.
@@ -117,6 +165,33 @@
     --vpc-shell-font: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
     --vpc-shell-radius: 6px;
   }
+
+  /* Светлая тема приложения (v2): приложение ставит html[data-theme].
+     Shell-тема каркаса берётся из базового :root выше. */
+  html[data-theme="light"] {
+    --bg: #f4f3ef;
+    --panel: #ffffff;
+    --line: #dcd9d0;
+    --text: #1d1d22;
+    --dim: #6b6874;
+    --accent: #1f7a35;
+    --scene-top: #e9eef4;
+    --scene-bottom: #f4f3ef;
+    --floor: #e2ddd2;
+    --plate: rgba(255, 255, 255, 0.85);
+    --avatar-bg: rgba(255, 255, 255, 0.6);
+  }
+
+  /* Время суток (v2): тонировка сцены — тёплая вечером, синяя ночью */
+  .room-scene::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    transition: background 2s;
+  }
+  html[data-vpc-time-of-day="evening"] .room-scene::after { background: rgba(255, 140, 60, 0.07); }
+  html[data-vpc-time-of-day="night"] .room-scene::after { background: rgba(10, 20, 60, 0.2); }
 
   * { box-sizing: border-box; }
 
@@ -150,7 +225,7 @@
     min-height: 320px;
     overflow: hidden;
     background:
-      linear-gradient(180deg, #14141a 0%, #101014 70%),
+      linear-gradient(180deg, var(--scene-top) 0%, var(--scene-bottom) 70%),
       var(--bg);
     border-bottom: 1px solid var(--line);
   }
@@ -167,7 +242,7 @@
     position: absolute;
     left: 0; right: 0; bottom: 0;
     height: 18%;
-    background: #191920;
+    background: var(--floor);
     border-top: 1px solid var(--line);
   }
 
@@ -185,7 +260,7 @@
     border: 1px solid var(--accent);
     color: var(--accent);
     font-size: 24px;
-    background: rgba(0, 0, 0, 0.35);
+    background: var(--avatar-bg);
   }
 
   .room-pastime-plate {
@@ -193,7 +268,7 @@
     top: 10px;
     left: 10px;
     padding: 6px 10px;
-    background: rgba(10, 10, 14, 0.8);
+    background: var(--plate);
     border: 1px solid var(--line);
     font-size: 12px;
     color: var(--dim);
@@ -277,22 +352,27 @@
   <!-- OPTIONAL: виджеты состояния -->
   <div class="room-stats">
     <div class="room-stat">
-      <div class="room-stat-label">Настроение</div>
+      <div class="room-stat-label" data-vpc-label="room-mood">Настроение</div>
       <div class="room-stat-value" data-vpc="room-mood">…</div>
     </div>
     <div class="room-stat">
-      <div class="room-stat-label">Энергия</div>
+      <div class="room-stat-label" data-vpc-label="room-energy">Энергия</div>
       <div class="room-stat-value" data-vpc="room-energy">…</div>
     </div>
     <div class="room-stat">
-      <div class="room-stat-label">Место</div>
+      <div class="room-stat-label" data-vpc-label="room-place">Место</div>
       <div class="room-stat-value" data-vpc="room-place">…</div>
+    </div>
+    <!-- OPTIONAL (v2): локальное время пользователя и погода (пусто — неизвестна) -->
+    <div class="room-stat">
+      <div class="room-stat-label"><span data-vpc="local-time"></span></div>
+      <div class="room-stat-value"><span data-vpc="weather-temp"></span></div>
     </div>
   </div>
 
   <div class="room-lists">
     <div class="room-card">
-      <div class="room-card-title">Пока тебя не было</div>
+      <div class="room-card-title" data-vpc-label="room-feed">Пока тебя не было</div>
       <!-- OPTIONAL: лента активности; строки — клоны шаблона feed-item -->
       <div data-vpc="room-feed"></div>
       <template data-vpc="feed-item">
@@ -304,7 +384,7 @@
     </div>
 
     <div class="room-card">
-      <div class="room-card-title">Инвентарь</div>
+      <div class="room-card-title" data-vpc-label="inventory">Инвентарь</div>
       <!-- OPTIONAL: инвентарь; предметы — клоны шаблона inventory-item -->
       <div class="inv-grid" data-vpc="room-inventory"></div>
       <template data-vpc="inventory-item">
@@ -317,9 +397,9 @@
       </template>
       <!-- OPTIONAL: форма добавления предмета в инвентарь -->
       <div class="vpc-form" data-vpc-form>
-        <input data-vpc-input="name" type="text" placeholder="название предмета" />
-        <input data-vpc-input="icon" type="text" placeholder="глиф" style="max-width: 64px" />
-        <button type="button" data-vpc-action="add-inventory-item">+</button>
+        <input data-vpc-input="name" type="text" placeholder="название предмета" data-vpc-label-placeholder="item-name" />
+        <input data-vpc-input="icon" type="text" placeholder="глиф" data-vpc-label-placeholder="item-icon" style="max-width: 64px" />
+        <button type="button" data-vpc-action="add-inventory-item" data-vpc-label-title="add-item">+</button>
       </div>
     </div>
   </div>
@@ -328,7 +408,7 @@
 
 <!-- ══════════════ СВОБОДНАЯ ЗОНА: декоративный JS скина ══════════════
      Можно всё стереть или написать своё. Доступно событие 'vpc:state'
-     на document (e.detail — снапшот данных экрана). -->
+     на document (e.detail — снапшот данных экрана) и API window.vpc. -->
 <script>
   // Пример: реакция на обновления состояния (можно удалить).
   document.addEventListener('vpc:state', function () { /* декор */ });

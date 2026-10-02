@@ -402,6 +402,16 @@ def main():
           and ba._pid_alive(0) is False and ba._pid_alive(-7) is False
           and ba._pid_alive("nope") is False
           and ba._pid_alive(4_000_000) is False)
+    if sys.platform != "win32":
+        # Зомби (01.10): завершённый Chrome пула H, которого родитель ещё не
+        # забрал, держал SingletonLock «живым» — профиль «занят» навсегда
+        import subprocess as _sp
+        _z = _sp.Popen(["sleep", "0.05"])
+        time.sleep(0.4)
+        zombie_dead = ba._pid_alive(_z.pid) is False
+        _z.wait()
+        check("_pid_alive: зомби (завершён, не забран родителем) — не жив",
+              zombie_dead)
     check("_pid_alive: os.kill(pid, 0) больше нигде не зовётся "
           "(на Windows это terminate)",
           # один вызов в самом _pid_alive + упоминание в его докстринге

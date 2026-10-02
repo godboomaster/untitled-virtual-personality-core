@@ -1,144 +1,231 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
 import { api, ApiError } from '../api';
+import { refetchPersonas } from '../apiData';
+import { alertDialog, confirmDialog } from '../dialogStore';
+import { renamePersonaId } from '../personaRename';
+import FormModal from './FormModal';
+import PersonaFormFields from './PersonaFormFields';
+import { defaultForm, formFromYaml, prettifyYaml, yamlWithForm } from './personaYamlSync';
+import type { FormState } from './personaYamlSync';
 
-/* YAML-файл персоны (кнопка в шапке чата): просмотр, копирование
-   в буфер, редактирование с сохранением на сервере (бэкенд валидирует
-   YAML). Закрытие — крестик, клик по оверлею, Esc. Только при живом бэкенде. */
+/* Правка существующей персоны (кнопка «Редактировать» в «Персонах» и в шапке
+   чата): слева — те же поля, что при создании, справа — полный persona.yaml.
+   Поля и текст синхронизированы в обе стороны (personaYamlSync); ключи, которых
+   нет в форме (color, llm, …), и комментарии сохраняются. YAML целиком можно
+   скопировать и вставить. id во вставленном тексте возвращается к тому, что
+   записан в файле; сменить id — отдельной кнопкой у поля (переносит файл,
+   папку памяти, аватар — personaRename). Только при живом бэкенде. */
 
 export default function PersonaYamlModal({
   personaId,
   onClose,
+  onRenamed,
 }: {
   personaId: string;
   onClose: () => void;
+  onRenamed?: (newId: string) => void; // id сменён — родитель переключается на новый
 }) {
   const { t } = useI18n();
-  // yamlText — последняя загруженная/сохранённая версия, draft — то, что в редакторе
-  const [yamlText, setYamlText] = useState<string | null>(null);
+  // savedText — что сейчас в файле, draft — текст в редакторе, form — его поля
+  const [savedText, setSavedText] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
+  const [form, setForm] = useState<FormState>(() => defaultForm());
+  const [yamlError, setYamlError] = useState(''); // текст не разбирается — поля не синхронизируются
+  const [normalized, setNormalized] = useState(false); // при загрузке \n и слэши переведены в блоки |
+  const [idKept, setIdKept] = useState(false); // во вставленном YAML был чужой id
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [restartNote, setRestartNote] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  const noteTimer = useRef<number | undefined>(undefined);
+  const fileId = useRef(personaId); // id из файла (обычно = имени файла, но не всегда)
 
-  const dirty = draft !== null && yamlText !== null && draft !== yamlText;
+  const dirty = draft !== null && savedText !== null && draft !== savedText;
 
-  // Закрытие по Esc
+  // Новый текст (загрузка, ручная правка, вставка) → поля формы
+  const applyText = (text: string) => {
+    setDraft(text);
+    const r = formFromYaml(text, defaultForm());
+    if ('error' in r) {
+      setYamlError(r.error);
+      return;
+    }
+    setYamlError('');
+    setForm(r.form);
+  };
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  useEffect(() => {
-    setYamlText(null);
+    setSavedText(null);
     setDraft(null);
     setLoadError(false);
     setSaveError('');
     setRestartNote(false);
+    setIdKept(false);
     api
       .getPersonaYaml(personaId)
       .then((r) => {
-        setYamlText(r.yaml);
-        setDraft(r.yaml);
+        const pretty = prettifyYaml(r.yaml);
+        setSavedText(r.yaml);
+        setNormalized(pretty !== r.yaml);
+        const parsed = formFromYaml(pretty, defaultForm());
+        fileId.current = 'form' in parsed && parsed.form.id ? parsed.form.id : personaId;
+        applyText(pretty);
       })
       .catch(() => setLoadError(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personaId]);
 
+  useEffect(() => () => window.clearTimeout(noteTimer.current), []);
+
   // Мигание «Скопировано»/«Сохранено»
-  useEffect(() => {
-    if (!copied && !saved) return;
-    const timer = setTimeout(() => {
+  const flash = (set: (v: boolean) => void) => {
+    set(true);
+    window.clearTimeout(noteTimer.current);
+    noteTimer.current = window.setTimeout(() => {
       setCopied(false);
       setSaved(false);
     }, 1500);
-    return () => clearTimeout(timer);
-  }, [copied, saved]);
+  };
 
-  const copy = async () => {
-    if (draft === null) return;
-    try {
-      await navigator.clipboard.writeText(draft);
-      setCopied(true);
-    } catch {
-      // Буфер недоступен (не secure-context) — просто ничего не делаем
+  // Правка поля → точечная правка ключа в тексте
+  const patch = (p: Partial<FormState>) => {
+    const next = { ...form, ...p };
+    setForm(next);
+    if (draft !== null && !yamlError) setDraft(yamlWithForm(draft, form, next));
+  };
+
+  // Вставка YAML целиком (из буфера): id остаётся тем, что записан в файле
+  const pasteText = (text: string) => {
+    if (!text.trim()) return;
+    const pretty = prettifyYaml(text);
+    const r = formFromYaml(pretty, defaultForm());
+    if ('form' in r && r.form.id !== fileId.current) {
+      applyText(yamlWithForm(pretty, r.form, { ...r.form, id: fileId.current }));
+      setIdKept(true);
+    } else {
+      applyText(pretty);
+      setIdKept(false);
     }
+    setSaveError('');
+  };
+
+  const paste = () => {
+    navigator.clipboard?.readText().then(pasteText).catch(() => {});
+  };
+
+  const copy = () => {
+    if (draft === null) return;
+    navigator.clipboard
+      ?.writeText(draft)
+      .then(() => flash(setCopied))
+      .catch(() => {});
   };
 
   const save = () => {
-    if (draft === null || !dirty || saving) return;
+    if (draft === null || !dirty || saving || yamlError) return;
     setSaving(true);
     setSaveError('');
     api
       .savePersonaYaml(personaId, draft)
       .then((r) => {
-        setYamlText(draft);
+        setSavedText(draft);
+        setNormalized(false);
+        setIdKept(false);
         setRestartNote(r.restart_required);
-        setSaved(true);
+        flash(setSaved);
+        refetchPersonas(); // имя/описание/функции на карточках и в чате
       })
       .catch((e) => setSaveError(e instanceof ApiError ? e.message : String(e)))
       .finally(() => setSaving(false));
   };
 
+  // Смена id: подтверждение → бэкенд + браузерные хранилища → родитель на новый id
+  const renameId = async (newId: string): Promise<string | null> => {
+    const ok = await confirmDialog({
+      title: t('pc.idRenameConfirmTitle', { from: personaId, to: newId }),
+      message: t('pc.idRenameConfirm'),
+      confirmLabel: t('pc.idRename'),
+    });
+    if (!ok) return '';
+    try {
+      const { restartRequired } = await renamePersonaId(personaId, newId);
+      onRenamed?.(newId);
+      if (restartRequired) {
+        void alertDialog({ title: t('pc.idRenamedTitle'), message: t('pc.idRenamedRestart', { id: newId.toUpperCase() }) });
+      }
+      return null;
+    } catch (e) {
+      return e instanceof ApiError ? e.message : String(e);
+    }
+  };
+
+  // Подсказка под текстом: ошибка разбора важнее остального
+  const hint = yamlError
+    ? t('pc.yamlParseError', { msg: yamlError })
+    : idKept
+      ? t('yaml.idKept', { id: fileId.current })
+      : normalized
+        ? t('yaml.normalized')
+        : t('yaml.syncHint');
+
   return (
-    <div className="pcreate-overlay" onClick={onClose}>
-      <div
-        className="pcreate-panel bracketed pcreate-panel--wide"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="corner tl" />
-        <div className="corner tr" />
-        <div className="corner bl" />
-        <div className="corner br" />
-        <div className="pcreate-head">
-          <span className="pcreate-title">{t('yaml.title')}</span>
-          <span className="badge">{personaId}.yaml</span>
-          <button type="button" className="pxe-close" onClick={onClose} aria-label={t('common.close')}>
-            ✕
-          </button>
-        </div>
-        <div className="pcreate-body">
-          {loadError ? (
-            <div className="yaml-view yaml-view--note">{t('yaml.error')}</div>
-          ) : draft === null ? (
-            <div className="yaml-view yaml-view--note">{t('yaml.loading')}</div>
-          ) : (
+    <FormModal
+      title={t('yaml.title')}
+      badge={`${personaId}.yaml`}
+      xl
+      submitLabel={saved && !dirty ? t('yaml.saved') : saving ? t('yaml.saving') : t('yaml.save')}
+      submitDisabled={!dirty || saving || !!yamlError}
+      onSubmit={save}
+      onClose={onClose}
+    >
+      {loadError ? (
+        <div className="yaml-view yaml-view--note">{t('yaml.error')}</div>
+      ) : draft === null ? (
+        <div className="yaml-view yaml-view--note">{t('yaml.loading')}</div>
+      ) : (
+        <div className="pcreate-columns">
+          <div className="pcreate-form-col">
+            <PersonaFormFields
+              form={form}
+              patch={patch}
+              onNameChange={(name) => patch({ name })}
+              onIdChange={() => {}}
+              idLocked
+              fileId={personaId}
+              onIdRename={renameId}
+              idRenameBlocked={dirty ? t('pc.idRenameUnsaved') : undefined}
+            />
+            {saveError && <div className="field-hint">// {saveError}</div>}
+            {restartNote && !saveError && <div className="field-hint">// {t('settings.restartRequired')}</div>}
+          </div>
+
+          <div className="pcreate-yaml-col">
+            <div className="pcreate-yaml-head">
+              <span className="field-label" style={{ marginBottom: 0 }}>
+                persona.yaml{dirty ? ` · ${t('yaml.unsaved')}` : ''}
+              </span>
+              <div className="pcreate-yaml-actions">
+                <button type="button" className="btn btn--ghost" title={t('yaml.pasteTitle')} onClick={paste}>
+                  {t('pc.pasteYaml')}
+                </button>
+                <button type="button" className="btn btn--ghost" onClick={copy}>
+                  {copied ? t('yaml.copied') : t('pc.copyYaml')}
+                </button>
+              </div>
+            </div>
             <textarea
-              className="yaml-view yaml-edit"
+              className="input pcreate-yaml pcreate-yaml--edit"
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => applyText(e.target.value)}
               spellCheck={false}
             />
-          )}
-          {saveError && <div className="field-hint">// {saveError}</div>}
-          {restartNote && !saveError && (
-            <div className="field-hint">// {t('settings.restartRequired')}</div>
-          )}
+            <div className="field-hint">{hint}</div>
+          </div>
         </div>
-        <div className="pcreate-foot">
-          <button
-            type="button"
-            className="btn btn--ghost"
-            disabled={draft === null}
-            onClick={copy}
-          >
-            {copied ? t('yaml.copied') : t('yaml.copy')}
-          </button>
-          <button
-            type="button"
-            className="btn btn--primary"
-            disabled={!dirty || saving}
-            onClick={save}
-          >
-            {saved && !dirty ? t('yaml.saved') : saving ? t('yaml.saving') : t('yaml.save')}
-          </button>
-        </div>
-      </div>
-    </div>
+      )}
+    </FormModal>
   );
 }

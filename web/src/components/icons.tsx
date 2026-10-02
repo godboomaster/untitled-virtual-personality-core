@@ -4,16 +4,25 @@ import type { ReactNode } from 'react';
    24×24 сетка, скруглённые концы — единый стиль вместо юникод-глифов) */
 
 export type IconName =
-  | 'home' | 'chat' | 'room' | 'personas' | 'settings' | 'voice' | 'dossier'
+  | 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings' | 'voice' | 'dossier'
   | 'fullscreen' | 'fullscreenExit'
   // Предметы инвентаря
   | 'book' | 'gem' | 'cup' | 'cards' | 'photo' | 'pencil' | 'frame' | 'disc' | 'cable'
   // Действия редактора инвентаря
   | 'trash' | 'pin'
+  // Действия карточки персоны
+  | 'copy' | 'snowflake' | 'camera' | 'close'
   // Навигация по местам в комнате
-  | 'chevronLeft' | 'chevronRight';
+  | 'chevronLeft' | 'chevronRight' | 'chevronDown';
 
 const paths: Record<IconName, ReactNode> = {
+  // Старт: кнопка «play» в круге
+  start: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <polygon points="10 8.5 15.5 12 10 15.5" />
+    </>
+  ),
   // Главная: сетка-панель
   home: (
     <>
@@ -39,6 +48,16 @@ const paths: Record<IconName, ReactNode> = {
     <>
       <circle cx="12" cy="7.5" r="3.5" />
       <path d="M20 21v-1.5a5 5 0 0 0-5-5H9a5 5 0 0 0-5 5V21" />
+    </>
+  ),
+  // Скины: палитра художника с мазком-«кистью»
+  skins: (
+    <>
+      <path d="M12 2a10 10 0 0 0 0 20c1.1 0 1.7-.8 1.7-1.7 0-.45-.18-.85-.45-1.15a1.6 1.6 0 0 1-.4-1.1c0-.95.75-1.7 1.7-1.7h2a5.5 5.5 0 0 0 5.45-5.45C22 5.9 17.5 2 12 2z" />
+      <circle cx="7.5" cy="11.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="9.5" cy="7" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="14.5" cy="6.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="17.5" cy="10.5" r="1.1" fill="currentColor" stroke="none" />
     </>
   ),
   // Настройки: шестерёнка (контур с зубьями, не «солнце» из лучей)
@@ -152,9 +171,38 @@ const paths: Record<IconName, ReactNode> = {
       <circle cx="12" cy="10" r="3" />
     </>
   ),
+  // ===== Карточка персоны =====
+  copy: (
+    <>
+      <rect x="9" y="9" width="12" height="12" rx="1.5" />
+      <path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5" />
+    </>
+  ),
+  snowflake: (
+    <>
+      <line x1="12" y1="2" x2="12" y2="22" />
+      <line x1="3.3" y1="7" x2="20.7" y2="17" />
+      <line x1="3.3" y1="17" x2="20.7" y2="7" />
+      <polyline points="9 4 12 6.5 15 4" />
+      <polyline points="9 20 12 17.5 15 20" />
+    </>
+  ),
+  camera: (
+    <>
+      <path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.8l1.7-2.5h6l1.7 2.5h2.8A1.5 1.5 0 0 1 21 8.5v10a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z" />
+      <circle cx="12" cy="13" r="3.5" />
+    </>
+  ),
+  close: (
+    <>
+      <line x1="6" y1="6" x2="18" y2="18" />
+      <line x1="18" y1="6" x2="6" y2="18" />
+    </>
+  ),
   // ===== Навигация =====
   chevronLeft: <polyline points="15 18 9 12 15 6" />,
   chevronRight: <polyline points="9 18 15 12 9 6" />,
+  chevronDown: <polyline points="6 9 12 15 18 9" />,
 };
 
 interface IconProps {

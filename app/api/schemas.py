@@ -80,6 +80,11 @@ class StmDeleteRequest(BaseModel):
     index: int  # позиция в буфере (порядок — как в /api/chat/history)
     chat_id: Optional[str] = None
     user_id: str = "web_user"
+    # Сверка цели: буфер STM — deque(maxlen), индекс сдвигается при каждой
+    # новой реплике. С content (и timestamp, если был в истории) сервер ищет
+    # именно эту реплику, а index — лишь подсказка; не нашлась — 404
+    content: Optional[str] = None
+    timestamp: Optional[float] = None
 
 
 class StmTrimRequest(BaseModel):
@@ -91,6 +96,18 @@ class StmTrimRequest(BaseModel):
 
 class PersonaYamlUpdate(BaseModel):
     yaml: str  # новое содержимое YAML-файла персоны целиком
+
+
+class PersonaRenameRequest(BaseModel):
+    new_id: str  # новый id персоны = имя YAML-файла и папки памяти data/api_<id>
+
+
+class PersonaColorUpdate(BaseModel):
+    color: Optional[str] = None  # "#rrggbb"; null — вернуть цвет по умолчанию (из id)
+
+
+class PersonaAvatarUpdate(BaseModel):
+    data_url: str  # data:image/png|jpeg|webp;base64,… (фронт сжимает до 256×256)
 
 
 class MemoryStats(BaseModel):
@@ -125,6 +142,14 @@ class ReminderAddRequest(BaseModel):
     delay_seconds: float = 3600
     chat_id: str = "web_user"
     user_name: str = "web"
+
+
+class ReminderUpdateRequest(BaseModel):
+    # Правка напоминания по id: не заданное поле не меняется
+    task: Optional[str] = None
+    trigger_at: Optional[float] = None  # unix-секунды нового срабатывания
+    active: Optional[bool] = None  # False — на паузу, True — продолжить
+    chat_id: str = "web_user"
 
 
 class CalendarEntryCreate(BaseModel):
@@ -179,19 +204,33 @@ class WebchatRequest(BaseModel):
     site: str | None = None  # legacy: один сайт веб-чата; ""/off — выкл
 
 
-class LocalBackendRequest(BaseModel):
-    backend: str  # движок задачи: "ollama" | "webchat"
-    site: str | None = None  # сайт веб-чата для задачи; пусто — первый включённый
+class PersonaLocalTasksUpdate(BaseModel):
+    # Движки служебных задач персоны (llm.local_tasks): одна задача и/или
+    # веб-чат фоновых задач
+    task: str | None = None  # id задачи из LOCAL_TASKS
+    backend: str | None = None  # "ollama" | "webchat" | "default" (снять выбор)
+    site: str | None = None  # сайт веб-чата задачи; пусто — веб-чат фоновых задач
+    bg_site: str | None = None  # "fallback" | "primary" | имя сайта
 
 
 class PersonaLlmConfig(BaseModel):
     primary: Optional[str] = None   # None → глобальный активный провайдер
     fallback: Optional[list[str]] = None  # приоритет цепочки после основного
+    # Провайдеры, убранные персоной из СВОЕЙ автоматической цепочки (токены
+    # как в primary/fallback); пустой список — исключений нет
+    exclude: Optional[list[str]] = None
     models: Optional[dict[str, str]] = None  # свои модели по провайдерам (пустая строка — снять)
     # Лимиты веб-чатов: {сайт: {"enabled": bool, "per_hour": int}}.
     # Поле должно быть объявлено явно: иначе pydantic молча отбрасывает
     # webchat_limits из запроса, и отключение лимита в UI не сохраняется.
     webchat_limits: Optional[dict[str, dict]] = None
+    # Провайдеры по назначению (реплики персоны в режиме управления /
+    # решения режима управления / зрение); None/пустая строка — снять.
+    # Хендлер передаёт только присланные поля (model_dump(exclude_unset=True)):
+    # не присланный ключ не трогается
+    answer_provider: Optional[str] = None
+    cc_provider: Optional[str] = None
+    vision_provider: Optional[str] = None
 
 
 class InitiativeUpdate(BaseModel):
@@ -235,3 +274,38 @@ class PersonaDraftSave(BaseModel):
     name: str = ""
     form: dict = Field(default_factory=dict)  # непрозрачное состояние формы фронта
     yaml: str = ""  # снапшот сгенерированного YAML на момент сохранения
+
+
+# ── Комната персоны (веб «Комната», app/api/room_api.py) ──────────────
+# Частичные обновления: поле не передано — не трогаем, null — удалить/
+# сбросить (различаем через model_dump(exclude_unset=True)).
+
+class RoomLayoutUpdate(BaseModel):
+    # {"<имя предмета>": {marker, size, icon, image, spot, hidden} | null}
+    items: Optional[dict[str, Optional[dict]]] = None
+    avatar: Optional[dict] = None  # {head, eyes, accessory, shade} | null
+
+
+class RoomStyleUpdate(BaseModel):
+    description: Optional[str] = Field(default=None, max_length=1500)
+    reference: Optional[str] = None  # data-URL (≤ 1 МБ) | null
+
+
+class RoomStyleDescribeRequest(BaseModel):
+    reference: str  # data-URL картинки-референса (≤ 1 МБ)
+
+
+class RoomArtUpdate(BaseModel):
+    sprite: Optional[dict] = None                     # {dataUrl, anchor} | null
+    sprites: Optional[dict[str, Optional[dict]]] = None  # {поза: спрайт | null}
+    room_bg: Optional[dict] = None                    # {dataUrl, floorPoints} | null
+
+
+class RoomPokeRequest(BaseModel):
+    chat_id: Optional[str] = "auto"
+
+
+class RoomFocusRequest(BaseModel):
+    action: str  # start | end
+    minutes: Optional[int] = None
+    chat_id: Optional[str] = "auto"

@@ -2,10 +2,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, useMockData } from '../i18n';
 import type { ChatMessage, InventoryItem, LearningSession, LtmFact, Reminder, TodoItem } from '../mockData';
 import { api, streamChat, StreamInterruptedError } from '../api';
-import type { ApiHistoryMessage, InitiativeData } from '../api';
-import { useApiOnline, useApiPersonaLlm, useApiProviders } from '../apiData';
+import type { ApiHistoryMessage, InitiativeData, PersonaConfig, ReminderEntry } from '../api';
+import { refetchPersonaLlm, useApiOnline, useApiPersonaLlm, useApiProviders, usePersonaLivingState } from '../apiData';
+import { alertDialog } from '../dialogStore';
 import {
-  getServerLastTs, markRead, pollInboxNow, pruneInbox, setControlMode, setFastPoll, setGenerating, touchActivity, useInbox,
+  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setControlMode, setFastPoll, setGenerating, touchActivity, useInbox,
 } from '../inboxStore';
 import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
@@ -22,6 +23,9 @@ import { usePersonaSkin } from '../skins/skinStore';
 import { usePersonaOverlay } from '../skins/overlayStore';
 import { buildChatPayload } from '../skins/payloads';
 import { useShellTheme } from '../skins/shellTheme';
+import { useSkinEnv } from '../skins/useSkinEnv';
+import { parseReminderWhen } from '../reminderWhen';
+import { useRoomView } from '../room/useRoomView';
 
 // Допуск сравнения серверных меток: last_ts и timestamp реплики STM — один и
 // тот же float (memory.add_message), но после рестарта буфер читается из БД
@@ -30,10 +34,57 @@ const TS_EPS = 0.001;
 // «своим» (реплики уже в локальной ленте): поллер может показать его и через
 // тик после конца стрима
 const ABSORB_MS = 30000;
+// Пауза перед повторной загрузкой истории, если первый запрос не прошёл
+const HISTORY_RETRY_MS = 3000;
 // Самая свежая серверная метка в истории STM (локальные пузыри сюда не идут:
 // их ts — часы браузера, с серверными не сравнимы)
 const newestTs = (list: ChatMessage[] | undefined) =>
   (list ?? []).reduce((mx, m) => Math.max(mx, m.ts ?? 0), 0);
+
+// Стабильный id реплики STM (см. toChatMessage): серверная метка в мкс
+// (~1.7e15 — не пересекается с локальными id вида Date.now() ~1.7e12) или
+// FNV-1a хеш автора+текста (< 2^31); повторы базы в той же выдаче
+// получают +1 за каждое более раннее совпадение
+const stmBaseId = (m: ApiHistoryMessage): number => {
+  if (m.timestamp) return Math.round(m.timestamp * 1e6);
+  const s = m.role + '\n' + m.content;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return (h >>> 1) + 1;
+};
+const stmIdCache = new WeakMap<ApiHistoryMessage[], number[]>();
+const stmMessageId = (all: ApiHistoryMessage[], i: number): number => {
+  let ids = stmIdCache.get(all);
+  if (!ids) {
+    const used = new Set<number>();
+    ids = all.map((m) => {
+      let id = stmBaseId(m);
+      while (used.has(id)) id += 1;
+      used.add(id);
+      return id;
+    });
+    stmIdCache.set(all, ids);
+  }
+  return ids[i];
+};
+
+// Фичи, хранящиеся в YAML словарём с параметрами (enabled + доп. поля,
+// см. Settings.tsx): сохранение фичи не должно затирать эти поля
+const DICT_FEATURES = new Set(['proactive', 'learning', 'rhythm', 'life']);
+
+// Включена ли фича по конфигу персоны (та же логика, что в Settings.tsx):
+// нет ключа — выключена, dict — по полю enabled (computer_control без
+// enabled в dict — включён по умолчанию)
+function featureEnabledFromConfig(features: Record<string, unknown> | undefined, id: string): boolean {
+  const v = features?.[id];
+  if (typeof v === 'boolean') return v;
+  if (v !== null && typeof v === 'object') {
+    return id === 'computer_control'
+      ? (v as { enabled?: unknown }).enabled !== false
+      : Boolean((v as { enabled?: unknown }).enabled);
+  }
+  return false;
+}
 
 export default function Chat() {
   const { lang, t } = useI18n();
@@ -55,7 +106,18 @@ export default function Chat() {
     roomConfigs,
   } = useMockData();
 
-  const [selectedId, setSelectedId] = useState(() => personas[0].id);
+  // При входе в чат открывается персона с самой свежей перепиской (первая в
+  // списке слева). Если опрос входящих ещё не принёс меток — первая по реестру,
+  // а выбор уточнится, когда метки придут (пока оператор сам не выбрал чат)
+  const [selectedId, setSelectedId] = useState(
+    () => latestActivePersona(personas.map((p) => p.id)) ?? personas[0].id,
+  );
+  const autoSelect = useRef(latestActivePersona(personas.map((p) => p.id)) === null);
+  // Выбор оператора (клик, переход из других секций) — автовыбор больше не нужен
+  const pickPersona = (id: string) => {
+    autoSelect.current = false;
+    setSelectedId(id);
+  };
   const avatars = usePersonaAvatars();
   const [panelOpen, setPanelOpen] = useState(true);
   // Левый список персон тоже задвигается (как правая контекстная панель)
@@ -77,8 +139,19 @@ export default function Chat() {
   const apiOnline = useApiOnline();
   const apiProviders = useApiProviders();
   const [historyByPersona, setHistoryByPersona] = useState<Record<string, ChatMessage[]>>({});
-  // LTM-факты персоны с бэкенда (для скин-досье)
-  const [apiFacts, setApiFacts] = useState<LtmFact[] | null>(null);
+  // Первая загрузка истории упала (ядро ещё поднимает бота персоны или
+  // перезапускается) — лента показывает повтор, эпоха перезапускает фетч
+  const [historyFailed, setHistoryFailed] = useState<Record<string, boolean>>({});
+  const [historyRetry, setHistoryRetry] = useState(0);
+  // LTM-факты персоны с бэкенда (для скин-досье); raw — исходные строки
+  // «Категория: факт» по тому же индексу, нужны для правки/забывания через API.
+  // Данные сайдбара/фактов/конфига помечены id персоны: после переключения
+  // персоны до прихода её данных чужие не показываются и не адресуются
+  const [apiFactsState, setApiFacts] = useState<{ persona: string; facts: LtmFact[] } | null>(null);
+  const apiFactsRawRef = useRef<{ persona: string; raw: string[] }>({ persona: '', raw: [] });
+  // Конфиг персоны с бэкенда (фичи + параметры генерации) — источник для
+  // скина вместо мока, когда бэкенд онлайн; без merge оверлея поверх сервера
+  const [apiPersonaConfigState, setApiPersonaConfig] = useState<{ persona: string; config: PersonaConfig } | null>(null);
   // Ждём ответ бэкенда (индикатор «печатает», блокировка повторной отправки) —
   // по id персоны: генерация идёт у одной, остальные чаты «печатает» не показывают
   const [waitingByPersona, setWaitingByPersona] = useState<Record<string, boolean>>({});
@@ -94,15 +167,22 @@ export default function Chat() {
   // дёргается после очистки диалога — LTM стёрты, списки могли измениться
   const [sideEpoch, setSideEpoch] = useState(0);
   // Данные сайдбара с бэкенда: дела, инвентарь, напоминания, курсы, инициатива
-  const [sideData, setSideData] = useState<{
+  const [sideDataState, setSideData] = useState<{
+    persona: string;
     todos: TodoItem[];
     inventory: InventoryItem[];
     reminders: Reminder[];
+    // Напоминания как их отдал бэкенд (id, trigger_at) — по index
+    // совпадают с reminders[].id: адресация правки/отмены по стабильному id
+    remindersRaw: ReminderEntry[];
     courses: LearningSession[];
     init: InitiativeData | null;
   } | null>(null);
 
   const persona = personas.find((p) => p.id === selectedId) ?? personas[0];
+  const sideData = sideDataState?.persona === persona.id ? sideDataState : null;
+  const apiFacts = apiFactsState?.persona === persona.id ? apiFactsState.facts : null;
+  const apiPersonaConfig = apiPersonaConfigState?.persona === persona.id ? apiPersonaConfigState.config : null;
 
   // Подпись провайдера для шапки: кто ответил последним, иначе закреплённый
   // за персоной основной (а не глобальный активный), иначе глобальный
@@ -143,20 +223,25 @@ export default function Chat() {
 
   // Список персон подменился (пришёл API) — выбор сбрасываем на существующую
   useEffect(() => {
-    if (!personas.some((p) => p.id === selectedId)) setSelectedId(personas[0].id);
+    if (!personas.some((p) => p.id === selectedId)) {
+      setSelectedId(latestActivePersona(personas.map((p) => p.id)) ?? personas[0].id);
+    }
   }, [personas, selectedId]);
 
   // Запрос «открыть чат с персоной» из других секций (карточки STATUS на Home)
   const chatPersonaRequest = useChatPersonaRequest();
   useEffect(() => {
     if (!chatPersonaRequest) return;
-    if (personas.some((p) => p.id === chatPersonaRequest)) setSelectedId(chatPersonaRequest);
+    if (personas.some((p) => p.id === chatPersonaRequest)) pickPersona(chatPersonaRequest);
     consumeChatPersonaRequest();
   }, [chatPersonaRequest, personas]);
 
-  // Реплика STM бэкенда → сообщение чата
-  const toChatMessage = (m: ApiHistoryMessage, i: number): ChatMessage => ({
-    id: i + 1,
+  // Реплика STM бэкенда → сообщение чата. id стабилен между перечитками
+  // (не позиция: буфер STM — deque с лимитом, позиции сдвигаются): серверная
+  // метка в мкс, без метки — хеш автора и текста; совпадения в одной выдаче
+  // разводятся +1 по порядку
+  const toChatMessage = (m: ApiHistoryMessage, i: number, all: ApiHistoryMessage[]): ChatMessage => ({
+    id: stmMessageId(all, i),
     role: m.role === 'user' ? 'user' : 'bot',
     text: m.content,
     time: m.timestamp
@@ -213,7 +298,16 @@ export default function Chat() {
 
   // Фоновые сообщения (напоминания, инициативы) прилетают в глобальный
   // inbox-стор (поллер в App); здесь только гасим непрочитанные открытой персоны
-  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs } = useInbox();
+  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode } = useInbox();
+  // Автовыбор: первые метки свежести пришли уже после открытия чата
+  useEffect(() => {
+    if (!autoSelect.current) return;
+    const id = latestActivePersona(personas.map((p) => p.id));
+    if (id) {
+      autoSelect.current = false;
+      setSelectedId(id);
+    }
+  }, [lastTs, personas]);
   useEffect(() => {
     markRead(persona.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -372,9 +466,13 @@ export default function Chat() {
   // Сервер генерирует ответ открытой персоны, а локального стрима нет
   // (перезагрузка страницы, обрыв) — inbox этой персоны опрашивается раз в 3 с,
   // чтобы поздний ответ появился за секунды, а не через 15-секундный тик
+  // Своя задача в режиме управления: промежуточные «Нажал …» идут через
+  // inbox, пока наш запрос ещё в пути, — тоже быстрый опрос, иначе они
+  // приходили пачкой раз в 15 с
+  const ccOn = controlMode[persona.id] === true;
   useEffect(() => {
-    setFastPoll(remoteGenerating && !inFlight ? persona.id : null);
-  }, [remoteGenerating, inFlight, persona.id]);
+    setFastPoll((remoteGenerating && !inFlight) || (inFlight && ccOn) ? persona.id : null);
+  }, [remoteGenerating, inFlight, ccOn, persona.id]);
   useEffect(() => () => setFastPoll(null), []);
 
   // Список персон по свежести переписки: последняя активная — наверху
@@ -382,26 +480,35 @@ export default function Chat() {
   // стабильная, нули у всех равны)
   const sortedPersonas = [...personas].sort((a, b) => (lastTs[b.id] ?? 0) - (lastTs[a.id] ?? 0));
 
-  // Подтягиваем историю персоны из бэкенда (один раз на персону за сессию)
+  // Подтягиваем историю персоны из бэкенда (один раз на персону за сессию).
+  // Первый запрос к персоне поднимает её бота на сервере — это небыстро,
+  // лента пока показывает загрузку; при сбое повторяем через паузу
   useEffect(() => {
     if (!apiOnline || historyByPersona[persona.id]) return;
     const id = persona.id;
     let stale = false;
+    let retryTimer: number | undefined;
     api
       .getHistory(id)
       .then((msgs) => {
         if (stale) return;
         setHistoryByPersona((prev) => ({ ...prev, [id]: msgs.map(toChatMessage) }));
+        setHistoryFailed((prev) => ({ ...prev, [id]: false }));
         // Инициатива/напоминание пишется и в STM, и в inbox — вычищаем дубли из стора
         pruneInbox(id, new Set(msgs.map((m) => m.content)));
         dropRecovered(id, msgs);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (stale) return;
+        setHistoryFailed((prev) => ({ ...prev, [id]: true }));
+        retryTimer = window.setTimeout(() => setHistoryRetry((n) => n + 1), HISTORY_RETRY_MS);
+      });
     return () => {
       stale = true;
+      window.clearTimeout(retryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiOnline, persona.id]);
+  }, [apiOnline, persona.id, historyRetry]);
 
   // Сайдбар контекста: дела/инвентарь/напоминания/курсы с бэкенда.
   // Перечитываем после ответа бота (waiting) — он мог их изменить по ходу диалога.
@@ -420,6 +527,7 @@ export default function Chat() {
       ([td, inv, rem, lr, ini]) => {
         if (stale) return;
         setSideData({
+          persona: id,
           todos: td.status === 'fulfilled' ? td.value.items.map((x) => ({ id: x.index, text: x.task, done: false })) : [],
           inventory:
             inv.status === 'fulfilled'
@@ -427,8 +535,9 @@ export default function Chat() {
               : [],
           reminders:
             rem.status === 'fulfilled'
-              ? rem.value.items.map((r) => ({ id: r.index, text: r.task, time: fmtTs(r.trigger_at), repeat: '', active: true }))
+              ? rem.value.items.map((r) => ({ id: r.index, text: r.task, time: fmtTs(r.trigger_at), repeat: '', active: r.active !== false }))
               : [],
+          remindersRaw: rem.status === 'fulfilled' ? rem.value.items : [],
           courses:
             lr.status === 'fulfilled'
               ? lr.value.sessions.map((s, i) => ({
@@ -458,21 +567,25 @@ export default function Chat() {
   useEffect(() => {
     if (!apiOnline) {
       setApiFacts(null);
+      apiFactsRawRef.current = { persona: '', raw: [] };
       return;
     }
+    const id = persona.id;
     let stale = false;
     api
-      .getLtmFacts(persona.id)
+      .getLtmFacts(id)
       .then((facts) => {
         if (stale) return;
-        setApiFacts(
-          facts.map((raw, i) => {
+        apiFactsRawRef.current = { persona: id, raw: facts };
+        setApiFacts({
+          persona: id,
+          facts: facts.map((raw, i) => {
             const sep = raw.indexOf(':');
             return sep > 0
               ? { id: i + 1, category: raw.slice(0, sep).trim(), fact: raw.slice(sep + 1).trim() }
               : { id: i + 1, category: 'General', fact: raw };
           }),
-        );
+        });
       })
       .catch(() => {});
     return () => {
@@ -480,15 +593,39 @@ export default function Chat() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiOnline, persona.id, waiting, sideEpoch]);
+
+  // Конфиг персоны с бэкенда (фичи + генерация) — перечитываем вместе с
+  // остальным сайдбаром (sideEpoch), чтобы правки через скин были видны сразу.
+  // Не сбрасываем на каждой перечитке: сбой GET оставил бы конфиг пустым, а
+  // переключение фичи по пустому затёрло бы её параметры (чужой персоны
+  // конфиг и так не виден — он помечен её id)
+  useEffect(() => {
+    if (!apiOnline) {
+      setApiPersonaConfig(null);
+      return;
+    }
+    const id = persona.id;
+    let stale = false;
+    api
+      .getPersonaConfig(id)
+      .then((c) => !stale && setApiPersonaConfig({ persona: id, config: c }))
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiOnline, persona.id, sideEpoch]);
   // Скин персоны: отдельные файлы по экранам, рендер в sandboxed iframe
   const { skins, broken, reportBroken, reset } = usePersonaSkin(persona.id);
   // Записываемые через скин данные (добавленные/переключённые сущности)
-  const overlay = usePersonaOverlay(persona.id);
+  const overlay = usePersonaOverlay(persona.id, () => void alertDialog({ message: t('skin.errQuota') }));
   // История = (STM бэкенда | моковый диалог) + отправленные в этой сессии реплики
   // + фоновые сообщения из inbox-стора (напоминания, инициативы)
   const baseMessages = apiOnline
     ? (historyByPersona[persona.id] ?? [])
     : (chatByPersona[persona.id] ?? []);
+  // История персоны ещё не пришла с бэкенда — в ленте индикатор загрузки
+  const historyLoading = apiOnline && !historyByPersona[persona.id];
   // Дедупликация: инициатива/напоминание лежит и в STM (история), и в inbox —
   // показываем inbox-копию, только если её текста ещё нет в истории
   const baseTexts = new Set(baseMessages.map((m) => m.text));
@@ -506,8 +643,9 @@ export default function Chat() {
   // тексту И ts (копия в истории свежее локальной): недеструктивно, лента не
   // моргает при фоновых перечитках, а повторные «да»/«нет» не съедаются
   // старым совпадением текста
+  // (TS_EPS: метки STM, перечитанные из БД после рестарта, — с точностью до мс)
   const sentVisible = (sentByPersona[persona.id] ?? []).filter(
-    (m) => !baseMessages.some((h) => h.text === m.text && (h.ts ?? 0) >= (m.ts ?? 0)),
+    (m) => !baseMessages.some((h) => h.text === m.text && (h.ts ?? 0) + TS_EPS >= (m.ts ?? 0)),
   );
   // Лента смешанная (история STM + локальные реплики сессии + inbox):
   // при простом склеивании инициатива из inbox встала бы ПОСЛЕ свежего
@@ -564,13 +702,29 @@ export default function Chat() {
         ignoreStreak: initApi.ignore_streak,
       }
     : init;
-  const mood = init.emotionalState;
-  // Тренд настроения из стрика игнорирования инициатив
-  const trend = initIgnoreStreak > 2
-    ? t('chat.trendWorsening')
-    : initIgnoreStreak === 0
+  // Настроение: живое состояние персоны (слой state), иначе ступень обиды
+  // по стрику игнора с бэкенда, иначе мок. Раньше здесь всегда был мок —
+  // у всех персон без мок-записи «лёгкая обида» Коннора
+  const livingData = usePersonaLivingState(persona.id);
+  const liveMood = apiOnline ? livingData?.state?.mood ?? null : null;
+  const streakStages = t('init.stages').split('|');
+  const mood = liveMood?.tag
+    ?? (initApi
+      ? streakStages[initIgnoreStreak < 3 ? 0 : initIgnoreStreak < 5 ? 1 : initIgnoreStreak < 7 ? 2 : initIgnoreStreak < 10 ? 3 : 4]
+      : init.emotionalState);
+  // Тренд: направление последнего сдвига живого mood; без него — по стрику
+  // игнорирования инициатив (растёт — хуже, сброшен — лучше)
+  const trend = liveMood
+    ? liveMood.trend === 'up'
       ? t('chat.trendImproving')
-      : t('chat.trendStable');
+      : liveMood.trend === 'down'
+        ? t('chat.trendWorsening')
+        : t('chat.trendStable')
+    : initIgnoreStreak > 2
+      ? t('chat.trendWorsening')
+      : initIgnoreStreak === 0
+        ? t('chat.trendImproving')
+        : t('chat.trendStable');
   // Частота самоинициативы: чем свежее диалог, тем чаще персона пишет сама (мок-эвристика)
   const initFreq =
     persona.lastReplyFreshness === 'fresh'
@@ -578,8 +732,18 @@ export default function Chat() {
       : persona.lastReplyFreshness === 'yesterday'
         ? t('chat.freqNormal')
         : t('chat.freqReduced');
-  // Текущее занятие персоны — первое из конфига её комнаты
-  const pastime = (roomConfigs[persona.id] ?? roomConfigs.connor).pastimes[0];
+  // Текущее занятие персоны: живое состояние из кеша комнаты (если она уже
+  // загружалась — свой поллинг не запускаем), иначе первое из мок-конфига её
+  // комнаты; у персоны без мока — ничего (занятия Коннора не подставляем)
+  const roomCache = useRoomView(persona.id, { enabled: false });
+  const roomLiving = roomCache.view?.living;
+  const roomState = roomLiving?.enabled && roomLiving.ui_sync ? roomLiving.state : null;
+  const pastime: { label: string; place: string } | null = roomState?.pastime
+    ? {
+        label: roomState.pastime,
+        place: roomCache.view?.config?.spots.find((s) => s.key === roomState.spot)?.place || roomState.location || '',
+      }
+    : (roomConfigs[persona.id]?.pastimes[0] ?? null);
   // Ближайшее активное напоминание персоны
   const nextReminder = (sideData ? sideData.reminders : (remindersByPersona[persona.id] ?? [])).find((r) => r.active);
   // Последняя самоинициатива персоны: живая история с бэкенда, иначе мок
@@ -711,14 +875,27 @@ export default function Chat() {
     setStreamMsgIdByPersona((prev) => ({ ...prev, [pid]: botId }));
     const bubbleIds: number[] = [botId];
     const bubbleTexts: string[] = [''];
+    // Метка ответа в STM (reply_ts сервера): пузырь встаёт в ленте после
+    // промежуточных сообщений хода из inbox («Нажал …» режима управления),
+    // а не сразу под вопросом (момент отправки). Нет метки (старый сервер,
+    // обрыв) — по-старому
+    let replyTs: number | undefined;
+    // Не раньше самого вопроса (часы браузера и сервера могут расходиться);
+    // части расщеплённого ответа — сразу за первой, по порядку
+    const bubbleTs = (msgId: number) => {
+      const i = bubbleIds.indexOf(msgId);
+      return replyTs && i >= 0 ? Math.max(replyTs, botId / 1000) + i * 1e-4 : msgId / 1000;
+    };
     const upsertBot = (msgId: number, msgText: string) => {
-      const time = new Date().toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' });
+      const ts = bubbleTs(msgId);
+      const time = new Date(replyTs ? ts * 1000 : Date.now())
+        .toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' });
       setSentByPersona((prev) => {
         const list = prev[pid] ?? [];
         if (list.some((m) => m.id === msgId)) {
-          return { ...prev, [pid]: list.map((m) => (m.id === msgId ? { ...m, text: msgText } : m)) };
+          return { ...prev, [pid]: list.map((m) => (m.id === msgId ? { ...m, text: msgText, ts } : m)) };
         }
-        return { ...prev, [pid]: [...list, { id: msgId, role: 'bot' as const, text: msgText, time, ts: msgId / 1000 }] };
+        return { ...prev, [pid]: [...list, { id: msgId, role: 'bot' as const, text: msgText, time, ts }] };
       });
     };
     // Картинки ответа (скриншоты страницы) — в тот же пузырь, что и текст:
@@ -743,8 +920,12 @@ export default function Chat() {
         bubbleTexts.push('');
         setStreamMsgIdByPersona((prev) => ({ ...prev, [pid]: nextId }));
       },
+      (ts) => {
+        replyTs = ts;
+      },
     )
       .then((res) => {
+        if (typeof res.reply_ts === 'number') replyTs = res.reply_ts;
         // Обмен целиком у нас: рост last_ts от этих реплик — «свой», историю
         // под него не перечитываем (иначе пузыри заменятся STM-копиями).
         // Реплики уже в STM (сервер пишет их до отправки токенов) — опрашиваем
@@ -762,7 +943,9 @@ export default function Chat() {
         // остальное (несстримленный хвост, досылаемые списки) — новые пузыри
         res.extra_messages.forEach((m, i) => {
           if (i < bubbleIds.length - 1) upsertBot(bubbleIds[i + 1], m);
-          else pushPersonaMessage(m);
+          // Досылаемые списки — за ответом по той же метке (часы браузера
+          // и сервера могут расходиться)
+          else pushPersonaMessage(m, replyTs ? bubbleTs(bubbleIds[0]) + (i + 1) * 1e-4 : undefined);
         });
         // Скриншоты страницы из режима управления («что на странице?») —
         // одним сообщением вместе с ответом (кадры в том же пузыре, dataURL).
@@ -810,22 +993,24 @@ export default function Chat() {
   };
 
   // Реплика персоны в историю (голосовой режим: мок-ответ озвучивается в VoiceChat)
-  const pushPersonaMessage = (text: string) => {
+  const pushPersonaMessage = (text: string, ts?: number) => {
     const msg: ChatMessage = {
       id: Date.now(),
       role: 'bot',
       text,
-      time: new Date().toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' }),
-      ts: Date.now() / 1000,
+      time: new Date(ts ? ts * 1000 : Date.now()).toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' }),
+      ts: ts ?? Date.now() / 1000,
     };
     setSentByPersona((prev) => ({ ...prev, [persona.id]: [...(prev[persona.id] ?? []), msg] }));
     touchActivity(persona.id, Date.now() / 1000);
   };
 
-  // Данные досье с учётом правок через скин (overlay поверх моков).
-  // В API-режиме — реальные списки с бэкенда + добавленные через скин в этой сессии.
+  // Данные досье для скина. В API-режиме — сервер является истиной целиком:
+  // правки через скин уходят в бэкенд (handleSkinAction/handleSkinSetting) и
+  // возвращаются через sideEpoch/apiFacts — overlay здесь больше не подмешиваем.
+  // Офлайн (моки) — как раньше, overlay поверх мокового списка.
   const skinTodos = apiOnline
-    ? [...(sideData?.todos ?? []), ...overlay.addedTodos]
+    ? (sideData?.todos ?? [])
     : [
         ...(todosByPersona[persona.id] ?? [])
           .filter((td) => !overlay.deletedTodos.includes(td.id))
@@ -836,7 +1021,7 @@ export default function Chat() {
         ...overlay.addedTodos,
       ];
   const skinReminders = apiOnline
-    ? [...(sideData?.reminders ?? []), ...overlay.addedReminders]
+    ? (sideData?.reminders ?? [])
     : [
         ...(remindersByPersona[persona.id] ?? [])
           .filter((r) => !overlay.deletedReminders.includes(r.id))
@@ -847,27 +1032,24 @@ export default function Chat() {
         ...overlay.addedReminders,
       ];
   const skinFacts = apiOnline
-    ? [...(apiFacts ?? []), ...overlay.addedFacts]
+    ? (apiFacts ?? [])
     : [
         ...(ltmByPersona[persona.id] ?? [])
           .filter((f) => !overlay.deletedFacts.includes(f.id))
           .map((f) => (overlay.editedFacts[f.id] ? { ...f, ...overlay.editedFacts[f.id] } : f)),
         ...overlay.addedFacts,
       ];
-  // STM-буфер досье: история диалога с учётом срезки/удалений через скин
-  const stmFiltered = messages.filter((m) => !overlay.deletedStm.includes(m.id));
-  const skinStm = overlay.stmTrimmed > 0 ? stmFiltered.slice(0, -overlay.stmTrimmed) : stmFiltered;
-  // Учебные курсы: реальные с бэкенда / моковые + добавленные через скин
+  // STM-буфер досье: онлайн — история уже отражает удаление/срезку (после
+  // trim-stm/delete-stm чат перечитывает её с бэкенда), офлайн — через overlay
+  const skinStm = apiOnline
+    ? messages
+    : (() => {
+        const stmFiltered = messages.filter((m) => !overlay.deletedStm.includes(m.id));
+        return overlay.stmTrimmed > 0 ? stmFiltered.slice(0, -overlay.stmTrimmed) : stmFiltered;
+      })();
+  // Учебные курсы: реальные с бэкенда / моковые + добавленные через скин (офлайн)
   const skinCourses = apiOnline
-    ? [...(sideData?.courses ?? []), ...overlay.addedCourses.map((c) => ({
-        ...c,
-        status: 'active' as const,
-        lessonCount: 0,
-        coveredTopics: [] as string[],
-        vocabulary: [] as string[],
-        nextLesson: '—',
-        quizPending: 0,
-      }))]
+    ? (sideData?.courses ?? [])
     : [
         ...(learningByPersona[persona.id] ?? []),
         ...overlay.addedCourses.map((c) => ({
@@ -881,66 +1063,308 @@ export default function Chat() {
         })),
       ];
 
-  // Действия записи из скина (whitelist — ничего другого скин командовать не может)
+  // Действия записи из скина (whitelist — ничего другого скин командовать не может).
+  // Показать ошибку записи: тот же модальный диалог, что и у остального
+  // приложения (dialogStore/DialogHost), а не тихое молчание
+  const reportSkinError = (e: unknown) => {
+    void alertDialog({ message: e instanceof Error ? e.message : String(e) });
+  };
+  // Онлайн — списки сайдбара перечитываем с бэкенда после успешной записи
+  const bumpSide = () => setSideEpoch((e) => e + 1);
+  // Ошибка с текстом для человека (показывается через reportSkinError)
+  const skinFail = (key: string, vars?: Record<string, string | number>) => new Error(t(key, vars));
+
+  // У todo-модуля нет id — только номер строки, и он сдвигается от любой
+  // записи. Пока идёт своя запись, новые действия со списком игнорируем
+  // (двойной клик не удалит два разных пункта), а номер берём из свежего
+  // списка по тексту пункта, который видел человек
+  const todoBusy = useRef(false);
+  const runTodoWrite = (op: () => Promise<unknown>) => {
+    if (todoBusy.current) return;
+    todoBusy.current = true;
+    op()
+      .then(bumpSide)
+      .catch((e) => {
+        bumpSide();
+        reportSkinError(e);
+      })
+      .finally(() => {
+        todoBusy.current = false;
+      });
+  };
+  const resolveTodoIndex = async (pid: string, shownId: number): Promise<number> => {
+    const shown = sideData?.todos.find((td) => td.id === shownId);
+    if (!shown) throw skinFail('skin.actStale');
+    const { items } = await api.getTodo(pid);
+    const hit =
+      items.find((x) => x.index === shownId && x.task === shown.text) ?? items.find((x) => x.task === shown.text);
+    if (!hit) throw skinFail('skin.actStale');
+    return hit.index;
+  };
+
+  // Напоминание из показанного списка → его запись бэкенда (id, trigger_at)
+  const shownReminder = (shownId: number) => sideData?.remindersRaw.find((r) => r.index === shownId) ?? null;
+  // «01.10, 14:30» → дата + время — так же, как их раскладывает payload скина
+  // (buildChatPayload) по полям формы правки
+  const splitWhen = (time: string) => {
+    const idx = time.lastIndexOf(', ');
+    return idx > 0 ? { date: time.slice(0, idx), clock: time.slice(idx + 2) } : { date: '', clock: time };
+  };
+  // Момент срабатывания из полей формы; не разобрать — ошибка для человека
+  const reminderAt = (date: string, clock: string): Date => {
+    const when = parseReminderWhen(date, clock, lang === 'en' ? 'en' : 'ru');
+    if (when.ok) return when.at;
+    if (when.error === 'date') throw skinFail('skin.actBadDate', { v: date });
+    if (when.error === 'time') throw skinFail('skin.actBadTime', { v: clock });
+    throw skinFail('skin.actPast');
+  };
+
+  // Исходная строка LTM-факта по id из показанного списка (только этой персоны)
+  const factRaw = (shownId: number): string | undefined =>
+    apiFactsRawRef.current.persona === persona.id ? apiFactsRawRef.current.raw[shownId - 1] : undefined;
+
   const handleSkinAction = (action: string, values: Record<string, string>, id: string | null) => {
     const numId = id != null ? Number(id) : NaN;
     const hasId = !Number.isNaN(numId);
     switch (action) {
-      case 'add-todo':
+      case 'add-todo': {
         // с id — правка существующего дела (кнопка edit-todo заполнила форму)
-        if (hasId && values.text?.trim()) overlay.updateTodo(numId, values.text.trim());
-        else if (values.text?.trim()) overlay.addTodo(values.text.trim());
-        break;
-      case 'toggle-todo':
-        if (hasId) overlay.toggleTodo(numId);
-        break;
-      case 'delete-todo':
-        if (hasId) overlay.deleteTodo(numId);
-        break;
-      case 'add-reminder': {
-        const clock = (values.clock ?? values.time)?.trim() || '—';
-        const when = values.date?.trim() ? `${values.date.trim()}, ${clock}` : clock;
-        const repeat = values.repeat?.trim() || '—';
-        if (hasId && values.text?.trim()) overlay.updateReminder(numId, { time: when, text: values.text.trim(), repeat });
-        else if (values.text?.trim()) overlay.addReminder(when, values.text.trim(), repeat);
+        const text = values.text?.trim();
+        if (!text) break;
+        if (apiOnline) {
+          // У todo-модуля нет PUT: правка = добавить новый пункт + удалить
+          // старый (добавление идёт в конец и номер старого не сдвигает; сбой
+          // посередине оставит дубль, а не потеряет пункт)
+          const pid = persona.id;
+          runTodoWrite(async () => {
+            if (!hasId) return api.addTodo(pid, text);
+            const idx = await resolveTodoIndex(pid, numId);
+            await api.addTodo(pid, text);
+            return api.removeTodo(pid, idx);
+          });
+        } else if (hasId) overlay.updateTodo(numId, text);
+        else overlay.addTodo(text);
         break;
       }
-      case 'toggle-reminder':
-        if (hasId) overlay.toggleReminder(numId);
+      // В ядре «сделано» = пункт удаляется из списка (см. Tasks.tsx)
+      case 'toggle-todo':
+      case 'delete-todo':
+        if (!hasId) break;
+        if (apiOnline) {
+          const pid = persona.id;
+          runTodoWrite(async () => api.removeTodo(pid, await resolveTodoIndex(pid, numId)));
+        } else if (action === 'toggle-todo') overlay.toggleTodo(numId);
+        else overlay.deleteTodo(numId);
         break;
-      case 'delete-reminder':
-        if (hasId) overlay.deleteReminder(numId);
+      case 'add-reminder': {
+        const text = values.text?.trim();
+        if (!text) break;
+        if (apiOnline) {
+          // Срок из даты+времени формы (reminderWhen: локальные даты, «завтра»,
+          // формат списка). Повтор через API не создать: у /reminders нет
+          // параметра расписания — но правка существующего его сохраняет
+          const dateIn = values.date?.trim();
+          const clockIn = (values.clock ?? values.time)?.trim();
+          const pid = persona.id;
+          const req = (async () => {
+            if (!hasId) {
+              const at = reminderAt(dateIn ?? '', clockIn ?? '');
+              const delay = Math.max(10, Math.round((at.getTime() - Date.now()) / 1000));
+              return api.addReminder(pid, text, delay);
+            }
+            // Правка — на месте, по id (атомарно, повтор и id сохраняются).
+            // Дата и время не тронуты (или поля нет в форме скина) — срок
+            // прежний: точный, а не пересчитанный из округлённой строки списка
+            const raw = shownReminder(numId);
+            const shown = sideData?.reminders.find((r) => r.id === numId);
+            if (!raw || !shown) throw skinFail('skin.actStale');
+            const orig = splitWhen(shown.time);
+            const date = dateIn ?? orig.date.trim();
+            const clock = clockIn ?? orig.clock.trim();
+            const patch: { task: string; trigger_at?: number } = { task: text };
+            if (date !== orig.date.trim() || clock !== orig.clock.trim()) {
+              patch.trigger_at = reminderAt(date, clock).getTime() / 1000;
+            }
+            return api.updateReminder(pid, raw.id, patch);
+          })();
+          req.then(bumpSide).catch((e) => {
+            bumpSide();
+            reportSkinError(e);
+          });
+        } else {
+          const clock = (values.clock ?? values.time)?.trim() || '—';
+          const when = values.date?.trim() ? `${values.date.trim()}, ${clock}` : clock;
+          const repeat = values.repeat?.trim() || '—';
+          if (hasId) overlay.updateReminder(numId, { time: when, text, repeat });
+          else overlay.addReminder(when, text, repeat);
+        }
         break;
-      case 'add-fact':
-        if (hasId && values.fact?.trim()) overlay.updateFact(numId, values.category?.trim() || '—', values.fact.trim());
-        else if (values.fact?.trim()) overlay.addFact(values.category?.trim() || '—', values.fact.trim());
+      }
+      case 'toggle-reminder': {
+        if (!hasId) break;
+        if (apiOnline) {
+          // Пауза/продолжение по стабильному id (PUT active); продолженное
+          // бэкенд сам ставит на следующее время по расписанию
+          const raw = shownReminder(numId);
+          if (!raw) {
+            bumpSide();
+            reportSkinError(skinFail('skin.actStale'));
+            break;
+          }
+          api.updateReminder(persona.id, raw.id, { active: raw.active === false }).then(bumpSide).catch((e) => {
+            bumpSide();
+            reportSkinError(e);
+          });
+        } else overlay.toggleReminder(numId);
         break;
-      case 'delete-fact':
-        if (hasId) overlay.deleteFact(numId);
+      }
+      case 'delete-reminder': {
+        if (!hasId) break;
+        if (apiOnline) {
+          // По стабильному id: номер строки мог сдвинуться (одно сработало)
+          const raw = shownReminder(numId);
+          if (!raw) {
+            bumpSide();
+            reportSkinError(skinFail('skin.actStale'));
+            break;
+          }
+          api.cancelReminderById(persona.id, raw.id).then(bumpSide).catch((e) => {
+            bumpSide();
+            reportSkinError(e);
+          });
+        } else overlay.deleteReminder(numId);
         break;
+      }
+      case 'add-fact': {
+        const fact = values.fact?.trim();
+        if (!fact) break;
+        if (apiOnline) {
+          const category = values.category?.trim();
+          const raw = category ? `${category}: ${fact}` : fact;
+          if (hasId) {
+            const oldRaw = factRaw(numId);
+            if (oldRaw) api.updateFact(persona.id, oldRaw, raw).then(bumpSide).catch(reportSkinError);
+          } else {
+            api.addFact(persona.id, raw).then(bumpSide).catch(reportSkinError);
+          }
+        } else if (hasId) overlay.updateFact(numId, values.category?.trim() || '—', fact);
+        else overlay.addFact(values.category?.trim() || '—', fact);
+        break;
+      }
+      case 'delete-fact': {
+        if (!hasId) break;
+        if (apiOnline) {
+          const raw = factRaw(numId);
+          if (raw) api.forgetFact(persona.id, raw).then(bumpSide).catch(reportSkinError);
+        } else overlay.deleteFact(numId);
+        break;
+      }
       case 'trim-stm': {
         const n = Number(values.count);
-        if (!Number.isNaN(n) && n > 0) overlay.trimStm(Math.floor(n));
+        if (Number.isNaN(n) || n <= 0) break;
+        const count = Math.floor(n);
+        if (apiOnline) {
+          api.trimStm(persona.id, count)
+            .then(() => {
+              reloadHistory(persona.id, true);
+              bumpSide();
+            })
+            .catch(reportSkinError);
+        } else overlay.trimStm(count);
         break;
       }
       case 'delete-stm':
-        if (hasId) overlay.deleteStm(numId);
+        if (!hasId) break;
+        if (apiOnline) {
+          // id — стабильный id реплики загруженной STM-истории (см.
+          // toChatMessage); реплики сессии/inbox, ещё не попавшие в STM, идут
+          // с другими id и молча пропускаются. Буфер STM с тех пор мог
+          // сдвинуться (deque с лимитом, новые реплики) — сервер ищет реплику
+          // по тексту и метке, позиция в истории — лишь подсказка
+          const msg = baseMessages.find((m) => m.id === numId && !m.fromInbox);
+          if (msg) {
+            const pid = persona.id;
+            api.deleteStmMessage(pid, baseMessages.indexOf(msg), { content: msg.text, timestamp: msg.ts ?? null })
+              .then(() => {
+                reloadHistory(pid, true);
+                bumpSide();
+              })
+              .catch((e) => {
+                reloadHistory(pid, true);
+                reportSkinError(e);
+              });
+          }
+        } else overlay.deleteStm(numId);
         break;
-      case 'add-course':
-        if (values.subject?.trim()) overlay.addCourse(values.subject.trim(), values.frequency?.trim() || '—');
+      case 'add-course': {
+        const subject = values.subject?.trim();
+        if (!subject) break;
+        if (apiOnline) {
+          // Тот же список опций и секунд, что в LearningPanel (форма курса)
+          const freqOptions = t('learn.freqOptions').split('|');
+          const freqSeconds = [3600, 86400, 86400, 86400, 86400, 604800];
+          const idx = freqOptions.indexOf(values.frequency?.trim() ?? '');
+          api.startLearning(persona.id, subject, idx >= 0 ? freqSeconds[idx] : 86400)
+            .then(bumpSide).catch(reportSkinError);
+        } else overlay.addCourse(subject, values.frequency?.trim() || '—');
         break;
+      }
       case 'set-model':
-        if (id) overlay.setModel(id, values.model ?? '');
+        if (!id) break;
+        // Персональная модель этой персоны для провайдера (как в PersonaDossier)
+        if (apiOnline) {
+          api.updatePersonaConfig(persona.id, { llm: { models: { [id]: values.model ?? '' } } })
+            .then(() => refetchPersonaLlm(persona.id))
+            .catch(reportSkinError);
+        } else overlay.setModel(id, values.model ?? '');
         break;
       case 'make-main':
-        if (id) overlay.makeMainProvider(id);
+        if (!id) break;
+        if (apiOnline) {
+          api.updatePersonaConfig(persona.id, { llm: { primary: id } })
+            .then(() => refetchPersonaLlm(persona.id))
+            .catch(reportSkinError);
+        } else overlay.makeMainProvider(id);
         break;
       case 'toggle-backup':
-        if (id) overlay.toggleBackup(id);
+        if (!id) break;
+        if (apiOnline) {
+          // «На подхвате» = состоит в fallback-цепочке персоны (Settings.tsx)
+          const current = personaLlm?.fallback ?? [];
+          const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+          api.updatePersonaConfig(persona.id, { llm: { fallback: next } })
+            .then(() => refetchPersonaLlm(persona.id))
+            .catch(reportSkinError);
+        } else overlay.toggleBackup(id);
         break;
-      case 'toggle-feature':
-        if (id) overlay.toggleFeature(id);
+      case 'toggle-feature': {
+        if (!id) break;
+        if (apiOnline) {
+          // Сервер заменяет значение фичи целиком — собираем его поверх
+          // текущего конфига. Конфига нет (не загрузился) — сначала дочитываем:
+          // иначе {enabled} затёр бы параметры dict-фичи, а «выкл» стало «вкл»
+          const pid = persona.id;
+          const fid = id;
+          (async () => {
+            let cfg = apiPersonaConfig;
+            if (!cfg) {
+              try {
+                cfg = await api.getPersonaConfig(pid);
+              } catch {
+                throw skinFail('skin.actConfigMissing');
+              }
+            }
+            const orig = cfg.features?.[fid];
+            const enabled = featureEnabledFromConfig(cfg.features, fid);
+            const payload: Record<string, unknown> =
+              orig !== null && typeof orig === 'object'
+                ? { [fid]: { ...(orig as Record<string, unknown>), enabled: !enabled } }
+                : { [fid]: DICT_FEATURES.has(fid) ? { enabled: !enabled } : !enabled };
+            return api.updatePersonaConfig(pid, { features: payload });
+          })().then(bumpSide).catch(reportSkinError);
+        } else overlay.toggleFeature(id);
         break;
+      }
       case 'reply':
         if (hasId) setReplyToId(numId);
         break;
@@ -965,18 +1389,50 @@ export default function Chat() {
   const handleSkinSetting = (key: string, value: string) => {
     // Чекбоксы инициативы приходят строкой 'true'/'false'
     if (key === 'iniAdaptive' || key === 'iniBayes') {
-      overlay.setInit(key === 'iniAdaptive' ? 'adaptive' : 'bayes', value === 'true');
+      const on = value === 'true';
+      if (apiOnline) {
+        api
+          .updateInitiative(persona.id, key === 'iniAdaptive' ? { adaptive_threshold: on } : { feedback_enabled: on })
+          .then(bumpSide)
+          .catch(reportSkinError);
+      } else overlay.setInit(key === 'iniAdaptive' ? 'adaptive' : 'bayes', on);
       return;
     }
     const n = Number(value);
     if (Number.isNaN(n)) return;
     if (key === 'temperature' || key === 'maxTokens' || key === 'topP' || key === 'stmSize') {
-      overlay.setGen(key, n);
+      if (apiOnline) {
+        const patch =
+          key === 'stmSize'
+            ? { stm_size: n }
+            : { settings: { [key === 'maxTokens' ? 'max_tokens' : key === 'topP' ? 'top_p' : 'temperature']: n } };
+        api.updatePersonaConfig(persona.id, patch).then(bumpSide).catch(reportSkinError);
+      } else overlay.setGen(key, n);
     } else if (key === 'iniSilence' || key === 'iniProbability' || key === 'iniMaxPerDay' || key === 'iniInterval') {
-      const map = { iniSilence: 'silence', iniProbability: 'probability', iniMaxPerDay: 'maxPerDay', iniInterval: 'interval' } as const;
-      overlay.setInit(map[key], n);
+      if (apiOnline) {
+        const patch =
+          key === 'iniSilence' ? { silence_threshold_minutes: n }
+          : key === 'iniProbability' ? { initiative_probability: n / 100 }
+          : key === 'iniMaxPerDay' ? { max_daily_initiatives: n }
+          : { check_interval_minutes: n };
+        api.updateInitiative(persona.id, patch).then(bumpSide).catch(reportSkinError);
+      } else {
+        const map = { iniSilence: 'silence', iniProbability: 'probability', iniMaxPerDay: 'maxPerDay', iniInterval: 'interval' } as const;
+        overlay.setInit(map[key], n);
+      }
     }
   };
+
+  // Окружение скина (тема, локаль, подписи UI, время суток, погода) —
+  // общий хук для чата/комнаты (и предпросмотра в SkinPanel)
+  const skinEnv = useSkinEnv({
+    locale: lang,
+    t,
+    personaName: persona.name,
+    apiOnline,
+    // Без скина окружение не нужно: ни поллинга погоды, ни минутного тикера
+    enabled: !!((skins.chat && !broken.chat) || (skins.dossier && !broken.dossier)),
+  });
 
   // Снапшот данных для скина (уходит в iframe через postMessage):
   // переписка + левый сайдбар (персоны) + правый сайдбар (контекст) + досье
@@ -987,10 +1443,10 @@ export default function Chat() {
     typing,
     messages,
     mood,
-    pastimeLabel: pastime.label,
+    pastimeLabel: pastime?.label ?? '',
     allPersonas: personas.map((p) => ({ persona: p, statusText: t(`status.${p.status}`) })),
     context: {
-      pastimePlace: pastime.place,
+      pastimePlace: pastime?.place ?? '',
       trend,
       initiative: t('chat.probLine', {
         p: Math.round(initProb * 100),
@@ -1026,20 +1482,24 @@ export default function Chat() {
     quizLineFor: (n) => t('learn.quizAlert', { n }),
     // Самоинициатива: живые значения персоны (initBase) + правки через скин
     // (probability в overlay — в %)
-    initState: {
-      ...init,
-      ...initBase,
-      silenceThresholdMin: overlay.init.silence ?? initBase.silenceThresholdMin,
-      probability: (overlay.init.probability ?? Math.round(initBase.probability * 100)) / 100,
-      maxPerDay: overlay.init.maxPerDay ?? initBase.maxPerDay,
-      checkIntervalMin: overlay.init.interval ?? initBase.checkIntervalMin,
-      adaptiveThreshold: overlay.init.adaptive ?? initBase.adaptiveThreshold,
-      bayesianFeedback: overlay.init.bayes ?? initBase.bayesianFeedback,
-    },
+    // Онлайн — только значения сервера (правки уходят в updateInitiative,
+    // офлайн-оверлей к ним не относится)
+    initState: apiOnline
+      ? { ...init, ...initBase }
+      : {
+          ...init,
+          ...initBase,
+          silenceThresholdMin: overlay.init.silence ?? initBase.silenceThresholdMin,
+          probability: (overlay.init.probability ?? Math.round(initBase.probability * 100)) / 100,
+          maxPerDay: overlay.init.maxPerDay ?? initBase.maxPerDay,
+          checkIntervalMin: overlay.init.interval ?? initBase.checkIntervalMin,
+          adaptiveThreshold: overlay.init.adaptive ?? initBase.adaptiveThreshold,
+          bayesianFeedback: overlay.init.bayes ?? initBase.bayesianFeedback,
+        },
     initStages: t('init.stages').split('|'),
     initSilenceText: t('init.silenceProgress', {
       n: 99,
-      max: overlay.init.silence ?? initBase.silenceThresholdMin,
+      max: apiOnline ? initBase.silenceThresholdMin : (overlay.init.silence ?? initBase.silenceThresholdMin),
     }),
     files: filesByPersona[persona.id] ?? [],
     providers:
@@ -1055,17 +1515,29 @@ export default function Chat() {
             model: p.model,
           }))
         : llmProviders,
-    modelOverrides: overlay.models,
-    providerMain: overlay.mainProvider,
-    backupToggled: overlay.backupToggled,
+    // Онлайн — персональные модели/основной провайдер/fallback-цепочка этой
+    // персоны с бэкенда (см. PersonaDossier/Settings.tsx), не overlay
+    modelOverrides: apiOnline ? (personaLlm?.models ?? {}) : overlay.models,
+    providerMain: apiOnline ? (personaLlm?.primary ?? null) : overlay.mainProvider,
+    backupToggled: apiOnline ? (personaLlm?.fallback ?? []) : overlay.backupToggled,
     featureFlags: featureFlags.map((f) => ({
       ...f,
-      enabled: overlay.toggledFeatures.includes(f.id) ? !f.enabled : f.enabled,
+      enabled: apiOnline
+        ? (apiPersonaConfig ? featureEnabledFromConfig(apiPersonaConfig.features, f.id) : f.enabled)
+        : (overlay.toggledFeatures.includes(f.id) ? !f.enabled : f.enabled),
     })),
-    genOverrides: overlay.gen,
+    genOverrides: apiOnline
+      ? {
+          temperature: apiPersonaConfig?.settings.temperature,
+          maxTokens: apiPersonaConfig?.settings.max_tokens,
+          topP: apiPersonaConfig?.settings.top_p,
+          stmSize: apiPersonaConfig?.stm_size ?? undefined,
+        }
+      : overlay.gen,
     stmSizeDefault: generationDefaults.stmSize,
     keySetLabel: t('apikeys.keySet'),
     keyNotSetLabel: t('apikeys.keyNotSet'),
+    env: skinEnv,
   });
   // Скин персоны — отдельные файлы по экранам; сломанный экран откатывается
   // на дефолт, остальные остаются кастомными
@@ -1088,7 +1560,7 @@ export default function Chat() {
           onSend={(text, image) => pushMessage(text, image ?? null)}
           onClear={clearStm}
           onSelectPersona={(id) => {
-            setSelectedId(id);
+            pickPersona(id);
             setReplyToId(null);
             setPendingImage(null);
             setDossierOpen(false);
@@ -1133,7 +1605,7 @@ export default function Chat() {
               className={`chat-persona-item stagger-item ${p.id === selectedId ? 'chat-persona-item--active' : ''}`}
               style={{ animationDelay: `${i * 40}ms` }}
               onClick={() => {
-                setSelectedId(p.id);
+                pickPersona(p.id);
                 setReplyToId(null);
                 setPendingImage(null);
               }}
@@ -1159,7 +1631,11 @@ export default function Chat() {
 
       {/* YAML-редактор персоны — поверх чата */}
       {yamlOpen && apiOnline && (
-        <PersonaYamlModal personaId={persona.id} onClose={() => setYamlOpen(false)} />
+        <PersonaYamlModal
+          personaId={persona.id}
+          onClose={() => setYamlOpen(false)}
+          onRenamed={(newId) => pickPersona(newId)}
+        />
       )}
 
       {/* Окно чата либо встроенное досье персоны (одно заменяет другое) */}
@@ -1226,6 +1702,31 @@ export default function Chat() {
             stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
           }}
         >
+          {historyLoading && (
+            <div
+              className={`chat-loading${messages.length === 0 ? ' chat-loading--center' : ''}`}
+              role="status"
+              aria-live="polite"
+            >
+              <div className="chat-loading-caption">
+                <span className="chat-loading-tag">[ .. ]</span>
+                {t('chat.historyLoading', { name: persona.name })}
+              </div>
+              <div className="chat-loading-cells" aria-hidden="true">
+                {Array.from({ length: 12 }, (_, i) => (
+                  <i key={i} style={{ animationDelay: `${i * 90}ms` }} />
+                ))}
+              </div>
+              <div className="chat-loading-hint">
+                {historyFailed[persona.id] ? t('chat.historyRetrying') : t('chat.historyLoadingHint')}
+              </div>
+              <div className="chat-loading-skeleton" aria-hidden="true">
+                <span className="chat-loading-bubble chat-loading-bubble--bot" />
+                <span className="chat-loading-bubble chat-loading-bubble--user" />
+                <span className="chat-loading-bubble chat-loading-bubble--bot chat-loading-bubble--short" />
+              </div>
+            </div>
+          )}
           {hiddenCount > 0 && (
             <button
               type="button"
@@ -1390,7 +1891,9 @@ export default function Chat() {
             <span className="dot dot--green" />
             <span>{t(`status.${persona.status}`)}</span>
           </div>
-          <div className="ctx-note">{t('chat.now', { label: pastime.label, place: pastime.place })}</div>
+          {pastime && (
+            <div className="ctx-note">{t('chat.now', { label: pastime.label, place: pastime.place || '—' })}</div>
+          )}
 
           {/* Настроение с трендом */}
           <div className="chat-context-title">{t('chat.mood')}</div>

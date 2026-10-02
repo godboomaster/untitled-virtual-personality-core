@@ -5,6 +5,7 @@ import { api } from '../api';
 import type { LearningSessionApi } from '../api';
 import { useApiOnline } from '../apiData';
 import FormModal from './FormModal';
+import Select from './Select';
 
 /* Вкладка «Обучение» в досье персоны: активный курс «Научи меня»,
    форма запуска нового курса и история курсов (learning_manager). */
@@ -319,16 +320,12 @@ export default function LearningPanel({ personaId }: { personaId: string }) {
           </div>
           <div className="field" style={{ marginBottom: 0 }}>
             <label className="field-label" htmlFor="learn-freq">{t('learn.frequency')}</label>
-            <select
+            <Select
               id="learn-freq"
-              className="input"
               value={frequency}
-              onChange={(e) => setFrequency(e.target.value)}
-            >
-              {frequencyOptions.map((f) => (
-                <option key={f} value={f}>{f}</option>
-              ))}
-            </select>
+              options={frequencyOptions.map((f) => ({ value: f, label: f }))}
+              onChange={setFrequency}
+            />
           </div>
           <button type="button" className="btn btn--primary" disabled={!subject.trim()} onClick={startCourse}>
             {t('learn.start')}

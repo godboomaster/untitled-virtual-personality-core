@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
-import { useI18n, useMockData } from '../i18n';
+import { useI18n } from '../i18n';
 import { usePersonaArt } from '../artStore';
-import { setPersonaItems, usePersonaItems } from '../inventoryStore';
+import { useRoomItems } from '../room/useRoomItems';
 import Icon from './icons';
 import { itemIcon } from './iconChoices';
 import type { InventoryItem, Persona } from '../mockData';
@@ -9,20 +9,18 @@ import type { InventoryItem, Persona } from '../mockData';
 /* Редактор размещения предметов (блок внутри раздела «Комната»):
    большой стейдж с фоном — предметы таскаются мышью, размер меняется
    уголком или слайдером; предмет без метки ставится кликом по фону.
-   Данные — общий стор inventoryStore (синхронен со сценой и инвентарём). */
+   Данные — useRoomItems (синхронен со сценой и инвентарём). */
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
 export default function RoomEditor({ persona }: { persona: Persona }) {
   const { t } = useI18n();
-  const { inventoryByPersona } = useMockData();
   const art = usePersonaArt(persona.id);
   const roomBg = art?.roomBg;
 
-  // Инвентарь: правки из общего стора, иначе моки текущей локали
-  const itemsOverride = usePersonaItems(persona.id);
-  const items = itemsOverride ?? inventoryByPersona[persona.id] ?? [];
-  const setItems = (next: InventoryItem[]) => setPersonaItems(persona.id, next);
+  // Инвентарь: онлайн — бэкенд (инвентарь + раскладка /room/layout),
+  // иначе правки из общего стора поверх моков текущей локали
+  const { items, setItems } = useRoomItems(persona.id);
 
   // Выбранный в списке предмет (его метка/размер правятся на стейдже)
   const [selectedId, setSelectedId] = useState<number | null>(null);

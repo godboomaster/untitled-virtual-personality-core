@@ -30,6 +30,7 @@ from typing import Dict, List, Optional
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.persona_context import _extract_json
+from app.core.language import detect_dialogue_language, user_language_line
 from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 
 logger = logging.getLogger(__name__)
@@ -39,21 +40,22 @@ MAX_MOMENTS = 15            # внутренние шутки/моменты н�
 MAX_TOPICS = 15
 MAX_STANCES = 10            # позиции персоны по темам (эволюция мнений)
 
-_MOMENTS_PROMPT = """Проанализируй фрагмент диалога между персонажем ({persona_name}) и пользователем. Выдели НОВЫЕ общие моменты их отношений: внутренние шутки, запомнившиеся совместные эпизоды, общие темы интересов. Только то, чего нет в уже известных списках.
+_MOMENTS_PROMPT = """Analyze the dialogue fragment between the character ({persona_name}) and the user. Pick out NEW shared moments of their relationship: inside jokes, memorable shared episodes, shared topics of interest. Only what is not in the already known lists.
 
-Отдельно отметь, высказал ли персонаж своё мнение по какой-то теме или ПЕРЕСМОТРЕЛ его в ходе обсуждения (спор, убеждение, смена позиции).
+Separately note whether the character expressed their opinion on some topic or RECONSIDERED it during the discussion (an argument, persuasion, a change of position).
 
-Верни СТРОГО JSON:
-{{"moments": ["<коротко, до 10 слов>", ...], "topics": ["<тема>", ...],
-  "stance_changes": [{{"topic": "<тема>", "position": "<текущая позиция персонажа, коротко>"}}]}}
-Новых нет — пустые списки (это нормально).
+Return STRICTLY JSON:
+{{"moments": ["<brief, up to 10 words>", ...], "topics": ["<topic>", ...],
+  "stance_changes": [{{"topic": "<topic>", "position": "<the character's current position, brief>"}}]}}
+Nothing new — empty lists (this is normal).
 
-Уже известные моменты: {known_moments}
-Уже известные темы: {known_topics}
-Текущие позиции персонажа: {known_stances}
+Already known moments: {known_moments}
+Already known topics: {known_topics}
+The character's current positions: {known_stances}
 
-Диалог:
-{dialog}"""
+Dialogue:
+{dialog}
+{language_line}"""
 
 _STAGES = [
     "acquaintance — you are still getting to know each other",
@@ -84,7 +86,7 @@ class RelationshipMemory:
     def __init__(self, context: str, primitive: bool = False):
         self.context = context
         self.primitive = primitive
-        self.local = get_local_router()
+        self.local = get_local_router(context)
         self._lock = threading.RLock()
         # Дозор: не чаще раза в RETENTION_TICK_HOURS перезапускать
         # прореживание из add_extracted (см. _maybe_prune_stale)
@@ -181,10 +183,10 @@ class RelationshipMemory:
         with self._lock:
             rec = self._rec(chat_id)
             return (
-                "; ".join(rec["shared_moments"][-8:]) or "(нет)",
-                "; ".join(rec["shared_topics"][-8:]) or "(нет)",
+                "; ".join(rec["shared_moments"][-8:]) or "(none)",
+                "; ".join(rec["shared_topics"][-8:]) or "(none)",
                 "; ".join(f"{s['topic']}: {s['position']}"
-                          for s in rec["stances"][-6:]) or "(нет)",
+                          for s in rec["stances"][-6:]) or "(none)",
             )
 
     # ── Извлечение общих моментов/тем (локальный движок) ──
@@ -239,10 +241,12 @@ class RelationshipMemory:
         return added
 
     def extract_moments(self, chat_id: str, messages: List[dict],
-                        persona_name: str = "") -> int:
+                        persona_name: str = "",
+                        user_language: Optional[str] = None) -> int:
         """Разбор последних реплик → новые общие моменты/темы.
         Возвращает число добавленных записей. Синхронный LLM-вызов —
-        звать из фонового потока."""
+        звать из фонового потока. user_language — язык пользователя;
+        не задан — по его репликам."""
         if self.primitive or not self.local.is_available(task="relationship"):
             return 0
         lines = []
@@ -255,17 +259,20 @@ class RelationshipMemory:
             return 0
 
         known_moments, known_topics, known_stances = self.known_lists(chat_id)
+        if user_language is None:
+            user_language = detect_dialogue_language("", messages)
 
         try:
             response = self.local.get_response(
                 messages=[
-                    {"role": "system", "content": "Ты возвращаешь только валидный JSON без пояснений."},
+                    {"role": "system", "content": "You return only valid JSON without explanations."},
                     {"role": "user", "content": _MOMENTS_PROMPT.format(
-                        persona_name=persona_name or "персонаж",
+                        persona_name=persona_name or "the character",
                         known_moments=known_moments,
                         known_topics=known_topics,
                         known_stances=known_stances,
-                        dialog="\n".join(lines))},
+                        dialog="\n".join(lines),
+                        language_line=user_language_line(user_language))},
                 ],
                 temperature=0.2,
                 max_tokens=250,

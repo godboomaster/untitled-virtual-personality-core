@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../api';
 import type { CalendarEntry, CalendarKind, TodoEntry } from '../api';
 import { useApiOnline } from '../apiData';
 import { useI18n, useMockData } from '../i18n';
+import Select from './Select';
 
 /* Общий календарь всех персон (месячная сетка на главной). Записи хранятся
    на бэкенде (data/calendar.json) и дополняются активными напоминаниями
@@ -302,8 +304,9 @@ export default function CalendarWidget() {
         })}
       </div>
 
-      {/* Модалка дня: записи + форма добавления/правки */}
-      {selected && (
+      {/* Модалка дня: записи + форма добавления/правки (порталом в body —
+          fixed внутри карточки с transform уезжал бы вместе с ней) */}
+      {selected && createPortal(
         <div className="pcreate-overlay" onClick={() => setSelected(null)}>
           <div className="pcreate-panel pcreate-panel--wide bracketed" onClick={(e) => e.stopPropagation()}>
             <div className="corner tl" />
@@ -367,16 +370,12 @@ export default function CalendarWidget() {
                 <div className="field-grid">
                   <div className="field" style={{ marginBottom: 0 }}>
                     <label className="field-label" htmlFor="cal-f-kind">{t('calendar.kind')}</label>
-                    <select
+                    <Select
                       id="cal-f-kind"
-                      className="input"
                       value={form.kind}
-                      onChange={(e) => setForm({ ...form, kind: e.target.value as CalendarKind })}
-                    >
-                      {KINDS.map((k) => (
-                        <option key={k} value={k}>{t(`calendar.kind.${k}`)}</option>
-                      ))}
-                    </select>
+                      options={KINDS.map((k) => ({ value: k, label: t(`calendar.kind.${k}`) }))}
+                      onChange={(v) => setForm({ ...form, kind: v as CalendarKind })}
+                    />
                   </div>
                   <div className="field" style={{ marginBottom: 0 }}>
                     <label className="field-label" htmlFor="cal-f-time">{t('tasks.time')}</label>
@@ -392,35 +391,31 @@ export default function CalendarWidget() {
                 <div className="field-grid" style={{ marginTop: 14 }}>
                   <div className="field" style={{ marginBottom: 0 }}>
                     <label className="field-label" htmlFor="cal-f-persona">{t('calendar.personaLabel')}</label>
-                    <select
+                    <Select
                       id="cal-f-persona"
-                      className="input"
                       value={form.persona}
-                      onChange={(e) => setForm({ ...form, persona: e.target.value })}
-                    >
-                      <option value="">{t('calendar.personaNone')}</option>
-                      {personas.map((p) => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: '', label: t('calendar.personaNone') },
+                        ...personas.map((p) => ({ value: p.id, label: p.name })),
+                      ]}
+                      onChange={(v) => setForm({ ...form, persona: v })}
+                    />
                   </div>
                   {apiOnline && form.persona && todoOptions.length > 0 && (
                     <div className="field" style={{ marginBottom: 0 }}>
                       <label className="field-label" htmlFor="cal-f-todo">{t('calendar.fromTodo')}</label>
-                      <select
+                      <Select
                         id="cal-f-todo"
-                        className="input"
                         value=""
-                        onChange={(e) => {
-                          const item = todoOptions.find((x) => String(x.index) === e.target.value);
+                        options={[
+                          { value: '', label: t('calendar.todoPick') },
+                          ...todoOptions.map((x) => ({ value: String(x.index), label: x.task })),
+                        ]}
+                        onChange={(v) => {
+                          const item = todoOptions.find((x) => String(x.index) === v);
                           if (item) setForm((f) => ({ ...f, title: item.task, kind: 'todo' }));
                         }}
-                      >
-                        <option value="">{t('calendar.todoPick')}</option>
-                        {todoOptions.map((x) => (
-                          <option key={x.index} value={x.index}>{x.task}</option>
-                        ))}
-                      </select>
+                      />
                     </div>
                   )}
                 </div>
@@ -447,7 +442,8 @@ export default function CalendarWidget() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

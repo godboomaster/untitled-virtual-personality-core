@@ -19,7 +19,12 @@
   6. выключение процесса бота гасит общий Chrome H только ПОСЛЕДНИМ
      пользователем (разделяемый flock <профиль>.bot-users.lock): живой сосед —
      Chrome жив; сосед упал (SIGKILL) — его регистрацию снимает ядро; без
-     учёта (нет flock) — Chrome гасится безусловно.
+     учёта (нет flock) — Chrome гасится безусловно. Погасивший Chrome
+     снимает и rescue (иначе он пережил бы перезапуск бота);
+  7. Chrome, поднятый не этим процессом: режим — по его командной строке,
+     rescue — общий для процессов (<профиль>.bot-rescue);
+  8. зависший Chrome пула H (жив, CDP молчит) перезапускается сам — на
+     таймауте вызова (проверка в фоне) и при переподключении.
 
 Настоящий Chrome не запускается и не убивается: «Chrome» — спящий python-
 подпроцесс с --user-data-dir=<tmp-профиль> в командной строке и симлинком
@@ -37,6 +42,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -57,12 +63,16 @@ def _read_log(log_path: str):
         return []
 
 
-def _spawn_chrome(udd: str) -> int:
-    """Фейковый Chrome на профиле: процесс с --user-data-dir в cmdline +
-    SingletonLock «host-pid» (атомарная подмена симлинка)."""
+def _spawn_chrome(udd: str, headless: bool = True,
+                  port: int = 0) -> int:
+    """Фейковый Chrome на профиле: процесс с --user-data-dir (и, как у
+    штатного пула H, --headless=new) в cmdline + SingletonLock «host-pid»
+    (атомарная подмена симлинка). headless=False — видимый, как после rescue;
+    port — ещё и --remote-debugging-port, как у настоящего Chrome пула H."""
     proc = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(120)",
-         f"--user-data-dir={udd}"],
+         f"--user-data-dir={udd}", *(["--headless=new"] if headless else []),
+         *([f"--remote-debugging-port={port}"] if port else [])],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True)
     tmp = os.path.join(udd, f".sl-{proc.pid}")
@@ -107,6 +117,10 @@ def _setup(udd: str, log_path: str, who: str, no_flock: bool = False):
     ba._RawCdp = lambda url=None: _FakeClient()
     ba._sweep_orphan_tabs = lambda c, p: None
     ba._POOL_H_RUNNING_MODE = None
+    ba._POOL_H_MODE_PID = None
+    ba._POOL_H_MODE_OVERRIDE = None
+    ba._POOL_H_RESCUE_UNTIL = 0.0
+    ba._POOL_H_RESCUE_SHARED = False
     ba._POOL_H_PROC = None
 
     def _fake_alive():
@@ -431,22 +445,36 @@ def main():
                   and ba._pool_users_path("h").endswith(
                       "profile.bot-users.lock")
                   and ba._pool_users_path("h").startswith(str(tmp)))
+            # Идёт rescue (окно капчи в общем Chrome)
+            with open(udd + ".bot-rescue", "w") as f:
+                f.write(str(time.time() + 600))
             ba._shutdown_pool_h("тест")
             check("выключение при живом соседе-пользователе: Chrome H жив, "
                   "свои вкладки/сокет/регистрация сброшены",
                   _alive(live) and not _kills()
                   and ba._RAW_CLIENTS["h"] is None
                   and ba._POOL_USERS["h"] is None)
+            check("выключение при живом соседе: rescue в общем Chrome "
+                  "продолжается", ba.pool_h_rescue_active())
+            # Убрать до переподключения: иначе оно сменит режим Chrome
+            os.unlink(udd + ".bot-rescue")
             # Сосед падает (SIGKILL): ядро снимает его flock — «вечного
             # пользователя» нет, следующее выключение гасит Chrome
             os.kill(pu.pid, signal.SIGKILL)
             pu.join(10)
             _connect_main()
+            with open(udd + ".bot-rescue", "w") as f:
+                f.write(str(time.time() + 600))
             ba._shutdown_pool_h("тест")
             time.sleep(0.2)
             check("сосед упал (SIGKILL) — выключение последнего гасит Chrome H",
                   not _alive(live) and len(_kills()) == 1
                   and ba._POOL_USERS["h"] is None)
+            check("Chrome погашен последним — rescue снят: перезапущенный бот "
+                  "поднимет пул H в штатном режиме, а не снова видимым",
+                  not ba.pool_h_rescue_active()
+                  and not os.path.exists(udd + ".bot-rescue")
+                  and ba._pool_h_desired_mode() == "headless")
         finally:
             if pu.is_alive():
                 pu.kill()
@@ -512,6 +540,185 @@ def main():
             pu.join(10)
             if pu.is_alive():
                 pu.kill()
+
+        # ── 7. Chrome пула H, поднятый НЕ этим процессом: режим — по его
+        # командной строке, rescue — общий для процессов (<профиль>.bot-rescue) ──
+        udd = str(tmp / "adopt" / "profile")
+        os.makedirs(udd)
+        log_path = str(tmp / "adopt" / "events.log")
+        ba = _setup(udd, log_path, "P")
+        ba._close_pool_h_graceful = lambda: None
+        hidden_calls = []
+        ba._hide_pool_window = lambda pid=None: hidden_calls.append(pid)
+
+        def _adopt_kills():
+            return [e for e in _read_log(log_path) if e[0] == "kill-start"]
+
+        def _ensure():
+            with ba._pool_h_lifecycle(time.monotonic() + 5):
+                ba._ensure_pool_h_browser()
+
+        vis = _spawn_chrome(udd, headless=False)
+        spawned.append(vis)
+        _ensure()
+        time.sleep(0.2)
+        fresh = ba._pool_h_chrome_pid()
+        spawned.append(fresh)
+        check("видимый Chrome от прошлого запуска бота (rescue) — "
+              "перезапуск в штатный headless",
+              not _alive(vis) and len(_adopt_kills()) == 1
+              and fresh != vis and _alive(fresh))
+
+        ba._POOL_H_RUNNING_MODE, ba._POOL_H_MODE_PID = None, None
+        _ensure()
+        check("headless Chrome соседа подхватывается без перезапуска",
+              len(_adopt_kills()) == 1 and _alive(fresh)
+              and ba._POOL_H_RUNNING_MODE == "headless")
+
+        # Сосед включил rescue: его видимый Chrome сменил наш headless
+        ba._RAW_CLIENTS["h"] = None
+        os.kill(fresh, signal.SIGKILL)
+        time.sleep(0.2)
+        rescue = _spawn_chrome(udd, headless=False)
+        spawned.append(rescue)
+        with open(udd + ".bot-rescue", "w") as f:
+            f.write(str(time.time() + 600))
+        _ensure()
+        check("rescue соседа: его видимый Chrome не убит, rescue виден и "
+              "здесь (свой режим — от прежнего Chrome — не в счёт)",
+              _alive(rescue) and len(_adopt_kills()) == 1
+              and ba._POOL_H_RUNNING_MODE == "headed"
+              and ba.pool_h_rescue_active())
+        ba.end_rescue_pool_h()
+        check("конец rescue в любом процессе завершает его для всех "
+              "(общий файл удалён)",
+              not ba.pool_h_rescue_active()
+              and not os.path.exists(udd + ".bot-rescue")
+              and ba._pool_h_mode_stale() is False)
+        _ensure()
+        time.sleep(0.2)
+        after = ba._pool_h_chrome_pid()
+        spawned.append(after)
+        check("после rescue видимый Chrome перезапускается в headless",
+              not _alive(rescue) and len(_adopt_kills()) == 2
+              and after != rescue and _alive(after))
+
+        # Свой rescue: срок пишется в общий файл; сосед его завершил
+        real_teardown = ba._teardown_pool_h
+        ba._launch_pool_h_chrome_locked = lambda: None
+        ba._teardown_pool_h = lambda grace_sec=3.0, **kw: True
+        ok_r = ba.rescue_pool_h(duration_min=10)
+        shared = ba._shared_rescue_until()
+        check("свой rescue: срок записан в общий файл",
+              ok_r and ba.pool_h_rescue_active()
+              and shared and abs(shared - ba._POOL_H_RESCUE_UNTIL) < 1)
+        os.unlink(udd + ".bot-rescue")
+        check("свой rescue, завершённый соседом, — завершён и здесь",
+              not ba.pool_h_rescue_active()
+              and ba._pool_h_desired_mode() == "headless"
+              and ba._POOL_H_MODE_OVERRIDE is None)
+
+        # Нужен hidden: видимый Chrome соседа прячем, не перезапуская
+        ba._BCFG["pool_h_mode"] = "hidden"
+        try:
+            ba._POOL_H_RUNNING_MODE, ba._POOL_H_MODE_PID = None, None
+            os.kill(after, signal.SIGKILL)
+            time.sleep(0.2)
+            vis2 = _spawn_chrome(udd, headless=False)
+            spawned.append(vis2)
+            _ensure()
+            check("pool_h_mode hidden: видимый Chrome соседа спрятан и "
+                  "принят как hidden, без перезапуска",
+                  _alive(vis2) and hidden_calls == [vis2]
+                  and ba._POOL_H_RUNNING_MODE == "hidden")
+        finally:
+            ba._BCFG["pool_h_mode"] = "headless"
+
+        # ── 8. Chrome пула H завис (жив, CDP молчит и на /json/version):
+        # бот перезапускает его сам — и на таймауте вызова, и при
+        # переподключении (иначе запуск упирался в его SingletonLock) ──
+        udd = str(tmp / "hung" / "profile")
+        os.makedirs(udd)
+        log_path = str(tmp / "hung" / "events.log")
+        ba = _setup(udd, log_path, "P")
+        ba._teardown_pool_h = real_teardown  # раздел 7 подменял
+        ba._close_pool_h_graceful = lambda: None
+        port = urlparse(ba._pool_h_cdp_url()).port or 9223
+        responds = {"v": False}
+        # Пробник — подмена: настоящий :9223 (Chrome живого бота) не трогаем
+        ba._pool_h_responds = lambda timeout: responds["v"]
+
+        def _hung_kills():
+            return [e for e in _read_log(log_path) if e[0] == "kill-start"]
+
+        def _launch_with_port():
+            _log(log_path, "launch-start", "P", time.time())
+            _spawn_chrome(udd, port=port)
+        ba._launch_pool_h_chrome_locked = _launch_with_port
+
+        hung = _spawn_chrome(udd, port=port)
+        spawned.append(hung)
+        os.makedirs(str(tmp / "hung" / "other"))
+        other = _spawn_chrome(str(tmp / "hung" / "other"), port=port)
+        spawned.append(other)
+        check("зависание: Chrome пула (порт и профиль пула) молчит — завис",
+              ba._pool_h_hung() is True)
+        responds["v"] = True
+        check("зависание: отвечает на /json/version — не завис (долгий "
+              "вызов ≠ зависший Chrome)", ba._pool_h_hung() is False)
+        responds["v"] = False
+        plain = _spawn_chrome(udd)  # тот же профиль, без отладочного порта
+        spawned.append(plain)
+        check("зависание: процесс на профиле без порта пула — не наш Chrome, "
+              "не трогаем", ba._pool_h_hung() is False and _alive(plain))
+        os.kill(plain, signal.SIGKILL)
+        time.sleep(0.2)
+        hung = _spawn_chrome(udd, port=port)
+        spawned.append(hung)
+
+        # Переподключение: быстрый пробник молчит, профиль держит зависший
+        # Chrome → убить и поднять свежий
+        with open(os.path.join(udd, f"closed-{hung}"), "w"):
+            pass
+        with ba._pool_h_lifecycle(time.monotonic() + 5):
+            ba._ensure_pool_h_browser()
+        time.sleep(0.2)
+        fresh = ba._pool_h_chrome_pid()
+        spawned.append(fresh)
+        check("зависание при переподключении: зависший Chrome убит, поднят "
+              "свежий (а не «профиль занят»)",
+              not _alive(hung) and len(_hung_kills()) == 1
+              and fresh != hung and _alive(fresh) and _alive(other))
+
+        # Таймаут вызова на живом сокете: проверка в фоне → перезапуск
+        class _SilentClient(_FakeClient):
+            def call(self, method, params=None, session_id=None, timeout=None):
+                raise ba.RawCallTimeout(f"CDP {method}: ответа нет")
+
+        def _timeout_call():
+            ba._RAW_CLIENTS["h"] = _SilentClient()
+            try:
+                ba._raw_call("Target.createTarget", pool="h", timeout=1)
+                return False
+            except ba.RawCallTimeout:
+                return True
+            finally:
+                # дождаться фоновой проверки
+                if ba._POOL_H_HANG_CHECK.acquire(timeout=30):
+                    ba._POOL_H_HANG_CHECK.release()
+
+        ba._POOL_SEEN_PID["h"] = fresh
+        responds["v"] = True
+        ba._LAST_RESTART_TS = 0.0
+        timed = _timeout_call()
+        check("таймаут вызова, Chrome отвечает на пробник — не трогаем",
+              timed and _alive(fresh) and len(_hung_kills()) == 1)
+        responds["v"] = False
+        timed = _timeout_call()
+        time.sleep(0.2)
+        check("таймаут вызова, Chrome молчит и на пробник — перезапуск в фоне",
+              timed and not _alive(fresh) and len(_hung_kills()) == 2
+              and ba._RAW_CLIENTS["h"] is None)
     finally:
         for pid in spawned:
             if isinstance(pid, int):

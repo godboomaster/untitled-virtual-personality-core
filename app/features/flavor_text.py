@@ -2,15 +2,21 @@
 компьютером (CC) — «системные сообщения», которым не нужны история диалога,
 LTM, погода и прочий контекст.
 
-Живой вызов идёт только через webchat-провайдер google (канал «cc»,
-stateless: каждый вызов — свежий чат без прошлого контекста; лок инстанса
-ждётся не дольше _LIVE_LOCK_TIMEOUT_SEC, пока идёт фоновая генерация банка —
-живой вызов тогда пропускается в пользу шаблонов). Генерация/пополнение
-банка — канал «cc_gen»: отдельный инстанс со своим локом, чтобы не
-блокировать живые реплики. Основной путь — банк заранее сгенерированных
-фраз (data/{context}/flavor_bank.json) с плейсхолдерами ({host}, {element},
-{text}, {detail}); последний фоллбек — честный шаблон caller'а
-(describe_done и т.п.).
+Живой вызов: если у персоны назначен провайдер ответа (llm.answer_provider,
+router.answer_provider) — ОДНА попытка через него (router.get_response_assigned,
+для веб-чата — разовый канал пути пользователя), неудача — сразу None (честный шаблон caller'а), без фоллбека на
+google или обычную цепочку — пользователь ждёт готовую реплику, а не долгий
+перебор провайдеров. Не назначен — как раньше, webchat-провайдер google
+(канал «cc», stateless: каждый вызов — свежий чат без прошлого контекста;
+лок инстанса ждётся не дольше _LIVE_LOCK_TIMEOUT_SEC, пока идёт фоновая
+генерация банка — живой вызов тогда пропускается в пользу шаблонов).
+Генерация/пополнение банка (kinds/phrases) — тоже сначала назначенный
+провайдер (канал «cc_gen», одна попытка), неудача — google (канал «cc_gen»,
+отдельный инстанс со своим локом, чтобы не блокировать живые реплики) →
+обычная цепочка роутера. Основной путь выдачи реплики — банк заранее
+сгенерированных фраз (data/{context}/flavor_bank.json) с плейсхолдерами
+({host}, {element}, {text}, {detail}); последний фоллбек — честный шаблон
+caller'а (describe_done и т.п.).
 
 Ошибки тоже проходят через flavor, но суть ошибки всегда сохраняется
 ({detail} в банковских фразах, инструкция в живом промпте) — причину не
@@ -34,6 +40,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.atomic_io import atomic_write_json, load_json_safe
+from app.core.language import persona_language, user_language_line
 from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
@@ -68,54 +75,54 @@ _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
 # плейсхолдеры; req — обязательные (без них фраза теряет смысл)
 _PHRASE_KEYS = {
     "cc_mode_on": {"ph": set(), "req": set(), "spec":
-        "режим управления компьютером включён: работают команды «открой …», "
-        "«нажми …», «введи …» и сценарии; на время режима молчат напоминания, "
-        "список дел, инвентарь и обучение; выход — сказать «выйди из режима "
-        "управления»"},
+        "computer control mode is on: the commands «открой …», «нажми …», "
+        "«введи …» and scenarios work; while the mode is on, reminders, the "
+        "todo list, the inventory and learning stay silent; to exit — say "
+        "«выйди из режима управления»"},
     "cc_mode_off": {"ph": set(), "req": set(), "spec":
-        "режим управления выключен: браузером больше не управляю; "
-        "напоминания, список дел, инвентарь и обучение снова работают"},
+        "control mode is off: the bot no longer controls the browser; "
+        "reminders, the todo list, the inventory and learning work again"},
     "cc_mode_already_on": {"ph": set(), "req": set(), "spec":
-        "режим управления уже был включён; выход — «выйди из режима "
+        "control mode was already on; to exit — «выйди из режима "
         "управления»"},
     "cc_mode_already_off": {"ph": set(), "req": set(), "spec":
-        "режим управления уже был выключен"},
+        "control mode was already off"},
     "cc_mode_disabled": {"ph": set(), "req": set(), "spec":
-        "управление компьютером выключено в настройках бота; включить его "
-        "можно в досье, раздел «Инструменты»"},
+        "computer control is disabled in the bot settings; it can be "
+        "enabled in the dossier, section «Инструменты»"},
     "scenario_record_start": {"ph": set(), "req": set(), "spec":
-        "началась запись сценария: действия («открой …», «нажми …», "
-        "«введи …») пойдут в запись; закончить — «сохрани сценарий» (можно "
-        "сразу с названием); отменить — «отмени запись»"},
+        "scenario recording has started: actions («открой …», «нажми …», "
+        "«введи …») go into the recording; to finish — «сохрани сценарий» "
+        "(a name can be given right away); to cancel — «отмени запись»"},
     "scenario_record_already": {"ph": {"since"}, "req": {"since"}, "spec":
-        "запись сценария уже идёт (со временем {since}); закончить — "
-        "«сохрани сценарий», отменить — «отмени запись»"},
+        "a scenario is already being recorded (since {since}); to finish — "
+        "«сохрани сценарий», to cancel — «отмени запись»"},
     "scenario_record_cancel": {"ph": set(), "req": set(), "spec":
-        "запись сценария отменена, ничего не сохранено"},
+        "scenario recording cancelled, nothing was saved"},
     "scenario_record_cancel_none": {"ph": set(), "req": set(), "spec":
-        "записи сценария не было — нечего отменять"},
+        "no scenario was being recorded — nothing to cancel"},
     "scenario_save_ask_name": {"ph": set(), "req": set(), "spec":
-        "бот спрашивает, как назвать сценарий; формат для пользователя: "
+        "the bot asks what to name the scenario; format for the user: "
         "«сохрани сценарий заказ пиццы»"},
     "scenario_saved": {"ph": {"name", "steps"}, "req": {"name"}, "spec":
-        "сценарий «{name}» записан, в нём {steps} шагов; запуск — просто "
-        "сказать «{name}»"},
+        "scenario «{name}» is saved, it has {steps} steps; to run it — just "
+        "say «{name}»"},
     "scenario_not_found": {"ph": {"name"}, "req": {"name"}, "spec":
-        "сценария «{name}» у бота нет"},
+        "the bot has no scenario «{name}»"},
     "scenario_started": {"ph": {"name", "steps"}, "req": {"name"}, "spec":
-        "запускаю сценарий «{name}» ({steps} шагов); отменить — сказать "
+        "starting scenario «{name}» ({steps} steps); to cancel — say "
         "«отмена»"},
     "scenario_stuck": {"ph": set(), "req": set(), "spec":
-        "сценарий стоит на сбойном шаге; варианты для пользователя: "
-        "«повтори», «дальше» (пропустить шаг) или «отмена»"},
+        "the scenario is stuck on a failed step; options for the user: "
+        "«повтори», «дальше» (skip the step) or «отмена»"},
     "scenario_run_cancel": {"ph": {"name"}, "req": {"name"}, "spec":
-        "сценарий «{name}» отменён"},
+        "scenario «{name}» cancelled"},
     "scenario_run_cancel_none": {"ph": set(), "req": set(), "spec":
-        "нечего отменять — сценарий не запущен"},
+        "nothing to cancel — no scenario is running"},
     "scenario_offer": {"ph": set(), "req": set(), "spec":
-        "бот предлагает запомнить только что пройденный сюжет как сценарий, "
-        "чтобы в следующий раз бот прошёл его сам; формат для пользователя: "
-        "«запомни сценарий …» и название"},
+        "the bot offers to remember the flow just completed as a scenario, "
+        "so that next time the bot runs it by itself; format for the user: "
+        "«запомни сценарий …» and a name"},
 }
 
 _BANK_LOCK = threading.Lock()
@@ -246,37 +253,112 @@ def _clean_live(text: Optional[str]) -> Optional[str]:
 
 
 def _from_live(bot, kind: str, bucket: str,
-               action: Optional[dict], detail: Optional[str]) -> Optional[str]:
-    """Живой вызов через google (канал cc). None — недоступен, тогда шаблон.
+               action: Optional[dict], detail: Optional[str],
+               lang: Optional[str] = None) -> Optional[str]:
+    """Живой вызов. Назначен провайдер ответа персоны (llm.answer_provider,
+    router.answer_provider) — ОДНА попытка через него (канал «cc»), неудача
+    — сразу None (без google и без обычной цепочки: пользователь ждёт
+    готовую реплику, а не долгий перебор). Не назначен — как раньше, google
+    (канал cc). None — недоступен, тогда шаблон (caller берёт честный).
     Пока идёт фоновая генерация банка — вызов пропускается: до готовности
-    банка отвечаем шаблонами. Лок инстанса ждём не дольше
-    _LIVE_LOCK_TIMEOUT_SEC — реплика на пользовательском пути."""
+    банка отвечаем шаблонами. Лок инстанса google ждём не дольше
+    _LIVE_LOCK_TIMEOUT_SEC — реплика на пользовательском пути.
+    lang — язык пользователя в диалоге (None — язык персоны)."""
     context = getattr(bot, "context", "default")
     if context in _GEN_STARTED:
         return None
-    persona_prompt = (getattr(getattr(bot, "persona", None), "system_prompt", "")
-                      or "")[:2500]
+    full_prompt = getattr(getattr(bot, "persona", None), "system_prompt", "") or ""
+    persona_prompt = full_prompt[:2500]
+    lang = lang or persona_language(full_prompt)
     cc = getattr(bot, "computer_control", None)
+    # Реплика генерируется внешней моделью (google AI Mode/назначенный
+    # провайдер). Действие на приватной странице (банк, переписка, вход — по
+    # полному URL и хосту; без адреса — отслеживаемая страница чата) туда
+    # не описываем вовсе: None — caller берёт шаблон. Введённый текст —
+    # всегда маской (пароль в поле без подписи по ней не распознать),
+    # известные секреты чатов и ПДн в описании/причине — маской
+    from app.features.cc_privacy import (known_secret_values, mask,
+                                         mask_values, page_candidates,
+                                         redact_inline)
+    if action and cc is not None:
+        from app.features.cc_privacy import _host_of
+        check = getattr(cc, "is_private_page", None)
+        cands = page_candidates(action)
+        try:
+            last = getattr(cc, "_last_url", None)
+        except Exception:
+            last = None
+        if last:
+            # Отслеживаемая страница чата — всегда, если адресов нет или
+            # хост тот же: у download/cart/zoom адрес действия — файл или
+            # только хост, а сама страница (vk.com/im) приватна по пути
+            def _h(s) -> str:
+                h = _host_of(str(s or ""))[0]
+                return h[4:] if h.startswith("www.") else h
+            if not cands or _h(last) in {_h(c) for c in cands}:
+                cands = cands + [str(last)]
+        try:
+            if callable(check) and any(check(c) for c in cands):
+                return None
+        except Exception:
+            return None
+
+    def _safe(a: dict) -> dict:
+        if isinstance(a, dict) and a.get("kind") == "type":
+            return dict(a, text=mask(a.get("text")))
+        return a
+    if action:
+        action = _safe(action)
+        if action.get("kind") == "multi" and isinstance(action.get("items"), list):
+            action = dict(action, items=[_safe(a) for a in action["items"]])
+    known = known_secret_values()
+    detail = redact_inline(mask_values(detail, known)) if detail else detail
     if bucket == "ok":
-        what = cc.describe_done(action) if (action and cc) else "действие выполнено"
-        task = (f"Действие выполнено: {what}.\n"
-                "Напиши одну короткую реплику в характере персоны, сообщающую "
-                "об этом (1-2 предложения; короткое действие в *курсиве* "
-                "уместно, если это в характере). Без вопросов пользователю.")
+        what = cc.describe_done(action) if (action and cc) else "the action was completed"
     else:
-        what = cc.describe(action) if (action and cc) else "команда"
-        err = str(detail or "неизвестная ошибка").rstrip().rstrip(".") \
-            or "неизвестная ошибка"
-        task = (f"Действие НЕ удалось: {what}. Причина: {err}.\n"
-                "Напиши одну короткую реплику в характере персоны о неудаче. "
-                f"Суть причины («{err}») сохрани дословно по смыслу — причину "
-                "не скрывай и не приукрашивай. Без вопросов пользователю.")
+        what = cc.describe(action) if (action and cc) else "a command"
+    # describe берёт подписи/URL из действия — те же маски, что и у detail
+    what = redact_inline(mask_values(what, known))
+    if bucket == "ok":
+        task = (f"Action completed: {what}.\n"
+                "Write one short line in the persona's character reporting "
+                "it (1-2 sentences; a short action in *italics* is fine if "
+                "it fits the character). No questions to the user.")
+    else:
+        err = str(detail or "unknown error").rstrip().rstrip(".") \
+            or "unknown error"
+        task = (f"Action FAILED: {what}. Reason: {err}.\n"
+                "Write one short line in the persona's character about the failure. "
+                f"Keep the gist of the reason («{err}») faithful in meaning — do "
+                "not hide or embellish the reason. No questions to the user.")
+    task += "\n" + user_language_line(lang)
     messages = [
         {"role": "system", "content": (
-            "Характер персоны (соблюдай строго, не пересказывай):\n"
-            f"{persona_prompt}")},
+            "Persona's character (follow it strictly, do not retell it):\n"
+            f"{persona_prompt}\n\n{user_language_line(lang)}")},
         {"role": "user", "content": task},
     ]
+    router = getattr(bot, "router", None)
+    provider = getattr(router, "answer_provider", None)
+    if provider:
+        # Назначенный провайдер ответа — одна попытка ВНЕ обычной цепочки
+        # и вне google: пользователь ждёт готовую реплику прямо сейчас,
+        # долгий перебор фоллбеков здесь не к месту (в отличие от
+        # get_response(force_provider=...), где неудача уходит в цепочку).
+        # Канал side + user_path=True: веб-чат подменяется разовым
+        # USER_PATH_CHANNEL — лок не дольше USER_PATH_QUEUE_WAIT_SEC и без
+        # пола ответа 150 с. Канал cc так не умеет: его лок делят решения
+        # режима управления, ждётся без ограничения, а таймаут 30 с
+        # поднимается до 150 с (см. Router._try_webchat).
+        try:
+            return _clean_live(router.get_response_assigned(
+                provider, messages, temperature=0.7, max_tokens=150,
+                top_p=0.9, timeout=30.0, webchat_channel="side",
+                user_path=True))
+        except Exception as e:
+            logger.debug(f"[Flavor] назначенный провайдер {provider} "
+                        f"не ответил: {e}")
+        return None
     try:
         chat = _google_cc_chat(context)
         return _clean_live(chat.get_response(messages, temperature=0.7,
@@ -289,17 +371,23 @@ def _from_live(bot, kind: str, bucket: str,
 
 
 def cc_reply(bot, action: Optional[dict], ok: bool,
-             detail: Optional[str] = None) -> Optional[str]:
+             detail: Optional[str] = None,
+             lang: Optional[str] = None) -> Optional[str]:
     """Реплика в характере персоны о результате CC-команды:
-    банк → живой google → None (caller берёт честный шаблон)."""
+    банк → живой google → None (caller берёт честный шаблон).
+    lang — язык пользователя в диалоге; банк сгенерирован на языке персоны,
+    и если язык пользователя другой — банк пропускается (живой вызов)."""
     try:
         context = getattr(bot, "context", "default")
         kind = _map_kind(action)
         bucket = "ok" if ok else "err"
-        text = _from_bank(context, kind, bucket, action, detail)
-        if text:
-            return text
-        return _from_live(bot, kind, bucket, action, detail)
+        sp = getattr(getattr(bot, "persona", None), "system_prompt", "") or ""
+        bank_lang = persona_language(sp)
+        if not (lang and bank_lang and lang != bank_lang):
+            text = _from_bank(context, kind, bucket, action, detail)
+            if text:
+                return text
+        return _from_live(bot, kind, bucket, action, detail, lang=lang)
     except Exception as e:
         logger.debug(f"[Flavor] cc_reply не удался: {e}")
         return None
@@ -340,29 +428,31 @@ def phrase(context: str, key: str, template: str, **values) -> str:
 # ── Генерация банка ────────────────────────────────────────
 
 def _gen_prompt(system_prompt: str, ok_n: int, err_n: int) -> str:
+    # Банк — на контекст персоны, без чата: язык — язык персоны
     kinds_descr = "\n".join(f"- {k}" for k in _BANK_KINDS)
     return (
-        "Генерируешь короткие реплики Telegram-бота в характере персоны. "
-        "Отвечаешь строго JSON, без пояснений.\n\n"
-        f"Характер персоны:\n{system_prompt[:4000]}\n\n"
-        "Бот выполняет команды управления компьютером (открыть сайт, нажать "
-        "элемент, ввести текст, листать и т.п.) и коротко сообщает результат "
-        "пользователю. Для КАЖДОГО типа команды придумай:\n"
-        f"- \"ok\": {ok_n} разнообразных фраз об успехе;\n"
-        f"- \"err\": {err_n} фраз о неудаче; каждая err-фраза ОБЯЗАНА "
-        "содержать плейсхолдер {detail} — туда подставится суть ошибки, "
-        "её нельзя скрывать или приукрашивать.\n\n"
-        "Допустимые плейсхолдеры (подставляются данными команды): {host} — "
-        "сайт, {element} — элемент страницы, {text} — введённый текст, "
-        "{detail} — суть ошибки (только err). Других плейсхолдеров не "
-        "используй. Плейсхолдер ставь только там, где он уместен.\n\n"
-        f"Типы команд:\n{kinds_descr}\n\n"
-        "Формат ответа — строго JSON:\n"
+        "You generate short lines for a Telegram bot in the persona's character. "
+        "You answer strictly in JSON, without explanations.\n\n"
+        f"Persona's character:\n{system_prompt[:4000]}\n\n"
+        "The bot executes computer control commands (open a site, click an "
+        "element, type text, scroll, etc.) and briefly reports the result "
+        "to the user. For EACH command type come up with:\n"
+        f"- \"ok\": {ok_n} varied phrases about success;\n"
+        f"- \"err\": {err_n} phrases about failure; every err phrase MUST "
+        "contain the placeholder {detail} — the gist of the error is substituted "
+        "there, it must not be hidden or embellished.\n\n"
+        "Allowed placeholders (filled with the command's data): {host} — "
+        "the site, {element} — the page element, {text} — the typed text, "
+        "{detail} — the gist of the error (err only). Do not use any other "
+        "placeholders. Put a placeholder only where it fits.\n\n"
+        f"Command types:\n{kinds_descr}\n\n"
+        "Answer format — strictly JSON:\n"
         "{\"open\": {\"ok\": [...], \"err\": [...]}, \"click\": {...}, ...}\n\n"
-        "Фразы короткие (1-2 предложения), в характере персоны, "
-        "разнообразные по лексике и конструкции. Короткое действие "
-        "в *курсиве* уместно, если это в характере. Без вопросов "
-        "пользователю."
+        "Phrases are short (1-2 sentences), in the persona's character, "
+        "varied in wording and structure. A short action "
+        "in *italics* is fine if it fits the character. No questions "
+        "to the user.\n"
+        f"{user_language_line(persona_language(system_prompt))}"
     )
 
 
@@ -372,21 +462,22 @@ def _gen_prompt_phrases(system_prompt: str) -> str:
     укладывалась в таймаут чтения ответа."""
     lines = "\n".join(f'- "{k}": {v["spec"]}' for k, v in _PHRASE_KEYS.items())
     return (
-        "Пишешь служебные сообщения Telegram-бота в характере персоны. "
-        "Отвечаешь строго JSON, без пояснений.\n\n"
-        f"Характер персоны:\n{system_prompt[:4000]}\n\n"
-        "Ниже — ситуации и обязательный смысл каждого сообщения. Для КАЖДОЙ "
-        "придумай 3 разнообразных варианта. Это ГОТОВЫЕ сообщения бота "
-        "пользователю: пиши от лица бота и в характере персоны, а не "
-        "пересказывай описание ситуации. Команды в «кавычках» сохраняй "
-        "дословно — это инструкции для пользователя. Плейсхолдеры в "
-        "{фигурных} скобках оставляй как есть — в них подставятся данные; "
-        "других плейсхолдеров не используй.\n\n"
-        f"Ситуации:\n{lines}\n\n"
-        "Формат ответа — строго JSON:\n"
+        "You write service messages for a Telegram bot in the persona's character. "
+        "You answer strictly in JSON, without explanations.\n\n"
+        f"Persona's character:\n{system_prompt[:4000]}\n\n"
+        "Below are the situations and the required meaning of each message. For EACH "
+        "one come up with 3 varied variants. These are READY messages from the bot "
+        "to the user: write as the bot and in the persona's character, do not "
+        "retell the situation description. Keep the commands in «quotes» "
+        "verbatim (do not translate them) — these are the exact commands the "
+        "bot recognizes. Leave placeholders in {curly} braces as they are — "
+        "data is substituted into them; do not use any other placeholders.\n\n"
+        f"Situations:\n{lines}\n\n"
+        "Answer format — strictly JSON:\n"
         "{\"cc_mode_on\": [...], \"cc_mode_off\": [...], ...}\n\n"
-        "Каждый вариант — 1-2 предложения, разнообразие по лексике. "
-        "Без вопросов пользователю от себя."
+        "Each variant is 1-2 sentences, varied in wording. "
+        "No questions to the user of your own.\n"
+        f"{user_language_line(persona_language(system_prompt))}"
     )
 
 
@@ -470,17 +561,29 @@ def _parse_bank_json(raw: str) -> dict:
 
 def _generate_kinds(context: str, system_prompt: str, router,
                     ok_n: int, err_n: int) -> dict:
-    """Генерация реплик команд (kinds): google (канал cc_gen — отдельный
-    инстанс, чтобы не держать лок живых реплик) → одна попытка по обычной
-    цепочке роутера. → {"kinds": ...}; {} — ничего не вышло (шаблоны)."""
+    """Генерация реплик команд (kinds): назначенный провайдер ответа
+    (llm.answer_provider, канал cc_gen, одна попытка) → google (канал
+    cc_gen — отдельный инстанс, чтобы не держать лок живых реплик) → одна
+    попытка по обычной цепочке роутера. → {"kinds": ...}; {} — ничего не
+    вышло (шаблоны)."""
     messages = [{"role": "user", "content": _gen_prompt(system_prompt, ok_n, err_n)}]
     raw = None
-    try:
-        raw = _google_cc_chat(context, channel="cc_gen").get_response(
-            messages, temperature=0.8, max_tokens=2500, top_p=0.9,
-            timeout=300.0)
-    except Exception as e:
-        logger.debug(f"[Flavor] генерация через google не удалась: {e}")
+    provider = getattr(router, "answer_provider", None)
+    if provider:
+        try:
+            raw = router.get_response_assigned(
+                provider, messages, temperature=0.8, max_tokens=2500,
+                top_p=0.9, timeout=300.0, webchat_channel="cc_gen")
+        except Exception as e:
+            logger.debug(f"[Flavor] генерация через назначенный провайдер "
+                        f"{provider} не удалась: {e}")
+    if not raw:
+        try:
+            raw = _google_cc_chat(context, channel="cc_gen").get_response(
+                messages, temperature=0.8, max_tokens=2500, top_p=0.9,
+                timeout=300.0)
+        except Exception as e:
+            logger.debug(f"[Flavor] генерация через google не удалась: {e}")
     if not raw and router is not None:
         try:
             raw = router.get_response(messages, temperature=0.8,
@@ -500,15 +603,27 @@ def _generate_kinds(context: str, system_prompt: str, router,
 def _generate_phrases(context: str, system_prompt: str, router) -> dict:
     """Генерация служебных фраз (phrases) отдельным вызовом от kinds:
     объединённый промпт раздувал ответ вдвое и не укладывался в таймаут
-    чтения ответа. {} — не вышло (работаем на шаблонах)."""
+    чтения ответа. Источники — в том же порядке, что в _generate_kinds:
+    назначенный провайдер ответа (канал cc_gen) → google (канал cc_gen) →
+    обычная цепочка роутера. {} — не вышло (работаем на шаблонах)."""
     messages = [{"role": "user", "content": _gen_prompt_phrases(system_prompt)}]
     raw = None
-    try:
-        raw = _google_cc_chat(context, channel="cc_gen").get_response(
-            messages, temperature=0.8, max_tokens=3000, top_p=0.9,
-            timeout=300.0)
-    except Exception as e:
-        logger.debug(f"[Flavor] генерация фраз через google не удалась: {e}")
+    provider = getattr(router, "answer_provider", None)
+    if provider:
+        try:
+            raw = router.get_response_assigned(
+                provider, messages, temperature=0.8, max_tokens=3000,
+                top_p=0.9, timeout=300.0, webchat_channel="cc_gen")
+        except Exception as e:
+            logger.debug(f"[Flavor] генерация фраз через назначенный "
+                        f"провайдер {provider} не удалась: {e}")
+    if not raw:
+        try:
+            raw = _google_cc_chat(context, channel="cc_gen").get_response(
+                messages, temperature=0.8, max_tokens=3000, top_p=0.9,
+                timeout=300.0)
+        except Exception as e:
+            logger.debug(f"[Flavor] генерация фраз через google не удалась: {e}")
     if not raw and router is not None:
         try:
             raw = router.get_response(messages, temperature=0.8,

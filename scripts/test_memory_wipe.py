@@ -14,6 +14,8 @@ PERSONA = "wipe_test"
 CTX = f"api_{PERSONA}"
 CK = "web_user"
 BASE = Path(f"data/{CTX}")
+# Остатки прошлого прогона, упавшего до финальной уборки
+shutil.rmtree(BASE, ignore_errors=True)
 
 
 def wjson(rel, data):
@@ -338,6 +340,127 @@ assert rjson("reminders/reminders.json")[1]["text"] == "врач"
 assert rjson("living/world.json")["npcs"][0]["name"] == "Хэнк"
 assert rjson("inventory.json")["items"] == [{"name": "кофе"}]
 print("фолбэк (файлы, бот без менеджеров): ok")
+
+# ── Режим управления: что просили и где бот был ──
+# Настоящие менеджеры (computer_control, агент задач, сценарии) и файловый
+# фолбэк (режим выключен, файлы прошлых запусков остались)
+from types import SimpleNamespace
+
+from app.features.cc_privacy import KnownSecrets
+from app.features.computer_control import ComputerControlManager
+from app.features.scenario_manager import ScenarioManager
+from app.features.task_agent import TaskAgent
+
+CC_DIR = BASE / "computer_control"
+
+
+def seed_control():
+    CC_DIR.mkdir(parents=True, exist_ok=True)
+    rec = lambda ts, chat, url: json.dumps(
+        {"ts": ts, "chat_id": chat, "ok": True, "kind": "url", "value": url},
+        ensure_ascii=False)
+    (CC_DIR / "audit.jsonl.1").write_text(
+        rec(1, CK, "https://old.example/") + "\n", encoding="utf-8")
+    (CC_DIR / "audit.jsonl").write_text(
+        "\n".join([rec(2, CK, "https://example.edu/kaf/persons/1914/"),
+                   rec(3, "other", "https://other.example/"),
+                   rec(4, CK, "https://dodopizza.ru/")]) + "\n",
+        encoding="utf-8")
+    wjson("computer_control/last_tab.json", {
+        "chats": {CK: {"host": "example.edu", "url": "https://example.edu/kaf/",
+                       "vis": "", "ts": 20},
+                  "other": {"host": "other.example",
+                            "url": "https://other.example/", "vis": "", "ts": 10}},
+        "host": "example.edu", "url": "https://example.edu/kaf/", "ts": 20})
+    wjson("computer_control/task_memory.json", {
+        CK: [{"ts": 1, "goal": "закажи пиццу", "sites": ["dodopizza.ru"],
+              "qa": [], "result": "дошёл до оформления"}],
+        "other": [{"ts": 2, "goal": "чужая", "sites": [], "qa": [], "result": ""}]})
+
+
+def audit_chats():
+    out = []
+    for name in ("audit.jsonl.1", "audit.jsonl"):
+        p = CC_DIR / name
+        if p.is_file():
+            out += [json.loads(ln)["chat_id"]
+                    for ln in p.read_text(encoding="utf-8").splitlines() if ln]
+    return out
+
+
+seed_control()
+cc = ComputerControlManager(context=CTX, config={"confirm": True})
+assert cc._st(CK).last_host == "example.edu"  # контекст страницы с диска
+cc.set_pending(CK, {"kind": "url", "value": "https://x.example/"}, user_id="u")
+ta = TaskAgent(computer_control=cc, context=CTX)
+ta._runs[CK] = {"goal": "закажи пиццу", "busy": False, "cancel": False,
+                "touched": time.time(), "qa": [], "sites": ["dodopizza.ru"]}
+ta.__dict__["_finished"] = {CK: {"run": {"goal": "прошлая"}, "ts": time.time(),
+                                 "text": "итог"}}
+sm = ScenarioManager(context=CTX, computer_control=cc)
+sm._recording[CK] = {"since": time.time(), "name": "пицца"}
+sm._runs[CK] = {"name": "пицца", "steps": [], "pos": 0}
+sm._offered[CK] = time.time()
+vault = KnownSecrets()
+vault.add(CK, "hunter22")
+bot3 = SimpleNamespace(computer_control=cc, task_agent=ta, scenario_manager=sm,
+                       _cc_known_secrets=vault,
+                       _pending_photos={CK: [{"data": b""}]},
+                       _pending_more_photos={CK: {"photos": [], "ts": 0}})
+
+stores3 = mw.collect_stores(bot3, PERSONA, CK)
+ctl = stores3["control"]
+assert len(ctl["audit"]) == 3 and ctl["last_tab"]["host"] == "example.edu"
+assert ctl["task_memory"][0]["goal"] == "закажи пиццу"
+
+mw.wipe_stores(bot3, PERSONA, CK)
+assert audit_chats() == ["other"], audit_chats()  # и из ротации .1
+tabs = rjson("computer_control/last_tab.json")
+assert list(tabs["chats"]) == ["other"] and tabs["host"] == "other.example"
+assert list(rjson("computer_control/task_memory.json")) == ["other"]
+assert cc.get_pending(CK) is None and CK not in cc._chat_states()
+assert CK not in ta._runs and CK not in ta._finished
+assert not (sm._recording or sm._runs or sm._offered)
+assert vault.values(CK) == []
+assert CK not in bot3._pending_photos and CK not in bot3._pending_more_photos
+# Новый ход того же чата — с чистого листа (страница «с диска» не всплывает)
+assert cc._st(CK).last_host is None
+print("режим управления (живые менеджеры): стёрто ok")
+
+# Идущий прогон агента: снимается флагом и не дописывает стёртую память
+busy = {"goal": "идущая", "busy": True, "cancel": False, "touched": time.time(),
+        "qa": [["вопрос", "ответ"]], "sites": ["x.ru"]}
+ta._runs[CK] = busy
+ta.forget_chat(CK)
+assert busy["cancel"] and busy["forget"]
+ta._remember(CK, busy, "cancelled by the user")  # конец _drive
+assert CK not in rjson("computer_control/task_memory.json")
+print("режим управления: идущий прогон не пишет в стёртую память ok")
+
+mw.restore_stores(bot3, PERSONA, CK, stores3)
+assert sorted(audit_chats()) == sorted([CK, CK, CK, "other"])
+chats_ts = [json.loads(ln)["ts"] for ln in
+            (CC_DIR / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+assert chats_ts == sorted(chats_ts)  # хвост для сценариев — хронологический
+assert rjson("computer_control/last_tab.json")["chats"][CK]["host"] == "example.edu"
+assert rjson("computer_control/task_memory.json")[CK][0]["goal"] == "закажи пиццу"
+assert cc._st(CK).last_host == "example.edu"
+print("режим управления: восстановление из корзины ok")
+
+# Файловый фолбэк: режим управления выключен — менеджеров нет
+shutil.rmtree(CC_DIR)
+seed_control()
+bot4 = FakeBot(full=False)
+stores4 = mw.collect_stores(bot4, PERSONA, CK)
+assert len(stores4["control"]["audit"]) == 3
+mw.wipe_stores(bot4, PERSONA, CK)
+assert audit_chats() == ["other"]
+assert list(rjson("computer_control/last_tab.json")["chats"]) == ["other"]
+assert list(rjson("computer_control/task_memory.json")) == ["other"]
+mw.restore_stores(bot4, PERSONA, CK, stores4)
+assert audit_chats().count(CK) == 3
+assert CK in rjson("computer_control/task_memory.json")
+print("режим управления (фолбэк, файлы): ok")
 
 shutil.rmtree(BASE)
 print("ALL OK")

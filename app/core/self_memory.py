@@ -12,7 +12,7 @@ from app.core.router import ModelRouter
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.language import (
-    detect_language, detect_dialogue_language, language_name, language_name_ru,
+    detect_language, detect_dialogue_language, user_language_line,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,14 @@ _REFLECTION_MARKERS = [
     "опять", "снова", "как обычно", "в который раз",
     # Рефлексия о боте
     "ты изменился", "ты стал", "ты как будто", "ты похож",
+    # То же для английских реплик — иначе англоязычный собеседник
+    # рефлексию не запускал бы никогда
+    "i feel", "strange", "weird", "surprising", "unexpected",
+    "for the first time", "always", "never", "sick of", "tired of", "annoying",
+    "actually", "honestly", "to be honest", "i admit",
+    "it seems to me", "i think you", "you always", "you never",
+    "again", "as usual", "once again",
+    "you've changed", "you have changed", "you became", "you seem", "you're like",
 ]
 
 
@@ -53,8 +61,6 @@ Write a detailed personal entry (2-3 sentences) in first person.
 
 Describe in detail: what was discussed, which topics came up, what hooked you, what emotions it stirred.
 Mention details from the conversation — concrete facts, arguments, opinions. This is your personal diary, write freely and fully.
-
-IMPORTANT: write the entry in the language the user uses in the conversation — if the user writes in English, write the entry in English.
 
 [DIALOGUE]
 {dialog}
@@ -79,7 +85,7 @@ DO NOT record:
 Answer strictly in this format:
 SKIP — if there is nothing to record
 NOTE: {{observation text}} — if there is something to record
-Write the observation in the language the user uses in the conversation (if the user writes in English, write in English).
+{language_line}
 
 User ({user_id}): {message}
 Context: {context}
@@ -89,7 +95,6 @@ Decision:"""
 _SUMMARY_PROMPT_TEMPLATE = """You are {persona_name}. Below are your old diary entries.
 Write one short paragraph (5-7 sentences) — the overall meaning of the whole story.
 What you lived through, what you learned, how you changed. This is your "life story".
-Write it in the language the entries themselves are written in.
 
 [OLD ENTRIES]
 {episodes}
@@ -99,29 +104,28 @@ Life story:"""
 
 # Примитивный режим (уровень интеллекта primitive): эпизод — не нарратив,
 # а вспышка сенсорного/инстинктивного впечатления.
-_EPISODE_PROMPT_PRIMITIVE = """Ты — {persona_name}, примитивное существо (не человек по типу мышления).
-Ниже — фрагмент общения. Запиши ОДНО короткое впечатление-вспышку (1 предложение, до 10 слов):
-сенсорное или инстинктивное, БЕЗ причин, БЕЗ выводов, БЕЗ наблюдений о себе или собеседнике.
-Тон примеров: «Тепло. Дремал.», «Громкий звук. Спрятался.», «Предмет блестит. Хочу.»
-Пиши на языке реплик собеседника (русские реплики — пиши по-русски).
+_EPISODE_PROMPT_PRIMITIVE = """You are {persona_name}, a primitive creature (not human in your type of thinking).
+Below is a fragment of communication. Write down ONE short flash impression (1 sentence, up to 10 words):
+sensory or instinctive, WITHOUT reasons, WITHOUT conclusions, WITHOUT observations about yourself or the interlocutor.
+Tone of the examples: "Warm. Dozed.", "Loud sound. Hid.", "Shiny thing. Want."
 
-[ДИАЛОГ]
+[DIALOGUE]
 {dialog}
 [END]
 
-Впечатление:"""
+Impression:"""
 
 # life_summary для primitive: не «история жизни», а список повторяющихся
 # паттернов — «любит блестящие предметы», «пугается громких звуков»
-_SUMMARY_PROMPT_PRIMITIVE = """Ты — {persona_name}, примитивное существо. Ниже — твои старые впечатления-вспышки.
-Выпиши 3-5 ПОВТОРЯЮЩИХСЯ паттернов существа (что любит, чего боится, что делает снова и снова).
-Каждый паттерн — короткая строка без рефлексии и объяснений. Пиши на языке записей.
+_SUMMARY_PROMPT_PRIMITIVE = """You are {persona_name}, a primitive creature. Below are your old flash impressions.
+Write out 3-5 RECURRING patterns of the creature (what it likes, what it fears, what it does again and again).
+Each pattern is a short line without reflection or explanations.
 
-[СТАРЫЕ ВПЕЧАТЛЕНИЯ]
+[OLD IMPRESSIONS]
 {episodes}
 [END]
 
-Верни JSON: {{"patterns": ["паттерн 1", "паттерн 2"]}}"""
+Return JSON: {{"patterns": ["pattern 1", "pattern 2"]}}"""
 
 
 
@@ -160,7 +164,7 @@ class BotSelfMemory:
         self.persona_name = persona_name
         self.router = router
 
-        self.local_router = get_local_router()
+        self.local_router = get_local_router(context)
         # tick() вызывается конкурентно (потоки to_thread, proactive-цикл, API).
         # ВАЖНО: под этим локом делаются только чтение/запись состояния —
         # LLM-вызовы (десятки секунд) всегда вне лока, иначе tick() следующего
@@ -201,6 +205,9 @@ class BotSelfMemory:
         })
         self._msg_since_episode = state["msg_since_episode"]
         self._msg_since_last_note = state["msg_since_last_note"]
+        # Последний язык пользователя (из tick): фолбэк для генераций без
+        # диалога под рукой — саммари архива, офлайн-эпизоды
+        self._last_user_lang: Optional[str] = None
 
         logger.info(f"[{persona_name}] BotSelfMemory инициализирован | "
                    f"эпизодов: {len(self._episodes['active'])} активных, "
@@ -244,7 +251,10 @@ class BotSelfMemory:
         # писать эпизод или заметку. Сама запись идёт в фоне — это LLM-вызовы
         # side-цепочки (десятки секунд), а tick идёт по request-path уже
         # после генерации ответа, и ждать его нельзя.
+        lang = detect_dialogue_language(last_message or "", messages)
         with self._lock:
+            if lang:
+                self._last_user_lang = lang
             self._msg_since_episode += 1
             self._msg_since_last_note += 1
 
@@ -350,10 +360,11 @@ class BotSelfMemory:
             self._save_json(self._episodes_file, self._episodes)
         return archive_full
 
-    def add_external_episode(self, text: str):
+    def add_external_episode(self, text: str, user_language: Optional[str] = None):
         # Эпизод из офлайн-жизни персоны: текст уже сгенерирован основной
         # LLM в стиле персоны — просто кладём в дневник с обычной
-        # архивацией/лимитами.
+        # архивацией/лимитами. user_language — язык чата, откуда эпизод
+        # (для саммари архива, если оно запустится).
         if not text or len(text.strip()) < 10:
             return
         archive_full = self._append_episode({
@@ -363,7 +374,7 @@ class BotSelfMemory:
         })
         # Суммаризация — LLM, вне лока (иначе tick() ждёт её таймаут)
         if archive_full:
-            self._summarize_archive()
+            self._summarize_archive(user_language)
 
     def clear_all(self):
         # Полная очистка: активные, архив, life_summary, заметки, счётчики.
@@ -430,8 +441,8 @@ class BotSelfMemory:
                     dialog=dialog_text
                 )
                 system_msg = (
-                    "Ты пишешь одно примитивное сенсорное впечатление. "
-                    "Только вывод, без пояснений. Пиши на языке реплик собеседника."
+                    "You write one primitive sensory impression. "
+                    "Output only, no explanations."
                 )
                 gen_temperature, gen_max_tokens = 0.6, 80
             else:
@@ -439,25 +450,15 @@ class BotSelfMemory:
                     persona_name=self.persona_name,
                     dialog=dialog_text
                 )
-                system_msg = (
-                    "You write a first-person diary. Dry, precise, no inventions. "
-                    "Write in the language of the user's messages — if the user "
-                    "writes in English, write the entry in English."
-                )
+                system_msg = "You write a first-person diary. Dry, precise, no inventions."
                 gen_temperature, gen_max_tokens = 0.7, 800
 
             # Язык дневника = язык пользователя: детект по его репликам,
             # явно дописываем в системное сообщение — иначе модель может
             # взять язык промпта-шаблона или персоны
             epoch = self._epoch  # поколение до LLM-вызова (см. _append_episode)
-            ep_lang = detect_dialogue_language("", messages)
-            if ep_lang:
-                if self.mode == "primitive":
-                    system_msg += (f" Язык собеседника — {language_name_ru(ep_lang)}. "
-                                   f"Пиши только на нём.")
-                else:
-                    system_msg += (f" The user's language is {language_name(ep_lang)}. "
-                                   f"Write the entry ONLY in {language_name(ep_lang)}.")
+            ep_lang = detect_dialogue_language("", messages) or self._last_user_lang
+            system_msg += " " + user_language_line(ep_lang)
 
             response = self._side_response(
                 messages=[
@@ -485,7 +486,7 @@ class BotSelfMemory:
             # Суммаризация архива если переполнен (тоже LLM — вне лока,
             # чтобы tick следующего сообщения не ждал; сохраняет сама)
             if archive_full:
-                self._summarize_archive()
+                self._summarize_archive(ep_lang)
 
             with self._lock:
                 active_count = len(self._episodes["active"])
@@ -505,24 +506,23 @@ class BotSelfMemory:
                 context_lines.append(f"{name}: {content[:200]}")
             context_text = "\n".join(context_lines)
 
+            # Язык заметки = язык пользователя (детект по его сообщению/репликам)
+            note_lang = (detect_language(message)
+                         or detect_dialogue_language("", context_messages)
+                         or self._last_user_lang)
+            note_lang_line = " " + user_language_line(note_lang)
             prompt = _NOTE_PROMPT_TEMPLATE.format(
                 persona_name=self.persona_name,
                 user_id=user_id,
                 message=message[:500],
-                context=context_text
+                context=context_text,
+                language_line=user_language_line(note_lang),
             )
 
             # Локальная модель — только фильтр SKIP/NOTE: classify() возвращает
             # ровно одну строку из valid_outputs и не может вернуть текст заметки,
             # поэтому сам текст всегда генерирует основной роутер
-            # Язык заметки = язык пользователя (детект по его сообщению/репликам)
             epoch = self._epoch  # поколение до LLM-вызовов (см. _append_episode)
-            note_lang = detect_language(message) or detect_dialogue_language("", context_messages)
-            note_lang_line = (
-                f" The user's language is {language_name(note_lang)}. "
-                f"Write the observation ONLY in {language_name(note_lang)}."
-                if note_lang else ""
-            )
             if self.local_router.is_available(task="self_memory"):
                 local_response = self.local_router.classify(
                     system_prompt=(
@@ -543,7 +543,7 @@ class BotSelfMemory:
 
             response = self._side_response(
                 messages=[
-                    {"role": "system", "content": "You decide whether an observation is worth recording. Answer only SKIP or NOTE: ... Write the observation in the language of the user's messages." + note_lang_line},
+                    {"role": "system", "content": "You decide whether an observation is worth recording. Answer only SKIP or NOTE: ..." + note_lang_line},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
@@ -604,10 +604,12 @@ class BotSelfMemory:
             self._save_json(self._episodes_file, self._episodes)
         return True
 
-    def _summarize_archive(self):
+    def _summarize_archive(self, user_language: Optional[str] = None):
         # Суммаризирует архивные эпизоды в life_summary.
         # primitive: не «история жизни», а список повторяющихся паттернов.
         # Вызывается ВНЕ лока: внутри LLM-вызов на десятки секунд.
+        # user_language — язык чата, запустившего суммаризацию; нет —
+        # последний язык пользователя, иначе язык самих записей.
         with self._lock:
             if self._summarize_inflight:
                 logger.info("[SelfMemory] Суммаризация уже идёт, пропускаю")
@@ -622,18 +624,16 @@ class BotSelfMemory:
             episodes_text = "\n\n".join(
                 f"[{i+1}] {ep['text']}" for i, ep in enumerate(archive)
             )
-            # Язык саммари = язык самих записей (они на языке пользователя)
-            sum_lang = detect_language(episodes_text)
+            sum_lang = (user_language or self._last_user_lang
+                        or detect_language(episodes_text))
 
             if self.mode == "primitive":
                 prompt = _SUMMARY_PROMPT_PRIMITIVE.format(
                     persona_name=self.persona_name,
                     episodes=episodes_text
                 )
-                if sum_lang:
-                    prompt += (f"\nЯзык паттернов — {language_name_ru(sum_lang)}. "
-                               f"Пиши только на нём.")
-                system_msg = "Ты возвращаешь только валидный JSON со списком паттернов."
+                prompt += "\n" + user_language_line(sum_lang)
+                system_msg = "You return only valid JSON with a list of patterns."
                 response = self._side_response(
                     messages=[
                         {"role": "system", "content": system_msg},
@@ -648,7 +648,7 @@ class BotSelfMemory:
                 patterns = (data or {}).get("patterns") or []
                 patterns = [str(p).strip()[:80] for p in patterns[:5] if str(p).strip()]
                 if patterns:
-                    summary = "Паттерны:\n" + "\n".join(f"- {p}" for p in patterns)
+                    summary = "Patterns:\n" + "\n".join(f"- {p}" for p in patterns)
                     if self._commit_summary(summary, taken, epoch):
                         logger.info(f"[SelfMemory] Паттерны primitive обновлены ({len(patterns)})")
                 return
@@ -657,13 +657,11 @@ class BotSelfMemory:
                 persona_name=self.persona_name,
                 episodes=episodes_text
             )
-            if sum_lang:
-                prompt += (f"\nThe entries' language is {language_name(sum_lang)}. "
-                           f"Write ONLY in {language_name(sum_lang)}.")
+            prompt += "\n" + user_language_line(sum_lang)
 
             response = self._side_response(
                 messages=[
-                    {"role": "system", "content": "You summarize your own life story. Brief and to the point. Write in the language of the diary entries."},
+                    {"role": "system", "content": "You summarize your own life story. Brief and to the point."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,

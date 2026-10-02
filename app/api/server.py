@@ -29,7 +29,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.api import runtime
 from app.api.runtime import chat_lock, get_persona_info, list_personas
-from app.api.security import PersonaIdPath, PersonaIdQuery
+from app.api.security import BodySizeLimit, PersonaIdPath, PersonaIdQuery
 from app.api.schemas import (
     ActiveProviderRequest,
     CalendarEntryCreate,
@@ -49,18 +49,29 @@ from app.api.schemas import (
     PersonaConfigUpdate,
     PersonaDraftSave,
     PersonaInfo,
+    PersonaAvatarUpdate,
+    PersonaColorUpdate,
+    PersonaRenameRequest,
     PersonaYamlUpdate,
     PresenceRequest,
     ProviderKeyRequest,
     ProviderModelRequest,
-    LocalBackendRequest,
+    PersonaLocalTasksUpdate,
     ReminderAddRequest,
+    ReminderUpdateRequest,
+    RoomArtUpdate,
+    RoomFocusRequest,
+    RoomLayoutUpdate,
+    RoomPokeRequest,
+    RoomStyleDescribeRequest,
+    RoomStyleUpdate,
     StmDeleteRequest,
     StmTrimRequest,
     TodoAddRequest,
     WebchatRequest,
 )
 from app.core.file_reader import extract_text
+from app.core.language import detect_language
 from app.core.message_pacing import send_delay
 from app.core.config import Config
 from app.core.paths import data_dir
@@ -76,6 +87,14 @@ _EXTRACT_ERROR_PREFIXES = ("Ошибка", "Формат", "Не удалось"
 app = FastAPI(title="Virtual Persona API", version="1.0")
 
 
+@app.on_event("startup")
+def _start_warmup():
+    # Фоновый подъём ботов персон, с которыми пользователь недавно общался
+    # (история и настройки готовы до захода в чат) — см. app/api/warmup.py
+    from app.api import warmup
+    warmup.start_warmup()
+
+
 @app.on_event("shutdown")
 def _shutdown_bot_browser():
     # Гасим браузер бота при остановке API — иначе он переживает выход,
@@ -89,6 +108,26 @@ def _shutdown_bot_browser():
 # Буфер логов для режима разработчика (GET /api/logs)
 from app.api import log_buffer
 log_buffer.install()
+# Маска секретов логов (и в буфере панели): после log_buffer — фильтр
+# ложится и на его хендлер; запуск uvicorn напрямую тоже покрыт
+from app.core import log_privacy  # noqa: E402
+log_privacy.install()
+
+# Лимит тела для маршрутов с многомегабайтными HTML-файлами скинов: 413 до
+# разбора JSON (security.BodySizeLimit). Добавлен раньше CORS — значит, внутри
+# него, и отказ тоже уходит с CORS-заголовками
+from app.api import skin_gen_api as _skin_gen_limits, skins_api as _skins_limits  # noqa: E402
+app.add_middleware(BodySizeLimit, rules=[
+    ("POST", r"/api/skins/generate", _skin_gen_limits.MAX_BODY_BYTES),
+    ("POST", r"/api/skins/direction", _skin_gen_limits.DIRECTION_MAX_BODY_BYTES),
+    ("POST", r"/api/skins", _skins_limits.MAX_BODY_BYTES),
+    ("PUT", r"/api/skins/[^/]+", _skins_limits.MAX_BODY_BYTES),
+    # Комната: спрайты/фон/картинки предметов — data-URL до 2 МБ каждый
+    ("PUT", r"/api/personas/[^/]+/room/art", 40 * 1024 * 1024),
+    ("PUT", r"/api/personas/[^/]+/room/layout", 20 * 1024 * 1024),
+    ("PUT", r"/api/personas/[^/]+/room/style", 2 * 1024 * 1024),
+    ("POST", r"/api/personas/[^/]+/room/style/describe", 2 * 1024 * 1024),
+])
 
 _cors_origins = os.getenv("API_CORS_ORIGINS", "*")
 app.add_middleware(
@@ -146,7 +185,30 @@ def _log_detached_failure(task: asyncio.Task) -> None:
         logger.error("[chat] фоновая генерация завершилась ошибкой", exc_info=exc)
 
 
-async def _run_generation(gen_key: str, fn):
+def _cc_turn_enter(bot, req):
+    """Режим управления, до лока чата: «стоп» при идущем ходе, реплика
+    занятому агенту, дубль ещё идущей команды — ответ сразу (см.
+    BotInstance.cc_turn_enter). → (reply | None, token)."""
+    enter = getattr(bot, "cc_turn_enter", None)
+    if not callable(enter) or req.image:
+        return None, None
+    try:
+        return enter(req.message, req.user_id, req.chat_id)
+    except Exception as e:
+        logger.debug(f"[chat] cc_turn_enter: {e}")
+        return None, None
+
+
+def _cc_turn_exit(bot, token) -> None:
+    exit_ = getattr(bot, "cc_turn_exit", None)
+    if token and callable(exit_):
+        try:
+            exit_(token)
+        except Exception:
+            pass
+
+
+async def _run_generation(gen_key: str, fn, on_done=None):
     """Генерация ответа, которую не отменяет разрыв соединения клиента.
 
     fn — синхронная тяжёлая часть (process_message), идёт в потоке пула;
@@ -158,7 +220,8 @@ async def _run_generation(gen_key: str, fn):
     параллельно с ещё живым потоком.
 
     Флаг ставится до ожидания лока: сообщение, вставшее в очередь за
-    предыдущим, тоже показывает «печатает»."""
+    предыдущим, тоже показывает «печатает». on_done — когда поток реально
+    закончил (снять регистрацию идущей команды режима управления)."""
     async def _job():
         _generating_enter(gen_key)
         try:
@@ -166,6 +229,8 @@ async def _run_generation(gen_key: str, fn):
                 return await asyncio.to_thread(fn)
         finally:
             _generating_exit(gen_key)
+            if on_done is not None:
+                on_done()
 
     task = asyncio.create_task(_job())
     _detached_generations.add(task)
@@ -189,6 +254,13 @@ async def require_auth(credentials: HTTPAuthorizationCredentials = Depends(_bear
     # выходом на первом несовпадении, что убирает timing-канал подбора токена
     if credentials is None or not hmac.compare_digest(credentials.credentials, _api_token):
         raise HTTPException(status_code=401, detail="Неверный или отсутствующий токен")
+
+
+async def _touch_persona(persona: str):
+    # Метка «пользователь заходил к персоне» — по ней warmup решает, кого
+    # поднимать при следующем старте API
+    from app.api import warmup
+    await asyncio.to_thread(warmup.touch, persona)
 
 
 async def _get_bot(persona: str):
@@ -276,24 +348,211 @@ async def persona_duplicate(persona: PersonaIdPath):
     return result
 
 
+@app.post("/api/personas/{persona}/rename", dependencies=[Depends(require_auth)])
+async def persona_rename(persona: PersonaIdPath, req: PersonaRenameRequest):
+    # Смена id: YAML-файл, папки памяти (с аватаром), календарь, токен бота
+    if any(key.startswith(f"{persona}:") for key in _generating):
+        raise HTTPException(status_code=409, detail="Персона сейчас отвечает — дождитесь конца ответа")
+    from app.api import settings_api
+    result = await asyncio.to_thread(settings_api.rename_persona, persona, req.new_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=result.get("status", 400), detail=result["detail"])
+    return result
+
+
+@app.put("/api/personas/{persona}/color", dependencies=[Depends(require_auth)])
+async def persona_color_update(persona: PersonaIdPath, req: PersonaColorUpdate):
+    # Цвет метки персоны: строка color: в YAML (карточка, календарь, главная)
+    from app.api import settings_api
+    result = await asyncio.to_thread(settings_api.set_persona_color, persona, req.color)
+    if not result["ok"]:
+        raise HTTPException(status_code=result.get("status", 400), detail=result["detail"])
+    return result
+
+
+# ── Главная страница веба: сводка по всем персонам без подъёма ботов ──
+
+
+@app.get("/api/home", dependencies=[Depends(require_auth)])
+async def home_overview(chat_id: str = "web_user"):
+    # Состояние персон, лента «пока вас не было» и телеметрия — из файлов
+    # персон (см. app/api/home_api.py); BotInstance не создаётся
+    from app.api import home_api
+
+    def _build():
+        infos = {p: get_persona_info(p) or {} for p in list_personas()}
+        return home_api.home_overview(infos, chat_id)
+
+    return await asyncio.to_thread(_build)
+
+
+# ── Аватары персон: файл в data/api_<id>/, общий для всех браузеров ──
+
+
+@app.get("/api/persona-avatars", dependencies=[Depends(require_auth)])
+async def persona_avatars():
+    # {id: data-URL} всех персон с аватаром — одним запросом при загрузке UI
+    from app.api import avatars_api
+    return {"avatars": await asyncio.to_thread(avatars_api.list_avatars, list_personas())}
+
+
+@app.put("/api/personas/{persona}/avatar", dependencies=[Depends(require_auth)])
+async def persona_avatar_set(persona: PersonaIdPath, req: PersonaAvatarUpdate):
+    if persona not in list_personas():
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    from app.api import avatars_api
+    result = await asyncio.to_thread(avatars_api.set_avatar, persona, req.data_url)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["detail"])
+    return result
+
+
+@app.delete("/api/personas/{persona}/avatar", dependencies=[Depends(require_auth)])
+async def persona_avatar_delete(persona: PersonaIdPath):
+    if persona not in list_personas():
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    from app.api import avatars_api
+    await asyncio.to_thread(avatars_api.delete_avatar, persona)
+    return {"ok": True}
+
+
+# ── Библиотека скинов: data/skins/, общая для всех браузеров ──
+
+from app.api.skins_api import SkinAssign, SkinCreate, SkinUpdate  # noqa: E402
+
+
+async def _skins_call(fn, *args):
+    # Операция библиотеки скинов в потоке; SkinError → HTTP-код с текстом
+    from app.api import skins_api
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except skins_api.SkinError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+
+
+@app.get("/api/skins", dependencies=[Depends(require_auth)])
+async def skins_list():
+    # Метаданные всех скинов (без HTML — файлы грузятся по одному скину)
+    from app.api import skins_api
+    return {
+        "skins": await _skins_call(skins_api.list_skins),
+        "hidden_builtins": await _skins_call(skins_api.hidden_builtins),
+    }
+
+
+@app.post("/api/skins/builtins/restore", dependencies=[Depends(require_auth)])
+async def skins_restore_builtins():
+    # Вернуть в библиотеку скрытые («удалённые») встроенные скины
+    from app.api import skins_api
+    return {"restored": await _skins_call(skins_api.restore_builtins)}
+
+
+@app.get("/api/skins/{skin_id}", dependencies=[Depends(require_auth)])
+async def skin_get(skin_id: PersonaIdPath):
+    from app.api import skins_api
+    return await _skins_call(skins_api.get_skin, skin_id)
+
+
+@app.post("/api/skins", dependencies=[Depends(require_auth)])
+async def skin_create(req: SkinCreate):
+    from app.api import skins_api
+    return {"skin": await _skins_call(skins_api.create_skin, req)}
+
+
+@app.put("/api/skins/{skin_id}", dependencies=[Depends(require_auth)])
+async def skin_update(skin_id: PersonaIdPath, req: SkinUpdate):
+    from app.api import skins_api
+    return {"skin": await _skins_call(skins_api.update_skin, skin_id, req)}
+
+
+@app.delete("/api/skins/{skin_id}", dependencies=[Depends(require_auth)])
+async def skin_delete(skin_id: PersonaIdPath):
+    # Удаление снимает скин со всех персон, которым он был назначен
+    from app.api import skins_api
+    return {"ok": True, "unassigned": await _skins_call(skins_api.delete_skin, skin_id)}
+
+
+@app.get("/api/skin-assignments", dependencies=[Depends(require_auth)])
+async def skin_assignments():
+    from app.api import skins_api
+    return {"assignments": await _skins_call(skins_api.get_assignments)}
+
+
+@app.put("/api/personas/{persona}/skin", dependencies=[Depends(require_auth)])
+async def persona_skin_set(persona: PersonaIdPath, req: SkinAssign):
+    # skin_id=null — снять скин (персона показывается дефолтным UI)
+    if persona not in list_personas():
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    from app.api import skins_api
+    await _skins_call(skins_api.assign_skin, persona, req.skin_id)
+    return {"ok": True}
+
+
+# ── Генерация скина нейросетью (панель скинов, SkinGenerator) ──
+
+from app.api.skin_gen_api import SkinDirectionRequest, SkinGenRequest  # noqa: E402
+
+
+@app.post("/api/skins/direction", dependencies=[Depends(require_auth)])
+async def skin_direction(req: SkinDirectionRequest):
+    """Арт-направления для генерации скина: {"directions": [...], "provider",
+    "model"} — 1–3 варианта (сюжет, палитра, шрифты, раскладка, фирменный
+    элемент…). Выбранное клиент шлёт с каждым запросом /api/skins/generate."""
+    from app.api import skin_gen_api
+    try:
+        return await asyncio.to_thread(skin_gen_api.propose_directions, req)
+    except skin_gen_api.SkinGenError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+
+
+@app.post("/api/skins/generate", dependencies=[Depends(require_auth)])
+async def skin_generate(req: SkinGenRequest):
+    """SSE: {"status"} (у "continue" — ещё "round", у "direction" — подобранное
+    сервером направление, если клиент его не прислал), {"progress", "elapsed"},
+    финал {"done", "html", "truncated", "provider", "model"} или {"error"}.
+    Проверка и автоисправление — на клиенте."""
+    from app.api import skin_gen_api
+    try:
+        messages, assets = skin_gen_api.prepare(req)
+    except skin_gen_api.SkinGenError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    return StreamingResponse(skin_gen_api.generate_events(req, messages, assets),
+                             media_type="text/event-stream")
+
+
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(require_auth)])
 async def chat(req: ChatRequest):
     bot = await _get_bot(req.persona)
     _check_not_muted(bot, req.persona)
+    await _touch_persona(req.persona)
     # Лок на (персона, чат): сериализуем сообщения одного чата,
     # разные чаты и персоны обрабатываются параллельно.
     lock_key = f"{req.persona}:{req.chat_id or req.user_id}"
     stm_key = _stm_key(req)
+    # До лока чата: «стоп»/дубль/занятый агент в режиме управления
+    early, cc_token = _cc_turn_enter(bot, req)
+    if early is not None:
+        return ChatResponse(
+            reply=early, extra_messages=[], question_kind=None,
+            persona=req.persona, chat_id=req.chat_id or req.user_id,
+            provider=None, model=None,
+            control_mode=bot.control_mode_on(req.chat_id or req.user_id),
+            images=[])
     # Ход пользователя — от получения сообщения до отдачи ответа (см.
     # _begin_turn): фоновые сообщения чата в это окно в STM не встают
-    frame = await _begin_turn(bot, stm_key)
     try:
-        return await _chat_in_turn(bot, req, lock_key, stm_key, frame)
+        frame = await _begin_turn(bot, stm_key)
+    except BaseException:
+        _cc_turn_exit(bot, cc_token)
+        raise
+    try:
+        return await _chat_in_turn(bot, req, lock_key, stm_key, frame, cc_token)
     finally:
         _end_turn(bot, frame)
 
 
-async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, frame):
+async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, frame,
+                        cc_token=None):
     def _generate():
         """Синхронная часть целиком (в потоке пула, под локом чата): и
         генерация, и разбор pending-бакетов — они должны сниматься тем же
@@ -310,7 +569,8 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                 split_extra = bot.pop_pending_split_messages(req.chat_id)
             else:
                 llm_input = (
-                    _prepare_image_input(bot, req.message, req.image)
+                    _prepare_image_input(bot, req.message, req.image,
+                                         req.chat_id, req.user_id)
                     if req.image else req.message
                 )
                 reply = bot.process_message(
@@ -345,7 +605,8 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
     # Лок на (персона, чат) и флаг «генерирует» держит _run_generation:
     # сообщения одного чата сериализуются, разные чаты и персоны идут
     # параллельно; разрыв соединения генерацию не обрывает
-    reply, provider, model, extra, question_kind = await _run_generation(lock_key, _generate)
+    reply, provider, model, extra, question_kind = await _run_generation(
+        lock_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token))
     return ChatResponse(
         reply=reply,
         extra_messages=extra,
@@ -434,15 +695,23 @@ def _decode_image(data: str) -> bytes:
         raise HTTPException(status_code=400, detail="Некорректные данные изображения (base64)")
 
 
-def _prepare_image_input(bot, message: str, image_b64: str) -> str:
+def _prepare_image_input(bot, message: str, image_b64: str,
+                         chat_id: str = None, user_id: str = None) -> str:
     # Текст для LLM из сообщения с картинкой: подпись + содержимое по
     # vision-модели. Каскад как у TG-бота: vision-провайдер основного роутера
     # → локальная LLM (OCR)
     image_bytes = _decode_image(image_b64)
     question = message.strip()
-    ocr = bot.describe_image(image_bytes, question)
+    # Язык описания — язык подписи, без неё — язык пользователя в чате
+    lang = detect_language(question)
+    if not lang and (chat_id or user_id):
+        try:
+            lang = bot.chat_user_language(bot.stm_key(chat_id, user_id))
+        except Exception:
+            lang = None
+    ocr = bot.describe_image(image_bytes, question, lang)
     if not ocr and getattr(bot, "_local_router", None) and bot._local_router.is_available():
-        ocr = bot._local_router.ocr_image(image_bytes, question)
+        ocr = bot._local_router.ocr_image(image_bytes, question, lang)
     if not ocr:
         raise HTTPException(status_code=503, detail="Ни одна vision-модель недоступна — не могу посмотреть картинку")
     return (f"{question}\n\n" if question else "") + (
@@ -479,9 +748,14 @@ def _rewrite_image_stm(bot, chat_key: str, user_id: str, display_text: str, repl
                 n_assist += 1
             n_pop = min(n_assist + 1, len(msgs))
         bot.memory.stm.pop_last_n(n_pop, chat_key)
-        bot.memory.stm.add_message("user", display_text, user_id, chat_key)
+        # Через маски хода режима управления (секрет ввода, текст приватной
+        # страницы): прямой stm.add_message вернул бы их в историю открытыми
+        add = getattr(bot, "stm_add_message", None)
+        if not callable(add):
+            add = bot.memory.stm.add_message
+        add("user", display_text, user_id, chat_key)
         for part in reply_parts:
-            bot.memory.stm.add_message("assistant", part, user_id, chat_key)
+            add("assistant", part, user_id, chat_key)
     except Exception as e:
         logger.warning(f"Не удалось переписать STM для изображения: {e}")
 
@@ -492,6 +766,7 @@ def _rewrite_image_stm(bot, chat_key: str, user_id: str, display_text: str, repl
 # /cancel_reminder, /inventory, /help — утилитарные, без LLM.
 _SLASH_DISPATCH = {
     "learn": "learn",
+    "stop_learning": "stop_learning",
     "remind": "remind",
     "add_todo": "todo",
     "add_inventory": "inventory",
@@ -500,6 +775,7 @@ _SLASH_DISPATCH = {
 _SLASH_HELP = (
     "Команды:\n"
     "/learn <тема> — начать обучение\n"
+    "/stop_learning [тема] — остановить курс\n"
     "/remind <что> [через N / в HH:MM] — напомнить\n"
     "/web — вкл/выкл веб-поиск\n"
     "/todo — список дел · /add_todo <задача>\n"
@@ -546,16 +822,11 @@ def _try_slash_command(bot, req: ChatRequest) -> tuple[str, bool] | None:
         active = bot.reminder_manager.get_active(chat_id)
         if not active:
             return "Активных напоминаний нет.", False
-        from app.features.reminder_manager import format_schedule
+        from app.features.reminder_manager import format_reminder_when
         lines = ["Активные напоминания:"]
         for i, r in enumerate(active):
             task = r.get("task") or "(без описания)"
-            if r.get("recurrence"):
-                when = format_schedule(r["recurrence"])
-            else:
-                remain = r["trigger_at"] - time.time()
-                mins = int(remain / 60)
-                when = f"через {mins} мин" if mins > 0 else f"через {int(remain)} сек"
+            when = format_reminder_when(r)
             lines.append(f"{i + 1}. {task} — {when} [id {r.get('id')}]")
         lines += ["", "Чтобы отменить: /cancel_reminder N (или id)"]
         return "\n".join(lines), False
@@ -595,6 +866,25 @@ def _try_slash_command(bot, req: ChatRequest) -> tuple[str, bool] | None:
     return "Неизвестная команда. Список: /help", False
 
 
+def _reply_stm_ts(bot, stm_key: str, reply: str):
+    """Серверная метка ответа хода — timestamp его записи в STM (та же, что
+    отдаст /api/chat/history). Фронт ставит по ней пузырь ответа: иначе он
+    вставал в ленту по моменту отправки вопроса, выше промежуточных сообщений
+    хода из inbox («Нажал …» режима управления). Хода/якоря нет — None
+    (фронт — по-старому); текста ответа в STM нет — «сейчас» (после всех
+    сообщений хода; сверки текста с историей у такого пузыря и так нет)."""
+    try:
+        tail = bot._turn_stm_tail(stm_key)
+    except Exception:
+        return None
+    if tail is None:
+        return None
+    hit = next((m for m in reversed(tail) if m.get("role") == "assistant"
+                and m.get("content") == reply), None)
+    ts = (hit or {}).get("timestamp")
+    return float(ts) if isinstance(ts, (int, float)) else time.time()
+
+
 async def _typed_chunks(text: str):
     """«Печать» порциями по 6 символов — чистый asyncio.sleep в event loop'е,
     без потока пула: time.sleep() внутри asyncio.to_thread держал бы воркер
@@ -618,6 +908,7 @@ async def chat_stream(req: ChatRequest):
     """
     bot = await _get_bot(req.persona)
     _check_not_muted(bot, req.persona)
+    await _touch_persona(req.persona)
     gen_key = f"{req.persona}:{req.chat_id or req.user_id}"
     stm_key = _stm_key(req)
     turn = {"frame": None}
@@ -638,7 +929,11 @@ async def chat_stream(req: ChatRequest):
                 provider, model = _answer_provider(bot) if llm_used else (None, None)
                 split_rest = bot.pop_pending_split_messages(req.chat_id)
             else:
-                llm_input = _prepare_image_input(bot, req.message, req.image) if req.image else req.message
+                llm_input = (
+                    _prepare_image_input(bot, req.message, req.image,
+                                         req.chat_id, req.user_id)
+                    if req.image else req.message
+                )
                 reply = bot.process_message(
                     llm_input,
                     user_id=req.user_id,
@@ -658,13 +953,16 @@ async def chat_stream(req: ChatRequest):
                         bot, stm_key, req.user_id,
                         f"📷 {cap}" if cap else "📷 (изображение)", [reply] + split_rest,
                     )
+            # В кадре хода — пока якорь STM этого хода виден
+            reply_ts = _reply_stm_ts(bot, stm_key, reply)
         # Pending-бакеты снимаем здесь же, в потоке под локом чата: без лока
         # следующее сообщение в тот же чат успело бы обнулить/перехватить
         # бакеты этого ответа
         extra = split_rest + bot.pop_pending_list_messages(req.chat_id)
         question_kind = bot.pop_pending_question_kind(req.chat_id)
         images = _pending_images(bot, req.chat_id)
-        return reply, split_rest, extra, question_kind, images, provider, model
+        return (reply, split_rest, extra, question_kind, images, provider,
+                model, reply_ts)
 
     async def _gen():
         # Ход пользователя держим до конца «печати» (split-пузыри с паузами) —
@@ -682,9 +980,26 @@ async def chat_stream(req: ChatRequest):
         # Генерация — в отдельной задаче (_run_generation): перезагрузка
         # страницы отменяет этот генератор, но не её; флаг «генерирует» и лок
         # чата снимутся, только когда ответ реально ляжет в STM
+        # До лока чата: «стоп»/дубль/занятый агент в режиме управления —
+        # короткий ответ сразу, без генерации
+        early, cc_token = _cc_turn_enter(bot, req)
+        if early is not None:
+            async for ev in _typed_chunks(early):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            payload = {
+                "done": True, "reply": early, "extra_messages": [],
+                "question_kind": None, "persona": req.persona,
+                "chat_id": req.chat_id or req.user_id,
+                "provider": None, "model": None,
+                "control_mode": bot.control_mode_on(req.chat_id or req.user_id),
+                "images": [],
+            }
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            return
         try:
             (reply, split_rest, extra, question_kind, images,
-             provider, model) = await _run_generation(gen_key, _generate)
+             provider, model, reply_ts) = await _run_generation(
+                gen_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token))
         except Exception:
             # Клиенту — обезличенное сообщение: текст исключения LLM-клиента
             # может содержать фрагменты API-ключа/URL с токеном авторизации
@@ -694,6 +1009,10 @@ async def chat_stream(req: ChatRequest):
             yield f"data: {json.dumps({'error': 'Не удалось получить ответ. Попробуйте ещё раз.'}, ensure_ascii=False)}\n\n"
             return
 
+        if reply_ts is not None:
+            # Метка ответа — до первой порции: пузырь сразу встаёт в ленте
+            # после промежуточных сообщений хода
+            yield f"data: {json.dumps({'reply_ts': reply_ts})}\n\n"
         # «Печать» финального текста: порции по несколько символов
         async for ev in _typed_chunks(reply):
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
@@ -720,6 +1039,7 @@ async def chat_stream(req: ChatRequest):
             "control_mode": bot.control_mode_on(req.chat_id or req.user_id),
             # Скриншоты страницы из режима управления («что на странице?»)
             "images": images,
+            "reply_ts": reply_ts,
         }
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -734,6 +1054,7 @@ async def chat_history(
     chat_id: str | None = None,
 ):
     bot = await _get_bot(persona)
+    await _touch_persona(persona)
     messages = await asyncio.to_thread(
         bot.memory.stm.get_messages, user_id=user_id, chat_id=chat_id
     )
@@ -745,11 +1066,13 @@ async def chat_clear(req: ClearChatRequest):
     """ПОЛНОЕ стирание памяти персоны: STM диалога + LTM-факты пользователя
     + дневник персоны (self_memory) + история и статистика самоинициатив +
     метка активности + адреса веб-чатов LLM + todo, напоминания, досье чата,
-    обучение, ритм и живое состояние персоны (срезы чата + глобальные мир/
-    инвентарь/кэш контекста — см. app/api/memory_wipe.py). Перед сбросом
+    обучение, ритм, живое состояние персоны (срезы чата + глобальные мир/
+    инвентарь/кэш контекста) и память режима управления (что просили и где
+    бот был: аудит действий чата, страница, агент задач — см.
+    app/api/memory_wipe.py). Перед сбросом
     делается снапшот в корзину (data/api_{persona}/clear_backups/, 7 дней)
-    — см. эндпоинт restore. Не трогаем: сценарии (пользовательские
-    плейбуки), базу знаний книги, загруженные файлы."""
+    — см. эндпоинт restore. Не трогаем: сохранённые сценарии
+    (пользовательские плейбуки), базу знаний книги, загруженные файлы."""
     from app.api import clear_backup
     from app.api import memory_wipe
     from app.features import web_llm as _wl
@@ -992,10 +1315,35 @@ async def chat_history_delete(req: StmDeleteRequest):
     # Удалить одно сообщение из STM (поштучное удаление в досье)
     bot = await _get_bot(req.persona)
     chat_key = req.chat_id or req.user_id
-    ok = await asyncio.to_thread(bot.memory.stm.delete_message, chat_key, req.index)
+    if req.content is None:
+        ok = await asyncio.to_thread(bot.memory.stm.delete_message, chat_key, req.index)
+    else:
+        ok = await asyncio.to_thread(
+            _stm_delete_matching, bot.memory.stm, chat_key, req.index, req.content, req.timestamp)
     if not ok:
-        raise HTTPException(status_code=404, detail="Сообщение с таким индексом не найдено")
+        raise HTTPException(status_code=404, detail="Сообщение не найдено — история изменилась, обновите её")
     return {"status": "ok"}
+
+
+def _stm_delete_matching(stm, chat_key: str, hint: int, content: str,
+                         timestamp: float | None) -> bool:
+    """Удалить из STM реплику с этим текстом (и меткой времени, если она
+    была в истории). Буфер — deque(maxlen): пока фронт показывал историю,
+    старые реплики могли вытесниться и индексы сдвинуться, поэтому индекс
+    с фронта — только подсказка при одинаковых репликах. Поиск и удаление —
+    под локом буфера (RLock, delete_message берёт его повторно)."""
+    with stm._lock:
+        msgs = stm.get_messages(chat_id=chat_key)
+        matches = [
+            i for i, m in enumerate(msgs)
+            if m.get("content") == content and (
+                timestamp is None
+                or abs(float(m.get("timestamp") or 0) - timestamp) < 0.001)
+        ]
+        if not matches:
+            return False
+        idx = min(matches, key=lambda i: abs(i - hint))
+        return stm.delete_message(chat_key, idx)
 
 
 @app.post("/api/chat/history/trim", dependencies=[Depends(require_auth)])
@@ -1188,6 +1536,8 @@ def _reminders(bot, chat_id: str) -> list[dict]:
             "trigger_at": r.get("trigger_at"),
             "recurrence": r.get("recurrence"),
             "user_name": r.get("user_name") or "",
+            # False — на паузе: не сработает, пока не продолжат (PUT active)
+            "active": not r.get("paused"),
         }
         for i, r in enumerate(bot.reminder_manager.get_active(chat_id))
     ]
@@ -1212,18 +1562,45 @@ async def reminders_add(persona: PersonaIdPath, req: ReminderAddRequest):
 
 
 @app.delete("/api/personas/{persona}/reminders", dependencies=[Depends(require_auth)])
-async def reminders_cancel(persona: PersonaIdPath, index: int, chat_id: str = "web_user"):
-    # Фронт (web/src/api.ts) шлёт 1-based index из _reminders(): переводим в
-    # 0-based и подаём в единую точку удаления по ссылке
-    # (parse_reminder_ref/cancel_by_ref, см. reminder_manager), чтобы
-    # адресация нигде в проекте не расходилась.
+async def reminders_cancel(persona: PersonaIdPath, index: int | None = None,
+                           id: str | None = None, chat_id: str = "web_user"):
+    # Надёжный путь — id напоминания (он же в _reminders()): между показом
+    # списка и отменой одно могло сработать, и номер строки указал бы на
+    # соседнее. 1-based index — для совместимости; оба идут в единую точку
+    # удаления по ссылке (parse_reminder_ref/cancel_by_ref, см. reminder_manager).
     bot = await _get_bot(persona)
     if bot.reminder_manager is None:
         raise HTTPException(status_code=400, detail="У этой персоны нет напоминаний (reminder: false)")
-    removed = await asyncio.to_thread(bot.reminder_manager.cancel_by_ref, chat_id, index - 1)
+    if id:
+        ref = id
+    elif index is not None:
+        ref = index - 1
+    else:
+        raise HTTPException(status_code=422, detail="Нужен id или index напоминания")
+    removed = await asyncio.to_thread(bot.reminder_manager.cancel_by_ref, chat_id, ref)
     if removed is None:
         raise HTTPException(status_code=404, detail="Напоминание не найдено")
     return {"items": await asyncio.to_thread(_reminders, bot, chat_id)}
+
+
+@app.put("/api/personas/{persona}/reminders/{rid}", dependencies=[Depends(require_auth)])
+async def reminders_update(persona: PersonaIdPath, rid: str, req: ReminderUpdateRequest):
+    # Правка текста/времени/паузы напоминания на месте, по id (повтор сохраняется)
+    bot = await _get_bot(persona)
+    if bot.reminder_manager is None:
+        raise HTTPException(status_code=400, detail="У этой персоны нет напоминаний (reminder: false)")
+    task = req.task.strip() if req.task is not None else None
+    if task is not None and not task:
+        raise HTTPException(status_code=422, detail="Текст напоминания пустой")
+    try:
+        updated = await asyncio.to_thread(
+            bot.reminder_manager.update_by_id, req.chat_id, rid, task, req.trigger_at,
+            req.active)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Недопустимое время: {e}")
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Напоминание не найдено")
+    return {"items": await asyncio.to_thread(_reminders, bot, req.chat_id)}
 
 
 # ── Календарь ─────────────────────────────────────────────────────────
@@ -1269,7 +1646,9 @@ def _reminder_calendar_items(start, end, persons) -> list[dict]:
             continue
         info = persons.get(persona) or {}
         for i, r in enumerate(reminders):
-            if r.get("fired") or not r.get("trigger_at") or r["trigger_at"] <= now:
+            # На паузе — не в календаре: он показывает то, что сработает
+            if (r.get("fired") or r.get("paused") or not r.get("trigger_at")
+                    or r["trigger_at"] <= now):
                 continue
             # timeutil.from_ts, а не datetime.fromtimestamp: это время
             # пользователя (TIMEZONE), а не системного пояса процесса.
@@ -1478,6 +1857,143 @@ async def living_state(persona: PersonaIdPath, chat_id: str = "web_user"):
     if living is None:
         return {"enabled": False, "ui_sync": False, "state": None}
     return await asyncio.to_thread(living.get_state_for_ui, chat_id)
+
+
+# ── Комната: живое присутствие персоны (app/api/room_api.py) ──────────
+# Всё из файлов обоих контекстов (веб api_<p> и Telegram <p> — другой
+# процесс), без создания BotInstance. web_presence здесь НЕ трогаем: открытая
+# комната не должна морозить фоновую жизнь персоны, это забота вкладки чата.
+
+def _room_persona(persona: str) -> dict:
+    from app.core import room
+    data = room.load_persona_data(persona)
+    if not data or not data.get("system_prompt"):
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    return data
+
+
+async def _room_call(fn, *args):
+    # Операция комнаты в потоке; RoomError → HTTP-код с текстом
+    from app.api import room_api
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except room_api.RoomError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+
+
+@app.get("/api/personas/{persona}/room", dependencies=[Depends(require_auth)])
+async def room_get(persona: PersonaIdPath, chat_id: str = "auto", context: str | None = None):
+    # Снимок комнаты: источник (самый свежий чат), конфиг, живое состояние,
+    # инвентарь с размещениями, фокус-сессия. Фронт опрашивает раз в минуту
+    from app.api import room_api
+    data = await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(room_api.room_snapshot, persona, data, chat_id, context)
+
+
+@app.get("/api/personas/{persona}/room/layout", dependencies=[Depends(require_auth)])
+async def room_layout_get(persona: PersonaIdPath):
+    from app.api import room_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(room_api.get_layout, persona)
+
+
+@app.put("/api/personas/{persona}/room/layout", dependencies=[Depends(require_auth)])
+async def room_layout_put(persona: PersonaIdPath, req: RoomLayoutUpdate):
+    from app.api import room_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(room_api.put_layout, persona, req.model_dump(exclude_unset=True))
+
+
+@app.get("/api/personas/{persona}/room/style", dependencies=[Depends(require_auth)])
+async def room_style_get(persona: PersonaIdPath):
+    from app.api import room_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(room_api.get_style, persona)
+
+
+@app.put("/api/personas/{persona}/room/style", dependencies=[Depends(require_auth)])
+async def room_style_put(persona: PersonaIdPath, req: RoomStyleUpdate):
+    from app.api import room_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(room_api.put_style, persona, req.model_dump(exclude_unset=True))
+
+
+@app.post("/api/personas/{persona}/room/style/describe", dependencies=[Depends(require_auth)])
+async def room_style_describe(persona: PersonaIdPath, req: RoomStyleDescribeRequest):
+    # Описание ТОЛЬКО стиля референса (медиум, линия, палитра, пропорции)
+    # vision-цепочкой основного роутера персоны — тем же путём, что ответ
+    # на фото в чате (router.get_response_with_image)
+    from app.api import room_api
+    await asyncio.to_thread(_room_persona, persona)
+    raw, mime = await _room_call(room_api.decode_data_url, req.reference,
+                                 room_api.REFERENCE_MAX_BYTES)
+    bot = await _get_bot(persona)
+    if not bot.router.supports_vision():
+        raise HTTPException(status_code=501,
+                            detail="Нет vision-модели: ни один провайдер персоны не принимает картинки")
+    answer = await asyncio.to_thread(
+        bot.router.get_response_with_image, room_api.STYLE_DESCRIBE_PROMPT, raw,
+        max_tokens=200, timeout=90.0, image_mime=mime)
+    if not answer or not str(answer).strip():
+        raise HTTPException(status_code=502, detail="Vision-модель не ответила")
+    return {"description": room_api.trim_words(answer, 60)}
+
+
+@app.get("/api/personas/{persona}/room/art", dependencies=[Depends(require_auth)])
+async def room_art_get(persona: PersonaIdPath):
+    from app.api import room_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(room_api.get_art, persona)
+
+
+@app.put("/api/personas/{persona}/room/art", dependencies=[Depends(require_auth)])
+async def room_art_put(persona: PersonaIdPath, req: RoomArtUpdate):
+    from app.api import room_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(room_api.put_art, persona, req.model_dump(exclude_unset=True))
+
+
+@app.post("/api/personas/{persona}/room/poke", dependencies=[Depends(require_auth)])
+async def room_poke(persona: PersonaIdPath, req: RoomPokeRequest):
+    # Клик по персоне: до LLM доходит только при features.room_pokes_to_llm
+    # и не чаще раза в 15 мин на чат; иначе delivered: false (всё равно 200)
+    from app.api import room_api
+    data = await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(room_api.poke, persona, data, req.chat_id or "auto")
+
+
+@app.post("/api/personas/{persona}/room/focus", dependencies=[Depends(require_auth)])
+async def room_focus(persona: PersonaIdPath, req: RoomFocusRequest):
+    """Фокус-сессия «поработать рядом»: start/end + сигнал персоне. На end —
+    одна короткая реплика персоны («как прошло?») основной LLM веб-бота
+    персоны; она же уходит в веб-инбокс и STM чата web_user (как инициатива).
+    Не вышло — line: null."""
+    from app.api import room_api
+    await asyncio.to_thread(_room_persona, persona)
+    result = await _room_call(room_api.focus, persona, req.action, req.minutes,
+                              req.chat_id or "auto")
+    if req.action != "end":
+        return result
+    line = None
+    if not result.pop("was_active", True):
+        # Повторный end (сессия уже закрыта) — без второй реплики и LLM-вызова
+        result["line"] = None
+        return result
+    try:
+        bot = await asyncio.to_thread(runtime.registry.get, persona)
+        if bot is not None:
+            line = await asyncio.to_thread(
+                room_api.generate_focus_line, bot, result.get("elapsed_min") or 0)
+            if line:
+                from app.api.inbox import inbox_push
+                await asyncio.to_thread(
+                    bot.memory.add_message, "assistant", line,
+                    user_id=room_api.WEB_CHAT_ID, chat_id=room_api.WEB_CHAT_ID)
+                inbox_push(persona, room_api.WEB_CHAT_ID, line)
+    except Exception as e:
+        logger.warning(f"[room] Реплика конца фокус-сессии не доставлена: {e}")
+    result["line"] = line
+    return result
 
 
 # Без persona (старый фронт — см. PresenceRequest.persona) предупреждаем
@@ -1732,11 +2248,25 @@ async def provider_test_webchat(req: WebchatRequest):
     return await asyncio.to_thread(settings_api.test_webchat, req.site)
 
 
-@app.put("/api/providers/local-tasks/{task}", dependencies=[Depends(require_auth)])
-async def provider_set_local_task(task: str, req: LocalBackendRequest):
-    # Движок локальной задачи (ollama | webchat) + сайт веб-чата для этой задачи
+@app.get("/api/personas/{persona}/local-tasks", dependencies=[Depends(require_auth)])
+async def persona_local_tasks(persona: PersonaIdPath):
+    # Движки служебных задач персоны (Ollama/веб-чат) + веб-чат фоновых задач
     from app.api import settings_api
-    result = await asyncio.to_thread(settings_api.set_local_task, task, req.backend, req.site)
+    result = await asyncio.to_thread(settings_api.get_persona_local_tasks, persona)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    return result
+
+
+@app.put("/api/personas/{persona}/local-tasks", dependencies=[Depends(require_auth)])
+async def persona_local_tasks_update(persona: PersonaIdPath, req: PersonaLocalTasksUpdate):
+    # Движок задачи (ollama | webchat | default) и/или веб-чат фоновых задач
+    from app.api import settings_api
+    result = await asyncio.to_thread(
+        settings_api.update_persona_local_tasks, persona, req.task, req.backend,
+        req.site, req.bg_site)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result["detail"])
     return result
@@ -1836,7 +2366,9 @@ async def persona_config_update(persona: PersonaIdPath, req: PersonaConfigUpdate
     from app.api import settings_api
     result = await asyncio.to_thread(
         settings_api.update_persona_config, persona, req.settings, req.stm_size, req.features,
-        req.llm.model_dump() if req.llm else None,
+        # exclude_unset: частичный патч llm (только models или fallback) не
+        # должен приходить с primary=None — это сняло бы закрепление провайдера
+        req.llm.model_dump(exclude_unset=True) if req.llm else None,
     )
     if result is None:
         raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")

@@ -6,6 +6,7 @@
 import logging
 from openai import OpenAI
 from app.core.config import PROVIDER_CONFIGS
+from app.core.language import detect_language, user_language_line
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,9 @@ def moderate_message(text: str) -> bool:
     logger.info(f"[MODERATION] Проверка: \'{text[:60]}\'")
 
     messages = [
-        {"role": "system", "content": MODERATION_PROMPT},
+        {"role": "system", "content": (
+            f"{MODERATION_PROMPT}\n{user_language_line(detect_language(text))} "
+            "The verdict word itself stays BLOCK or ALLOW.")},
         {"role": "user", "content": text}
     ]
     try:

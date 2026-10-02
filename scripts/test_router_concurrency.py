@@ -87,6 +87,7 @@ def main():
         r.active_provider = "webchat"
         r.pinned_provider = None
         r.fallback_order = None
+        r.excluded = set()
         r.model_overrides = {}
         r.webchat_sites = list(sites)
         r._webchats = {}
@@ -754,7 +755,10 @@ def main():
     # ── 10. Локальный роутер: короткая очередь веб-чата → откат на локальную модель ──
     import app.core.local_router as lrm
     lr = lrm.LocalLLMRouter.__new__(lrm.LocalLLMRouter)
-    lr._task_cfg = {"query_rewrite": {"backend": "webchat", "site": "qwen"}}
+    lr._personas = {}
+    lr._webchats = {}
+    lr.bind_persona("p", None, {"tasks": {"query_rewrite": {"backend": "webchat",
+                                                            "site": "qwen"}}})
     lr._available = False
     got_kw = {}
 
@@ -763,12 +767,13 @@ def main():
             got_kw.update(kw)
             return None
     lr._get_webchat = lambda site=None: _LChat()
-    lr.get_response([{"role": "user", "content": "x"}], task="query_rewrite")
+    lr.get_response([{"role": "user", "content": "x"}], task="query_rewrite",
+                    persona="p")
     check("local_router: очередь side ждётся "
           f"{lrm.LOCAL_WEBCHAT_QUEUE_WAIT_SEC}с, а не до 600 с",
           got_kw.get("lock_timeout") == lrm.LOCAL_WEBCHAT_QUEUE_WAIT_SEC)
     lr.get_response([{"role": "user", "content": "x"}], task="query_rewrite",
-                    queue_wait=42.0)
+                    queue_wait=42.0, persona="p")
     check("local_router: явный queue_wait уважается",
           got_kw.get("lock_timeout") == 42.0)
 

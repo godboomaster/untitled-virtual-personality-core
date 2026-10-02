@@ -86,9 +86,9 @@ def main():
     # ── 2. Стилевые модификаторы ──
     from app.features import help_style
 
-    for style, marker in (("action_only", "НЕ можешь объяснять"),
-                          ("casual_human", "как обычный человек"),
-                          ("full_assistant", "досконально")):
+    for style, marker in (("action_only", "CANNOT explain"),
+                          ("casual_human", "like an ordinary person"),
+                          ("full_assistant", "thoroughly")):
         block = help_style.build_style_block(style, "готовка")
         check(f"стиль {style}: фрагмент + приоритет + домен",
               block and marker in block and "OVERRIDES" in block and "готовка" in block)
@@ -115,7 +115,7 @@ def main():
         no_block = help_style.build_block_for_message(
             "смотри какую смешную картинку нашёл", prim, local)
         check("пайплайн: help-запрос primitive → action_only подключён",
-              block is not None and "action" not in block.lower() or "НЕ можешь объяснять" in (block or ""))
+              block is not None and "action" not in block.lower() or "CANNOT explain" in (block or ""))
         check("пайплайн: болтовня → модификатор не влезает",
               no_block is None)
     else:
@@ -146,7 +146,7 @@ def main():
     sm_prim._write_episode([{"role": "user", "content": "привет, я принёс тебе еду",
                              "user_name": "Хозяин"}])
     check("self_memory: primitive-промпт использован",
-          captured and "впечатление-вспышку" in captured[-1])
+          captured and "flash impression" in captured[-1])
     check("self_memory: эпизод короткий записан",
           sm_prim._episodes["active"] and sm_prim._episodes["active"][-1]["text"] == "Тепло. Дремал у батареи.")
 

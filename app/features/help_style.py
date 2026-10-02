@@ -24,6 +24,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from app.core.language import detect_language, user_language_line
 from app.core.persona_context import _extract_json
 
 logger = logging.getLogger(__name__)
@@ -48,40 +49,42 @@ _STATS = {"detect_calls": 0, "cache_hits": 0, "blocks_applied": 0}
 def get_stats() -> dict:
     return dict(_STATS)
 
-_HELP_DETECT_PROMPT = """Определи: сообщение пользователя — это просьба о помощи / совете / объяснении / решении конкретной задачи в предметной области (а НЕ бытовой разговор)?
+_HELP_DETECT_PROMPT = """Decide: is the user's message a request for help / advice / an explanation / solving a specific task in some subject area (and NOT everyday small talk)?
 
-HELP — вопросы «как», «почему», «что делать», просьбы объяснить/посчитать/написать/выбрать, учебные и рабочие задачи.
-CHAT — приветствия, болтовня, эмоции, рассказы о себе, реакции, «спасибо», обсуждение самого персонажа.
+HELP — "how", "why", "what should I do" questions, requests to explain/calculate/write/choose, study and work tasks.
+CHAT — greetings, chit-chat, emotions, stories about oneself, reactions, "thanks", discussing the character itself.
 
-Верни JSON: {{"is_help_request": true, "domain": "тема одним-двумя словами"}} или {{"is_help_request": false, "domain": ""}}
+Return JSON: {{"is_help_request": true, "domain": "the topic in one or two words"}} or {{"is_help_request": false, "domain": ""}}
 
-Сообщение: «{text}»"""
+Message: "{text}"
+{language_line}"""
 
 # Общесистемные шаблоны уровня. Персональные правила подачи конкретной
 # персоны (например, обязательная фраза-переход перед точным вопросом)
 # ложатся поверх, если не противоречат.
 STYLE_FRAGMENTS = {
     "action_only": (
-        "Если пользователь просит о помощи в предметной области (совет, объяснение, "
-        "решение задачи) — ты НЕ можешь объяснять или советовать словами на человеческом "
-        "уровне. Либо выполни доступное тебе действие (напоминание/todo/инвентарь), "
-        "либо отреагируй минимально — односложно, жестом, без развёрнутого ответа. "
-        "Ты не разбираешься в темах, которые не относятся к твоим базовым функциям."
+        "If the user asks for help in some subject area (advice, an explanation, "
+        "solving a task) — you CANNOT explain or advise in words at a human "
+        "level. Either perform an action available to you (reminder/todo/inventory), "
+        "or react minimally — with one word, a gesture, without a detailed answer. "
+        "You know nothing about topics outside your basic functions."
     ),
     "casual_human": (
-        "Если пользователь просит о помощи в теме, требующей экспертизы — отвечай "
-        "КОРОТКО, как обычный человек, а не эксперт: своими словами, без претензии "
-        "на полноту: \"вроде надо делать так\", \"я не спец, но кажется...\". "
-        "НЕ задавай уточняющих вопросов в стиле ассистента. НЕ давай точных, "
-        "структурированных, развёрнутых формулировок. Можешь ошибаться или дать "
-        "неполный ответ — это нормально, ты не справочник."
+        "If the user asks for help on a topic that requires expertise — answer "
+        "BRIEFLY, like an ordinary person, not an expert: in your own words, without "
+        "claiming completeness: \"I think you're supposed to do it like this\", "
+        "\"I'm no expert, but it seems...\". "
+        "Do NOT ask assistant-style clarifying questions. Do NOT give precise, "
+        "structured, detailed wording. You may be wrong or give an "
+        "incomplete answer — that's fine, you are not a reference book."
     ),
     "full_assistant": (
-        "Если пользователь просит о помощи в теме — ты можешь разобрать её досконально: "
-        "точные расчёты, код с нуля, структурированный анализ, уточняющие вопросы "
-        "там, где это нужно для точности ответа. Длина ответа по-прежнему определяется "
-        "твоими правилами длины (см. остальной system_prompt) — точность не значит "
-        "избыточную многословность."
+        "If the user asks for help on a topic — you can go through it thoroughly: "
+        "precise calculations, code from scratch, structured analysis, clarifying questions "
+        "where they are needed for an accurate answer. The length of the answer is still "
+        "set by your length rules (see the rest of the system_prompt) — accuracy does not "
+        "mean excessive verbosity."
     ),
 }
 
@@ -94,11 +97,14 @@ def detect_help_request(text: str, local_router) -> Optional[dict]:
         return None
     if local_router is None or not local_router.is_available(task="help_detect"):
         return None
+    # Язык — текущего сообщения (тема domain — свободный текст)
+    lang_line = user_language_line(detect_language(text))
     try:
         response = local_router.get_response(
             messages=[
-                {"role": "system", "content": "Ты — бинарный классификатор. Отвечаешь только валидным JSON."},
-                {"role": "user", "content": _HELP_DETECT_PROMPT.format(text=text[:500])},
+                {"role": "system", "content": "You are a binary classifier. You answer only with valid JSON."},
+                {"role": "user", "content": _HELP_DETECT_PROMPT.format(
+                    text=text[:500], language_line=lang_line)},
             ],
             temperature=0.0,
             max_tokens=80,
@@ -112,7 +118,8 @@ def detect_help_request(text: str, local_router) -> Optional[dict]:
             }
         # JSON не осилила — дешёвый бинарный fallback
         verdict = local_router.classify(
-            system_prompt="Classify the user message: is it a request for help/advice/explanation in some domain (not small talk)?",
+            system_prompt=("Classify the user message: is it a request for help/advice/explanation in some domain (not small talk)?\n"
+                           + lang_line),
             user_prompt=text[:500],
             valid_outputs=["HELP", "CHAT"],
             temperature=0.0,

@@ -30,7 +30,8 @@ from typing import Dict, List, Optional
 
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, load_json_safe
-from app.core.language import detect_dialogue_language, language_name
+from app.core.language import (detect_dialogue_language, language_name,
+                                persona_language, user_language_line)
 from app.core.paths import data_dir
 from app.features.env_context import _WMO_DESC, fetch_forecast, is_precip_code, load_location
 
@@ -400,7 +401,7 @@ class RhythmManager:
     def _lang(self, chat_id: str) -> str:
         """Язык сообщения: общий детектор app.core.language по последним
         репликам ПОЛЬЗОВАТЕЛЯ из чата (реплики ассистента и синтетика не
-        считаются). Без истории — русский."""
+        считаются). Без истории — язык персоны, иначе русский."""
         if self._memory is not None:
             try:
                 lang = detect_dialogue_language(
@@ -409,6 +410,11 @@ class RhythmManager:
                     return language_name(lang)
             except Exception:
                 pass
+        if self._persona is not None:
+            name = language_name(persona_language(
+                getattr(self._persona, "system_prompt", "")))
+            if name:
+                return name
         return "Russian"
 
     def _generate_text(self, kind: str, facts: str, lang: str) -> Optional[str]:
@@ -417,19 +423,18 @@ class RhythmManager:
             return None
         persona_prompt = self._persona.system_prompt.strip()
         if kind == "morning":
-            user_content = (f"Current time: {facts}. Greet the user." if lang == "English"
-                            else f"Текущее время: {facts}. Поздоровайся с пользователем.")
+            user_content = f"Current time: {facts}. Greet the user."
         elif kind == "night":
-            user_content = (f"Current time: {facts}. The user is still awake." if lang == "English"
-                            else f"Текущее время: {facts}. Пользователь ещё не спит.")
+            user_content = f"Current time: {facts}. The user is still awake."
         else:
-            user_content = (f"Weather fact: {facts}" if lang == "English"
-                            else f"Факт о погоде: {facts}")
+            user_content = f"Weather fact: {facts}"
+        # lang — имя языка ("Russian"/"English"), строке языка нужен код
+        code = {"Russian": "ru", "English": "en"}.get(lang)
         messages = [
             {"role": "system", "content": (
                 f"{persona_prompt}\n\n---\n{_TASK_PROMPTS[kind]} "
-                f"Write the message in {lang}. "
-                "Do NOT use markdown. Do NOT write meta-notes."
+                "Do NOT use markdown. Do NOT write meta-notes.\n"
+                f"{user_language_line(code)}"
             )},
             {"role": "user", "content": user_content},
         ]

@@ -71,7 +71,7 @@ def ai_result(answer: str) -> dict:
     text = answer.strip()
     if len(text) > AI_MAX_CHARS:
         text = text[:AI_MAX_CHARS].rsplit(" ", 1)[0] + " […]"
-    return {"title": "Google AI Mode (сводка по выдаче Google)", "body": "",
+    return {"title": "Google AI Mode (summary of Google results)", "body": "",
             "href": "google.com (AI Mode)", "full_text": text,
             "_source": "google_ai"}
 

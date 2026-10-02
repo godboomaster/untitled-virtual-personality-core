@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════════════════════════
-     VPC SKIN FILE v1 · ЭКРАН ЧАТА — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ.
+     VPC SKIN FILE · КОНТРАКТ v2 · ЭКРАН ЧАТА — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ.
 
      Это самодостаточный файл ОДНОГО экрана скина (визуальной оболочки)
      ИИ-персоны: экран чата с левым сайдбаром (список персон), лентой
@@ -25,7 +25,12 @@
         заблокирована политикой CSP. Картинки и шрифты — только inline
         (data-URI) или рисуй чистым CSS/SVG.
 
-     4. ВСЁ ОСТАЛЬНОЕ — свободная зона: любая структура страницы,
+     4. Мета vpc-skin-contract в <head> (сейчас content="2") — версия
+        контракта, на который рассчитан файл. Не повышай её сам: скин
+        с версией новее приложения не загрузится. Нет меты — контракт v1.
+        Имя/автор/версия скина — мета vpc-skin-name / -author / -version.
+
+     5. ВСЁ ОСТАЛЬНОЕ — свободная зона: любая структура страницы,
         любые дополнительные элементы, декор, фоны, анимации, свой JS.
         Скин может выглядеть КАК УГОДНО непохоже на этот шаблон.
 
@@ -99,6 +104,27 @@
        Счётчики: элемент [data-vpc-count="<ключ>"] получает число записей
        списка. Ключи этого экрана: personas, todos, inventory, features.
 
+       Окружение (v2): слоты local-time («HH:MM»), weather (строка погоды,
+       если задано местоположение), weather-temp («+7°C»).
+
+     ТЕМА, ЯЗЫК, ВРЕМЯ СУТОК (v2). Приложение ставит на <html>:
+       data-theme="light|dark"  — тема приложения. Скин ОБЯЗАН выглядеть
+                                  прилично в обеих: переопредели палитру
+                                  в html[data-theme="light"] { ... }
+       lang="ru|en"             — язык интерфейса
+       data-vpc-time-of-day="morning|day|evening|night"
+       data-vpc-weather="clear|cloudy|fog|rain|snow|storm" (если известна)
+
+     ПОДПИСИ (v2): элемент [data-vpc-label="ключ"] получает локализованный
+       текст приложения (содержимое заменяется ЦЕЛИКОМ — ставь на отдельный
+       <span>); исходный текст — фолбэк, если подписи нет. Атрибуты:
+       data-vpc-label-placeholder / -title / -aria="ключ". Ключи экрана:
+       persona-list, open-dossier, open-dossier-title, typing,
+       message-placeholder, send, attach, remove-attach, reply,
+       cancel-reply, presence, mood, initiative, next-reminder, todos,
+       inventory, modules. Можно переименовать текст под стиль скина,
+       убрав data-vpc-label, — тогда он не локализуется.
+
      SHELL-ТЕМА КАРКАСА (OPTIONAL): пока открыт экран персоны со скином,
      приложение перекрашивает и свой каркас — левый бар с разделами и
      верхний топбар. Для этого в :root скина объявляются переменные
@@ -113,15 +139,40 @@
      Сворачивание списков сайдбаров эталон делает нативным <details> —
      можно реализовать иначе, это внутренняя механика скина.
 
-     СВОЙ JS: можно, в блоке «СВОБОДНАЯ ЗОНА» внизу. Доступно событие
-     document 'vpc:state' (e.detail — весь снапшот данных) для
-     декоративных реакций. Отправлять сообщения и клики самому не нужно —
-     их обрабатывает bridge-скрипт.
+     СВОЙ JS: можно, в блоке «СВОБОДНАЯ ЗОНА» внизу. Отправлять сообщения
+     и клики самому не нужно — их обрабатывает bridge-скрипт. Для
+     декоративных реакций:
+       document 'vpc:state'  (e.detail — весь снапшот данных);
+       window.vpc (v2) — bridge стоит в конце <body>, поэтому бери его
+       в обработчике DOMContentLoaded или события document 'vpc:ready':
+         vpc.contract / vpc.skinContract  версии контракта (прил. / скина)
+         vpc.state                        последний снапшот
+         vpc.on(event, fn(detail, state)) → функция отписки; события:
+           'state'   каждый снапшот
+           'message' новое сообщение ленты (история не считается)
+           'typing'  смена «печатает» (boolean)
+           'mood'    смена настроения
+           'theme'   смена темы ('light' | 'dark')
+           'persona' смена персоны
+         vpc.send(text, image?)           отправить сообщение
+         vpc.action(name, values, id?)    действие записи
+         vpc.setSetting(key, value)       изменить настройку
+         vpc.selectPersona(id), vpc.openDossier(), vpc.closeDossier()
+         vpc.zoom(src)                    показать картинку крупно
+     Лента сообщений не перерисовывается целиком: узлы сообщений
+     переиспользуются по id, CSS-анимация появления проигрывается только
+     у новых. Горячие клавиши (Escape, сочетания с Ctrl/Cmd/Alt) уходят
+     приложению; оставить клавишу себе — e.preventDefault().
      ═══════════════════════════════════════════════════════════════════════ -->
 <html lang="ru" data-vpc-active="chat">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Метаданные скина: контракт (обязательно для v2), имя, автор, версия -->
+<meta name="vpc-skin-contract" content="2" />
+<meta name="vpc-skin-name" content="VPC Default" />
+<meta name="vpc-skin-author" content="Virtual Persona Core" />
+<meta name="vpc-skin-version" content="1.0" />
 <title>VPC Skin — Chat</title>
 <style>
 
@@ -136,6 +187,8 @@
     --accent: #7ee787;
     --user-bubble: #22304a;
     --persona-bubble: #1d1d24;
+    --user-border: #33507e;
+    --on-accent: #0b0b0e;
 
     /* OPTIONAL: SHELL-ТЕМА — палитра каркаса приложения (левый бар с
        разделами, верхний топбар) на время, пока открыт экран этой персоны.
@@ -150,6 +203,21 @@
     --vpc-shell-accent: var(--accent);
     --vpc-shell-font: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
     --vpc-shell-radius: 6px;
+  }
+
+  /* Светлая тема приложения (v2): приложение ставит html[data-theme].
+     Shell-тема каркаса берётся из базового :root выше. */
+  html[data-theme="light"] {
+    --bg: #f4f3ef;
+    --panel: #ffffff;
+    --line: #dcd9d0;
+    --text: #1d1d22;
+    --dim: #6b6874;
+    --accent: #1f7a35;
+    --user-bubble: #dfe8f7;
+    --persona-bubble: #f0efea;
+    --user-border: #a9bfe3;
+    --on-accent: #ffffff;
   }
 
   * { box-sizing: border-box; }
@@ -264,7 +332,7 @@
   .msg[data-role="user"] {
     align-self: flex-end;
     background: var(--user-bubble);
-    border-color: #33507e;
+    border-color: var(--user-border);
   }
 
   .msg-quote {
@@ -343,7 +411,7 @@
   .chat-send {
     background: var(--accent);
     border: 0;
-    color: #0b0b0e;
+    color: var(--on-accent);
     font: inherit;
     font-weight: 700;
     padding: 8px 18px;
@@ -402,33 +470,6 @@
   }
   .ctx-details summary .cnt { color: var(--accent); }
   .ctx-details[open] summary { margin-bottom: 4px; }
-
-  /* Вкладки досье: в разметке этого экрана не используются */
-  .dossier-tabs {
-    display: flex;
-    gap: 4px;
-    padding: 8px 16px 0;
-    background: var(--panel);
-    border-bottom: 1px solid var(--line);
-  }
-  .dossier-tab {
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--dim);
-    font: inherit;
-    padding: 8px 12px;
-    cursor: pointer;
-  }
-  .dossier-tab.tab-active { color: var(--accent); border-bottom-color: var(--accent); }
-  .dossier-page { display: none; }
-  .dossier-page.page-active {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    align-content: start;
-  }
-  @media (max-width: 800px) { .dossier-page.page-active { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -439,6 +480,7 @@
   <!-- OPTIONAL: левый сайдбар — список персон. Клик по элементу
        переключает персону (обрабатывает bridge). -->
   <aside class="chat-left">
+    <div class="ctx-title" data-vpc-label="persona-list">Персоны</div>
     <div data-vpc="persona-list"></div>
     <template data-vpc="persona-item">
       <button type="button" class="pl-item">
@@ -461,7 +503,8 @@
         </div>
       </div>
       <!-- OPTIONAL: клик = открыть досье -->
-      <button type="button" class="chat-dossier-btn" data-vpc="open-dossier">DOSSIER</button>
+      <button type="button" class="chat-dossier-btn" data-vpc="open-dossier"
+              data-vpc-label="open-dossier" data-vpc-label-title="open-dossier-title">DOSSIER</button>
     </header>
 
     <!-- REQUIRED: контейнер ленты сообщений. Атрибут data-vpc не трогать.
@@ -475,7 +518,8 @@
     <template data-vpc="message">
       <div class="msg">
         <!-- OPTIONAL: клик = ответить на это сообщение (bridge знает id) -->
-        <button type="button" class="item-btn msg-reply-btn" data-vpc-item-action="reply">↩</button>
+        <button type="button" class="item-btn msg-reply-btn" data-vpc-item-action="reply"
+                data-vpc-label-title="reply">↩</button>
         <!-- data-vpc-optional: если цитаты нет, приложение удалит этот блок целиком -->
         <div class="msg-quote" data-vpc-optional>
           <b data-vpc-field="quote-author"></b>
@@ -488,50 +532,54 @@
     </template>
 
     <!-- OPTIONAL: индикатор «печатает…»; виден при атрибуте data-active -->
-    <div class="chat-typing" data-vpc="typing-indicator">печатает…</div>
+    <div class="chat-typing" data-vpc="typing-indicator"><span data-vpc-label="typing">печатает</span>…</div>
 
     <!-- OPTIONAL: плашка «ответ на сообщение»; приложение само ставит/снимает
          hidden и заполняет поля reply-author / reply-text -->
     <div class="chat-reply-bar" data-vpc="reply-bar" hidden>
       <b data-vpc-field="reply-author"></b>
       <span class="chat-reply-text" data-vpc-field="reply-text"></span>
-      <button type="button" class="item-btn" data-vpc-action="cancel-reply">✕</button>
+      <button type="button" class="item-btn" data-vpc-action="cancel-reply" data-vpc-label-title="cancel-reply">✕</button>
     </div>
 
     <!-- OPTIONAL: превью прикреплённой картинки (файл выбирает bridge) -->
     <div class="chat-attach-bar">
       <img class="chat-attach-thumb" data-vpc="attach-preview" alt="" hidden />
-      <button type="button" class="item-btn" data-vpc="cancel-attach">✕</button>
+      <button type="button" class="item-btn" data-vpc="cancel-attach" data-vpc-label-title="remove-attach">✕</button>
     </div>
 
     <div class="chat-bar">
       <!-- В строке ввода — ТОЛЬКО эти три элемента. Кнопку «очистить диалог»
            сюда НЕ добавляй: она живёт в досье, в карточке «Опасная зона». -->
       <!-- OPTIONAL: клик = прикрепить картинку -->
-      <button type="button" class="chat-clear" data-vpc="attach-image" title="Прикрепить картинку">+</button>
+      <button type="button" class="chat-clear" data-vpc="attach-image" title="Прикрепить картинку" data-vpc-label-title="attach">+</button>
       <!-- REQUIRED: поле ввода. Enter = отправка. -->
-      <input class="chat-input" data-vpc="input" type="text" placeholder="Сообщение…" />
+      <input class="chat-input" data-vpc="input" type="text" placeholder="Сообщение…"
+             data-vpc-label-placeholder="message-placeholder" />
       <!-- REQUIRED: кнопка отправки. Клик обрабатывает bridge. -->
-      <button type="button" class="chat-send" data-vpc="send">SEND</button>
+      <button type="button" class="chat-send" data-vpc="send" data-vpc-label="send">SEND</button>
     </div>
   </div>
 
   <!-- OPTIONAL: правый сайдбар — контекстная панель -->
   <aside class="chat-right">
-    <div class="ctx-title">Присутствие</div>
+    <!-- data-vpc-label: подпись на языке приложения (исходный текст — фолбэк) -->
+    <div class="ctx-title" data-vpc-label="presence">Присутствие</div>
     <div class="ctx-line"><span data-vpc="persona-status">…</span></div>
     <div class="ctx-note" data-vpc="ctx-pastime">…</div>
+    <!-- OPTIONAL (v2): локальное время пользователя и погода (пусто — неизвестна) -->
+    <div class="ctx-note"><span data-vpc="local-time"></span> <span data-vpc="weather"></span></div>
 
-    <div class="ctx-title">Настроение</div>
+    <div class="ctx-title" data-vpc-label="mood">Настроение</div>
     <div class="ctx-line">
       <span data-vpc="ctx-mood">…</span> <span class="ctx-trend" data-vpc="ctx-trend"></span>
     </div>
 
-    <div class="ctx-title">Самоинициатива</div>
+    <div class="ctx-title" data-vpc-label="initiative">Самоинициатива</div>
     <div class="ctx-note" data-vpc="ctx-initiative">…</div>
     <div class="ctx-note" data-vpc="ctx-last-reply">…</div>
 
-    <div class="ctx-title">Ближайшее напоминание</div>
+    <div class="ctx-title" data-vpc-label="next-reminder">Ближайшее напоминание</div>
     <div class="ctx-note" data-vpc="ctx-next-reminder">…</div>
 
     <!-- OPTIONAL: строка об активном курсе обучения (пустая — курса нет) -->
@@ -540,7 +588,7 @@
     <!-- OPTIONAL: раскрывающиеся списки (нативный <details>).
          [data-vpc-count] в заголовке получает число записей от приложения. -->
     <details class="ctx-details" open>
-      <summary>Дела · <span class="cnt" data-vpc-count="todos">0</span></summary>
+      <summary><span data-vpc-label="todos">Дела</span> · <span class="cnt" data-vpc-count="todos">0</span></summary>
       <div data-vpc="todo-list"></div>
       <template data-vpc="todo-item">
         <div class="ctx-line todo-item item-row">
@@ -551,7 +599,7 @@
     </details>
 
     <details class="ctx-details">
-      <summary>Инвентарь · <span class="cnt" data-vpc-count="inventory">0</span></summary>
+      <summary><span data-vpc-label="inventory">Инвентарь</span> · <span class="cnt" data-vpc-count="inventory">0</span></summary>
       <div data-vpc="inventory-list"></div>
       <template data-vpc="inventory-item">
         <div class="ctx-line item-row">
@@ -562,7 +610,7 @@
     </details>
 
     <details class="ctx-details">
-      <summary>Модули · <span class="cnt" data-vpc-count="features">0</span></summary>
+      <summary><span data-vpc-label="modules">Модули</span> · <span class="cnt" data-vpc-count="features">0</span></summary>
       <div data-vpc="feature-list"></div>
       <template data-vpc="feature-item">
         <span class="feature-badge" data-vpc-field="label"></span>
@@ -574,10 +622,17 @@
 
 <!-- ══════════════ СВОБОДНАЯ ЗОНА: декоративный JS скина ══════════════
      Можно всё стереть или написать своё. Доступно событие 'vpc:state'
-     на document (e.detail — снапшот данных экрана). -->
+     на document (e.detail — снапшот данных экрана) и API window.vpc. -->
 <script>
   // Пример: реакция на обновления состояния (можно удалить).
   document.addEventListener('vpc:state', function () { /* декор */ });
+
+  // Пример window.vpc (v2): API появляется к событию 'vpc:ready'
+  document.addEventListener('vpc:ready', function () {
+    vpc.on('message', function (m) {
+      if (m.role === 'persona') { /* новое сообщение персоны: звук, вспышка… */ }
+    });
+  });
 </script>
 
 <!-- ==== VPC-BRIDGE:START ====

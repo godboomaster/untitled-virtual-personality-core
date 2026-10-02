@@ -25,7 +25,8 @@ from typing import Optional, List, Dict
 from app.core import timeutil
 from app.core.paths import data_dir
 from app.core.atomic_io import atomic_write_json, load_json_safe
-from app.core.language import detect_language, detect_dialogue_language, language_name
+from app.core.language import (detect_language, detect_dialogue_language, language_name,
+                               persona_language, user_language_line)
 
 logger = logging.getLogger(__name__)
 
@@ -944,6 +945,44 @@ def parse_reminder_ref(arg: str) -> Optional[tuple]:
     return None
 
 
+# ─── Пауза ────────────────────────────────────────────────
+# Напоминание на паузе хранится с "paused": true; флага нет — активно (так
+# читаются и файлы, записанные до появления паузы). Пауза не трогает ни
+# trigger_at, ни расписание: планировщик такие записи просто не берёт.
+# В списке (get_active) напоминание на паузе видно и после своего времени —
+# его всё ещё можно продолжить или отменить.
+
+def is_paused(r: dict) -> bool:
+    return bool(r.get("paused"))
+
+
+def _is_listed(r: dict, now: float) -> bool:
+    # Запись видна в списке: не погашена и либо ещё впереди, либо на паузе.
+    return not r.get("fired") and (is_paused(r) or r["trigger_at"] > now)
+
+
+def _is_armed(r: dict, now: float) -> bool:
+    # Запись ждёт срабатывания: не погашена, не на паузе, время впереди.
+    return not r.get("fired") and not is_paused(r) and r["trigger_at"] > now
+
+
+def format_reminder_when(r: dict) -> str:
+    """«Когда» для текстового списка напоминаний (/reminders в Telegram и
+    веб-чате): расписание повтора или остаток до срабатывания, у стоящего
+    на паузе — пометка; время разового, прошедшее на паузе, остатком не
+    показываем (отрицательных минут не бывает)."""
+    if r.get("recurrence"):
+        when = format_schedule(r["recurrence"])
+    else:
+        remain = r["trigger_at"] - time.time()
+        mins = int(remain / 60)
+        if remain <= 0:
+            when = "время прошло"
+        else:
+            when = f"через {mins} мин" if mins > 0 else f"через {int(remain)} сек"
+    return f"{when} (на паузе)" if is_paused(r) else when
+
+
 # ─── Менеджер ─────────────────────────────────────────────
 
 class ReminderManager:
@@ -1091,12 +1130,13 @@ class ReminderManager:
         return reminder
 
     def get_active(self, chat_id: str) -> List[dict]:
-        # Активные (не сработавшие) напоминания для чата.
+        # Не сработавшие напоминания чата, включая поставленные на паузу
+        # (у них "paused": true — списки помечают их, см. is_paused).
         now = time.time()
         with self._lock:
             return [
                 r for r in self._reminders
-                if r["chat_id"] == str(chat_id) and not r.get("fired") and r["trigger_at"] > now
+                if r["chat_id"] == str(chat_id) and _is_listed(r, now)
             ]
 
     def cancel_reminder(self, chat_id: str, index: int) -> bool:
@@ -1162,9 +1202,10 @@ class ReminderManager:
         if not rid:
             return None
         with self._lock:
+            # Напоминание на паузе перенос не берёт: сдвигается то, что
+            # должно сработать (продолжить — через update_by_id)
             target = next((r for r in self._reminders
-                           if r["chat_id"] == str(chat_id) and not r.get("fired")
-                           and r["trigger_at"] > now
+                           if r["chat_id"] == str(chat_id) and _is_armed(r, now)
                            and str(r.get("id") or "").lower() == rid), None)
             if target is None:
                 return None
@@ -1179,6 +1220,75 @@ class ReminderManager:
                     f"task='{target.get('task')}' на "
                     f"{timeutil.from_ts(new_trigger).strftime('%d.%m %H:%M')}")
         return {"task": target.get("task"), "trigger_at": new_trigger, "recreated": False}
+
+    def update_by_id(self, chat_id: str, rid: str, task: Optional[str] = None,
+                     trigger_at: Optional[float] = None,
+                     active: Optional[bool] = None) -> Optional[dict]:
+        """Правка напоминания по id на месте (веб-досье): текст, время
+        срабатывания и/или пауза. Одна запись под одним локом — в отличие от
+        «отменить + создать заново», сбой посередине ничего не теряет, а id,
+        автор и расписание повтора остаются прежними.
+
+        У повторяющегося новое время задаёт и расписание: час/минута (у
+        еженедельного — и день недели) берутся из trigger_at по часам
+        пользователя (timeutil).
+
+        active=False ставит на паузу (планировщик запись не берёт), True —
+        продолжает:
+          - повторяющееся — со следующего времени по расписанию после «сейчас»
+            (срабатывания, пропущенные на паузе, не догоняются); если прежнее
+            trigger_at ещё впереди, оно остаётся — короткая пауза не сбрасывает
+            перенос, сделанный до неё;
+          - разовое, чьё время прошло за время паузы, — trigger_at не
+            трогаем, и цикл отправляет его ближайшим тиком, как любое
+            просроченное (например, после рестарта). Раз пользователь
+            продолжил напоминание, он хочет его получить; молча потерять
+            или оставить на паузе было бы хуже. Нужно другое время —
+            передаётся вместе с active в trigger_at.
+
+        Возвращает обновлённую запись (копию) либо None — такого напоминания
+        (не сработавшего: впереди или на паузе) в чате нет. ValueError —
+        время в прошлом.
+        """
+        now = time.time()
+        if trigger_at is not None and trigger_at < now + 10:
+            raise ValueError("время напоминания уже прошло")
+        rid = str(rid or "").strip().lstrip("#").lower()
+        if not rid:
+            return None
+        with self._lock:
+            target = next((r for r in self._reminders
+                           if r["chat_id"] == str(chat_id) and _is_listed(r, now)
+                           and str(r.get("id") or "").lower() == rid), None)
+            if target is None:
+                return None
+            if task is not None:
+                target["task"] = task or None
+            if trigger_at is not None:
+                schedule = target.get("recurrence")
+                if schedule:
+                    dt = timeutil.from_ts(trigger_at)
+                    schedule = {**schedule, "hour": dt.hour, "minute": dt.minute}
+                    if schedule.get("type") == "weekly":
+                        schedule["weekday"] = dt.weekday()
+                    target["recurrence"] = schedule
+                target["trigger_at"] = float(trigger_at)
+                target["attempts"] = 0
+            if active is False and not is_paused(target):
+                target["paused"] = True
+            elif active is True and is_paused(target):
+                target.pop("paused", None)
+                target["attempts"] = 0
+                schedule = target.get("recurrence")
+                if schedule and trigger_at is None and target["trigger_at"] <= now:
+                    target["trigger_at"] = _next_occurrence(schedule, now)
+            self._save()
+            updated = dict(target)
+        logger.info(f"[Reminder] Изменено по id: chat={chat_id} id={rid} "
+                    f"task='{updated.get('task')}' на "
+                    f"{timeutil.from_ts(updated['trigger_at']).strftime('%d.%m %H:%M')}"
+                    + (" (на паузе)" if is_paused(updated) else ""))
+        return updated
 
     def postpone_reminder(self, chat_id: str, seconds: Optional[float] = None,
                           abs_time: Optional[tuple] = None,
@@ -1209,10 +1319,12 @@ class ReminderManager:
             if delay is None:
                 return None
 
+        # Напоминания на паузе в выбор цели не входят: переносится то, что
+        # должно сработать
         with self._lock:
             active = [
                 r for r in self._reminders
-                if r["chat_id"] == str(chat_id) and not r.get("fired") and r["trigger_at"] > now
+                if r["chat_id"] == str(chat_id) and _is_armed(r, now)
             ]
 
         def _choices(items) -> list:
@@ -1359,7 +1471,7 @@ class ReminderManager:
         if not (isinstance(entry, dict) and entry.get("postpone_choice")):
             return None
 
-        active = self.get_active(chat_id)
+        active = [r for r in self.get_active(chat_id) if not is_paused(r)]
         if not active:
             self.clear_pending_remind(chat_id)
             return {"gone": True}
@@ -1522,11 +1634,13 @@ class ReminderManager:
 
     def _still_due(self, reminder: dict) -> bool:
         """Напоминание всё ещё должно сработать: оно в списке (не отменено —
-        сравнение по идентичности), не погашено и не перенесено на потом.
+        сравнение по идентичности), не погашено, не на паузе и не перенесено
+        на потом.
         Зовётся под локом гейта хода, перед записью в STM."""
         with self._lock:
             return (any(r is reminder for r in self._reminders)
                     and not reminder.get("fired")
+                    and not is_paused(reminder)
                     and reminder.get("trigger_at", 0) <= time.time())
 
     def _reminder_lang(self, chat_id: str, task: Optional[str]) -> str:
@@ -1541,6 +1655,8 @@ class ReminderManager:
                     "", self._memory.stm.get_last(8, chat_id=chat_id))
             except Exception:
                 lang = None
+        if not lang and self._persona is not None:
+            lang = persona_language(getattr(self._persona, "system_prompt", ""))
         return language_name(lang) or "Russian"
 
     def _generate_reminder_text(self, user_name: str, task: Optional[str],
@@ -1563,18 +1679,15 @@ class ReminderManager:
         if addr.lower() in ("user", "пользователь"):
             addr = ""
         if not addr:
-            addr = "the user" if lang == "English" else "пользователя"
+            addr = "the user"
         if task:
-            user_content = (
-                f"Remind {addr}: {task}" if lang == "English"
-                else f"Напомни {addr}: {task}"
-            )
+            user_content = f"Remind {addr}: {task}"
         else:
             user_content = (
                 f"Remind {addr} — they asked for a reminder but didn't specify what for."
-                if lang == "English"
-                else f"Напомни {addr} — пользователь просил напомнить, но не уточнил о чём."
             )
+        # lang — имя языка ("Russian"/"English"), строке языка нужен код
+        code = {"Russian": "ru", "English": "en"}.get(lang)
 
         messages = [
             {"role": "system", "content": (
@@ -1583,9 +1696,9 @@ class ReminderManager:
                 "You are reminding the user about something at their request. "
                 "Write a short reminder (1-2 sentences) in your character. "
                 "Be sure to mention the essence of the task. "
-                f"Write the reminder in {lang}. "
                 "Do NOT use markdown. Do NOT write meta-notes."
-                f"{living_block}"
+                f"{living_block}\n\n"
+                f"{user_language_line(code)}"
             )},
             {"role": "user", "content": user_content},
         ]
@@ -1599,6 +1712,57 @@ class ReminderManager:
             return None
         return response.strip()
 
+    async def _check_due(self):
+        """Один проход планировщика: отправляет наступившие напоминания.
+        Им же цикл догоняет просроченные после рестарта (первый тик берёт всё,
+        чьё время прошло). Напоминания на паузе не берутся вовсе."""
+        now = time.time()
+        with self._lock:
+            due = [r for r in self._reminders
+                   if not r.get("fired") and not is_paused(r) and r["trigger_at"] <= now]
+
+        # fired ставим только ПОСЛЕ успешной отправки — иначе при сбое
+        # (падение процесса, ошибка сети) напоминание потерялось бы без повтора
+        changed = False
+        for r in due:
+            # Идёт ход пользователя в этом чате — напоминание ждёт
+            # следующего тика целиком (без генерации текста и без траты
+            # попытки), чтобы не держать цикл и напоминания других чатов
+            gate = self._turn_gate
+            if gate is not None and gate.busy(r["chat_id"]):
+                logger.info(f"[Reminder] Идёт ход пользователя в {r['chat_id']} — "
+                            f"«{r.get('task')}» ждёт следующего тика")
+                continue
+            success = await self._fire(r)
+            if success == _DEFERRED or success == _CANCELLED:
+                # отложено ходом — повтор тиком, не сбой; отменено —
+                # запись уже убрана/перенесена/поставлена на паузу самим ходом
+                continue
+            with self._lock:
+                if success:
+                    if r.get("recurrence"):
+                        # Повторяющееся: не гасим, переносим на следующее время
+                        r["trigger_at"] = _next_occurrence(r["recurrence"], time.time())
+                        r["attempts"] = 0
+                    else:
+                        r["fired"] = True
+                else:
+                    r["attempts"] = r.get("attempts", 0) + 1
+                    if r["attempts"] >= 3:
+                        if r.get("recurrence"):
+                            # Пропускаем этот раз (сбой сети/процесса),
+                            # переносим на следующее время расписания
+                            r["trigger_at"] = _next_occurrence(r["recurrence"], time.time())
+                            r["attempts"] = 0
+                            logger.warning(f"[Reminder] Пропущено после 3 попыток, перенесено: {r.get('task')}")
+                        else:
+                            r["fired"] = True  # сдаёмся после 3 попыток
+                            logger.error(f"[Reminder] Не доставлено после 3 попыток: {r.get('task')}")
+                changed = True
+        if changed:
+            with self._lock:
+                self._save()
+
     async def _loop(self):
         # Главный цикл — проверяет каждые 30 секунд.
         logger.info(f"[Reminder] Цикл запущен для context={self.context}")
@@ -1606,52 +1770,7 @@ class ReminderManager:
 
         while self._running:
             try:
-                now = time.time()
-                with self._lock:
-                    due = [r for r in self._reminders
-                           if not r.get("fired") and r["trigger_at"] <= now]
-
-                # fired ставим только ПОСЛЕ успешной отправки — иначе при сбое
-                # (падение процесса, ошибка сети) напоминание потерялось бы без повтора
-                changed = False
-                for r in due:
-                    # Идёт ход пользователя в этом чате — напоминание ждёт
-                    # следующего тика целиком (без генерации текста и без траты
-                    # попытки), чтобы не держать цикл и напоминания других чатов
-                    gate = self._turn_gate
-                    if gate is not None and gate.busy(r["chat_id"]):
-                        logger.info(f"[Reminder] Идёт ход пользователя в {r['chat_id']} — "
-                                    f"«{r.get('task')}» ждёт следующего тика")
-                        continue
-                    success = await self._fire(r)
-                    if success == _DEFERRED or success == _CANCELLED:
-                        # отложено ходом — повтор тиком, не сбой; отменено —
-                        # запись уже убрана/перенесена самим ходом
-                        continue
-                    with self._lock:
-                        if success:
-                            if r.get("recurrence"):
-                                # Повторяющееся: не гасим, переносим на следующее время
-                                r["trigger_at"] = _next_occurrence(r["recurrence"], time.time())
-                                r["attempts"] = 0
-                            else:
-                                r["fired"] = True
-                        else:
-                            r["attempts"] = r.get("attempts", 0) + 1
-                            if r["attempts"] >= 3:
-                                if r.get("recurrence"):
-                                    # Пропускаем этот раз (сбой сети/процесса),
-                                    # переносим на следующее время расписания
-                                    r["trigger_at"] = _next_occurrence(r["recurrence"], time.time())
-                                    r["attempts"] = 0
-                                    logger.warning(f"[Reminder] Пропущено после 3 попыток, перенесено: {r.get('task')}")
-                                else:
-                                    r["fired"] = True  # сдаёмся после 3 попыток
-                                    logger.error(f"[Reminder] Не доставлено после 3 попыток: {r.get('task')}")
-                        changed = True
-                if changed:
-                    with self._lock:
-                        self._save()
+                await self._check_due()
 
                 # Периодически чистим старые
                 cleanup_counter += 1

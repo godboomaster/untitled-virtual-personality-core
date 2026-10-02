@@ -100,6 +100,9 @@ def markdown_to_telegram_html(text: str) -> str:
 class TelegramMessageSender:
     # Отправка сообщений через Telegram Bot API.
 
+    supports_documents = True
+    supports_replies = True
+
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
         # message_id последнего успешно отправленного сообщения ПО ЧАТАМ (для опционального

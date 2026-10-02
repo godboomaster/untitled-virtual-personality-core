@@ -10,14 +10,14 @@ import threading
 import time
 import yaml
 import logging
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from pathlib import Path
 from typing import Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from app.core.persona import PersonaLayer, _format_msg_ts
 from app.core.addons import TurnInfo, load_addons
-from app.core.language import detect_language, detect_dialogue_language
+from app.core.language import detect_language, detect_dialogue_language, user_language_line
 from app.core.memory import MemoryManager
 from app.core.router import ModelRouter
 from app.core.config import Config
@@ -26,6 +26,8 @@ from app.core.file_reader import extract_text, MAX_FILE_SIZE_DEFAULT
 from app.core.interfaces import MessageSender
 from app.core.presence import web_presence
 from app.core import timeutil
+from app.core.atomic_io import atomic_write_json, load_json_safe
+from app.core.paths import data_dir
 from app.core.turn_gate import ChatTurnGate, begin_turn_async
 from app.core.users import get_username
 from app.features.todo_manager import (
@@ -52,14 +54,21 @@ from app.features.computer_control import (
     parse_hover_request,
     parse_key_request,
     parse_media_request,
-    parse_open_on_page, parse_open_many, parse_open_with_url, parse_page_question,
+    parse_open_on_page, parse_open_many, parse_open_request, parse_open_with_url,
+    parse_page_question,
     parse_page_view_request, parse_read_request, page_view_text,
     page_view_full_text, parse_scroll_request, parse_scroll_to_goal,
     parse_search_on_site, parse_send_request,
     parse_slider_request,
     parse_tab_list_query, parse_tab_op, parse_tab_switch, parse_type_request,
     parse_zoom_request, _MORE_PHOTOS_RE)
+from app.features.computer_control import (
+    SOFT_STOP_RE, STOP_CMD_RE, command_has_secret, command_secret_values,
+    is_goal_task,
+    looks_like_command, next_video_recipe, normalize_command,
+    split_compound_command, tag_origin)
 from app.features.scenario_manager import ScenarioManager
+from app.features.task_agent import TaskAgent, parse_task_request
 from app.features.search_gate import search_skip_reason
 
 logger = logging.getLogger(__name__)
@@ -90,6 +99,46 @@ _RESCUE_BROWSER_RE = re.compile(
     r"^\s*(?:почини|починить|открой|пройди|реши|решить)\s+"
     r"(?:браузер|веб-?чат\w*|капч\w+|челлендж)\w*\s*[.!…]*\s*$",
     re.IGNORECASE)
+
+# Скачивание «с сайта X» / «на сайте X» / «с example.ru» — не с текущей
+# страницы: это цель для агента задач
+_DL_ELSEWHERE_RE = re.compile(
+    r"(?:^|\s)(?:с|со|на|from|on)\s+(?:сайт[аеу]?\s+\S+|"
+    r"[\w.-]+\.[a-zа-яё]{2,}(?:/\S*)?)", re.IGNORECASE)
+
+# «стоп» при идущем ходе режима управления — ловится ДО лока чата
+# (cc_turn_enter): голая команда остановки, без продолжения фразы. Правило
+# одно с отменой задачи агента (computer_control.STOP_CMD_RE)
+_CC_STOP_RE = STOP_CMD_RE
+
+# Шаговые команды: повтор — намеренный («громче» ×3, «дальше» ×2), дублем
+# не считается никогда (см. cc_turn_enter)
+_CC_STEP_CMD_RE = re.compile(
+    r"^(?:(?:ещё|еще|сделай|чуть)\s+)*(?:по)?(?:громче|тише)\b|"
+    r"^(?:вниз|вверх|дальше|далее|назад|вперёд|вперед|ещё|еще|"
+    r"next|back|up|down|louder|quieter|more)\s*[.!…]*$|"
+    r"^(?:нажми|кликни|жми|тыкни|click|press|tap)\s+(?:на\s+)?"
+    r"(?:кнопку\s+)?(?:далее|дальше|следующ\w*|вперёд|вперед|next|continue|"
+    r"продолжить)\b|"
+    # Перемотка на N секунд/минут вперёд/назад — повтор намеренный
+    # («перемотай на 10 секунд вперёд» ×2 = +20 с)
+    r"^(?:(?:пере|про|от)мота(?:й|йте|ть)|мотни|seek|skip|rewind|"
+    r"fast[\s-]?forward|forward|back|jump)\b.*"
+    r"(?:\b(?:\d+|пару|несколько)\s*"
+    r"(?:сек\w*|с\b|мин\w*|seconds?|secs?|s\b|minutes?|mins?|m\b)|"
+    r"\b(?:полминуты|минуту|секунду|a\s+minute)\b)|"
+    r"^(?:(?:пере|про|от)мота(?:й|йте|ть)|мотни)\s+(?:чуть\s+|немного\s+)?"
+    r"(?:вперёд|вперед|назад)\s*[.!…]*$", re.IGNORECASE)
+# Прочие (не тяжёлые и не шаговые) повторы — дубль только в этом окне:
+# двойная доставка сообщения, а не осознанный повтор
+_CC_DUP_WINDOW_SEC = 1.5
+
+# Шаг составной команды после открытия сайта: «(открой ютуб) и включи
+# музыку» — воспроизведение/поиск на ЭТОМ сайте (см. _cc_ladder)
+_CHAIN_PLAY_RE = re.compile(
+    r"^\s*(?:(?P<play>включи|поставь|запусти|play|put\s+on)|"
+    r"(?P<find>найди|поищи|ищи|search(?:\s+for)?|find|look\s+up))\s+"
+    r"(?P<query>\S.*?)\s*[.!?…]*$", re.IGNORECASE)
 
 
 def _fmt_reminder_choices(choices: list) -> str:
@@ -185,6 +234,14 @@ def _looks_like_frequency_answer(text: str) -> bool:
     if word_count > 12:
         return False
     return bool(_FREQUENCY_WORDS_RE.search(text))
+
+
+# Ответ на «чему тебя научить?», который темой не является
+_NOT_A_TOPIC_RE = re.compile(
+    r"^(?:не\s+знаю|хз|потом|позже|неважно|забей|ничему|ничего|нет|не\s+надо|отмена|"
+    r"never\s*mind|nothing|no|nope|idk|dunno|later)(?![a-zа-яё])",
+    re.IGNORECASE,
+)
 
 
 # Максимальная длина «короткого» ответа на вопрос «продолжаем?» (в словах).
@@ -322,10 +379,25 @@ class BotInstance:
                 context=self.context, computer_control=self.computer_control)
             logger.info(f"  [{persona_name}] Scenario manager включён")
 
+        # Агент-автопилот (цель → цепочка действий с уточнениями у
+        # пользователя) — тоже надстройка над computer_control.
+        # `task_agent: false` гасит
+        self.task_agent: Optional[TaskAgent] = None
+        if self.computer_control and self.features.get("task_agent", True):
+            self.task_agent = TaskAgent(computer_control=self.computer_control,
+                                        context=self.context)
+            logger.info(f"  [{persona_name}] Task agent включён")
+
         # Режим управления (per chat): computer control работает ТОЛЬКО в нём
         # («перейди в режим управления»), иначе CC-команды не перехватываются.
-        # В режиме наоборот молчат напоминания/дела/инвентарь/обучение
+        # В режиме наоборот молчат напоминания/дела/инвентарь/обучение.
+        # Режим переживает рестарт (control_mode.json: чат → момент последней
+        # активности) и сам гаснет после простоя (idle_exit_min)
         self._control_mode: set = set()
+        self._control_mode_ts: Dict[str, float] = {}
+        self._control_mode_path = (data_dir() / self.context
+                                   / "computer_control" / "control_mode.json")
+        self._cc_mode_load()
 
         # Learning manager (только если learning) — режим обучения по запросу
         self.learning_manager: Optional[LearningManager] = None
@@ -351,7 +423,8 @@ class BotInstance:
             self.router.set_persona_llm(llm_cfg.get("primary"), llm_cfg.get("fallback"),
                                         llm_cfg.get("models"), webchat=llm_cfg.get("webchat"),
                                         webchat_limits=llm_cfg.get("webchat_limits"),
-                                        webchat_modes=llm_cfg.get("webchat_mode"))
+                                        webchat_modes=llm_cfg.get("webchat_mode"),
+                                        exclude=llm_cfg.get("exclude"))
 
         # Memory + Router
         self.memory = MemoryManager(
@@ -362,6 +435,9 @@ class BotInstance:
             context=context,
             main_router=self.router
         )
+        # Секреты ввода и текст приватных страниц режима управления — в
+        # историю маской (см. _cc_hist_install)
+        self._cc_hist_install()
 
         # Web search
         self._web_search_enabled = self.features.get("web_search", False)
@@ -374,13 +450,22 @@ class BotInstance:
             self._web_pool = ThreadPoolExecutor(max_workers=2)
             logger.info(f"  [{persona_name}] Web search включён (pool: 2 workers)")
 
-        # Local router (для query rewriting)
+        # Local router — вид общего роутера для этой персоны: движки служебных
+        # задач (Ollama/веб-чат) из llm.local_tasks, веб-чаты фоновых задач —
+        # из цепочки провайдеров персоны (self.router)
         self._local_router = None
         try:
             from app.core.local_router import get_local_router
-            self._local_router = get_local_router()
-        except Exception:
-            pass
+            get_local_router().bind_persona(self.context, self.router,
+                                            llm_cfg.get("local_tasks"))
+            self._local_router = get_local_router(self.context)
+        except Exception as e:
+            logger.warning(f"  [{persona_name}] Локальный роутер не подключён: {e}")
+        if self._web_search_enabled and self._local_router is not None:
+            # Улучшение/верификация поискового запроса — движками этой персоны
+            import functools
+            self._search_web = functools.partial(self._search_web,
+                                                 local_router=self._local_router)
 
         # Punish block (нужен до rate limiter: использует block_user/is_blocked)
         self._punish_enabled = self.features.get("punish_block", False)
@@ -481,6 +566,11 @@ class BotInstance:
                     + (", primitive-режим" if self.intellect.is_primitive else "") + ")")
         except Exception as e:
             logger.warning(f"  [{persona_name}] Living persona не запущена: {e}")
+
+        # Язык чата без сохранённого значения (первый запуск, новый чат) —
+        # по репликам STM
+        if self.living is not None:
+            self.living.get_chat_user_language = self.chat_user_language
 
         # Напоминания знают о living-состоянии (mood/energy в тексте)
         if self.reminder_manager is not None and self.living is not None:
@@ -748,30 +838,518 @@ class BotInstance:
         self._pending_split_messages[str(chat_id)] = parts[1:]
         return parts[0]
 
+    # ── Приватность истории режима управления ──
+    # Секрет из команды («введи Kotik2019! в поле пароль») и текст приватной
+    # страницы (вход/оплата/банк) человек видит в ответе, но в STM/БД/LTM они
+    # не пишутся: история уходит облачной модели с каждым следующим ходом.
+    # Маски копятся в кадре хода (живут до его конца) там, где действие
+    # исполнено/отложено, а применяются в единой точке записи — обёртке
+    # memory.add_message: так их видят все пути истории (fast-path, «да» на
+    # pending, сценарии, основной поток) без правок в каждом.
+
+    # describe/describe_done режут введённый текст до 40 символов
+    _CC_HIST_HEAD = 40
+
+    def _cc_hist_install(self) -> None:
+        mem = getattr(self, "memory", None)
+        orig = getattr(mem, "add_message", None)
+        if orig is None or getattr(orig, "_cc_hist_wrapped", False):
+            return
+
+        def add_message(role, content, user_id="default", chat_id=None,
+                        *args, **kwargs):
+            try:
+                content = self._cc_hist_redact(role, content, user_id, chat_id)
+            except Exception as e:
+                logger.warning(f"[CompControl] маска истории не применилась: {e}")
+            return orig(role, content, user_id, chat_id, *args, **kwargs)
+
+        add_message._cc_hist_wrapped = True
+        mem.add_message = add_message
+        self._cc_hist_hook_cc()
+
+    def _cc_hist_hook_cc(self) -> None:
+        # Каждый исполненный ввод менеджера (сценарий, маркер, «да», агент)
+        # — в маску истории хода: ComputerControlManager._audit зовёт on_typed
+        cc = getattr(self, "computer_control", None)
+        if cc is not None and getattr(cc, "on_typed", None) is None:
+            try:
+                cc.on_typed = self._cc_hist_note_typed
+            except Exception:
+                pass
+
+    def _cc_sc_note_answer(self, chat_id, text) -> None:
+        """Ответ на вопрос-слот идущего сценария: слот-секрет (вопрос о
+        пароле/коде/телефоне или слот «секретN» из _slotify_secrets) — маской
+        хода и в KnownSecrets чата, до записи реплики в STM."""
+        self._cc_hist_hook_cc()
+        sm = getattr(self, "scenario_manager", None)
+        if sm is None or not str(text or "").strip():
+            return
+        try:
+            with sm._lock:
+                run = (getattr(sm, "_runs", None) or {}).get(str(chat_id))
+                step = dict((run or {}).get("awaiting") or {})
+        except Exception:
+            return
+        if not step:
+            return
+        question = str(step.get("question") or "")
+        if re.match(r"(?:секрет|secret)", str(step.get("slot") or ""),
+                    re.IGNORECASE):
+            question += " [секрет]"
+        try:
+            self._cc_hist_note_user_text(text, question)
+        except Exception as e:
+            logger.warning(f"[Scenarios] маска ответа слота не поставлена: {e}")
+
+    @staticmethod
+    def _cc_hist_frames() -> list:
+        # Кадры ходов текущего контекста: регистрация идёт из мест, где
+        # ключ STM неизвестен (_cc_reply), — ход контекста один, его кадр
+        from app.core import turn_gate
+        return list((turn_gate._FRAMES.get() or {}).values())
+
+    def _cc_hist_add_mask(self, kind: str, needle: str,
+                          repl: Optional[str] = None) -> None:
+        if not needle:
+            return
+        for frame in self._cc_hist_frames():
+            masks = frame.setdefault("cc_hist_masks", [])
+            if not any(m[0] == kind and m[1] == needle for m in masks):
+                masks.append((kind, needle, repl))
+            if kind == "secret":
+                self._cc_hist_remember(frame.get("key"), needle)
+
+    def _cc_hist_vault(self):
+        # Известные секреты чата (cc_privacy.KnownSecrets): маски хода живут
+        # один ход, а пароль из ответа агент вводит ходом позже. Лениво —
+        # тестовые заготовки бота собираются без __init__
+        vault = self.__dict__.get("_cc_known_secrets")
+        if vault is None:
+            from app.features.cc_privacy import KnownSecrets
+            vault = self.__dict__.setdefault("_cc_known_secrets",
+                                             KnownSecrets())
+        return vault
+
+    def _cc_hist_remember(self, chat_key, value) -> None:
+        # «да»/«нет»/«отмена» на вопрос о пароле — не секрет: маской на
+        # полчаса ложилось бы каждое следующее «да» в чате
+        from app.features.computer_control import classify_confirmation
+        s = str(value or "").strip()
+        if (chat_key is None or not s or TaskAgent.parse_cancel(s)
+                or classify_confirmation(s) != "UNKNOWN"):
+            return
+        self._cc_hist_vault().add(chat_key, s)
+
+    def _cc_hist_note_typed(self, action) -> None:
+        """Ввод в чувствительное поле (флаг снапшота, подпись «пароль/код/
+        карта…» или секретоподобное значение) — текст ввода в историю
+        маской. multi — по вложенным действиям."""
+        from app.features.cc_privacy import typed_is_sensitive
+        if not isinstance(action, dict):
+            return
+        items = (action.get("items") if action.get("kind") == "multi"
+                 else [action])
+        for a in items or ():
+            if not isinstance(a, dict) or a.get("kind") != "type":
+                continue
+            text = str(a.get("text") or "").strip()
+            if text and typed_is_sensitive(text, a.get("element"),
+                                           bool(a.get("field_sensitive"))):
+                self._cc_hist_add_mask("secret", text)
+
+    # Кандидаты в телефон/карту с пробелами/скобками/дефисами — целиком
+    # проверяет looks_secret
+    _CC_HIST_DIGITS_RE = re.compile(r"\+?\d[\d ()-]{8,}\d")
+
+    def _cc_hist_note_user_text(self, text, question: Optional[str] = None,
+                                contacts: bool = True,
+                                answer_secret: bool = False) -> None:
+        """Секреты в реплике человека — маской ДО её записи в STM. Реплика
+        пишется раньше, чем становится известно, что агент задачи/маркер
+        LLM введёт её в поле (а пост-правка STM не догонит батч
+        LTM-экстракции, который собирается в момент записи), поэтому
+        секрет угадывается по самому тексту: значение после «пароль/код/
+        PIN…» (command_secret_values), email/телефон/карта/токен целиком
+        или словом (looks_secret), а ответ на вопрос агента о пароле/коде/
+        карте/почте/телефоне/логине (question) — весь.
+        contacts=False — обычная реплика (путь маркеров): email/телефон в
+        разговоре не секрет и маской не ложатся; если маркер введёт их в
+        поле, реплику хода перепишет _cc_hist_after_markers."""
+        from app.features.cc_privacy import (is_sensitive_label, looks_contact,
+                                             looks_secret)
+        s = str(text or "").strip()
+        if not s:
+            return
+
+        def _secret(v: str) -> bool:
+            return looks_secret(v) and (contacts or not looks_contact(v))
+
+        if answer_secret or (question and is_sensitive_label(question)
+                             and not TaskAgent.parse_cancel(s)) or _secret(s):
+            self._cc_hist_add_mask("secret", s)
+        values = set(command_secret_values(s))
+        for raw in re.findall(r"[^\s«»\"'“”„`,;]+", s):
+            tok = raw.strip(".!?…:()")
+            if tok and (tok in values or _secret(tok)):
+                # И слово с краевой пунктуацией: «Kotik2019!» — пароль с «!»
+                # или «Kotik2019» в конце фразы, заранее не понять
+                self._cc_hist_add_mask("secret", tok)
+                if raw != tok:
+                    self._cc_hist_add_mask("secret", raw)
+        for v in values:
+            self._cc_hist_add_mask("secret", v)
+        for m in self._CC_HIST_DIGITS_RE.findall(s):
+            if _secret(m.strip()):
+                self._cc_hist_add_mask("secret", m.strip())
+
+    def stm_add_message(self, role: str, content, user_id, chat_id) -> None:
+        """Запись прямо в STM (без LTM — правка хвоста хода, например
+        картинки на сервере) через те же маски хода, что и memory.add_message."""
+        try:
+            content = self._cc_hist_redact(role, content, user_id, chat_id)
+        except Exception as e:
+            logger.warning(f"[CompControl] маска истории не применилась: {e}")
+        self.memory.stm.add_message(role, content, user_id, chat_id)
+
+    def _cc_hist_rewrite_tail(self, chat_id, user_id) -> int:
+        """Записи ЭТОГО хода в STM, легшие до маски, — заново через маски
+        хода: хвост снимается (буфер и Chroma, pop_last_n) и пишется снова.
+        Батч LTM-экстракции, собранный в момент записи, не догнать — поэтому
+        это запасной путь, а основной — маска до записи. → сколько записей
+        изменилось."""
+        key = self.stm_key(chat_id, user_id)
+        tail = self._turn_stm_tail(key)
+        if not tail:
+            return 0
+        new = [self._cc_hist_redact(m.get("role"), m.get("content"), user_id,
+                                    chat_id) for m in tail]
+        if all(c == m.get("content") for m, c in zip(tail, new)):
+            return 0
+        stm = self.memory.stm
+        stm.pop_last_n(len(tail), key)
+        for m, c in zip(tail, new):
+            stm.add_message(m.get("role"), c, m.get("sender_id") or user_id,
+                            chat_id, m.get("user_name"))
+        return sum(c != m.get("content") for m, c in zip(tail, new))
+
+    def _cc_hist_after_markers(self, chat_id, user_id) -> None:
+        """Маркер LLM поставил ввод (pending): его значение известно только
+        после ответа модели, а реплика человека уже в STM. Ввод в поле
+        логина/почты/пароля или секретоподобное значение → маска хода и
+        правка уже записанной реплики этого хода."""
+        cc = getattr(self, "computer_control", None)
+        if cc is None or chat_id is None:
+            return
+        with cc._lock:
+            entry = (cc._pending or {}).get(str(chat_id))
+        if not entry:
+            return
+        self._cc_hist_note_typed(entry.get("action"))
+        n = self._cc_hist_rewrite_tail(chat_id, user_id)
+        if n:
+            logger.info(f"[CompControl] реплика хода переписана маской "
+                        f"(ввод маркера): {n} зап.")
+
+    def _cc_private_host(self, *urls) -> Optional[str]:
+        """Хост приватной страницы, если хоть один адрес приватный (любой —
+        консервативно), иначе None."""
+        cc = getattr(self, "computer_control", None)
+        check = getattr(cc, "is_private_page", None)
+        if not callable(check):
+            return None
+        for u in urls:
+            if u and check(str(u)):
+                from urllib.parse import urlsplit
+                s = str(u)
+                return (urlsplit(s).hostname if "://" in s
+                        else s.split("/")[0]) or s
+        return None
+
+    def _cc_hist_note_private(self, text: Optional[str], host: str,
+                              what: str = "read") -> None:
+        # Текст приватной страницы в ответе → в историю только заглушка
+        text = (text or "").strip()
+        if not text:
+            return
+        if what == "read":
+            repl = f"[прочитано {len(text)} символов с приватной страницы {host}]"
+        else:
+            repl = (f"[обзор приватной страницы {host}: {len(text)} символов "
+                    f"— в историю не сохранён]")
+        self._cc_hist_add_mask("private", text, repl)
+
+    def _cc_hist_note_read(self, action, detail) -> None:
+        # Прочитанный текст приватной страницы: адрес действия, хост и
+        # текущий адрес браузера, если это та же вкладка (путь /login и т.п.)
+        if not isinstance(action, dict) or not detail:
+            return
+        host = str(action.get("host") or "")
+        last = getattr(getattr(self, "computer_control", None), "_last_url", None)
+        if last and host and self._cc_private_host(host) is None:
+            from urllib.parse import urlsplit
+            try:
+                lh = (urlsplit(str(last)).hostname or "").lower()
+            except Exception:
+                lh = ""
+            if lh != host.lower().split(":")[0]:
+                last = None
+        priv = self._cc_private_host(action.get("value"), action.get("url"),
+                                     host, last)
+        if priv:
+            self._cc_hist_note_private(detail, host or priv, "read")
+
+    def _cc_hist_redact(self, role: str, content, user_id, chat_id):
+        """Маски кадра хода и известные секреты чата → текст записи истории.
+        Вне хода (фоновые сообщения) — только известные секреты."""
+        if not isinstance(content, str) or not content:
+            return content
+        key = self.stm_key(chat_id, user_id)
+        known = self._cc_hist_vault().values(key)
+        frame = self._get_turn_gate().current_frame(key)
+        if frame is None:
+            for needle in sorted(known, key=len, reverse=True):
+                content = self._cc_mask_secret(content, needle)
+            return content
+        # Ввод, отложенный этим ходом до «да» (_cc_run_steps → set_pending):
+        # запись истории идёт после set_pending — маска ставится здесь
+        cc = getattr(self, "computer_control", None)
+        if cc is not None and chat_id is not None:
+            try:
+                with cc._lock:
+                    entry = (cc._pending or {}).get(str(chat_id))
+                if entry:
+                    self._cc_hist_note_typed(entry.get("action"))
+            except Exception:
+                pass
+        masks = frame.get("cc_hist_masks") or []
+        if not masks and not known:
+            return content
+        # Сначала крупные куски приватного текста, затем секреты
+        for kind, needle, repl in masks:
+            if kind == "private" and role == "assistant" and needle in content:
+                content = content.replace(needle, repl)
+        # Длинные секреты первыми: «Kotik2019» из текста реплики не должен
+        # надкусить «Kotik2019!» ввода и оставить хвост «!»
+        secrets = sorted({m[1] for m in masks if m[0] == "secret"}
+                         | set(known), key=len, reverse=True)
+        for needle in secrets:
+            content = self._cc_mask_secret(content, needle)
+        return content
+
+    @classmethod
+    def _cc_mask_secret(cls, content: str, secret: str) -> str:
+        """Все вхождения секрета — маской ***(N), без учёта регистра.
+        Длинный секрет ищется по голове (describe режет до 40 символов) и
+        съедается вместе с совпадающим хвостом; короткий — только отдельным
+        словом («1234» внутри «12345» не трогаем)."""
+        from app.features.cc_privacy import mask
+        head = secret[:cls._CC_HIST_HEAD]
+        low, hl, sl = content.lower(), head.lower(), secret.lower()
+        if len(low) != len(content) or len(sl) != len(secret):
+            low, hl, sl = content, head, secret  # lower() сменил длину
+        out, i, pos = [], 0, 0
+        while True:
+            j = low.find(hl, pos)
+            if j < 0:
+                break
+            end = j + len(hl)
+            while (end - j < len(sl) and end < len(low)
+                   and low[end] == sl[end - j]):
+                end += 1
+            if len(secret) < cls._CC_HIST_HEAD and (
+                    (j and content[j - 1].isalnum())
+                    or (end < len(content) and content[end].isalnum())):
+                pos = j + 1
+                continue
+            out.append(content[i:j])
+            out.append(mask(secret))
+            i = pos = end
+        out.append(content[i:])
+        return "".join(out)
+
     # Main processing
 
     def control_mode_on(self, chat_id) -> bool:
         # Включён ли режим управления (computer control) для чата.
-        return str(chat_id) in self._control_mode
+        # Простой дольше idle_exit_min гасит режим здесь же (лениво, при
+        # первом обращении), уведомление — со следующим сообщением
+        key = str(chat_id)
+        if key not in self._control_mode:
+            return False
+        if getattr(self, "computer_control", None) is None:
+            # computer_control выключен (конфиг/веб-настройки): режим без
+            # менеджера только глушил бы напоминания/дела — гасим молча
+            self._cc_mode_drop_all("computer_control выключен")
+            return False
+        ts = getattr(self, "_control_mode_ts", {}).get(key)
+        idle_min = self._cc_idle_exit_min()
+        if ts and idle_min > 0 and time.time() - ts > idle_min * 60:
+            logger.info(f"[BotInstance] режим управления OFF по простою "
+                        f"(chat {key}, {idle_min} мин)")
+            self._control_mode.discard(key)
+            self._control_mode_off_cleanup(key)
+            self.__dict__.setdefault("_cc_idle_notice", {})[key] = idle_min
+            self._cc_mode_save()
+            return False
+        return True
 
-    def _control_mode_switch(self, chat_id: str, turn_on: bool) -> str:
+    def _cc_idle_exit_min(self) -> int:
+        # features.computer_control.idle_exit_min (0 — без автовыхода);
+        # читается на каждом обращении — веб-настройки меняют его на живую
+        cfg = (getattr(self, "features", None) or {}).get("computer_control")
+        try:
+            return int(cfg.get("idle_exit_min", 30)) if isinstance(cfg, dict) else 30
+        except (TypeError, ValueError):
+            return 30
+
+    def _cc_mode_touch(self, chat_id) -> None:
+        """Активность в режиме — отодвигает автовыход по простою. На диск —
+        не чаще раза в минуту: ошибка в минуту после рестарта не важна."""
+        key = str(chat_id)
+        if key not in self._control_mode:
+            return
+        if getattr(self, "computer_control", None) is None:
+            self._cc_mode_drop_all("computer_control выключен")
+            return
+        tsd = self.__dict__.setdefault("_control_mode_ts", {})
+        prev = tsd.get(key) or 0
+        now = time.time()
+        tsd[key] = now
+        # Режим восстановлен из файла после рестарта — браузерный слой о нём
+        # ещё не знает (пул V не прогрет): сообщаем при первой активности
+        cold = self.__dict__.get("_cc_mode_cold", set())
+        if key in cold:
+            cold.discard(key)
+            try:
+                from app.features import browser_actions as _ba
+                _ba.set_control_mode(key, True)
+            except Exception:
+                pass
+        if now - prev > 60:
+            self._cc_mode_save()
+
+    def _cc_mode_drop_all(self, why: str) -> None:
+        """Снять режим управления во всех чатах и очистить файл режима
+        (computer_control выключен — восстанавливать нечего)."""
+        chats = list(getattr(self, "_control_mode", ()) or ())
+        if not chats:
+            return
+        logger.info(f"[BotInstance] режим управления OFF в {len(chats)} "
+                    f"чат(ах): {why}")
+        for key in chats:
+            self._control_mode.discard(key)
+            try:
+                self._control_mode_off_cleanup(key)
+            except Exception as e:
+                logger.debug(f"[BotInstance] чистка режима {key}: {e}")
+        self._cc_mode_save()
+
+    def _cc_mode_load(self) -> None:
+        path = getattr(self, "_control_mode_path", None)
+        if path is None:
+            return
+        data = load_json_safe(path, {}, label="ControlMode")
+        if not isinstance(data, dict):
+            return
+        if getattr(self, "computer_control", None) is None:
+            # Режим сохранён, а computer_control с тех пор выключен: не
+            # восстанавливаем и чистим файл
+            if data:
+                logger.info(f"  [{self.persona_name}] режим управления не "
+                            f"восстановлен: computer_control выключен")
+                self._cc_mode_save()
+            return
+        for k, v in data.items():
+            try:
+                self._control_mode_ts[str(k)] = float(v)
+                self._control_mode.add(str(k))
+                self.__dict__.setdefault("_cc_mode_cold", set()).add(str(k))
+            except (TypeError, ValueError):
+                continue
+        if self._control_mode:
+            logger.info(f"  [{self.persona_name}] режим управления восстановлен "
+                        f"для {len(self._control_mode)} чат(ов)")
+
+    def _cc_mode_save(self) -> None:
+        # Заготовки без __init__ (тесты) пути не имеют — на диск не пишем
+        path = getattr(self, "_control_mode_path", None)
+        if path is None:
+            return
+        tsd = getattr(self, "_control_mode_ts", {})
+        data = {k: tsd.get(k) or time.time() for k in sorted(self._control_mode)}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(path, data)
+        except Exception as e:
+            logger.warning(f"[BotInstance] режим управления не сохранился: {e}")
+
+    def _cc_pop_idle_notice(self, chat_id, lang=None) -> Optional[str]:
+        # Одноразовое «режим выключен после простоя» для следующего сообщения
+        mins = self.__dict__.get("_cc_idle_notice", {}).pop(str(chat_id), None)
+        if mins is None:
+            return None
+        from app.features import cc_texts
+        return cc_texts.t("cc_mode_idle_off", lang, minutes=mins)
+
+    @staticmethod
+    def _cc_mode_feature_note(user_input: str) -> Optional[str]:
+        """Просьба напомнить/записать дело/положить в инвентарь в режиме
+        управления: сами фичи на время режима выключены — пометка модели,
+        чтобы ответ честно сказал «не сохранено», а не «напомню»."""
+        t = str(user_input or "")
+        low = t.lower()
+        try:
+            asked = ("напом" in low or re.search(r"\bremind", low)
+                     or is_todo_request(t) or is_todo_done_request(t)
+                     or is_todo_list_request(t)
+                     or is_inventory_add_request(t)
+                     or is_inventory_remove_request(t))
+        except Exception:
+            asked = "напом" in low
+        if not asked:
+            return None
+        return ("Control mode is on in this chat, so reminders, the todo list "
+                "and the inventory are paused. The user's request was NOT "
+                "saved and nothing was scheduled. Say so honestly and briefly, "
+                "in your own style: to use it, the user should first exit "
+                "control mode (\"выйди из режима управления\" / \"exit control "
+                "mode\") and ask again. Do NOT say that anything was scheduled, "
+                "added or remembered.")
+
+    def _cc_phrase(self, key: str, lang=None, **values) -> str:
+        """Служебная реплика режима управления: flavor-банк (голос персоны)
+        только если язык пользователя совпадает с языком банка, иначе —
+        шаблон cc_texts на языке пользователя."""
+        from app.features import cc_texts, flavor_text
+        template = cc_texts.t(key, lang, **values)
+        try:
+            from app.core.language import persona_language
+            sp = getattr(getattr(self, "persona", None), "system_prompt", "") or ""
+            bank_lang = persona_language(sp)
+        except Exception:
+            bank_lang = None
+        if lang and bank_lang and lang != bank_lang:
+            return template
+        return flavor_text.phrase(getattr(self, "context", "default"), key,
+                                  template, **values)
+
+    def _control_mode_switch(self, chat_id: str, turn_on: bool,
+                             lang: Optional[str] = None) -> str:
         """Реплика на «перейди в режим управления»/«выйди из режима
         управления» + побочки переключения (чистка подвисших CC-состояний).
         Реплики — голосом персоны из flavor-банка (секция phrases), при
-        пустом банке — честные шаблоны."""
-        from app.features import flavor_text
+        пустом банке или другом языке пользователя — шаблоны cc_texts."""
         if turn_on:
             if not self.computer_control:
-                return flavor_text.phrase(
-                    self.context, "cc_mode_disabled",
-                    "Управление компьютером у меня выключено в "
-                    "настройках — включи его в досье («Инструменты»).")
+                return self._cc_phrase("cc_mode_disabled", lang)
             if chat_id in self._control_mode:
-                return flavor_text.phrase(
-                    self.context, "cc_mode_already_on",
-                    "Я уже в режиме управления. Обратно — «выйди из "
-                    "режима управления».")
+                return self._cc_phrase("cc_mode_already_on", lang)
             self._control_mode.add(chat_id)
+            self.__dict__.setdefault("_control_mode_ts", {})[chat_id] = time.time()
+            self.__dict__.get("_cc_mode_cold", set()).discard(chat_id)
+            self._cc_mode_save()
             logger.info(f"[BotInstance] режим управления ON (chat {chat_id})")
             # Пул V (headed Chrome): поднимаем заранее и показываем окно —
             # пользователь ждёт готовый браузер (web_extended)
@@ -780,18 +1358,20 @@ class BotInstance:
                 _ba.set_control_mode(chat_id, True)
             except Exception:
                 pass
-            return flavor_text.phrase(
-                self.context, "cc_mode_on",
-                "Режим управления включён: «открой …», «нажми …», "
-                "«введи …», сценарии — всё работает. На время режима "
-                "молчат: напоминания, список дел, инвентарь, обучение. "
-                "Закончить — «выйди из режима управления».")
+            return self._cc_phrase("cc_mode_on", lang)
         if chat_id not in self._control_mode:
-            return flavor_text.phrase(
-                self.context, "cc_mode_already_off",
-                "Режим управления и так выключен.")
+            return self._cc_phrase("cc_mode_already_off", lang)
         self._control_mode.discard(chat_id)
+        self._cc_mode_save()
         logger.info(f"[BotInstance] режим управления OFF (chat {chat_id})")
+        self._control_mode_off_cleanup(chat_id)
+        return self._cc_phrase("cc_mode_off", lang)
+
+    def _control_mode_off_cleanup(self, chat_id: str) -> None:
+        """Побочки выхода из режима (явного и по простою): браузерный слой,
+        подвисшие pending/сценарий/задача агента."""
+        getattr(self, "_control_mode_ts", {}).pop(chat_id, None)
+        self.__dict__.get("_cc_mode_cold", set()).discard(chat_id)
         # Пул V больше этому чату не нужен: догорит по idle-таймеру
         try:
             from app.features import browser_actions as _ba
@@ -812,11 +1392,391 @@ class BotInstance:
                     self.scenario_manager.record_stop(chat_id)
         except Exception:
             pass
-        return flavor_text.phrase(
-            self.context, "cc_mode_off",
-            "Вышел из режима управления — браузером не управляю. "
-            "Напоминания, список дел, инвентарь и обучение снова "
-            "работают.")
+        try:
+            if self.task_agent:
+                self.task_agent.cancel(chat_id)
+        except Exception:
+            pass
+
+    # ── Ход до лока чата: «стоп», дубли, занятый агент ──────────
+
+    def cc_turn_enter(self, text: str, user_id, chat_id):
+        """Вызывается платформой ДО ожидания лока чата (Telegram/веб).
+        → (reply, token): reply не None — ответить им сразу и сообщение
+        дальше не обрабатывать; token — отдать в cc_turn_exit по окончании
+        хода (None — регистрировать нечего).
+        Только в режиме управления и только для авторизованного: иначе
+        сообщение идёт обычным путём, как раньше.
+        - «стоп/отмена/хватит» при идущем ходе этого чата — флаг остановки
+          агенту и циклам исполнения, ответ «Останавливаю…» сразу, а не
+          после 4-минутного прогона;
+        - реплика при занятом агенте — «ещё работаю», а не очередь (иначе
+          она ушла бы ответом на вопрос, которого человек ещё не видел);
+        - та же команда, пока прежняя ещё идёт, — «уже выполняю»."""
+        key = str(chat_id or user_id or "")
+        raw = str(text or "")
+        try:
+            if not (key and getattr(self, "computer_control", None)
+                    and self._cc_allowed(user_id, chat_id)
+                    and self.control_mode_on(key)):
+                return None, None
+            try:
+                clean = self.strip_trigger(raw) or raw
+            except Exception:
+                clean = raw
+            lang = detect_language(clean)
+            norm = " ".join(normalize_command(
+                clean, self._address_names()).lower().split())
+        except Exception as e:
+            logger.debug(f"[BotInstance] cc_turn_enter: {e}")
+            return None, None
+        from app.features import cc_texts
+        ta = getattr(self, "task_agent", None)
+        # Ключ прогона агента — как у хода: веб без chat_id — user_id
+        ta_chat = chat_id or user_id
+        cc = self.computer_control
+        with self.__dict__.setdefault("_cc_inflight_lock", threading.Lock()):
+            inflight = self.__dict__.setdefault("_cc_inflight", {})
+            running = inflight.get(key) or {}
+            # Страховка от утечки токена (исключение до cc_turn_exit):
+            # запись старше 15 мин — не «идущий ход»
+            for _n, (_c, _ts) in list(running.items()):
+                if time.time() - _ts > 900:
+                    running.pop(_n, None)
+            ta_busy = bool(ta and ta.busy(ta_chat))
+            # «Коннор, стоп» в вебе: имя strip_trigger не снимает
+            is_stop = bool(_CC_STOP_RE.match(clean) or _CC_STOP_RE.match(norm))
+            # Прогон агента ждёт ответа (вопрос, «да/нет») — «стоп» его
+            # автора снимает его сразу, до лока хода: иначе «да», уже
+            # ждущее лока, исполнило бы подтверждённый шаг и повело прогон
+            # дальше. Чужой «стоп» ждущий прогон не трогает (ответит feed:
+            # «задачей управляет …»); идущий (busy) останавливает любой
+            # допущенный — остановка в сторону безопасности
+            ta_mine = False
+            if ta and is_stop and not ta_busy:
+                try:
+                    own = ta.owner(ta_chat)
+                    ta_mine = ta.active(ta_chat) and (
+                        own is None or user_id is None or own == str(user_id))
+                    aw_q = getattr(ta, "awaiting_kind", lambda c: None)(ta_chat)
+                    if ta_mine and aw_q in ("ask", "confirm", "switch") \
+                            and (SOFT_STOP_RE.match(clean)
+                                 or SOFT_STOP_RE.match(norm)):
+                        # «не надо»/«хватит» на вопрос или «да/нет» агента —
+                        # это «нет» на него (разберёт feed), а не отмена
+                        # задачи; идущий ход (running) по-прежнему стоп
+                        ta_mine = False
+                except Exception as e:
+                    logger.debug(f"[BotInstance] владелец задачи: {e}")
+            # Идущий прогон сценария этого чата (шаги исполняются сейчас):
+            # «стоп» ставит ему флаг — цикл шагов проверяет его перед каждым
+            sm = getattr(self, "scenario_manager", None)
+            _sm_stop = getattr(sm, "request_stop", None)
+            if is_stop and (running or ta_busy or ta_mine):
+                ta_reply = None
+                if ta_busy or ta_mine:
+                    ta_reply = ta.cancel(ta_chat)
+                if callable(_sm_stop):
+                    _sm_stop(chat_id)
+                cc.request_stop(key)
+                # Листание — только этого чата: «стоп» другого чата чужую
+                # страницу не гасит
+                cc.stop_scroll_if_active(chat_id=key)
+                logger.info(f"[BotInstance] «стоп» до лока хода (chat {key})")
+                if ta_mine and not running and ta_reply:
+                    # Прогон ждал ответа — снят сразу, останавливать нечего
+                    return ta_reply, None
+                return cc_texts.t("stopping", lang), None
+            if parse_control_mode(clean) is False and (running or ta_busy):
+                # Выход из режима при идущем ходе: остановить сразу, само
+                # переключение — своим ходом после текущего
+                if ta_busy:
+                    ta.cancel(ta_chat)
+                if callable(_sm_stop):
+                    _sm_stop(chat_id)
+                cc.request_stop(key)
+            elif ta_busy:
+                return self._cc_phrase("task_busy", lang), None
+            elif norm and norm in running \
+                    and self._cc_is_dup(norm, running[norm][1]):
+                logger.info(f"[BotInstance] дубль команды «{norm[:40]}» "
+                            f"пока идёт прежняя (chat {key}) — пропуск")
+                return cc_texts.t("already_running", lang), None
+            running = inflight.setdefault(key, {})
+            running[norm] = ((running.get(norm) or (0, 0))[0] + 1, time.time())
+            return None, (key, norm)
+
+    @staticmethod
+    def _cc_dup_kind(norm: str) -> str:
+        """Вид команды для отсева дублей: "step" — шаговая/идемпотентная
+        (медиа, клавиши, листание, «далее») — повтор никогда не дубль;
+        "heavy" — открытие/навигация/задача/ввод/отправка — повтор, пока
+        идёт прежняя, дубль; "other" — дубль только в _CC_DUP_WINDOW_SEC."""
+        try:
+            if (_CC_STEP_CMD_RE.match(norm) or parse_media_request(norm)
+                    or parse_key_request(norm) or parse_scroll_request(norm)
+                    or parse_erase_request(norm) or parse_zoom_request(norm)
+                    is not None or next_video_recipe(norm)):
+                return "step"
+            if (parse_type_request(norm) or parse_send_request(norm)
+                    or parse_open_with_url(norm) or parse_search_on_site(norm)
+                    or parse_task_request(norm) or parse_open_many(norm)):
+                return "heavy"
+        except Exception as e:
+            logger.debug(f"[BotInstance] вид команды для дублей: {e}")
+        return "other"
+
+    def _cc_is_dup(self, norm: str, last_ts: float) -> bool:
+        kind = self._cc_dup_kind(norm)
+        if kind == "step":
+            return False
+        if kind == "heavy":
+            return True
+        return time.time() - float(last_ts or 0) < _CC_DUP_WINDOW_SEC
+
+    def cc_turn_exit(self, token) -> None:
+        if not token:
+            return
+        key, norm = token
+        with self.__dict__.setdefault("_cc_inflight_lock", threading.Lock()):
+            running = self.__dict__.setdefault("_cc_inflight", {}).get(key)
+            if not running:
+                return
+            cnt, ts = running.get(norm) or (0, 0)
+            if cnt > 1:
+                running[norm] = (cnt - 1, ts)
+            else:
+                running.pop(norm, None)
+            if not running:
+                self._cc_inflight.pop(key, None)
+
+    def cc_pending_stamp(self, chat_id):
+        """Отметка живого подтверждения чата (pending режима управления или
+        вопрос агента) — платформа сравнивает до/после хода: новый вопрос
+        «да/нет» в группе требует reply на сообщение бота (см. group_reply_hint)."""
+        cc = getattr(self, "computer_control", None)
+        if cc is None:
+            return None
+        stamp = None
+        try:
+            with cc._lock:
+                entry = cc._pending.get(str(chat_id))
+                if entry:
+                    stamp = ("cc", entry.get("expires_at"))
+        except Exception:
+            pass
+        ta = getattr(self, "task_agent", None)
+        if stamp is None and ta is not None:
+            try:
+                with ta._lock:
+                    run = ta._runs.get(str(chat_id))
+                    aw = run.get("awaiting") if run else None
+                    if aw and aw.get("kind") in ("confirm", "continue",
+                                                 "ask", "switch"):
+                        # Вопрос агента тоже ждёт ответа именно автора: в
+                        # группе без reply ответ отбрасывался платформой
+                        stamp = ("ta", id(aw))
+            except Exception:
+                pass
+        return stamp
+
+    def cc_group_confirm_hint(self, text: str) -> str:
+        from app.features import cc_texts
+        return cc_texts.t("group_reply_hint", detect_language(text or ""))
+
+    def rebind_computer_control(self) -> None:
+        """После живой смены computer_control в веб-настройках: надстройки
+        (сценарии, агент, flavor-банк) — на текущий менеджер. Без этого они
+        держали старый экземпляр, а включённые после старта — не появлялись
+        до рестарта."""
+        cc = self.computer_control
+        if cc is None:
+            # Режим управления без менеджера бессмыслен: гасим во всех чатах
+            # (и в файле — иначе вернулся бы после рестарта)
+            try:
+                self._cc_mode_drop_all("computer_control выключен в настройках")
+            except Exception as e:
+                logger.debug(f"[BotInstance] снятие режима управления: {e}")
+            for attr in ("scenario_manager", "task_agent"):
+                mgr = getattr(self, attr, None)
+                if mgr is None:
+                    continue
+                try:
+                    for chat in list(getattr(mgr, "_runs", {}) or {}):
+                        mgr.cancel(chat)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+            return
+        if self.features.get("scenarios", True):
+            if self.scenario_manager is None:
+                self.scenario_manager = ScenarioManager(
+                    context=self.context, computer_control=cc)
+                logger.info(f"[{self.persona_name}] Scenario manager включён на живую")
+            else:
+                self.scenario_manager.cc = cc
+        if self.features.get("task_agent", True):
+            if self.task_agent is None:
+                self.task_agent = TaskAgent(computer_control=cc,
+                                            context=self.context)
+                logger.info(f"[{self.persona_name}] Task agent включён на живую")
+            else:
+                self.task_agent.cc = cc
+        try:
+            from app.features import flavor_text
+            flavor_text.ensure_flavor_bank(self)
+        except Exception as e:
+            logger.debug(f"[{self.persona_name}] flavor-банк не запущен: {e}")
+
+    def _ta_foreign_command(self, text: str, ta_chat) -> bool:
+        """Реплика при ждущем прогоне агента — явная посторонняя команда, а
+        не ответ ему: новая «задача: …», «открой <сайт/приложение из
+        конфига>», медиа-команда («громче», «пауза»). «открой меню»,
+        «пепперони», «да» — ответы: алиаса «меню» в конфиге нет."""
+        try:
+            names = self._address_names()
+            if parse_task_request(text, names):
+                return True
+            clean = normalize_command(text, names)
+            if classify_confirmation(text, names) != "UNKNOWN" \
+                    or re.match(r"^\s*(?:продолж\w*|дальше|давай\s+дальше|"
+                                r"continue|go\s+on|resume)[\s.!…]*$", clean,
+                                re.IGNORECASE):
+                return False  # «да/нет», «продолжай» — ответ агенту
+            media = parse_media_request(clean)
+            if media and media[2] not in ("toggle", "play", "pause"):
+                # Громкость/перемотка — посторонняя команда; пауза/«продолжи»
+                # — нет (Space ушёл бы в кнопку в фокусе на оформлении)
+                return True
+            word = parse_open_request(clean)
+            if word and self.computer_control is not None:
+                a = self.computer_control.resolve(word, web_search=False)
+                return bool(a) and a.get("kind") in ("url", "app", "task")
+        except Exception as e:
+            logger.debug(f"[TaskAgent] разбор посторонней команды: {e}")
+        return False
+
+    def _task_agent_turn(self, user_input: str, user_id, chat_id, user_name,
+                         turn_lang, goal: Optional[str] = None,
+                         feed_text: Optional[str] = None,
+                         announce: bool = True) -> str:
+        """Ход агента-автопилота: goal — запуск новой задачи, None — реплика
+        в живой прогон (ответ на вопрос, «да/нет», отмена).
+        Реплика пользователя пишется в STM ДО прогона: метка времени STM —
+        момент записи, а промежуточные сообщения хода (notify) уходят во
+        время прогона. Запись в конце ставила вопрос пользователя в ленте
+        веба (сортировка по времени) после шагов, которые он вызвал.
+        Поэтому маски секретов ставятся до записи: по тексту реплики (ответ
+        на вопрос агента о пароле/карте — целиком), а ввод агента в поле —
+        хуком on_typed до исполнения (ответ хода пишется после прогона)."""
+        # Ключ прогона агента: веб-клиент API без chat_id — user_id (иначе все
+        # такие клиенты делили один прогон и одну память «None»)
+        ta_chat = chat_id or user_id
+        try:
+            self.task_agent.on_typed = self._cc_hist_note_typed
+            # Известные секреты чата — агенту: поисковый запрос с паролем,
+            # данным ответом, уходит только после «да»
+            self.task_agent.known_secrets = (
+                lambda chat: self._cc_hist_vault().values(chat))
+            # Текст приватной страницы в отчёте агента — в историю заглушкой
+            self.task_agent.on_private_text = self._cc_hist_note_private
+            # Группа (Telegram: отрицательный chat_id) — строки хода с
+            # приватной страницы видят все участники: агент шлёт заглушку
+            self.task_agent.is_group = (
+                lambda chat: str(chat or "").strip().startswith("-"))
+            # Разбор ответа по слотам брифа — тем же роутером, что шаги
+            self.task_agent.slot_router = self.router
+            said = feed_text if feed_text is not None else user_input
+            # Ответ на вопрос агента — секрет по тому же признаку, что у
+            # {{secretN}} агента, а не только по ключевым словам вопроса
+            # («Какие данные для входа?» → «Kotik2019!»)
+            ans_secret = (not goal and
+                          self.task_agent.answer_is_secret(ta_chat, said))
+            self._cc_hist_note_user_text(
+                said,
+                None if goal else self.task_agent.awaiting_question(ta_chat),
+                answer_secret=ans_secret)
+            if feed_text is not None and feed_text != user_input:
+                self._cc_hist_note_user_text(user_input)
+        except Exception as e:
+            logger.warning(f"[TaskAgent] маска истории не поставлена: {e}")
+        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+        notify = self._cc_notifier(chat_id, user_id)
+        from app.features import cc_texts
+        try:
+            if goal:
+                reply = self.task_agent.start(ta_chat, goal, self.router,
+                                              notify=notify, lang=turn_lang,
+                                              user_id=user_id,
+                                              announce=announce)
+            elif feed_text is not None and not feed_text.strip():
+                # feed_text — только написанное человеком: OCR фото/текст файла
+                # не должны ни отвечать на вопрос агента, ни давать «да»
+                reply = cc_texts.t("task_text_only", turn_lang)
+            else:
+                reply = self.task_agent.feed(
+                    ta_chat, user_input if feed_text is None else feed_text,
+                    self.router, notify=notify, user_id=user_id,
+                    names=self._address_names())
+        except Exception as e:
+            logger.warning(f"[TaskAgent] ход упал: {e}", exc_info=True)
+            self.task_agent.cancel(ta_chat)
+            reply = cc_texts.t("task_turn_crashed", turn_lang,
+                               err=str(e)[:80])
+        if reply is None:
+            # Прогон снят между проверкой и feed (TTL) — реплика уже в STM,
+            # в обычный поток её не отдаём (задвоилась бы)
+            reply = cc_texts.t("task_already_closed", turn_lang)
+        self.memory.add_message("assistant", reply, user_id, chat_id)
+        try:
+            if not self.task_agent.active(ta_chat):
+                # Прогон закончился (итог уже записан маской) — известные
+                # секреты чата больше не нужны
+                self._cc_hist_vault().purge(self.stm_key(chat_id, user_id))
+        except Exception as e:
+            logger.debug(f"[TaskAgent] секреты чата не сброшены: {e}")
+        if self.proactive and chat_id:
+            self.proactive.record_user_response(chat_id)
+        return reply
+
+    def _cc_notifier(self, chat_id, user_id=None):
+        """Промежуточные сообщения в чат из потока process_message (ход
+        задачи агента) — через sender платформы на его event loop'е (TG-бот
+        привязан к loop'у приложения), в ту же тему форума, что и ход.
+        Sender+loop берём у фоновых менеджеров, которые их уже держат; ни
+        одного живого — None (ход уйдёт строками в итоговый ответ).
+        Отправленное — и в STM (через маски хода: приватное — заглушкой),
+        иначе в истории остался бы только итог без шагов."""
+        import asyncio
+        try:
+            topic = (self.get_chat_topic(chat_id)
+                     if hasattr(self, "get_chat_topic") else None)
+        except Exception:
+            topic = None
+        for mgr in (self.reminder_manager, self.proactive):
+            sender = getattr(mgr, "_sender", None)
+            task = getattr(mgr, "_task", None)
+            if sender is None or task is None or task.done():
+                continue
+            loop = task.get_loop()
+
+            def _notify(text: str, _s=sender, _l=loop):
+                try:
+                    kw = {"topic_id": topic} if topic else {}
+                    asyncio.run_coroutine_threadsafe(
+                        _s.send_message(str(chat_id), text, **kw), _l
+                    ).result(timeout=15)
+                except Exception as e:
+                    logger.debug(f"[TaskAgent] промежуточное сообщение "
+                                 f"не ушло: {e}")
+                    return
+                try:
+                    self.memory.add_message("assistant", text, user_id,
+                                            chat_id)
+                except Exception as e:
+                    logger.debug(f"[TaskAgent] строки хода не в STM: {e}")
+            return _notify
+        return None
 
     def _get_turn_gate(self) -> ChatTurnGate:
         gate = self.__dict__.get("turn_gate")
@@ -920,6 +1880,660 @@ class BotInstance:
                 return list(msgs[i + 1:])
         return None
 
+    # ── Fast-path режима управления: команда → лесенка парсеров ──
+
+    def _cc_fast_path(self, cc_text: str, user_input: str, user_id, chat_id,
+                      user_name, turn_lang) -> Optional[str]:
+        """Команда управления из того, что человек НАПИСАЛ (cc_text —
+        normalize_command от raw_user_text), а не из составного user_input
+        с OCR/файлом: «Нажми Удалить аккаунт» на скриншоте — не команда.
+        Составная команда («открой додо и нажми на пепперони фреш») идёт
+        шагами (_cc_run_steps). Ответ — строка (история уже записана) или
+        None: не команда, сообщение уходит обычным путём."""
+        if not cc_text:
+            return None
+        # Секреты команды («введи Kotik2019 в поле пароль», «ivan / K…») —
+        # маской хода и в KnownSecrets ДО лесенки: отказ резолва (нет поля,
+        # не разобрал) возвращается раньше маски в её конце, а реплика и
+        # причина отказа уходят в STM и flavor-провайдеру
+        try:
+            self._cc_hist_note_user_text(cc_text, contacts=False)
+        except Exception as e:
+            logger.warning(f"[CompControl] маска команды не поставлена: {e}")
+        try:
+            steps = [s for s in split_compound_command(cc_text) if s] or [cc_text]
+        except Exception as e:
+            logger.debug(f"[CompControl] разбиение составной команды упало: {e}")
+            steps = [cc_text]
+        goal_out: List[str] = []
+        reply = self._cc_run_steps(steps, chat_id, turn_lang,
+                                   user_input=user_input, goal_out=goal_out)
+        if reply is None and len(steps) > 1:
+            # Разбиение ошиблось (первый кусок — не команда): целиком фраза
+            # могла быть одной командой («найди чёрный и белый чай»)
+            reply = self._cc_run_steps([cc_text], chat_id, turn_lang,
+                                       user_input=user_input,
+                                       goal_out=goal_out)
+        if goal_out:
+            # Цель — агенту сразу; строки шагов до неё («Открыл …») — первыми
+            ta_reply = self._task_agent_turn(
+                user_input, user_id, chat_id, user_name, turn_lang,
+                goal=goal_out[0], feed_text=cc_text)
+            return "\n".join(x for x in (reply, ta_reply) if x)
+        if reply is None:
+            return None
+        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+        self.memory.add_message("assistant", reply, user_id, chat_id)
+        if self.proactive and chat_id:
+            self.proactive.record_user_response(chat_id)
+        return reply
+
+    def _cc_run_steps(self, steps: List[str], chat_id, turn_lang,
+                      user_input: str = "", done: Optional[List[str]] = None,
+                      page_site: Optional[str] = None,
+                      goal_out: Optional[list] = None):
+        """Шаги составной команды — лениво: следующий шаг резолвится только
+        после исполнения предыдущего (второй шаг целится в страницу,
+        открытую первым). Шаг, требующий подтверждения, уходит в pending
+        вместе с хвостом (action["rest_steps"], action["chain_site"]) — после
+        «да» цепочку продолжает pending-ветка. Неудачный шаг обрывает
+        цепочку. Ответ — сводка по всем шагам одним сообщением; None —
+        первый же шаг не команда. done — строки уже исполненных шагов (для
+        продолжения после «да»); page_site — сайт, открытый прошлым шагом.
+        goal_out — список: шаг оказался целью для агента задач — туда цель
+        (с хвостом фразы), ответ — строки шагов до неё; агента запускает
+        вызывающий."""
+        lines = list(done or [])
+        cc = self.computer_control
+        for i, step in enumerate(steps):
+            _stopped = getattr(cc, "stop_requested", None)
+            if i and callable(_stopped) and _stopped(str(chat_id or "")):
+                break  # «стоп» пришёл до лока хода (cc_turn_enter)
+            res = self._cc_ladder(step, chat_id, turn_lang,
+                                  user_input=user_input, page_site=page_site)
+            if res is None:
+                if not lines:
+                    return None
+                from app.features import cc_texts
+                lines.append(cc_texts.t("chain_not_command", turn_lang,
+                                        step=step))
+                break
+            if "reply" in res:
+                lines.append(res["reply"])
+                if not res.get("ok", True):
+                    break
+                continue
+            action = res["action"]
+            rest = [s for s in steps[i + 1:] if s]
+            if is_goal_task(action):
+                # Цель от LLM-яруса — агенту сразу, без «Берусь за задачу?»
+                # (решение: просмотр сайтов безопасен, необратимое спросит
+                # сам агент; первое сообщение — «Беру: …, «стоп» —
+                # прервать»). Хвост составной фразы — часть цели: «найди
+                # пиццу и закажи её» терял «закажи её»
+                from app.features import cc_texts
+                if not self.task_agent:
+                    lines.append(cc_texts.t("tasks_disabled", turn_lang))
+                    break
+                goal = " ".join([str(action["goal"])] + rest)[:400]
+                if goal_out is not None:
+                    goal_out.append(goal)
+                    return "\n".join(ln for ln in lines if ln)
+                cc.set_pending(chat_id, dict(action, goal=goal))
+                lines.append(cc_texts.t("task_goal_confirm", turn_lang,
+                                        goal=goal))
+                break
+            if not res.get("direct") and cc.needs_confirm(action):
+                if rest:
+                    action["rest_steps"] = rest
+                    action["chain_site"] = (self._cc_chain_site(step, action)
+                                            or page_site)
+                cc.set_pending(chat_id, action)
+                lines.append(cc.confirm_question(action, lang=turn_lang))
+                if rest:
+                    # Человек подтверждает и хвост цепочки — пусть его видит
+                    from app.features import cc_texts
+                    lines.append(cc_texts.t(
+                        "chain_tail", turn_lang,
+                        steps=", ".join(f"«{s}»" for s in rest)))
+                break
+            ok, line = self._cc_execute_reply(action, chat_id, turn_lang)
+            if not ok and isinstance(action.get("confirm_required"), dict):
+                # Гейт execute: ничего не нажато (маршрут — до рискованного
+                # шага) — вопрос вместо «не удалось», хвост цепочки — в pending
+                if rest:
+                    action["rest_steps"] = rest
+                    action["chain_site"] = (self._cc_chain_site(step, action)
+                                            or page_site)
+                _q = self._cc_gate_ask(action, chat_id, turn_lang)
+                if _q:
+                    line = _q
+                    if rest:
+                        from app.features import cc_texts
+                        line += "\n" + cc_texts.t(
+                            "chain_tail", turn_lang,
+                            steps=", ".join(f"«{s}»" for s in rest))
+            lines.append(line)
+            if not ok:
+                break
+            page_site = self._cc_chain_site(step, action) or page_site
+        return "\n".join(ln for ln in lines if ln)
+
+    def _cc_gate_ask(self, action: dict, chat_id, turn_lang,
+                     user_id=None) -> Optional[str]:
+        """Отказ гейта подтверждения (execute без токена «да») → pending +
+        вопрос с тем, что реально нажмётся; None — отказа не было."""
+        cc = self.computer_control
+        follow = getattr(cc, "gate_followup", None)
+        try:
+            got = follow(action, lang=turn_lang) if callable(follow) else None
+        except Exception as e:
+            logger.debug(f"[CompControl] вопрос после гейта не собран: {e}")
+            got = None
+        if not got:
+            return None
+        pend, question = got
+        cc.set_pending(chat_id, pend, user_id=user_id)
+        return question
+
+    @staticmethod
+    def _cc_chain_site(step: str, action: dict) -> Optional[str]:
+        """Каким словом назвать сайт, открытый шагом цепочки — для «…и
+        включи музыку» (поиск на этом сайте, а не запуск приложения).
+        None — шаг сайт не открывал."""
+        if not isinstance(action, dict) or action.get("kind") not in (
+                "url", "nav", "multi"):
+            return None
+        if action.get("search_site"):
+            return str(action["search_site"])
+        try:
+            names = parse_open_many(step)
+        except Exception:
+            names = None
+        if names:
+            return str(names[-1])
+        return None
+
+    def _cc_execute_reply(self, action: dict, chat_id, turn_lang):
+        """Исполнение действия fast-path → (ok, реплика). Чтение отвечает
+        самим прочитанным текстом, остальное — «Готово, …»/«Не удалось …»."""
+        cc = self.computer_control
+        # Секрет ввода и текст приватной страницы — в историю маской
+        # (реплики ниже их повторяют: «ввёл «…» в поле …», прочитанное)
+        self._cc_hist_note_typed(action)
+        ok, detail = cc.execute(action, chat_id, router=self.router)
+        from app.features import cc_texts
+        if not ok and isinstance(action.get("confirm_required"), dict):
+            # Гейт подтверждения — не сбой: вопрос соберёт _cc_run_steps
+            return False, detail
+        if action.get("kind") == "read":
+            if ok:
+                self._cc_hist_note_read(action, detail)
+            return ok, (detail if ok else
+                        cc_texts.t("read_failed", turn_lang, detail=detail))
+        return ok, self._cc_reply(
+            action, ok, detail,
+            cc_texts.t("done", turn_lang,
+                       what=cc.describe_done(action, lang=turn_lang)) if ok else
+            cc_texts.t("failed", turn_lang,
+                       what=cc.describe(action, lang=turn_lang), detail=detail),
+            lang=turn_lang)
+
+    def _cc_scroll_goal_reply(self, goal: str, chat_id, turn_lang) -> dict:
+        """«пролистай до X» / «найди X на странице» / «докрути до конца» —
+        ограниченный доскролл до цели с фото места. Чтение + прокрутка,
+        ничего не нажимается — без подтверждения, выполняется сразу.
+        → {"reply", "ok"} для лесенки."""
+        from app.features import cc_texts
+        sg = None
+        sg_err = None
+        try:
+            sg, sg_err = self.computer_control.scroll_to_goal(
+                goal, None, chat_id=str(chat_id or ""))
+        except Exception as e:
+            logger.debug(f"[CompControl] fast-path доскролл до цели не "
+                         f"удался: {e}")
+            sg_err = cc_texts.t("scroll_failed", turn_lang)
+        if sg is None:
+            if sg_err == cc_texts.t("stopped", turn_lang):
+                # «стоп» — не сбой: честное «остановлено» без реплики-ошибки
+                return {"ok": False, "reply": sg_err}
+            return {"ok": False, "reply": self._cc_reply(
+                None, False, sg_err,
+                sg_err or cc_texts.t("scroll_failed", turn_lang),
+                lang=turn_lang)}
+        if sg["found"]:
+            if sg.get("edge") == "bottom":
+                _tmpl = cc_texts.t("scroll_goal_bottom", turn_lang)
+            elif sg.get("edge") == "top":
+                _tmpl = cc_texts.t("scroll_goal_top", turn_lang)
+            else:
+                _tmpl = cc_texts.t("scroll_goal_found", turn_lang,
+                                   goal=sg["goal"])
+            if sg.get("shot"):
+                self._pending_photos.setdefault(str(chat_id), []).append({
+                    "data": sg["shot"],
+                    "caption": cc_texts.t("scroll_goal_caption", turn_lang,
+                                          goal=sg["goal"], host=sg["host"])
+                    if not sg.get("edge") else
+                    cc_texts.t("scroll_goal_edge_caption", turn_lang,
+                               host=sg["host"])})
+            return {"ok": True, "reply": self._cc_reply(
+                None, True, None, _tmpl, lang=turn_lang)}
+        return {"ok": False, "reply": self._cc_reply(
+            None, False, None,
+            cc_texts.t("scroll_goal_miss", turn_lang, goal=sg["goal"]),
+            lang=turn_lang)}
+
+    def _cc_page_view_reply(self, site: Optional[str], shot_asked: bool,
+                            full: bool, chat_id, turn_lang,
+                            user_input: str) -> dict:
+        """«что на странице?» / «пришли скриншот» / «покажи всю страницу» —
+        отчёт об открытой странице: текстом — список элементов, плюс
+        скриншот в pending-фото бакет (платформа досылает картинку следом).
+        Как чтение: ничего не меняет, без подтверждения. → {"reply", "ok"}."""
+        from app.features import cc_texts
+        pv = None
+        pv_err = None
+        try:
+            pv, pv_err = self.computer_control.page_view_report(
+                site, chat_id=str(chat_id or ""), full_page=full)
+        except Exception as e:
+            logger.debug(f"[CompControl] fast-path отчёт о странице не "
+                         f"удался: {e}")
+            pv_err = cc_texts.t("page_view_failed", turn_lang)
+        from app.features.cc_privacy import scrub_url
+        # Адрес в отчёте — без токенов/кодов (reset?token=…): отчёт уходит
+        # в ответ, в историю и, на обычной странице, облачной модели.
+        # Приватная страница (вход/оплата/банк или private_hosts) — отчёт
+        # только человеку, в историю заглушка, LLM его не видит
+        pv_url = scrub_url(pv.get("url") or "") if pv is not None else ""
+        pv_private = (self._cc_private_host(pv.get("url"), pv.get("host"))
+                      if pv is not None else None)
+        if pv is not None and pv.get("full") and pv.get("shots"):
+            # Оглавление текстом + кадры-куски альбомом (партии по 10 —
+            # лимит media group Telegram; остаток — по «ещё»)
+            pv_desc = page_view_full_text(
+                pv_url, pv["host"], pv.get("outline"),
+                truncated=pv.get("truncated", False), lang=turn_lang)
+            if pv_private:
+                self._cc_hist_note_private(pv_desc, pv["host"] or pv_private,
+                                           "page_view")
+            pv_line = self._cc_reply(
+                None, True, None,
+                cc_texts.t("page_full_line", turn_lang), lang=turn_lang)
+            pv_reply = f"{pv_line}\n\n{pv_desc}"
+            shots = pv["shots"]
+            first, extra = shots[:10], shots[10:]
+            self._pending_photos.setdefault(str(chat_id), []).extend(
+                {"data": s} for s in first)
+            if extra:
+                self._pending_more_photos[str(chat_id)] = {
+                    "photos": [{"data": s} for s in extra],
+                    "ts": time.time()}
+                pv_reply += "\n\n" + cc_texts.t(
+                    "page_full_more", turn_lang, n=len(first),
+                    total=len(shots))
+            return {"ok": True, "reply": pv_reply}
+        if pv is not None:
+            pv_reply = page_view_text(pv_url, pv["host"], pv["items"],
+                                      lang=turn_lang)
+            # Отвечает персона своим голосом: данные страницы — в промпт;
+            # LLM молчит — честный фолбэк на шаблонный список. Приватная
+            # страница (вход/оплата/банк) — только шаблон: её текст в
+            # облачную/веб-чат модель не уходит (ни сейчас, ни историей)
+            if pv_private:
+                self._cc_hist_note_private(pv_reply, pv["host"] or pv_private,
+                                           "page_view")
+            else:
+                pv_reply = self._persona_page_view_reply(
+                    user_input, pv_reply) or pv_reply
+            if pv["shot"]:
+                self._pending_photos.setdefault(str(chat_id), []).append({
+                    "data": pv["shot"],
+                    "caption": cc_texts.t("page_shot_caption", turn_lang,
+                                          host=pv["host"])})
+            elif shot_asked:
+                # Скриншот просили явно, а кадр не получился — честно
+                # говорим, список элементов всё равно дан
+                pv_reply += "\n\n" + cc_texts.t("page_shot_failed", turn_lang)
+            return {"ok": True, "reply": pv_reply}
+        return {"ok": False,
+                "reply": pv_err or cc_texts.t("page_view_failed", turn_lang)}
+
+    def _cc_ladder(self, text: str, chat_id, turn_lang, user_input: str = "",
+                   page_site: Optional[str] = None) -> Optional[dict]:
+        """Один шаг команды через лесенку regex-парсеров, последним — LLM-
+        ярус. text — нормализованная команда (без OCR/файлов). → None — не
+        команда; {"reply", "ok"} — шаг уже обслужен (чтение/отчёт/доскролл/
+        отказ резолва); {"action", "direct"} — действие к подтверждению или
+        исполнению (direct — без подтверждения: чтение, переключение
+        вкладки). page_site — сайт, открытый прошлым шагом цепочки."""
+        cc = self.computer_control
+        cid = str(chat_id or "")
+        # «пролистай до X» — своим блоком ДО лесенки клика: внутри неё
+        # «пролистай до напитков» перехватило бы автолистание
+        # (parse_scroll_request) и крутило бы до «стоп», а человек при
+        # удалённом управлении страницу не видит
+        if cc.click:
+            cc_sg = parse_scroll_to_goal(text)
+            if cc_sg:
+                return self._cc_scroll_goal_reply(cc_sg, chat_id, turn_lang)
+
+        # «включи X на <сайте>» (поиск на сайте) проверяем ДО «открой X»:
+        # иначе «<фильм> на <сайте>» уйдёт в резолв как имя сайта
+        cc_action = None
+        cc_err = None
+        cc_pair = parse_search_on_site(text)
+        if cc_pair:
+            try:
+                cc_action = cc.resolve_search(*cc_pair)
+            except Exception as e:
+                logger.debug(f"[CompControl] fast-path поиск на сайте не удался: {e}")
+        # Шаг цепочки после открытия сайта: «(открой ютуб) и включи музыку» —
+        # поиск на ЭТОМ сайте, а не запуск приложения «Музыка». Медиа/клавиши
+        # («включи звук», «нажми пробел») — дальше по лесенке как есть
+        m_play = _CHAIN_PLAY_RE.match(text) if page_site and cc_action is None \
+            else None
+        if m_play and not parse_media_request(text) \
+                and not parse_key_request(text):
+            try:
+                # «включи X» — сразу первый результат, «найди X» — выдача
+                cc_action = cc.resolve_search(m_play.group("query"), page_site,
+                                              direct=bool(m_play.group("play")))
+            except Exception as e:
+                logger.debug(f"[CompControl] поиск на сайте цепочки не удался: {e}")
+        # «открой на site.ru/827 студентам — …»: явный адрес в фразе —
+        # открываем его, даже когда вокруг длинный текст; хвост по
+        # сепараторам « - »/«→» — путь кликами по странице (nav-действие).
+        # До клика и open_many: те обе длинную фразу отвергнут по длине
+        if cc_action is None:
+            cc_nav = parse_open_with_url(text)
+            if cc_nav:
+                try:
+                    cc_action = cc.resolve_nav(*cc_nav)
+                except Exception as e:
+                    logger.debug(f"[CompControl] fast-path явный URL не удался: {e}")
+        # «нажми X» / «скачай X» / «введи X в поле Y» / «отправь» / «открой X
+        # на этой странице» … — агентный клик/ввод по снапшоту страницы;
+        # подтверждение покажет, что именно нажмётся. Неудача — честный
+        # отказ шаблоном: LLM-путь это выполнить не может, а изобразить
+        # выполнение — может, поэтому туда не пускаем. «Не наша» команда
+        # ввода (resolve_type → (None, None)) идёт дальше. Порядок парсеров
+        # значим: медиа ДО клавиш, клавиши ДО клика («нажми esc» — не цель
+        # «esc»), стирание ДО корзины/закрытия («удали X»), корзина ДО
+        # клика и инвентаря, операции вкладки ДО закрытия-кликом («закрой
+        # вкладку»), закрытие и hover ДО generic-клика
+        if cc_action is None and cc.click:
+            cc_parsed = self._cc_parse_page_command(text)
+            if cc_parsed:
+                resolver = {"download": cc.resolve_download,
+                            "type": cc.resolve_type,
+                            "scroll": cc.resolve_scroll,
+                            "cart": cc.resolve_cart,
+                            "send": cc.resolve_send,
+                            "key": cc.resolve_key,
+                            "hover": cc.resolve_hover,
+                            "slider": cc.resolve_slider,
+                            "tab_op": cc.resolve_tab_op}.get(
+                    cc_parsed[2], cc.resolve_click)
+                try:
+                    cc_action, cc_err = resolver(cc_parsed[0], cc_parsed[1],
+                                                 self.router, chat_id=cid)
+                except Exception as e:
+                    logger.debug(f"[CompControl] fast-path клик/скачивание не удалось: {e}")
+                    from app.features import cc_texts
+                    cc_err = cc_texts.t("ladder_action_failed", turn_lang)
+                if cc_action is None and cc_err:
+                    return {"ok": False, "reply": self._cc_reply(
+                        None, False, cc_err, cc_err, lang=turn_lang)}
+        # «перейди на вкладку X» / «какие вкладки открыты» — ничего не меняют
+        # на страницах, сразу, без подтверждения. Явная форма со словом
+        # «вкладку» при промахе — честный отказ со списком; мягкая («перейди
+        # на X») при промахе молча идёт дальше (может, это «открой X»)
+        cc_direct = False
+        if cc_action is None and cc.click:
+            if parse_tab_list_query(text):
+                try:
+                    return {"ok": True, "reply": cc.list_open_tabs_text()}
+                except Exception as e:
+                    logger.debug(f"[CompControl] список вкладок не удался: {e}")
+                    from app.features import cc_texts
+                    return {"ok": False,
+                            "reply": cc_texts.t("ladder_tabs_failed",
+                                                turn_lang)}
+            cc_tab = parse_tab_switch(text)
+            if cc_tab:
+                try:
+                    cc_action, cc_err = cc.resolve_tab_switch(
+                        cc_tab[0], cc_tab[1], chat_id=cid)
+                    # Переключение — сразу; фолбэк на открытие сайта
+                    # (url-действие) идёт обычным путём с подтверждением
+                    cc_direct = bool(cc_action) and \
+                        cc_action.get("kind") == "tab_switch"
+                except Exception as e:
+                    logger.debug(f"[CompControl] fast-path переключение "
+                                 f"вкладки не удалось: {e}")
+                    from app.features import cc_texts
+                    cc_err = cc_texts.t("ladder_tab_switch_failed", turn_lang)
+                if cc_action is None and cc_err:
+                    return {"ok": False, "reply": self._cc_reply(
+                        None, False, cc_err, cc_err, lang=turn_lang)}
+        # «прочитай последнее сообщение (на <сайте>)» — чтение со страницы:
+        # без подтверждения, прочитанный текст — сразу ответом
+        if cc_action is None and cc.click:
+            cc_read = parse_read_request(text)
+            if cc_read:
+                try:
+                    cc_action, cc_err = cc.resolve_read(*cc_read, chat_id=cid)
+                except Exception as e:
+                    logger.debug(f"[CompControl] fast-path чтение не удалось: {e}")
+                    from app.features import cc_texts
+                    cc_err = cc_texts.t("ladder_read_failed", turn_lang)
+                if cc_action is None and cc_err:
+                    return {"ok": False, "reply": cc_err}
+        # «увеличь/уменьши/сбрось масштаб» — обратимая настройка вкладки
+        if cc_action is None and cc.click:
+            cc_zoom = parse_zoom_request(text)
+            if cc_zoom is not None:
+                try:
+                    cc_action, cc_err = cc.resolve_zoom(*cc_zoom, chat_id=cid)
+                except Exception as e:
+                    logger.debug(f"[CompControl] fast-path зум не удался: {e}")
+                    from app.features import cc_texts
+                    cc_err = cc_texts.t("ladder_zoom_failed", turn_lang)
+                if cc_action is None and cc_err:
+                    return {"ok": False, "reply": self._cc_reply(
+                        None, False, cc_err, cc_err, lang=turn_lang)}
+        # «что на странице?» / «пришли скриншот» / «покажи всю страницу»
+        if cc_action is None and cc.click:
+            cc_pv = parse_page_view_request(text)
+            if cc_pv is not None:
+                return self._cc_page_view_reply(
+                    cc_pv[0], cc_pv[1], cc_pv[2], chat_id, turn_lang,
+                    user_input or text)
+        if cc_action is None:
+            # «X and Y» делится, только если обе части — известные цели
+            # («Barnes and Noble» — одно название)
+            cc_names = parse_open_many(
+                text, known=getattr(cc, "is_known_target", None))
+            if cc_names:
+                try:
+                    cc_action = cc.resolve_many(cc_names)
+                except Exception as e:
+                    logger.debug(f"[CompControl] fast-path резолв не удался: {e}")
+        tag_origin(cc_action, "fast")
+        # Секрет в самой команде («введи пароль Kotik2019 …»), которую regex
+        # не разобрал: в облачный LLM-ярус такой текст не уходит — просим
+        # сказать по шаблону, который разбирает regex-путь
+        if cc_action is None and cc.click and command_has_secret(text):
+            for v in command_secret_values(text):
+                try:
+                    self._cc_hist_add_mask("secret", v)
+                except Exception:
+                    pass
+            logger.info("[CompControl] команда с секретом не разобрана "
+                        "regex-ом — LLM-ярус пропущен")
+            from app.features import cc_texts
+            return {"ok": False,
+                    "reply": cc_texts.t("secret_rephrase", turn_lang)}
+        # LLM-ярус разбора (последний): ни один regex-парсер не сматчился —
+        # модель классифицирует фразу в JSON-действие, дальше те же
+        # резолверы и тот же confirm/allowlist. Только для фраз, похожих на
+        # команду: на «как дела?» лишний вызов модели до основного ответа
+        # лишь тормозит. Ошибка резолва — честный отказ
+        if cc_action is None and cc.click and len(text) <= 400 \
+                and looks_like_command(text, turn_lang):
+            try:
+                cc_action, cc_err = cc.resolve_intent_llm(
+                    text, self.router, chat_id=cid)
+            except Exception as e:
+                logger.debug(f"[CompControl] LLM-разбор команды не удался: {e}")
+            tag_origin(cc_action, "intent_llm")
+            if is_goal_task(cc_action):
+                # Цель-задача из свободной фразы — всегда с подтверждением
+                cc_action["force_confirm"] = True
+            self._cc_mark_model_url(cc, cc_action, text)
+            kind = cc_action.get("kind") if cc_action else None
+            if kind == "scroll_goal":
+                return self._cc_scroll_goal_reply(
+                    str(cc_action["goal"]), chat_id, turn_lang)
+            if kind == "page_view":
+                return self._cc_page_view_reply(
+                    cc_action.get("site"), bool(cc_action.get("screenshot")),
+                    bool(cc_action.get("full")), chat_id, turn_lang,
+                    user_input or text)
+            if cc_action is None and cc_err:
+                return {"ok": False, "reply": self._cc_reply(
+                    None, False, cc_err, cc_err, lang=turn_lang)}
+        if not cc_action:
+            return None
+        if page_site and cc_action.get("kind") == "app":
+            # Шаг цепочки после открытия сайта не запускает программу
+            # («…и включи музыку» ≠ Music.app): цель — на открытой странице
+            obj = re.sub(r"^\S+\s*", "", text).strip() or text
+            try:
+                cc_action, cc_err = cc.resolve_click(obj, PAGE_REF, self.router,
+                                                     chat_id=cid)
+            except Exception as e:
+                logger.debug(f"[CompControl] клик шага цепочки не удался: {e}")
+                from app.features import cc_texts
+                cc_action, cc_err = None, cc_texts.t("ladder_action_failed",
+                                                     turn_lang)
+            if cc_action is None:
+                from app.features import cc_texts
+                return {"ok": False, "reply": self._cc_reply(
+                    None, False, cc_err,
+                    cc_err or cc_texts.t("ladder_not_found", turn_lang),
+                    lang=turn_lang)}
+            tag_origin(cc_action, "fast")
+        # В лог — без секретов: ввод маской (_describe_safe), текст команды
+        # ввода — только длиной
+        from app.features.cc_privacy import redact_inline
+        shown = (f"{len(text)} симв." if cc_action.get("kind") == "type"
+                 else redact_inline(text, 40))
+        logger.info(f"[CompControl] fast-path: '{shown}' → "
+                    f"{'задача' if is_goal_task(cc_action) else getattr(cc, '_describe_safe', cc.describe)(cc_action)}")
+        return {"action": cc_action,
+                "direct": cc_direct or cc_action.get("kind") == "read"}
+
+    @staticmethod
+    def _cc_mark_model_url(cc, cc_action, text: str) -> None:
+        """LLM-ярус, action=open: адрес выбрала модель. Домен не из
+        sites/allow_domains или адрес с query/fragment (выдуманный «ЛК банка»
+        с телефоном в параметрах) — via_search: гейт требует «да» при любом
+        confirm, как у маркера и агента (_open_needs_confirm). Домен, который
+        пользователь сам назвал в фразе, без параметров — его выбор."""
+        if not isinstance(cc_action, dict):
+            return
+        from urllib.parse import urlsplit
+        from app.features.task_agent import _open_needs_confirm
+        low = str(text or "").lower()
+        items = (cc_action.get("items") or []
+                 if cc_action.get("kind") == "multi" else [cc_action])
+        for a in items:
+            if not isinstance(a, dict) or a.get("kind") not in ("url", "nav"):
+                continue
+            url = str(a.get("value") or "")
+            try:
+                parts = urlsplit(url)
+                host = (parts.hostname or "").lower()
+            except ValueError:
+                parts, host = None, ""
+            if (parts is not None and host and not parts.query
+                    and not parts.fragment and not a.get("via_search")
+                    and re.search(r"(?<![\w.-])" + re.escape(
+                        host[4:] if host.startswith("www.") else host)
+                        + r"(?![\w-])", low)):
+                continue
+            if _open_needs_confirm(cc, {}, a, url):
+                a["via_search"] = True
+        if any(isinstance(a, dict) and a.get("via_search") for a in items):
+            cc_action["via_search"] = True
+
+    @staticmethod
+    def _cc_parse_page_command(text: str):
+        """Каскад regex-парсеров команд странице → (цель, сайт/PAGE_REF,
+        вид резолвера) или None. Порядок значим (см. _cc_ladder)."""
+        cc_page_goal = parse_open_on_page(text)
+        if cc_page_goal:
+            return cc_page_goal, PAGE_REF, "click"
+        cc_dl = parse_download_request(text)
+        if cc_dl and not _DL_ELSEWHERE_RE.search(str(cc_dl[0])):
+            # «скачай отчёт с сайта X» — цель на другом сайте (агенту через
+            # LLM-ярус), а не разовое скачивание на текущей вкладке
+            return cc_dl[0], cc_dl[1], "download"
+        cc_type = parse_type_request(text)
+        if cc_type:
+            # Сайт/поле/текст разберёт resolve_type по снапшоту
+            return cc_type, None, "type"
+        cc_send = parse_send_request(text)
+        if cc_send:
+            # «отправь» — Enter в поле, сайт как у клика
+            return None, cc_send[1], "send"
+        # «пауза»/«тише»/«громче» — медиа-команды плеера клавишами
+        cc_media = parse_media_request(text)
+        if cc_media:
+            return cc_media, None, "key"
+        # «нажми пробел/энтер/эскейп» — клавиша в страницу без выбора элемента
+        cc_key = parse_key_request(text)
+        if cc_key:
+            return cc_key[0], cc_key[1], "key"
+        # «удали 5 символов» — стирание серией Backspace (тот же key-резолвер)
+        cc_erase = parse_erase_request(text)
+        if cc_erase:
+            return cc_erase[0], cc_erase[1], "key"
+        # «промотай страницу» / «стоп»: листание в фоне. «стоп» без активного
+        # листания резолвер вернёт (None, None) — фраза уйдёт в диалог
+        cc_scroll = parse_scroll_request(text)
+        if cc_scroll:
+            return ((cc_scroll[0], cc_scroll[2], cc_scroll[3], cc_scroll[4]),
+                    cc_scroll[1], "scroll")
+        # «убери X из корзины» / «убавь/прибавь X» — корзина сайта
+        cc_cart = parse_cart_request(text)
+        if cc_cart:
+            return cc_cart, None, "cart"
+        # «поставь слайдер X на N» — числовой хвост отличает от клика
+        cc_slider = parse_slider_request(text)
+        if cc_slider:
+            return cc_slider[0], cc_slider[1], "slider"
+        # «обнови/перезагрузи/закрой вкладку (X)»
+        cc_tab_op = parse_tab_op(text)
+        if cc_tab_op:
+            return cc_tab_op[1], cc_tab_op[0], "tab_op"
+        # «закрой окно/попап» — закрытие (целевое или крестик)
+        cc_close = parse_close_request(text)
+        if cc_close:
+            return cc_close[0], cc_close[1], "click"
+        # «наведи (курсор) на X» — hover без клика
+        cc_hover = parse_hover_request(text)
+        if cc_hover:
+            return cc_hover[0], cc_hover[1], "hover"
+        cc_click = parse_click_request(text)
+        if cc_click:
+            return cc_click[0], cc_click[1], "click"
+        return None
+
     def process_message(self, user_input: str, user_id: str = "default",
                         chat_id: str = None, user_name: str = None,
                         reply_context: str = None,
@@ -933,8 +2547,14 @@ class BotInstance:
         try:
             # Ход пользователя открыт ДО записи его реплики в STM и закрыт
             # после записи ответа: фоновая инициатива/ритм в этом окне в STM
-            # не пишут (см. user_turn) — порядок user → ответ не рвётся
-            with self.user_turn(self.stm_key(chat_id, user_id)):
+            # не пишут (см. user_turn) — порядок user → ответ не рвётся.
+            # Контекст браузера режима управления (вкладка, листание) — этого
+            # чата на весь ход: ключ тот же, что у режима (chat_id или user_id)
+            _cc = getattr(self, "computer_control", None)
+            with self.user_turn(self.stm_key(chat_id, user_id)), (
+                    _cc.chat_scope(chat_id or user_id)
+                    if _cc is not None and hasattr(_cc, "chat_scope")
+                    else nullcontext()):
                 reply = self._process_message_impl(
                     user_input, user_id=user_id, chat_id=chat_id, user_name=user_name,
                     reply_context=reply_context,
@@ -970,6 +2590,13 @@ class BotInstance:
         # app/api/server.py).
         if raw_user_text is None:
             raw_user_text = user_input
+        # Язык пользователя в этом ходе — для изолированных реплик
+        # (CC-результаты, настройка обучения): в них нет истории диалога
+        try:
+            turn_lang = detect_dialogue_language(
+                raw_user_text, self.memory.stm.get_last(8, chat_id=chat_id), user_id)
+        except Exception:
+            turn_lang = detect_language(raw_user_text)
 
         # Очищаем pending-состояние ЭТОГО чата от предыдущего вызова (атрибуты per-chat:
         # process_message выполняется конкурентно в потоках для разных чатов, и общие
@@ -1002,6 +2629,19 @@ class BotInstance:
                         f"⚠️ {_site}: закончился бесплатный лимит сообщений — "
                         f"восстановится ≈ в {_when}. До тех пор пропускаю "
                         "этот чат, отвечаю через другие модели.")
+                elif _kind == "login" and "возраст" in str(_alert.get("reason") or ""):
+                    self._pending_list_messages[str(chat_id)].append(
+                        f"⚠️ {_site} просит подтвердить возраст — сделай это "
+                        "в браузере бота (скажи «почини браузер», чтобы окно "
+                        "стало видимым). Пока пропускаю этот чат и отвечаю "
+                        "через другие модели; как подтвердишь — подхвачу сам.")
+                elif _kind == "login":
+                    self._pending_list_messages[str(chat_id)].append(
+                        f"⚠️ {_site} выкинул бота из аккаунта — зайди в него "
+                        "в браузере бота (скажи «почини браузер», чтобы окно "
+                        "стало видимым). Пока пропускаю этот чат и отвечаю "
+                        "через другие модели; как войдёшь — подхвачу сам "
+                        "в течение пары минут.")
                 elif _kind == "refused":
                     self._pending_list_messages[str(chat_id)].append(
                         f"⚠️ {_site} временно отклоняет сообщения "
@@ -1024,7 +2664,14 @@ class BotInstance:
         # (context_parts_out) — список/ответ формулирует модель, не шаблон
         page_section_note = None
 
-        logger.info(f"[BotInstance] process_message START: '{user_input[:60]}' | chat_id={chat_id}")
+        # Сырой текст реплики в лог не пишем: в режиме управления это бывает
+        # пароль ответом агенту/слоту сценария — только длина; иначе без
+        # секретов (маска логов процесса — app.core.log_privacy)
+        from app.core.log_privacy import control_mode_active, input_for_log
+        logger.info("[BotInstance] process_message START: "
+                    + input_for_log(user_input, control_mode_active(
+                        self, chat_id or user_id))
+                    + f" | chat_id={chat_id}")
 
         # «перейди в режим управления» / «выйди из режима управления» —
         # переключатель computer control. Работает всегда и раньше всех
@@ -1033,10 +2680,38 @@ class BotInstance:
         # allowlist) — иначе перехвата нет вообще, фраза уходит в обычный
         # диалог: для чужого режима управления «не существует», а не честно
         # отказывает и не палит, что фича есть.
-        if chat_id and self._cc_allowed(user_id, chat_id):
-            _mode = parse_control_mode(user_input)
+        # Ключ режима — chat_id, иначе user_id (веб-API без chat_id): так же
+        # его читает ответ API (control_mode в ChatResponse). Команды режима —
+        # только из того, что человек написал (raw_user_text), не из OCR/файла
+        cc_mode_key = str(chat_id or user_id or "")
+        # Ключ и язык хода — менеджеру управления (на поток хода): execute и
+        # опросы браузера веб-чата без chat_id видят «стоп» по тому же ключу,
+        # что ставит cc_turn_enter; служебные тексты — на языке хода
+        if getattr(self, "computer_control", None):
+            try:
+                self.computer_control.set_turn(cc_mode_key, turn_lang)
+            except Exception as e:
+                logger.debug(f"[BotInstance] ход для режима управления: {e}")
+        if cc_mode_key and self._cc_allowed(user_id, chat_id):
+            _mode = parse_control_mode(raw_user_text)
+            # Новый ход: «стоп» прошлого хода отработал, флаг снимаем.
+            # control_mode_on здесь же гасит режим после простоя
+            try:
+                if self.computer_control:
+                    self.computer_control.stop_clear(cc_mode_key)
+            except Exception:
+                pass
+            if self.control_mode_on(cc_mode_key):
+                self._cc_mode_touch(cc_mode_key)
+            _idle_note = self._cc_pop_idle_notice(cc_mode_key, turn_lang)
+            if _idle_note and _mode is not True:
+                # Честно сообщаем отдельным сообщением вслед за ответом: иначе
+                # команда молча ушла бы в обычный диалог
+                self._pending_list_messages.setdefault(str(chat_id), []).append(
+                    _idle_note)
             if _mode is not None:
-                _cm_reply = self._control_mode_switch(str(chat_id), _mode)
+                _cm_reply = self._control_mode_switch(cc_mode_key, _mode,
+                                                      lang=turn_lang)
                 self.memory.add_message("user", user_input, user_id, chat_id, user_name)
                 self.memory.add_message("assistant", _cm_reply, user_id, chat_id)
                 if self.proactive:
@@ -1047,24 +2722,28 @@ class BotInstance:
         # видимом Chrome, чтобы пользователь прошёл капчу руками. Тоже
         # только для авторизованных — иначе кто угодно в чате мог бы поднять
         # видимое окно браузера с сессиями владельца.
-        if chat_id and self._cc_allowed(user_id, chat_id) and _RESCUE_BROWSER_RE.match(user_input):
+        if cc_mode_key and self._cc_allowed(user_id, chat_id) \
+                and _RESCUE_BROWSER_RE.match(raw_user_text):
             try:
                 from app.features import browser_actions as _ba
                 _ok = _ba.rescue_pool_h()
             except Exception:
                 _ok = False
-            _reply = (
-                "Открыл браузер бота — пройди в его окне проверку «я не робот» "
-                "(если просят несколько чатов — в каждом). Как закончишь, "
-                "просто напиши мне: карантин снимется сам, и браузер уйдёт "
-                "обратно в невидимый режим." if _ok else
-                "Не смог перезапустить браузер бота в видимом режиме — "
-                "подробности в логе.")
+            from app.features import cc_texts
+            _reply = cc_texts.t("rescue_ok" if _ok else "rescue_fail", turn_lang)
             self.memory.add_message("user", user_input, user_id, chat_id, user_name)
             self.memory.add_message("assistant", _reply, user_id, chat_id)
             if self.proactive:
                 self.proactive.record_user_response(chat_id)
             return _reply
+        # Следующая реплика после «почини браузер» — «готово»: rescue, которому
+        # чинить нечего, завершается сразу, а не по истечении срока
+        if cc_mode_key and self._cc_allowed(user_id, chat_id):
+            try:
+                from app.features import web_llm as _wl
+                _wl.finish_idle_rescue()
+            except Exception:
+                pass
 
         # Быстрый путь computer_control: перехват «да»/«нет» на pending-действие
         # и голая команда «открой X» — оба обслуживаются шаблонно, весь тяжёлый
@@ -1074,89 +2753,284 @@ class BotInstance:
         # (общий браузер с сессиями владельца), но исполнять команды в нём
         # должен только владелец/allowlist — иначе любой участник группового
         # чата, где кто-то один включил режим, мог бы им управлять.
-        if (self.computer_control and chat_id
-                and self.control_mode_on(chat_id)
+        if (self.computer_control and cc_mode_key
+                and self.control_mode_on(cc_mode_key)
                 and self._cc_allowed(user_id, chat_id)):
+            # Команда для лесенки — нормализованный текст, который человек
+            # написал сам: «Коннор, можешь открыть ютуб?» → «открой ютуб»
+            cc_text = normalize_command(raw_user_text, self._address_names())
+            # Автор хода: им подписывается pending, который создаст этот ход
+            # (подтвердить сможет только он)
+            try:
+                self.computer_control.note_requester(chat_id, user_id)
+            except Exception:
+                pass
             # Сценарии — ДО pending-confirm и fast-path парсеров: ответы слотов
             # («гавайскую») и «отмена» при живом прогоне не должны уходить
             # в команды странице; «запомни сценарий X» и имя сценария —
             # тоже раньше «открой X»
             if self.scenario_manager:
+                from app.features import cc_texts
                 sc_reply = None
                 try:
-                    if self.scenario_manager.active(chat_id):
-                        sc_reply = (self.scenario_manager.cancel(chat_id)
-                                    if self.scenario_manager.parse_cancel(user_input)
-                                    else self.scenario_manager.feed(
-                                        chat_id, user_input, self.router))
+                    # Сценарию — только то, что человек НАПИСАЛ: OCR фото/текст
+                    # файла в составном user_input не должны ни запускать
+                    # сценарий, ни вписываться в поле сайта ответом на слот
+                    sc_text = raw_user_text or ""
+                    # Ввод шагов сценария → маска истории (менеджер мог
+                    # смениться живым переключением настроек)
+                    self._cc_hist_hook_cc()
+                    # Живой прогон агента: реплика — ответ ему («пепперони»,
+                    # «да»), а не имя сценария. Раньше она уходила в pending
+                    # «Запустить сценарий?», и следующее «да» съедал агент
+                    ta_busy_run = bool(self.task_agent and self.task_agent.active(
+                        chat_id or user_id))
+                    if ta_busy_run and not self.scenario_manager.active(chat_id):
+                        pass
+                    elif self.scenario_manager.active(chat_id):
+                        if self.scenario_manager.parse_cancel(sc_text):
+                            sc_reply = self.scenario_manager.cancel(chat_id)
+                        elif not sc_text.strip() and raw_user_text != user_input:
+                            sc_reply = cc_texts.t("scenario_text_only",
+                                                  turn_lang)
+                        else:
+                            # Ответ на слот-секрет («Что ввести в поле
+                            # «Пароль»?») — маской в STM и в KnownSecrets
+                            # ДО записи реплики; ввод сценария — хуком
+                            # on_typed менеджера (describe_done ввода)
+                            self._cc_sc_note_answer(chat_id, sc_text)
+                            sc_reply = self.scenario_manager.feed(
+                                chat_id, sc_text, self.router)
                     else:
                         # «начни записывать сценарий (X)» — явные скобки
                         # записи; «сохрани сценарий» внутри неё берёт трассу
                         # с момента старта (обрабатывает record_reply)
                         sc_start = self.scenario_manager.parse_start_record(
-                            user_input)
+                            sc_text)
                         if sc_start is not None:
                             sc_reply = self.scenario_manager.record_start(
                                 chat_id, sc_start)
-                        elif self.scenario_manager.parse_stop_record(user_input):
+                        elif self.scenario_manager.parse_stop_record(sc_text):
                             sc_reply = self.scenario_manager.record_stop(chat_id)
                         else:
-                            sc_save = self.scenario_manager.parse_save_request(user_input)
+                            sc_save = self.scenario_manager.parse_save_request(sc_text)
                             if sc_save is not None:
                                 sc_reply = self.scenario_manager.record_reply(
                                     chat_id, sc_save, self.router)
                             else:
-                                sc_name = self.scenario_manager.find_scenario(user_input)
-                                if sc_name:
+                                sc_match = self.scenario_manager.match_scenario(
+                                    sc_text, self._address_names())
+                                if sc_match and sc_match[1]:
+                                    sc_name = sc_match[0]
                                     logger.info(f"[Scenarios] fast-path: "
-                                                f"'{user_input[:40]}' → «{sc_name}»")
+                                                f"'{sc_text[:40]}' → «{sc_name}»")
                                     sc_reply = self.scenario_manager.start(
                                         sc_name, chat_id, self.router)
+                                elif sc_match:
+                                    # Имя сценария лишь встретилось во фразе —
+                                    # запуск только после «да» этого же человека
+                                    self.computer_control.set_pending(
+                                        chat_id, {"kind": "scenario",
+                                                  "name": sc_match[0],
+                                                  "origin": "scenario"},
+                                        user_id=user_id)
+                                    sc_reply = cc_texts.t(
+                                        "scenario_confirm_start", turn_lang,
+                                        name=sc_match[0])
                 except Exception as e:
                     logger.warning(f"[Scenarios] fast-path упал: {e}")
                     self.scenario_manager.cancel(chat_id)
-                    sc_reply = f"Сценарий сломался ({str(e)[:80]}) — отменил его."
+                    sc_reply = cc_texts.t("scenario_broken", turn_lang,
+                                          err=str(e)[:80])
                 if sc_reply is not None:
                     self.memory.add_message("user", user_input, user_id, chat_id, user_name)
                     self.memory.add_message("assistant", sc_reply, user_id, chat_id)
                     if self.proactive and chat_id:
                         self.proactive.record_user_response(chat_id)
                     return sc_reply
-            cc_pending = self.computer_control.get_pending(chat_id)
+            # Агент-автопилот: живой прогон забирает ответы на свои вопросы
+            # и «да/нет» на свои подтверждения; «задача: …» — явный запуск.
+            # До pending-confirm и fast-path парсеров — по той же причине,
+            # что и сценарии («пепперони» — ответ, а не команда странице)
+            ta_chat = chat_id or user_id
+            ta_live = bool(self.task_agent and self.task_agent.active(ta_chat))
+            ta_names = self._address_names()
+            if not ta_live and self.task_agent and raw_user_text is not None \
+                    and not parse_task_request(raw_user_text, ta_names):
+                # «да»/«продолжай» на итог только что закончившейся задачи —
+                # возобновить её, а не отдать реплику обычному чату (персона
+                # «продолжала» на словах). Только написанное человеком
+                ta_live = self.task_agent.reopen(ta_chat, raw_user_text,
+                                                 user_id=user_id,
+                                                 names=ta_names)
+            if ta_live and raw_user_text \
+                    and hasattr(self.task_agent, "ask_switch") \
+                    and self._ta_foreign_command(raw_user_text, ta_chat):
+                # Явная посторонняя команда («открой ютуб», новая «задача:
+                # …») при ждущем прогоне — не ответ агенту: «бросить задачу?»
+                sw = self.task_agent.ask_switch(ta_chat, raw_user_text,
+                                                user_id=user_id)
+                if sw:
+                    # Команда может нести пароль («задача: войди, пароль …»)
+                    # — маски хода до записи, как у обычной команды
+                    try:
+                        self._cc_hist_note_user_text(raw_user_text,
+                                                     contacts=False)
+                    except Exception as e:
+                        logger.warning(f"[TaskAgent] маска команды не "
+                                       f"поставлена: {e}")
+                    self.memory.add_message("user", user_input, user_id,
+                                            chat_id, user_name)
+                    self.memory.add_message("assistant", sw, user_id, chat_id)
+                    return sw
+            # Запуск задачи — только из написанного человеком: «задача: …»
+            # на скриншоте/в файле агента не запускает
+            ta_goal = (parse_task_request(raw_user_text or "", ta_names)
+                       if self.task_agent and not ta_live else None)
+            if ta_live or ta_goal:
+                ta_reply = self._task_agent_turn(
+                    user_input, user_id, chat_id, user_name, turn_lang,
+                    goal=ta_goal, feed_text=raw_user_text or "")
+                _pop = getattr(self.task_agent, "pop_switch", None)
+                ta_next = _pop(ta_chat) if callable(_pop) else None
+                if ta_next:
+                    # «да» на «бросить задачу?» — прогон снят, теперь команда,
+                    # ради которой его бросили (обычным путём хода)
+                    return ta_reply + "\n" + self._process_message_impl(
+                        ta_next, user_id=user_id, chat_id=chat_id,
+                        user_name=user_name, raw_user_text=ta_next)
+                return ta_reply
+            # Pending — только свой: в группе «да» другого участника чужое
+            # действие не исполняет (get_pending с user_id его не видит)
+            cc_pending = self.computer_control.get_pending(chat_id, user_id=user_id)
+            if not cc_pending and self.computer_control.pending_expired_recently(
+                    chat_id, user_id=user_id) and classify_confirmation(
+                    raw_user_text, self._address_names()) == "YES":
+                # Голое «да» после истечения TTL: не молчаливая болтовня,
+                # а честное «повтори» — иначе человек думает, что сделано
+                cc_reply = self._cc_phrase("cc_confirm_expired", turn_lang)
+                self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                self.memory.add_message("assistant", cc_reply, user_id, chat_id)
+                if self.proactive and chat_id:
+                    self.proactive.record_user_response(chat_id)
+                return cc_reply
             if cc_pending:
-                cc_verdict = classify_confirmation(raw_user_text)
+                cc_verdict = classify_confirmation(
+                    raw_user_text, self._address_names())
                 cc_reply = None
+                if cc_pending.get("choices"):
+                    # Список «какой сайт открыть?»: номер — выбор варианта
+                    # (и согласие), «да» — первый; «нет» — как обычно
+                    from app.features.computer_control import parse_choice
+                    cc_n = parse_choice(raw_user_text, self._address_names())
+                    cc_max = len(cc_pending["choices"])
+                    if cc_n is not None and not 1 <= cc_n <= cc_max:
+                        # Pending живёт: человек выбирает, просто промахнулся
+                        from app.features import cc_texts
+                        cc_reply = cc_texts.t("site_choice_range", turn_lang,
+                                              n=cc_n, max=cc_max)
+                        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                        self.memory.add_message("assistant", cc_reply, user_id, chat_id)
+                        if self.proactive and chat_id:
+                            self.proactive.record_user_response(chat_id)
+                        return cc_reply
+                    if cc_n is not None:
+                        cc_verdict = "YES"
+                    if cc_verdict == "YES":
+                        self.computer_control.pick_choice(
+                            cc_pending, (cc_n or 1) - 1)
                 if cc_verdict == "YES":
                     self.computer_control.stats["confirmed"] += 1
                     # Pending снимаем ДО исполнения: иначе следующее «да»
                     # (на любой другой вопрос) исполнит действие повторно
                     self.computer_control.clear_pending(chat_id)
+                    # Источник для аудита: исполнено по «да»; откуда пришло
+                    # действие (fast/marker/…) — в pending_from
+                    if cc_pending.get("origin") not in (None, "pending"):
+                        cc_pending["pending_from"] = cc_pending["origin"]
+                    cc_pending["origin"] = "pending"
+                    for _it in cc_pending.get("items") or ():
+                        if isinstance(_it, dict):
+                            _it["origin"] = "pending"
+                    if cc_pending.get("kind") == "scenario" and self.scenario_manager:
+                        # «Запустить сценарий «X»?» (имя лишь встретилось во
+                        # фразе) — «да» запускает сценарий
+                        try:
+                            cc_reply = self.scenario_manager.start(
+                                str(cc_pending.get("name") or ""), chat_id,
+                                self.router)
+                        except Exception as e:
+                            logger.warning(f"[Scenarios] запуск по «да» упал: {e}")
+                            self.scenario_manager.cancel(chat_id)
+                            from app.features import cc_texts
+                            cc_reply = cc_texts.t("scenario_broken", turn_lang,
+                                                  err=str(e)[:80])
+                        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                        self.memory.add_message("assistant", cc_reply, user_id, chat_id)
+                        if self.proactive and chat_id:
+                            self.proactive.record_user_response(chat_id)
+                        return cc_reply
+                    if is_goal_task(cc_pending) and self.task_agent:
+                        # «Берусь за задачу «X»?» (цель от LLM-яруса) — «да»
+                        # запускает агента, а не execute
+                        return self._task_agent_turn(
+                            user_input, user_id, chat_id, user_name,
+                            turn_lang, goal=str(cc_pending.get("goal") or ""),
+                            announce=False)
+                    # «да» владельца pending — источник токена подтверждения:
+                    # без него гейт execute рискованное действие не исполнит
+                    _grant = getattr(self.computer_control,
+                                     "grant_confirmation", None)
+                    if callable(_grant):
+                        _grant(cc_pending, "pending", by=user_id)
                     cc_ok, cc_detail = self.computer_control.execute(
                         cc_pending, chat_id, router=self.router)
-                    cc_reply = self._cc_reply(
-                        cc_pending, cc_ok, cc_detail,
-                        f"Готово, {self.computer_control.describe_done(cc_pending)}."
-                        if cc_ok else
-                        f"Не удалось {self.computer_control.describe(cc_pending)}: {cc_detail}.")
+                    from app.features import cc_texts
+                    # Маршрут дошёл до рискованного элемента, которого не было
+                    # в вопросе, — стоп на нём и новый вопрос с его подписью
+                    cc_reply = self._cc_gate_ask(cc_pending, chat_id,
+                                                 turn_lang, user_id=user_id)
+                    if cc_reply is None:
+                        cc_reply = self._cc_reply(
+                            cc_pending, cc_ok, cc_detail,
+                            cc_texts.t("done", turn_lang, what=self.computer_control.describe_done(
+                                cc_pending, lang=turn_lang))
+                            if cc_ok else
+                            cc_texts.t("failed", turn_lang, what=self.computer_control.describe(
+                                cc_pending, lang=turn_lang), detail=cc_detail), lang=turn_lang)
+                    if cc_ok and cc_pending.get("rest_steps"):
+                        # Составная команда: хвост шагов — после этого «да»
+                        cc_reply = self._cc_run_steps(
+                            list(cc_pending["rest_steps"]), chat_id, turn_lang,
+                            user_input=user_input, done=[cc_reply],
+                            page_site=cc_pending.get("chain_site"))
                 elif cc_verdict == "NO":
                     self.computer_control.stats["declined"] += 1
                     self.computer_control.clear_pending(chat_id)
-                    cc_reply = "Хорошо, не выполняю."
+                    from app.features import cc_texts
+                    cc_reply = cc_texts.t("declined", turn_lang)
+                    # «стоп»/«хватит» при идущем листании — это и отказ, и
+                    # остановка: иначе страница крутилась бы дальше
+                    if self.computer_control.stop_scroll_if_active(
+                            raw_user_text or "", chat_id=cc_mode_key):
+                        cc_reply = cc_texts.t("declined_scroll", turn_lang)
                 if cc_reply is not None:
                     self.memory.add_message("user", user_input, user_id, chat_id, user_name)
                     self.memory.add_message("assistant", cc_reply, user_id, chat_id)
                     if self.proactive and chat_id:
                         self.proactive.record_user_response(chat_id)
                     return cc_reply
-                # UNKNOWN — не перехватываем: сообщение уходит в обычный поток,
-                # pending живёт до TTL
+                # UNKNOWN — не согласие: вопрос, болтовня или новая команда
+                # («ок, а теперь нажми войти»). Отложенное действие больше
+                # не актуально — снимаем, сообщение идёт обычным потоком
+                self.computer_control.clear_pending(chat_id, user_id=user_id)
 
             # «ещё» / «покажи остальное» — досылка остатка полностраничного
             # альбома («покажи всю страницу» режется на партии по 10).
             # Только при живом остатке (TTL 10 мин) — иначе бытовое «ещё»
             # уходит обычным путём
             _more_ph = self._pending_more_photos.get(str(chat_id))
-            if _more_ph and _MORE_PHOTOS_RE.match(user_input):
+            if _more_ph and _MORE_PHOTOS_RE.match(raw_user_text or ""):
                 if time.time() - float(_more_ph.get("ts") or 0) > 600:
                     self._pending_more_photos.pop(str(chat_id), None)
                 else:
@@ -1169,9 +3043,10 @@ class BotInstance:
                         self._pending_more_photos.pop(str(chat_id), None)
                     self._pending_photos.setdefault(
                         str(chat_id), []).extend(_batch)
-                    _mr = (f"Держи, следующие {len(_batch)} кадров — "
-                           f"«ещё» пришлёт дальше." if _rest else
-                           f"Держи, последние {len(_batch)} кадров.")
+                    from app.features import cc_texts
+                    _mr = cc_texts.t("page_more_next" if _rest
+                                     else "page_more_last", turn_lang,
+                                     n=len(_batch))
                     self.memory.add_message("user", user_input, user_id,
                                             chat_id, user_name)
                     self.memory.add_message("assistant", _mr, user_id,
@@ -1180,442 +3055,21 @@ class BotInstance:
                         self.proactive.record_user_response(chat_id)
                     return _mr
 
-            # «пролистай до X» / «найди X на странице» / «докрути до конца» —
-            # ограниченный доскролл до цели с фото места. Чтение + прокрутка,
-            # ничего не нажимается — без подтверждения, выполняется сразу.
-            # Своим блоком ДО лесенки клика: внутри неё «пролистай до
-            # напитков» перехватило бы автолистание (parse_scroll_request)
-            # и крутило бы до «стоп», а человек при удалённом управлении
-            # страницу не видит
-            if self.computer_control.click:
-                cc_sg = parse_scroll_to_goal(user_input)
-                if cc_sg:
-                    sg = None
-                    sg_err = None
-                    try:
-                        sg, sg_err = self.computer_control.scroll_to_goal(
-                            cc_sg, None, chat_id=str(chat_id or ""))
-                    except Exception as e:
-                        logger.debug(f"[CompControl] fast-path доскролл до "
-                                     f"цели не удался: {e}")
-                        sg_err = "Не удалось пролистать страницу."
-                    if sg is None:
-                        sg_reply = self._cc_reply(
-                            None, False, sg_err,
-                            sg_err or "Не удалось пролистать страницу.")
-                    elif sg["found"]:
-                        if sg.get("edge") == "bottom":
-                            _tmpl = "Докрутил до самого низа страницы."
-                        elif sg.get("edge") == "top":
-                            _tmpl = "Вернулся на самый верх страницы."
-                        else:
-                            _tmpl = f"Нашёл «{sg['goal']}» — вот это место."
-                        sg_reply = self._cc_reply(None, True, None, _tmpl)
-                        if sg.get("shot"):
-                            self._pending_photos.setdefault(
-                                str(chat_id), []).append({
-                                    "data": sg["shot"],
-                                    "caption": f"«{sg['goal']}» "
-                                               f"({sg['host']})"
-                                    if not sg.get("edge") else
-                                    f"Край страницы ({sg['host']})"})
-                    else:
-                        sg_reply = self._cc_reply(
-                            None, False, None,
-                            f"Пролистал страницу — «{sg['goal']}» не вижу. "
-                            f"Могу показать её целиком: скажи «покажи всю "
-                            f"страницу».")
-                    self.memory.add_message("user", user_input, user_id,
-                                            chat_id, user_name)
-                    self.memory.add_message("assistant", sg_reply, user_id,
-                                            chat_id)
-                    if self.proactive and chat_id:
-                        self.proactive.record_user_response(chat_id)
-                    return sg_reply
-
-            # «включи X на <сайте>» (поиск на сайте) проверяем ДО «открой X»:
-            # иначе «<фильм> на <сайте>» уйдёт в резолв как имя сайта
-            cc_action = None
-            cc_err = None
-            cc_pair = parse_search_on_site(user_input)
-            if cc_pair:
-                try:
-                    cc_action = self.computer_control.resolve_search(*cc_pair)
-                except Exception as e:
-                    logger.debug(f"[CompControl] fast-path поиск на сайте не удался: {e}")
-            # «открой на site.ru/827 студентам — …»: явный адрес в фразе —
-            # открываем его, даже когда вокруг длинный текст; хвост по
-            # сепараторам « - »/«→» — путь кликами по странице (nav-действие).
-            # До клика и open_many: те обе длинную фразу отвергнут по длине
-            if cc_action is None:
-                cc_nav = parse_open_with_url(user_input)
-                if cc_nav:
-                    try:
-                        cc_action = self.computer_control.resolve_nav(*cc_nav)
-                    except Exception as e:
-                        logger.debug(f"[CompControl] fast-path явный URL не удался: {e}")
-            # «нажми X (на сайте)» / «скачай X» / «введи X в поле Y» /
-            # «отправь» (Enter в поле) / «открой X на этой странице» —
-            # агентный клик, скачивание и ввод:
-            # снапшот страницы + выбор элемента; подтверждение покажет, что
-            # именно нажмётся/скачается/введётся. Неудача — честный отказ
-            # шаблоном: LLM-путь это выполнить не может, а изобразить
-            # выполнение («Действие выполнено», «Введено») — может, поэтому
-            # туда не пускаем. «Не наша» команда ввода (resolve_type вернул
-            # (None, None) — «напиши мне письмо») уходит в обычный поток.
-            # Под-переключатель click: при выключенном клике команда уходит в
-            # обычный LLM-поток (фича клика off — бот просто отвечает текстом)
-            if cc_action is None and self.computer_control.click:
-                cc_parsed = None  # (цель, сайт/PAGE_REF, вид: click/download/type)
-                cc_page_goal = parse_open_on_page(user_input)
-                if cc_page_goal:
-                    cc_parsed = (cc_page_goal, PAGE_REF, "click")
-                else:
-                    cc_dl = parse_download_request(user_input)
-                    if cc_dl:
-                        cc_parsed = (cc_dl[0], cc_dl[1], "download")
-                    else:
-                        cc_type = parse_type_request(user_input)
-                        if cc_type:
-                            # Сайт/поле/текст разберёт resolve_type по снапшоту
-                            cc_parsed = (cc_type, None, "type")
-                        else:
-                            cc_send = parse_send_request(user_input)
-                            if cc_send:
-                                # «отправь» — Enter в поле, сайт как у клика
-                                cc_parsed = (None, cc_send[1], "send")
-                            else:
-                                # «пауза»/«тише»/«громче»/«без звука» —
-                                # медиа-команды плеера клавишами; ДО
-                                # клавиш-«нажми» и клика
-                                cc_media = parse_media_request(user_input)
-                                if cc_media:
-                                    cc_parsed = (cc_media, None, "key")
-                                else:
-                                    # «нажми пробел/энтер/эскейп…» — клавиша
-                                    # в страницу (без выбора элемента); ДО
-                                    # generic-клика: «нажми esc» — не цель «esc»
-                                    cc_key = parse_key_request(user_input)
-                                    if cc_key:
-                                        cc_parsed = (cc_key[0], cc_key[1], "key")
-                                    else:
-                                        # «удали 5 символов» / «сотри три
-                                        # буквы» — стирание серией Backspace
-                                        # (тот же key-резолвер); ДО корзины и
-                                        # закрытия: «удали X» они тоже слушают
-                                        cc_erase = parse_erase_request(user_input)
-                                        if cc_erase:
-                                            cc_parsed = (cc_erase[0],
-                                                         cc_erase[1], "key")
-                                        else:
-                                            # «промотай страницу» / «стоп»: листание в фоне.
-                                            # «промотай раздел слева (вверх)» — режим
-                                            # уезжает резолверу кортежем ("start", side, dir).
-                                            # «стоп» без активного листания резолвер вернёт
-                                            # (None, None) — фраза уйдёт в обычный диалог
-                                            cc_scroll = parse_scroll_request(user_input)
-                                            if cc_scroll:
-                                                cc_parsed = ((cc_scroll[0], cc_scroll[2],
-                                                              cc_scroll[3],
-                                                              cc_scroll[4]),
-                                                             cc_scroll[1], "scroll")
-                                            else:
-                                                # «убери X из корзины» / «убавь/прибавь X» —
-                                                # корзина сайта, ДО generic-клика и до
-                                                # инвентаря бота (тот ловит «убери X»)
-                                                cc_cart = parse_cart_request(user_input)
-                                                if cc_cart:
-                                                    cc_parsed = (cc_cart, None, "cart")
-                                                else:
-                                                    # «перетащи/поставь слайдер X на N» —
-                                                    # ползунок на странице; числовой
-                                                    # хвост «на N» отличает от клика
-                                                    cc_slider = parse_slider_request(
-                                                        user_input)
-                                                    if cc_slider:
-                                                        cc_parsed = (cc_slider[0],
-                                                                     cc_slider[1],
-                                                                     "slider")
-                                                    else:
-                                                        # «обнови/перезагрузи/закрой
-                                                        # вкладку (X)» — управление
-                                                        # вкладкой, ДО закрытия-кликом:
-                                                        # «закрой вкладку» тот бы увёл
-                                                        # в поиск крестика «вкладку»
-                                                        cc_tab_op = parse_tab_op(user_input)
-                                                        if cc_tab_op:
-                                                            cc_parsed = (cc_tab_op[1],
-                                                                         cc_tab_op[0],
-                                                                         "tab_op")
-                                                        else:
-                                                            # «закрой окно/попап/соусы к
-                                                            # бортикам» — закрытие (целевое
-                                                            # или крестик), ДО generic-клика
-                                                            cc_close = parse_close_request(user_input)
-                                                            if cc_close:
-                                                                cc_parsed = (cc_close[0], cc_close[1], "click")
-                                                            else:
-                                                                # «наведи (курсор) на X» —
-                                                                # hover без клика: hover-меню,
-                                                                # кнопки карточки, слайдер
-                                                                cc_hover = parse_hover_request(user_input)
-                                                                if cc_hover:
-                                                                    cc_parsed = (cc_hover[0], cc_hover[1], "hover")
-                                                                else:
-                                                                    cc_click = parse_click_request(user_input)
-                                                                    if cc_click:
-                                                                        cc_parsed = (cc_click[0], cc_click[1], "click")
-                if cc_parsed:
-                    resolver = {"download": self.computer_control.resolve_download,
-                                "type": self.computer_control.resolve_type,
-                                "scroll": self.computer_control.resolve_scroll,
-                                "cart": self.computer_control.resolve_cart,
-                                "send": self.computer_control.resolve_send,
-                                "key": self.computer_control.resolve_key,
-                                "hover": self.computer_control.resolve_hover,
-                                "slider": self.computer_control.resolve_slider,
-                                "tab_op": self.computer_control.resolve_tab_op}.get(
-                        cc_parsed[2], self.computer_control.resolve_click)
-                    try:
-                        cc_action, cc_err = resolver(cc_parsed[0], cc_parsed[1],
-                                                     self.router,
-                                                     chat_id=str(chat_id or ""))
-                    except Exception as e:
-                        logger.debug(f"[CompControl] fast-path клик/скачивание не удалось: {e}")
-                        cc_err = "Не удалось выполнить действие на странице."
-                    if cc_action is None and cc_err:
-                        cc_err = self._cc_reply(None, False, cc_err, cc_err)
-                        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
-                        self.memory.add_message("assistant", cc_err, user_id, chat_id)
-                        if self.proactive and chat_id:
-                            self.proactive.record_user_response(chat_id)
-                        return cc_err
-            # «перейди на вкладку X» / «какие вкладки открыты» — переключение
-            # и список вкладок. Ничего не меняют на страницах — выполняются
-            # сразу, без подтверждения (как чтение). Явная форма со словом
-            # «вкладку» при промахе — честный отказ со списком открытых;
-            # мягкая («перейди на X») при промахе молча уходит дальше по
-            # fast-path (может, это «открой X» или вообще не наша команда)
-            cc_tab_direct = False
-            if cc_action is None and self.computer_control.click:
-                if parse_tab_list_query(user_input):
-                    try:
-                        cc_tabs_text = \
-                            self.computer_control.list_open_tabs_text()
-                    except Exception as e:
-                        logger.debug(f"[CompControl] список вкладок не "
-                                     f"удался: {e}")
-                        cc_tabs_text = "Не удалось получить список вкладок."
-                    self.memory.add_message("user", user_input, user_id,
-                                            chat_id, user_name)
-                    self.memory.add_message("assistant", cc_tabs_text,
-                                            user_id, chat_id)
-                    if self.proactive and chat_id:
-                        self.proactive.record_user_response(chat_id)
-                    return cc_tabs_text
-                cc_tab = parse_tab_switch(user_input)
-                if cc_tab:
-                    try:
-                        cc_action, cc_err = \
-                            self.computer_control.resolve_tab_switch(
-                                cc_tab[0], cc_tab[1],
-                                chat_id=str(chat_id or ""))
-                        # Переключение — сразу; фолбэк на открытие сайта
-                        # (url-действие) идёт обычным путём с подтверждением
-                        cc_tab_direct = bool(cc_action) and \
-                            cc_action.get("kind") == "tab_switch"
-                    except Exception as e:
-                        logger.debug(f"[CompControl] fast-path переключение "
-                                     f"вкладки не удалось: {e}")
-                        cc_err = "Не удалось переключить вкладку."
-                    if cc_action is None and cc_err:
-                        cc_err = self._cc_reply(None, False, cc_err, cc_err)
-                        self.memory.add_message("user", user_input, user_id,
-                                                chat_id, user_name)
-                        self.memory.add_message("assistant", cc_err, user_id,
-                                                chat_id)
-                        if self.proactive and chat_id:
-                            self.proactive.record_user_response(chat_id)
-                        return cc_err
-            # «прочитай последнее сообщение (на <сайте>)» / «что ответил <чат-бот>» —
-            # чтение со страницы: без подтверждения (ничего не меняет),
-            # прочитанный текст — сразу ответом
-            if cc_action is None and self.computer_control.click:
-                cc_read = parse_read_request(user_input)
-                if cc_read:
-                    try:
-                        cc_action, cc_err = self.computer_control.resolve_read(
-                            *cc_read, chat_id=str(chat_id or ""))
-                    except Exception as e:
-                        logger.debug(f"[CompControl] fast-path чтение не удалось: {e}")
-                        cc_err = "Не удалось прочитать страницу."
-                    if cc_action is None and cc_err:
-                        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
-                        self.memory.add_message("assistant", cc_err, user_id, chat_id)
-                        if self.proactive and chat_id:
-                            self.proactive.record_user_response(chat_id)
-                        return cc_err
-            # «увеличь/уменьши/сбрось масштаб» — зум вкладки; настройка
-            # обратимая, ничего не активирует — без подтверждения, как чтение
-            if cc_action is None and self.computer_control.click:
-                cc_zoom = parse_zoom_request(user_input)
-                if cc_zoom is not None:
-                    try:
-                        cc_action, cc_err = self.computer_control.resolve_zoom(
-                            *cc_zoom, chat_id=str(chat_id or ""))
-                    except Exception as e:
-                        logger.debug(f"[CompControl] fast-path зум не удался: {e}")
-                        cc_err = "Не удалось изменить масштаб."
-                    if cc_action is None and cc_err:
-                        cc_err = self._cc_reply(None, False, cc_err, cc_err)
-                        self.memory.add_message("user", user_input, user_id,
-                                                chat_id, user_name)
-                        self.memory.add_message("assistant", cc_err, user_id,
-                                                chat_id)
-                        if self.proactive and chat_id:
-                            self.proactive.record_user_response(chat_id)
-                        return cc_err
-            # «что на странице?» / «что ты видишь?» / «покажи страницу» /
-            # «пришли скриншот» — отчёт об открытой странице: текстом —
-            # список элементов, плюс скриншот вьюпорта в pending-фото бакет
-            # (платформа досылает картинку следом за ответом). Как чтение:
-            # ничего не меняет, без подтверждения
-            if cc_action is None and self.computer_control.click:
-                cc_pv = parse_page_view_request(user_input)
-                if cc_pv is not None:
-                    pv = None
-                    pv_err = None
-                    try:
-                        pv, pv_err = self.computer_control.page_view_report(
-                            cc_pv[0], chat_id=str(chat_id or ""),
-                            full_page=cc_pv[2])
-                    except Exception as e:
-                        logger.debug(f"[CompControl] fast-path отчёт о "
-                                     f"странице не удался: {e}")
-                        pv_err = "Не удалось посмотреть страницу."
-                    if pv is not None and pv.get("full") and pv.get("shots"):
-                        # «Покажи всю страницу»: оглавление текстом +
-                        # кадры-куски альбомом (партии по 10 — лимит media
-                        # group Telegram; остаток — по «ещё»)
-                        pv_desc = page_view_full_text(
-                            pv["url"], pv["host"], pv.get("outline"),
-                            truncated=pv.get("truncated", False))
-                        pv_line = self._cc_reply(
-                            None, True, None,
-                            "Снял всю страницу — держи целиком, по кускам.")
-                        pv_reply = f"{pv_line}\n\n{pv_desc}"
-                        shots = pv["shots"]
-                        first, extra = shots[:10], shots[10:]
-                        self._pending_photos.setdefault(
-                            str(chat_id), []).extend(
-                                {"data": s} for s in first)
-                        if extra:
-                            self._pending_more_photos[str(chat_id)] = {
-                                "photos": [{"data": s} for s in extra],
-                                "ts": time.time()}
-                            pv_reply += (
-                                f"\n\nПрислал первые {len(first)} из "
-                                f"{len(shots)} кадров — скажи «ещё», "
-                                f"пришлю остальные.")
-                    elif pv is not None:
-                        pv_reply = page_view_text(pv["url"], pv["host"],
-                                                  pv["items"])
-                        # Отвечает персона своим голосом: данные страницы —
-                        # в промпт, текст пишет назначенный answer-провайдер;
-                        # LLM молчит — честный фолбэк на шаблонный список
-                        pv_reply = self._persona_page_view_reply(
-                            user_input, pv_reply) or pv_reply
-                        if pv["shot"]:
-                            self._pending_photos[str(chat_id)].append({
-                                "data": pv["shot"],
-                                "caption": f"Так выглядит страница "
-                                           f"({pv['host']})"})
-                        elif cc_pv[1]:
-                            # Скриншот просили явно, а кадр не получился —
-                            # честно говорим, список элементов всё равно дан
-                            pv_reply += ("\n\nСкриншот снять не вышел — "
-                                         "браузер не дал кадр, держи "
-                                         "список элементов.")
-                    else:
-                        pv_reply = pv_err or "Не удалось посмотреть страницу."
-                    self.memory.add_message("user", user_input, user_id,
-                                            chat_id, user_name)
-                    self.memory.add_message("assistant", pv_reply, user_id,
-                                            chat_id)
-                    if self.proactive and chat_id:
-                        self.proactive.record_user_response(chat_id)
-                    return pv_reply
-            if cc_action is None:
-                cc_names = parse_open_many(user_input)
-                if cc_names:
-                    try:
-                        cc_action = self.computer_control.resolve_many(cc_names)
-                    except Exception as e:
-                        logger.debug(f"[CompControl] fast-path резолв не удался: {e}")
-            # LLM-ярус разбора команды (последний): ни один regex-парсер не
-            # сматчился — модель классифицирует фразу в JSON-действие
-            # (текстовый протокол, работает на любом провайдере), дальше те же
-            # резолверы и тот же confirm/allowlist, что у regex-пути.
-            # Ошибка резолва — честный отказ, как у остальных fast-path команд
-            if cc_action is None and self.computer_control.click \
-                    and len(user_input) <= 200:
-                try:
-                    cc_action, cc_err = \
-                        self.computer_control.resolve_intent_llm(
-                            user_input, self.router,
-                            chat_id=str(chat_id or ""))
-                except Exception as e:
-                    logger.debug(f"[CompControl] LLM-разбор команды не удался: {e}")
-                if cc_action is None and cc_err:
-                    cc_err = self._cc_reply(None, False, cc_err, cc_err)
-                    self.memory.add_message("user", user_input, user_id, chat_id, user_name)
-                    self.memory.add_message("assistant", cc_err, user_id, chat_id)
-                    if self.proactive and chat_id:
-                        self.proactive.record_user_response(chat_id)
-                    return cc_err
-            if cc_action:
-                logger.info(f"[CompControl] fast-path: '{user_input[:40]}' → "
-                            f"{self.computer_control.describe(cc_action)}")
-                self.memory.add_message("user", user_input, user_id, chat_id, user_name)
-                if cc_action.get("kind") == "read":
-                    # Чтение — из regex-парсера или классифицировано LLM-ярусом:
-                    # ответом служит сам прочитанный текст, а не «Готово, …»
-                    cc_ok, cc_detail = self.computer_control.execute(
-                        cc_action, chat_id, router=self.router)
-                    cc_reply = (cc_detail if cc_ok else
-                                f"Не удалось прочитать: {cc_detail}.")
-                elif cc_tab_direct:
-                    # Переключение вкладки — как чтение: без подтверждения
-                    cc_ok, cc_detail = self.computer_control.execute(
-                        cc_action, chat_id, router=self.router)
-                    cc_reply = self._cc_reply(
-                        cc_action, cc_ok, cc_detail,
-                        f"Готово, {self.computer_control.describe_done(cc_action)}."
-                        if cc_ok else
-                        f"Не удалось {self.computer_control.describe(cc_action)}: {cc_detail}.")
-                elif self.computer_control.needs_confirm(cc_action):
-                    self.computer_control.set_pending(chat_id, cc_action)
-                    cc_reply = self.computer_control.confirm_question(cc_action)
-                else:
-                    cc_ok, cc_detail = self.computer_control.execute(
-                        cc_action, chat_id, router=self.router)
-                    cc_reply = self._cc_reply(
-                        cc_action, cc_ok, cc_detail,
-                        f"Готово, {self.computer_control.describe_done(cc_action)}."
-                        if cc_ok else
-                        f"Не удалось {self.computer_control.describe(cc_action)}: {cc_detail}."
-                    )
-                self.memory.add_message("assistant", cc_reply, user_id, chat_id)
-                if self.proactive and chat_id:
-                    self.proactive.record_user_response(chat_id)
-                return cc_reply
+            # Лесенка команд управления: нормализованный текст ТОГО, что
+            # человек написал (не OCR/файл), составная команда — шагами
+            # (_cc_fast_path → _cc_run_steps → _cc_ladder)
+            cc_fp = self._cc_fast_path(cc_text, user_input, user_id, chat_id,
+                                       user_name, turn_lang)
+            if cc_fp is not None:
+                return cc_fp
             # «что находится в X?» / «что в разделе X?» — вопрос о содержимом
             # секции открытой страницы: текст секции читаем со страницы и
             # подаём в общий LLM-поток контекстом — список формулирует модель.
             # Не fast-path ответ: return тут нет. Секция не нашлась / страницу
             # не открывали — молча обычный диалог (вопрос мог быть не о странице)
             if self.computer_control.click:
-                cc_pq = parse_page_question(user_input)
+                cc_pq = (parse_page_question(raw_user_text)
+                         or parse_page_question(cc_text))
                 if cc_pq:
                     try:
                         _pq = self.computer_control.read_page_section(*cc_pq)
@@ -1665,7 +3119,12 @@ class BotInstance:
         ru_rewritten = side_tasks.rewrite_query_if_enabled(
             self, user_input, history_for_rewrite, persona_context=persona_context
         )
-        logger.info(f"[BotInstance] rewrite_query: '{user_input[:60]}' -> '{ru_rewritten[:60]}'")
+        # Реплика в лог — как START: в режиме управления только длина
+        # (пароль без слова-секрета: «ivan / Kotik2019!»), иначе без секретов
+        _log_hide = control_mode_active(self, chat_id or user_id)
+        logger.info("[BotInstance] rewrite_query: "
+                    + input_for_log(user_input, _log_hide) + " -> "
+                    + input_for_log(ru_rewritten, _log_hide))
 
         # Лёгкий режим: отвечать будет локальная модель ИЛИ флаг
         # features.light_context принудительно включён в YAML персоны — слабая
@@ -1692,7 +3151,9 @@ class BotInstance:
         # на выдачу (SOURCE PRIORITY) вместо дневника персоны
         search_skip = search_skip_reason(user_input, self._address_names())
         if search_skip and getattr(self, "_web_search_enabled", False):
-            logger.info(f"[BotInstance] веб-поиск пропущен ({search_skip}): '{user_input[:60]}'")
+            logger.info(f"[BotInstance] веб-поиск пропущен ({search_skip}): "
+                        + input_for_log(user_input, control_mode_active(
+                            self, chat_id or user_id)))
         if (self._web_search_enabled and chat_id not in self._web_search_disabled_chats
                 and not self._is_docs_only_request(user_input)
                 and search_skip is None
@@ -1712,6 +3173,19 @@ class BotInstance:
             else:
                 web_future = self._web_pool.submit(self._search_web, *search_args)
 
+        # Путь маркеров LLM (режим управления): реплика ложится в STM раньше,
+        # чем process_markers поставит pending ввода — секреты из неё
+        # маскируются заранее, по тексту (см. _cc_hist_note_user_text); email/
+        # телефон обычной реплики — не секрет (contacts=False): маской он
+        # станет, только если маркер введёт его в поле (_cc_hist_after_markers)
+        if self.computer_control and chat_id and self.control_mode_on(chat_id):
+            try:
+                self._cc_hist_note_user_text(raw_user_text or user_input,
+                                             contacts=False)
+                if ru_rewritten != (raw_user_text or user_input):
+                    self._cc_hist_note_user_text(ru_rewritten, contacts=False)
+            except Exception as e:
+                logger.warning(f"[CompControl] маска истории не поставлена: {e}")
         try:
             # В STM сохраняем переписанную русскую версию (с разрешёнными местоимениями)
             self.memory.add_message("user", ru_rewritten, user_id, chat_id, user_name,
@@ -1837,6 +3311,11 @@ class BotInstance:
             # Любой текст со словом "напом" — это путь напоминаний, не todo.
             reminder_context = None
             is_reminder_request = False
+            # В режиме управления напоминания/дела/инвентарь молчат (ветки
+            # ниже пропускаются) — честная пометка модели, иначе она
+            # отвечает «напомню»/«записал», ничего не сделав
+            if chat_id and self.control_mode_on(chat_id):
+                reminder_context = self._cc_mode_feature_note(user_input)
 
             # Pending /remind без времени: пользователь отвечал на «через сколько?»
             if self.reminder_manager and chat_id \
@@ -1854,9 +3333,15 @@ class BotInstance:
                 _yield_to_learning = False
                 if pending_task and self.learning_manager:
                     _setup = self.learning_manager.get_setup_state(chat_id, user_id)
-                    if _setup and (
-                        self.learning_manager.is_reply_to_question(chat_id, reply_to_bot_message_id)
-                        or _looks_like_frequency_answer(user_input)
+                    # Уступаем, только если обучение правда возьмёт ответ (та же
+                    # проверка, что в learning-блоке ниже) — иначе сообщение не
+                    # досталось бы ни напоминанию, ни курсу
+                    _learn_reply = self.learning_manager.is_reply_to_question(
+                        chat_id, reply_to_bot_message_id)
+                    if _setup and _setup.get("subject") and (
+                        _learn_reply
+                        or (_looks_like_frequency_answer(user_input)
+                            and self.learning_manager.parse_setup_answer(user_input)[1])
                     ):
                         _remind_at = self.reminder_manager.get_pending_remind_asked_at(chat_id) or 0
                         _yield_to_learning = (_setup.get("asked_at") or 0) > _remind_at
@@ -2102,19 +3587,61 @@ class BotInstance:
                 )
 
                 # Сбрасываем счётчик молчания — но только если сообщение не про другую
-                # фичу (напоминание не должно сбрасывать молчание курса).
+                # фичу (напоминание не должно сбрасывать молчание курса). Только
+                # курсов автора: в группе чужие реплики чужой курс не держат.
                 if not explicit_other_feature:
-                    self.learning_manager.record_user_activity(chat_id)
+                    self.learning_manager.record_user_activity(chat_id, user_id)
 
+                # 0. Просьба остановить обучение («хватит уроков», «хватит учить
+                #    испанскому») или ответ на «какой курс остановить?» — раньше
+                #    всего остального: иначе курс шёл бы вечно у того, кто пишет
+                #    боту о другом (молчания нет — «продолжаем?» не спросят).
+                _stop = None
+                if not explicit_other_feature:
+                    _stop = self.learning_manager.handle_stop_request(chat_id, user_id, user_input)
                 # 1. Если ждём ответа на «как часто?» — парсим частоту.
                 #    Чтобы не перехватывать напоминания/todo/инвентарь, активируемся только если:
                 #    (a) это reply на бот-вопрос о частоте, ИЛИ
                 #    (b) сообщение не похоже ни на какую другую фичу (explicit_other_feature=False).
+                #    Без reply берём только явную частоту (parse_setup_answer):
+                #    «я спал 5 часов» не должно создать курс раз в 5 часов.
                 setup = self.learning_manager.get_setup_state(chat_id, user_id)
-                if setup and not explicit_other_feature and (reply_to_question or _looks_like_frequency_answer(user_input)):
+                _setup_delay, _setup_take = None, False
+                if _stop is None and setup and setup.get("subject") and not explicit_other_feature \
+                        and (reply_to_question or _looks_like_frequency_answer(user_input)):
+                    _setup_delay, _setup_take = self.learning_manager.parse_setup_answer(
+                        user_input, is_reply=reply_to_question)
+                if _stop is not None:
+                    skip_llm_answer = self.learning_manager.render_stop_reply(
+                        _stop, user_language=turn_lang)
+                    # «Какой остановить?» — вопрос: reply на него распознается
+                    self._pending_question_kind[str(chat_id)] = \
+                        "stop_choice" if _stop["kind"] == "which" else None
+                    is_learning_request = True
+                elif setup and not setup.get("subject") and not explicit_other_feature:
+                    # «Научи меня» без темы — бот спросил «чему?». Короткий ответ
+                    # (или reply) — это тема; иначе человек пишет о другом:
+                    # вопрос снимаем, сообщение идёт в обычный ответ
+                    subject = ""
+                    if (reply_to_question or (len(user_input.split()) <= 5 and "?" not in user_input)) \
+                            and not _NOT_A_TOPIC_RE.match(user_input.strip()):
+                        subject = extract_subject(user_input)
+                    if subject:
+                        self.learning_manager.begin_setup(chat_id, subject, user_id or "default",
+                                                          user_name or "User")
+                        learning_context = (
+                            f"The user wants you to teach them \"{subject}\". "
+                            "Ask them briefly and in your own style how often to send lessons "
+                            "(for example: once a day, every 2 hours). The course starts after their reply."
+                        )
+                        self._pending_question_kind[str(chat_id)] = "frequency"
+                        is_learning_request = True
+                    else:
+                        self.learning_manager.clear_setup(chat_id, user_id)
+                elif _setup_take:
                     topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
                     subject = setup.get("subject", "")
-                    delay = self.learning_manager.parse_frequency_smart(user_input)
+                    delay = _setup_delay
                     if delay:
                         self.learning_manager.commit_session(chat_id, delay, topic_id, user_id=user_id)
                         delay_text = self.learning_manager.format_delay(delay)
@@ -2125,10 +3652,10 @@ class BotInstance:
                         # пользователя нет, иначе модель ответит на языке персоны.
                         skip_llm_answer = self.learning_manager.render_setup_reply(
                             subject, "confirmed", delay_text,
-                            user_language=detect_language(user_input))
+                            user_language=turn_lang)
                     else:
                         skip_llm_answer = self.learning_manager.render_setup_reply(
-                            subject, "reask", user_language=detect_language(user_input))
+                            subject, "reask", user_language=turn_lang)
                     # Если частоту не поняли (reask) — бот переспрашивает, это «вопрос».
                     # Если поняли (confirmed) — это не вопрос, а подтверждение старта.
                     self._pending_question_kind[str(chat_id)] = "frequency" if not delay else None
@@ -2173,7 +3700,7 @@ class BotInstance:
                             # явно — реплик пользователя в изолированном вызове нет.
                             skip_llm_answer = self.learning_manager.render_continue_reply(
                                 chat_id, decision, session_id=_session_id,
-                                user_language=detect_language(user_input))
+                                user_language=turn_lang)
                             # При UNKNOWN бот переспрашивает «да/нет» — это «вопрос».
                             self._pending_question_kind[str(chat_id)] = "continue" if decision == "UNKNOWN" else None
                             is_learning_request = True
@@ -2202,11 +3729,19 @@ class BotInstance:
                         if intent == "LEARN":
                             subject = extract_subject(user_input)
                             self.learning_manager.begin_setup(chat_id, subject, user_id or "default", user_name or "User")
-                            learning_context = (
-                                f"The user wants you to teach them \"{subject}\". "
-                                "Ask them briefly and in your own style how often to send lessons "
-                                "(for example: once a day, every 2 hours). The course starts after their reply."
-                            )
+                            if subject:
+                                learning_context = (
+                                    f"The user wants you to teach them \"{subject}\". "
+                                    "Ask them briefly and in your own style how often to send lessons "
+                                    "(for example: once a day, every 2 hours). The course starts after their reply."
+                                )
+                            else:
+                                # «Научи меня» без темы — сначала «чему?» (ответ
+                                # разберёт ветка настройки без темы выше)
+                                learning_context = (
+                                    "The user wants you to teach them something but did not say what. "
+                                    "Ask them briefly and in your own style which topic they want to learn."
+                                )
                             is_learning_request = True
                             # Ответ ниже — вопрос «как часто?»: отмечаем, чтобы telegram-слой
                             # зарегистрировал его message_id и reply пользователя распознался
@@ -2428,7 +3963,7 @@ class BotInstance:
             if self.computer_control and chat_id \
                     and self.control_mode_on(chat_id) \
                     and self._cc_allowed(user_id, chat_id):
-                cc_prompt = self.computer_control.instruction_block()
+                cc_prompt = self.computer_control.instruction_block(lang=turn_lang)
 
             messages = self.persona.prepare_messages(
                 user_input, memory_text, history=stm_messages,
@@ -2468,12 +4003,10 @@ class BotInstance:
             # финальный reply порциями, чтобы клиент не показывал сырой стрим.
             if on_token is not None:
                 answer = self.router.get_response_stream(
-                    messages, on_token, **settings,
-                    force_provider=self.router.answer_provider)
+                    messages, on_token, **settings)
             else:
                 answer = self.router.get_response(
-                    messages, **settings,
-                    force_provider=self.router.answer_provider)
+                    messages, **settings)
             if not answer:
                 logger.error("Все LLM-провайдеры недоступны, ответ не сгенерирован")
                 return "Сейчас все LLM-провайдеры недоступны. Попробуй позже."
@@ -2494,8 +4027,7 @@ class BotInstance:
                     {"role": "user", "content": "You stopped mid-sentence. Continue strictly from where you left off — do not repeat what was already written and do not start over. Continue in the same language as the reply."},
                 ]
                 cont = self.router.get_response(
-                    follow_up_messages, **settings,
-                    force_provider=self.router.answer_provider)
+                    follow_up_messages, **settings)
                 if not cont:
                     break
                 answer = answer + cont
@@ -2525,8 +4057,7 @@ class BotInstance:
             if _is_garbage(answer):
                 logger.warning(f"[BotInstance] Мусорный ответ ({answer!r}) — регенерация")
                 retry = self.router.get_response(
-                    messages, **settings,
-                    force_provider=self.router.answer_provider)
+                    messages, **settings)
                 if retry:
                     answer = self._addons_repair(self._clean_response(retry), addon_results)
                 else:
@@ -2547,7 +4078,7 @@ class BotInstance:
                         f"[ConvStyle] Финальный вопрос сверх лимита "
                         f"(streak={question_streak}, mode={self.conversation_style.frequency}) — регенерация")
                     new_answer = regenerate_without_tail_question(
-                        self.router, messages, answer, settings)
+                        self.router, messages, answer, settings, lang=turn_lang)
                     if new_answer:
                         answer = self._clean_response(new_answer) or answer
 
@@ -2585,7 +4116,25 @@ class BotInstance:
                     and self.control_mode_on(chat_id)
                     and not is_reminder_request and not is_learning_request):
                 if self._cc_allowed(user_id, chat_id):
-                    answer, cc_notices = self.computer_control.process_markers(answer, chat_id)
+                    # Недоверенный текст в этом ходе (секция страницы, веб-
+                    # выдача, файлы, цитата, OCR/документ в составном вводе):
+                    # маркер мог подсказать он, а не человек — process_markers
+                    # отбросит маркеры, если сам человек действия не просил
+                    _cc_untrusted = bool(
+                        page_section_note or web_context or file_context
+                        or reply_context
+                        or (raw_user_text or "") != (user_input or ""))
+                    answer, cc_notices = self.computer_control.process_markers(
+                        answer, chat_id, user_id=user_id,
+                        untrusted=_cc_untrusted, user_text=raw_user_text,
+                        lang=turn_lang)
+                    try:
+                        # Ввод маркера в поле логина/почты — маской и в уже
+                        # записанной реплике этого хода
+                        self._cc_hist_after_markers(chat_id, user_id)
+                    except Exception as e:
+                        logger.warning(f"[CompControl] маска ввода маркера "
+                                       f"не поставлена: {e}")
                     for _cc_note in cc_notices:
                         self._pending_lists(chat_id).append(_cc_note)
                 else:
@@ -2797,7 +4346,8 @@ class BotInstance:
                         "Clean up the task text: remove pronouns and clutter. "
                         "The answer is only the short task text, phrased as an infinitive. "
                         "STRICTLY keep the language of the original text: "
-                        "do NOT translate — Russian stays Russian, English stays English."
+                        "do NOT translate — Russian stays Russian, English stays English.\n"
+                        + user_language_line(detect_language(raw_task))
                     )},
                     {"role": "user", "content": raw_task.strip()},
                 ],
@@ -2856,7 +4406,8 @@ class BotInstance:
                         "Determine whether the message is a correction of the bot or a request to remember "
                         "a rule/preference (how to address the user, what to do or not do). "
                         "If yes — formulate the rule as ONE short sentence (up to 12 words), "
-                        "without explanations or quotes. If it is ordinary conversation or a question — answer exactly NO."
+                        "without explanations or quotes. If it is ordinary conversation or a question — answer exactly NO.\n"
+                        + user_language_line(detect_dialogue_language(user_text))
                     )},
                     {"role": "user", "content": user_text[:400]},
                 ],
@@ -2899,7 +4450,8 @@ class BotInstance:
                 f"Options:\n{options_text}\n"
                 "- CHAT — ordinary conversation, none of the above.\n"
                 "Pay attention to the object of the action: \"todo list\" is TODO, \"inventory/you have/to you\" is INVENTORY. "
-                "Answer with one word."
+                "Answer with one word.\n"
+                + user_language_line(detect_dialogue_language(user_text))
             ),
             user_prompt=f"User message: \"{user_text}\"",
             valid_outputs=valid_outputs + ["CHAT"],
@@ -2938,20 +4490,23 @@ class BotInstance:
         }.get(intent, "perform an action")
 
         system_prompt = (
-            "Ты — классификатор намерений. Определи, ЯВНО ли пользователь просит "
-            f"{intent_desc}, или это просто реплика/рассказ.\n"
-            "ПРАВИЛА:\n"
-            "- Пользователь вручает предмет персонажу («держи X», «возьми X», «вот тебе X», "
-            "«надень X», «дарю X») — это ADD.\n"
-            "- Рассказ о прошлом («я купил X», «мне подарили X», «получил X») — это SKIP.\n"
-            "- Кандидат уже извлечён из сообщения автоматически — оцени, осознанно ли "
-            "пользователь это просит.\n"
-            "Ответь ОДНИМ словом: ADD или SKIP."
+            "You are an intent classifier. Determine whether the user EXPLICITLY asks to "
+            f"{intent_desc}, or it is just a remark/story.\n"
+            "RULES:\n"
+            "- The user hands an item to the character (\"here's X\", \"take X\", \"this X is for you\", "
+            "\"put on X\", \"I'm giving you X\"; in Russian: «держи X», «возьми X», «вот тебе X», "
+            "«надень X», «дарю X») — this is ADD.\n"
+            "- A story about the past (\"I bought X\", \"I was given X\", \"I got X\"; in Russian: "
+            "«я купил X», «мне подарили X», «получил X») — this is SKIP.\n"
+            "- The candidate has already been extracted from the message automatically — judge whether "
+            "the user is deliberately asking for this.\n"
+            "Answer with ONE word: ADD or SKIP.\n"
+            + user_language_line(detect_dialogue_language(user_text))
         )
         user_prompt = (
-            f"Сообщение пользователя: \"{user_text}\"\n"
-            f"Извлечённый кандидат: \"{candidate}\"\n"
-            f"Это явная просьба: {intent_desc}? Ответь ADD или SKIP."
+            f"User message: \"{user_text}\"\n"
+            f"Extracted candidate: \"{candidate}\"\n"
+            f"Is this an explicit request to {intent_desc}? Answer ADD or SKIP."
         )
 
         try:
@@ -2978,8 +4533,12 @@ class BotInstance:
         """«Что ты видишь на странице» — ответ голосом персоны: шаблонный
         список элементов уходит в LLM как ДАННЫЕ, ответ пишет назначенный
         провайдер ответа (llm.answer_provider; не назначен — обычная цепочка).
-        None — LLM недоступна: caller отправляет шаблонный список как есть."""
+        None — LLM недоступна: caller отправляет шаблонный список как есть.
+        Приватную страницу caller сюда не шлёт; здесь — вторая линия: URL
+        без токенов, email/телефоны/карты/токены в подписях — маской."""
         try:
+            from app.features.cc_privacy import redact_inline
+            page_text = redact_inline(page_text)
             persona_prompt = self.persona.system_prompt.strip()
             messages = [
                 {"role": "system", "content": (
@@ -2989,9 +4548,10 @@ class BotInstance:
                     "and to the point — tell what's there in your own words; "
                     "do NOT copy the list verbatim, do NOT invent elements that "
                     "aren't there. Answer in the language of the user's "
-                    "question.")},
-                {"role": "user", "content": f"Вопрос: {user_input}\n\n"
-                                           f"Содержимое страницы:\n{page_text}"},
+                    "question.\n"
+                    + user_language_line(detect_dialogue_language(user_input)))},
+                {"role": "user", "content": f"Question: {user_input}\n\n"
+                                           f"Page content:\n{page_text}"},
             ]
             settings = self.persona.get_settings()
             ans = self.router.get_response(
@@ -3006,14 +4566,24 @@ class BotInstance:
             return None
 
     def _cc_reply(self, action: Optional[dict], ok: bool,
-                  detail: Optional[str], template: str) -> str:
+                  detail: Optional[str], template: str,
+                  lang: Optional[str] = None) -> str:
         """Ответ о результате CC-команды: flavor-реплика в характере персоны
-        (банк фраз с плейсхолдерами → живой ответ провайдера google, канал cc),
+        (банк фраз с плейсхолдерами → живой ответ: llm.answer_provider, не
+        назначен — google, канал cc),
         при недоступности — честный шаблон (template). При ok=False detail
         передаётся в любом случае, чтобы суть ошибки не терялась."""
+        # Исполнение по «да» (pending) идёт мимо _cc_execute_reply: маски
+        # истории для ввода/чтения ставим и здесь (повторно — без дублей)
+        try:
+            self._cc_hist_note_typed(action)
+            if ok and isinstance(action, dict) and action.get("kind") == "read":
+                self._cc_hist_note_read(action, detail)
+        except Exception as e:
+            logger.debug(f"[BotInstance] маска истории не поставлена: {e}")
         try:
             from app.features import flavor_text
-            flavored = flavor_text.cc_reply(self, action, ok, detail)
+            flavored = flavor_text.cc_reply(self, action, ok, detail, lang=lang)
             if flavored:
                 return flavored
         except Exception as e:
@@ -3239,14 +4809,16 @@ class BotInstance:
             expires = add_match.group(3)
             response = response[:add_match.start()] + response[add_match.end():]
             # Дополняем описание/срок через локальную модель, если LLM их не указала
-            desc, expires = self._enrich_inventory_item(name, desc, expires)
+            desc, expires = self._enrich_inventory_item(
+                name, desc, expires, lang=detect_language(user_text))
             self.inventory_manager.add_item(name, desc, source=giver_name, expires=expires)
             inventory_changed = True
         # Fallback: эвристика нашла предмет, но маркера нет — подтверждаем через LLM
         elif fallback_add:
             verdict = self._confirm_intent(user_text, fallback_add, "inventory_add")
             if verdict == "ADD":
-                f_desc, f_expires = self._enrich_inventory_item(fallback_add)
+                f_desc, f_expires = self._enrich_inventory_item(
+                    fallback_add, lang=detect_language(user_text))
                 self.inventory_manager.add_item(fallback_add, f_desc, source=giver_name, expires=f_expires)
                 inventory_changed = True
             elif verdict == "ASK":
@@ -3661,8 +5233,10 @@ class BotInstance:
 
     # ── слэш-команды: создание сущности + ответ через LLM в образе персоны ──
 
-    def describe_image(self, image_bytes: bytes, question: str = "") -> Optional[str]:
+    def describe_image(self, image_bytes: bytes, question: str = "",
+                       lang: Optional[str] = None) -> Optional[str]:
         """OCR + описание изображения через vision-провайдер основного роутера.
+        lang — язык пользователя (None — по подписи к картинке).
         Возвращает None, если ни один vision-провайдер не настроен/не ответил."""
         if not self.router.supports_vision():
             return None
@@ -3673,9 +5247,12 @@ class BotInstance:
         )
         if question:
             prompt += f"\nAdditionally answer the user's question about the image: {question}"
+        # Текст с картинки (TEXT) — как есть, описание — на языке пользователя
+        prompt += "\n" + user_language_line(lang or detect_language(question))
         return self.router.get_response_with_image(prompt, image_bytes)
 
-    def _enrich_inventory_item(self, name: str, desc: str = "", expires: Optional[str] = None) -> tuple:
+    def _enrich_inventory_item(self, name: str, desc: str = "", expires: Optional[str] = None,
+                               lang: Optional[str] = None) -> tuple:
         """Дополняет описание и срок годности предмета через ЛОКАЛЬНУЮ модель
         (основную не трогаем). Срок придумывается только для портящихся предметов.
         Возвращает (desc, expires) — незаполненные поля остаются как были."""
@@ -3692,7 +5269,8 @@ class BotInstance:
                     "1) DESCRIPTION — brief (5-15 words), without the name and without quotes.\n"
                     "2) EXPIRES — an expiration date YYYY-MM-DD, ONLY if the item can spoil "
                     "(food, drinks, flowers, etc.); for non-perishable items write \"-\".\n"
-                    "The answer is strictly two lines:\nDESCRIPTION: ...\nEXPIRES: ..."
+                    "The answer is strictly two lines:\nDESCRIPTION: ...\nEXPIRES: ...\n"
+                    + user_language_line(lang or detect_language(name))
                 )},
                 {"role": "user", "content": name.strip()},
             ]
@@ -3782,8 +5360,7 @@ class BotInstance:
         messages = self.persona.prepare_messages(**kwargs)
         settings = self.persona.get_settings()
         answer = self.router.get_response(
-            messages, **settings,
-            force_provider=self.router.answer_provider)
+            messages, **settings)
         if not answer:
             logger.error("Все LLM-провайдеры недоступны, ответ не сгенерирован")
             return "Сейчас все LLM-провайдеры недоступны. Попробуй позже."
@@ -3796,11 +5373,10 @@ class BotInstance:
         while not _webchat_answered and _looks_truncated(answer) and _continuations < 2:
             follow_up_messages = messages + [
                 {"role": "assistant", "content": answer},
-                {"role": "user", "content": "You stopped mid-sentence. Continue strictly from where you left off — do not repeat what was already written and do not start over."},
+                {"role": "user", "content": "You stopped mid-sentence. Continue strictly from where you left off — do not repeat what was already written and do not start over. Continue in the same language as the reply."},
             ]
             cont = self.router.get_response(
-                follow_up_messages, **settings,
-                force_provider=self.router.answer_provider)
+                follow_up_messages, **settings)
             if not cont:
                 break
             answer = answer + cont
@@ -3817,7 +5393,7 @@ class BotInstance:
         """
         Оркестратор слэш-команд. Создаёт сущность через manager API и формирует
         контекстную инструкцию для ответа в образе персоны.
-        kind: 'remind' | 'todo' | 'inventory' | 'learn'
+        kind: 'remind' | 'todo' | 'inventory' | 'learn' | 'stop_learning'
         """
         args = (args or "").strip()
         user_input_cmd = f"/{kind} {args}".strip()  # что сохранится в STM
@@ -3909,6 +5485,21 @@ class BotInstance:
                 "Confirm this in your own style, briefly."
             )
             return self.command_reply(note, "inventory", chat_id, user_id, user_name, user_input_cmd)
+
+        if kind == "stop_learning":
+            if not self.learning_manager:
+                return "Режим обучения не активен для этой персоны."
+            result = self.learning_manager.handle_stop_request(chat_id, user_id, args, explicit=True)
+            if result["kind"] == "which":
+                # «Какой курс остановить?» — вопрос, reply на него распознается
+                self._pending_question_kind[str(chat_id)] = "stop_choice"
+            reply = self.learning_manager.render_stop_reply(
+                result, user_language=self.chat_user_language(chat_id))
+            # Пара «команда → ответ» в STM, как у command_reply: иначе персона
+            # не знает, что курс остановлен, и продолжает о нём говорить
+            with self.user_turn(self.stm_key(chat_id, user_id)):
+                self.memory.add_message("user", user_input_cmd, user_id, chat_id, user_name)
+                return self._save_assistant_reply(self._clean_response(reply), user_id, chat_id)
 
         if kind == "learn":
             if not self.learning_manager:

@@ -32,7 +32,9 @@ from typing import Callable, Dict, List, Optional, Tuple
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.interfaces import MessageSender
-from app.core.language import detect_dialogue_language, language_name
+from app.core.language import (
+    detect_dialogue_language, detect_language, initiative_language_note, language_name,
+    user_language_line)
 from app.core.paths import data_dir
 from app.core.presence import web_presence
 from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
@@ -85,6 +87,16 @@ def _looks_like_token(text: str) -> bool:
     return len(t) >= 4 and t.isalpha() and t.isupper()
 
 
+# Теги mood от игнора/облегчения для русскоязычных чатов
+_MOOD_TAGS_RU = {
+    "deep hurt": "глубокая обида",
+    "strong hurt": "сильная обида",
+    "hurt": "обида",
+    "slight hurt": "лёгкая обида",
+    "relief": "облегчение",
+}
+
+
 class InitiativeType(Enum):
     # Типы proactive-инициатив.
     SELF_REFLECTION = "self_reflection"     # Размышление о себе, своей роли, памяти
@@ -99,7 +111,7 @@ class InitiativeType(Enum):
 
 INITIATIVE_TYPE_DESCRIPTIONS = {
     InitiativeType.SELF_REFLECTION: "Share a reflection about yourself, your role, personality or experience. Use self_memory, inventory, the persona system prompt.",
-    InitiativeType.USER_REFLECTION: "Share a reflection about the user — as if to yourself. Not facts from the internet, but your own thoughts: 'The user likes X, I wonder what else...'",
+    InitiativeType.USER_REFLECTION: "Share a thought about the user, addressed to them directly as 'you'. Not facts from the internet, but your own observations: 'You keep coming back to X, I wonder what else you love...'",
     InitiativeType.MEMORY_RECALL: "Recall something from past conversations and share that memory",
     InitiativeType.TODO_REFLECTION: "Share a thought about current tasks, plans or todos (from the todo list)",
     InitiativeType.INVENTORY_REFLECTION: "Share a thought about the items in your inventory — what you have, what you would like",
@@ -283,7 +295,7 @@ class ProactiveMessaging:
         self._dossier_inflight: set = set()  # чаты, по которым анализ уже идёт в фоне
 
         # Локальный роутер для бинарных классификаций
-        self.local_router = get_local_router()
+        self.local_router = get_local_router(self.context)
 
         # Состояние multi-turn: chat_id -> {waiting: bool, initiative_msg: str, timestamp: float}
         self._multi_turn_state: Dict[str, dict] = {}
@@ -304,6 +316,58 @@ class ProactiveMessaging:
         отвечает чужим форматом (JSON досье ушёл бы пользователю)."""
         return self.router.get_response(
             messages, webchat_channel="proactive", **kw)
+
+    def _chat_language(self, chat_id: str, messages: Optional[List[dict]] = None) -> Optional[str]:
+        """Язык пользователя чата: по его репликам в STM, иначе — сохранённый
+        язык чата living-движка (переживает рестарт и вытеснение STM)."""
+        lang = None
+        try:
+            if messages is None:
+                messages = self.memory.stm.get_last(10, chat_id=chat_id)
+            lang = detect_dialogue_language("", messages)
+        except Exception:
+            lang = None
+        if not lang and getattr(self, "living", None) is not None:
+            try:
+                lang = self.living.chat_language(chat_id)
+            except Exception:
+                lang = None
+        return lang
+
+    def _ensure_user_language(self, text: str, user_lang: Optional[str]) -> Optional[str]:
+        """Страховка языка готовой инициативы: директива в промпте не
+        гарантия — факты жизни и память на другом языке всё равно иногда
+        перетягивают модель. Не совпал язык — один перевод; перевод не
+        помог — None: лучше промолчать, чем написать не на том языке."""
+        if not user_lang or not text:
+            return text
+        got = detect_language(text)
+        if got is None or got == user_lang:
+            return text
+        name = language_name(user_lang)
+        logger.warning(f"[Proactive] Инициатива на другом языке ({got}, "
+                       f"нужен {user_lang}) — перевод: {text[:60]!r}")
+        try:
+            translated = self._side_response(
+                [
+                    {"role": "system", "content": (
+                        f"You translate a character's chat message into {name}. "
+                        "Keep the meaning, tone, style, emoji and length. "
+                        f"Answer ONLY with the message in {name}, no comments.")},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.3,
+                max_tokens=600,
+                top_p=0.9,
+            )
+        except Exception as e:
+            logger.warning(f"[Proactive] Перевод инициативы не удался: {e}")
+            return None
+        translated = (translated or "").strip()
+        if translated and detect_language(translated) == user_lang:
+            return translated
+        logger.info("[Proactive] Перевод не дал нужного языка — инициатива пропущена")
+        return None
     def _load_ignore_streak(self):
         self._ignore_streak = load_json_safe(self._ignore_file, default={}, label="Proactive.ignore_streak")
 
@@ -327,6 +391,9 @@ class ProactiveMessaging:
         if living is None:
             return
         try:
+            # Тег виден в комнате и в [CURRENT STATE] — на языке чата
+            if tag and living.chat_language(str(chat_id)) == "ru":
+                tag = _MOOD_TAGS_RU.get(tag, tag)
             living.state_engine.apply_mood_impact(str(chat_id), delta, tag)
         except Exception as e:
             logger.debug(f"[Proactive] mood-impact не применён: {e}")
@@ -341,13 +408,13 @@ class ProactiveMessaging:
         # Обида от игнора — это настроение персоны, а не только счётчик:
         # толкаем valence вниз, ближайший тик плавно вернёт к baseline
         if streak >= 10:
-            delta, tag = -0.25, "глубокая обида"
+            delta, tag = -0.25, "deep hurt"
         elif streak >= 7:
-            delta, tag = -0.20, "сильная обида"
+            delta, tag = -0.20, "strong hurt"
         elif streak >= 5:
-            delta, tag = -0.15, "обида"
+            delta, tag = -0.15, "hurt"
         elif streak >= 3:
-            delta, tag = -0.10, "лёгкая обида"
+            delta, tag = -0.10, "slight hurt"
         else:
             delta, tag = 0.0, ""
         if delta:
@@ -363,7 +430,7 @@ class ProactiveMessaging:
             self._save_ignore_streak()
         # Ответ после серии игноров — маленькое облегчение в mood
         if old >= 3:
-            self._apply_living_mood(chat_id, 0.15, "облегчение")
+            self._apply_living_mood(chat_id, 0.15, "relief")
         logger.info(f"[Proactive] Ignore streak {chat_id} сброшен (было: {old})")
 
     def ruin_mood(self, chat_id: str):
@@ -373,7 +440,7 @@ class ProactiveMessaging:
         with self._lock:
             self._ignore_streak[chat_id] = 10
             self._save_ignore_streak()
-        self._apply_living_mood(chat_id, -0.5, "глубокая обида")
+        self._apply_living_mood(chat_id, -0.5, "deep hurt")
         logger.info(f"[Proactive] Настроение в чате {chat_id} испорчено заморозкой (streak=10)")
 
     def _get_emotional_state(self, chat_id: str) -> str:
@@ -398,7 +465,7 @@ class ProactiveMessaging:
                 valence = 0.0
             if valence > -0.1:
                 return ""
-            tag = str(mood.get("tag", "") or "подавленность")
+            tag = str(mood.get("tag", "") or "downcast")
             reason = ("The user has been ignoring your messages lately — that's part of why. "
                       if streak >= 3 else "")
             if valence <= -0.5:
@@ -697,10 +764,10 @@ class ProactiveMessaging:
                     if dossier:
                         context_parts.append(f"What you know about the user:\n{dossier[:400]}")
                 prompt_hint = (
-                    "Share a reflection about the user — as if to yourself. "
-                    "Not facts from the internet, but your personal thoughts. "
-                    "For example: 'The user likes X, I wonder what else they love...' "
-                    "Or: 'I noticed the user often talks about Y...'"
+                    "Share a thought about the user, addressed to them directly. "
+                    "Not facts from the internet, but your personal observations. "
+                    "For example: 'You really like X, I wonder what else you love...' "
+                    "Or: 'I noticed you often talk about Y...'"
                 )
 
             elif initiative_type == InitiativeType.MEMORY_RECALL:
@@ -746,6 +813,9 @@ class ProactiveMessaging:
                         unconsumed = self.living.state_engine.unconsumed(chat_id, limit=5)
                         fact_lines = []
                         for e in unconsumed:
+                            # Сигналы комнаты — не факты её жизни (см. life_facts_count)
+                            if e.get("type") == "room_signal":
+                                continue
                             p = e.get("payload") or {}
                             fact = p.get("event") or p.get("content")
                             if fact:
@@ -800,31 +870,25 @@ class ProactiveMessaging:
             # Язык рефлексии: явный детект по репликам пользователя из STM
             # (в контексте могут быть блоки на другом языке — не даём им
             # переключить язык сообщения)
-            user_lang = None
-            try:
-                user_lang = detect_dialogue_language(
-                    "", self.memory.stm.get_last(10, chat_id=chat_id))
-            except Exception:
-                user_lang = None
+            user_lang = self._chat_language(chat_id)
+            # Директива — последней в системном блоке (см. _build_monolog_prompt)
+            lang_note = initiative_language_note(user_lang)
             if user_lang:
-                _lname = language_name(user_lang)
-                lang_rule = (
-                    f"The user's language is {_lname}. Write ONLY in {_lname}. "
-                )
+                lang_rule = ""
             else:
-                lang_rule = (
-                    "Write in the language of the user's messages in the conversation "
-                    "(if the user writes in Russian, write in Russian; if in English, write in English). "
-                )
+                lang_rule = user_language_line(None) + " "
 
             system_prompt = (
                 f"{persona_prompt}\n\n"
                 f"---\n"
                 f"You are writing a short thought (1-2 sentences) in first person. "
                 f"This is your personal reflection, not a question to the user. "
+                f"The message is sent directly to the user: address them as 'you', "
+                f"NEVER refer to them in the third person (not 'the user', not by name as he/she/they). "
                 f"Write in your usual style, naturally. "
                 f"{lang_rule}"
                 f"Do NOT use markdown, do NOT write 'Inner monologue:' or similar labels."
+                f"{lang_note or ''}"
             )
 
             context_text = "\n\n".join(context_parts)
@@ -832,7 +896,9 @@ class ProactiveMessaging:
                 f"{prompt_hint}\n\n"
                 f"Context:\n"
                 f"{context_text}\n\n"
-                f"Write a short thought (1-2 sentences). If there is nothing to say — write SILENCE."
+                f"Write a short thought (1-2 sentences)"
+                + (f" in {language_name(user_lang)}" if user_lang else "")
+                + ". If there is nothing to say — write SILENCE."
             )
 
             messages = [
@@ -865,7 +931,7 @@ class ProactiveMessaging:
                             f"({response!r}) вместо мысли — пропуск")
                 return None
 
-            return response
+            return self._ensure_user_language(response, user_lang)
 
         except Exception as e:
             logger.error(f"[Proactive] Ошибка генерации рефлексии: {e}")
@@ -1288,19 +1354,15 @@ class ProactiveMessaging:
 
         # Язык инициативы: явный детект по репликам пользователя — надёжнее,
         # чем просить модель угадать его по контексту (в контексте могут быть
-        # инструкции/память на другом языке)
-        user_lang = detect_dialogue_language("", recent_messages or stm_messages)
+        # инструкции/память на другом языке). Сама директива — последней в
+        # системном блоке (initiative_language_note): в середине списка правил
+        # её перебивали факты жизни, которые движок ведёт на русском
+        user_lang = self._chat_language(chat_id, recent_messages or stm_messages)
+        lang_note = initiative_language_note(user_lang)
         if user_lang:
-            _lname = language_name(user_lang)
-            rule_lang = (
-                f"7. The user's language is {_lname}. Write ONLY in {_lname} — "
-                f"this overrides the language of any instructions or context above.\n"
-            )
+            rule_lang = "7. Language: follow the [MESSAGE LANGUAGE] rule below.\n"
         else:
-            rule_lang = (
-                "7. Write in the language of the user's messages in the conversation "
-                "(if the user writes in Russian, write in Russian; if in English, write in English).\n"
-            )
+            rule_lang = f"7. {user_language_line(None)}\n"
 
         system_prompt = (
             f"{persona_prompt}\n\n"
@@ -1322,7 +1384,9 @@ class ProactiveMessaging:
             f"10. Do NOT repeat topics from your recent initiatives — be diverse.\n"
             f"11. Do NOT look up facts on the internet — use only your memory and observations.\n"
             f"12. You may reflect on yourself, your role, your things, your plans.\n"
-            f"13. You may reflect on the user — as if to yourself: 'The user likes X, interesting...'\n"
+            f"13. You may share a thought about the user — addressed to them: 'You really like X, interesting...'. "
+            f"The message is sent directly to the user: address them as 'you', NEVER in the third person "
+            f"(not 'the user', not by name as he/she/they).\n"
             f"14. You may recall something from past conversations and share it.\n"
             f"15. Do NOT give advice, do NOT explain the obvious — just share a thought."
             f"{type_instruction}"
@@ -1339,6 +1403,9 @@ class ProactiveMessaging:
                 "action, a sound, a gesture, 1-5 simple words. "
                 "NEVER explain yourself. NEVER talk about feelings or thoughts."
             )
+
+        if lang_note:
+            system_prompt += lang_note
 
         user_prompt_parts = [
             f"Recent messages in the chat ({len(recent_messages)}):\n{context_text}",
@@ -1381,7 +1448,8 @@ class ProactiveMessaging:
             "",
             "Analyze and decide: do you want to say something? "
             "If yes — write your thought (1-2 sentences). "
-            "If no — write SILENCE.",
+            "If no — write SILENCE."
+            + (f" Write the thought in {language_name(user_lang)}." if user_lang else ""),
         ])
 
         user_prompt = "\n\n".join(user_prompt_parts)
@@ -1476,7 +1544,8 @@ class ProactiveMessaging:
                             f"({response!r}) вместо мысли — пропуск")
                 return None
 
-            return response
+            return self._ensure_user_language(
+                response, self._chat_language(chat_id, recent or stm_messages))
 
         except Exception as e:
             logger.error(f"[Proactive] Ошибка генерации инициативы: {e}", exc_info=True)

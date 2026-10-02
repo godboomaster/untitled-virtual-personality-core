@@ -4,7 +4,7 @@
 
 import { useEffect, useReducer } from 'react';
 import { api } from './api';
-import type { ApiPersona, LivingStateData, LocalTaskInfo, PersonaLlmConfig, ProviderInfo } from './api';
+import type { ApiPersona, LivingStateData, PersonaLlmConfig, ProviderInfo } from './api';
 import type { Persona, PersonaFeature } from './mockData';
 
 // Коды фич, известные UI (подписи — fb.* в словарях i18n)
@@ -53,15 +53,15 @@ function mapPersona(p: ApiPersona): Persona {
 // следующем монтировании потребителя (навигация по секциям) пробуем снова.
 let cache: Persona[] | null = null;
 let failedAt = 0; // время последней неудачной попытки; 0 — не было
-let inflight = false;
+let inflight: Promise<void> | null = null;
 const listeners = new Set<() => void>();
 const RETRY_AFTER_MS = 5000; // антифлап-пауза между попытками после неудачи
 
-function ensureFetch() {
-  if (cache !== null || inflight) return;
-  if (failedAt && Date.now() - failedAt < RETRY_AFTER_MS) return;
-  inflight = true;
-  api
+function ensureFetch(): Promise<void> {
+  if (inflight) return inflight;
+  if (cache !== null) return Promise.resolve();
+  if (failedAt && Date.now() - failedAt < RETRY_AFTER_MS) return Promise.resolve();
+  inflight = api
     .getPersonas()
     .then((list) => {
       cache = list.map(mapPersona);
@@ -71,9 +71,10 @@ function ensureFetch() {
       failedAt = Date.now(); // бэкенд недоступен — моковый режим до следующей попытки
     })
     .finally(() => {
-      inflight = false;
+      inflight = null;
       listeners.forEach((l) => l());
     });
+  return inflight;
 }
 
 // Персоны с бэкенда; null — бэкенд недоступен (или ещё грузится)
@@ -89,13 +90,23 @@ export function useApiPersonas(): Persona[] | null {
   return cache;
 }
 
-// Сбросить кеш и перечитать список (после создания/удаления/дублирования персоны)
-export function refetchPersonas() {
-  cache = null;
+// Сбросить кеш и перечитать список (после создания/удаления/дублирования персоны).
+// Промис резолвится, когда новый список уже в кеше (смена id ждёт его,
+// чтобы переключить выбор на новый id, а не на первую персону)
+export function refetchPersonas(): Promise<void> {
+  // Старый список держим до прихода нового: сброс кеша в null на время запроса
+  // выглядел бы как «бэкенд офлайн» (мок-данные, сброс выбора персоны в чате)
   failedAt = 0;
-  inflight = false;
-  ensureFetch();
-  listeners.forEach((l) => l());
+  return api
+    .getPersonas()
+    .then((list) => {
+      cache = list.map(mapPersona);
+    })
+    .catch(() => {
+      cache = null;
+      failedAt = Date.now();
+    })
+    .finally(() => listeners.forEach((l) => l()));
 }
 
 // true — бэкенд отвечает, можно ходить в API за чатом/памятью
@@ -107,7 +118,6 @@ export function useApiOnline(): boolean {
 
 let provCache: ProviderInfo[] | null = null;
 let provWebchat: { sites: string[]; options: string[] } | null = null;
-let provLocalTasks: LocalTaskInfo[] | null = null;
 let provFailed = false;
 let provInflight = false;
 const provListeners = new Set<() => void>();
@@ -123,7 +133,6 @@ function ensureProvidersFetch() {
         sites: r.webchat_sites ?? (r.webchat_site ? [r.webchat_site] : []),
         options: r.webchat_options ?? [],
       };
-      provLocalTasks = r.local_tasks ?? [];
     })
     .catch(() => {
       provFailed = true;
@@ -165,14 +174,6 @@ export function useApiProviders(): ProviderInfo[] | null {
 export function useApiWebchat(): { sites: string[]; options: string[] } | null {
   useProvListener();
   return provWebchat;
-}
-
-// Задачи локального движка (классификаторы, тики state/world и т.п.) с их
-// текущим движком — Ollama или веб-чат (выбор пользователя); null — бэкенд
-// недоступен (или ещё грузится)
-export function useApiLocalTasks(): LocalTaskInfo[] | null {
-  useProvListener();
-  return provLocalTasks;
 }
 
 // ── Персональный LLM-конфиг (primary + свои модели), по id персоны ────

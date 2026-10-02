@@ -32,10 +32,12 @@ import json
 import logging
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
 from app.core.config import get_db_paths
+from app.core.language import user_language_line
 
 logger = logging.getLogger(__name__)
 
@@ -51,63 +53,71 @@ DEFAULT_PERSONA_CONTEXT = {
     "personality_summary": "",
     "speech_dna": {"allowed_markers": [], "forbidden_markers": [], "tone": ""},
     "behavioral_rules": [],
-    "baseline_mood": {"valence": 0.0, "arousal": 0.3, "tag": "спокойствие"},
+    "baseline_mood": {"valence": 0.0, "arousal": 0.3, "tag": "calm"},
     "interests": [],
     "role_context": "",
     "world_binding": dict(_DEFAULT_WORLD_BINDING),
-    # Суточный распорядок: чем персона обычно занята по времени суток
+    # Суточный распорядок: чем персона обычно занята по времени суток.
+    # Ключи — служебные (утро/день/вечер/ночь, их читает state_engine._daytime),
+    # значения попадают в промпты и в комнату — дефолты на английском
     "daily_routine": {
-        "утро": "просыпается и собирается",
-        "день": "занят своими делами",
-        "вечер": "отдыхает после дня",
-        "ночь": "спит",
+        "утро": "waking up and getting ready",
+        "день": "busy with their own things",
+        "вечер": "resting after the day",
+        "ночь": "sleeping",
     },
 }
+
+# Выжимка на другом языке, чем нужен сейчас, переизвлекается не чаще раза
+# в сутки: у персоны может быть несколько чатов на разных языках
+LANGUAGE_REFRESH_SEC = 86400
 
 # Промпт извлечения: основная LLM, разовый вызов. Просим СТРОГО JSON —
 # маленький ответ, поэтому можно не жалеть инструкций.
 # Литеральные скобки JSON экранированы ({{ }}) — промпт проходит через .format().
-_EXTRACT_PROMPT = """Ты — парсер карточек персонажей. Из system_prompt ниже извлеки структурированную выжимку по схеме. Верни СТРОГО один JSON-объект без markdown-обёрток и пояснений.
+_EXTRACT_PROMPT = """You are a character card parser. From the system_prompt below, extract a structured summary according to the schema. Return STRICTLY one JSON object without markdown wrappers or explanations.
 
-Схема:
+Schema:
 {{
-  "personality_summary": "3-5 предложений: кто персонаж, ключевая черта, манера держаться",
+  "personality_summary": "3-5 sentences: who the character is, the key trait, the manner of behaving",
   "speech_dna": {{
-    "allowed_markers": ["характерные обороты речи, которые персонаж использует"],
-    "forbidden_markers": ["обороты, которые персонаж НИКОГДА не использует"],
-    "tone": "краткая характеристика тона"
+    "allowed_markers": ["characteristic turns of speech that the character uses"],
+    "forbidden_markers": ["turns of speech that the character NEVER uses"],
+    "tone": "brief description of the tone"
   }},
-  "behavioral_rules": ["короткие запреты из блока НЕЛЬЗЯ/запрещено, без деталей"],
+  "behavioral_rules": ["short prohibitions from the MUST NOT/forbidden block, without details"],
   "baseline_mood": {{
     "valence": 0.0,
     "arousal": 0.3,
-    "tag": "состояние по умолчанию (темперамент вне диалога)"
+    "tag": "1-2 words: the default mood outside the dialogue (calm, cheerful, wary)"
   }},
-  "interests": ["темы, которые персонажу интересны"],
-  "role_context": "роль персонажа в его мире (1 предложение)",
+  "interests": ["topics the character is interested in"],
+  "role_context": "the character's role in their world (1 sentence)",
   "world_binding": {{
     "type": "real_world | fictional_universe | unspecified",
-    "location": "город/место, если указано в карточке, иначе null",
-    "universe_note": "если вымышленная вселенная — краткое описание её отличий от реальности, иначе null"
+    "location": "city/place if specified in the card, otherwise null",
+    "universe_note": "if it is a fictional universe — a brief description of how it differs from reality, otherwise null"
   }},
   "daily_routine": {{
-    "утро": "чем персонаж обычно занят утром (1 фраза)",
-    "день": "... днём",
-    "вечер": "... вечером",
-    "ночь": "... ночью (обычно сон)"
+    "утро": "what the character usually does in the morning (1 phrase)",
+    "день": "... in the afternoon",
+    "вечер": "... in the evening",
+    "ночь": "... at night (usually sleep)"
   }}
 }}
+The daily_routine keys are fixed service keys (morning / afternoon / evening / night): keep them exactly as written.
 
-Правила world_binding.type:
-- "real_world" — карточка ЯВНО привязывает персонажа к нашей реальности: реальный город/страна жизни, «живёт здесь и сейчас с пользователем», нет фантастического сеттинга.
-- "fictional_universe" — персонаж существует в собственной вымышленной вселенной (канон игры/книги/фэнтези), даже если она похожа на реальную.
-- "unspecified" — нет явных указаний ни туда, ни сюда.
-Для valence: -1 (негатив) .. 1 (позитив). Для arousal: 0 (спокойствие) .. 1 (возбуждение).
+Rules for world_binding.type:
+- "real_world" — the card EXPLICITLY ties the character to our reality: a real city/country of residence, "lives here and now with the user", no fantastic setting.
+- "fictional_universe" — the character exists in their own fictional universe (canon of a game/book/fantasy), even if it resembles the real one.
+- "unspecified" — no explicit indications either way.
+For valence: -1 (negative) .. 1 (positive). For arousal: 0 (calm) .. 1 (excitement).
 
 system_prompt:
 ---
 {system_prompt}
 ---
+{language_line}
  JSON:"""
 
 
@@ -180,7 +190,7 @@ def _normalize(raw: dict) -> dict:
         "baseline_mood": {
             "valence": _clamp(mood.get("valence"), -1.0, 1.0),
             "arousal": _clamp(mood.get("arousal"), 0.0, 1.0),
-            "tag": str(mood.get("tag", "")).strip()[:80] or "спокойствие",
+            "tag": str(mood.get("tag", "")).strip()[:80] or "calm",
         },
         "interests": _str_list(raw.get("interests")),
         "role_context": str(raw.get("role_context", "")).strip()[:400],
@@ -217,7 +227,7 @@ def _heuristic_fallback(system_prompt: str) -> dict:
         "personality_summary": summary,
         "speech_dna": {"allowed_markers": [], "forbidden_markers": forbidden, "tone": ""},
         "behavioral_rules": rules,
-        "baseline_mood": {"valence": 0.0, "arousal": 0.3, "tag": "спокойствие"},
+        "baseline_mood": {"valence": 0.0, "arousal": 0.3, "tag": "calm"},
         "interests": [],
         "role_context": "",
         "daily_routine": dict(DEFAULT_PERSONA_CONTEXT["daily_routine"]),
@@ -310,16 +320,32 @@ class PersonaContextLayer:
         out["world_binding"] = binding
         return out
 
-    def get(self, system_prompt: str) -> dict:
+    def _cache_fresh(self, h: str, user_language: Optional[str]) -> bool:
+        """Кэш годен для промпта h. Выжимка на другом языке (свободный текст
+        уходит в промпты и в комнату) переизвлекается, но не чаще
+        LANGUAGE_REFRESH_SEC. Легаси-кэш без поля lang писался русским
+        промптом — считаем его русским."""
+        if not self._cache or self._cache.get("hash") != h:
+            return False
+        if not user_language:
+            return True
+        cached_lang = self._cache.get("lang", "ru")
+        if cached_lang == user_language:
+            return True
+        return time.time() - float(self._cache.get("ts") or 0) < LANGUAGE_REFRESH_SEC
+
+    def get(self, system_prompt: str, user_language: Optional[str] = None) -> dict:
         """Возвращает актуальную выжимку. Если кэш протух (правка промпта) —
         переизвлекает основной LLM (разово). При недоступности LLM —
         эвристический черновик, чтобы тики не падали. Ручной world_binding
-        из YAML (если задан) накладывается поверх — каждый раз, детерминировано."""
+        из YAML (если задан) накладывается поверх — каждый раз, детерминировано.
+        user_language — язык пользователя (LivingPersona.global_language):
+        свободный текст выжимки пишется на нём."""
         h = _hash_prompt(system_prompt)
         with self._lock:
             self._latest_hash = h
             while True:
-                if self._cache and self._cache.get("hash") == h:
+                if self._cache_fresh(h, user_language):
                     return self._apply_manual_binding(self._cache["persona_context"])
                 if h not in self._extracting:
                     break
@@ -330,7 +356,7 @@ class PersonaContextLayer:
         extracted = None
         try:
             # Вне лока: LLM-вызов может идти минуты (очередь веб-чата)
-            extracted = self._extract(system_prompt)
+            extracted = self._extract(system_prompt, user_language)
         finally:
             with self._lock:
                 self._extracting.discard(h)
@@ -340,18 +366,19 @@ class PersonaContextLayer:
                 # Сброс/возврат кэша очисткой чата за это время записи не
                 # мешает: выжимка — производная того же промпта
                 if extracted is not None and self._latest_hash == h:
-                    self._cache = {"hash": h, "persona_context": extracted}
+                    self._cache = {"hash": h, "persona_context": extracted,
+                                   "lang": user_language, "ts": time.time()}
                     self._save()
                 self._cond.notify_all()
         return self._apply_manual_binding(extracted)
 
-    def refresh(self, system_prompt: str) -> dict:
+    def refresh(self, system_prompt: str, user_language: Optional[str] = None) -> dict:
         # Принудительное переизвлечение (правка персоны).
         with self._lock:
             self._cache = None
-        return self.get(system_prompt)
+        return self.get(system_prompt, user_language)
 
-    def _extract(self, system_prompt: str) -> dict:
+    def _extract(self, system_prompt: str, user_language: Optional[str] = None) -> dict:
         if not (system_prompt or "").strip():
             return json.loads(json.dumps(DEFAULT_PERSONA_CONTEXT))
 
@@ -360,8 +387,10 @@ class PersonaContextLayer:
             try:
                 response = self.router.get_response(
                     messages=[
-                        {"role": "system", "content": "Ты извлекаешь структурированные данные из текста. Отвечаешь строго JSON."},
-                        {"role": "user", "content": _EXTRACT_PROMPT.format(system_prompt=system_prompt[:12000])},
+                        {"role": "system", "content": "You extract structured data from text. You answer strictly in JSON."},
+                        {"role": "user", "content": _EXTRACT_PROMPT.format(
+                            system_prompt=system_prompt[:12000],
+                            language_line=user_language_line(user_language))},
                     ],
                     temperature=0.1,
                     max_tokens=900,

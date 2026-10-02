@@ -43,8 +43,22 @@ def inbox_pop(persona: str, chat_id: str) -> list[dict]:
         return items
 
 
+def inbox_rename(old: str, new: str):
+    # Смена id персоны: недоставленные фоновые сообщения переезжают под новый id
+    with _inbox_lock:
+        for key in [k for k in _inbox if k[0] == old]:
+            q = _inbox.pop(key)
+            _inbox.setdefault((new, key[1]), deque(maxlen=_MAX_QUEUED)).extend(q)
+
+
 class WebInboxSender:
     # MessageSender-совместимый транспорт: кладёт сообщения в inbox веб-чата.
+
+    # Веб-чат показывает из inbox только текст (kind не рендерится), файла
+    # пользователь не увидит — обучение шлёт урок текстом. У веб-сообщений
+    # нет id, reply на вопрос невозможен.
+    supports_documents = False
+    supports_replies = False
 
     def __init__(self, persona: str):
         self._persona = persona

@@ -8,23 +8,22 @@ import { useInbox, useInboxPolling } from './inboxStore';
 import { ensureNotifyPermission, OPEN_CHAT_EVENT, setUnreadTitle } from './notifications';
 import { requestChatPersona } from './chatNavStore';
 import { useDevMode } from './devMode';
+import Start from './sections/Start';
 import Home from './sections/Home';
 import Chat from './sections/Chat';
 import Room from './sections/Room';
 import Personas from './sections/Personas';
+import Skins from './sections/Skins';
 import ApiKeys from './sections/ApiKeys';
 import ImageLightbox from './components/ImageLightbox';
+import DialogHost from './components/DialogHost';
+import RoomPipHost from './room/RoomPip';
+import { getInitialTheme } from './useAppTheme';
+import type { AppTheme } from './useAppTheme';
 
-export type Section = 'home' | 'chat' | 'room' | 'personas' | 'settings';
+export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings';
 
-type Theme = 'light' | 'dark';
-
-// Начальная тема: сохранённый выбор или системное предпочтение
-function getInitialTheme(): Theme {
-  const saved = localStorage.getItem('vpc-theme');
-  if (saved === 'light' || saved === 'dark') return saved;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-}
+type Theme = AppTheme;
 
 export default function App() {
   const [section, setSection] = useState<Section>('home');
@@ -101,10 +100,12 @@ export default function App() {
         </header>
         <div className="content-scroll">
           <div key={section} className="section-enter">
+            {section === 'start' && <Start onNavigate={setSection} />}
             {section === 'home' && <Home onNavigate={setSection} />}
             {section === 'chat' && <Chat />}
             {section === 'room' && <Room />}
             {section === 'personas' && <Personas />}
+            {section === 'skins' && <Skins />}
             {section === 'settings' && <ApiKeys />}
           </div>
         </div>
@@ -112,6 +113,10 @@ export default function App() {
       {devMode && <DevLogPanel />}
       {/* Лайтбокс: клик по контентной картинке — крупный просмотр */}
       <ImageLightbox />
+      {/* Подтверждения и сообщения на странице (dialogStore) вместо window.confirm/alert */}
+      <DialogHost />
+      {/* PiP-окно комнаты: живёт над разделами, переживает уход из «Комнаты» */}
+      <RoomPipHost />
     </div>
   );
 }

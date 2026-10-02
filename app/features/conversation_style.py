@@ -37,6 +37,8 @@ import logging
 import re
 from typing import List, Dict, Optional
 
+from app.core.language import detect_dialogue_language, user_language_line
+
 logger = logging.getLogger(__name__)
 
 FREQUENCIES = ("none", "rare", "natural", "frequent")
@@ -120,21 +122,22 @@ def build_style_note(frequency: str) -> Optional[str]:
     None — платформа не вмешивается (natural/frequent)."""
     if frequency == "none":
         body = (
-            "Не задавай вопросов в конце ответа вообще: завершай реплику "
-            "утверждением, как человек заканчивает мысль. Вопрос допустим, "
-            "только если другая инструкция в этом промпте явно требует "
-            "ответить вопросом — она важнее."
+            "Do not ask questions at the end of your reply at all: finish the "
+            "reply with a statement, the way a person finishes a thought. A "
+            "question is allowed only if another instruction in this prompt "
+            "explicitly requires answering with a question — it takes priority."
         )
     elif frequency == "rare":
         body = (
-            "Не заканчивай ответ вопросом, если без ответа пользователя тебе "
-            "действительно не обойтись (нужен выбор, уточнение или "
-            "подтверждение для дальнейшего действия). Реплика должна звучать "
-            "завершённой сама по себе — так заканчивает мысль человек, а не "
-            "ассистент, приглашающий продолжить диалог. Рефлекторные вопросы "
-            "«на автомате» («А у тебя?», «Расскажи подробнее?», «Чем ещё "
-            "помочь?») запрещены. Если другая инструкция в этом промпте явно "
-            "требует ответить вопросом — она важнее."
+            "Do not end your reply with a question unless you truly cannot do "
+            "without the user's answer (a choice, clarification or "
+            "confirmation is needed for a further action). The reply must "
+            "sound complete on its own — the way a person finishes a thought, "
+            "not the way an assistant invites the user to keep talking. "
+            "Reflexive \"autopilot\" questions (\"And you?\", \"Tell me more?\", "
+            "\"Anything else I can help with?\") are forbidden. If another "
+            "instruction in this prompt explicitly requires answering with a "
+            "question — it takes priority."
         )
     else:
         return None
@@ -162,7 +165,7 @@ _REGEN_INSTRUCTION = (
     "Rewrite your last reply so it does NOT end with a question. End it as a "
     "complete statement in your own voice — the way a person finishes a "
     "thought, not the way an assistant invites the user to keep talking. "
-    "Keep the meaning, style, language and roughly the same length. Keep a final "
+    "Keep the meaning, style and roughly the same length. Keep a final "
     "question ONLY if the conversation genuinely cannot continue without the "
     "user's answer (a required choice or clarification), or another "
     "instruction in this conversation explicitly demanded a question — then "
@@ -170,8 +173,20 @@ _REGEN_INSTRUCTION = (
 )
 
 
+def _regen_instruction(messages: List[Dict], lang: Optional[str] = None) -> str:
+    # Язык — пользователя в диалоге: иначе регенерация закрепит дрейф языка
+    # исходного ответа
+    if lang is None:
+        last_user = next((m.get("content", "") for m in reversed(messages)
+                          if m.get("role") == "user"
+                          and isinstance(m.get("content"), str)), "")
+        lang = detect_dialogue_language(last_user, messages)
+    return f"{_REGEN_INSTRUCTION}\n{user_language_line(lang)}"
+
+
 def regenerate_without_tail_question(router, messages: List[Dict],
-                                     answer: str, settings: dict) -> Optional[str]:
+                                     answer: str, settings: dict,
+                                     lang: Optional[str] = None) -> Optional[str]:
     """Одна регенерация с усиленным напоминанием (слой 3). Модель сама решает,
     был ли вопрос нужным: нужный оставит, рефлекторный перепишет.
     None — регенерация не удалась, оставляем исходный ответ."""
@@ -179,7 +194,7 @@ def regenerate_without_tail_question(router, messages: List[Dict],
     try:
         follow_up = messages + [
             {"role": "assistant", "content": answer},
-            {"role": "user", "content": _REGEN_INSTRUCTION},
+            {"role": "user", "content": _regen_instruction(messages, lang)},
         ]
         new_answer = router.get_response(follow_up, **settings)
     except Exception as e:

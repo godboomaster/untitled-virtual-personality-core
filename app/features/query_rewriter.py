@@ -12,6 +12,8 @@ Query rewriting — разрешение кореференций в запро�
 import logging
 import re
 
+from app.core.language import detect_dialogue_language, user_language_line
+
 logger = logging.getLogger(__name__)
 
 # Сколько последних реплик из истории передавать в rewriter
@@ -131,7 +133,9 @@ def rewrite_query(
     try:
         response = router.get_response(
             messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": (
+                    _SYSTEM_PROMPT + "\n\n" + user_language_line(
+                        detect_dialogue_language(user_input, history)))},
                 {"role": "user", "content": user_content},
             ],
             task="query_rewrite",

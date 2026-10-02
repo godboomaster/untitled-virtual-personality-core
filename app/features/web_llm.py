@@ -10,9 +10,10 @@
 ответов ("main") и побочных задач вроде LTM ("side") — РАЗНЫЕ чаты и
 раздельные квоты, чтобы фоновые задачи не замусоривали контекст беседы.
 Стейтless-канал "cc" (_STATELESS_CHANNELS): внутренние вызовы
-computer_control (разбор команд, резолв элементов) — каждый вызов идёт в
-СВЕЖИЙ чат, адрес не запоминается: системным вызовам нужен только голый
-промпт, а история прошлых команд в треде смещала бы ответы.
+computer_control (разбор команд, резолв элементов) — на поисковике (AI Mode
+Google) каждый вызов идёт в СВЕЖИЙ тред, адрес не запоминается; на
+чат-сайтах — свой постоянный чат канала (свежий на каждый вызов — сотни
+чатов-однодневок, за это блокируют аккаунт: _FRESH_THREAD_SITES).
 Фоновые каналы (side/proactive) идут через очередь СВОЕГО сайта (один
 фоновый вызов на сайт за раз) и общий небольшой семафор процесса (нагрузка
 на Chrome), ожидание очереди — короткое, занятость = переход к следующему
@@ -48,11 +49,12 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, file_lock, load_json_safe
+from app.core.language import detect_language, user_language_line
 from app.core.paths import data_dir
 from app.core.thread_local_attr import ThreadLocalAttr
 
@@ -66,6 +68,7 @@ STABLE_POLLS = 2            # столько одинаковых непусты
 BANNER_PROBE_EVERY = 4      # баннер-пробник (скан всей страницы) — раз в N тиков
 FRESH_CHAT_SETTLE_SEC = 2.0  # пауза после навигации на home (новый чат)
 SEND_VERIFY_SEC = 8.0        # сколько ждём появления своего сообщения в ленте
+READY_WAIT_SEC = 15.0        # потолок ожидания готовности SPA (ready_js адаптера)
 
 # Тексты-заглушки во время «думания» — ответом не считаются
 _THINKING_NOISE = {"", "thinking…", "thinking", "thinking completed",
@@ -131,6 +134,62 @@ _QUARANTINE_LOCK = threading.Lock()
 _SITE_QUARANTINE: Dict[str, dict] = {}  # site → {"until": ts, "reason": str, "kind": str}
 _PENDING_ALERTS: List[dict] = []        # {"site","reason","kind","until","ts"} для пользователя
 
+# ── A/B-сравнение ответов ──
+# Сайт показывает ДВА ответа и блокирует чат до выбора («Which response do
+# you prefer? Select one to continue», кнопки «I prefer this response» —
+# qwen, ChatGPT): следующее сообщение не отправится, а ответ не прочитается.
+# Выбираем первый — это просто ответ, выбор ничего не значит для бота.
+_AB_CHOICE_JS = r"""(function(){
+  var re=/^(i prefer this response|i prefer this one|prefer this response|мне больше нравится этот ответ|предпочитаю этот ответ|этот ответ лучше)$/i;
+  var b=[].slice.call(document.querySelectorAll('button,[role=button]'))
+    .filter(function(x){ var r=x.getBoundingClientRect();
+      return r.width>0 && r.height>0 && re.test((x.innerText||'').trim()); });
+  if (!b.length) return '';
+  b[0].click();
+  return 'clicked:' + b.length;
+})()"""
+
+# ── Разлогин ──
+# Сайт выкинул бота из аккаунта: вместо чата — страница входа, поля ввода
+# нет. Раньше это распознавалось как «отправка отклоняется подряд» (карантин
+# refused с текстом «перегрузка или лимит тарифа») и ещё перезапускало
+# браузер на первой же неудаче — оба действия бесполезны: войти может только
+# человек. Карантин kind="login" таймером по существу не лечится, поэтому
+# TTL длинный, а снимается он пробой: не чаще LOGIN_PROBE_SEC вызов
+# пропускается к сайту, открывает чат и БЕЗ отправки смотрит на поле ввода
+# (вошли — карантин снят; нет — молча продлён).
+LOGIN_QUARANTINE_TTL_SEC = 6 * 3600.0
+LOGIN_PROBE_SEC = 300.0
+# В rescue (видимое окно, человек входит прямо сейчас) — чаще
+LOGIN_RESCUE_PROBE_SEC = 20.0
+_LOGIN_PROBE_AT: Dict[str, float] = {}  # site → время последней пробы
+# Адрес страницы входа: путь sign_in/login/auth… или SSO-хост
+_LOGIN_URL_RE = re.compile(
+    r"accounts\.google\.com|appleid\.apple\.com|"
+    r"/(?:sign[_-]?in|log[_-]?in|signin|login|sign[_-]?up|signup|auth)"
+    r"(?:[/?#.]|$)", re.IGNORECASE)
+# Состояние страницы чата: видимо ли поле ввода адаптера, есть ли видимое
+# поле пароля / кнопка «Войти». %INPUT% — JSON-строка селектора адаптера
+_LOGIN_STATE_JS = r"""(function(){
+  function vis(el){ if(!el) return false; var r=el.getBoundingClientRect();
+    var s=getComputedStyle(el);
+    return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'; }
+  function any(sel){ try { return Array.prototype.some.call(
+    document.querySelectorAll(sel), vis); } catch(e) { return false; } }
+  var age='', are=/(confirm|verify)\s+(your\s+)?age|age verification|are you (at least |over )?1[38]|i am (at least |over )?1[38]|date of birth|подтверд\S*\s+(свой\s+|ваш\s+)?возраст|дата рождения|вам (уже )?(есть )?18/i;
+  var dl=document.querySelectorAll('[role=dialog],[aria-modal=true],[class*=modal],[class*=Modal]');
+  for (var j=0; j<dl.length && j<50; j++) {
+    var dt=(dl[j].innerText||'');
+    if (vis(dl[j]) && are.test(dt)) { age=dt.trim().slice(0,80); break; } }
+  var btn=false, re=/^(log ?in|sign ?in|войти|вход|continue with (google|apple|email|phone))$/i;
+  var els=document.querySelectorAll('button,a,[role=button]');
+  for (var i=0; i<els.length && i<500; i++) {
+    var t=(els[i].innerText||'').trim();
+    if (t.length<40 && re.test(t) && vis(els[i])) { btn=true; break; } }
+  return JSON.stringify({url: location.href, comp: any(%INPUT%),
+                         pwd: any('input[type=password]'), btn: btn, age: age});
+})()"""
+
 
 def _parse_reset_ttl(text: str) -> float | None:
     """TTL карантина из текста о лимите: «через N часов/минут», «in N
@@ -187,8 +246,9 @@ def _parse_reset_ttl(text: str) -> float | None:
 # длинным бюджетом BG_GATE_TIMEOUT_SEC (фоновая работа не теряется).
 _BACKGROUND_CHANNELS = ("side", "proactive")
 
-# Каналы БЕЗ памяти: каждый вызов — свежий чат на сайте, адрес чата не
-# запоминается, тред не копит историю. «cc» — внутренние вызовы
+# Каналы БЕЗ памяти (на поисковике — _FRESH_THREAD_SITES; на чат-сайтах у
+# каждого из них постоянный чат): каждый вызов — свежий чат на сайте, адрес
+# чата не запоминается, тред не копит историю. «cc» — внутренние вызовы
 # computer_control (разбор команд, резолв элементов страницы) и живые
 # flavor-реплики; «cc_gen» — долгая фоновая генерация flavor-банка
 # (отдельный канал = отдельный инстанс/лок: генерация не блокирует
@@ -214,6 +274,13 @@ _BACKGROUND_CHANNELS = ("side", "proactive")
 USER_PATH_CHANNEL = "inline"
 _STATELESS_CHANNELS = frozenset({"cc", "cc_gen", "burst", "probe", "search",
                                  USER_PATH_CHANNEL})
+# Свежий тред на каждый вызов — только там, где это обычное поведение: AI
+# Mode Google — поисковик, новый вопрос там — новый поиск. Чат-сайтам
+# (deepseek, qwen, claude…) это сотни чатов-однодневок: 01.10 канал cc
+# открыл в deepseek 60 новых чатов за ~50 минут, и аккаунт заблокировали на
+# 3 дня. Там у каждого канала — один постоянный чат, как у main; новый —
+# только если сохранённый недоступен (удалён, переполнен, не принял ввод)
+_FRESH_THREAD_SITES = frozenset({"google"})
 
 # Каналы коротких «системных» вызовов на пользовательском пути: пол
 # таймаута ANSWER_TIMEOUT_SEC (150с для длинных дневников) к ним не
@@ -473,6 +540,26 @@ def quarantine_site(site: str, reason: str, ttl: float = None,
                        f"{int(eff_ttl / 60)} мин — {reason}")
 
 
+def quarantine_kind(site: str) -> Optional[str]:
+    # Природа активного карантина сайта (challenge/ratelimit/refused/login) или None
+    if not site_quarantined(site):
+        return None
+    with _QUARANTINE_LOCK:
+        q = _SITE_QUARANTINE.get(site)
+        return str(q.get("kind") or "challenge") if q else None
+
+
+def _claim_login_probe(site: str, interval: float = LOGIN_PROBE_SEC) -> bool:
+    """Пора ли пробовать сайт в карантине разлогина (не чаще interval).
+    True — проба за этим вызовом, время пробы отмечено."""
+    now = time.time()
+    with _QUARANTINE_LOCK:
+        if now - _LOGIN_PROBE_AT.get(site, 0.0) < interval:
+            return False
+        _LOGIN_PROBE_AT[site] = now
+        return True
+
+
 def site_quarantined(site: str) -> bool:
     with _QUARANTINE_LOCK:
         q = _SITE_QUARANTINE.get(site)
@@ -497,6 +584,32 @@ def quarantine_status() -> dict:
                   if now >= float(q.get("until") or 0)]:
             _SITE_QUARANTINE.pop(s, None)
         return {s: dict(q) for s, q in _SITE_QUARANTINE.items()}
+
+
+def finish_idle_rescue() -> bool:
+    """Реплика пользователя после «почини браузер» — это «готово» (так его
+    и просит rescue_ok). Rescue этого процесса, которому чинить нечего — ни
+    капчи, ни разлогина в карантине, — завершается сразу: по чистой
+    странице его снимать было бы не с чего, и пул H оставался бы видимым до
+    конца срока, выскакивая окном на каждую новую вкладку. Карантин есть —
+    rescue снимет вызов к сайту (_challenge_check, _login_restored). Чужой
+    rescue (включил другой процесс бота) не трогаем: его карантины — в
+    памяти того процесса. → True — завершён."""
+    from app.features import browser_actions as ba
+    if not ba.pool_h_rescue_owned():
+        return False
+    if any(str(q.get("kind") or "challenge") in ("challenge", "login")
+           for q in quarantine_status().values()):
+        return False
+    ba.end_rescue_pool_h()
+    return True
+
+
+def _drop_pending_alerts(site: str, kind: str):
+    # Снять недоставленные уведомления сайта этого вида (ситуация прошла)
+    with _QUARANTINE_LOCK:
+        _PENDING_ALERTS[:] = [a for a in _PENDING_ALERTS
+                              if not (a["site"] == site and a["kind"] == kind)]
 
 
 def pop_quarantine_alerts() -> List[dict]:
@@ -668,11 +781,17 @@ _CHAT_ERROR_RES = (
     # «Currently available to ... members…»
     re.compile(r"currently available to .{0,40}members", re.I),
     re.compile(r"servers? (?:is |are )?(?:currently )?overloaded", re.I),
+    # duck.ai: «Упс... Сервис Duck.ai временно недоступен. … код 02f8» —
+    # анти-бот (418 ERR_BN_LIMIT) или сбой сайта: не битый чат, а отказ
+    re.compile(r"duck\.ai\s+(?:временно недоступен|is temporarily unavailable)",
+               re.I),
 )
 
 # Признак отказа по перегрузке/тарифу в тексте ошибки: такие _ChatBroken
-# уходят не в сброс чата (чат не битый), а в карантин сайта
-_OVERLOAD_RE = re.compile(r"currently available to|overloaded|перегруж",
+# уходят не в сброс чата (чат не битый), а в карантин сайта (duck.ai:
+# повторять при анти-боте — растить риск блока IP, общего с поиском DDG)
+_OVERLOAD_RE = re.compile(r"currently available to|overloaded|перегруж|"
+                          r"временно недоступен|temporarily unavailable",
                           re.I)
 
 # Отказ от ответа на КОНКРЕТНЫЙ промпт (не битый чат и не отказ сайта):
@@ -847,6 +966,37 @@ _DEEPSEEK_MODE_JS = (
     "(%s)"
 )
 
+# JS модели duck.ai: строка меню model-picker-row-<id> (id — %s из
+# mode_default), заодно веб-поиск выключен (служебным промптам он не нужен,
+# а у моделей tinfoil включённый спрашивает согласие вместо ответа).
+# Идемпотентно: модель уже выбрана — меню закрывается без клика. Promise —
+# меню рендерится не сразу
+_DUCKAI_MODE_JS = (
+    "(function(want){"
+    "function esc(){document.body.dispatchEvent(new KeyboardEvent('keydown',"
+    "{key:'Escape',bubbles:true}));}"
+    "function wait(ms){return new Promise(function(r){setTimeout(r,ms);});}"
+    "var out=[];"
+    "var ci=document.querySelector('[data-testid=duckai-chat-input]');"
+    "var tools=document.querySelector('[data-testid=duckai-tools-button]');"
+    "var chain=Promise.resolve();"
+    "if(ci&&tools&&/web search|веб-поиск/i.test(ci.innerText||'')){"
+    "chain=chain.then(function(){tools.click();return wait(500);}).then(function(){"
+    "var it=[].slice.call(document.querySelectorAll('[role=menuitemradio]'))"
+    ".filter(function(e){return /web search|веб-поиск/i.test(e.innerText||'');})[0];"
+    "if(it&&it.getAttribute('aria-checked')==='true'){it.click();out.push('search-off');}"
+    "else esc();return wait(300);});}"
+    "return chain.then(function(){"
+    "var b=document.querySelector('[data-testid=model-picker-button]');"
+    "if(!b)return 'no-picker';b.click();return wait(500).then(function(){"
+    "var row=document.querySelector('[data-testid=\"model-picker-row-'+want+'\"]');"
+    "if(!row){esc();return 'no-row:'+want;}"
+    "if(row.getAttribute('aria-checked')==='true'){esc();out.push('ok:'+want);}"
+    "else{row.click();out.push('clicked:'+want);}"
+    "return out.join(',');});});"
+    "})(%s)"
+)
+
 ADAPTERS = {
     "deepseek": {
         "host": "chat.deepseek.com",
@@ -889,6 +1039,16 @@ ADAPTERS = {
         # answer его не видят, поэтому текст ошибки читаем с последнего
         # контейнера целиком (см. _wait_answer).
         "error_scope": ".qwen-chat-message-assistant",
+        # Готовность к отправке: профиль аккаунта загружен (фронт выставляет
+        # window.userId после fetchUser — через 5–12 с после загрузки, а
+        # поле ввода видно уже через ~1 с). Отправка раньше идёт гостевой
+        # веткой: фронт требует cookie qwen_age_verification и вместо
+        # отправки показывает окно «Confirm your age to continue»
+        "ready_js": "(typeof window.userId==='string'&&window.userId)?'ready':''",
+        # Это окно, всплывшее из-за гонки выше: закрываем крестиком (возраст
+        # НЕ подтверждаем) и отправляем снова — загруженный профиль фронт
+        # проверяет по дате рождения аккаунта
+        "race_modal_close": ".age-confirmation-modal .ant-modal-close",
         "mode_js": _QWEN_FAST_MODE_JS,
         # Сайт принимает картинки вставкой (проверено Cmd+V вручную):
         # включает vision-фолбэк через веб-чат (chat_paste_image). Лимит
@@ -1049,6 +1209,41 @@ ADAPTERS = {
         "images": True,
         "max_images": 1,
     },
+    "duckai": {
+        # Duck.ai (DuckDuckGo): без аккаунта, дневной лимит на все модели
+        # (сброс в полночь UTC; исчерпание — _RATE_LIMIT_RES). Голый
+        # headless сайт режет анти-ботом (418 ERR_BN_LIMIT), пул H бота с
+        # его профилем — пропускает (замер 01.10). Адрес у чата один
+        # (duck.ai/) — постоянный чат держит вкладка, а не chat_url
+        "host": "duck.ai",
+        "home": "https://duck.ai/",
+        "input": "textarea[name=user-prompt]",
+        "input_goal": ["поле ввода сообщения", "ask anything",
+                       "задавайте любые вопросы"],
+        # Ответ — тело сообщения ассистента (без заголовка «Duck.ai said» и
+        # имени модели); ряд кнопок с «Copy to clipboard» — его сосед в том
+        # же контейнере (hasDone находит его уровнем выше)
+        "answer": ["div[id*='-assistant-message-']:not([id^='heading-'])"
+                   " > div:has(.space-y-4)",
+                   "div[id*='-assistant-message-']:not([id^='heading-'])"
+                   " .space-y-4"],
+        "user": ["[data-testid=user-message]"],
+        "done_selector": "button[aria-label*='copy' i], "
+                         "button[aria-label*='копир' i]",
+        # Модель — Gemma 4 31B (tinfoil: провайдер запросов не видит).
+        # Замер 01.10 на задачах бота: разделы, разбор ответа и шаг агента —
+        # все верно и чисто (Luna, gpt-oss — тоже годятся; Mistral — нет)
+        "mode_js": _DUCKAI_MODE_JS,
+        "mode_default": "tinfoil/gemma4-31b",
+        # Длиннее — сайт не берёт (условие пользователя 01.10; замер: 15,5
+        # тыс. прошли целиком): вызов сразу уходит следующему провайдеру
+        "max_input": 16000,
+        "max_input_strict": True,
+        # Отправка — только Enter с символом «\r» (rawKeyDown фоновой
+        # вкладки не срабатывает: бот слал промпт кнопкой после неудачного
+        # Enter, на втором вызове пул H завис — замер 01.10)
+        "enter_text": True,
+    },
 }
 
 
@@ -1115,10 +1310,12 @@ class WebChatLLM:
             self.browser_pool = "v" if site in ("chatgpt", "claude") else "h"
         # Канал: у побочных задач ("side") свой чат и своя квота — фоновая
         # активность не замусоривает контекст основной беседы.
-        # Стейтless-каналы (_STATELESS_CHANNELS, "cc"): чат не
-        # переиспользуется и не запоминается — голый промпт без истории
+        # Стейтless-каналы (_STATELESS_CHANNELS, "cc") на поисковике
+        # (_FRESH_THREAD_SITES): чат не переиспользуется и не запоминается —
+        # голый промпт без истории. На чат-сайтах — постоянный чат канала
         self.channel = (channel or "main").strip() or "main"
-        self.stateless = self.channel in _STATELESS_CHANNELS
+        self.stateless = self.channel in _STATELESS_CHANNELS \
+            and site in _FRESH_THREAD_SITES
         self._state_key = site if self.channel == "main" \
             else f"{site}#{self.channel}"
         # Лимит вызовов в час (None — без лимита; дефолт).
@@ -1152,6 +1349,8 @@ class WebChatLLM:
         # отклоняющий отправки бесплатного тарифа, гасил бы браузер на
         # каждом сообщении)
         self._send_fail_streak = 0
+        # Этот вызов — проба карантина разлогина (см. _quarantine_skip)
+        self._login_probe = False
         # Флаги последнего вызова (last_call_lock_miss/last_call_tab_lost) —
         # потоко-локальные дескрипторы класса, default False
         # Инстанс выбыл из кэша роутера (retire): вкладка закрывается по
@@ -1342,6 +1541,9 @@ class WebChatLLM:
                           timeout_sec=8.0)
         except Exception:
             pass  # closed-loop отправки сам отловит неготовность поля
+        if not self._wait_ready(ba, self._tab_id):
+            logger.debug(f"[WebChat] {self.site}#{self.channel}: страница не "
+                         f"готова за {READY_WAIT_SEC:.0f} с — отправляю так")
         mode_js = self._mode_js()
         if mode_js:
             try:
@@ -1350,6 +1552,111 @@ class WebChatLLM:
             except Exception as e:
                 logger.debug(f"[WebChat] {self.site}#{self.channel}: "
                              f"режим не переключён: {e}")
+
+    def _wait_ready(self, ba, tab_id, timeout_sec: float = READY_WAIT_SEC) -> bool:
+        """Дождаться готовности SPA к отправке (ready_js адаптера). Без
+        ready_js — сразу True; таймаут/ошибка — False (дальше решают
+        closed-loop отправки и проверка входа)."""
+        js = self.adapter.get("ready_js")
+        if not js:
+            return True
+        deadline = time.time() + timeout_sec
+        while True:
+            try:
+                if ba.eval_js(None, tab_id, js) == "ready":
+                    return True
+            except Exception:
+                return False
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.3)
+
+    def _dismiss_race_modal(self, ba, tab_id) -> bool:
+        """Окно, всплывшее из-за отправки до готовности страницы (qwen:
+        гостевая проверка возраста), — закрыть крестиком, когда страница
+        готова. True — закрыли, повторная отправка пройдёт штатной веткой."""
+        sel = self.adapter.get("race_modal_close")
+        if not sel or not self._wait_ready(ba, tab_id):
+            return False
+        js = ("(function(){var x=document.querySelector(%s);if(!x)return '';"
+              "var r=x.getBoundingClientRect();"
+              "if(r.width<1||r.height<1)return '';x.click();return 'closed';})()"
+              % json.dumps(sel))
+        try:
+            if ba.eval_js(None, tab_id, js) != "closed":
+                return False
+        except Exception:
+            return False
+        logger.info(f"[WebChat] {self.site}#{self.channel}: отправка ушла до "
+                    "загрузки профиля — окно сайта закрыто, отправляю снова")
+        time.sleep(0.5)
+        return True
+
+    def _login_state(self, ba, tab_id) -> Tuple[str, str]:
+        """Состояние вкладки чата: ("ok", "") — поле ввода на месте;
+        ("login", описание) — страница входа (разлогин); ("unknown", "") —
+        ни то ни другое или замер не удался (карантин по нему не решаем)."""
+        try:
+            raw = ba.eval_js(None, tab_id, _LOGIN_STATE_JS.replace(
+                "%INPUT%", json.dumps(self.adapter["input"])))
+            data = json.loads(raw)
+        except Exception as e:
+            logger.debug(f"[WebChat] {self.site}: проверка входа не удалась: {e}")
+            return "unknown", ""
+        if data.get("age"):
+            # Окно подтверждения возраста поверх чата: поле ввода может быть
+            # видно под ним, но ввод не принимается. Жать «мне есть 18» за
+            # человека не будем — это его заявление, а не техническая кнопка
+            return "login", "сайт просит подтвердить возраст"
+        if data.get("comp"):
+            return "ok", ""
+        url = str(data.get("url") or "")
+        signs = []
+        if _LOGIN_URL_RE.search(urlsplit(url).netloc + urlsplit(url).path):
+            signs.append(f"адрес {urlsplit(url).path or url}")
+        if data.get("pwd"):
+            signs.append("поле пароля")
+        if data.get("btn"):
+            signs.append("кнопка входа")
+        if signs:
+            return "login", "страница входа: " + ", ".join(signs)
+        return "unknown", ""
+
+    def _on_logged_out(self, label: str):
+        # Разлогин: карантин kind=login (уведомление один раз — повторный
+        # quarantine_site по уже карантиненному сайту лишь продлевает срок)
+        self._send_fail_streak = 0
+        _LOGIN_PROBE_AT[self.site] = time.time()
+        reason = (label if "возраст" in label
+                  else f"бот разлогинен ({label})")
+        quarantine_site(self.site, reason, ttl=LOGIN_QUARANTINE_TTL_SEC,
+                        kind="login")
+
+    def _resolve_ab_choice(self, ba, tab_id) -> bool:
+        """A/B-панель на странице → выбрать первый ответ. True — кликнули."""
+        try:
+            out = str(ba.eval_js(None, tab_id, _AB_CHOICE_JS) or "")
+        except Exception:
+            return False
+        if out.startswith("clicked"):
+            logger.info(f"[WebChat] {self.site}: сайт предложил выбрать из двух "
+                        "ответов — выбран первый")
+            return True
+        return False
+
+    def _login_restored(self, ba):
+        clear_quarantine(self.site)
+        # Уведомления уходят со СЛЕДУЮЩИМ ответом бота: не доставленное к
+        # этому моменту «выкинул из аккаунта» пришло бы уже после входа
+        _drop_pending_alerts(self.site, "login")
+        try:
+            # Вошли в видимом окне rescue — пул H возвращается в штатный режим
+            if ba.pool_h_rescue_active():
+                ba.end_rescue_pool_h()
+        except Exception:
+            pass
+        logger.info(f"[WebChat] {self.site}: вход восстановлен — карантин "
+                    "разлогина снят")
 
     def _challenge_check(self, ba, tab_id) -> bool:
         """Страница под антибот-челленджем? Одна автопопытка клика по
@@ -1372,7 +1679,10 @@ class WebChatLLM:
             # Страница чиста. Если сайт был в карантине — челлендж пройден
             # (пользователь в rescue): снимаем карантин, пул H возвращается
             # в штатный режим
-            if site_quarantined(self.site):
+            # Карантин разлогина так не снимается: на странице входа капчи
+            # тоже нет — его снимает только проба поля ввода (_login_state)
+            if site_quarantined(self.site) \
+                    and quarantine_kind(self.site) != "login":
                 clear_quarantine(self.site)
                 try:
                     ba.end_rescue_pool_h()
@@ -1464,8 +1774,11 @@ class WebChatLLM:
         и заполняется по DOM-метке. Детерминированно, без LLM: web_llm сам
         является LLM-провайдером роутера — звать модель для поиска её же
         поля ввода было бы круговой зависимостью."""
+        # Enter с символом «\r» — только сайтам, которым он нужен (duck.ai):
+        # остальным сигнатура и поведение прежние
+        kw = {"enter_text": True} if self.adapter.get("enter_text") else {}
         try:
-            ba.chat_fill_send(host, tab_id, self.adapter["input"], prompt)
+            ba.chat_fill_send(host, tab_id, self.adapter["input"], prompt, **kw)
             return
         except Exception as e:
             idx = self._find_input_by_goal(ba, host, tab_id)
@@ -1521,6 +1834,10 @@ class WebChatLLM:
         аплоада (первая могла упереться в тост «files still uploading»).
         Возвращает marker (нормализованное начало промпта) — якорь для
         _wait_answer; None — у адаптера нет user-селекторов."""
+        # Панель выбора из двух ответов, оставшаяся от прошлого вызова,
+        # блокирует ввод — снимаем её до отправки
+        if self._resolve_ab_choice(ba, tab_id):
+            time.sleep(1.0)
         user_sels = self.adapter.get("user")
         if not user_sels:
             self._fill_send(ba, host, tab_id, prompt)
@@ -1557,6 +1874,8 @@ class WebChatLLM:
                 logger.info(f"[WebChat] {self.site}#{self.channel}: отправлено "
                             "кнопкой после неудачного Enter")
                 return want
+            if attempt == 1 and self._dismiss_race_modal(ba, tab_id):
+                continue
             logger.info(f"[WebChat] {self.site}#{self.channel}: сообщение не "
                         f"появилось в ленте (попытка {attempt})")
         raise TimeoutError("сообщение не появилось в ленте после отправки")
@@ -1753,12 +2072,28 @@ class WebChatLLM:
         под локом (карантин мог начаться, пока ждали)."""
         if not site_quarantined(self.site):
             return False
+        # ba передан — повторная проверка под локом того же вызова: проба
+        # разлогина, заявленная первой проверкой, должна пройти и здесь
+        second = ba is not None
         try:
             if ba is None:
                 from app.features import browser_actions as ba
             rescue = self.browser_pool == "h" and ba.pool_h_rescue_active()
         except Exception:
             rescue = False
+        if quarantine_kind(self.site) == "login":
+            if (second and self._login_probe) or _claim_login_probe(
+                    self.site, LOGIN_RESCUE_PROBE_SEC if rescue
+                    else LOGIN_PROBE_SEC):
+                # Проба: вызов идёт к сайту, но до отправки проверит поле
+                # ввода (_get_response_locked); rescue — человек, возможно,
+                # как раз вошёл в видимом окне
+                self._login_probe = True
+                logger.info(f"[WebChat] {self.site}: карантин разлогина — "
+                            "проверяю, не выполнен ли вход")
+                return False
+            logger.info(f"[WebChat] {self.site}: карантин (разлогин) — пропуск")
+            return True
         if not rescue:
             logger.info(f"[WebChat] {self.site}: карантин активен — пропуск")
             return True
@@ -2055,9 +2390,10 @@ class WebChatLLM:
                 try:
                     follow = self._get_response_locked(
                         [{"role": "user", "content": (
-                            "Это тот же кадр, но без разметки-номерков. "
-                            "Уточни свой предыдущий ответ по нему (если "
-                            "уточнять нечего — коротко подтверди его).")}],
+                            "This is the same frame, but without the numbered "
+                            "markup. Refine your previous answer based on it (if "
+                            "there is nothing to refine, briefly confirm it). "
+                            + user_language_line(detect_language(answer)))}],
                         0.7, 2000, 0.9, timeout,
                         image_bytes=extra_image, image_mime=image_mime,
                         extra_image_bytes=None)
@@ -2079,6 +2415,12 @@ class WebChatLLM:
         if not prompt:
             return None
         cap = self.adapter.get("max_input")
+        if cap and len(prompt) > cap and self.adapter.get("max_input_strict"):
+            # Сайт длиннее не берёт — сразу следующему провайдеру, без
+            # вкладки и квоты
+            logger.info(f"[WebChat] {self.site}#{self.channel}: промпт "
+                        f"{len(prompt)} симв. длиннее {cap} — пропуск")
+            return None
         if cap and len(prompt) > cap:
             logger.warning(f"[WebChat] {self.site}: промпт {len(prompt)} симв. "
                            f"длиннее лимита поля ({cap}) — сайт может не "
@@ -2091,6 +2433,9 @@ class WebChatLLM:
         # очереди, в get_response)
         if self._quarantine_skip(ba):
             return None
+        # Проба карантина разлогина — флаг этого вызова (снимаем сразу: ранний
+        # выход ниже не должен оставить его следующему вызову)
+        login_probe, self._login_probe = self._login_probe, False
         # headed-сайт (пул V), а режим управления нигде не включён: видимый
         # Chrome не поднимаем, сайт пропускается (override — конфиг
         # browser.headed_fallback_without_control)
@@ -2110,6 +2455,20 @@ class WebChatLLM:
             tab_id = self._ensure_chat(fresh=fresh)
             if tab_id is None:
                 return None
+            if login_probe:
+                # До отправки: поле ввода на месте — вход выполнен, карантин
+                # снят; страница входа — карантин молча продлён, квота и
+                # перезапуски браузера не тратятся. «Неизвестно» — обычная
+                # отправка: удастся — карантин снимется ниже
+                login_probe = False
+                state, label = self._login_state(ba, tab_id)
+                if state == "login":
+                    logger.info(f"[WebChat] {self.site}: всё ещё разлогинен "
+                                f"({label}) — карантин продлён")
+                    self._on_logged_out(label)
+                    return None
+                if state == "ok":
+                    self._login_restored(ba)
             # Вкладка из реестра фоновых (raw-CDP)? Тогда её исчезновение
             # посреди вызова детектируется мгновенно (_tab_vanished)
             tab_token = self._snap_for(ba, tab_id)
@@ -2156,6 +2515,9 @@ class WebChatLLM:
                 marker = self._send_verified(ba, host, tab_id, prompt,
                                              wait_upload=bool(image_bytes))
                 self._send_fail_streak = 0
+                if quarantine_kind(self.site) == "login":
+                    # Сообщение ушло — значит, вход есть (проба «неизвестно»)
+                    self._login_restored(ba)
             except Exception as e:
                 if self._tab_vanished(ba, tab_id, tab_token):
                     # Вкладку убили извне (перезапуск Chrome пула и т.п.):
@@ -2172,6 +2534,15 @@ class WebChatLLM:
                     self._save_state({"chat_url": ""})
                     continue
                 logger.warning(f"[WebChat] {self.site}: отправка не удалась: {e}")
+                # Поле не приняло ввод, потому что его нет — страница входа
+                # (сайт разлогинил бота): не «перегрузка», и reload/перезапуск
+                # браузера тут не помогут — карантин разлогина
+                state, label = self._login_state(ba, tab_id)
+                if state == "login":
+                    logger.warning(f"[WebChat] {self.site}: бот разлогинен "
+                                   f"({label})")
+                    self._on_logged_out(label)
+                    return None
                 # Причина «залипания» может быть в антибот-челлендже,
                 # всплывшем на странице, — тогда не лечим вкладку, а
                 # карантиним сайт (fallback-цепочка продолжит без него)
@@ -2281,13 +2652,13 @@ class WebChatLLM:
             if role == "system":
                 sys_parts.append(content.strip())
             else:
-                prefix = {"user": "Пользователь",
-                          "assistant": "Ассистент"}.get(role)
+                prefix = {"user": "User",
+                          "assistant": "Assistant"}.get(role)
                 convo.append(f"{prefix}: {content.strip()}" if prefix
                              else content.strip())
         parts = []
         if sys_parts:
-            parts.append("Инструкции (соблюдай строго, не пересказывай):\n"
+            parts.append("Instructions (follow strictly, do not restate them):\n"
                          + "\n\n".join(sys_parts))
         parts.extend(convo)
         return "\n\n".join(parts).strip()
@@ -2380,6 +2751,9 @@ class WebChatLLM:
                 raise _TabLost("вкладка пропала из реестра во время ожидания "
                                "ответа (перезапуск браузера?)")
             n, cur, cnt, done = 0, "", None, False
+            # Два ответа на выбор: пока не выбран, лента не завершится
+            if tick % 2 == 0:
+                self._resolve_ab_choice(ba, tab_id)
             try:
                 if anchored:
                     cnt, cur, done = ba.answer_blocks_after(

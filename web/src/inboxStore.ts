@@ -49,6 +49,21 @@ export function setControlMode(persona: string, value: boolean) {
   emit();
 }
 
+// Персона с самой свежей перепиской среди ids (первая в списке чатов);
+// null — опрос ещё не принёс ни одной метки
+export function latestActivePersona(ids: string[]): string | null {
+  let best: string | null = null;
+  let bestTs = 0;
+  for (const id of ids) {
+    const ts = lastTs[id] ?? 0;
+    if (ts > bestTs) {
+      best = id;
+      bestTs = ts;
+    }
+  }
+  return best;
+}
+
 // Отметить свежую активность в чате персоны (для сортировки списка персон по новизне)
 export function touchActivity(persona: string, ts: number) {
   if (!ts || (lastTs[persona] ?? 0) >= ts) return;

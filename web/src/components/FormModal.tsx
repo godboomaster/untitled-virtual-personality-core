@@ -1,11 +1,14 @@
 import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import { useI18n } from '../i18n';
 
 /* Общая обёртка модального окна с формой: оверлей, панель в HUD-стиле,
    шапка с заголовком, подвал «Отмена / Создать». Закрытие — крестик,
    клик по оверлею, Esc. Используется модалкой создания персоны
-   и маленькими формами добавления (напоминание, to-do). */
+   и маленькими формами добавления (напоминание, to-do). Рендерится порталом
+   в body: иначе position: fixed считается от предка с transform (анимация
+   раздела, hover карточки) — модалка уезжает вверх, низ страницы не затемнён. */
 
 interface FormModalProps {
   title: string;
@@ -40,7 +43,7 @@ export default function FormModal({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div className="pcreate-overlay" onClick={onClose}>
       <div
         className={`pcreate-panel bracketed ${wide ? 'pcreate-panel--wide' : ''} ${xl ? 'pcreate-panel--xl' : ''}`}
@@ -65,6 +68,7 @@ export default function FormModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

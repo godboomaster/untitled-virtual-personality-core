@@ -6,7 +6,6 @@ main.py запускает два Telegram Application, каждый со сво
 import asyncio
 import logging
 import re
-import time
 from typing import Optional
 from telegram import Update, BotCommand, InputFile, InputMediaPhoto
 from datetime import datetime, timezone
@@ -21,6 +20,7 @@ from telegram.ext import (
 )
 
 from app.bot_instance import BotInstance
+from app.core.language import detect_language
 from app.core.users import register_user, get_user_display, get_user_tag
 from app.core.telegram_sender import TelegramMessageSender
 from app.core.message_pacing import send_delay as _send_delay
@@ -328,7 +328,8 @@ def create_handlers(bot: BotInstance) -> dict:
                 "",
                 "🎓 Обучение",
                 "/learn <тема> — курс с уроками по расписанию и тестами",
-                "Или просто: «научи меня …», «хочу выучить …».",
+                "/stop_learning [тема] — остановить курс",
+                "Или просто: «научи меня …», «хочу выучить …», «хватит уроков».",
             ]
         if bot.file_db:
             lines += [
@@ -523,18 +524,13 @@ def create_handlers(bot: BotInstance) -> dict:
         if not active:
             await update.message.reply_text("Активных напоминаний нет.")
             return
-        from app.features.reminder_manager import format_schedule
+        from app.features.reminder_manager import format_reminder_when
         lines = ["Активные напоминания:"]
         for i, r in enumerate(active):
             task = r.get("task") or "(без описания)"
             author = r.get("user_name") or ""
             author_text = f" (от {author})" if author else ""
-            if r.get("recurrence"):
-                when = format_schedule(r["recurrence"])
-            else:
-                remain = r["trigger_at"] - time.time()
-                mins = int(remain / 60)
-                when = f"через {mins} мин" if mins > 0 else f"через {int(remain)} сек"
+            when = format_reminder_when(r)
             # id рядом с номером: номер живёт только до следующего изменения
             # списка, id — вместе с напоминанием (см. parse_reminder_ref)
             lines.append(f"{i + 1}. [{r.get('id') or '—'}] {task}{author_text} — {when}")
@@ -581,7 +577,8 @@ def create_handlers(bot: BotInstance) -> dict:
     # ── слэш-команды как второй способ записи (ответ через LLM в образе персоны) ──
 
     async def _run_command(update: Update, kind: str, usage: str, manager_attr: str,
-                           context: ContextTypes.DEFAULT_TYPE = None):
+                           context: ContextTypes.DEFAULT_TYPE = None,
+                           allow_empty: bool = False):
         """Общий каркас: проверяет менеджера, парсит аргументы, вызывает
         _dispatch_command, отвечает. context нужен для досылки split-частей
         (_send_split_parts)."""
@@ -595,7 +592,9 @@ def create_handlers(bot: BotInstance) -> dict:
         # Сырой текст после имени команды
         raw = update.message.text or ""
         args = raw.split(" ", 1)[1].strip() if " " in raw else ""
-        if not args:
+        # allow_empty — у команды есть смысл без аргументов (/stop_learning:
+        # единственный курс или вопрос «какой остановить?»)
+        if not args and not allow_empty:
             await update.message.reply_text(usage)
             return
         # Команда — тоже ход пользователя, до конца доставки ответа
@@ -638,6 +637,10 @@ def create_handlers(bot: BotInstance) -> dict:
         await _run_command(update, "learn",
                            "Использование: /learn <тема>", "learning_manager", context)
 
+    async def stop_learning_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await _run_command(update, "stop_learning", "", "learning_manager", context,
+                           allow_empty=True)
+
     # Per-chat блокировки: сообщения ОДНОГО чата обрабатываются последовательно,
     # но разные чаты и slash-команды — параллельно (приложение запущено с
     # concurrent_updates=True). Без этого два быстрых сообщения из одного чата
@@ -660,7 +663,12 @@ def create_handlers(bot: BotInstance) -> dict:
         # Регистрируем пользователя
         register_user(user_id, user.first_name or user.username or f"User_{user_id}", user.username)
 
-        logger.info(f"[{persona_name}] [MSG] chat={chat_id} user={user_id} text='{text[:80]}'")
+        # Текст реплики — без секретов, в режиме управления — только длина
+        # (ответ агенту/слоту сценария бывает паролем без признаков секрета)
+        from app.core.log_privacy import control_mode_active, input_for_log
+        _log_hide = control_mode_active(bot, chat_id)
+        logger.info(f"[{persona_name}] [MSG] chat={chat_id} user={user_id} "
+                    f"text={input_for_log(text, _log_hide, 80)}")
 
         # Логируем информацию о топике (для отладки)
         message_thread_id = getattr(update.message, "message_thread_id", None)
@@ -708,6 +716,40 @@ def create_handlers(bot: BotInstance) -> dict:
         if not is_addressed_to_bot:
             return
 
+        # До лока чата (режим управления): «стоп» при идущем ходе, реплика
+        # занятому агенту и дубль ещё идущей команды отвечаются сразу — иначе
+        # они ждали бы конца 4-минутного прогона. Только для авторизованного
+        # в режиме (cc_turn_enter сам проверяет), гейт pre_check им не нужен:
+        # владелец/allowlist не модерируются и не лимитируются на «стоп»
+        early_reply, cc_token = bot.cc_turn_enter(text, user_id, chat_id)
+        if early_reply:
+            try:
+                await update.message.reply_text(early_reply)
+            except Exception:
+                pass
+            return
+        try:
+            await _handle_message_turn(update, context, user, user_id, chat_id,
+                                       text, is_private, reply_ctx,
+                                       reply_to_bot_message_id)
+        finally:
+            bot.cc_turn_exit(cc_token)
+
+    async def _keep_typing(tg_bot, chat_id: int):
+        # «печатает» в Telegram гаснет через ~5 с — обновляем каждые 4 с,
+        # пока идёт генерация/исполнение команды
+        try:
+            while True:
+                await asyncio.sleep(4)
+                try:
+                    await tg_bot.send_chat_action(chat_id=chat_id, action="typing")
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            pass
+
+    async def _handle_message_turn(update, context, user, user_id, chat_id, text,
+                                   is_private, reply_ctx, reply_to_bot_message_id):
         # Дальше — конвейер ответа. Сериализуем по чату: slash-команды и другие
         # чаты не ждут LLM, но два сообщения одного чата не перехлёстываются.
         # Ход пользователя (app/core/turn_gate.py) открыт с получения
@@ -725,7 +767,11 @@ def create_handlers(bot: BotInstance) -> dict:
             if not clean_text or not clean_text.strip():
                 clean_text = text
 
-            logger.info(f"[{persona_name}] Обработка от {user_id}: {clean_text[:60]}...")
+            from app.core.log_privacy import (control_mode_active,
+                                              input_for_log)
+            logger.info(f"[{persona_name}] Обработка от {user_id}: "
+                        + input_for_log(clean_text, control_mode_active(
+                            bot, chat_id), 60))
 
             # Вступительная реплика персоны до генерации ответа
             pre_reply_text = bot.persona.persona_data.get("pre_reply_text")
@@ -740,14 +786,27 @@ def create_handlers(bot: BotInstance) -> dict:
             try:
                 user_name = user.first_name or user.username or f"User_{user_id}"
                 user_tag = get_user_tag(user_id)
-                response, provider_label = await asyncio.to_thread(
-                    _process_labeled, bot, clean_text,
-                    user_id=user_id, chat_id=chat_id,
-                    user_name=user_tag if chat_id != user_id else user_name,
-                    reply_context=reply_ctx,
-                    reply_to_bot_message_id=reply_to_bot_message_id
-                )
+                # Отметка подтверждения до хода: появился новый вопрос «да/нет»
+                # — в группе подсказываем ответить reply-ем (гейт без триггера
+                # и reply голое «да» не пропускает)
+                confirm_before = bot.cc_pending_stamp(chat_id)
+                typing_task = asyncio.create_task(
+                    _keep_typing(context.bot, update.effective_chat.id))
+                try:
+                    response, provider_label = await asyncio.to_thread(
+                        _process_labeled, bot, clean_text,
+                        user_id=user_id, chat_id=chat_id,
+                        user_name=user_tag if chat_id != user_id else user_name,
+                        reply_context=reply_ctx,
+                        reply_to_bot_message_id=reply_to_bot_message_id
+                    )
+                finally:
+                    typing_task.cancel()
                 logger.info(f"[{provider_label}] [{persona_name}] Ответ получен ({len(response)} символов)")
+                if not is_private and response:
+                    confirm_after = bot.cc_pending_stamp(chat_id)
+                    if confirm_after and confirm_after != confirm_before:
+                        response = f"{response}\n\n{bot.cc_group_confirm_hint(clean_text)}"
                 # Скриншоты режима управления уезжают ВМЕСТЕ с ответом:
                 # первый кадр несёт текст в подписи (одно сообщение вместо
                 # «текст, следом фото»); не влезло в подпись — текст и кадры
@@ -927,9 +986,12 @@ def create_handlers(bot: BotInstance) -> dict:
 
             # Та же per-chat сериализация, что и для текстовых сообщений
             async with _chat_lock(chat_id):
-                # Каскад: vision-провайдер основного роутера → локальная vision-модель
+                # Каскад: vision-провайдер основного роутера → локальная vision-модель.
+                # Язык описания — язык подписи, без неё — язык пользователя в чате
+                img_lang = detect_language(caption_clean) or bot.chat_user_language(chat_id)
                 try:
-                    ocr_text = await asyncio.to_thread(bot.describe_image, image_bytes, caption_clean)
+                    ocr_text = await asyncio.to_thread(
+                        bot.describe_image, image_bytes, caption_clean, img_lang)
                 except Exception as e:
                     # Сбой vision-провайдера — к локальной модели, а не молча в лог PTB
                     logger.error(f"[{persona_name}] describe_image: {e}", exc_info=True)
@@ -940,7 +1002,8 @@ def create_handlers(bot: BotInstance) -> dict:
                             "Сейчас не могу обработать изображение — ни одна vision-модель недоступна."
                         )
                         return
-                    ocr_text = await asyncio.to_thread(bot._local_router.ocr_image, image_bytes, caption_clean)
+                    ocr_text = await asyncio.to_thread(
+                        bot._local_router.ocr_image, image_bytes, caption_clean, img_lang)
                 if not ocr_text:
                     await update.message.reply_text("Не удалось прочитать изображение.")
                     return
@@ -1074,6 +1137,7 @@ def create_handlers(bot: BotInstance) -> dict:
         "add_todo": add_todo_cmd if bot.todo_manager else None,
         "add_inventory": add_inventory_cmd if bot.inventory_manager else None,
         "learn": learn_cmd if bot.learning_manager else None,
+        "stop_learning": stop_learning_cmd if bot.learning_manager else None,
         "handle_message": handle_message,
         "handle_document": handle_document if bot.file_db else None,
         "handle_photo": handle_photo,
@@ -1153,6 +1217,8 @@ def register_handlers(app: Application, bot: BotInstance):
         app.add_handler(CommandHandler("add_inventory", h["add_inventory"], filters=_NEW))
     if h.get("learn"):
         app.add_handler(CommandHandler("learn", h["learn"], filters=_NEW))
+    if h.get("stop_learning"):
+        app.add_handler(CommandHandler("stop_learning", h["stop_learning"], filters=_NEW))
 
     # Debug
     async def debug_all(update: Update, context: ContextTypes.DEFAULT_TYPE):

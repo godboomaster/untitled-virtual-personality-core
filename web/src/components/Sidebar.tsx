@@ -11,10 +11,12 @@ interface SidebarProps {
 }
 
 const navItems: { id: Section; icon: IconName }[] = [
+  { id: 'start', icon: 'start' },
   { id: 'home', icon: 'home' },
   { id: 'chat', icon: 'chat' },
   { id: 'room', icon: 'room' },
   { id: 'personas', icon: 'personas' },
+  { id: 'skins', icon: 'skins' },
   { id: 'settings', icon: 'settings' },
 ];
 

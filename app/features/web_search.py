@@ -1,18 +1,21 @@
 """
-Веб-поиск через DuckDuckGo.
+Веб-поиск через DuckDuckGo (резолв сайтов — также через веб-Google в пуле H).
 Используется когда в контексте разговора/памяти нет ответа на вопрос.
 """
 
 import inspect
 import ipaddress
+import json
 import re
 import socket
 import threading
+import time
 import logging
 from urllib.parse import urlparse
 
 import httpx
 
+from app.core.language import detect_language, user_language_line
 from app.core.local_router import get_local_router
 from app.core.router import internet_available
 from app.core.word_stem import WORD_ENDINGS as _WORD_ENDINGS
@@ -371,7 +374,9 @@ def _verify_translation(original: str, translated: str, router) -> bool:
         "(character names, game titles, unfamiliar words) with synonyms or a literal translation.\n"
         "Answer ONLY 'OK' if the translation is correct, or 'FAIL' if terms were substituted.\n\n"
         f"Original: {original}\n"
-        f"Translation: {translated}"
+        f"Translation: {translated}\n\n"
+        f"{user_language_line(detect_language(original))} "
+        "The verdict itself is always exactly OK or FAIL."
     )
     try:
         response = router.get_response(
@@ -390,7 +395,8 @@ def _verify_translation(original: str, translated: str, router) -> bool:
 
 
 def _enhance_query(query: str, history: list[dict] | None = None, persona_context: str | None = None,
-                   verify_translation: bool = False) -> tuple[str, str | None]:
+                   verify_translation: bool = False,
+                   local_router=None) -> tuple[str, str | None]:
     """
     Улучшает поисковый запрос через локальную LLM.
     Учитывает историю диалога и контекст персоны.
@@ -400,7 +406,7 @@ def _enhance_query(query: str, history: list[dict] | None = None, persona_contex
     """
     try:
         from app.core.query_enhancer import QueryEnhancer
-        enhancer = QueryEnhancer()
+        enhancer = QueryEnhancer(router=local_router)
         logger.info(f"[WEB_SEARCH] Улучшение запроса: '{query[:50]}' (history={len(history) if history else 0}, persona={'yes' if persona_context else 'no'})")
         enhanced = enhancer.enhance(query, history=history, persona_context=persona_context)
         logger.info(f"[WEB_SEARCH] Результат улучшения: '{query[:50]}' -> '{enhanced[:50]}'")
@@ -416,7 +422,7 @@ def _enhance_query(query: str, history: list[dict] | None = None, persona_contex
             if not verify_translation:
                 logger.info(f"[WEB_SEARCH] Перевод (Google): '{enhanced[:50]}' -> en='{en_translated[:50]}'")
                 return enhanced, en_translated
-            router = get_local_router()
+            router = local_router or get_local_router()
             if _verify_translation(enhanced, en_translated, router):
                 logger.info(f"[WEB_SEARCH] Перевод (Google+verify): '{enhanced[:50]}' -> en='{en_translated[:50]}'")
                 return enhanced, en_translated
@@ -439,6 +445,7 @@ def search_web(
     persona_context: str | None = None,
     verify_translation: bool = False,
     fetch_pages: bool = True,
+    local_router=None,
 ) -> list[dict]:
     """
     Ищет запрос в DuckDuckGo и возвращает список результатов.
@@ -447,6 +454,7 @@ def search_web(
     Если enhance=True — улучшает запрос через LLM и делает дополнительный поиск на английском.
     Если en_query_override задан — использует его вместо LLM-перевода (для rewriter'а).
     verify_translation=True — дополнительно проверяет Google-перевод локальной LLM.
+    local_router — локальный роутер персоны (движки её служебных задач).
     Для топ-результатов загружает полный текст страницы.
 
     Returns:
@@ -471,7 +479,7 @@ def search_web(
     elif enhance:
         ru_query, en_query = _enhance_query(
             query, history=history, persona_context=persona_context,
-            verify_translation=verify_translation)
+            verify_translation=verify_translation, local_router=local_router)
 
     def _run_search(q: str, limit: int) -> list[dict]:
         # Один поиск с фильтрацией по блэклисту.
@@ -578,7 +586,163 @@ def _match_word(qw: str, tw: str, text_slug: str) -> bool:
     return False
 
 
-def find_site_url(name: str, max_results: int = 10) -> str | None:
+# ── Выдача веб-Google (headless пул H) ──
+# Google точнее DDG на узких запросах («человек + организация»: страница
+# преподавателя на сайте вуза), но у него нет бесплатного API выдачи — читаем
+# страницу поиска во вкладке уже поднятого пула H (того же, где живёт AI Mode).
+# udm=14 — фильтр «Веб»: только обычные ссылки, без ИИ-обзора и каруселей;
+# селектор «#rso a:has(h3)» и без него отсекает рекламу (#tads) и ИИ-обзор
+# (над #rso). Капча не обходится: сайт уходит в карантин, резолв — в DDG.
+GOOGLE_SEARCH_URL = "https://www.google.com/search?udm=14&q="
+# Ключ карантина общий с веб-чатом AI Mode: тот же профиль и IP — капча
+# у одного означает капчу у другого
+GOOGLE_QUARANTINE_SITE = "google"
+GOOGLE_WAIT_SEC = 8.0      # потолок ожидания выдачи во вкладке
+
+# Ждёт выдачу (или страницу капчи) и отдаёт JSON: sorry — антибот-стена
+# Google (/sorry/, форма капчи), rso — контейнер органики есть (его пропажа
+# без капчи — смена разметки), links — [заголовок, href, сниппет] органических
+# ссылок (сниппета нет — пустая строка: его разметка меняется чаще ссылок)
+_GOOGLE_RESULTS_JS = (
+    "(async()=>{const t0=Date.now();"
+    "const sorry=()=>/^\\/sorry\\//.test(location.pathname)"
+    "||!!document.querySelector('#captcha-form,form[action*=\"/sorry/\"]');"
+    "while(Date.now()-t0<" + str(int(GOOGLE_WAIT_SEC * 1000)) + "){"
+    "if(document.querySelector('#rso')||sorry())break;"
+    "if(document.readyState==='complete'&&Date.now()-t0>2500)break;"
+    "await new Promise(r=>setTimeout(r,150));}"
+    "const links=[...document.querySelectorAll('#rso a:has(h3)')].map(a=>{"
+    "const box=a.closest('[data-hveid][data-ved],.MjjYud,.g');"
+    "const sn=box&&box.querySelector('[data-sncf],.VwiC3b,"
+    "[style*=\"-webkit-line-clamp\"]');"
+    "return [a.querySelector('h3').innerText.trim(),a.href,"
+    "sn?sn.innerText.trim():''];});"
+    "return JSON.stringify({sorry:sorry(),"
+    "rso:!!document.querySelector('#rso'),links});})()"
+)
+
+
+def _google_unwrap(href: str) -> str:
+    """Редирект-обёртка Google (/url?q=…) → целевой адрес; прочее как есть."""
+    from urllib.parse import parse_qs
+    p = urlparse(href)
+    if re.match(r"^(www\.)?google\.", p.hostname or "") and p.path == "/url":
+        qs = parse_qs(p.query)
+        return (qs.get("q") or qs.get("url") or [""])[0]
+    return href
+
+
+def google_web_links(query: str, max_results: int = 10) -> list[dict] | None:
+    """Органическая выдача веб-Google → [{"href", "title", "body"}] (формат
+    DDGS.text; body — сниппет, может быть пустым).
+
+    None — Google недоступен и вызывающему нужен другой поисковик: нет
+    интернета, пул H не поднят (ради одного поиска браузер не запускаем),
+    Google в карантине, капча (→ карантин), разметка не распознана
+    (warning в лог — иначе поломка выглядела бы как «ничего не нашлось»)."""
+    from urllib.parse import quote_plus
+    from app.features import browser_actions as ba
+    from app.features.web_llm import quarantine_site, site_quarantined
+    if not internet_available():
+        return None
+    if site_quarantined(GOOGLE_QUARANTINE_SITE):
+        logger.info("[WEB_SEARCH] Google в карантине — выдача не читается")
+        return None
+    try:
+        tab_id = ba.open_headless_tab(GOOGLE_SEARCH_URL + quote_plus(query))
+    except Exception as e:
+        logger.info(f"[WEB_SEARCH] Google: вкладка не открылась ({e})")
+        return None
+    try:
+        raw = ba.eval_js(None, tab_id, _GOOGLE_RESULTS_JS,
+                         timeout_sec=GOOGLE_WAIT_SEC + 4)
+        data = json.loads(raw or "{}")
+        if data.get("sorry") or ba.detect_antibot(None, tab_id):
+            quarantine_site(GOOGLE_QUARANTINE_SITE, "капча в поиске Google")
+            return None
+        if not data.get("rso"):
+            logger.warning(f"[WEB_SEARCH] Google: нет блока выдачи (#rso) по "
+                           f"'{query[:50]}' — разметка изменилась?")
+            return None
+    except Exception as e:
+        logger.info(f"[WEB_SEARCH] Google: выдача не прочитана ({e})")
+        return None
+    finally:
+        ba.close_background_tab(tab_id)
+    out, seen = [], set()
+    for title, href, *rest in data.get("links") or []:
+        url = _google_unwrap(str(href or ""))
+        p = urlparse(url)
+        if p.scheme not in ("http", "https") or re.match(
+                r"^(www\.)?google\.", p.hostname or ""):
+            continue  # служебные ссылки самого Google (картинки, «ещё»)
+        key = ((p.hostname or "").lower(), p.path.rstrip("/"), p.query)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"href": url, "title": str(title or ""),
+                    "body": str(rest[0] if rest else "")})
+        if len(out) >= max_results:
+            break
+    return out
+
+
+def _ddg_links(query: str, max_results: int) -> list[dict] | None:
+    """Выдача DDG → [{"href", "title", …}]; None — пакет/сеть недоступны."""
+    DDGS = _get_ddgs()
+    if DDGS is None:
+        logger.error("[WEB_SEARCH] Пакет ddgs не установлен")
+        return None
+    try:
+        return list(DDGS().text(query, max_results=max_results))
+    except Exception as e:
+        logger.error(f"[WEB_SEARCH] DDG по '{query[:50]}' не удался: {e}")
+        return None
+
+
+def search_links(query: str, max_results: int = 10,
+                 engine: str = "google") -> tuple[list[dict], str]:
+    """Ссылки выдачи → ([{"href", "title", "body"}], движок). engine="google" —
+    веб-Google, при его недоступности DDG (движок в ответе — фактический)."""
+    if engine == "google":
+        links = google_web_links(query, max_results)
+        if links is not None:
+            return links, "google"
+        logger.info(f"[WEB_SEARCH] Google недоступен — DDG для '{query[:50]}'")
+    return _ddg_links(query, max_results) or [], "ddg"
+
+
+# Выдача последних резолвов (после фильтра платформ) — варианты для списка
+# «какой сайт открыть?»: computer_control берёт их сразу после find_site_url,
+# второй запрос к поисковику не нужен
+SITE_CHOICES_TTL_SEC = 120.0
+_SITE_CHOICES_LOCK = threading.Lock()
+_SITE_CHOICES: dict[str, tuple[float, list]] = {}
+
+
+def _choices_key(name: str) -> str:
+    return " ".join(str(name or "").lower().split())
+
+
+def _remember_site_choices(name: str, candidates: list) -> None:
+    now = time.time()
+    with _SITE_CHOICES_LOCK:
+        for k in [k for k, (ts, _c) in _SITE_CHOICES.items()
+                  if now - ts > SITE_CHOICES_TTL_SEC]:
+            del _SITE_CHOICES[k]
+        _SITE_CHOICES[_choices_key(name)] = (now, list(candidates))
+
+
+def site_choices(name: str) -> list[tuple[str, str]]:
+    """Варианты (url, заголовок) из выдачи последнего find_site_url по этому
+    имени, в порядке выдачи; пусто — резолва не было или он устарел."""
+    with _SITE_CHOICES_LOCK:
+        ts, cands = _SITE_CHOICES.get(_choices_key(name), (0.0, []))
+    return list(cands) if time.time() - ts <= SITE_CHOICES_TTL_SEC else []
+
+
+def find_site_url(name: str, max_results: int = 10,
+                  engine: str = "google") -> str | None:
     """Лёгкий резолв «название сайта» → корневой URL сайта по выдаче поисковика.
 
     Для fast-path «открой X» (computer_control): один поисковый вызов,
@@ -601,21 +765,17 @@ def find_site_url(name: str, max_results: int = 10) -> str | None:
     приёмной кампании; корень сервиса, а не чужая страница на нём); мультисловный матч по
     заголовку — страница целиком (например, запрос «человек + организация»
     может резолвиться прямо на страницу этого человека).
-    Домены из _PLATFORM_DOMAINS пропускаем, если запрос их самих не называет."""
+    Домены из _PLATFORM_DOMAINS пропускаем, если запрос их самих не называет.
+    engine — поисковик выдачи: "google" (веб-Google в пуле H, при его
+    недоступности — DDG; см. search_links) или "ddg"."""
     from urllib.parse import urlparse
-    # Офлайн: резолв через DDG заведомо мёртв — сразу None (запрос уходит
-    # в LLM-путь, как при отсутствии результата)
+    # Офлайн: резолв через поисковик заведомо мёртв — сразу None (запрос
+    # уходит в LLM-путь, как при отсутствии результата)
     if not internet_available():
         logger.info(f"[WEB_SEARCH] Нет интернета — резолв сайта пропущен: '{name[:60]}'")
         return None
-    DDGS = _get_ddgs()
-    if DDGS is None:
-        logger.error("[WEB_SEARCH] Пакет ddgs не установлен")
-        return None
-    try:
-        raw = list(DDGS().text(name, max_results=max_results))
-    except Exception as e:
-        logger.error(f"[WEB_SEARCH] Резолв сайта '{name[:50]}' не удался: {e}")
+    raw, _engine = search_links(name, max_results, engine=engine)
+    if not raw:
         return None
 
     def _slug(s: str) -> str:
@@ -653,6 +813,7 @@ def find_site_url(name: str, max_results: int = 10) -> str | None:
         if platform and platform not in slugs:
             continue  # статья/группа О сайте, а не сам сайт
         candidates.append((url, r.get("title") or ""))
+    _remember_site_choices(name, candidates)
     if not candidates:
         logger.info(f"[WEB_SEARCH] Резолв '{name[:40]}': выдача пуста после фильтра — отказ")
         return None

@@ -114,13 +114,6 @@ export interface InitiativeState {
   initiativesToday: number;
 }
 
-// Пресеты архетипов для быстрого создания персоны (Home, модалка создания)
-export interface PersonaArchetype {
-  id: string;
-  name: string;
-  desc: string; // подставляется как черновик описания персоны
-}
-
 // Учебный курс «Научи меня» (learning_manager): бот регулярно присылает
 // уроки по теме, проводит тесты и ведёт словарь выученных слов
 export interface LearningSession {
@@ -157,6 +150,11 @@ export interface InventoryItem {
   marker?: { x: number; y: number }; // метка на фоне комнаты, доли кадра (0..1)
   size?: number; // ширина предмета на сцене, % ширины сцены (по умолчанию 6)
   spot?: boolean; // предмет — место в комнате: персона подходит к нему (нужна метка)
+  // Онлайн-комната (GET /room + layout): место вокруг предмета, зона авто-метки
+  // от LLM (без пользовательской метки) и дата получения
+  spotInfo?: { label: string; place: string; pose: string } | null;
+  zone?: string | null;
+  acquired?: string;
 }
 
 // Лента «пока тебя не было»: чем занималась каждая персона без оператора.
@@ -218,7 +216,6 @@ export interface MockData {
   initiativeStateByPersona: Record<string, InitiativeState>;
   llmProviders: LlmProvider[];
   providerModels: Record<string, string[]>;
-  personaArchetypes: PersonaArchetype[];
   generationDefaults: { temperature: number; maxTokens: number; topP: number; stmSize: number };
   featureFlags: { id: string; label: string; enabled: boolean }[];
   learningByPersona: Record<string, LearningSession[]>;
@@ -646,29 +643,6 @@ const providerModelsData: Record<string, string[]> = {
   local: ['gemma3:4b', 'gemma3:1b', 'gemma3:12b', 'qwen2.5:7b'],
 };
 
-const personaArchetypesRu: PersonaArchetype[] = [
-  {
-    id: 'analyst',
-    name: 'Аналитик',
-    desc: 'Холодная логика и структура. Разбирает проблемы на части и находит закономерности.',
-  },
-  {
-    id: 'companion',
-    name: 'Компаньон',
-    desc: 'Тёплый собеседник на каждый день. Помнит детали и первым пишет, когда ты пропадаешь.',
-  },
-  {
-    id: 'keeper',
-    name: 'Хранитель знаний',
-    desc: 'Архивариус с долгой памятью. Отвечает по документам и никогда ничего не забывает.',
-  },
-  {
-    id: 'assistant',
-    name: 'Ассистент',
-    desc: 'Нейтральный исполнитель. Короткие точные ответы, задачи и напоминания без лишних слов.',
-  },
-];
-
 const generationDefaultsData = {
   temperature: 0.8,
   maxTokens: 800,
@@ -680,15 +654,14 @@ const generationDefaultsData = {
 // Показываем все у каждой персоны; включённые/выключенные — из конфига.
 const featureFlagsRu = [
   { id: 'web_search', label: 'Веб-поиск', enabled: true },
-  { id: 'book_search', label: 'Поиск по книге (RAG)', enabled: true },
   { id: 'todo', label: 'Список дел', enabled: true },
   { id: 'reminder', label: 'Напоминания', enabled: true },
-  { id: 'inventory', label: 'Инвентарь предметов', enabled: false },
-  { id: 'learning', label: 'Режим обучения (курсы)', enabled: false },
+  { id: 'inventory', label: 'Инвентарь', enabled: false },
+  { id: 'learning', label: 'Курсы обучения', enabled: false },
   { id: 'proactive', label: 'Самоинициатива', enabled: true },
-  { id: 'rhythm', label: 'Суточный ритм (утро/ночь/погода)', enabled: false },
-  { id: 'life', label: 'Жизнь персоны (между разговорами)', enabled: false },
-  { id: 'self_memory', label: 'Дневник бота (self_memory)', enabled: true },
+  { id: 'rhythm', label: 'Суточный ритм', enabled: false },
+  { id: 'life', label: 'Жизнь между разговорами', enabled: false },
+  { id: 'self_memory', label: 'Дневник персоны', enabled: true },
   { id: 'rate_limit', label: 'Лимит частоты сообщений', enabled: false },
   { id: 'moderation', label: 'Модерация сообщений', enabled: false },
   { id: 'punish_block', label: 'Блокировка при нарушениях', enabled: false },
@@ -697,9 +670,11 @@ const featureFlagsRu = [
   { id: 'computer_control', label: 'Управление компьютером', enabled: false },
 ];
 
-// Фичи Telegram-режима (читаются только в app/main.py при старте TG-бота):
-// в веб/API-режиме они инертны, поэтому из веб-UI их скрываем. В YAML остаются.
-export const WEB_HIDDEN_FEATURES = new Set(['export_server', 'restore_memory']);
+// Флаги, которые веб-UI не показывает среди умений (в YAML остаются):
+// export_server/restore_memory — фичи Telegram-режима (читаются только в
+// app/main.py при старте TG-бота), в веб/API-режиме инертны; book_search —
+// старое имя аддона arrodes_book (книжный RAG), нужен только Арродесу
+export const WEB_HIDDEN_FEATURES = new Set(['export_server', 'restore_memory', 'book_search']);
 
 // Курсы обучения по персонам (learning.json)
 const learningByPersonaRu: Record<string, LearningSession[]> = {
@@ -1072,7 +1047,6 @@ export const mockRu: MockData = {
   initiativeStateByPersona: initiativeStateByPersonaRu,
   llmProviders: llmProvidersRu,
   providerModels: providerModelsData,
-  personaArchetypes: personaArchetypesRu,
   generationDefaults: generationDefaultsData,
   featureFlags: featureFlagsRu,
   learningByPersona: learningByPersonaRu,
@@ -1476,42 +1450,18 @@ const llmProvidersEn: LlmProvider[] = [
   { id: 'local', name: 'Local models (Ollama)', keySet: true, keysCount: 1, active: false, backup: true, local: true, model: 'gemma3:4b' },
 ];
 
-const personaArchetypesEn: PersonaArchetype[] = [
-  {
-    id: 'analyst',
-    name: 'Analyst',
-    desc: 'Cold logic and structure. Breaks problems into parts and finds patterns.',
-  },
-  {
-    id: 'companion',
-    name: 'Companion',
-    desc: 'A warm everyday conversationalist. Remembers details and writes first when you disappear.',
-  },
-  {
-    id: 'keeper',
-    name: 'Knowledge Keeper',
-    desc: 'An archivist with a long memory. Answers from documents and never forgets anything.',
-  },
-  {
-    id: 'assistant',
-    name: 'Assistant',
-    desc: 'A neutral executor. Short, precise answers, tasks and reminders without extra words.',
-  },
-];
-
 // Full set of core features: id = key in the persona YAML features section.
 // Shown for every persona; on/off comes from the config.
 const featureFlagsEn = [
   { id: 'web_search', label: 'Web search', enabled: true },
-  { id: 'book_search', label: 'Book search (RAG)', enabled: true },
   { id: 'todo', label: 'To-do list', enabled: true },
   { id: 'reminder', label: 'Reminders', enabled: true },
-  { id: 'inventory', label: 'Item inventory', enabled: false },
-  { id: 'learning', label: 'Learning mode (courses)', enabled: false },
+  { id: 'inventory', label: 'Inventory', enabled: false },
+  { id: 'learning', label: 'Learning courses', enabled: false },
   { id: 'proactive', label: 'Proactivity', enabled: true },
-  { id: 'rhythm', label: 'Daily rhythm (morning/night/weather)', enabled: false },
-  { id: 'life', label: 'Persona life (between conversations)', enabled: false },
-  { id: 'self_memory', label: 'Bot diary (self_memory)', enabled: true },
+  { id: 'rhythm', label: 'Daily rhythm', enabled: false },
+  { id: 'life', label: 'Life between chats', enabled: false },
+  { id: 'self_memory', label: 'Persona diary', enabled: true },
   { id: 'rate_limit', label: 'Message rate limit', enabled: false },
   { id: 'moderation', label: 'Message moderation', enabled: false },
   { id: 'punish_block', label: 'Block on violations', enabled: false },
@@ -1885,7 +1835,6 @@ export const mockEn: MockData = {
   initiativeStateByPersona: initiativeStateByPersonaEn,
   llmProviders: llmProvidersEn,
   providerModels: providerModelsData,
-  personaArchetypes: personaArchetypesEn,
   generationDefaults: generationDefaultsData,
   featureFlags: featureFlagsEn,
   learningByPersona: learningByPersonaEn,

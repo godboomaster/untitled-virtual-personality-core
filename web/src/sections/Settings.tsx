@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import Collapsible from '../components/Collapsible';
 import InfoButton from '../components/InfoButton';
-import { useI18n, useMockData } from '../i18n';
+import Select from '../components/Select';
+import { useHelpTexts, useI18n, useMockData } from '../i18n';
 import type { HelpKey } from '../helpTexts';
 import { api } from '../api';
-import type { ProviderInfo } from '../api';
-import { refetchProviders, useApiOnline, useApiProviders, refetchPersonaLlm, useApiWebchat, useApiLocalTasks } from '../apiData';
+import type { PersonaLocalTasks, ProviderInfo } from '../api';
+import { refetchProviders, useApiOnline, useApiProviders, refetchPersonaLlm, useApiWebchat } from '../apiData';
 import { WEB_HIDDEN_FEATURES } from '../mockData';
 
 /* Настройки персоны (вкладка в досье): провайдеры, параметры генерации,
@@ -14,15 +16,36 @@ import { WEB_HIDDEN_FEATURES } from '../mockData';
 
 const featureHelpKeys: Record<string, HelpKey> = {
   web_search: 'settings.feature.web_search',
-  moderation: 'settings.feature.moderation',
-  book_search: 'settings.feature.rag',
-  self_memory: 'settings.feature.self_memory',
+  file_upload: 'settings.feature.file_upload',
+  todo: 'settings.feature.todo',
+  reminder: 'settings.feature.reminder',
+  learning: 'settings.feature.learning',
+  computer_control: 'settings.feature.computer_control',
   proactive: 'settings.feature.proactive',
   rhythm: 'settings.feature.rhythm',
   life: 'settings.feature.life',
+  self_memory: 'settings.feature.self_memory',
+  inventory: 'settings.feature.inventory',
+  ui_room_mood_sync: 'settings.feature.ui_room_mood_sync',
+  room_llm_placement: 'settings.feature.room_llm_placement',
+  room_pokes_to_llm: 'settings.feature.room_pokes_to_llm',
+  moderation: 'settings.feature.moderation',
+  rate_limit: 'settings.feature.rate_limit',
+  punish_block: 'settings.feature.punish_block',
   light_context: 'settings.feature.light_context',
-  computer_control: 'settings.feature.computer_control',
 };
+
+// Группы фич в карточке «Фичи». Флаги из YAML, которых нет в группах
+// (незнакомые UI), попадают в «Прочее» под своим ключом
+const featureGroups: { title: string; ids: string[] }[] = [
+  { title: 'settings.featGroup.assistant', ids: ['web_search', 'file_upload', 'todo', 'reminder', 'learning', 'computer_control'] },
+  {
+    title: 'settings.featGroup.life',
+    ids: ['proactive', 'rhythm', 'life', 'self_memory', 'inventory', 'ui_room_mood_sync', 'room_llm_placement', 'room_pokes_to_llm'],
+  },
+  { title: 'settings.featGroup.safety', ids: ['moderation', 'rate_limit', 'punish_block'] },
+  { title: 'settings.featGroup.other', ids: ['light_context'] },
+];
 
 // Фичи, которые в YAML хранятся dict'ом с параметрами (enabled + интервалы и т.п.)
 const DICT_FEATURES = new Set(['proactive', 'learning', 'rhythm', 'life']);
@@ -35,17 +58,25 @@ interface SettingsProps {
 export default function Settings({ embedded, personaId }: SettingsProps) {
   const { t } = useI18n();
   const { llmProviders, generationDefaults, featureFlags, providerModels } = useMockData();
+  const helpTexts = useHelpTexts();
   const apiOnline = useApiOnline();
 
   // Провайдеры с бэкенда (общий кеш)
   const providers = useApiProviders();
   // Веб-чаты с бэкенда: включённые сайты (для строк персональной цепочки)
   const webchat = useApiWebchat();
-  // Задачи локального движка: у каждой свой движок — Ollama или веб-чат
-  // (веб-чат — с выбором конкретного сайта)
-  const localTasks = useApiLocalTasks();
-  const pickTaskBackend = (taskId: string, backend: 'ollama' | 'webchat', site?: string | null) => {
-    api.setLocalTask(taskId, backend, site).then(refetchProviders).catch(() => {});
+  // Служебные задачи персоны: у каждой свой движок — Ollama или веб-чат
+  // (веб-чат — с выбором конкретного сайта); без выбора — дефолт по роду
+  // задачи. Сайты фоновых задач зависят от цепочки провайдеров персоны —
+  // перечитываем снимок и после сохранения цепочки
+  const [localTasks, setLocalTasks] = useState<PersonaLocalTasks | null>(null);
+  const refetchLocalTasks = () => {
+    if (!personaId) return;
+    api.getPersonaLocalTasks(personaId).then(setLocalTasks).catch(() => setLocalTasks(null));
+  };
+  const patchLocalTasks = (patch: Parameters<typeof api.updatePersonaLocalTasks>[1]) => {
+    if (!personaId) return;
+    api.updatePersonaLocalTasks(personaId, patch).then(setLocalTasks).catch(() => {});
   };
 
   // Конфиг персоны с бэкенда → черновики форм
@@ -57,13 +88,15 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
   // Персональные провайдеры: основной (null = глобальный) и приоритет fallback
   const [llmPrimary, setLlmPrimary] = useState<string | null>(null);
   const [llmFallback, setLlmFallback] = useState<string[]>([]);
+  // Убранные из цепочки ЭТОЙ персоны (llm.exclude); другие персоны не затрагиваются
+  const [llmExclude, setLlmExclude] = useState<string[]>([]);
   const [restartNote, setRestartNote] = useState(false);
   // Какая карточка только что сохранилась (✓ только на её кнопке)
   const [savedCard, setSavedCard] = useState<'llm' | 'gen' | 'features' | null>(null);
   // Снимки загруженного конфига — чтобы слать только изменённые поля карточки
   const [genInit, setGenInit] = useState<{ temperature: number; maxTokens: number; topP: number; stmSize: number; splitMessages: boolean } | null>(null);
   const [featureInit, setFeatureInit] = useState<Record<string, boolean> | null>(null);
-  const [llmInit, setLlmInit] = useState<{ primary: string | null; fallback: string[] } | null>(null);
+  const [llmInit, setLlmInit] = useState<{ primary: string | null; fallback: string[]; exclude: string[] } | null>(null);
   // Провайдеры по назначению (llm.answer/cc/vision_provider): '' — обычная цепочка
   const [purposeProvs, setPurposeProvs] = useState({ answer: '', cc: '', vision: '' });
   const [purposeInit, setPurposeInit] = useState<{ answer: string; cc: string; vision: string } | null>(null);
@@ -74,6 +107,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
   useEffect(() => {
     if (!apiOnline || !personaId) return;
     setRestartNote(false);
+    api.getPersonaLocalTasks(personaId).then(setLocalTasks).catch(() => setLocalTasks(null));
     api
       .getPersonaConfig(personaId)
       .then((c) => {
@@ -112,9 +146,11 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
         setFeatureRaw(c.features);
         const loadedPrimary = c.llm?.primary ?? null;
         const loadedFallback = c.llm?.fallback ?? [];
+        const loadedExclude = c.llm?.exclude ?? [];
         setLlmPrimary(loadedPrimary);
         setLlmFallback(loadedFallback);
-        setLlmInit({ primary: loadedPrimary, fallback: loadedFallback });
+        setLlmExclude(loadedExclude);
+        setLlmInit({ primary: loadedPrimary, fallback: loadedFallback, exclude: loadedExclude });
         const loadedPurpose = {
           answer: c.llm?.answer_provider ?? '',
           cc: c.llm?.cc_provider ?? '',
@@ -198,7 +234,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
   // (персона может держать сайт, выключенный глобально)
   const webchatSites = (() => {
     const out = [...(webchat?.sites ?? [])];
-    [llmPrimary, ...llmFallback].forEach((x) => {
+    [llmPrimary, ...llmFallback, ...llmExclude].forEach((x) => {
       if (x && x.startsWith('webchat:')) {
         const s = x.split(':', 2)[1];
         if (s && !out.includes(s)) out.push(s);
@@ -233,7 +269,9 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
     if (!personaMode) return providers ?? [];
     // В досье персоны — только провайдеры с заданным ключом (или локальные):
     // бесключевые всё равно не смогут ответить, они настраиваются в общих настройках
-    const usable = allProviders.filter((p) => p.key_set || p.local);
+    const usable = allProviders.filter(
+      (p) => (p.key_set || p.local) && (p.id === effPrimary || !llmExclude.includes(p.id)),
+    );
     const byId = new Map(usable.map((p) => [p.id, p]));
     const out: typeof usable = [];
     const push = (id: string) => {
@@ -246,7 +284,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
     return out;
   };
   // Видимый fallback-порядок для произвольной пары (основной, fallback-черновик)
-  const computeVisibleFallback = (primaryId: string | null, fb: string[]): string[] => {
+  const computeVisibleFallback = (primaryId: string | null, fb: string[], exclude: string[] = llmExclude): string[] => {
     if (!allProviders) return [];
     const eff = primaryId ?? globalActiveId;
     const order: string[] = [];
@@ -256,7 +294,20 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
     push(eff);
     fb.forEach(push);
     allProviders.forEach((p) => push(p.id));
-    return order.filter((id) => id !== eff);
+    return order.filter((id) => id !== eff && !exclude.includes(id));
+  };
+  // Убранные провайдеры, которых можно вернуть (основной не убирается)
+  const excludedProviders = (allProviders ?? []).filter(
+    (p) => llmExclude.includes(p.id) && p.id !== effPrimary && (p.key_set || p.local),
+  );
+  const excludeProvider = (id: string) => {
+    setLlmExclude((cur) => (cur.includes(id) ? cur : [...cur, id]));
+    setLlmFallback((cur) => cur.filter((x) => x !== id));
+  };
+  // Возвращённый встаёт в конец цепочки
+  const restoreProvider = (id: string) => {
+    setLlmFallback(() => [...visibleFallback(), id]);
+    setLlmExclude((cur) => cur.filter((x) => x !== id));
   };
   // Видимый fallback-порядок (все строки после основного)
   const visibleFallback = () => computeVisibleFallback(llmPrimary, llmFallback);
@@ -279,6 +330,65 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
     setLlmFallback(order);
   };
 
+  // Перетаскивание строки fallback-цепочки (стрелки ↑↓ остаются). Мышь —
+  // за любую часть строки, кроме кнопок/полей; палец — только за ручку ⋮⋮
+  // (у неё touch-action: none, остальная строка прокручивает страницу).
+  // Место вставки — по серединам остальных строк относительно указателя:
+  // вычисление идемпотентно, строка не «дребезжит» между соседями.
+  const [fbDrag, setFbDrag] = useState<{ id: string; dy: number } | null>(null);
+  const providerListRef = useRef<HTMLUListElement>(null);
+  const startFallbackDrag = (e: ReactPointerEvent<HTMLLIElement>, id: string) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('button, input, select, textarea, a, label, [role="combobox"]')) return;
+    if (e.pointerType === 'touch' && !target.closest('.provider-grip')) return;
+    // Мышь: без выделения текста на время протаскивания
+    if (e.pointerType === 'mouse') e.preventDefault();
+    const li = e.currentTarget;
+    const startY = e.clientY;
+    const grab = e.clientY - li.getBoundingClientRect().top;
+    let started = false;
+    const onMove = (ev: PointerEvent) => {
+      if (!started) {
+        if (Math.abs(ev.clientY - startY) < 5) return;
+        started = true;
+        document.body.classList.add('is-row-dragging');
+      }
+      const others = Array.from(
+        providerListRef.current?.querySelectorAll<HTMLElement>('[data-fb-id]') ?? [],
+      ).filter((el) => el !== li);
+      const idx = others.filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.top + r.height / 2 < ev.clientY;
+      }).length;
+      const beforeId = others[idx]?.dataset.fbId;
+      const afterId = idx > 0 ? others[idx - 1].dataset.fbId : undefined;
+      setLlmFallback((prev) => {
+        const cur = computeVisibleFallback(llmPrimary, prev);
+        const order = cur.filter((x) => x !== id);
+        let at = beforeId ? order.indexOf(beforeId) : afterId ? order.indexOf(afterId) + 1 : order.length;
+        if (at < 0) at = order.length;
+        order.splice(at, 0, id);
+        return order.join('\n') === cur.join('\n') ? prev : order;
+      });
+      // Строка идёт за указателем: смещение от её естественного места
+      // (отрисованное смещение — из style: рендер может отставать от событий)
+      const applied = parseFloat(li.style.translate.split(' ')[1] ?? '') || 0;
+      const naturalTop = li.getBoundingClientRect().top - applied;
+      setFbDrag({ id, dy: ev.clientY - grab - naturalTop });
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      document.body.classList.remove('is-row-dragging');
+      setFbDrag(null);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
+
   const saveLlm = () => {
     if (!personaId) return;
     // Лимиты шлём полной картой по всем показанным сайтам (включая дефолтные
@@ -288,10 +398,13 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
       const l = wcLimitOf(s);
       limitsPayload[s] = l.enabled ? { enabled: true, per_hour: l.per_hour } : { enabled: false };
     });
+    // Основной не может быть убран — такую запись не сохраняем
+    const savedExclude = llmExclude.filter((x) => x !== effPrimary);
     api
       .updatePersonaConfig(personaId, {
         llm: {
           primary: llmPrimary, fallback: visibleFallback(), webchat_limits: limitsPayload,
+          exclude: savedExclude,
           // провайдеры по назначению: пустая строка → null → сервер снимает ключ
           answer_provider: purposeProvs.answer || null,
           cc_provider: purposeProvs.cc || null,
@@ -300,10 +413,12 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
       })
       .then(() => {
         flashSaved('llm');
-        setLlmInit({ primary: llmPrimary, fallback: llmFallback });
+        setLlmExclude(savedExclude);
+        setLlmInit({ primary: llmPrimary, fallback: llmFallback, exclude: savedExclude });
         setWcLimitsInit({ ...wcLimits });
         setPurposeInit({ ...purposeProvs });
         refetchPersonaLlm(personaId); // шапка чата покажет нового основного сразу
+        refetchLocalTasks(); // сайты фоновых задач — из новой цепочки
       })
       .catch(() => {});
   };
@@ -319,7 +434,8 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
     (!!purposeInit && (purposeProvs.answer !== purposeInit.answer
       || purposeProvs.cc !== purposeInit.cc || purposeProvs.vision !== purposeInit.vision)) ||
     llmPrimary !== llmInit.primary ||
-    visibleFallback().join(',') !== computeVisibleFallback(llmInit.primary, llmInit.fallback).join(',') ||
+    visibleFallback().join(',') !== computeVisibleFallback(llmInit.primary, llmInit.fallback, llmInit.exclude).join(',') ||
+    [...llmExclude].sort().join(',') !== [...llmInit.exclude].sort().join(',') ||
     webchatSites.some((s) => {
       const a = wcLimitOf(s);
       const b = wcLimitsInit[s] ?? { enabled: true, per_hour: 40 };
@@ -336,6 +452,12 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
   };
 
   const apiMode = apiOnline && providers !== null;
+  // Сводка свёрнутого списка: первые звенья цепочки и их число
+  const providersSummary = (() => {
+    const names = apiMode ? orderedProviders().map((p) => p.name) : [main.name];
+    const head = names.slice(0, 3).join(' → ');
+    return names.length > 3 ? `${head} … (${names.length})` : head;
+  })();
 
   return (
     <div className={embedded ? undefined : 'section'}>
@@ -355,236 +477,460 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
           <InfoButton helpKey="settings.activeProvider" />
         </h2>
 
-        <ul className="memory-list">
-          {apiMode
-            ? orderedProviders().map((p, i) => {
-                const isMain = personaMode ? p.id === effPrimary : p.active;
-                const canUse = p.key_set || p.local;
-                const wcSite = p.id.startsWith('webchat:') ? p.id.split(':')[1] : null;
-                return (
-                  <li
-                    key={p.id}
-                    className={`provider-item stagger-item ${isMain ? 'prov-main' : ''}`}
-                    style={{ animationDelay: `${i * 40}ms` }}
-                  >
-                    <div className="provider-main">
-                      <span className="provider-name">{p.name}</span>
-                      {personaMode ? (
-                        // В досье модели персоны редактируются в карточке «Модели провайдеров»
-                        p.model && <span className="provider-model">{p.model}</span>
-                      ) : (
-                        // Общие настройки: глобальная модель провайдера (blur/Enter — сохранить)
-                        <>
-                          <input
-                            key={`${p.id}:${p.model}`}
-                            className="input pmodel-input"
-                            list={`settings-models-${p.id}`}
-                            defaultValue={p.model}
-                            placeholder={t('dossier.modelPh')}
-                            spellCheck={false}
-                            onBlur={(e) => {
-                              const v = e.target.value.trim();
-                              if (v && v !== p.model) {
-                                api.setProviderModel(p.id, v).then(refetchProviders).catch(() => {});
-                              } else {
-                                e.target.value = p.model;
-                              }
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                            }}
-                          />
-                          <datalist id={`settings-models-${p.id}`}>
-                            {(providerModels[p.id] ?? []).map((m) => (
-                              <option key={m} value={m} />
-                            ))}
-                          </datalist>
-                        </>
-                      )}
-                      {p.local && <span className="badge">{t('settings.localBadge')}</span>}
-                      {isMain && (
-                        <span className="badge badge--active">
-                          {personaMode && !llmPrimary ? t('settings.mainGlobalBadge') : t('settings.mainBadge')}
-                        </span>
-                      )}
-                    </div>
-                    <div className="provider-side">
-                      {p.id.startsWith('webchat:') ? (
-                        // Веб-чат: без ключа — доступность от логина в браузере бота.
-                        // В досье — свой лимит: tick снимает его, число — сообщений в час
-                        <>
-                          <span className="badge">{t('settings.webchatBadge')}</span>
-                          {personaMode && wcSite && (
-                            <>
-                              <label className="switch" title={t('settings.webchatLimit')}>
-                                <input
-                                  type="checkbox"
-                                  checked={wcLimitOf(wcSite).enabled}
-                                  onChange={(e) => setWcLimit(wcSite, { enabled: e.target.checked })}
-                                />
-                                <span className="switch-slider" />
-                              </label>
-                              <input
-                                className="input"
-                                style={{ width: 64 }}
-                                type="number"
-                                min={1}
-                                max={500}
-                                disabled={!wcLimitOf(wcSite).enabled}
-                                value={wcLimitOf(wcSite).per_hour}
-                                title={t('settings.webchatPerHour')}
-                                onChange={(e) => {
-                                  const v = Math.max(1, Math.min(500, Number(e.target.value) || 1));
-                                  setWcLimit(wcSite, { per_hour: v });
-                                }}
-                              />
-                            </>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          {!p.local &&
-                            (p.key_set ? (
-                              <span className="badge badge--success">
-                                {t('apikeys.keySet')}{p.keys_count > 1 ? ` · ${t('settings.keyRotation', { n: p.keys_count })}` : ''}
-                              </span>
-                            ) : (
-                              <span className="badge badge--muted">{t('apikeys.keyNotSet')}</span>
-                            ))}
-                          <InfoButton helpKey="settings.keyStatus" />
-                        </>
-                      )}
-                      {personaMode ? (
-                        !isMain && canUse && (
+        {/* Цепочка провайдеров — разворачивающийся список; в свёрнутом
+            заголовке — первые звенья цепочки */}
+        <Collapsible
+          title={t('settings.providerChain')}
+          summary={providersSummary}
+          storageKey="vpc-settings-open-providers"
+        >
+          <ul className="memory-list" ref={providerListRef}>
+            {apiMode
+              ? orderedProviders().map((p, i) => {
+                  const isMain = personaMode ? p.id === effPrimary : p.active;
+                  const canUse = p.key_set || p.local;
+                  const wcSite = p.id.startsWith('webchat:') ? p.id.split(':')[1] : null;
+                  const draggable = personaMode && !isMain && canUse;
+                  const dragging = fbDrag?.id === p.id;
+                  return (
+                    <li
+                      key={p.id}
+                      data-fb-id={draggable ? p.id : undefined}
+                      className={`provider-item stagger-item ${isMain ? 'prov-main' : ''} ${draggable ? 'is-draggable' : ''} ${dragging ? 'is-dragging' : ''}`}
+                      // translate, а не transform: transform держит анимация появления (fill both)
+                      style={{ animationDelay: `${i * 40}ms`, translate: dragging ? `0 ${fbDrag.dy}px` : undefined }}
+                      onPointerDown={draggable ? (e) => startFallbackDrag(e, p.id) : undefined}
+                    >
+                      <div className="provider-main">
+                        {personaMode && (
+                          <span
+                            className="provider-grip"
+                            aria-hidden="true"
+                            title={draggable ? t('settings.dragHint') : undefined}
+                            style={{ visibility: draggable ? 'visible' : 'hidden' }}
+                          >
+                            ⋮⋮
+                          </span>
+                        )}
+                        <span className="provider-name">{p.name}</span>
+                        {personaMode ? (
+                          // В досье модели персоны редактируются в карточке «Модели провайдеров»
+                          p.model && <span className="provider-model">{p.model}</span>
+                        ) : (
+                          // Общие настройки: глобальная модель провайдера (blur/Enter — сохранить)
                           <>
-                            <button
-                              className="btn btn--ghost"
-                              title={t('settings.moveUp')}
-                              aria-label={t('settings.moveUp')}
-                              onClick={() => moveFallback(p.id, -1)}
-                            >
-                              ↑
-                            </button>
-                            <button
-                              className="btn btn--ghost"
-                              title={t('settings.moveDown')}
-                              aria-label={t('settings.moveDown')}
-                              onClick={() => moveFallback(p.id, 1)}
-                            >
-                              ↓
-                            </button>
-                            <button className="btn btn--ghost" onClick={() => makePersonaMain(p.id)}>
+                            <input
+                              key={`${p.id}:${p.model}`}
+                              className="input pmodel-input"
+                              list={`settings-models-${p.id}`}
+                              defaultValue={p.model}
+                              placeholder={t('dossier.modelPh')}
+                              spellCheck={false}
+                              onBlur={(e) => {
+                                const v = e.target.value.trim();
+                                if (v && v !== p.model) {
+                                  api.setProviderModel(p.id, v).then(refetchProviders).catch(() => {});
+                                } else {
+                                  e.target.value = p.model;
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                              }}
+                            />
+                            <datalist id={`settings-models-${p.id}`}>
+                              {(providerModels[p.id] ?? []).map((m) => (
+                                <option key={m} value={m} />
+                              ))}
+                            </datalist>
+                          </>
+                        )}
+                        {p.local && <span className="badge">{t('settings.localBadge')}</span>}
+                        {isMain && (
+                          <span className="badge badge--active">
+                            {personaMode && !llmPrimary ? t('settings.mainGlobalBadge') : t('settings.mainBadge')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="provider-side">
+                        {p.id.startsWith('webchat:') ? (
+                          // Веб-чат: без ключа — доступность от логина в браузере бота.
+                          // В досье — свой лимит: tick снимает его, число — сообщений в час
+                          <>
+                            <span className="badge">{t('settings.webchatBadge')}</span>
+                            {personaMode && wcSite && (
+                              <>
+                                <label className="switch" title={t('settings.webchatLimit')}>
+                                  <input
+                                    type="checkbox"
+                                    checked={wcLimitOf(wcSite).enabled}
+                                    onChange={(e) => setWcLimit(wcSite, { enabled: e.target.checked })}
+                                  />
+                                  <span className="switch-slider" />
+                                </label>
+                                <input
+                                  className="input"
+                                  style={{ width: 64 }}
+                                  type="number"
+                                  min={1}
+                                  max={500}
+                                  disabled={!wcLimitOf(wcSite).enabled}
+                                  value={wcLimitOf(wcSite).per_hour}
+                                  title={t('settings.webchatPerHour')}
+                                  onChange={(e) => {
+                                    const v = Math.max(1, Math.min(500, Number(e.target.value) || 1));
+                                    setWcLimit(wcSite, { per_hour: v });
+                                  }}
+                                />
+                              </>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            {!p.local &&
+                              (p.key_set ? (
+                                <span className="badge badge--success">
+                                  {t('apikeys.keySet')}{p.keys_count > 1 ? ` · ${t('settings.keyRotation', { n: p.keys_count })}` : ''}
+                                </span>
+                              ) : (
+                                <span className="badge badge--muted">{t('apikeys.keyNotSet')}</span>
+                              ))}
+                            <InfoButton helpKey="settings.keyStatus" />
+                          </>
+                        )}
+                        {personaMode ? (
+                          !isMain && canUse && (
+                            <>
+                              <button
+                                className="btn btn--ghost"
+                                title={t('settings.moveUp')}
+                                aria-label={t('settings.moveUp')}
+                                onClick={() => moveFallback(p.id, -1)}
+                              >
+                                ↑
+                              </button>
+                              <button
+                                className="btn btn--ghost"
+                                title={t('settings.moveDown')}
+                                aria-label={t('settings.moveDown')}
+                                onClick={() => moveFallback(p.id, 1)}
+                              >
+                                ↓
+                              </button>
+                              <button className="btn btn--ghost" onClick={() => makePersonaMain(p.id)}>
+                                {t('settings.makeMain')}
+                              </button>
+                              <button
+                                className="btn btn--ghost"
+                                title={t('settings.excludeHint')}
+                                aria-label={t('settings.excludeHint')}
+                                onClick={() => excludeProvider(p.id)}
+                              >
+                                ✕
+                              </button>
+                            </>
+                          )
+                        ) : (
+                          !p.active && canUse && (
+                            <button className="btn btn--ghost" onClick={() => makeMain(p.id)}>
                               {t('settings.makeMain')}
                             </button>
-                          </>
-                        )
-                      ) : (
-                        !p.active && canUse && (
-                          <button className="btn btn--ghost" onClick={() => makeMain(p.id)}>
+                          )
+                        )}
+                      </div>
+                    </li>
+                  );
+                })
+              : llmProviders.map((p, i) => {
+                  const isMain = p.id === main.id;
+                  return (
+                    <li
+                      key={p.id}
+                      className={`provider-item stagger-item ${isMain ? 'prov-main' : ''}`}
+                      style={{ animationDelay: `${i * 40}ms` }}
+                    >
+                      <div className="provider-main">
+                        <label className="switch" title={t('settings.onBackup')}>
+                          <input
+                            type="checkbox"
+                            disabled={isMain}
+                            checked={isMain || backupIds.includes(p.id)}
+                            onChange={() => toggleBackup(p.id)}
+                          />
+                          <span className="switch-slider" />
+                        </label>
+                        <span className="provider-name">{p.name}</span>
+                        {p.model && <span className="provider-model">{p.model}</span>}
+                        {p.local && <span className="badge">{t('settings.localBadge')}</span>}
+                        {isMain && <span className="badge badge--active">{t('settings.mainBadge')}</span>}
+                      </div>
+                      <div className="provider-side">
+                        {!p.local &&
+                          (p.keySet ? (
+                            <span className="badge badge--success">
+                              {t('apikeys.keySet')}{p.keysCount > 1 ? ` · ${t('settings.keyRotation', { n: p.keysCount })}` : ''}
+                            </span>
+                          ) : (
+                            <span className="badge badge--muted">{t('apikeys.keyNotSet')}</span>
+                          ))}
+                        <InfoButton helpKey="settings.keyStatus" />
+                        {p.local && <button className="btn btn--ghost">{t('settings.checkAvailability')}</button>}
+                        {!isMain && (
+                          <button className="btn btn--ghost" onClick={() => setMainId(p.id)}>
                             {t('settings.makeMain')}
                           </button>
-                        )
-                      )}
-                    </div>
-                  </li>
-                );
-              })
-            : llmProviders.map((p, i) => {
-                const isMain = p.id === main.id;
-                return (
-                  <li
-                    key={p.id}
-                    className={`provider-item stagger-item ${isMain ? 'prov-main' : ''}`}
-                    style={{ animationDelay: `${i * 40}ms` }}
-                  >
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+          </ul>
+          {/* Убранные из цепочки этой персоны — можно вернуть (встают в конец) */}
+          {personaMode && apiMode && excludedProviders.length > 0 && (
+            <div className="prov-excluded">
+              <div className="field-hint">{t('settings.excludedTitle')}</div>
+              <ul className="memory-list">
+                {excludedProviders.map((p) => (
+                  <li key={p.id} className="provider-item prov-excluded-item">
                     <div className="provider-main">
-                      <label className="switch" title={t('settings.onBackup')}>
-                        <input
-                          type="checkbox"
-                          disabled={isMain}
-                          checked={isMain || backupIds.includes(p.id)}
-                          onChange={() => toggleBackup(p.id)}
-                        />
-                        <span className="switch-slider" />
-                      </label>
                       <span className="provider-name">{p.name}</span>
-                      {p.model && <span className="provider-model">{p.model}</span>}
-                      {p.local && <span className="badge">{t('settings.localBadge')}</span>}
-                      {isMain && <span className="badge badge--active">{t('settings.mainBadge')}</span>}
+                      <span className="badge">
+                        {t(
+                          p.local
+                            ? 'settings.localBadge'
+                            : p.id.startsWith('webchat')
+                              ? 'settings.webchatBadge'
+                              : 'settings.apiBadge',
+                        )}
+                      </span>
                     </div>
                     <div className="provider-side">
-                      {!p.local &&
-                        (p.keySet ? (
-                          <span className="badge badge--success">
-                            {t('apikeys.keySet')}{p.keysCount > 1 ? ` · ${t('settings.keyRotation', { n: p.keysCount })}` : ''}
-                          </span>
-                        ) : (
-                          <span className="badge badge--muted">{t('apikeys.keyNotSet')}</span>
-                        ))}
-                      <InfoButton helpKey="settings.keyStatus" />
-                      {p.local && <button className="btn btn--ghost">{t('settings.checkAvailability')}</button>}
-                      {!isMain && (
-                        <button className="btn btn--ghost" onClick={() => setMainId(p.id)}>
-                          {t('settings.makeMain')}
-                        </button>
-                      )}
+                      <button className="btn btn--ghost" onClick={() => restoreProvider(p.id)}>
+                        {t('settings.restoreToChain')}
+                      </button>
                     </div>
                   </li>
-                );
-              })}
-        </ul>
-        <div className="field-hint">
-          {personaMode ? t('settings.personaProvidersHint') : t('settings.providersHint')}
-        </div>
-        {/* Провайдеры по назначению: текст ответа / решения управления / vision */}
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="field-hint">
+            {personaMode ? t('settings.personaProvidersHint') : t('settings.providersHint')}
+          </div>
+        </Collapsible>
+        {/* Провайдеры режима управления: реплики / решения / vision — сворачиваемый блок */}
         {personaMode && (
-          <div className="purpose-provs" style={{ marginTop: 10 }}>
-            <div className="field-hint">{t('settings.purposeTitle')}</div>
-            {([
-              ['answer', 'settings.purposeAnswer'],
-              ['cc', 'settings.purposeCc'],
-              ['vision', 'settings.purposeVision'],
-            ] as const).map(([key, labelKey]) => (
-              <div
-                key={key}
-                style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}
-              >
-                <span style={{ flex: 1, fontSize: 13 }}>{t(labelKey)}</span>
-                <select
-                  className="input"
-                  style={{ maxWidth: 220 }}
-                  value={purposeProvs[key]}
-                  onChange={(e) => setPurposeProvs((cur) => ({ ...cur, [key]: e.target.value }))}
+          <div className="purpose-provs">
+            {(() => {
+              // Тип рядом с именем: одно и то же имя бывает и веб-чатом, и API
+              const provOptions = (allProviders ?? [])
+                .filter((pr) => pr.key_set || pr.local)
+                .map((pr) => ({
+                  value: pr.id,
+                  label: `${pr.name} · ${t(
+                    pr.local
+                      ? 'settings.localBadge'
+                      : pr.id.startsWith('webchat')
+                        ? 'settings.webchatBadge'
+                        : 'settings.apiBadge',
+                  )}`,
+                }));
+              const rows = [
+                ['answer', 'settings.purposeAnswer', 'settings.purposeAnswerShort'],
+                ['cc', 'settings.purposeCc', 'settings.purposeCcShort'],
+                ['vision', 'settings.purposeVision', 'settings.purposeVisionShort'],
+              ] as const;
+              // Сводка в свёрнутом заголовке: что назначено, иначе «всё по цепочке»
+              const assigned = rows
+                .filter(([key]) => purposeProvs[key])
+                .map(([key, , shortKey]) => {
+                  const id = purposeProvs[key];
+                  const label = provOptions.find((o) => o.value === id)?.label ?? id;
+                  return `${t(shortKey)}: ${label}`;
+                });
+              return (
+                <Collapsible
+                  title={t('settings.purposeTitle')}
+                  summary={assigned.length ? assigned.join(' · ') : t('settings.purposeNone')}
+                  headExtra={<InfoButton helpKey="settings.purpose" />}
+                  storageKey="vpc-settings-open-purpose"
                 >
-                  <option value="">{t('settings.purposeChain')}</option>
-                  {(allProviders ?? [])
-                    .filter((pr) => pr.key_set || pr.local)
-                    .map((pr) => (
-                      <option key={pr.id} value={pr.id}>{pr.name}</option>
-                    ))}
-                </select>
-              </div>
-            ))}
+                  {rows.map(([key, labelKey]) => (
+                    <div key={key} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ flex: 1, fontSize: 13 }}>{t(labelKey)}</span>
+                      <Select
+                        style={{ maxWidth: 220 }}
+                        value={purposeProvs[key]}
+                        options={[{ value: '', label: t('settings.purposeChain') }, ...provOptions]}
+                        onChange={(v) => setPurposeProvs((cur) => ({ ...cur, [key]: v }))}
+                      />
+                    </div>
+                  ))}
+                </Collapsible>
+              );
+            })()}
           </div>
         )}
+        {/* Движки служебных задач персоны: всё, что поручено локальной модели
+            (классификаторы, тики жизни, дневники, рерайтер), — по каждой
+            задаче свой движок: Ollama или веб-чат (сайт выбирается рядом).
+            Без выбора — по роду задачи: на пути ответа — Ollama, фоновые —
+            веб-чат фоновых задач, затем запасной веб-чат, затем Ollama */}
+        {apiMode && localTasks && localTasks.tasks.length > 0 && (
+          <div className="local-backend-row">
+            <Collapsible
+              title={t('settings.localBackend')}
+              headExtra={<InfoButton helpKey="settings.localBackend" />}
+              storageKey="vpc-settings-open-local-tasks"
+              summary={(() => {
+                // Сводка: куда идёт фон и сколько задач на каждом движке
+                const bg = localTasks.tasks.find((x) => x.background && x.backend === 'webchat');
+                const nOllama = localTasks.tasks.filter((x) => x.backend === 'ollama').length;
+                const nWeb = localTasks.tasks.length - nOllama;
+                return t('settings.localSummary', {
+                  bg: bg ? bg.sites.join(' → ') : 'Ollama',
+                  ollama: nOllama,
+                  web: nWeb,
+                });
+              })()}
+            >
+                <div className="pmodel-row">
+                  <span className="provider-name">{t('settings.localBgSite')}</span>
+                  <div className="dossier-confirm-actions local-task-controls">
+                    <Select
+                      className="local-task-site"
+                      value={localTasks.bg_site}
+                      title={t('settings.localBgSiteTitle')}
+                      disabled={localTasks.sites.length === 0}
+                      options={[
+                        {
+                          value: 'fallback',
+                          label:
+                            t('settings.localBgSiteFallback') +
+                            (localTasks.fallback_site ? ` · ${localTasks.fallback_site}` : ''),
+                        },
+                        {
+                          value: 'primary',
+                          label:
+                            t('settings.localBgSitePrimary') +
+                            (localTasks.primary_site ? ` · ${localTasks.primary_site}` : ''),
+                        },
+                        // Остальные сайты цепочки: первый fallback и основной уже
+                        // стоят выше режимами (они следуют за цепочкой персоны).
+                        // Выбранный сайт оставляем, даже если он совпал с режимом
+                        ...localTasks.sites
+                          .filter(
+                            (s) =>
+                              s === localTasks.bg_site ||
+                              (s !== localTasks.fallback_site && s !== localTasks.primary_site),
+                          )
+                          .map((s) => ({ value: s, label: s })),
+                      ]}
+                      onChange={(v) => patchLocalTasks({ bg_site: v })}
+                    />
+                  </div>
+                </div>
+                {(['conversation', 'background'] as const).map((group) => (
+                  <div key={group}>
+                    <div className="field-hint">{t(`settings.localGroup.${group}`)}</div>
+                    <ul className="memory-list">
+                      {localTasks.tasks
+                        .filter((task) => task.background === (group === 'background'))
+                        .map((task) => {
+                          const noSites = localTasks.sites.length === 0;
+                          const webDisabled = task.ollama_only || noSites;
+                          const title = task.ollama_only
+                            ? t('settings.localTaskOllamaOnly')
+                            : noSites
+                              ? t('settings.localBackendNoSite')
+                              : undefined;
+                          // Порядок попыток: веб-чаты задачи, затем откат на Ollama
+                          const chain = task.backend === 'webchat' ? [...task.sites, 'Ollama'].join(' → ') : 'Ollama';
+                          return (
+                            <li key={task.id} className="pmodel-row">
+                              <span className="provider-name">
+                                {t(`localTask.${task.id}`)}
+                                <span className="local-task-chain">
+                                  {chain}
+                                  {!task.explicit && !task.ollama_only && ` · ${t('settings.localTaskDefault')}`}
+                                </span>
+                              </span>
+                              <div className="dossier-confirm-actions local-task-controls">
+                                <button
+                                  type="button"
+                                  className={`btn ${task.backend === 'ollama' ? 'btn--primary' : 'btn--ghost'}`}
+                                  disabled={task.backend === 'ollama'}
+                                  onClick={() => patchLocalTasks({ task: task.id, backend: 'ollama' })}
+                                >
+                                  Ollama
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`btn ${task.backend === 'webchat' ? 'btn--primary' : 'btn--ghost'}`}
+                                  disabled={webDisabled || task.backend === 'webchat'}
+                                  title={title}
+                                  onClick={() => patchLocalTasks({ task: task.id, backend: 'webchat', site: null })}
+                                >
+                                  {t('settings.localBackendWebchat')}
+                                </button>
+                                {task.backend === 'webchat' && !task.ollama_only && (
+                                  <Select
+                                    className="local-task-site"
+                                    value={task.site ?? ''}
+                                    title={t('settings.localBackendSite')}
+                                    options={[
+                                      { value: '', label: t('settings.localBackendSiteAuto') },
+                                      ...localTasks.sites.map((s) => ({ value: s, label: s })),
+                                    ]}
+                                    onChange={(v) =>
+                                      patchLocalTasks({ task: task.id, backend: 'webchat', site: v || null })
+                                    }
+                                  />
+                                )}
+                                {task.explicit && (
+                                  <button
+                                    type="button"
+                                    className="btn btn--ghost"
+                                    title={t('settings.localTaskResetTitle')}
+                                    onClick={() => patchLocalTasks({ task: task.id, backend: 'default' })}
+                                  >
+                                    {t('settings.localTaskReset')}
+                                  </button>
+                                )}
+                              </div>
+                            </li>
+                          );
+                        })}
+                    </ul>
+                  </div>
+                ))}
+                <div className="field-hint">{t('settings.localBackendHint')}</div>
+            </Collapsible>
+          </div>
+        )}
+
+        {/* Сохранение провайдеров персоны — под всеми блоками карточки
+            (движки локальных задач сохраняются сразу при выборе) */}
         {personaMode && (
           <div className="dossier-confirm-actions" style={{ marginTop: 12 }}>
             <button className="btn btn--primary" onClick={saveLlm} disabled={!llmDirty}>
               {savedCard === 'llm' ? '✓' : t('common.save')}
             </button>
-            {(llmPrimary !== null || llmFallback.length > 0) && (
+            {(llmPrimary !== null || llmFallback.length > 0 || llmExclude.length > 0) && (
               <button
                 className="btn btn--ghost"
                 onClick={() => {
                   // Сброс на глобального — сразу сохраняем пустой override
                   setLlmPrimary(null);
                   setLlmFallback([]);
+                  setLlmExclude([]);
                   api
-                    .updatePersonaConfig(personaId!, { llm: { primary: null, fallback: [] } })
+                    .updatePersonaConfig(personaId!, { llm: { primary: null, fallback: [], exclude: [] } })
                     .then(() => {
                       flashSaved('llm');
-                      setLlmInit({ primary: null, fallback: [] });
+                      setLlmInit({ primary: null, fallback: [], exclude: [] });
                       refetchPersonaLlm(personaId!);
+                      refetchLocalTasks();
                     })
                     .catch(() => {});
                 }}
@@ -592,70 +938,6 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                 {t('settings.resetToGlobal')}
               </button>
             )}
-          </div>
-        )}
-
-        {/* Движок локальных задач: всё, что поручено Ollama (классификаторы,
-            тики жизни, дневники, рерайтер), — по каждой задаче свой движок:
-            Ollama или веб-чат; сайт веб-чата выбирается рядом */}
-        {apiMode && localTasks && localTasks.length > 0 && (
-          <div className="local-backend-row">
-            <span className="field-label">
-              {t('settings.localBackend')}
-              <InfoButton helpKey="settings.localBackend" />
-            </span>
-            <ul className="memory-list">
-              {localTasks.map((task) => {
-                const noSites = !webchat?.sites?.length;
-                const webDisabled = task.ollama_only || noSites;
-                const title = task.ollama_only
-                  ? t('settings.localTaskOllamaOnly')
-                  : noSites
-                    ? t('settings.localBackendNoSite')
-                    : undefined;
-                return (
-                  <li key={task.id} className="pmodel-row">
-                    <span className="provider-name">{t(`localTask.${task.id}`)}</span>
-                    <div className="dossier-confirm-actions local-task-controls">
-                      <button
-                        type="button"
-                        className={`btn ${task.backend === 'ollama' ? 'btn--primary' : 'btn--ghost'}`}
-                        disabled={task.backend === 'ollama'}
-                        onClick={() => pickTaskBackend(task.id, 'ollama')}
-                      >
-                        Ollama
-                      </button>
-                      <button
-                        type="button"
-                        className={`btn ${task.backend === 'webchat' ? 'btn--primary' : 'btn--ghost'}`}
-                        disabled={webDisabled || task.backend === 'webchat'}
-                        title={title}
-                        onClick={() => pickTaskBackend(task.id, 'webchat')}
-                      >
-                        {t('settings.localBackendWebchat')}
-                      </button>
-                      {task.backend === 'webchat' && !task.ollama_only && (
-                        <select
-                          className="input local-task-site"
-                          value={task.site ?? ''}
-                          title={t('settings.localBackendSite')}
-                          onChange={(e) => pickTaskBackend(task.id, 'webchat', e.target.value || null)}
-                        >
-                          <option value="">
-                            {t('settings.localBackendSiteAuto')}
-                            {webchat?.sites?.[0] ? ` · ${webchat.sites[0]}` : ''}
-                          </option>
-                          {(webchat?.sites ?? []).map((s) => (
-                            <option key={s} value={s}>{s}</option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-            <div className="field-hint">{t('settings.localBackendHint')}</div>
           </div>
         )}
 
@@ -744,27 +1026,49 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
       {/* Фичи */}
       <div className="card">
         <h2 className="card-title">{t('settings.features')}</h2>
-        <div className="features-grid">
-          {apiMode
-            ? Object.entries(featureDraft).map(([key, on]) => (
-                <label key={key} className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={on}
-                    onChange={(e) => setFeatureDraft((d) => ({ ...d, [key]: e.target.checked }))}
-                  />
-                  <span>{featureFlags.find((f) => f.id === key)?.label ?? key}</span>
-                  {featureHelpKeys[key] && <InfoButton helpKey={featureHelpKeys[key]} />}
-                </label>
-              ))
-            : featureFlags.map((f) => (
-                <label key={f.id} className="checkbox-row">
-                  <input type="checkbox" defaultChecked={f.enabled} readOnly />
-                  <span>{f.label}</span>
-                  {featureHelpKeys[f.id] && <InfoButton helpKey={featureHelpKeys[f.id]} />}
-                </label>
-              ))}
-        </div>
+        {(() => {
+          // Строки фич: из конфига персоны (API) или мок-список
+          const items: { id: string; on: boolean }[] = apiMode
+            ? Object.entries(featureDraft).map(([id, on]) => ({ id, on }))
+            : featureFlags.map((f) => ({ id: f.id, on: f.enabled }));
+          const grouped = new Set(featureGroups.flatMap((g) => g.ids));
+          const groups = featureGroups.map((g) => ({
+            title: g.title,
+            items: g.ids.map((id) => items.find((x) => x.id === id)).filter((x): x is { id: string; on: boolean } => !!x),
+          }));
+          // Незнакомые флаги — в «Прочее»
+          groups[groups.length - 1].items.push(...items.filter((x) => !grouped.has(x.id)));
+          return groups
+            .filter((g) => g.items.length > 0)
+            .map((g) => (
+              <div key={g.title} className="features-group">
+                <div className="features-group-title">{t(g.title)}</div>
+                <div className="features-grid">
+                  {g.items.map(({ id, on }) => {
+                    const label = featureFlags.find((f) => f.id === id)?.label
+                      ?? (featureHelpKeys[id] ? helpTexts[featureHelpKeys[id]].title : id);
+                    return (
+                      <label key={id} className="checkbox-row feature-row">
+                        {apiMode ? (
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={(e) => setFeatureDraft((d) => ({ ...d, [id]: e.target.checked }))}
+                          />
+                        ) : (
+                          <input type="checkbox" defaultChecked={on} readOnly />
+                        )}
+                        <span className={`feature-label ${featureHelpKeys[id] || featureFlags.some((f) => f.id === id) ? '' : 'feature-label--raw'}`}>
+                          {label}
+                        </span>
+                        {featureHelpKeys[id] && <InfoButton helpKey={featureHelpKeys[id]} />}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ));
+        })()}
         {apiMode && (
           <>
             <button className="btn btn--primary" onClick={saveFeatures} disabled={!featuresDirty}>

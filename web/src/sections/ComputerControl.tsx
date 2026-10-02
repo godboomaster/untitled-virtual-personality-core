@@ -3,6 +3,7 @@ import { useI18n } from '../i18n';
 import { api } from '../api';
 import { useApiOnline } from '../apiData';
 import InfoButton from '../components/InfoButton';
+import Collapsible from '../components/Collapsible';
 
 /* Управление компьютером (досье → «Настройки»): allowlist'ы сайтов,
    приложений, поисковых шаблонов и задач персоны. Пишется в
@@ -11,6 +12,13 @@ import InfoButton from '../components/InfoButton';
 
 type Row = { k: string; v: string };
 type SearchRow = { k: string; url: string; first: string };
+
+// Сводка свёрнутого списка: первые ключи, при длинном списке — счётчик
+function keysSummary(rows: { k: string }[], empty: string): string {
+  const keys = rows.map((r) => r.k.trim()).filter(Boolean);
+  if (!keys.length) return empty;
+  return keys.slice(0, 4).join(', ') + (keys.length > 4 ? ` … (${keys.length})` : '');
+}
 
 // Значение apps/tasks может быть per-OS словарём: в поле показываем JSON,
 // при сохранении парсим обратно (строка без «{» остаётся строкой)
@@ -238,86 +246,108 @@ export default function ComputerControl({ personaId }: { personaId: string }) {
             <InfoButton helpKey="computer.click" />
           </label>
 
-          <div className="field-label" style={{ marginTop: 12 }}>
-            {t('computer.sites')}
-            <InfoButton helpKey="computer.sites" />
+          {/* Списки (сайты, приложения, поиск, задачи) — сворачиваемые блоки;
+              в свёрнутом заголовке — первые ключи */}
+          <div style={{ marginTop: 12 }}>
+            <Collapsible
+              title={t('computer.sites')}
+              headExtra={<InfoButton helpKey="computer.sites" />}
+              storageKey="vpc-computer-open-sites"
+              summary={keysSummary(sites, t('computer.listEmpty'))}
+            >
+              <RowList rows={sites} onChange={wrap(setSites)} keyPh={t('computer.keyPh')} valPh={t('computer.sitePh')} />
+            </Collapsible>
           </div>
-          <RowList rows={sites} onChange={wrap(setSites)} keyPh={t('computer.keyPh')} valPh={t('computer.sitePh')} />
 
-          <div className="field-label" style={{ marginTop: 12 }}>
-            {t('computer.apps')}
-            <InfoButton helpKey="computer.apps" />
+          <div style={{ marginTop: 8 }}>
+            <Collapsible
+              title={t('computer.apps')}
+              headExtra={<InfoButton helpKey="computer.apps" />}
+              storageKey="vpc-computer-open-apps"
+              summary={keysSummary(apps, t('computer.listEmpty'))}
+            >
+              <RowList rows={apps} onChange={wrap(setApps)} keyPh={t('computer.keyPh')} valPh={t('computer.appPh')} />
+            </Collapsible>
           </div>
-          <RowList rows={apps} onChange={wrap(setApps)} keyPh={t('computer.keyPh')} valPh={t('computer.appPh')} />
 
-          <div className="field-label" style={{ marginTop: 12 }}>
-            {t('computer.search')}
-            <InfoButton helpKey="computer.search" />
+          <div style={{ marginTop: 8 }}>
+            <Collapsible
+              title={t('computer.search')}
+              headExtra={<InfoButton helpKey="computer.search" />}
+              storageKey="vpc-computer-open-search"
+              summary={keysSummary(search, t('computer.listEmpty'))}
+            >
+              <ul className="memory-list">
+                {search.map((r, i) => {
+                  const upd = (patch: Partial<SearchRow>) => {
+                    const n = [...search];
+                    n[i] = { ...r, ...patch };
+                    setSearch(n);
+                    setDirty(true);
+                  };
+                  return (
+                    <li key={i} className="pmodel-row" style={{ display: 'flex', gap: 6 }}>
+                      <input
+                        className="input"
+                        style={{ maxWidth: 130 }}
+                        value={r.k}
+                        placeholder={t('computer.keyPh')}
+                        spellCheck={false}
+                        onChange={(e) => upd({ k: e.target.value })}
+                      />
+                      <input
+                        className="input"
+                        style={{ flex: 1 }}
+                        value={r.url}
+                        placeholder={t('computer.urlPh')}
+                        spellCheck={false}
+                        onChange={(e) => upd({ url: e.target.value })}
+                      />
+                      <input
+                        className="input"
+                        style={{ flex: 1 }}
+                        value={r.first}
+                        placeholder={t('computer.firstPh')}
+                        spellCheck={false}
+                        onChange={(e) => upd({ first: e.target.value })}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn--ghost"
+                        onClick={() => {
+                          setSearch(search.filter((_, j) => j !== i));
+                          setDirty(true);
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => {
+                  setSearch([...search, { k: '', url: '', first: '' }]);
+                  setDirty(true);
+                }}
+              >
+                ＋
+              </button>
+            </Collapsible>
           </div>
-          <ul className="memory-list">
-            {search.map((r, i) => {
-              const upd = (patch: Partial<SearchRow>) => {
-                const n = [...search];
-                n[i] = { ...r, ...patch };
-                setSearch(n);
-                setDirty(true);
-              };
-              return (
-                <li key={i} className="pmodel-row" style={{ display: 'flex', gap: 6 }}>
-                  <input
-                    className="input"
-                    style={{ maxWidth: 130 }}
-                    value={r.k}
-                    placeholder={t('computer.keyPh')}
-                    spellCheck={false}
-                    onChange={(e) => upd({ k: e.target.value })}
-                  />
-                  <input
-                    className="input"
-                    style={{ flex: 1 }}
-                    value={r.url}
-                    placeholder={t('computer.urlPh')}
-                    spellCheck={false}
-                    onChange={(e) => upd({ url: e.target.value })}
-                  />
-                  <input
-                    className="input"
-                    style={{ flex: 1 }}
-                    value={r.first}
-                    placeholder={t('computer.firstPh')}
-                    spellCheck={false}
-                    onChange={(e) => upd({ first: e.target.value })}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn--ghost"
-                    onClick={() => {
-                      setSearch(search.filter((_, j) => j !== i));
-                      setDirty(true);
-                    }}
-                  >
-                    ✕
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => {
-              setSearch([...search, { k: '', url: '', first: '' }]);
-              setDirty(true);
-            }}
-          >
-            ＋
-          </button>
 
-          <div className="field-label" style={{ marginTop: 12 }}>
-            {t('computer.tasks')}
-            <InfoButton helpKey="computer.tasks" />
+          <div style={{ marginTop: 8 }}>
+            <Collapsible
+              title={t('computer.tasks')}
+              headExtra={<InfoButton helpKey="computer.tasks" />}
+              storageKey="vpc-computer-open-tasks"
+              summary={keysSummary(tasks, t('computer.listEmpty'))}
+            >
+              <RowList rows={tasks} onChange={wrap(setTasks)} keyPh={t('computer.keyPh')} valPh={t('computer.taskPh')} />
+            </Collapsible>
           </div>
-          <RowList rows={tasks} onChange={wrap(setTasks)} keyPh={t('computer.keyPh')} valPh={t('computer.taskPh')} />
 
           <div className="dossier-confirm-actions" style={{ marginTop: 12 }}>
             <button type="button" className="btn btn--primary" onClick={() => save()} disabled={!dirty}>

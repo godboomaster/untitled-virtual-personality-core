@@ -4,11 +4,14 @@
 Хранилища: todo, напоминания, досье чата, обучение, feedback/ignore-streak
 инициатив, ритм, живое состояние (per-chat срезы: состояние, офлайн-факты,
 отношения, ежедневные выжимки; плюс глобальные для персоны: мир, инвентарь,
-кэш контекста персоны). НЕ трогаем: сценарии (пользовательские плейбуки —
-конфиг), book/ (база знаний), files/ (загруженные документы — не память
-диалога и не восстановимы из снапшота), computer_control (состояние
-браузера — транзиент, не про диалог; адреса веб-чатов чистит отдельный
-web_llm.clear_chat_urls).
+кэш контекста персоны), режим управления (что просили и где бот был: аудит
+действий чата, страница чата в last_tab.json, память и прогоны агента задач,
+pending-подтверждения, прогон/запись сценария, известные секреты чата).
+НЕ трогаем: сохранённые сценарии (пользовательские плейбуки — конфиг),
+включённость режима управления (настройка, не память), вкладки браузера
+(пользователя), book/ (база знаний), files/ (загруженные документы — не
+память диалога и не восстановимы из снапшота); адреса веб-чатов чистит
+отдельный web_llm.clear_chat_urls.
 
 КРИТИЧНО: бот запущен во время очистки — у менеджеров состояние в памяти и
 файл перезаписывается при следующей мутации, а у reminder/learning фоновые
@@ -559,6 +562,111 @@ def _restore_living(bot, context, ck, inv):
                         {"items": list(inv["inventory"])})
 
 
+# ════════════ режим управления (computer_control + агент задач + сценарии) ════════════
+
+def _cc_dir(context: str) -> Path:
+    return data_dir() / context / "computer_control"
+
+
+def _collect_control(bot, context, ck, out):
+    # Чистое чтение: запись страницы чата, строки аудита чата (текущий файл
+    # и ротации), память задач чата. Живое состояние (pending, прогоны) —
+    # транзиент, в корзину не кладётся
+    from app.features.cc_privacy import AUDIT_BACKUPS
+    base = _cc_dir(context)
+    cc = getattr(bot, "computer_control", None)
+    if cc is not None:
+        base = Path(cc.base_dir)
+    snap: dict = {}
+    tabs = _read_json(base / "last_tab.json", {})
+    if isinstance(tabs, dict):
+        if isinstance(tabs.get("chats"), dict):
+            if tabs["chats"].get(ck) is not None:
+                snap["last_tab"] = tabs["chats"][ck]
+        elif tabs.get("host"):
+            snap["last_tab_legacy"] = tabs
+    lines = []
+    audit = base / "audit.jsonl"
+    for i in range(AUDIT_BACKUPS, -1, -1):
+        p = audit if i == 0 else audit.with_name(f"{audit.name}.{i}")
+        try:
+            raw = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except FileNotFoundError:
+            continue
+        for line in raw:
+            try:
+                if str(json.loads(line).get("chat_id")) == ck:
+                    lines.append(line)
+            except Exception:
+                continue
+    if lines:
+        snap["audit"] = lines
+    ta = getattr(bot, "task_agent", None)
+    mem_path = Path(ta._memory_path) if ta is not None \
+        else base / "task_memory.json"
+    mem = _read_json(mem_path, {})
+    if isinstance(mem, dict) and mem.get(ck):
+        snap["task_memory"] = mem[ck]
+    if snap:
+        out["control"] = snap
+
+
+def _wipe_control(bot, context, ck):
+    # Сначала живое (прогоны не должны дописать стёртое), потом файлы
+    sm = getattr(bot, "scenario_manager", None)
+    if sm is not None:
+        with sm._lock:
+            sm._runs.pop(ck, None)
+            sm._recording.pop(ck, None)
+            sm._offered.pop(ck, None)
+    ta = getattr(bot, "task_agent", None)
+    if ta is not None:
+        ta.forget_chat(ck)
+    else:
+        path = _cc_dir(context) / "task_memory.json"
+        mem = _read_json(path, {})
+        if isinstance(mem, dict) and ck in mem:
+            mem.pop(ck)
+            _write_json(path, mem)
+    cc = getattr(bot, "computer_control", None)
+    if cc is not None:
+        cc.forget_chat(ck)
+    else:
+        from app.features.computer_control import forget_chat_files
+        forget_chat_files(_cc_dir(context), ck)
+    # Бот: пароли, названные в чате (агент вводил их ходом позже), и
+    # отложенные скриншоты страниц («ещё» — досылка альбома)
+    vault = getattr(bot, "__dict__", {}).get("_cc_known_secrets")
+    if vault is not None:
+        vault.purge(ck)
+    for name in ("_pending_photos", "_pending_more_photos"):
+        store = getattr(bot, name, None)
+        if isinstance(store, dict):
+            store.pop(ck, None)
+
+
+def _restore_control(bot, context, ck, data):
+    cc = getattr(bot, "computer_control", None)
+    files = {k: v for k, v in data.items() if k != "task_memory"}
+    if cc is not None:
+        cc.restore_chat(ck, files)
+    else:
+        from app.features.computer_control import restore_chat_files
+        restore_chat_files(_cc_dir(context), ck, files)
+    records = data.get("task_memory")
+    if records:
+        ta = getattr(bot, "task_agent", None)
+        if ta is not None:
+            ta.restore_memory(ck, records)
+        else:
+            path = _cc_dir(context) / "task_memory.json"
+            mem = _read_json(path, {})
+            if not isinstance(mem, dict):
+                mem = {}
+            mem[ck] = list(records) + list(mem.get(ck) or [])
+            _write_json(path, mem)
+
+
 # ════════════ публичный интерфейс ════════════
 
 def collect_stores(bot, persona: str, chat_key: str) -> dict:
@@ -574,6 +682,7 @@ def collect_stores(bot, persona: str, chat_key: str) -> dict:
         _collect_proactive(bot, context, ck, out)
         _collect_rhythm(bot, context, ck, out)
         _collect_living(bot, context, ck, out)
+        _collect_control(bot, context, ck, out)
     except Exception as e:
         logger.warning(f"[MemoryWipe] {persona}: срезы собраны частично: {e}")
     return out
@@ -587,13 +696,14 @@ def wipe_stores(bot, persona: str, chat_key: str):
     for name, fn in (("todo", _wipe_todo), ("reminders", _wipe_reminders),
                      ("dossier", _wipe_dossier), ("learning", _wipe_learning),
                      ("proactive", _wipe_proactive), ("rhythm", _wipe_rhythm),
-                     ("living", _wipe_living)):
+                     ("living", _wipe_living), ("control", _wipe_control)):
         try:
             fn(bot, context, ck)
         except Exception as e:
             logger.warning(f"[MemoryWipe] {persona}: очистка {name}: {e}")
     logger.info(f"[MemoryWipe] {persona}: память чата {ck} стёрта полностью "
-                "(todo/reminders/досье/learning/инициативы/ритм/living)")
+                "(todo/reminders/досье/learning/инициативы/ритм/living/"
+                "режим управления)")
 
 
 def restore_stores(bot, persona: str, chat_key: str, stores: dict):
@@ -607,7 +717,8 @@ def restore_stores(bot, persona: str, chat_key: str, stores: dict):
             ("reminders", _restore_reminders, "reminders"),
             ("dossier", _restore_dossier, "dossier"),
             ("learning", _restore_learning, "learning"),
-            ("rhythm", _restore_rhythm, "rhythm")):
+            ("rhythm", _restore_rhythm, "rhythm"),
+            ("control", _restore_control, "control")):
         try:
             if stores.get(key) is not None:
                 fn(bot, context, ck, stores[key])

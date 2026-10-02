@@ -59,15 +59,17 @@ def submit_help_style_if_enabled(bot, user_input: str):
 
 
 def classify_learning_intent_if_enabled(bot, user_input: str) -> str:
-    """'LEARN' | 'INFO'. Флаг выкл — только keyword-гейт («научи/обучи/
-    выучить…»), без LLM-уточнения."""
-    from app.features.learning_intent import _keyword_match
-    if not _keyword_match(user_input):
+    """'LEARN' | 'INFO'. Флаг выкл — только регулярки по формам просьбы
+    («научи меня X», «хочу выучить X», «teach me X»), без LLM-уточнения;
+    разовое «научи, как сделать X» без LLM — обычный вопрос."""
+    from app.features.learning_intent import learn_request_kind
+    kind = learn_request_kind(user_input)
+    if not kind:
         return "INFO"
     if not enabled(bot, "learning_intent_llm"):
-        return "LEARN"
+        return "LEARN" if kind == "learn" else "INFO"
     from app.features.learning_intent import classify_learning_intent
-    return classify_learning_intent(user_input)
+    return classify_learning_intent(user_input, bot._local_router)
 
 
 def search_enhance_enabled(bot) -> bool:

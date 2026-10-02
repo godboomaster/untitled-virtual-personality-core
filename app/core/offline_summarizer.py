@@ -28,43 +28,50 @@ from app.core import timeutil
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.persona_context import _extract_json
-from app.core.language import language_name, language_name_ru
+from app.core.language import user_language_line
 
 logger = logging.getLogger(__name__)
 
 DAILY_SUMMARY_TRIGGER = 8  # unconsumed-записей достаточно для внеплановой суммаризации
 
-_THESES_PROMPT = """Сожми записи из жизни персонажа за период в 3-5 фактических тезисов. Черновик, не литература: один тезис — одна строка, только факты («что произошло»).
+_THESES_PROMPT = """Compress the entries from the character's life over the period into 3-5 factual theses. A draft, not literature: one thesis — one line, only facts ("what happened").
 
-Записи:
+Entries:
 {entries}
 
-Верни JSON: {{"theses": ["тезис 1", "тезис 2", ...]}}"""
+Return JSON: {{"theses": ["thesis 1", "thesis 2", ...]}}
+{language_line}"""
 
-_EPISODE_PROMPT = """Ниже — тезисы о том, что происходило в твоей жизни, пока ты не общался с собеседником. Преврати их в запись в своём личном дневнике — 2-3 предложения от первого лица, в твоём характере и стиле. Это твоя собственная жизнь: пиши как дневник, а не отчёт.
+_EPISODE_PROMPT = """Below are theses about what was happening in your life while you were not talking to your interlocutor. Turn them into an entry in your personal diary — 2-3 sentences in the first person, in your character and style. This is your own life: write it as a diary, not a report.
 
-Тезисы:
+Theses:
 {theses}
 
-Запись в дневнике:"""
+{language_line}
+
+Diary entry:"""
 
 # Примитивный вариант: одна вспышка-впечатление из событий жизни, а не нарратив
-_EPISODE_PROMPT_PRIMITIVE = """Ты — примитивное существо (не человек по типу мышления). Ниже — что происходило с тобой. Запиши ОДНО короткое впечатление (1 предложение, до 10 слов): сенсорное, инстинктивное, без причин и выводов. Пиши на языке тезисов.
+_EPISODE_PROMPT_PRIMITIVE = """You are a primitive creature (not human in your type of thinking). Below is what was happening to you. Write down ONE short impression (1 sentence, up to 10 words): sensory, instinctive, without reasons or conclusions.
 
-Что происходило:
+What was happening:
 {theses}
 
-Впечатление:"""
+{language_line}
 
-_SCREENWRITER_PROMPT = """Ты — сценарист жизни персонажа. Ниже — активные сюжетные линии. Реши по каждой: оставить как есть, продвинуть к повороту или завершить. Учти характер персонажа — линия не должна требовать нарушений его правил.
+Impression:"""
 
-Сюжетные линии:
+_SCREENWRITER_PROMPT = """You are the screenwriter of the character's life. Below are the active storylines. Decide for each one: leave it as is, advance it to a turn, or conclude it. Take the character's personality into account — a storyline must not require violating their rules.
+
+Storylines:
 {storylines}
 
-Известные NPC: {npc_list}
+Known NPCs: {npc_list}
 
-Верни JSON: {{"updates": [{{"title": "...", "action": "keep|advance|resolve", "note": "что изменилось, 1 предложение для summary"}}]}}
-Двигай к развязке только 1 линию за раз — не форсируй все сразу."""
+Return JSON: {{"updates": [{{"title": "...", "action": "keep|advance|resolve", "note": "what changed, 1 sentence for the summary"}}]}}
+Move only 1 storyline at a time towards its resolution — do not force them all at once.
+Keep the titles exactly as given.
+{language_line}"""
 
 
 class OfflineSummarizer:
@@ -77,7 +84,7 @@ class OfflineSummarizer:
         self.router = router
 
         self.primitive = primitive
-        self.local = get_local_router()
+        self.local = get_local_router(context)
         self._lock = threading.RLock()
 
         db = get_db_paths(context)
@@ -144,7 +151,12 @@ class OfflineSummarizer:
 
         if episode and self_memory is not None:
             try:
-                self_memory.add_external_episode(episode)
+                try:
+                    self_memory.add_external_episode(
+                        episode, user_language=user_language)
+                except TypeError:
+                    # старый интерфейс без языка (заглушки)
+                    self_memory.add_external_episode(episode)
                 logger.info(f"[Summarizer] Офлайн-эпизод записан в дневник ({chat_id})")
             except Exception as e:
                 logger.warning(f"[Summarizer] Эпизод не записан в self_memory: {e}")
@@ -158,16 +170,19 @@ class OfflineSummarizer:
             if e.get("type") == "world_event" and p.get("event"):
                 lines.append(f"- {p['event']}")
             elif e.get("type") == "external_stimulus" and p.get("content"):
-                lines.append(f"- Внешний факт: {p['content'][:200]}")
+                lines.append(f"- External fact: {p['content'][:200]}")
+            elif e.get("type") == "room_signal" and p.get("event"):
+                # Комната в вебе: пользователь заглянул / посидел рядом
+                lines.append(f"- {str(p['event'])[:200]}")
             elif e.get("type") == "state_change":
                 diff = p.get("diff") or {}
                 bits = []
                 if "pastime" in diff:
-                    bits.append(f"занятие: {diff['pastime']}")
+                    bits.append(f"pastime: {diff['pastime']}")
                 if "location" in diff:
-                    bits.append(f"место: {diff['location']}")
+                    bits.append(f"location: {diff['location']}")
                 if "mood" in diff:
-                    bits.append(f"настроение: {diff['mood'].get('tag', '')}")
+                    bits.append(f"mood: {diff['mood'].get('tag', '')}")
                 if "internal_note" in diff:
                     bits.append(str(diff["internal_note"]))
                 if bits:
@@ -179,18 +194,18 @@ class OfflineSummarizer:
         # Тезисы — на языке пользователя (дневник ведётся на нём)
         if self.local.is_available(task="offline_summary"):
             try:
-                lang_prefix = (
-                    f"Язык тезисов — {language_name_ru(user_language)}. Пиши только на нём.\n\n"
-                    if user_language else ""
-                )
                 response = self.local.get_response(
                     messages=[
-                        {"role": "system", "content": "Ты возвращаешь только валидный JSON."},
-                        {"role": "user", "content": lang_prefix + _THESES_PROMPT.format(
-                            entries="\n".join(lines[:40]))},
+                        {"role": "system", "content": "You return only valid JSON."},
+                        {"role": "user", "content": _THESES_PROMPT.format(
+                            entries="\n".join(lines[:40]),
+                            language_line=user_language_line(user_language))},
                     ],
                     temperature=0.2, max_tokens=300,
                     task="offline_summary",
+                    # Ответ пользователю ждёт сжатие: веб-чату — не больше
+                    # 40 с на сайт (зависший сайт не держит реплику минутами)
+                    webchat_timeout=40.0,
                 )
                 data = _extract_json(response or "")
                 if data and data.get("theses"):
@@ -209,25 +224,24 @@ class OfflineSummarizer:
             return None
         # Явный язык записи: системный промпт персоны и шаблон могут тянуть
         # модель на свой язык — директива в user-сообщении надёжнее
-        lang_line = (
-            f"\n\nЯзык записи — {language_name_ru(user_language)}. Пиши только на нём."
-            if user_language else ""
-        )
+        lang_line = user_language_line(user_language)
         try:
             if self.primitive:
                 messages = [
                     {"role": "system", "content": (
-                        "Ты пишешь одно примитивное сенсорное впечатление. "
-                        "Только вывод, без пояснений.")},
+                        "You write one primitive sensory impression. "
+                        "Output only, no explanations.")},
                     {"role": "user", "content": _EPISODE_PROMPT_PRIMITIVE.format(
-                        theses="\n".join(f"- {t}" for t in theses)) + lang_line},
+                        theses="\n".join(f"- {t}" for t in theses),
+                        language_line=lang_line)},
                 ]
                 temperature, max_tokens = 0.6, 80
             else:
                 messages = [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": _EPISODE_PROMPT.format(
-                        theses="\n".join(f"- {t}" for t in theses)) + lang_line},
+                        theses="\n".join(f"- {t}" for t in theses),
+                        language_line=lang_line)},
                 ]
                 temperature, max_tokens = 0.7, 400
             response = self._side_response(
@@ -285,15 +299,18 @@ class OfflineSummarizer:
                 pass
         return bool(world_engine.active_storylines(limit=1))
 
-    def advance_storylines(self, persona, world_engine) -> int:
+    def advance_storylines(self, persona, world_engine,
+                           user_language: Optional[str] = None) -> int:
         # Основная LLM в роли сценариста. Возвращает число обновлённых линий.
+        # user_language — язык пользователя (LivingPersona.global_language):
+        # на нём пишутся заметки линий (они уходят в промпты и в комнату)
         storylines = world_engine.active_storylines(limit=5)
         if not storylines:
             return 0
         snapshot = world_engine.get_world_snapshot()
-        npc_list = "; ".join(f"{n['name']} ({n['role']})" for n in snapshot["npcs"][:10]) or "(нет)"
+        npc_list = "; ".join(f"{n['name']} ({n['role']})" for n in snapshot["npcs"][:10]) or "(none)"
 
-        system_prompt = (persona.system_prompt or "").strip() or "Ты — сценарист."
+        system_prompt = (persona.system_prompt or "").strip() or "You are a screenwriter."
         try:
             response = self._side_response(
                 messages=[
@@ -303,7 +320,8 @@ class OfflineSummarizer:
                             [{"title": s["title"], "status": s["status"],
                               "summary": s.get("summary", "")} for s in storylines],
                             ensure_ascii=False, indent=1),
-                        npc_list=npc_list)},
+                        npc_list=npc_list,
+                        language_line=user_language_line(user_language))},
                 ],
                 temperature=0.6,
                 max_tokens=500,

@@ -1,7 +1,9 @@
 // Движок скинов: валидация загруженного файла и подготовка его к
 // изолированному рендеру (CSP + эталонный bridge + выбор экрана).
 
-import { BRIDGE_SOURCE, BRIDGE_START, BRIDGE_END } from './bridgeSource';
+import { BRIDGE_SOURCE, BRIDGE_GEN_PLACEHOLDER } from './bridgeSource';
+import { readSkinMeta, SKIN_CONTRACT_VERSION } from './meta';
+import type { SkinMeta } from './meta';
 
 export type SkinScreen = 'chat' | 'room' | 'dossier';
 
@@ -17,10 +19,12 @@ export interface SkinValidation {
   // Экраны, найденные в файле (per-screen файлы содержат один,
   // legacy-файлы — все три сразу)
   screens: SkinScreen[];
+  // Метаданные <meta name="vpc-skin-*"> (без vpc-skin-contract — контракт v1)
+  meta: SkinMeta;
 }
 
 // Обязательные точки контракта по экранам: [селектор, описание]
-const REQUIRED: Record<SkinScreen, [string, string][]> = {
+export const REQUIRED: Record<SkinScreen, [string, string][]> = {
   chat: [
     ['[data-vpc-screen="chat"] [data-vpc="messages"]', 'контейнер ленты [data-vpc="messages"] в экране чата'],
     ['[data-vpc-screen="chat"] template[data-vpc="message"]', 'шаблон сообщения <template data-vpc="message">'],
@@ -46,6 +50,7 @@ export function detectScreens(html: string): SkinScreen[] {
 // чтобы их можно было отдать нейросети-редактору как отчёт.
 export function validateSkin(html: string): SkinValidation {
   const errors: string[] = [];
+  const meta = readSkinMeta(html);
 
   if (new Blob([html]).size > SKIN_MAX_BYTES) {
     errors.push(`Файл больше ${Math.round(SKIN_MAX_BYTES / 1024 / 1024)} МБ — уменьшите inline-ассеты.`);
@@ -54,7 +59,18 @@ export function validateSkin(html: string): SkinValidation {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   if (!doc.documentElement || doc.querySelector('parsererror')) {
     errors.push('Файл не является валидным HTML-документом.');
-    return { ok: false, errors, screens: [] };
+    return { ok: false, errors, screens: [], meta };
+  }
+
+  // Скин новее приложения: hook-точки/события, на которые он рассчитан,
+  // здесь могут не работать
+  if (meta.contract > SKIN_CONTRACT_VERSION) {
+    errors.push(
+      `Скин рассчитан на более новую версию приложения: контракт v${meta.contract}, ` +
+      `приложение поддерживает v${SKIN_CONTRACT_VERSION}. Обновите приложение или ` +
+      `укажите <meta name="vpc-skin-contract" content="${SKIN_CONTRACT_VERSION}">, ` +
+      'если скин не использует новых возможностей.',
+    );
   }
 
   const screens = detectScreens(html);
@@ -85,7 +101,7 @@ export function validateSkin(html: string): SkinValidation {
     errors.push('Найдены внешние ресурсы (http/https, @import, url()). Сеть заблокирована: используйте inline data-URI или CSS/SVG.');
   }
 
-  return { ok: errors.length === 0, errors, screens };
+  return { ok: errors.length === 0, errors, screens, meta };
 }
 
 // Есть ли в скине отдельный экран (например, досье).
@@ -115,26 +131,57 @@ const SHELL_VAR_MAP: Record<string, string[]> = {
   'vpc-shell-shadow': ['--shadow-card', '--shadow-card-hover'],
 };
 
-// Значение безопасно для подстановки в CSS каркаса: никаких тегов, импортов
-// и сетевых url() (data:-URI разрешены — сеть скину всё равно закрыта CSP)
-function safeCssValue(v: string): boolean {
-  if (v.length > 400) return false;
-  const low = v.toLowerCase();
-  if (low.includes('<') || low.includes('>') || low.includes('@')) return false;
-  if (low.includes('expression(') || low.includes('javascript')) return false;
-  if (/url\(\s*["']?\s*(?!data:)/i.test(v)) return false;
-  return true;
+// Значение безопасно для подстановки в CSS каркаса. Белый список: каркас
+// — документ приложения без CSP, любая загрузка отсюда ушла бы в сеть.
+// Никаких url()/image-set()/строк/экранирований — только литералы
+// цветов/размеров, ключевые слова и функции цвета, calc и градиенты.
+// Шрифтам дополнительно разрешены имена семейств в кавычках
+const CSS_SAFE_FUNCS = new Set([
+  'rgb', 'rgba', 'hsl', 'hsla', 'hwb', 'lab', 'lch', 'oklab', 'oklch', 'color-mix',
+  'var', 'calc', 'min', 'max', 'clamp', 'linear-gradient', 'radial-gradient',
+]);
+const FONT_VARS = new Set(['vpc-shell-font', 'vpc-shell-font-disp', 'vpc-shell-font-mono']);
+
+function safeCssValue(v: string, font: boolean): boolean {
+  if (!v || v.length > 400) return false;
+  if (font) {
+    // Список семейств: идентификаторы и имена в кавычках через запятую
+    return /^\s*(?:"[\w .-]*"|'[\w .-]*'|[a-zA-Z][\w .-]*)(?:\s*,\s*(?:"[\w .-]*"|'[\w .-]*'|[a-zA-Z][\w .-]*))*\s*$/.test(v);
+  }
+  // Только буквы/цифры/пробелы и безобидная пунктуация: без \, кавычек, ;{}<>@!
+  if (!/^[a-zA-Z0-9\s#%.,()+\-*/_]*$/.test(v)) return false;
+  const funcs = v.match(/[a-zA-Z-]+(?=\()/g) ?? [];
+  if (funcs.some((f) => !CSS_SAFE_FUNCS.has(f.toLowerCase()))) return false;
+  // Скобки без имени функции (например, «(url)» после склейки) не пропускаем
+  return !/(^|[^a-zA-Z-])\(/.test(v);
 }
 
-// Извлекает shell-тему из файла скина: переменные каркаса → литеральные значения
-export function extractShellTheme(html: string): Record<string, string> {
+// Флаг !important в конце значения (перекраска пишет переменные с ним)
+const stripImportant = (v: string) => v.replace(/\s*!\s*important\s*$/i, '').trim();
+
+// CSS-правила, привязанные к теме приложения: html[data-theme="light"] { … }
+const THEME_BLOCK_RE = /\[data-theme\s*=\s*["']?(light|dark)["']?\s*\][^{}]*\{([^{}]*)\}/g;
+const CSS_VAR_RE = /(--[a-zA-Z0-9-]+)\s*:\s*([^;}{]+);/g;
+
+// Извлекает shell-тему из файла скина: переменные каркаса → литеральные значения.
+// Базовая палитра — переменные вне блоков [data-theme]; с theme поверх неё
+// ложатся переменные из блоков этой темы
+export function extractShellTheme(html: string, theme?: 'light' | 'dark'): Record<string, string> {
   // Все CSS-переменные скина (--name: value;) — из <style>-блоков файла
   const props: Record<string, string> = {};
-  const re = /(--[a-zA-Z0-9-]+)\s*:\s*([^;}{]+);/g;
+  const themed: string[] = [];
+  const base = html.replace(THEME_BLOCK_RE, (_whole: string, t: string, body: string) => {
+    if (t === theme) themed.push(body);
+    return '';
+  });
   let m: RegExpExecArray | null;
-  while ((m = re.exec(html))) props[m[1]] = m[2].trim();
+  for (const src of [base, ...themed]) {
+    CSS_VAR_RE.lastIndex = 0;
+    while ((m = CSS_VAR_RE.exec(src))) props[m[1]] = stripImportant(m[2]);
+  }
 
   const out: Record<string, string> = {};
+  const shell: Record<string, string> = {};
   for (const [shellName, appVars] of Object.entries(SHELL_VAR_MAP)) {
     let value = props['--' + shellName];
     if (!value) continue;
@@ -146,46 +193,114 @@ export function extractShellTheme(html: string): Record<string, string> {
           props[name] != null ? props[name] : fb != null ? fb.trim() : whole,
       );
     }
-    if (/var\(--/.test(value)) continue; // не разрешилась — пропускаем
-    if (!safeCssValue(value)) continue;
+    value = stripImportant(value);
+    if (/var\(/.test(value)) continue; // не разрешилась — пропускаем
+    if (!safeCssValue(value, FONT_VARS.has(shellName))) continue;
+    shell[shellName] = value;
     for (const appVar of appVars) out[appVar] = value;
+  }
+
+  // Производные переменные каркаса, которых скин не задаёт: без них
+  // полупрозрачные подложки и приглушённый текст остались бы от темы
+  // приложения и могли бы слиться с палитрой скина
+  // (смешиваются только цвета: градиент в color-mix недопустим)
+  const color = (name: string) => (shell[name] && !/gradient\(/i.test(shell[name]) ? shell[name] : null);
+  const mix = (a: string, pct: number, b: string) => `color-mix(in srgb, ${a} ${pct}%, ${b})`;
+  const bg = color('vpc-shell-bg');
+  const text = color('vpc-shell-text');
+  const dim = color('vpc-shell-dim');
+  const accent = color('vpc-shell-accent');
+  if (!shell['vpc-shell-topbar'] && bg) out['--topbar-bg'] = mix(bg, 82, 'transparent');
+  if (text) out['--bg-hover'] = mix(text, 6, 'transparent');
+  if ((dim || text) && bg) out['--text-muted'] = dim ? mix(dim, 70, bg) : mix(text!, 45, bg);
+  if (accent) {
+    out['--accent-soft'] = mix(accent, 12, 'transparent');
+    out['--border-accent'] = accent;
   }
   return out;
 }
 
-// Подготовка скина к рендеру: вырезает опасные/внешние теги, вставляет
-// CSP-мету, заменяет bridge-блок эталонным, выставляет активный экран.
-export function prepareSkin(html: string, screen: SkinScreen): string {
+// Маркеры блока bridge — комментарии <!-- ==== VPC-BRIDGE:START … --> / <!-- ==== VPC-BRIDGE:END ==== -->
+const BRIDGE_START_RE = /^\s*=+\s*VPC-BRIDGE:START\b/;
+const BRIDGE_END_RE = /^\s*=+\s*VPC-BRIDGE:END\s*=*\s*$/;
+
+export interface PrepareSkinOptions {
+  // Метка документа: bridge прикладывает её к событиям (SkinFrame
+  // отсеивает события прошлых документов того же iframe)
+  gen?: string;
+  // Скрипт, который исполнится раньше любых скриптов скина (зонд смоук-теста)
+  headScript?: string;
+}
+
+// Эталонный bridge вместо блока между маркерами. Блок заменяется на месте,
+// только если оба маркера — соседи прямо в <head>/<body>; иначе bridge
+// дописывается в конец <body>. Всё — в DOM, без правки сериализованной строки
+function placeBridge(doc: Document, script: HTMLScriptElement) {
+  const walker = doc.createTreeWalker(doc, NodeFilter.SHOW_COMMENT);
+  let start: Comment | null = null;
+  let end: Comment | null = null;
+  for (let n = walker.nextNode() as Comment | null; n; n = walker.nextNode() as Comment | null) {
+    if (!start) {
+      if (BRIDGE_START_RE.test(n.data)) start = n;
+    } else if (BRIDGE_END_RE.test(n.data)) {
+      end = n;
+      break;
+    }
+  }
+  const parent = start?.parentNode;
+  if (start && end && parent && end.parentNode === parent && (parent === doc.body || parent === doc.head)) {
+    while (start.nextSibling && start.nextSibling !== end) parent.removeChild(start.nextSibling);
+    parent.insertBefore(script, end);
+    return;
+  }
+  doc.body!.appendChild(script);
+}
+
+// Подготовка скина к рендеру: вырезает опасные/внешние теги, заменяет
+// bridge-блок эталонным, вставляет CSP-мету первой в <head>, выставляет
+// активный экран. Итог — сериализация DOM без строковых вставок
+export function prepareSkin(html: string, screen: SkinScreen, opts: PrepareSkinOptions = {}): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
+  const root = doc.documentElement;
 
   // Защитная чистка: эти теги не нужны скину и потенциально опасны
   doc
-    .querySelectorAll('base, link, iframe, object, embed, meta[http-equiv], script[src]')
+    .querySelectorAll(
+      'base, link, iframe, frame, frameset, object, embed, portal, fencedframe, meta[http-equiv], script[src]',
+    )
     .forEach((el) => el.remove());
+  root.removeAttribute('manifest');
+  if (!doc.body) root.appendChild(doc.createElement('body'));
+  let head = doc.head;
+  if (!head) {
+    head = doc.createElement('head');
+    root.insertBefore(head, root.firstChild);
+  }
 
-  // CSP: никакой сети, только inline скрипты/стили и data:-ассеты
+  // Bridge: заменить блок между маркерами эталонной версией
+  const bridge = doc.createElement('script');
+  bridge.textContent = BRIDGE_SOURCE.replace(BRIDGE_GEN_PLACEHOLDER, (opts.gen ?? '').replace(/[^\w-]/g, ''));
+  placeBridge(doc, bridge);
+
+  // CSP: никакой сети, только inline скрипты/стили и data:-ассеты. Мета —
+  // самый первый узел <head>: политика действует только на то, что ниже неё,
+  // а до <head> в сериализации идёт лишь тег <html> (без манифеста)
   const meta = doc.createElement('meta');
   meta.setAttribute('http-equiv', 'Content-Security-Policy');
   meta.setAttribute('content', CSP);
-  doc.head.insertBefore(meta, doc.head.firstChild);
+  if (opts.headScript) {
+    const probe = doc.createElement('script');
+    probe.textContent = opts.headScript;
+    head.insertBefore(probe, head.firstChild);
+  }
+  head.insertBefore(meta, head.firstChild);
+  // Перед <head> ничего не остаётся (там бывают лишь комментарии/пробелы)
+  while (root.firstChild && root.firstChild !== head) root.removeChild(root.firstChild);
 
   // Активный экран
-  doc.documentElement.setAttribute('data-vpc-active', screen);
+  root.setAttribute('data-vpc-active', screen);
+  // Версия контракта скина — bridge читает её отсюда (v1 — файл без меты)
+  root.setAttribute('data-vpc-contract', String(readSkinMeta(html).contract));
 
-  let out = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
-
-  // Bridge: заменить блок между маркерами эталонной версией;
-  // если маркеры выпилены — дописать перед </body>
-  const bridgeTag = '<script>' + BRIDGE_SOURCE + '</' + 'script>';
-  const start = out.indexOf(BRIDGE_START);
-  const end = out.indexOf(BRIDGE_END);
-  if (start !== -1 && end !== -1 && end > start) {
-    out = out.slice(0, start) + BRIDGE_START + ' ==== -->\n' + bridgeTag + '\n<!-- ==== ' + BRIDGE_END + out.slice(end + BRIDGE_END.length);
-  } else if (out.includes('</body>')) {
-    out = out.replace('</body>', bridgeTag + '\n</body>');
-  } else {
-    out += bridgeTag;
-  }
-
-  return out;
+  return '<!DOCTYPE html>\n' + root.outerHTML;
 }

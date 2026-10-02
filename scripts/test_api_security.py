@@ -421,6 +421,34 @@ def test_typed_chunks_nonblocking():
     check("_typed_chunks: пустой текст → без событий", empty_events == [])
 
 
+def test_reply_stm_ts():
+    section("H2. server._reply_stm_ts — пузырь ответа по серверной метке STM")
+    import app.api.server as server_mod
+
+    class _Bot:
+        def __init__(self, tail):
+            self.tail = tail
+
+        def _turn_stm_tail(self, key):
+            if isinstance(self.tail, Exception):
+                raise self.tail
+            return self.tail
+
+    tail = [{"role": "user", "content": "закажи пиццу", "timestamp": 10.0},
+            {"role": "assistant", "content": "Нажал «20 см».", "timestamp": 11.0},
+            {"role": "assistant", "content": "Какой размер?", "timestamp": 12.5}]
+    check("метка ответа — timestamp его записи в STM (после сообщений хода)",
+          server_mod._reply_stm_ts(_Bot(tail), "k", "Какой размер?") == 12.5)
+    t0 = time.time()
+    got = server_mod._reply_stm_ts(_Bot(tail), "k", "другой текст")
+    check("текста ответа в STM нет — «сейчас» (после всех сообщений хода)",
+          got is not None and got >= t0)
+    check("хода/якоря нет или ошибка — None (фронт по-старому)",
+          server_mod._reply_stm_ts(_Bot(None), "k", "x") is None
+          and server_mod._reply_stm_ts(_Bot(RuntimeError("x")), "k", "x")
+          is None)
+
+
 # ════════════ I. persona_yaml: sync read вынесен в поток ══════════════════
 
 def test_persona_yaml_nonblocking():
@@ -492,6 +520,7 @@ def main():
     test_settings_api_env_rejection()
     test_fastapi_endpoints()
     test_typed_chunks_nonblocking()
+    test_reply_stm_ts()
     test_persona_yaml_nonblocking()
 
     print(f"\nИтого: {ok} проверок, {failures} провалов")

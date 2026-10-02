@@ -560,6 +560,31 @@ def test_unique_ids(tmp: Path):
           sorted(ltm.get_all_facts("u1")) == ["Rule: без смайликов", "Rule: коротко"])
 
 
+def test_prompt_language(tmp: Path):
+    print("\n── язык пользователя в промптах экстракции/слияния/консолидации ──")
+    router = GatedRouter({"fact extractor": "City: Tomsk",
+                          "merge values": "pizza, pasta, sushi, rolls, ramen, soup",
+                          "consolidate": "City: Tomsk\nFood: pizza"}, gate=False)
+    ltm = make_ltm(tmp, "prompt_lang", router)
+    ltm.extract_facts_async("User: я переехал в Томск в прошлом году", "u1")
+    drain_pool(ltm)
+    check("экстракция: язык по тексту (ru) + категории на английском",
+          router.calls and "speaks Russian" in router.calls[-1]
+          and "Category names" in router.calls[-1])
+    ltm.note_user_language("u2", "I moved to Tomsk last year")
+    ltm.extract_facts_async("User: ok", "u2")
+    drain_pool(ltm)
+    check("экстракция: язык из последней реплики пользователя (en)",
+          "speaks English" in router.calls[-1])
+    ltm.save_facts("Food: pizza, pasta, sushi", "u2")
+    ltm.save_facts("Food: pasta, rolls, ramen", "u2")
+    check("слияние: язык пользователя в системном промпте",
+          any("merge values" in c and "speaks English" in c for c in router.calls))
+    ltm.summarize_user("u2")
+    check("консолидация: язык пользователя в системном промпте",
+          "consolidate" in router.calls[-1] and "speaks English" in router.calls[-1])
+
+
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="memory_concurrency_"))
     cwd = os.getcwd()
@@ -575,6 +600,7 @@ def main():
         test_merge_outside_lock(tmp)
         test_serial_and_save_fixes(tmp)
         test_unique_ids(tmp)
+        test_prompt_language(tmp)
     finally:
         drain_pool()
         os.chdir(cwd)

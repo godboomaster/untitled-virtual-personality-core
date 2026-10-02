@@ -33,6 +33,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.INFO,
 )
+# Маска секретов во ВСЕХ записях лога процесса (пароли из ответов агенту/
+# слоту сценария, email/телефоны/карты/токены) — одна точка на все пути
+from app.core import log_privacy
+log_privacy.install()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
@@ -134,6 +138,7 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         commands.append(("cancel_reminder", "Отменить: /cancel_reminder <номер>"))
     if bot_instance.learning_manager:
         commands.append(("learn", "Учить тему: /learn <тема>"))
+        commands.append(("stop_learning", "Остановить курс: /stop_learning [тема]"))
     if bot_instance.file_db:
         commands.append(("files", "Список загруженных файлов"))
         commands.append(("reset_files", "Сбросить файловую базу"))

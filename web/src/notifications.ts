@@ -241,7 +241,36 @@ export async function testNotification(): Promise<string> {
   return 'Отправлено ✓ Баннера нет? Системные настройки → Уведомления → [браузер] → включить и выбрать стиль «Баннеры»; также проверь Фокус-режим';
 }
 
+// ===== Заголовок вкладки =====
+// Итог собирается из двух частей: счётчик непрочитанных и статус (например,
+// «Fyvf · читает у окна», пока открыта комната или её PiP-окно):
+// «(3) Fyvf · читает у окна», без статуса — «(3) Virtual Persona Core».
+// Статусы ставятся по владельцам; раздел «Комната» важнее PiP-окна.
+
+let unreadTotal = 0;
+const titleStatuses = new Map<string, string>();
+const TITLE_PRIORITY = ['room', 'pip'];
+
+function applyTitle() {
+  let status: string | undefined;
+  for (const owner of TITLE_PRIORITY) {
+    status = titleStatuses.get(owner);
+    if (status) break;
+  }
+  status ??= titleStatuses.values().next().value;
+  const base = status || BASE_TITLE;
+  document.title = unreadTotal > 0 ? `(${unreadTotal}) ${base}` : base;
+}
+
 // Счётчик непрочитанных в заголовке вкладки: «(3) Virtual Persona Core»
 export function setUnreadTitle(total: number) {
-  document.title = total > 0 ? `(${total}) ${BASE_TITLE}` : BASE_TITLE;
+  unreadTotal = total;
+  applyTitle();
+}
+
+// Статус владельца в заголовке; null — снять (заголовок восстанавливается)
+export function setTitleStatus(owner: string, text: string | null) {
+  if (text) titleStatuses.set(owner, text);
+  else titleStatuses.delete(owner);
+  applyTitle();
 }

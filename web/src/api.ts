@@ -3,7 +3,11 @@
    Токен (если на бэке задан API_TOKEN) хранится в localStorage
    под ключом vpc-api-token. */
 
+import type { RoomArtData, RoomArtPatch, RoomFocus, RoomLayout, RoomLayoutPatch, RoomSource, RoomStyle, RoomView } from './room/roomTypes';
+
 const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000';
+// Адрес бэкенда без схемы — для подписей в UI (экран загрузки)
+export const API_HOST = BASE_URL.replace(/^https?:\/\//, '');
 
 // Пользователь веб-интерфейса — один на всех персон (память у персон изолирована контекстом)
 export const WEB_USER_ID = 'web_user';
@@ -75,6 +79,7 @@ export interface ApiChatResponse {
   model: string | null;
   control_mode?: boolean; // режим управления после этого сообщения — дебаунс отправки гасится
   images?: string[]; // скриншоты страницы (dataURL) из режима управления
+  reply_ts?: number | null; // метка ответа в STM (серверные секунды) — место пузыря в ленте
 }
 
 export class ApiError extends Error {
@@ -119,7 +124,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => request<{ status: string }>('/api/health'),
+  health: (init?: RequestInit) => request<{ status: string }>('/api/health', init),
 
   getPersonas: () => request<ApiPersona[]>('/api/personas'),
 
@@ -184,11 +189,16 @@ export const api = {
       { method: 'POST', body: JSON.stringify({}) },
     ),
 
-  // Поштучное удаление из STM: index — позиция в списке getHistory
-  deleteStmMessage: (persona: string, index: number) =>
+  // Поштучное удаление из STM: index — позиция в списке getHistory.
+  // match — текст (и метка) удаляемой реплики: буфер STM сдвигается с каждой
+  // новой репликой, сервер тогда ищет именно её, а index — лишь подсказка
+  deleteStmMessage: (persona: string, index: number, match?: { content: string; timestamp?: number | null }) =>
     request<{ status: string }>('/api/chat/history/delete', {
       method: 'POST',
-      body: JSON.stringify({ persona, index, user_id: WEB_USER_ID, chat_id: WEB_CHAT_ID }),
+      body: JSON.stringify({
+        persona, index, user_id: WEB_USER_ID, chat_id: WEB_CHAT_ID,
+        ...(match ? { content: match.content, timestamp: match.timestamp ?? null } : {}),
+      }),
     }),
 
   // Удаление последних count сообщений из STM
@@ -299,8 +309,89 @@ export const api = {
       { method: 'DELETE' },
     ),
 
+  // Отмена по стабильному id: номер строки мог сдвинуться (одно сработало)
+  cancelReminderById: (persona: string, id: string) =>
+    request<{ items: ReminderEntry[] }>(
+      `/api/personas/${encodeURIComponent(persona)}/reminders?id=${encodeURIComponent(id)}&chat_id=${WEB_CHAT_ID}`,
+      { method: 'DELETE' },
+    ),
+
+  // Правка на месте по id: текст, время (unix-секунды) и/или пауза
+  // (active: false — на паузу, true — продолжить); повтор сохраняется
+  updateReminder: (persona: string, id: string, patch: { task?: string; trigger_at?: number; active?: boolean }) =>
+    request<{ items: ReminderEntry[] }>(
+      `/api/personas/${encodeURIComponent(persona)}/reminders/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: JSON.stringify({ ...patch, chat_id: WEB_CHAT_ID }) },
+    ),
+
   getInventory: (persona: string) =>
     request<{ items: InventoryEntry[] }>(`/api/personas/${encodeURIComponent(persona)}/inventory`),
+
+  addInventoryItem: (persona: string, name: string, description: string = '') =>
+    request<{ result: string }>(`/api/personas/${encodeURIComponent(persona)}/inventory`, {
+      method: 'POST',
+      body: JSON.stringify({ name, description }),
+    }),
+
+  removeInventoryItem: (persona: string, name: string) =>
+    request<{ result: string }>(
+      `/api/personas/${encodeURIComponent(persona)}/inventory?name=${encodeURIComponent(name)}`,
+      { method: 'DELETE' },
+    ),
+
+  // ── Комната: живое присутствие персоны (типы — web/src/room/roomTypes.ts) ──
+  // chat_id=auto — бэкенд сам берёт самый свежий чат (веб или Telegram)
+  getRoom: (persona: string, chatId: string = 'auto') =>
+    request<RoomView>(`/api/personas/${encodeURIComponent(persona)}/room?chat_id=${encodeURIComponent(chatId)}`),
+
+  getRoomLayout: (persona: string) =>
+    request<RoomLayout>(`/api/personas/${encodeURIComponent(persona)}/room/layout`),
+
+  // Частичный патч раскладки; null у предмета удаляет его запись
+  putRoomLayout: (persona: string, patch: RoomLayoutPatch) =>
+    request<RoomLayout>(`/api/personas/${encodeURIComponent(persona)}/room/layout`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  getRoomStyle: (persona: string) =>
+    request<RoomStyle>(`/api/personas/${encodeURIComponent(persona)}/room/style`),
+
+  putRoomStyle: (persona: string, patch: { description?: string; reference?: string | null }) =>
+    request<RoomStyle>(`/api/personas/${encodeURIComponent(persona)}/room/style`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  // Описание арт-стиля по референсу (vision-модель; 501 — такой модели нет)
+  describeRoomStyle: (persona: string, reference: string) =>
+    request<{ description: string }>(`/api/personas/${encodeURIComponent(persona)}/room/style/describe`, {
+      method: 'POST',
+      body: JSON.stringify({ reference }),
+    }),
+
+  getRoomArt: (persona: string) =>
+    request<RoomArtData>(`/api/personas/${encodeURIComponent(persona)}/room/art`),
+
+  putRoomArt: (persona: string, patch: RoomArtPatch) =>
+    request<RoomArtData>(`/api/personas/${encodeURIComponent(persona)}/room/art`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  // «Заглянул в комнату»: до LLM доходит, только если разрешено фичей и лимитом
+  pokeRoom: (persona: string, chatId: string = 'auto') =>
+    request<{ ok: boolean; delivered: boolean }>(`/api/personas/${encodeURIComponent(persona)}/room/poke`, {
+      method: 'POST',
+      body: JSON.stringify({ chat_id: chatId }),
+    }),
+
+  // Совместная работа: start/end; на end — короткая реплика персоны (или null)
+  roomFocus: (persona: string, action: 'start' | 'end', minutes?: number, chatId: string = 'auto') =>
+    request<{ ok?: boolean; focus?: RoomFocus; source?: RoomSource; elapsed_min?: number; line?: string | null }>(`/api/personas/${encodeURIComponent(persona)}/room/focus`, {
+      method: 'POST',
+      body: JSON.stringify({ action, chat_id: chatId, ...(minutes != null ? { minutes } : {}) }),
+    }),
 
   getLearning: (persona: string) =>
     request<{ sessions: LearningSessionApi[] }>(
@@ -318,6 +409,10 @@ export const api = {
       `/api/personas/${encodeURIComponent(persona)}/learning?session_id=${encodeURIComponent(sessionId)}&chat_id=${WEB_CHAT_ID}`,
       { method: 'DELETE' },
     ),
+
+  // Сводка для главной: состояние персон, лента «пока вас не было», телеметрия
+  // (бэкенд читает файлы персон, ботов не поднимает — app/api/home_api.py)
+  getHome: () => request<HomeOverview>(`/api/home?chat_id=${WEB_CHAT_ID}`),
 
   getDiary: (persona: string) =>
     request<DiaryData>(`/api/personas/${encodeURIComponent(persona)}/diary`),
@@ -358,7 +453,6 @@ export const api = {
     webchat_site: string | null; // первый из webchat_sites (совместимость)
     webchat_sites: string[]; // включённые веб-чаты в порядке перебора
     webchat_options: string[];
-    local_tasks: LocalTaskInfo[]; // движки задач локального движка (Ollama/веб-чат)
   }>('/api/providers'),
 
   getLocalStatus: () =>
@@ -378,13 +472,23 @@ export const api = {
     request<{ ok: boolean; latency_sec?: number; preview?: string; error?: string }>(
       '/api/providers/webchat/test', { method: 'POST', body: JSON.stringify({ site }) }),
 
-  // Движок конкретной локальной задачи (классификаторы, тики жизни и т.п.):
-  // 'ollama' | 'webchat'; site — сайт веб-чата для задачи (пусто — первый включённый)
-  setLocalTask: (task: string, backend: 'ollama' | 'webchat', site?: string | null) =>
-    request<{ ok: boolean; task: string; backend: string }>(`/api/providers/local-tasks/${encodeURIComponent(task)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ backend, site: site ?? null }),
-    }),
+  // Движки служебных задач персоны (классификаторы, тики жизни и т.п.):
+  // Ollama или веб-чат по каждой задаче + веб-чат фоновых задач
+  getPersonaLocalTasks: (persona: string) =>
+    request<PersonaLocalTasks>(`/api/personas/${encodeURIComponent(persona)}/local-tasks`),
+
+  // task + backend: 'ollama' | 'webchat' (site — сайт задачи, null — веб-чат
+  // фоновых задач) | 'default' — снять выбор; bg_site: 'fallback' | 'primary' | сайт
+  updatePersonaLocalTasks: (persona: string, patch: {
+    task?: string;
+    backend?: 'ollama' | 'webchat' | 'default';
+    site?: string | null;
+    bg_site?: string;
+  }) =>
+    request<PersonaLocalTasks & { ok: boolean }>(
+      `/api/personas/${encodeURIComponent(persona)}/local-tasks`,
+      { method: 'PUT', body: JSON.stringify(patch) },
+    ),
 
   // ── Местоположение и погода (строка окружения в контекст персон) ──
 
@@ -442,6 +546,74 @@ export const api = {
       { method: 'PUT', body: JSON.stringify({ model }) },
     ),
 
+  // Аватары персон хранятся на сервере (data/api_<id>/avatar.*) — общие для всех
+  // браузеров. Отдаются data-URL-ами одним запросом: <img src> на эндпоинт не
+  // прошёл бы авторизацию (Bearer-токен идёт только в заголовке fetch)
+  getPersonaAvatars: () => request<{ avatars: Record<string, string> }>('/api/persona-avatars'),
+
+  setPersonaAvatar: (persona: string, dataUrl: string) =>
+    request<{ ok: boolean }>(`/api/personas/${encodeURIComponent(persona)}/avatar`, {
+      method: 'PUT',
+      body: JSON.stringify({ data_url: dataUrl }),
+    }),
+
+  deletePersonaAvatar: (persona: string) =>
+    request<{ ok: boolean }>(`/api/personas/${encodeURIComponent(persona)}/avatar`, { method: 'DELETE' }),
+
+  // ── Библиотека скинов (data/skins/ на сервере, общая для всех браузеров) ──
+
+  // Метаданные всех скинов, без HTML
+  // hidden_builtins — встроенные скины, удалённые (скрытые) из библиотеки
+  getSkins: () => request<{ skins: ApiSkinMeta[]; hidden_builtins?: string[] }>('/api/skins'),
+
+  // Вернуть скрытые встроенные скины в библиотеку
+  restoreBuiltinSkins: () => request<{ restored: string[] }>('/api/skins/builtins/restore', { method: 'POST' }),
+
+  // Скин целиком: метаданные + {sha256: html} файлов экранов
+  getSkin: (id: string) =>
+    request<{ skin: ApiSkinMeta; files: Record<string, string> }>(`/api/skins/${encodeURIComponent(id)}`),
+
+  createSkin: (body: ApiSkinCreate) =>
+    request<{ skin: ApiSkinMeta }>('/api/skins', { method: 'POST', body: JSON.stringify(body) }),
+
+  updateSkin: (id: string, patch: ApiSkinUpdate) =>
+    request<{ skin: ApiSkinMeta }>(`/api/skins/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  // Удаление снимает скин со всех персон; unassigned — с каких сняли.
+  // Встроенный скин (builtin-…) не удаляется, а скрывается из библиотеки
+  deleteSkin: (id: string) =>
+    request<{ ok: boolean; unassigned: string[] }>(`/api/skins/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  getSkinAssignments: () => request<{ assignments: Record<string, string> }>('/api/skin-assignments'),
+
+  // skinId=null — снять скин с персоны
+  setPersonaSkin: (persona: string, skinId: string | null) =>
+    request<{ ok: boolean }>(`/api/personas/${encodeURIComponent(persona)}/skin`, {
+      method: 'PUT',
+      body: JSON.stringify({ skin_id: skinId }),
+    }),
+
+  // Арт-направления для генерации скина нейросетью (короткий вызов LLM)
+  skinDirections: (body: ApiSkinDirectionRequest, signal?: AbortSignal) =>
+    request<ApiSkinDirections>('/api/skins/direction', { method: 'POST', body: JSON.stringify(body), signal }),
+
+  // Цвет метки персоны (строка color: в YAML); null — вернуть цвет по умолчанию
+  setPersonaColor: (persona: string, color: string | null) =>
+    request<{ ok: boolean; color: string }>(`/api/personas/${encodeURIComponent(persona)}/color`, {
+      method: 'PUT',
+      body: JSON.stringify({ color }),
+    }),
+
+  // Смена id персоны: файл YAML, папка памяти data/api_<id>, аватар и ссылки на id
+  renamePersona: (persona: string, newId: string) =>
+    request<{ ok: boolean; persona: string; restart_required: boolean }>(`/api/personas/${encodeURIComponent(persona)}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ new_id: newId }),
+    }),
+
   getPersonaYaml: (persona: string) =>
     request<{ persona: string; yaml: string }>(`/api/personas/${encodeURIComponent(persona)}/yaml`),
 
@@ -461,6 +633,7 @@ export const api = {
     llm?: {
       primary?: string | null;
       fallback?: string[];
+      exclude?: string[]; // убранные из цепочки персоны; [] — снять
       models?: Record<string, string>;
       answer_provider?: string | null;
       cc_provider?: string | null;
@@ -510,6 +683,47 @@ export const api = {
     ),
 };
 
+export type ApiSkinScreen = 'chat' | 'dossier' | 'room';
+
+// Скин библиотеки на сервере (app/api/skins_api.py)
+export interface ApiSkinMeta {
+  id: string;
+  name: string;
+  author: string | null;
+  version: string | null;
+  contract: number;
+  screens: Partial<Record<ApiSkinScreen, string>>; // экран → sha256 файла
+  sizes: Partial<Record<ApiSkinScreen, number>>; // байт
+  colors: Record<string, string>; // переопределения CSS-переменных
+  hue_shift: number;
+  created_at: number; // мс
+  updated_at: number;
+}
+
+// Файлы передаются списком, экраны ссылаются на них индексами: комбинированный
+// файл на три экрана уходит по сети один раз
+export interface ApiSkinCreate {
+  name: string;
+  author?: string | null;
+  version?: string | null;
+  contract?: number;
+  files: string[];
+  screens: Partial<Record<ApiSkinScreen, number>>;
+  colors?: Record<string, string>;
+  hue_shift?: number;
+}
+
+export interface ApiSkinUpdate {
+  name?: string;
+  author?: string | null;
+  version?: string | null;
+  contract?: number;
+  files?: string[];
+  screens?: Partial<Record<ApiSkinScreen, number | null>>; // null — убрать экран
+  colors?: Record<string, string>;
+  hue_shift?: number;
+}
+
 export interface FileEntry {
   filename: string;
   size: number; // символов полного текста
@@ -537,20 +751,33 @@ export interface LocalStatus {
   available: boolean; // server && model_present
 }
 
-// Задача локального движка и её текущий движок (выбор пользователя)
+// Служебная задача персоны и её текущий (resolved) движок
 export interface LocalTaskInfo {
   id: string;
   backend: 'ollama' | 'webchat';
-  site: string | null; // сайт веб-чата (когда backend === 'webchat')
+  sites: string[]; // веб-чаты по порядку попыток (затем откат на Ollama)
+  site: string | null; // явно выбранный сайт задачи (null — веб-чат фоновых задач)
+  explicit: boolean; // движок выбран пользователем (иначе — дефолт по роду задачи)
+  background: boolean; // фоновая: по умолчанию веб-чат; иначе — Ollama
   ollama_only: boolean; // технически не может уйти в веб-чат (OCR)
+}
+
+// Движки служебных задач персоны
+export interface PersonaLocalTasks {
+  bg_site: string; // веб-чат фоновых задач: 'fallback' | 'primary' | сайт
+  primary_site: string | null; // основной веб-чат персоны
+  fallback_site: string | null; // первый веб-чат её fallback-цепочки
+  sites: string[]; // веб-чаты цепочки персоны
+  tasks: LocalTaskInfo[];
 }
 
 export interface PersonaLlmConfig {
   primary: string | null; // null — глобальный активный провайдер
   fallback: string[]; // приоритет fallback-цепочки (id провайдеров)
+  exclude?: string[]; // убранные из цепочки этой персоны (другие не затрагиваются)
   models: Record<string, string>; // свои модели по провайдерам (override глобальной)
   // провайдеры по назначению (null/отсутствует — обычная цепочка):
-  answer_provider?: string | null; // текст ответа пользователю
+  answer_provider?: string | null; // реплики персоны в режиме управления (действия, пересказ страницы)
   cc_provider?: string | null; // решения режима управления (разбор/резолв)
   vision_provider?: string | null; // vision-фолбэк (картинки)
   // лимиты веб-чатов: {сайт: {enabled, per_hour}}; сайта нет — без лимита
@@ -577,12 +804,14 @@ export interface PersonaDraft {
 // SSE-стриминг ответа (/api/chat/stream): токены — порции финального текста
 // (бэкенд отдаёт reply после постобработки ядра кусками, эффект печати),
 // part_break — граница расщеплённого ответа (settings.split_messages):
-// следующие токены относятся к новому сообщению. Промис резолвится
-// финальным событием done с тем же reply (+ extra_messages).
+// следующие токены относятся к новому сообщению; reply_ts (до токенов) —
+// серверная метка ответа в STM. Промис резолвится финальным событием done
+// с тем же reply (+ extra_messages).
 export async function streamChat(
   params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string },
   onToken: (text: string) => void,
   onPartBreak?: () => void,
+  onReplyTs?: (ts: number) => void,
 ): Promise<ApiChatResponse> {
   const token = localStorage.getItem('vpc-api-token');
   // Сетевой сбой до ответа (fetch отклонён) — запрос мог и дойти до сервера:
@@ -643,11 +872,145 @@ export async function streamChat(
       const event = JSON.parse(line.slice(6));
       if (event.token) onToken(event.token);
       else if (event.part_break) onPartBreak?.();
+      else if (!event.done && typeof event.reply_ts === 'number') onReplyTs?.(event.reply_ts);
       else if (event.error) throw new ApiError(500, event.error);
       else if (event.done) return event as ApiChatResponse;
     }
   }
   throw new StreamInterruptedError('Стрим оборвался без финального события');
+}
+
+// Арт-направление скина (POST /api/skins/direction): сюжет, палитра с ролями,
+// системные шрифтовые стеки, раскладка, фирменный элемент. Выбранное уходит
+// с каждым запросом генерации экрана — все экраны собираются из него
+export interface ApiSkinDirectionColor {
+  role: string; // background | surface | ink | muted | accent | accent2 | extra
+  hex: string; // #rrggbb
+  reason: string;
+}
+
+export interface ApiSkinDirection {
+  name: string;
+  subject: string;
+  mood: string;
+  palette: ApiSkinDirectionColor[];
+  fonts: { display: string; text: string; mono: string; why: string }; // CSS-стеки font-family (mono может быть пуст)
+  layout: string;
+  signature: string;
+  texture: string;
+  motion: string;
+  avoid: string[];
+  note?: string; // заметка пользователя к выбранному направлению
+}
+
+export interface ApiSkinDirections {
+  directions: ApiSkinDirection[];
+  provider: string | null;
+  model: string | null;
+}
+
+export interface ApiSkinDirectionRequest {
+  description: string;
+  locale: 'ru' | 'en';
+  count?: number; // 1–3
+  exclude?: string[]; // названия уже показанных направлений
+  provider?: string | null;
+  model?: string | null;
+}
+
+// Генерация файла экрана скина нейросетью (POST /api/skins/generate, SSE)
+export interface ApiSkinGenRequest {
+  screen: ApiSkinScreen;
+  description: string;
+  base_html: string;
+  base_kind: 'template' | 'skin';
+  contract_doc: string;
+  locale: 'ru' | 'en';
+  previous_html?: string | null; // итерация исправления: прошлый ответ модели
+  errors?: string[]; // …и ошибки проверки
+  provider?: string | null; // null — обычная цепочка провайдеров
+  model?: string | null;
+  // Выбранное арт-направление; null на первом запросе — сервер подберёт
+  // направление сам и пришлёт его событием status=direction
+  direction?: ApiSkinDirection | null;
+}
+
+export interface ApiSkinGenResult {
+  html: string;
+  truncated: boolean; // ответ оборван лимитом вывода (нет </html>) и после продолжений
+  chars: number;
+  provider: string | null;
+  model: string | null;
+  elapsed: number; // сек
+}
+
+// Ошибка из SSE-потока генерации: code — busy (идёт другая генерация) или
+// no_html (модель ответила не документом; raw — начало ответа)
+export class SkinGenStreamError extends ApiError {
+  code: string | null;
+  raw: string | null;
+  constructor(detail: string, code: string | null, raw: string | null) {
+    super(code === 'busy' ? 409 : 500, detail);
+    this.code = code;
+    this.raw = raw;
+  }
+}
+
+// Прогресс: символов ответа получено и секунд прошло; status — служебные
+// этапы сервера (started, retry_small_limit, continue — ответ оборван лимитом
+// вывода и дописывается, info.round — номер продолжения; direction_start /
+// direction / direction_failed — сервер сам подбирает арт-направление,
+// info.direction — подобранное). Отмена — через signal
+export async function streamSkinGeneration(
+  params: ApiSkinGenRequest,
+  onProgress: (chars: number, elapsed: number) => void,
+  onStatus?: (status: string, info: { round?: number; direction?: ApiSkinDirection }) => void,
+  signal?: AbortSignal,
+): Promise<ApiSkinGenResult> {
+  const token = localStorage.getItem('vpc-api-token');
+  const res = await fetch(`${BASE_URL}/api/skins/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(params),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch {
+      /* тело не JSON — оставляем HTTP-код */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const frames = buf.split('\n\n');
+    buf = frames.pop() ?? '';
+    for (const frame of frames) {
+      const line = frame.split('\n').find((l) => l.startsWith('data: '));
+      if (!line) continue;
+      const event = JSON.parse(line.slice(6));
+      if (event.error) throw new SkinGenStreamError(event.error, event.code ?? null, event.raw ?? null);
+      if (event.done) return event as ApiSkinGenResult;
+      if (typeof event.progress === 'number') onProgress(event.progress, event.elapsed ?? 0);
+      else if (event.status)
+        onStatus?.(event.status, {
+          round: typeof event.round === 'number' ? event.round : undefined,
+          direction: event.direction && typeof event.direction === 'object' ? event.direction : undefined,
+        });
+    }
+  }
+  throw new StreamInterruptedError('Стрим генерации скина оборвался без результата');
 }
 
 export interface InboxMessage {
@@ -664,10 +1027,13 @@ export interface TodoEntry {
 
 export interface ReminderEntry {
   index: number;
+  id: string; // стабильный id напоминания (reminder_manager)
   task: string;
   trigger_at: number | null;
   recurrence: { type: 'daily' | 'weekly'; hour: number; minute: number; weekday?: number | null } | null;
   user_name: string;
+  // false — на паузе: не сработает, пока не продолжат (у старых серверов поля нет)
+  active?: boolean;
 }
 
 // ── Общий календарь ──
@@ -712,6 +1078,30 @@ export interface LearningSessionApi {
   quiz_pending: boolean;
 }
 
+// Сводка главной страницы (GET /api/home)
+export interface HomeEvent {
+  kind: 'initiative' | 'diary';
+  text: string;
+  ts: number; // unix-секунды
+  type?: string;
+}
+
+export interface HomePersonaOverview {
+  last_user_ts: number | null; // последнее сообщение оператора в веб-чате
+  state: { pastime: string; location: string; mood: string; energy: number | null; updated_at: number | null } | null;
+  events: HomeEvent[]; // свежие сверху
+  reminders_active: number;
+  next_reminder: { text: string; ts: number } | null;
+  initiatives_today: number;
+  initiatives_max: number;
+  ltm_facts: number;
+}
+
+export interface HomeOverview {
+  now: number;
+  personas: Record<string, HomePersonaOverview>;
+}
+
 export interface DiaryData {
   episodes: { text: string; timestamp: string; msg_count?: number }[];
   notes: { text: string; timestamp: string; user_id?: string }[];
@@ -743,6 +1133,8 @@ export interface LivingMood {
   valence: number;
   arousal: number;
   tag: string;
+  // направление последнего сдвига valence (старый бэкенд — поля нет)
+  trend?: 'up' | 'down' | 'flat';
 }
 
 export interface LivingPersonaState {

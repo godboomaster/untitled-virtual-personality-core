@@ -61,10 +61,6 @@ export const helpTextsRu = {
     title: 'Запоминание фактов о вас',
     body: 'После ваших сообщений персона незаметно выписывает важное: город, возраст, работу, увлечения — и запоминает навсегда. Старые факты обновляются, похожие объединяются. Если выключить — персона перестанет узнавать о вас новое, но уже запомненное не забудет.',
   },
-  'settings.feature.rag': {
-    title: 'Ответы по вашим файлам',
-    body: 'Можно загрузить персоне документы, и она будет отвечать с их учётом — найдёт нужные места и использует в разговоре. Одновременно хранятся три последних файла: загружаете четвёртый — самый старый удаляется.',
-  },
   'settings.feature.self_memory': {
     title: 'Личный дневник персоны',
     body: 'Персона ведёт дневник: записывает, о чём вы говорили и что она почувствовала. Эти записи тихонько подмешиваются в её мысли, поэтому у неё есть ощущение «жизни между разговорами». Вам она про дневник прямо не рассказывает.',
@@ -87,10 +83,51 @@ export const helpTextsRu = {
   },
   'settings.feature.computer_control': {
     title: 'Управление компьютером',
-    body: 'Разрешает персоне выполнять команды на вашем компьютере: открывать сайты («открой ютуб»), искать на своих сайтах, запускать приложения и задачи, нажимать кнопки на страницах. Разрешённое настраивается списками в разделе «Инструменты». Если выключить — персона ничего не выполняет, а списки сохраняются и вернутся при повторном включении. Применяется сразу, перезапуск не нужен.',
+    body: 'Разрешает персоне выполнять команды на вашем компьютере: открывать сайты («открой ютуб»), искать на своих сайтах, запускать приложения и задачи, нажимать кнопки на страницах. Разрешённое настраивается списками во вкладке «Режим управления». Если выключить — персона ничего не выполняет, а списки сохраняются и вернутся при повторном включении. Применяется сразу, перезапуск не нужен.',
   },
 
-  // ===== Инструменты (управление компьютером) =====
+  'settings.feature.file_upload': {
+    title: 'Загрузка файлов',
+    body: 'Персоне можно присылать документы: она сохраняет их у себя и при ответах находит в них нужные места. Загруженное видно во вкладке «Файлы». Если выключить — файлы не принимаются.',
+  },
+  'settings.feature.todo': {
+    title: 'Список дел',
+    body: 'Персона ведёт ваш список дел: добавляет пункты, когда вы о них говорите, и отмечает выполненные. Список — во вкладке «Напоминания и задачи».',
+  },
+  'settings.feature.reminder': {
+    title: 'Напоминания',
+    body: 'Попросите «напомни завтра в 9 позвонить маме» — персона напишет в назначенное время, своими словами. Бывают разовые и повторяющиеся. Все напоминания — во вкладке «Напоминания и задачи».',
+  },
+  'settings.feature.learning': {
+    title: 'Курсы обучения',
+    body: 'Персона может вести с вами учебный курс: объясняет уроки по порядку, задаёт проверочные вопросы и помнит пройденные темы. Курсы и прогресс — во вкладке «Обучение».',
+  },
+  'settings.feature.inventory': {
+    title: 'Инвентарь',
+    body: 'У персоны есть свои вещи: подаренное вами и найденное ею. Она помнит, что у неё есть, может этим пользоваться и упоминать в разговоре.',
+  },
+  'settings.feature.rate_limit': {
+    title: 'Лимит частоты сообщений',
+    body: 'Ограничивает, сколько сообщений один человек может отправить за час (по умолчанию 6). Сверх лимита персона не отвечает, пока не пройдёт час. Полезно для публичных ботов; для личного общения обычно не нужно.',
+  },
+  'settings.feature.punish_block': {
+    title: 'Блокировка при нарушениях',
+    body: 'За грубость или сообщение, которое отсёк фильтр, персона может на время (по умолчанию на час) перестать отвечать нарушителю. Работает вместе с «Модерацией сообщений».',
+  },
+  'settings.feature.ui_room_mood_sync': {
+    title: 'Комната и настроение',
+    body: 'Вкладки «Комната» и «Настроение» в вебе показывают живое состояние персоны: где она, чем занята, как себя чувствует. Если не задано явно — включено вместе с «Жизнью между разговорами».',
+  },
+  'settings.feature.room_llm_placement': {
+    title: 'Расстановка вещей моделью',
+    body: 'Когда у персоны появляется новый предмет, модель решает, куда его поставить в комнате. Если выключить — предмет просто кладётся на стол, без обращения к модели.',
+  },
+  'settings.feature.room_pokes_to_llm': {
+    title: 'Реакция на тычки в комнате',
+    body: 'Клик по персоне в комнате доходит до основной модели, и она отвечает в чате. Если выключить — реакция обходится без модели.',
+  },
+
+  // ===== Режим управления (управление компьютером) =====
   'computer.title': {
     title: 'Что умеет этот раздел',
     body: 'Здесь задаётся, чем персона может управлять на вашем компьютере: любимые сайты («открой ютуб»), поиск на своих сайтах («включи интерстеллар на кинопоиске»), приложения и именованные задачи, а также нажатия кнопок на страницах. Персона не может ничего сверх этих списков. Настройки применяются сразу, без перезапуска. Выключить всё управление — кнопка «Выключить» внизу или чекбокс в «Настройки» → «Фичи»; списки при этом сохранятся.',
@@ -117,7 +154,7 @@ export const helpTextsRu = {
   },
   'computer.tasks': {
     title: 'Именованные задачи',
-    body: 'Команды «сделай X» для готовых действий: пауза видео, следующий трек и тому подобное. Слева — название, справа — что выполнить: системная команда, шаблон Shortcuts на macOS или браузерный рецепт (recipe:…) — действие внутри уже открытой вкладки. Выполняется только то, что прописано здесь.',
+    body: 'Ваши действия на компьютере по команде «сделай X»: слева — название («режим фокуса»), справа — что выполнить: системная команда или ярлык Shortcuts на macOS. Выполняется только то, что прописано здесь. Управление видео прописывать не нужно — оно встроено: «пауза», «тише», «громче», «без звука», «следующее видео», «третье видео», «первый результат» («пауза», «тише», «громче» и «без звука» — при включённом агентном клике).',
   },
 
   // ===== Инициатива =====
@@ -220,9 +257,19 @@ export const helpTextsRu = {
     title: 'Лёгкая локальная модель',
     body: 'Gemma — небольшая модель, которая работает прямо на вашем компьютере через Ollama: бесплатно, без лимитов и без расхода API-ключей. Установка одной командой: ollama pull gemma3:4b. Отлично подходит как последний резерв и для простых ответов, где не нужна большая модель.',
   },
+  'settings.purpose': {
+    title: 'Провайдеры режима управления',
+    body:
+      'Необязательно: закрепить отдельного провайдера за работой в режиме управления компьютером. Обычные ответы в чате это не затрагивает — их пишет основной провайдер («сделать основным») и цепочка.\n\n' +
+      '• Реплики в режиме управления — кто пишет слова персоны: короткие реплики о сделанных действиях («открыла вкладку», «не получилось нажать: …»), пополнение банка таких готовых фраз и пересказ содержимого страницы. Без назначения реплики о действиях пишет веб-чат Google, пересказ — цепочка.\n' +
+      '• Решения режима управления — кто решает, что делать на компьютере: куда нажать, какой элемент выбрать. У веб-чата для этого свой канал, основная беседа не засоряется.\n' +
+      '• Vision-фолбэк — кто разглядывает скриншоты экрана, если основная модель их не видит.\n\n' +
+      'Назначенный провайдер получает одну попытку. Не ответил — решения и скриншоты идут по цепочке, а реплика о действии берётся из шаблона.\n' +
+      '«По цепочке» — ничего не назначено. В списке только провайдеры с ключом или локальные.',
+  },
   'settings.localBackend': {
     title: 'Движки локальных задач',
-    body: 'Помимо основных ответов, у бота есть куча мелкой «служебной» работы, которую обычно выполняет локальная модель через Ollama: бинарные классификаторы (нужен ли поиск, заметка в дневник), тики жизни персоны (состояние, мир, события), сжатие офлайн-дневника, рерайтер поисковых запросов. Здесь перечислены все такие задачи — и для каждой отдельно выбирается движок: локальная Ollama (быстро и бесплатно) или веб-чат в вашем браузере. Выбрали веб-чат — рядом появляется список, в котором пользователь определяет конкретный сайт (qwen, deepseek и т.д.); «авто» — первый включённый. Задачи идут через канал side: отдельный чат и своя квота, чтобы не мешать основной беседе. Веб-чат не ответил — задача мягко откатывается на Ollama. Распознавание текста на картинках (OCR) всегда остаётся за Ollama: веб-чату не отдать изображение.',
+    body: 'Помимо основных ответов, у персоны есть куча мелкой «служебной» работы: классификаторы (намерение, просьба о помощи, «хочу учиться»), рерайтер поисковых запросов, тики жизни (состояние, мир, события), дневник, разбор диалога, сжатие офлайн-дневника. Настройки — у каждой персоны свои. Задачи разделены на две группы. «В разговоре» — их ответа ждёт реплика персоны, поэтому по умолчанию они идут в локальную Ollama: тёплая модель отвечает за доли секунды. «Фоновые» — вне разговора, их ответа никто не ждёт, поэтому по умолчанию они идут в веб-чат фоновых задач: «Первый fallback» — первый веб-чат цепочки персоны после основного, «Основной» — основной веб-чат персоны, или конкретный сайт. Не ответил — пробуется запасной веб-чат (основной или первый fallback), затем Ollama. Веб-чат в служебных задачах работает через канал side: отдельный чат и своя квота, основная беседа не засоряется. Любой задаче можно выбрать движок вручную (Ollama или веб-чат с конкретным сайтом); «Сбросить» возвращает выбор по умолчанию. Распознавание текста на картинках (OCR) всегда остаётся за Ollama: веб-чату не отдать изображение.',
   },
 
   // ===== Персоны =====
@@ -266,7 +313,7 @@ export const helpTextsRu = {
   },
   'pc.intellect': {
     title: 'Уровень интеллекта',
-    body: 'Отдельное измерение поверх характера: определяет, как персона отвечает на просьбы о помощи. primitive — существо с нечеловеческим типом мышления (животное, дух, примитивный робот): простая речь, помощь действием, дневник из инстинктивных впечатлений. normal — человек: помогает по-бытовому коротко, без ассистентских уточнений. bot — высокий интеллект: право на полный разбор просьбы (расчёты, код, уточняющие вопросы), подача всё равно в стиле персоны. Уровень ограничивает поведение, а характер (system_prompt) наполняет его внутри ограничения. Вместе с уровнем в поля temperature / max_tokens / top_p подставляются подходящие дефолты (bot — 0.7 / 4000 / 0.9; normal — как у живых персон: 0.85 / 3000 / 0.92; primitive — 0.5 / 800 / 0.85), их можно править вручную. «не задан» — уровневые механики полностью выключены (legacy-режим старых персон).',
+    body: 'Отдельное измерение поверх характера: определяет, как персона отвечает на просьбы о помощи. «Нечеловеческое мышление» (в yaml — primitive) — существо с нечеловеческим типом мышления (животное, дух, примитивный робот): простая речь, помощь действием, дневник из инстинктивных впечатлений. «Человек» (normal): помогает по-бытовому коротко, без ассистентских уточнений. «Высокий интеллект» (bot): право на полный разбор просьбы (расчёты, код, уточняющие вопросы), подача всё равно в стиле персоны. Уровень ограничивает поведение, а характер (system_prompt) наполняет его внутри ограничения. Вместе с уровнем в поля temperature / max_tokens / top_p подставляются подходящие дефолты (высокий интеллект — 0.7 / 4000 / 0.9; человек — как у живых персон: 0.85 / 3000 / 0.92; нечеловеческое мышление — 0.5 / 800 / 0.85), их можно править вручную. «Не задан» — уровневые механики полностью выключены, блок intellect в yaml не пишется (режим старых персон).',
   },
   'pc.features': {
     title: 'Умения персоны',
@@ -286,7 +333,7 @@ export const helpTextsRu = {
   },
   'pc.systemPrompt': {
     title: 'Душа персоны',
-    body: 'Главная инструкция, по которой персона говорит и ведёт себя: характер, голос, запреты. У Коннора промпт начинается так: «Ты — Коннор, андроид модели RK800, серийный номер 313 248 317 - 52. Произведён CyberLife…». Кнопки шаблонов выше подставляют заготовку.',
+    body: 'Главная инструкция, по которой персона говорит и ведёт себя: характер, голос, запреты. У Коннора промпт начинается так: «Ты — Коннор, андроид модели RK800, серийный номер 313 248 317 - 52. Произведён CyberLife…».',
   },
 
   // ===== Напоминания и задачи =====
@@ -369,10 +416,6 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
     title: 'Remembering facts about you',
     body: 'After your messages the persona quietly writes down what matters: city, age, job, hobbies — and remembers forever. Old facts get updated, similar ones merged. Turn off — the persona stops learning new things about you, but keeps what it already memorized.',
   },
-  'settings.feature.rag': {
-    title: 'Answers based on your files',
-    body: 'You can upload documents to the persona, and it will answer with them in mind — finding the right passages and using them in conversation. The three most recent files are kept: upload a fourth and the oldest is deleted.',
-  },
   'settings.feature.self_memory': {
     title: "Persona's personal diary",
     body: 'The persona keeps a diary: it writes down what you talked about and how it felt. These notes quietly blend into its thoughts, giving it a sense of "life between conversations". It won\'t tell you about the diary directly.',
@@ -395,10 +438,51 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
   },
   'settings.feature.computer_control': {
     title: 'Computer control',
-    body: 'Lets the persona run commands on your computer: open sites ("open youtube"), search on your sites, launch apps and named tasks, click buttons on pages. What is allowed is configured via the lists in the "Tools" section. Turn off — the persona runs nothing, while the lists are kept and come back when re-enabled. Applies instantly, no restart needed.',
+    body: 'Lets the persona run commands on your computer: open sites ("open youtube"), search on your sites, launch apps and named tasks, click buttons on pages. What is allowed is configured via the lists in the "Control mode" tab. Turn off — the persona runs nothing, while the lists are kept and come back when re-enabled. Applies instantly, no restart needed.',
   },
 
-  // ===== Tools (computer control) =====
+  'settings.feature.file_upload': {
+    title: 'File upload',
+    body: 'You can send documents to the persona: it keeps them and finds the relevant passages when answering. Uploaded files are in the "Files" tab. When off, files are not accepted.',
+  },
+  'settings.feature.todo': {
+    title: 'To-do list',
+    body: 'The persona keeps your to-do list: adds items when you mention them and checks off completed ones. The list is in the "Reminders & tasks" tab.',
+  },
+  'settings.feature.reminder': {
+    title: 'Reminders',
+    body: 'Ask "remind me tomorrow at 9 to call mom" — the persona will write at that time, in its own words. One-off and repeating reminders are supported. All of them are in the "Reminders & tasks" tab.',
+  },
+  'settings.feature.learning': {
+    title: 'Learning courses',
+    body: 'The persona can run a course with you: explains lessons in order, asks check questions and remembers covered topics. Courses and progress are in the "Learning" tab.',
+  },
+  'settings.feature.inventory': {
+    title: 'Inventory',
+    body: 'The persona has its own things: gifts from you and what it found. It remembers what it has, can use it and mention it in conversation.',
+  },
+  'settings.feature.rate_limit': {
+    title: 'Message rate limit',
+    body: 'Limits how many messages one person can send per hour (6 by default). Over the limit the persona stays silent until the hour passes. Useful for public bots; usually unnecessary for personal chats.',
+  },
+  'settings.feature.punish_block': {
+    title: 'Block on violations',
+    body: 'For rudeness or a message cut by the filter, the persona may stop answering the offender for a while (an hour by default). Works together with "Message moderation".',
+  },
+  'settings.feature.ui_room_mood_sync': {
+    title: 'Room & mood',
+    body: 'The "Room" and "Mood" tabs in the web UI show the persona\'s live state: where it is, what it\'s doing, how it feels. If not set explicitly, it follows "Life between chats".',
+  },
+  'settings.feature.room_llm_placement': {
+    title: 'Model places items',
+    body: 'When the persona gets a new item, the model decides where to put it in the room. When off, the item simply goes on the table without a model call.',
+  },
+  'settings.feature.room_pokes_to_llm': {
+    title: 'Reacting to room pokes',
+    body: 'Clicking the persona in the room reaches the main model, which replies in the chat. When off, the reaction happens without the model.',
+  },
+
+  // ===== Control mode (computer control) =====
   'computer.title': {
     title: 'What this section does',
     body: 'This is where you define what the persona may control on your computer: favorite sites ("open youtube"), search on your sites ("play Interstellar on kinopoisk"), apps and named tasks, plus clicking buttons on pages. The persona cannot do anything beyond these lists. Settings apply instantly, no restart. To turn all control off — the "Disable" button below or the checkbox in "Settings" → "Features"; the lists are preserved.',
@@ -425,7 +509,7 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
   },
   'computer.tasks': {
     title: 'Named tasks',
-    body: '"Do X" commands for ready-made actions: pause video, next track and so on. Left — the name, right — what to run: a system command, a Shortcuts template on macOS, or a browser recipe (recipe:…) — an action inside an already open tab. Only what is written here gets executed.',
+    body: 'Your own computer actions for "do X" commands: left — the name ("focus mode"), right — what to run: a system command or a macOS Shortcuts shortcut. Only what is written here gets executed. Video control needs no entries — it is built in (phrases in Russian): «пауза», «тише», «громче», «без звука», «следующее видео», «третье видео», «первый результат» («пауза», «тише», «громче» and «без звука» need agent click enabled).',
   },
 
   // ===== Initiative =====
@@ -528,9 +612,19 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
     title: 'Lightweight local model',
     body: 'Gemma is a small model that runs right on your computer via Ollama: free, no limits and no API key spending. Install with one command: ollama pull gemma3:4b. Great as a last resort and for simple answers that don\'t need a big model.',
   },
+  'settings.purpose': {
+    title: 'Control mode providers',
+    body:
+      'Optional: pin a specific provider to a job in computer-control mode. Regular chat replies are not affected — they are written by the primary provider ("make main") and the chain.\n\n' +
+      '• Persona lines in control mode — who writes the persona\'s words: short lines about completed actions ("opened the tab", "couldn\'t click: …"), refilling the bank of such ready-made phrases, and retelling page content. When unassigned, action lines are written by the Google web chat and retelling follows the chain.\n' +
+      '• Computer-control decisions — who decides what to do on the computer: where to click, which element to pick. A web chat uses its own channel for this, so the main conversation stays clean.\n' +
+      '• Vision fallback — who looks at screen screenshots when the main model can\'t see them.\n\n' +
+      'The assigned provider gets one attempt. If it fails, decisions and screenshots follow the chain, and the action line falls back to a template.\n' +
+      '"Follow chain" means nothing is assigned. Only providers with a key or local ones are listed.',
+  },
   'settings.localBackend': {
     title: 'Local task engines',
-    body: 'Besides the main replies, the bot has plenty of small "household" work usually done by the local model via Ollama: binary classifiers (is a search needed, a diary note), persona life ticks (state, world, events), offline diary compression, the search query rewriter. Every such task is listed here — and each one gets its own engine: the local Ollama (fast and free) or a web chat in your browser. Pick a web chat and a list appears next to it where the user determines the exact site (qwen, deepseek, etc.); "auto" means the first enabled one. Tasks run on the side channel: a separate chat with its own quota, so they never interfere with the main conversation. If the web chat fails to answer, the task gently falls back to Ollama. Image OCR always stays on Ollama: a web chat cannot take a picture.',
+    body: 'Besides the main replies, a persona has plenty of small "household" work: classifiers (intent, help request, "teach me"), the search query rewriter, life ticks (state, world, events), the diary, dialogue harvest, offline diary compression. The settings are per persona. Tasks are split into two groups. "In conversation" — the persona\'s reply waits for them, so by default they go to the local Ollama: a warm model answers in a fraction of a second. "Background" — outside the conversation, nobody waits for them, so by default they go to the background web chat: "First fallback" is the first web chat in the persona\'s chain after the primary, "Primary" is the persona\'s primary web chat, or pick a specific site. If it fails, the backup web chat is tried (the primary or the first fallback), then Ollama. Household tasks use the web chat\'s side channel: a separate chat with its own quota, so the main conversation stays clean. Any task can get its engine chosen by hand (Ollama or a web chat with a specific site); "Reset" restores the default. Image OCR always stays on Ollama: a web chat cannot take a picture.',
   },
 
   // ===== Personas =====
@@ -574,7 +668,7 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
   },
   'pc.intellect': {
     title: 'Intellect tier',
-    body: 'A separate dimension on top of personality: it defines how the persona responds to requests for help. primitive — a creature with a non-human mind (animal, spirit, simple robot): simple speech, helps by doing, an instinct-driven diary. normal — a human: helps briefly and casually, no assistant-style clarifications. bot — high intelligence: entitled to a full task breakdown (calculations, code, follow-up questions), still delivered in the persona\'s voice. The tier constrains behavior; the character (system_prompt) fills it in within the constraint. Picking a tier also fills temperature / max_tokens / top_p with fitting defaults (bot — 0.7 / 4000 / 0.9; normal — like living personas: 0.85 / 3000 / 0.92; primitive — 0.5 / 800 / 0.85), which you can then edit manually. "Not set" disables tier mechanics entirely (legacy mode of old personas).',
+    body: 'A separate dimension on top of personality: it defines how the persona responds to requests for help. "Non-human mind" (primitive in yaml) — a creature with a non-human mind (animal, spirit, simple robot): simple speech, helps by doing, an instinct-driven diary. "Human" (normal): helps briefly and casually, no assistant-style clarifications. "High intelligence" (bot): entitled to a full task breakdown (calculations, code, follow-up questions), still delivered in the persona\'s voice. The tier constrains behavior; the character (system_prompt) fills it in within the constraint. Picking a tier also fills temperature / max_tokens / top_p with fitting defaults (high intelligence — 0.7 / 4000 / 0.9; human — like living personas: 0.85 / 3000 / 0.92; non-human mind — 0.5 / 800 / 0.85), which you can then edit manually. "Not set" disables tier mechanics entirely and omits the intellect block from the yaml (legacy mode of old personas).',
   },
   'pc.features': {
     title: "Persona's abilities",
@@ -594,7 +688,7 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
   },
   'pc.systemPrompt': {
     title: "Persona's soul",
-    body: 'The main instruction the persona speaks and behaves by: character, voice, taboos. Connor\'s prompt starts like this: "You are Connor, an RK800 android, serial number 313 248 317 - 52. Manufactured by CyberLife…". The template buttons above insert a draft.',
+    body: 'The main instruction the persona speaks and behaves by: character, voice, taboos. Connor\'s prompt starts like this: "You are Connor, an RK800 android, serial number 313 248 317 - 52. Manufactured by CyberLife…".',
   },
 
   // ===== Reminders and tasks =====

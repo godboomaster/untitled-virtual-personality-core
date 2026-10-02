@@ -128,11 +128,12 @@ def main():
         lp.summarizer = types.SimpleNamespace(
             should_run_daily=lambda cid, n: False,
             should_run_screenwriter=lambda we: screenwriter,
-            advance_storylines=lambda persona, we: lp.screen.append(1) or True)
+            advance_storylines=lambda persona, we, **kw: lp.screen.append(1) or True)
         lp.world_engine = types.SimpleNamespace(
             should_fetch_stimuli=lambda: True)
         lp.external_stimuli_allowed = lambda: True
         lp.persona = None
+        lp.global_language = lambda chat_id=None: None
         return lp
 
     lp = make_living()
@@ -173,6 +174,8 @@ def main():
                 {"role": "user", "content": "привет", "sender_id": None}])
         mm.ltm = types.SimpleNamespace(
             main_router=None,
+            note_user_language=lambda *a: None,
+            user_language=lambda uid: None,
             extract_facts_async=lambda *a, **kw: mm.extracted.append(1))
         mm._run_summarize_async = lambda uid: (mm.summarized.append(uid), True)[1]
         return mm

@@ -7,6 +7,14 @@ import { requestChatPersona } from '../chatNavStore';
 import { useInbox } from '../inboxStore';
 import { usePersonaAvatars } from '../avatarStore';
 import CalendarWidget from '../components/CalendarWidget';
+import { api } from '../api';
+import type { HomeOverview } from '../api';
+import { useApiOnline } from '../apiData';
+
+// Сводка главной с бэкенда обновляется раз в минуту
+const HOME_POLL_MS = 60_000;
+// Строк в ленте «пока вас не было»
+const FEED_LIMIT = 8;
 
 interface HomeProps {
   onNavigate: (s: Section) => void;
@@ -19,57 +27,8 @@ interface FeedRow {
   text: string;
   time: string;
   outcome?: InitiativeOutcome;
+  ts?: number; // для сортировки живой ленты
 }
-
-// Шпаргалка команд режима управления: литеральные фразы для бота
-// (парсеры русскоязычные, поэтому команды не переводятся), группы —
-// через i18n. Нейтральные примеры: без имён сайтов и конкретных товаров
-const CC_GROUPS: { labelKey: string; cmds: string[] }[] = [
-  {
-    labelKey: 'home.ccPages',
-    cmds: ['открой сайт …', 'обнови страницу', 'вернись назад',
-           'закрой вкладку …', 'перейди на вкладку …', 'какие вкладки открыты'],
-  },
-  {
-    labelKey: 'home.ccInput',
-    cmds: ['нажми …', 'наведи на …', 'введи … в поле …', 'отправь',
-           'нажми пробел / энтер / эскейп', 'удали N символов',
-           'выстави слайдер … на N', 'второй результат'],
-  },
-  {
-    labelKey: 'home.ccRead',
-    cmds: ['что на странице?', 'пришли скриншот', 'покажи всю страницу целиком',
-           'ещё — следующая партия кадров', 'что в разделе …?',
-           'прочитай страницу'],
-  },
-  {
-    labelKey: 'home.ccScroll',
-    cmds: ['пролистай страницу', 'листай вверх', 'стоп', 'пролистай до …',
-           'найди … на странице', 'докрути до конца'],
-  },
-  {
-    labelKey: 'home.ccMedia',
-    cmds: ['пауза', 'продолжи', 'тише', 'громче', 'без звука'],
-  },
-  {
-    labelKey: 'home.ccZoom',
-    cmds: ['увеличь масштаб', 'уменьши масштаб', 'сбрось масштаб'],
-  },
-  {
-    labelKey: 'home.ccCart',
-    cmds: ['убери … из корзины', 'прибавь …', 'убавь …', 'измени состав …'],
-  },
-  {
-    labelKey: 'home.ccMisc',
-    cmds: ['скачай …', 'закрой окно', 'запусти приложение …', 'почини браузер'],
-  },
-  {
-    labelKey: 'home.ccScenarios',
-    cmds: ['начни записывать сценарий …', 'сохрани сценарий …',
-           'отмени запись', 'запуск — просто назвать сценарий',
-           'в прогоне: повтори / дальше / отмена'],
-  },
-];
 
 export default function Home({ onNavigate }: HomeProps) {
   const { t, lang } = useI18n();
@@ -95,6 +54,45 @@ export default function Home({ onNavigate }: HomeProps) {
     roomConfigs,
   } = useMockData();
 
+  // Живые данные главной (GET /api/home); null — бэкенд недоступен или ещё
+  // грузится: тогда блоки показывают моковые данные, как и остальной UI
+  const online = useApiOnline();
+  const [overview, setOverview] = useState<HomeOverview | null>(null);
+  useEffect(() => {
+    if (!online) {
+      setOverview(null);
+      return;
+    }
+    let alive = true;
+    const load = () =>
+      api
+        .getHome()
+        .then((o) => alive && setOverview(o))
+        .catch(() => {});
+    void load();
+    const timer = setInterval(load, HOME_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [online]);
+  const live = overview !== null;
+  const ov = (id: string) => overview?.personas[id];
+
+  // «5 мин назад» / «вчера в 14:20» / «12.08» — от живых часов now
+  const ago = (ts: number | null | undefined): string => {
+    if (!ts) return t('home.never');
+    const sec = Math.max(0, now.getTime() / 1000 - ts);
+    if (sec < 60) return t('home.agoNow');
+    if (sec < 3600) return t('home.agoMin', { n: Math.floor(sec / 60) });
+    const d = new Date(ts * 1000);
+    const hm = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+    if (ts >= startOfToday) return t('home.agoToday', { t: hm });
+    if (ts >= startOfToday - 86400) return t('home.agoYesterday', { t: hm });
+    return d.toLocaleDateString(locale, { day: '2-digit', month: '2-digit' });
+  };
+
   // Приветствие по времени суток
   const hour = new Date().getHours();
   const greetKey =
@@ -109,7 +107,12 @@ export default function Home({ onNavigate }: HomeProps) {
   // Тикер «мысли персон»: последняя запись дневника и последняя инициатива каждой
   const thoughts = useMemo(
     () =>
-      personas
+      live
+        ? personas
+            .flatMap((p) => (overview.personas[p.id]?.events ?? []).slice(0, 1).map((e) => ({ name: p.name, text: e.text, ts: e.ts })))
+            .sort((a, b) => b.ts - a.ts)
+            .slice(0, 6)
+        : personas
         .flatMap((p) => {
           const items: { name: string; text: string }[] = [];
           const diary = (diaryByPersona[p.id] ?? [])[0];
@@ -119,7 +122,7 @@ export default function Home({ onNavigate }: HomeProps) {
           return items;
         })
         .slice(0, 6),
-    [personas, diaryByPersona, initiativeByPersona],
+    [live, overview, personas, diaryByPersona, initiativeByPersona],
   );
   const [thoughtIdx, setThoughtIdx] = useState(0);
 
@@ -139,13 +142,32 @@ export default function Home({ onNavigate }: HomeProps) {
     { index: 'MOD_03', title: t('home.modRoomTitle'), desc: t('home.modRoomDesc'), target: 'room', status: 'ACTIVE' },
     { index: 'MOD_04', title: t('home.modPersonasTitle'), desc: t('home.modPersonasDesc'), target: 'personas', status: 'ACTIVE' },
     { index: 'MOD_05', title: t('home.modSettingsTitle'), desc: t('home.modSettingsDesc'), target: 'settings', status: 'ACTIVE' },
+    { index: 'MOD_06', title: t('home.modStartTitle'), desc: t('home.modStartDesc'), target: 'start', status: 'GUIDE' },
   ];
 
   // Агрегированная телеметрия ядра: суммы по всем персонам
-  const totalLtmFacts = Object.values(ltmByPersona).reduce((n, facts) => n + facts.length, 0);
+  const sumLive = (pick: (o: NonNullable<ReturnType<typeof ov>>) => number) =>
+    personas.reduce((n, p) => n + (overview?.personas[p.id] ? pick(overview.personas[p.id]) : 0), 0);
+  const totalLtmFacts = live
+    ? sumLive((o) => o.ltm_facts)
+    : Object.values(ltmByPersona).reduce((n, facts) => n + facts.length, 0);
 
-  // Лента «пока вас не было»: по 2 свежих события каждого типа (мок)
+  // Лента «пока вас не было»: живая — события каждой персоны после вашего
+  // последнего сообщения ей (инициативы и записи дневника), свежие сверху;
+  // мок — по 2 события каждого типа
   const feedRows: FeedRow[] = useMemo(() => {
+    if (live) {
+      return personas
+        .flatMap((p) => {
+          const o = overview.personas[p.id];
+          const since = o?.last_user_ts ?? 0;
+          return (o?.events ?? [])
+            .filter((e) => e.ts > since)
+            .map((e) => ({ kind: e.kind, persona: p.name, text: e.text, time: '', ts: e.ts }));
+        })
+        .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
+        .slice(0, FEED_LIMIT);
+    }
     const initRows: FeedRow[] = personas
       .flatMap((p) => {
         const e = (initiativeByPersona[p.id] ?? []).at(-1);
@@ -167,7 +189,7 @@ export default function Home({ onNavigate }: HomeProps) {
       )
       .slice(0, 2);
     return [...initRows, ...diaryRows, ...reminderRows];
-  }, [personas, initiativeByPersona, diaryByPersona, remindersByPersona]);
+  }, [live, overview, personas, initiativeByPersona, diaryByPersona, remindersByPersona]);
 
   // Строки журнала системы для терминального блока
   const logLines: React.ReactNode[] = [
@@ -191,12 +213,15 @@ export default function Home({ onNavigate }: HomeProps) {
     return () => clearTimeout(timer);
   }, [visibleLines, logLines.length]);
 
-  const activeReminders = Object.values(remindersByPersona).reduce(
-    (n, rs) => n + rs.filter((r) => r.active).length,
-    0,
-  );
-  const initiativesToday = Object.values(initiativeStateByPersona).reduce((n, s) => n + s.initiativesToday, 0);
-  const initiativesMax = Object.values(initiativeStateByPersona).reduce((n, s) => n + s.maxPerDay, 0);
+  const activeReminders = live
+    ? sumLive((o) => o.reminders_active)
+    : Object.values(remindersByPersona).reduce((n, rs) => n + rs.filter((r) => r.active).length, 0);
+  const initiativesToday = live
+    ? sumLive((o) => o.initiatives_today)
+    : Object.values(initiativeStateByPersona).reduce((n, s) => n + s.initiativesToday, 0);
+  const initiativesMax = live
+    ? sumLive((o) => o.initiatives_max)
+    : Object.values(initiativeStateByPersona).reduce((n, s) => n + s.maxPerDay, 0);
 
   return (
     <div className="section home">
@@ -243,6 +268,9 @@ export default function Home({ onNavigate }: HomeProps) {
           <button className="btn btn--ghost" onClick={() => onNavigate('chat')}>
             {t('home.ctaChat')}
           </button>
+          <button className="btn btn--ghost" onClick={() => onNavigate('start')}>
+            {t('home.ctaGuide')}
+          </button>
         </div>
         <div className="home-readout bottom-right">
           PERSONAS <span className="val">{String(personas.length).padStart(3, '0')}</span>
@@ -259,7 +287,19 @@ export default function Home({ onNavigate }: HomeProps) {
         </div>
         <div className="home-presence-grid">
           {personas.map((p) => {
-            const pastime = (roomConfigs[p.id] ?? roomConfigs.connor).pastimes[0];
+            // Занятие: живое состояние персоны (living) или мок комнаты
+            const o = ov(p.id);
+            // Мок — только своей персоны: занятия Коннора другим не подставляем
+            const mockPastime = roomConfigs[p.id]?.pastimes[0];
+            const activity = live
+              ? o?.state
+                ? [o.state.pastime, o.state.location].filter(Boolean).join(' · ')
+                : t('home.noState')
+              : mockPastime
+                ? `${mockPastime.label} · ${mockPastime.place}`
+                : t('home.noState');
+            const mood = live ? o?.state?.mood : undefined;
+            const lastReply = live ? ago(o?.last_user_ts) : p.lastReply;
             return (
               <button
                 key={p.id}
@@ -286,18 +326,19 @@ export default function Home({ onNavigate }: HomeProps) {
                     <div className="home-presence-status">
                       <span className="status-led" />
                       {t(`status.${p.status}`)}
+                      {mood && <span className="home-presence-mood"> · {mood}</span>}
                     </div>
                   </div>
                 </div>
-                <div className="home-presence-activity">
-                  {pastime.label} · {pastime.place}
+                <div className={'home-presence-activity' + (live && !o?.state ? ' home-presence-activity--none' : '')}>
+                  {activity}
                 </div>
                 {(unread[p.id] ?? 0) > 0 ? (
                   <div className="home-presence-reply home-presence-reply--unread">
                     {t('home.unreadMsg', { n: unread[p.id] })}
                   </div>
                 ) : (
-                  <div className="home-presence-reply">{t('home.lastReplyLabel', { t: p.lastReply })}</div>
+                  <div className="home-presence-reply">{t('home.lastReplyLabel', { t: lastReply })}</div>
                 )}
               </button>
             );
@@ -343,6 +384,7 @@ export default function Home({ onNavigate }: HomeProps) {
           <span className="home-block-num">03 / EVENTS</span>
         </div>
         <div className="home-feed">
+          {live && feedRows.length === 0 && <div className="home-feed-empty">{t('home.feedEmpty')}</div>}
           {feedRows.map((row, i) => (
             <div key={i} className="home-feed-row">
               <span className={`badge home-feed-badge--${row.kind}`}>
@@ -367,7 +409,7 @@ export default function Home({ onNavigate }: HomeProps) {
                   {t(`outcome.${row.outcome}`)}
                 </span>
               )}
-              <span className="home-feed-time">{row.time}</span>
+              <span className="home-feed-time">{row.ts ? ago(row.ts) : row.time}</span>
             </div>
           ))}
         </div>
@@ -403,30 +445,11 @@ export default function Home({ onNavigate }: HomeProps) {
         </div>
       </div>
 
-      {/* Команды режима управления: шпаргалка фраз для бота */}
-      <div>
-        <div className="home-block-head">
-          <span className="home-block-title">{t('home.ccTitle')}</span>
-          <span className="home-block-num">06 / CONTROL</span>
-        </div>
-        <p className="home-cc-hint">{t('home.ccHint')}</p>
-        <div className="home-cc-grid">
-          {CC_GROUPS.map((g) => (
-            <div key={g.labelKey} className="home-cc-group">
-              <div className="home-cc-group-title">{t(g.labelKey)}</div>
-              {g.cmds.map((c) => (
-                <code key={c} className="home-cc-cmd">{c}</code>
-              ))}
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* Журнал системы */}
       <div>
         <div className="home-block-head">
           <span className="home-block-title">{t('home.syslogTitle')}</span>
-          <span className="home-block-num">07 / SYSLOG</span>
+          <span className="home-block-num">06 / SYSLOG</span>
         </div>
         <div className="home-term bracketed">
           <div className="corner tl" />

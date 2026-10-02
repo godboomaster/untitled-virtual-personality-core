@@ -119,27 +119,12 @@ def list_providers() -> dict:
     from app.features.web_llm import ADAPTERS as _WC_ADAPTERS
     from app.core.router import _parse_webchat_sites
     webchat_sites = _parse_webchat_sites()
-    # Движки локальных задач: что из служебных вызовов идёт в Ollama,
-    # а что — в веб-чат (и на какой сайт)
-    from app.core.local_router import get_local_router
+    # Движки служебных задач (Ollama/веб-чат) — на персону, см.
+    # get_persona_local_tasks
     return {"providers": providers, "active": active,
             "webchat_site": webchat_sites[0] if webchat_sites else None,
             "webchat_sites": webchat_sites,
-            "webchat_options": sorted(_WC_ADAPTERS),
-            "local_tasks": get_local_router().task_snapshot()}
-
-
-def set_local_task(task: str, backend: str, site: str | None = None) -> dict:
-    """Выбрать движок локальной задачи (всё, что поручено Ollama): «ollama» —
-    локальная Ollama, «webchat» — веб-чат пользователя; site — конкретный
-    сайт веб-чата для этой задачи (пусто — первый включённый). Канал side:
-    отдельный чат и квота. Применяется к живому синглтону сразу, персист в
-    data/local_backends.json, рестарт не нужен."""
-    from app.core.local_router import get_local_router
-    ok, detail = get_local_router().set_task_backend(task, backend, site)
-    if not ok:
-        return {"ok": False, "detail": detail}
-    return {"ok": True, "task": task, "backend": backend}
+            "webchat_options": sorted(_WC_ADAPTERS)}
 
 
 def set_webchat(sites) -> dict:
@@ -179,11 +164,11 @@ def set_webchat(sites) -> dict:
                 and hasattr(ltm_router, "reset_webchats"):
             ltm_router.webchat_sites = list(norm)
             ltm_router.reset_webchats()
-    # Задачи локального движка не могут остаться на выключенном веб-чате —
-    # возвращаем их на Ollama (иначе вызовы молча ходили бы в никуда)
+    # Веб-чаты выключены: вкладки side служебных задач закрываются (сайты
+    # задач персон резолвятся заново на каждом вызове — по их цепочкам)
     if not norm:
         from app.core.local_router import get_local_router
-        get_local_router().reset_webchat_tasks()
+        get_local_router().reset_webchats()
         if (os.getenv("LOCAL_LLM_BACKEND") or "").lower() == "webchat":
             _persist_env("LOCAL_LLM_BACKEND", "ollama")
     logger.info(f"[Settings] webchat-провайдеры: {','.join(norm) or 'выключены'}")
@@ -463,7 +448,118 @@ def _apply_llm_to_bot(persona: str, llm_cfg: dict):
                                    webchat_modes=llm_cfg.get("webchat_mode"),
                                    answer_provider=llm_cfg.get("answer_provider"),
                                    cc_provider=llm_cfg.get("cc_provider"),
-                                   vision_provider=llm_cfg.get("vision_provider"))
+                                   vision_provider=llm_cfg.get("vision_provider"),
+                                   exclude=llm_cfg.get("exclude"))
+        _bind_local_tasks(bot, llm_cfg)
+
+
+def _bind_local_tasks(bot, llm_cfg: dict):
+    # Движки служебных задач персоны: llm.local_tasks + её цепочка провайдеров
+    # (веб-чаты фоновых задач резолвятся из bot.router на каждом вызове)
+    from app.core.local_router import get_local_router
+    get_local_router().bind_persona(bot.context, bot.router,
+                                    llm_cfg.get("local_tasks"))
+
+
+def get_persona_local_tasks(persona: str) -> dict | None:
+    """Движки служебных задач персоны (досье → настройки): bg_site, её
+    основной/первый fallback веб-чат и resolved-движок каждой задачи.
+    None — персоны нет."""
+    from app.api.runtime import registry
+    from app.core.local_router import get_local_router
+    bot = registry.get(persona)
+    if bot is None:
+        return None
+    return get_local_router().task_snapshot(bot.context)
+
+
+def update_persona_local_tasks(persona: str, task: str | None = None,
+                               backend: str | None = None,
+                               site: str | None = None,
+                               bg_site: str | None = None) -> dict | None:
+    """Выбор движков служебных задач персоны (YAML, llm.local_tasks).
+
+    task + backend: «ollama» | «webchat» (site — сайт задачи; пусто —
+    веб-чат фоновых задач персоны) | «default» — снять выбор, движок по роду
+    задачи. bg_site: веб-чат фоновых задач — «fallback» (первый веб-чат
+    цепочки после основного, дефолт) | «primary» (основной) | «rotate»
+    (сайты по очереди из llm.local_tasks.rotate) | имя сайта.
+    Применяется к живому боту сразу. None — персоны нет; {"ok": False,
+    "detail"} — отказ; иначе {"ok": True, **снимок}."""
+    from app.core.local_router import (BG_SITE_MODES, DEFAULT_BG_SITE,
+                                       LOCAL_TASKS)
+    from app.features.web_llm import ADAPTERS as _WC_ADAPTERS
+
+    entry = None
+    if task is not None:
+        if task not in LOCAL_TASKS:
+            return {"ok": False, "detail": f"Неизвестная задача «{task}»"}
+        backend = (backend or "").strip().lower()
+        if backend not in ("ollama", "webchat", "default"):
+            return {"ok": False,
+                    "detail": "Движок должен быть «ollama», «webchat» или «default»"}
+        if backend == "webchat" and LOCAL_TASKS[task]:
+            return {"ok": False,
+                    "detail": "Эта задача технически не может уйти в веб-чат"}
+        site = (site or "").strip().lower() or None
+        if site is not None and site not in _WC_ADAPTERS:
+            return {"ok": False, "detail": f"Неизвестный веб-чат «{site}»"}
+        if backend != "default":
+            entry = {"backend": backend}
+            if backend == "webchat" and site:
+                entry["site"] = site
+    if bg_site is not None:
+        bg_site = bg_site.strip().lower()
+        if bg_site not in BG_SITE_MODES and bg_site not in _WC_ADAPTERS:
+            return {"ok": False, "detail": f"Неизвестный веб-чат «{bg_site}»"}
+
+    path = _persona_yaml_path(persona)
+    if path is None:
+        return None
+    # Лок на весь read-modify-write (см. update_persona_proactive)
+    with yaml_write_lock:
+        if not path.is_file():
+            return None
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not data.get("system_prompt"):
+            return None
+        llm = data.get("llm") or {}
+        lt = llm.get("local_tasks")
+        lt = dict(lt) if isinstance(lt, dict) else {}
+        tasks = lt.get("tasks")
+        tasks = dict(tasks) if isinstance(tasks, dict) else {}
+        if task is not None:
+            if entry is None:
+                tasks.pop(task, None)
+            else:
+                tasks[task] = entry
+        if tasks:
+            lt["tasks"] = tasks
+        else:
+            lt.pop("tasks", None)
+        if bg_site is not None:
+            if bg_site == DEFAULT_BG_SITE:
+                lt.pop("bg_site", None)
+            else:
+                lt["bg_site"] = bg_site
+        if lt:
+            llm["local_tasks"] = lt
+        else:
+            llm.pop("local_tasks", None)
+        if llm:
+            data["llm"] = llm
+        else:
+            data.pop("llm", None)
+        atomic_write_text(path, _dump_persona_yaml(data))
+
+    from app.api.runtime import registry
+    from app.core.local_router import get_local_router
+    bot = registry.get(persona)
+    if bot is None:
+        return None
+    bot.persona.persona_data = data
+    _bind_local_tasks(bot, data.get("llm") or {})
+    return {"ok": True, **get_local_router().task_snapshot(bot.context)}
 
 
 def _apply_computer_control_live(bot, cc_cfg):
@@ -487,6 +583,14 @@ def _apply_computer_control_live(bot, cc_cfg):
         logger.info(f"[{bot.persona_name}] Computer control обновлён на живую")
     else:
         bot.computer_control = None
+    # Сценарии/агент/flavor-банк — на текущий менеджер (или сняты вместе с ним)
+    rebind = getattr(bot, "rebind_computer_control", None)
+    if callable(rebind):
+        try:
+            rebind()
+        except Exception as e:
+            logger.warning(f"[{bot.persona_name}] надстройки computer control "
+                           f"не перепривязались: {e}")
 
 
 # Редактируемые через UI параметры проактивности → (тип, min, max)
@@ -741,7 +845,7 @@ def update_persona_proactive(persona: str, patch: dict) -> dict | None:
         features["proactive"] = proactive
         data["features"] = features
         atomic_write_text(
-            path, yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120)
+            path, _dump_persona_yaml(data)
         )
 
     # Живой бот: конфиг читается циклом на каждой итерации — применяется сразу;
@@ -757,6 +861,35 @@ def update_persona_proactive(persona: str, patch: dict) -> dict | None:
 
 
 # ── Конфиг персоны (YAML) ─────────────────────────────────────────────
+
+
+class _PersonaYamlDumper(yaml.SafeDumper):
+    """SafeDumper, пишущий многострочные строки блоком `|`.
+
+    Стандартный safe_dump кладёт многострочный system_prompt в кавычки с
+    экранированием (`...don't\\n  \\ just shows.\\n`) — в файле и в
+    веб-редакторе остаются \\n и слэши вместо переносов строк.
+    """
+
+
+def _represent_str(dumper: yaml.SafeDumper, value: str):
+    if "\n" in value:
+        # Литеральный блок PyYAML не берёт при пробелах в конце строк —
+        # они незначимы, срезаем, чтобы не откатываться в кавычки
+        value = "\n".join(line.rstrip() for line in value.split("\n"))
+        return dumper.represent_scalar("tag:yaml.org,2002:str", value, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value)
+
+
+_PersonaYamlDumper.add_representer(str, _represent_str)
+
+
+def _dump_persona_yaml(data: dict) -> str:
+    """YAML персоны для записи в файл (read-modify-write из веб-настроек)."""
+    return yaml.dump(
+        data, Dumper=_PersonaYamlDumper, allow_unicode=True, sort_keys=False, width=120
+    )
+
 
 # Сюда пишутся новые персоны (создание, копия)
 _PERSONAS_DIR = CORE_PERSONAS_DIR
@@ -800,9 +933,11 @@ def get_persona_config(persona: str) -> dict | None:
         "llm": {
             "primary": llm.get("primary"),  # None — используется глобальный активный
             "fallback": llm.get("fallback") or [],
+            # Провайдеры, убранные персоной из своей автоматической цепочки
+            "exclude": llm.get("exclude") or [],
             "models": llm.get("models") or {},  # свои модели по провайдерам
-            # Провайдеры по назначению: текст ответа / решения управления /
-            # vision-фолбэк (None — обычная цепочка)
+            # Провайдеры по назначению: реплики персоны в режиме управления /
+            # решения режима управления / vision-фолбэк (None — обычная цепочка)
             "answer_provider": llm.get("answer_provider"),
             "cc_provider": llm.get("cc_provider"),
             "vision_provider": llm.get("vision_provider"),
@@ -885,6 +1020,13 @@ def update_persona_config(persona: str, settings: dict | None,
                     merged_l["fallback"] = llm["fallback"]
                 else:
                     merged_l.pop("fallback", None)
+            if llm.get("exclude") is not None:
+                # Провайдеры, убранные персоной из своей цепочки: None —
+                # не трогать, пустой список — убрать ключ (нет исключений)
+                if llm["exclude"]:
+                    merged_l["exclude"] = llm["exclude"]
+                else:
+                    merged_l.pop("exclude", None)
             if llm.get("models") is not None:
                 # Персональные модели: {provider: model}; пустое значение снимает override
                 merged_m = merged_l.get("models") or {}
@@ -928,7 +1070,7 @@ def update_persona_config(persona: str, settings: dict | None,
                 data.pop("llm", None)
 
         atomic_write_text(
-            path, yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120)
+            path, _dump_persona_yaml(data)
         )
 
     # Живой бот: генерация, stm_size, провайдеры и проактивность применяем
@@ -1056,8 +1198,25 @@ def delete_persona(persona: str) -> bool:
         return False
     registry.evict(persona)
     path.unlink()
+    try:
+        from app.api import skins_api
+        skins_api.forget_persona(persona)
+    except Exception:
+        logger.exception("[api] Удаление персоны: назначение скина не снято")
     logger.info(f"[api] Удалена персона {persona}")
     return True
+
+
+def _set_top_field(text: str, key: str, line: str, after: str | None = None) -> str:
+    """Заменить верхнеуровневое `key: ...` строкой line (текст и комментарии
+    остальных строк не трогаются). Поля нет — вставить после строки `after:`
+    или в начало файла."""
+    pattern = rf"(?m)^{key}:.*$"
+    if re.search(pattern, text):
+        return re.sub(pattern, lambda _m: line, text, count=1)
+    if after and re.search(rf"(?m)^{after}:.*$", text):
+        return re.sub(rf"(?m)^({after}:.*)$", lambda m: m.group(1) + "\n" + line, text, count=1)
+    return line + "\n" + text
 
 
 def duplicate_persona(persona: str) -> dict | None:
@@ -1092,15 +1251,174 @@ def duplicate_persona(persona: str) -> dict | None:
         data = yaml.safe_load(raw) or {}
         new_name = f"{data.get('name') or persona} (копия)"
 
-        def set_field(text: str, key: str, line: str) -> str:
-            pattern = rf"(?m)^{key}:.*$"
-            if re.search(pattern, text):
-                return re.sub(pattern, lambda _m: line, text, count=1)
-            return line + "\n" + text
-
-        out = set_field(raw, "id", f"id: {new_id}")
+        out = _set_top_field(raw, "id", f"id: {new_id}")
         escaped = new_name.replace("\\", "\\\\").replace('"', '\\"')
-        out = set_field(out, "name", f'name: "{escaped}"')
+        out = _set_top_field(out, "name", f'name: "{escaped}"')
         atomic_write_text(dest, out)
     logger.info(f"[api] Персона {persona} продублирована в {new_id}")
     return {"ok": True, "persona": new_id}
+
+
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def set_persona_color(persona: str, color: str | None) -> dict:
+    """Цвет метки персоны (карточка, календарь): строка `color:` в YAML.
+
+    Правится только эта строка (текст и комментарии остального файла не
+    трогаются); None — убрать поле, цвет снова вычисляется из id
+    (runtime.persona_color). {"ok": True, "color"} | {"ok": False, "detail", "status"}.
+    """
+    from app.api.runtime import list_personas, persona_color, persona_yaml_path
+    if persona not in list_personas():
+        return {"ok": False, "status": 404, "detail": f"Персона '{persona}' не найдена"}
+    if color is not None and not _COLOR_RE.match(color):
+        return {"ok": False, "status": 400, "detail": "Цвет — в формате #RRGGBB"}
+    path = persona_yaml_path(persona)
+    with yaml_write_lock:
+        raw = path.read_text(encoding="utf-8")
+        if color is None:
+            out = re.sub(r"(?m)^color:.*\n?", "", raw, count=1)
+        else:
+            out = _set_top_field(raw, "color", f"color: '{color.lower()}'", after="description")
+        if out != raw:
+            atomic_write_text(path, out)
+        data = yaml.safe_load(out) or {}
+    logger.info(f"[api] Цвет персоны {persona}: {color or 'по умолчанию'}")
+    return {"ok": True, "color": persona_color(persona, data)}
+
+
+def _data_roots() -> list[Path]:
+    """Папки данных, где может лежать память персоны. Их несколько: data_dir()
+    (VPC_DATA_DIR), Config.DATA_DIR (DATA_DIR — Chroma, living, self_memory,
+    календарь) и data/ в корне проекта (clear_backups) — обычно это одна и та
+    же папка, но env может развести их."""
+    from app.core.config import Config
+    roots: list[Path] = []
+    for root in (data_dir(), Path(Config.DATA_DIR), Path(__file__).parent.parent.parent / "data"):
+        r = root.resolve()
+        if r not in roots:
+            roots.append(r)
+    return roots
+
+
+def _persona_data_dirs(persona: str) -> list[Path]:
+    """Кандидаты папок памяти персоны: api_<id> (веб/API) и <id> (Telegram)."""
+    out = []
+    for root in _data_roots():
+        for prefix in ("api_", ""):
+            path = safe_join(root, persona, prefix=prefix)
+            if path is not None:
+                out.append(path)
+    return out
+
+
+def rename_persona(persona: str, new_id: str) -> dict:
+    """Сменить id персоны: YAML-файл (в той же папке персон), поле id:, папки
+    памяти data/api_<id> и data/<id> (с аватаром), записи календаря, токен
+    <ID>_BOT_TOKEN в .env и недоставленные фоновые сообщения.
+
+    Chroma-коллекции общие по имени и изолированы только папкой, id внутри
+    базы нет — переименования папки достаточно. Бот персоны выгружается из
+    реестра и пересоздаётся под новым id при первом обращении.
+
+    {"ok": True, "persona", "restart_required"} |
+    {"ok": False, "detail", "status"} (404 — нет персоны, 409 — id занят).
+    """
+    from app.api.runtime import list_personas, persona_color, persona_yaml_path, registry
+
+    if persona not in list_personas():
+        return {"ok": False, "status": 404, "detail": f"Персона '{persona}' не найдена"}
+    new_id = (new_id or "").strip()
+    if not PERSONA_ID_RE.match(new_id):
+        return {"ok": False, "status": 400,
+                "detail": "id: латиница, цифры, _ и - (до 64 символов)"}
+    if new_id == persona:
+        return {"ok": False, "status": 400, "detail": "Новый id совпадает с текущим"}
+    # Регистр важен: на macOS/Windows файловая система его не различает —
+    # alex → Alex дал бы «конфликт» с самим собой; такие переименования не делаем
+    if new_id.lower() == persona.lower():
+        return {"ok": False, "status": 400, "detail": "id отличается только регистром букв — выберите другой"}
+    if persona_yaml_path(new_id) is not None:
+        return {"ok": False, "status": 409, "detail": f"Персона '{new_id}' уже существует"}
+    busy = [str(p) for p in _persona_data_dirs(new_id) if p.exists()]
+    if busy:
+        # Чужая (например, от удалённой персоны) память подмешалась бы к этой
+        return {"ok": False, "status": 409,
+                "detail": f"Папка данных для '{new_id}' уже существует: {', '.join(busy)}"}
+
+    src_path = persona_yaml_path(persona)
+    dest_path = safe_join(src_path.parent, new_id, ".yaml") if src_path else None
+    if src_path is None or dest_path is None:
+        return {"ok": False, "status": 404, "detail": f"Персона '{persona}' не найдена"}
+
+    moves = [(src, safe_join(src.parent, new_id, prefix=src.name[:-len(persona)]))
+             for src in _persona_data_dirs(persona) if src.is_dir()]
+
+    with yaml_write_lock:
+        raw = src_path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        out = _set_top_field(raw, "id", f"id: {new_id}")
+        # Цвет без явного color: считается от id — закрепляем текущий, чтобы
+        # метка персоны в календаре и карточке не сменила цвет
+        if not (isinstance(data.get("color"), str) and data["color"].strip()):
+            out = _set_top_field(out, "color", f"color: '{persona_color(persona, data)}'", after="description")
+
+        # Выгрузить бота до переноса: его фоновые циклы пишут в папку памяти
+        registry.evict(persona)
+        done: list[tuple[Path, Path]] = []
+        try:
+            for src, dst in moves:
+                src.rename(dst)
+                done.append((src, dst))
+            atomic_write_text(dest_path, out)
+            src_path.unlink()
+        except Exception as e:
+            # Откат: папки назад, недописанный новый YAML — убрать
+            for src, dst in reversed(done):
+                try:
+                    dst.rename(src)
+                except OSError:
+                    logger.exception(f"[api] Откат смены id: не удалось вернуть {dst} → {src}")
+            if src_path.exists() and dest_path.exists():
+                dest_path.unlink(missing_ok=True)
+            logger.exception(f"[api] Смена id {persona} → {new_id} не удалась")
+            return {"ok": False, "status": 500, "detail": f"Не удалось сменить id: {e}"}
+
+    # Дальше — некритичные ссылки на id: сбой не откатывает переименование
+    try:
+        from app.features.calendar_manager import get_calendar
+        cal = get_calendar()
+        for entry in cal.list_entries():
+            if entry.get("persona") == persona:
+                cal.update_entry(entry["id"], persona=new_id)
+    except Exception:
+        logger.exception("[api] Смена id: записи календаря не обновлены")
+
+    restart_required = False
+    old_var, new_var = f"{persona.upper()}_BOT_TOKEN", f"{new_id.upper()}_BOT_TOKEN"
+    token = os.getenv(old_var)
+    if token:
+        try:
+            # Telegram-бот читает токен при старте — нужен его перезапуск
+            _persist_env(new_var, token)
+            _remove_env(old_var)
+            restart_required = True
+        except ValueError:
+            # new_id с «-» не годится в имя переменной окружения
+            logger.warning(f"[api] Смена id: {old_var} не перенесён — {new_var} недопустимое имя переменной")
+
+    try:
+        from app.api.inbox import inbox_rename
+        inbox_rename(persona, new_id)
+    except Exception:
+        logger.exception("[api] Смена id: очередь фоновых сообщений не перенесена")
+
+    try:
+        from app.api import skins_api
+        skins_api.rename_persona(persona, new_id)
+    except Exception:
+        logger.exception("[api] Смена id: назначение скина не перенесено")
+
+    logger.info(f"[api] id персоны {persona} → {new_id} (папки: {[str(d) for _, d in moves]})")
+    return {"ok": True, "persona": new_id, "restart_required": restart_required}

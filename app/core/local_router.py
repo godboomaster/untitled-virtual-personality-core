@@ -1,31 +1,33 @@
 """
-Локальный LLM роутер через Ollama.
+Локальный LLM роутер: лёгкие служебные вызовы (классификации, извлечение,
+сжатие) — полный список задач в LOCAL_TASKS.
 
-Обслуживает лёгкие служебные вызовы (классификации, извлечение, сжатие) —
-полный список задач в LOCAL_TASKS.
-
-Движок каждой задачи выбирает пользователь (настройки досье, «Движок
-локальных задач»): «ollama» (дефолт) или «webchat» — тогда вызовы этой
-задачи уходят в веб-чат через WebChatLLM (канал side: отдельный чат и
-квота, чтобы не замусоривать контекст основной беседы); конкретный сайт
-тоже выбирается пользователем. Выбор хранится в data/local_backends.json,
-задача без записи наследует LOCAL_LLM_BACKEND из env (дефолт ollama).
-Веб-чат не ответил — мягкий откат на Ollama, если она доступна. OCR
+Движок задачи выбирается на персону (досье → настройки, «Движок локальных
+задач»; YAML персоны, llm.local_tasks): «ollama» или «webchat» — тогда вызов
+уходит в веб-чат через WebChatLLM (канал side: отдельный чат и квота, чтобы
+не замусоривать контекст основной беседы). Без явного выбора — по роду
+задачи: задачи на пути ответа (ответ ждут прямо в разговоре) идут в Ollama,
+фоновые (BACKGROUND_TASKS) — в веб-чат: первый веб-чат fallback-цепочки
+персоны после основного, запасной — основной веб-чат персоны (тоже канал
+side). Веб-чаты не ответили — мягкий откат на Ollama, если она доступна. OCR
 остаётся только за Ollama: веб-чату не отдать картинку.
+
+Роутер один на процесс (Ollama и вкладки side общие), персона задаёт только
+выбор движков: get_local_router(context) — вид роутера, привязанный к
+персоне (bind_persona). Без привязки — дефолт LOCAL_LLM_BACKEND из env
+(ollama) для всех задач.
 """
 
-import json
 import logging
 import os
 import threading
 import time
-from pathlib import Path
 from typing import Optional
 
 import httpx
 
 from app.core.config import OLLAMA_MODEL
-from app.core.paths import data_dir
+from app.core.language import detect_language, user_language_line
 
 logger = logging.getLogger(__name__)
 
@@ -47,46 +49,140 @@ LOCAL_TASKS: dict[str, bool] = {
     "rule_extract": False,         # извлечение правил из реплик
     "inventory_enrich": False,     # описания предметов инвентаря
     "learning_intent": False,      # детект «хочу учиться»
-    "learning": False,             # генерация уроков и словаря курса
+    "learning": False,             # уроки на пути ответа: «продолжим?», старт курса
+    "learning_lesson": False,      # плановый урок в фоне: тема и словарь
     "help_detect": False,          # детект просьб о помощи
     "dossier": False,              # анализ досье (fallback без основного роутера)
     "relationship": False,         # разбор диалога → общие моменты/темы отношений
     "dialogue_harvest": False,     # общий урожай диалога: NPC + mood + моменты/позиции
+    "room_placement": False,       # комната в вебе: где стоит новый предмет инвентаря
     "ocr": True,                   # текст с картинок — только Ollama (vision)
 }
 
-def register_task(name: str, ollama_only: bool = False) -> None:
+# Фоновые задачи: их ответа никто не ждёт в разговоре — по умолчанию веб-чат
+# (канал side). Остальные идут на пути ответа пользователю — по умолчанию
+# Ollama: тёплая модель отвечает за доли секунды, веб-чат side — от ~10 с
+# (шаг опроса POLL_SEC × STABLE_POLLS). offline_summary формально на пути
+# ответа (контекст первой реплики после отсутствия ≥12 ч), но редкий — в фоне
+# по выбору: лишние секунды раз в полдня дешевле, чем держать Gemma.
+BACKGROUND_TASKS: set[str] = {
+    "self_memory", "state_engine", "world_engine", "offline_summary",
+    "proactive_prefilter", "dossier", "relationship", "dialogue_harvest",
+    "room_placement",
+    "learning_lesson",
+}
+
+
+def register_task(name: str, ollama_only: bool = False,
+                  background: bool = False) -> None:
     # Задача аддона: видна в настройках движков, её движок можно выбрать
     LOCAL_TASKS[name] = bool(ollama_only)
+    if background:
+        BACKGROUND_TASKS.add(name)
+    else:
+        BACKGROUND_TASKS.discard(name)
 
 
 # Бюджет ожидания очереди фона веб-чата (канал side) для локальных задач:
-# занято дольше — откат на Ollama (см. get_response). Столько же, сколько
-# основной роутер ждёт перед уходом в burst (BURST_LOCK_WAIT_SEC).
+# занято дольше — следующий сайт/откат на Ollama (см. get_response). Столько
+# же, сколько основной роутер ждёт перед уходом в burst (BURST_LOCK_WAIT_SEC).
 LOCAL_WEBCHAT_QUEUE_WAIT_SEC = 3.0
 
-# Выбор пользователя: {task: {"backend": "ollama"|"webchat", "site": ...}}
-_TASKS_FILE = data_dir() / "local_backends.json"
+# Веб-чат фоновых задач персоны (llm.local_tasks.bg_site): «fallback» —
+# первый веб-чат fallback-цепочки после основного (дефолт), «primary» —
+# основной веб-чат персоны, «rotate» — сайты по очереди из
+# llm.local_tasks.rotate ({сайт: сколько вопросов подряд}; 01.10 — duck.ai и
+# Google AI Mode, чтобы нагрузка на каждый сайт была меньше), иначе имя
+# сайта. Запасной — основной веб-чат (или первый fallback, если выбран сам
+# основной); у «rotate» — следующий сайт очереди.
+BG_SITE_MODES = ("fallback", "primary", "rotate")
+DEFAULT_BG_SITE = "fallback"
+ROTATE_MAX = 20  # вопросов подряд одному сайту — не больше
 
 
-def _load_task_config() -> dict:
+def normalize_local_tasks_cfg(cfg) -> tuple[dict, str]:
+    """llm.local_tasks из YAML → ({задача: {"backend", "site"?}}, bg_site).
+    Мусорные записи отбрасываются: неизвестный движок, сайт вне ADAPTERS."""
+    from app.features.web_llm import ADAPTERS
+    cfg = cfg if isinstance(cfg, dict) else {}
+    bg = str(cfg.get("bg_site") or DEFAULT_BG_SITE).strip().lower()
+    if bg not in BG_SITE_MODES and bg not in ADAPTERS:
+        bg = DEFAULT_BG_SITE
+    tasks: dict = {}
+    raw = cfg.get("tasks") if isinstance(cfg.get("tasks"), dict) else {}
+    for task, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        backend = str(entry.get("backend") or "").strip().lower()
+        if backend not in ("ollama", "webchat"):
+            continue
+        site = str(entry.get("site") or "").strip().lower() or None
+        norm = {"backend": backend}
+        if backend == "webchat" and site in ADAPTERS:
+            norm["site"] = site
+        tasks[str(task)] = norm
+    return tasks, bg
+
+
+def normalize_rotate_cfg(cfg) -> list[tuple[str, int]]:
+    """llm.local_tasks.rotate → [(сайт, сколько вопросов подряд)] в порядке
+    YAML. Мусор отбрасывается: сайт вне ADAPTERS, счётчик вне 1..ROTATE_MAX."""
+    from app.features.web_llm import ADAPTERS
+    raw = cfg.get("rotate") if isinstance(cfg, dict) else None
+    out: list[tuple[str, int]] = []
+    for site, n in (raw.items() if isinstance(raw, dict) else ()):
+        site = str(site or "").strip().lower()
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            continue
+        if site in ADAPTERS and 1 <= n <= ROTATE_MAX \
+                and site not in (s for s, _n in out):
+            out.append((site, n))
+    return out
+
+
+def _global_webchat_sites() -> list[str]:
     try:
-        cfg = json.loads(_TASKS_FILE.read_text(encoding="utf-8"))
-        tasks = cfg.get("tasks") if isinstance(cfg, dict) else None
-        return tasks if isinstance(tasks, dict) else {}
+        from app.core.router import _parse_webchat_sites
+        return list(_parse_webchat_sites())
     except Exception:
-        return {}
+        return []
 
 
-def _save_task_config(tasks: dict):
+def _router_webchat_sites(router) -> tuple[Optional[str], list[str]]:
+    """(основной веб-чат персоны | None, веб-чаты её fallback-цепочки по
+    порядку, без основного) — из ModelRouter персоны."""
+    if router is None:
+        return None, []
+
+    def _site(tok) -> Optional[str]:
+        if not isinstance(tok, str):
+            return None
+        if tok == "webchat":  # голый webchat — все сайты, первым идёт первый
+            sites = list(getattr(router, "webchat_sites", None) or [])
+            # Сайты, исключённые персоной (llm.exclude), пропускаем — роутер
+            # их всё равно не тронет (см. ModelRouter._filter_excluded_sites);
+            # 'webchat:<сайт>' ниже не фильтруется — это уже закреплённый
+            # основной провайдер, исключение его не касается.
+            excluded = getattr(router, "excluded", None) or set()
+            sites = [s for s in sites if f"webchat:{s}" not in excluded]
+            return sites[0] if sites else None
+        if tok.startswith("webchat:"):
+            return tok.split(":", 1)[1] or None
+        return None
+
+    primary = _site(getattr(router, "active_provider", None))
     try:
-        _TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _TASKS_FILE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"tasks": tasks}, ensure_ascii=False, indent=2),
-                       encoding="utf-8")
-        tmp.replace(_TASKS_FILE)
-    except Exception as e:
-        logger.warning(f"[LocalLLM] Конфиг движков задач не записан: {e}")
+        order = router._get_full_order()
+    except Exception:
+        order = []
+    chain: list[str] = []
+    for tok in order:
+        site = _site(tok)
+        if site and site != primary and site not in chain:
+            chain.append(site)
+    return primary, chain
 
 
 class LocalLLMRouter:
@@ -101,13 +197,15 @@ class LocalLLMRouter:
         self.base_url = base_url or os.getenv("OLLAMA_URL", DEFAULT_OLLAMA_URL).rstrip("/")
         self.model = model or OLLAMA_MODEL
         self.timeout = timeout
-        # Движки задач (Ollama/веб-чат по каждой) — выбор пользователя
-        self._task_cfg = _load_task_config()
+        # Привязки персон (bind_persona): context -> {"router": ModelRouter,
+        # "tasks": {задача: {"backend", "site"?}}, "bg_site": str}
+        self._personas: dict = {}
 
         self._client = httpx.Client(timeout=timeout)
         self._last_check = 0.0  # для периодической пере-проверки в is_available()
         self._available = self._check_available()
         self._webchats: dict = {}  # сайт -> ленивый WebChatLLM (канал side)
+        self._rot_lock = threading.Lock()  # счётчики очереди «rotate»
 
         if self._available:
             logger.info(f"[LocalLLM] Подключен к Ollama: {self.base_url}, модель: {self.model}")
@@ -116,90 +214,123 @@ class LocalLLMRouter:
                 f"[LocalLLM] Ollama недоступен по {self.base_url}. "
                 f"Бинарные классификаторы будут fallback на основной роутер."
             )
-        if any(v.get("backend") == "webchat" for v in self._task_cfg.values()
-               if isinstance(v, dict)):
-            logger.info("[LocalLLM] Часть задач локального движка идёт через веб-чат (side)")
 
-    # ── движки задач: ollama или веб-чат (выбор пользователя) ──
+    # ── движки задач: выбор на персону ──
 
     def _default_backend(self) -> str:
-        # Дефолтный движок для задач без явной записи: LOCAL_LLM_BACKEND.
+        # Движок задач без привязки к персоне: LOCAL_LLM_BACKEND (дефолт ollama).
         b = (os.getenv("LOCAL_LLM_BACKEND") or "ollama").strip().lower()
         return b if b in ("ollama", "webchat") else "ollama"
 
-    def _resolve_task(self, task: Optional[str]) -> tuple[str, Optional[str]]:
-        # (backend, site|None) задачи: запись пользователя или дефолт env.
-        entry = self._task_cfg.get(task) if task else None
-        if isinstance(entry, dict):
-            backend = entry.get("backend")
-            backend = backend if backend in ("ollama", "webchat") else None
-            if backend:
-                site = entry.get("site") or None
-                return backend, (str(site) if site else None)
-        return self._default_backend(), None
+    def bind_persona(self, context: str, router=None, cfg=None) -> None:
+        """Привязать персону: её ModelRouter (цепочка провайдеров — откуда
+        брать веб-чаты фоновых задач) и llm.local_tasks из YAML:
+        {"bg_site": "fallback"|"primary"|<сайт>,
+         "tasks": {задача: {"backend": "ollama"|"webchat", "site": <сайт>}}}.
+        Повторный вызов заменяет привязку (живое применение настроек)."""
+        tasks, bg = normalize_local_tasks_cfg(cfg)
+        self._personas[str(context)] = {"router": router, "tasks": tasks,
+                                        "bg_site": bg,
+                                        "rotate": normalize_rotate_cfg(cfg),
+                                        "rot_i": 0}
 
-    def task_snapshot(self) -> list[dict]:
-        # Снимок для UI: текущий (resolved) движок каждой известной задачи.
-        out = []
-        for task, ollama_only in LOCAL_TASKS.items():
-            backend, site = self._resolve_task(task)
-            out.append({"id": task, "backend": backend,
-                        "site": site if backend == "webchat" else None,
-                        "ollama_only": ollama_only})
-        return out
+    def for_persona(self, context: Optional[str]):
+        # Вид роутера для персоны; без context — сам общий роутер
+        return PersonaLocalRouter(self, context) if context else self
 
-    def set_task_backend(self, task: str, backend: str,
-                         site: Optional[str] = None) -> tuple[bool, str]:
-        """Выбрать движок задачи: «ollama»/«webchat» + сайт веб-чата
-        (None/пусто — первый включённый). Персист в data/local_backends.json.
-        (ok, detail) — detail заполняется при отказе."""
-        if task not in LOCAL_TASKS:
-            return False, f"Неизвестная задача «{task}»"
-        backend = (backend or "").strip().lower()
-        if backend not in ("ollama", "webchat"):
-            return False, "Движок должен быть «ollama» или «webchat»"
-        site = (site or "").strip().lower() or None
-        if backend == "webchat":
-            if LOCAL_TASKS[task]:
-                return False, "Эта задача технически не может уйти в веб-чат"
-            from app.core.router import _parse_webchat_sites
-            sites = _parse_webchat_sites()
-            if not sites:
-                return False, "Сначала включите веб-чат (выберите хотя бы один сайт)"
-            if site is not None and site not in sites:
-                return False, f"Сайт «{site}» не включён"
-            if site is None:
-                site = sites[0]
+    def _webchat_order(self, binding: dict, site: Optional[str],
+                       advance: bool = False) -> list[str]:
+        """Сайты веб-чата задачи по порядку попыток: выбранный (сайт задачи,
+        иначе bg_site персоны), затем запасной — основной веб-чат персоны
+        (или первый fallback, если выбран сам основной; основной не веб-чат —
+        следующий веб-чат цепочки). «rotate» — очередной сайт очереди, за
+        ним следующий; advance — сдвинуть очередь (только настоящий вызов,
+        не снимок для настроек)."""
+        if binding.get("router") is None:
+            # Роутера персоны нет — глобальный порядок веб-чатов
+            sites = _global_webchat_sites()
+            primary, chain = (sites[0] if sites else None), sites[1:]
         else:
-            site = None
-        entry = {"backend": backend}
-        if site:
-            entry["site"] = site
-        tasks = dict(self._task_cfg)
-        old = tasks.get(task)
-        if old == entry:
-            return True, ""
-        tasks[task] = entry
-        _save_task_config(tasks)
-        self._task_cfg = tasks
-        logger.info(f"[LocalLLM] Задача «{task}»: движок {backend}"
-                    + (f", сайт {site}" if site else ""))
-        return True, ""
+            primary, chain = _router_webchat_sites(binding.get("router"))
+        fallback = chain[0] if chain else None
+        mode = site or binding.get("bg_site") or DEFAULT_BG_SITE
+        rot = binding.get("rotate") or []
+        if mode == "rotate" and not rot:
+            mode = DEFAULT_BG_SITE  # очередь не задана — как по умолчанию
+        if mode == "rotate":
+            seq = [s for s, n in rot for _ in range(n)]
+            with self._rot_lock:
+                i = int(binding.get("rot_i") or 0)
+                if advance:
+                    binding["rot_i"] = i + 1
+            cur = seq[i % len(seq)]
+            order = [cur] + [s for s, _n in rot if s != cur] \
+                + [primary, fallback]
+        elif mode == "primary":
+            order = [primary, fallback]
+        elif mode == "fallback":
+            order = [fallback, primary]
+        else:
+            order = [mode, primary, fallback]
+        order += chain[1:]
+        out: list[str] = []
+        for s in order:
+            if s and s not in out:
+                out.append(s)
+        return out[:2]
 
-    def reset_webchat_tasks(self):
-        """Веб-чаты выключили — все задачи, что шли в веб-чат, возвращаем на
-        Ollama (иначе вызовы молча ходили бы в никуда; get_response и так
-        откатывается, но конфиг не должен врать)."""
-        changed = {t: {"backend": "ollama"} for t, v in self._task_cfg.items()
-                   if isinstance(v, dict) and v.get("backend") == "webchat"}
-        if not changed:
-            return
-        tasks = dict(self._task_cfg)
-        tasks.update(changed)
-        _save_task_config(tasks)
-        self._task_cfg = tasks
-        # Выбывшие инстансы закрывают свои вкладки (идущий вызов — по его
-        # завершении, см. WebChatLLM.retire), а не остаются жить в пуле
+    def _resolve_task(self, task: Optional[str],
+                      persona: Optional[str] = None,
+                      advance: bool = False) -> tuple[str, list[str]]:
+        """(backend, сайты веб-чата по порядку попыток) задачи персоны:
+        явный выбор из llm.local_tasks, иначе дефолт по роду задачи.
+        Веб-чатов нет — ollama. advance — сдвинуть очередь «rotate»."""
+        if task and LOCAL_TASKS.get(task):
+            return "ollama", []
+        binding = self._personas.get(str(persona)) if persona else None
+        if binding is None:
+            if self._default_backend() == "webchat":
+                sites = _global_webchat_sites()[:1]
+                if sites:
+                    return "webchat", sites
+            return "ollama", []
+        entry = binding["tasks"].get(task) if task else None
+        if entry:
+            backend, site = entry["backend"], entry.get("site")
+        else:
+            backend = "webchat" if task in BACKGROUND_TASKS else "ollama"
+            site = None
+        if backend == "webchat":
+            sites = self._webchat_order(binding, site, advance=advance)
+            if sites:
+                return "webchat", sites
+        return "ollama", []
+
+    def task_snapshot(self, persona: Optional[str] = None) -> dict:
+        """Снимок для UI: bg_site персоны, её основной/первый fallback
+        веб-чат, доступные сайты и resolved-движок каждой задачи."""
+        binding = self._personas.get(str(persona)) if persona else None
+        primary, chain = (_router_webchat_sites(binding.get("router"))
+                          if binding else (None, []))
+        tasks = []
+        for task, ollama_only in LOCAL_TASKS.items():
+            backend, sites = self._resolve_task(task, persona)
+            entry = (binding["tasks"].get(task) if binding else None) or {}
+            tasks.append({"id": task, "backend": backend, "sites": sites,
+                          "site": entry.get("site"),
+                          "explicit": bool(entry) and not ollama_only,
+                          "background": task in BACKGROUND_TASKS,
+                          "ollama_only": ollama_only})
+        sites = [s for s in [primary] + chain if s]
+        return {"bg_site": binding["bg_site"] if binding else DEFAULT_BG_SITE,
+                "primary_site": primary,
+                "fallback_site": chain[0] if chain else None,
+                "sites": sites, "tasks": tasks}
+
+    def reset_webchats(self):
+        """Веб-чаты выключили — выбывшие инстансы закрывают свои вкладки
+        (идущий вызов — по его завершении, см. WebChatLLM.retire), а не
+        остаются жить в пуле; следующий вызов создаст инстанс заново."""
         old = list(self._webchats.values())
         self._webchats.clear()
         for chat in old:
@@ -207,29 +338,29 @@ class LocalLLMRouter:
                 chat.retire()
             except Exception:
                 pass
-        logger.info(f"[LocalLLM] Веб-чаты выключены — задачи на Ollama: "
-                    f"{', '.join(sorted(changed))}")
 
     def _get_webchat(self, site: Optional[str] = None):
-        """WebChatLLM для локальных задач: сайт задачи (или первый включённый
-        из WEBCHAT_SITES), канал «side» — отдельный чат и квота. Контекст
-        «default»: локальный роутер — синглтон без привязки к персоне, его
-        сайт#side общий для всех персон (там только короткие классификации —
-        персональный контент инициатив/LTM у персон идёт в своих чатах,
-        см. ModelRouter(context=...)). None — веб-чаты не включены."""
+        """WebChatLLM для локальных задач: сайт (None — первый включённый из
+        WEBCHAT_SITES), канал «side» — отдельный чат и квота. Контекст
+        «default»: вкладка side на сайт одна на процесс, общая для всех
+        персон (там короткие служебные вызовы — персональный контент
+        инициатив/LTM у персон идёт в своих чатах, см. ModelRouter(context=...)).
+        None — сайта нет."""
         try:
-            from app.core.router import _parse_webchat_sites
-            from app.features.web_llm import WebChatLLM
-            sites = _parse_webchat_sites()
-            if not sites:
+            from app.features.web_llm import ADAPTERS, WebChatLLM
+            if site is None:
+                sites = _global_webchat_sites()
+                if not sites:
+                    return None
+                site = sites[0]
+            if site not in ADAPTERS:
                 return None
-            target = site if site in sites else sites[0]
-            chat = self._webchats.get(target)
+            chat = self._webchats.get(site)
             if chat is None:
                 # setdefault атомарен: два первых параллельных вызова не
                 # создают два инстанса (две вкладки на одном side-чате)
                 chat = self._webchats.setdefault(
-                    target, WebChatLLM(target, channel="side"))
+                    site, WebChatLLM(site, channel="side"))
             return chat
         except Exception as e:
             logger.debug(f"[LocalLLM] Веб-чат для локальных задач недоступен: {e}")
@@ -255,22 +386,19 @@ class LocalLLMRouter:
             logger.debug(f"[LocalLLM] Проверка доступности не удалась: {e}")
             return False
 
-    def is_available(self, task: Optional[str] = None) -> bool:
-        """Доступен ли движок задачи (какой бы ни был выбран).
+    def is_available(self, task: Optional[str] = None,
+                     persona: Optional[str] = None) -> bool:
+        """Доступен ли движок задачи персоны (какой бы ни был выбран).
 
-        webchat — включён сайт задачи (или любой, если сайт не задан);
-        ollama — ответ /api/tags (после отказа пере-проверка не чаще раза в 30 сек).
-        Доступность ≠ успех вызова: веб-чат мог не ответить, Ollama — упасть;
-        тогда get_response честно вернёт None (или откатится на второй движок).
+        webchat — у задачи есть сайт веб-чата (_resolve_task отдаёт webchat
+        только с сайтами); ollama — ответ /api/tags (после отказа
+        пере-проверка не чаще раза в 30 сек). Доступность ≠ успех вызова:
+        веб-чат мог не ответить, Ollama — упасть; тогда get_response честно
+        вернёт None (или откатится на следующий движок).
         """
-        backend, site = self._resolve_task(task)
+        backend, _sites = self._resolve_task(task, persona)
         if backend == "webchat":
-            try:
-                from app.core.router import _parse_webchat_sites
-                sites = _parse_webchat_sites()
-                return bool(sites) and (site is None or site in sites)
-            except Exception:
-                return False
+            return True
         if self._available:
             return True
         # Ollama могла стартовать после бота — пере-проверяем не чаще раза в 30 сек
@@ -292,15 +420,17 @@ class LocalLLMRouter:
         timeout: Optional[float] = None,
         task: Optional[str] = None,
         queue_wait: Optional[float] = None,
+        persona: Optional[str] = None,
+        webchat_timeout: Optional[float] = None,
     ) -> Optional[str]:
         """
         Отправляет запрос движку задачи (Ollama или веб-чат).
         Возвращает текст ответа или None при ошибке.
 
-        task — идентификатор задачи из LOCAL_TASKS: движок (Ollama/веб-чат
-        и сайт) берётся из выбора пользователя для этой задачи. webchat —
-        сначала веб-чат (канал side), его неудача мягко откатывает на
-        Ollama; ollama — только Ollama.
+        task — идентификатор задачи из LOCAL_TASKS, persona — context персоны
+        (см. bind_persona): движок и сайты берутся из её выбора для задачи
+        (или дефолта по роду задачи). webchat — сайты по очереди (канал
+        side), их неудача мягко откатывает на Ollama; ollama — только Ollama.
 
         queue_wait — сколько ждать очередь фона сайта веб-чата (сек); None —
         LOCAL_WEBCHAT_QUEUE_WAIT_SEC. Канал side фоновый: без бюджета вызов
@@ -309,29 +439,37 @@ class LocalLLMRouter:
         ответа (query_rewrite, intent_router, rule_extract, learning_intent,
         help_detect…), и у них есть откат на Ollama. Фоновой задаче без
         отката, которой важнее дождаться, — передать queue_wait явно.
+
+        webchat_timeout — бюджет ответа одного сайта веб-чата (сек); None —
+        max(timeout, 150). timeout рассчитан на Ollama и для веб-чата мал,
+        поэтому по умолчанию берётся пол 150 с; синхронной задаче на пути
+        ответа (offline_summary) — передать свой потолок, иначе при зависших
+        сайтах реплика ждала бы минуты.
         """
-        backend, site = self._resolve_task(task)
+        backend, sites = self._resolve_task(task, persona, advance=True)
         if backend == "webchat":
-            chat = self._get_webchat(site)
-            if chat is not None:
+            for site in sites:
+                chat = self._get_webchat(site)
+                if chat is None:
+                    continue
                 try:
                     # Веб-чат медленный (стриминг + опрос DOM) — минимум как у роутера
                     answer = chat.get_response(
                         messages, temperature=temperature, max_tokens=max_tokens,
-                        top_p=top_p, timeout=max(timeout or 0.0, 150.0),
+                        top_p=top_p,
+                        timeout=(webchat_timeout if webchat_timeout is not None
+                                 else max(timeout or 0.0, 150.0)),
                         lock_timeout=(LOCAL_WEBCHAT_QUEUE_WAIT_SEC
                                       if queue_wait is None else queue_wait))
                     if answer:
                         return answer.strip()
-                    logger.warning(
-                        f"[LocalLLM] Веб-чат ({task or 'default'}) не ответил — "
-                        f"пробуем Ollama, если доступна")
+                    logger.info(f"[LocalLLM] Веб-чат {site} ({task or 'default'}) "
+                                f"не ответил — следующий движок")
                 except Exception as e:
-                    logger.warning(f"[LocalLLM] Ошибка веб-чата: {e}")
-            else:
-                logger.warning(
-                    f"[LocalLLM] Движок задачи «{task or 'default'}» — webchat, "
-                    f"но сайты не включены — пробуем Ollama")
+                    logger.warning(f"[LocalLLM] Ошибка веб-чата {site}: {e}")
+            logger.warning(
+                f"[LocalLLM] Веб-чаты задачи «{task or 'default'}» "
+                f"({', '.join(sites)}) не ответили — пробуем Ollama, если доступна")
 
         if not self._available:
             return None
@@ -391,6 +529,7 @@ class LocalLLMRouter:
         temperature: float = 0.0,
         max_tokens: int = 50,
         task: Optional[str] = None,
+        persona: Optional[str] = None,
     ) -> Optional[str]:
         """
         Упрощённый классификатор.
@@ -406,6 +545,7 @@ class LocalLLMRouter:
             temperature=temperature,
             max_tokens=max_tokens,
             task=task,
+            persona=persona,
         )
 
         if not response:
@@ -428,7 +568,8 @@ class LocalLLMRouter:
         return None
 
 
-    def ocr_image(self, image_bytes: bytes, question: str = "") -> Optional[str]:
+    def ocr_image(self, image_bytes: bytes, question: str = "",
+                  lang: Optional[str] = None) -> Optional[str]:
         """
         Извлекает текст с изображения и описывает его (vision).
         Требует мультимодальную модель — веб-чату картинки не отдать, поэтому
@@ -453,6 +594,8 @@ class LocalLLMRouter:
             )
             if question:
                 prompt += f"\nAdditionally answer the user's question about the image: {question}"
+            # lang — язык пользователя; None — по подписи к картинке
+            prompt += "\n" + user_language_line(lang or detect_language(question))
 
             payload = {
                 "model": self.model,
@@ -492,10 +635,37 @@ _local_router: Optional[LocalLLMRouter] = None
 _local_router_lock = threading.Lock()
 
 
-def get_local_router() -> LocalLLMRouter:
+class PersonaLocalRouter:
+    """Вид общего локального роутера, привязанный к персоне: те же методы
+    задач (is_available/get_response/classify), движок — из её настроек
+    (bind_persona). Остальное (model, base_url, ocr_image, _available…)
+    читается у общего роутера."""
+
+    def __init__(self, base: LocalLLMRouter, context: str):
+        self._base = base
+        self.context = str(context)
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+    def is_available(self, task: Optional[str] = None) -> bool:
+        return self._base.is_available(task=task, persona=self.context)
+
+    def get_response(self, messages: list, *args, **kwargs) -> Optional[str]:
+        kwargs.setdefault("persona", self.context)
+        return self._base.get_response(messages, *args, **kwargs)
+
+    def classify(self, *args, **kwargs) -> Optional[str]:
+        kwargs.setdefault("persona", self.context)
+        return self._base.classify(*args, **kwargs)
+
+
+def get_local_router(context: Optional[str] = None):
+    """Общий локальный роутер; с context — его вид для персоны (движки
+    задач из её настроек, см. bind_persona)."""
     global _local_router
     if _local_router is None:
         with _local_router_lock:
             if _local_router is None:
                 _local_router = LocalLLMRouter()
-    return _local_router
+    return _local_router.for_persona(context)

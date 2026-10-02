@@ -105,6 +105,47 @@ def main():
     check("live: промах банка → google, обрамляющие кавычки срезаны",
           r == "*Киваю.* Готово.")
 
+    # ── 2а2. Назначенный провайдер ответа (llm.answer_provider,
+    # router.answer_provider) — одна попытка ВНЕ google и ВНЕ цепочки:
+    # отвечает — используется вместо google; молчит — сразу None, google
+    # не трогаем (пользователь ждёт готовую реплику) ──
+    _assigned_calls = []
+    _google_should_not_be_called = []
+    ft._google_cc_chat = lambda context, channel="cc": (
+        _google_should_not_be_called.append(1) or
+        SimpleNamespace(get_response=lambda messages, **kw: "google ответ"))
+
+    class _AssignedRouter:
+        def __init__(self, reply):
+            self.answer_provider = "openai"
+            self._reply = reply
+
+        def get_response_assigned(self, provider, messages, **kw):
+            _assigned_calls.append((provider, kw))
+            return self._reply
+
+    bot_assigned = SimpleNamespace(context="t_assigned",
+                                   persona=SimpleNamespace(system_prompt=SP),
+                                   computer_control=None,
+                                   router=_AssignedRouter('  «Готово.»  '))
+    ft._save_bank("t_assigned", {"kinds": {}})  # промах банка → живой вызов
+    r = ft.cc_reply(bot_assigned, {"kind": "click", "element": "Play"}, True)
+    check("live: назначенный провайдер отвечает — вместо google, канал side, "
+          "user_path=True",
+          r == "Готово." and len(_assigned_calls) == 1
+          and _assigned_calls[0][0] == "openai"
+          and _assigned_calls[0][1].get("webchat_channel") == "side"
+          and _assigned_calls[0][1].get("user_path") is True
+          and not _google_should_not_be_called)
+
+    bot_assigned.router = _AssignedRouter(None)
+    _assigned_calls.clear()
+    r = ft.cc_reply(bot_assigned, {"kind": "click", "element": "Play"}, True)
+    check("live: назначенный провайдер молчит — None без фоллбека на google",
+          r is None and len(_assigned_calls) == 1
+          and not _google_should_not_be_called)
+    ft._google_cc_chat = _google_cc_chat_real
+
     # ── 2б. Живой вызов не блокируется генерацией/локом ──
     _live_calls = []
     ft._google_cc_chat = lambda context: SimpleNamespace(
@@ -120,6 +161,27 @@ def main():
     check("live: лок ждётся не дольше _LIVE_LOCK_TIMEOUT_SEC",
           r == "ок" and _live_calls
           and _live_calls[0].get("lock_timeout") == ft._LIVE_LOCK_TIMEOUT_SEC)
+
+    # ── 2б2. Язык пользователя: в живом промпте; банк на языке персоны
+    # (здесь ru) при английском пользователе пропускается ──
+    _live_msgs = []
+    ft._google_cc_chat = lambda context: SimpleNamespace(
+        get_response=lambda messages, **kw: _live_msgs.append(messages) or "Done.")
+    ft._save_bank("t1", {"kinds": {"generic": {"ok": ["Сделано."],
+                                               "err": ["Сбой: {detail}."]}}})
+    r = ft.cc_reply(bot, {"kind": "click"}, True, lang="en")
+    check("lang: en-пользователь при ru-банке — живой вызов, язык в промпте",
+          r == "Done." and _live_msgs
+          and "speaks English" in _live_msgs[0][0]["content"]
+          and "speaks English" in _live_msgs[0][1]["content"])
+    _live_msgs.clear()
+    r = ft.cc_reply(bot, {"kind": "click"}, True, lang="ru")
+    check("lang: язык совпал с банком — фраза из банка", r == "Сделано."
+          and not _live_msgs)
+    check("lang: генератор банка — язык персоны",
+          "speaks Russian" in ft._gen_prompt(SP, 1, 1)
+          and "speaks Russian" in ft._gen_prompt_phrases(SP))
+    ft._save_bank("t1", {"kinds": {}})
 
     # ── 2в. Генерация — отдельный канал cc_gen (свой инстанс/лок) ──
     _gen_channels = []

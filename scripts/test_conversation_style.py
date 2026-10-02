@@ -107,9 +107,9 @@ def main():
     note_none = cs.build_style_note("none")
     check("нота rare: есть запрет рефлекторных вопросов и лазейка для явных инструкций",
           note_rare is not None and "CONVERSATION STYLE" in note_rare
-          and "завершённой" in note_rare and "она важнее" in note_rare)
+          and "complete on its own" in note_rare and "takes priority" in note_rare)
     check("нота none: жёсткий запрет с лазейкой",
-          note_none is not None and "вообще" in note_none and "она важнее" in note_none)
+          note_none is not None and "at all" in note_none and "takes priority" in note_none)
     check("ноты natural/frequent отсутствуют",
           cs.build_style_note("natural") is None and cs.build_style_note("frequent") is None)
 
@@ -153,8 +153,15 @@ def main():
     check("регенерация: исходный ответ уходит в контексте как assistant-реплика",
           r1.calls and r1.calls[0][-2] == {"role": "assistant", "content": "Да. Рассказать?"}
           and r1.calls[0][-1]["role"] == "user")
+    check("регенерация: в инструкции язык пользователя",
+          "The user speaks" in r1.calls[0][-1]["content"])
     check("регенерация: счётчик попыток",
           cs.get_stats()["regen_attempts"] == stats_before["regen_attempts"] + 1)
+    r_en = FakeRouter(reply="ok")
+    cs.regenerate_without_tail_question(
+        r_en, [{"role": "user", "content": "tell me about it"}], "Sure. Want more?", {})
+    check("регенерация: язык из последней реплики пользователя (en)",
+          "speaks English" in r_en.calls[0][-1]["content"])
 
     r2 = FakeRouter(reply="Ты точно хочешь это удалить?")
     out2 = cs.regenerate_without_tail_question(r2, msgs, "Удалил. Точно?", {})

@@ -16,7 +16,6 @@ _LAT_RE = re.compile(r"[a-z]", re.IGNORECASE)
 _SYNTHETIC_PREFIXES = ("the user sent",)
 
 _LANGUAGE_NAMES = {"ru": "Russian", "en": "English"}
-_LANGUAGE_NAMES_RU = {"ru": "русский", "en": "английский"}
 
 
 def detect_language(text: str) -> Optional[str]:
@@ -63,11 +62,6 @@ def language_name(code: Optional[str]) -> Optional[str]:
     return _LANGUAGE_NAMES.get(code or "")
 
 
-def language_name_ru(code: Optional[str]) -> Optional[str]:
-    # Имя языка по-русски — для промптов, написанных на русском.
-    return _LANGUAGE_NAMES_RU.get(code or "")
-
-
 def response_language_note(code: Optional[str]) -> Optional[str]:
     """Директива языка ответа для системного промпта.
 
@@ -88,3 +82,44 @@ def response_language_note(code: Optional[str]) -> Optional[str]:
         "prompt. If the user switches language — switch with them. "
         "Do not mix languages in one reply."
     )
+
+
+def initiative_language_note(code: Optional[str]) -> Optional[str]:
+    """Директива языка для сообщений, которые персона пишет сама
+    (самоинициатива): реплики пользователя в запросе нет, а контекст —
+    состояние, факты жизни, планы, сюжетные линии — движок жизни ведёт
+    на русском. Без явного указания, что это сырые заметки, модель
+    подхватывает их язык. Вставляется ПОСЛЕДНЕЙ в системный блок."""
+    name = language_name(code)
+    if not name:
+        return None
+    return (
+        "\n\n[MESSAGE LANGUAGE — highest priority rule]\n"
+        f"The user's language is {name}. Write ONLY in {name}.\n"
+        "The context you are given (your state, life facts, plans, storylines, "
+        "memory, past messages) may be written in another language — these are "
+        f"raw notes: retell them in {name}, never switch to their language. "
+        "This rule has priority over the persona format and over the language "
+        "of any instructions in this prompt. Do not mix languages."
+    )
+
+
+def user_language_line(code: Optional[str]) -> str:
+    """Строка языка пользователя для ЛЮБОГО служебного промпта (все промпты
+    проекта пишутся на английском, язык вывода задаётся этой строкой).
+
+    code — язык пользователя в диалоге ('ru'/'en'), обычно из
+    detect_dialogue_language(...); для фоновых генераций без диалога —
+    язык чата (LivingPersona.chat_language) или язык персоны
+    (persona_language). None — язык ещё не известен."""
+    name = language_name(code)
+    if not name:
+        return ("The user's language is not known yet: write all free-text "
+                "output in the language of the user's messages.")
+    return (f"The user speaks {name} in the dialogue: write all free-text "
+            f"output in {name}.")
+
+
+def persona_language(system_prompt: Optional[str]) -> Optional[str]:
+    # Фолбэк для генераций вне диалога: язык системного промпта персоны.
+    return detect_language(system_prompt or "")

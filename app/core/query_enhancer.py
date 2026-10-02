@@ -11,6 +11,7 @@ import logging
 import re
 from typing import Optional
 
+from app.core.language import detect_dialogue_language, user_language_line
 from app.core.local_router import get_local_router
 
 logger = logging.getLogger(__name__)
@@ -42,8 +43,10 @@ class QueryEnhancer:
 
     _FEW_SHOT_EXAMPLES = []
 
-    def __init__(self):
-        self.router = get_local_router()
+    def __init__(self, router=None):
+        # router — локальный роутер персоны (get_local_router(context));
+        # без него — общий (движки задач по умолчанию)
+        self.router = router or get_local_router()
 
     def enhance(self, user_question: str, history: list[dict] | None = None, persona_context: str | None = None) -> str:
         """
@@ -89,7 +92,9 @@ class QueryEnhancer:
 
         # Формируем промпт с few-shot примерами и контекстом
         messages = [
-            {"role": "system", "content": self._SYSTEM_PROMPT},
+            {"role": "system", "content": (
+                self._SYSTEM_PROMPT + "\n\n" + user_language_line(
+                    detect_dialogue_language(user_question, history)))},
         ]
         messages.extend(self._FEW_SHOT_EXAMPLES)
 

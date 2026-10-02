@@ -125,11 +125,14 @@ def main():
     # ── 4. Маркеры: срезка + pending (confirm=True) ──
     m = make()
     clean, notices = m.process_markers("Конечно! Открыть YouTube? [OPEN_URL:youtube.com]", "c1")
-    check("маркер срезан из видимого текста",
-          clean == "Конечно! Открыть YouTube?" and notices == [])
+    # Вопрос модели перед маркером заменяется шаблоном (prompt injection не
+    # подменит, что спрашивается)
+    check("маркер срезан из видимого текста, вопрос — шаблон",
+          clean == "Конечно!\n\nОткрыть youtube.com?" and notices == [])
     pend = m.get_pending("c1")
     check("confirm-режим: действие в pending, исполнения нет",
-          pend == {"kind": "url", "value": "https://youtube.com"} and m.calls == [])
+          pend == {"kind": "url", "value": "https://youtube.com",
+                   "origin": "marker"} and m.calls == [])
     clean2, _ = m.process_markers("Запустить Safari? [OPEN_APP:safari]", "c2")
     check("pending per-chat независимы",
           m.get_pending("c2")["kind"] == "app" and m.get_pending("c1")["kind"] == "url")
@@ -142,22 +145,17 @@ def main():
           m.process_markers("[OPEN_URL:youtube.com]", "c10")[0] == "Открыть youtube.com?"
           and m.get_pending("c10") is not None)
 
-    # ── 5. Немедленный режим (confirm=False) ──
+    # ── 5. confirm=False: маркер модели всё равно ждёт «да» ──
+    # (модель видит недоверенный текст — маркер не исполняется сразу никогда)
     mi = make(cfg={**CFG, "confirm": False})
     clean, notices = mi.process_markers("Открываю. [OPEN_URL:youtube.com]", "c4")
-    check("immediate: исполнено сразу, pending нет",
-          mi.calls == [{"kind": "url", "value": "https://youtube.com"}]
-          and mi.get_pending("c4") is None and notices == [])
-    mf = make(cfg={**CFG, "confirm": False}, fail_with=RuntimeError("no display"))
-    clean, notices = mf.process_markers("Открываю. [OPEN_URL:youtube.com]", "c5")
-    check("immediate: неудача → уведомление пользователю",
-          len(notices) == 1 and "Не удалось" in notices[0])
+    check("confirm=False: маркер → pending, не исполнен, вопрос-шаблон",
+          mi.calls == [] and mi.get_pending("c4") is not None
+          and clean == "Открыть youtube.com?" and notices == [])
     mr = make(cfg={**CFG, "confirm": False})
     _, notices = mr.process_markers("[OPEN_APP:photoshop]", "c6")
-    check("immediate: отклонённый маркер → уведомление",
+    check("confirm=False: отклонённый маркер → уведомление",
           len(notices) == 1 and mr.calls == [])
-    check("immediate: маркер — единственное содержимое → «Готово, …»",
-          mi.process_markers("[OPEN_URL:youtube.com]", "c11")[0] == "Готово, открыл youtube.com.")
 
     # ── 5c. Подтверждение по типу действия (risk_overrides) ──
     RO = {"click": False, "navigate_known_domain": False,
@@ -193,12 +191,11 @@ def main():
     rn.process_markers("[OPEN_URL:example.com]", "c12")
     check("risk: маркер нового домена → pending, не исполнен",
           rn.calls == [] and rn.get_pending("c12") is not None)
-    # Известный домен без confirm: маркер исполняется сразу
+    # Известный домен без confirm: маркер модели всё равно ждёт «да»
     rk = make(cfg={**CFG, "risk_overrides": {"navigate_known_domain": False}})
     rk.process_markers("[OPEN_URL:youtube.com]", "c13")
-    check("risk: известный домен → исполнено сразу",
-          rk.calls == [{"kind": "url", "value": "https://youtube.com"}]
-          and rk.get_pending("c13") is None)
+    check("risk: известный домен по маркеру → pending (маркер всегда с «да»)",
+          rk.calls == [] and rk.get_pending("c13") is not None)
     # Без переопределений всё решает общий confirm
     plain = make()
     check("risk: без overrides — общий confirm",
@@ -229,7 +226,10 @@ def main():
     check("parse: «страницу/вкладку» срезаются, «открой сайт» — не команда",
           parse_open_request("открой страницу кутузова вуза") == "кутузова вуза"
           and parse_open_request("открой страницу кутузовой вуза") == "кутузовой вуза"
-          and parse_open_request("открой вкладку ютуб") == "ютуб"
+          # «открой вкладку X» — переключение на открытую вкладку
+          # (parse_tab_switch), а не открытие сайта: иначе «открой вкладку
+          # с почтой» уходило в поисковик как сайт «с почтой»
+          and parse_open_request("открой вкладку ютуб") is None
           and parse_open_request("открой сайт") is None)
     check("parse: «приложение/программу» срезаются",
           parse_open_request("открой приложение clip studio paint") == "clip studio paint"
@@ -261,12 +261,55 @@ def main():
         check("resolve: «ютуб» через поисковый резолв → youtube",
               mr_.resolve("ютуб") == {"kind": "url",
                                       "value": "https://www.youtube.com/",
-                                      "expect_name": "ютуб"})
+                                      "expect_name": "ютуб",
+                                      "via_search": True})
         check("resolve: поиск ничего не нашёл → None",
               mr_.resolve("какой-то ноунейм") is None)
+        # Выдача с несколькими ссылками — список вариантов: лучший адрес
+        # первым, без дублей и без доменов вне allow_domains
+        _orig_choices = _ws.site_choices
+        _ws.site_choices = lambda name: [
+            ("https://evil.example/", "Чужой"),
+            ("https://youtube.com/", "YouTube"),
+            ("https://www.youtube.com/", "YouTube дубль"),
+            ("https://m.youtube.com/feed", "Лента"),
+        ]
+        try:
+            a = mr_.resolve("ютуб")
+            check("resolve: варианты выдачи → choices (лучший первым, без "
+                  "дублей и чужих доменов)",
+                  [c["url"] for c in a.get("choices") or []]
+                  == ["https://www.youtube.com/", "https://m.youtube.com/feed"]
+                  and a["choices"][0]["title"] == "YouTube")
+            check("resolve_many: у составной команды списков нет",
+                  all("choices" not in it for it in
+                      (mr_.resolve_many(["ютуб", "ютуб"]) or {}).get("items", [])))
+            _ws.site_choices = lambda name: [("https://youtube.com/", "YouTube")]
+            check("resolve: единственный вариант — обычный вопрос без списка",
+                  "choices" not in mr_.resolve("ютуб"))
+        finally:
+            _ws.site_choices = _orig_choices
     finally:
         _ws.find_site_url = _orig_find
         _bh.find_in_history = _orig_hist
+
+    # Ответ номером на список вариантов
+    from app.features.computer_control import parse_choice
+    for t, want in (("2", 2), ("№3", 3), ("второй", 2), ("открой 2-й", 2),
+                    ("давай четвёртую", 4), ("second one", 2),
+                    ("Коннор, 1", 1), ("7", 7)):
+        check(f"choice: {t!r} → {want}", parse_choice(t, ["Коннор"]) == want)
+    for t in ("не 2", "1 или 2", "2?", "да", "через 2 минуты",
+              "открой 2 и нажми войти", "пятница", "", None):
+        check(f"choice: {t!r} — не выбор", parse_choice(t) is None)
+    q = ComputerControlManager.confirm_question(
+        {"kind": "url", "value": "https://a.ru/",
+         "choices": [{"url": "https://a.ru/", "title": "Сайт  А"},
+                     {"url": "https://b.ru/p?char=%D0%90&token=s3cr3t",
+                      "title": ""}]})
+    check("choice: вопрос — нумерованный список с заголовком и адресом",
+          "1. Сайт А — a.ru" in q and "2. b.ru/p?char=А" in q
+          and "s3cr3t" not in q)
 
     # Алиасы sites: мгновенный резолв без поиска, в т.ч. в маркерном пути
     ms_ = make(cfg={**CFG, "sites": {"ютуб": "youtube.com", "плохой": "javascript:x"}})
@@ -287,6 +330,10 @@ def main():
                 {"href": "https://www.youtube.com/"},
                 {"href": "https://play.google.com/store/apps/details?id=com.google.android.youtube"},
             ]
+    # Логика матча — на подменённой DDG-выдаче: веб-Google (движок по
+    # умолчанию) «недоступен», search_links уходит в DDG, сеть не трогаем
+    _orig_gweb = _ws.google_web_links
+    _ws.google_web_links = lambda *a, **kw: None
     _orig_ddgs, _orig_tr = _ws._get_ddgs, _ws._google_translate
     _ws._get_ddgs = lambda: _FakeDDGS
     _ws._google_translate = lambda text: "youtube" if text == "ютуб" else None
@@ -364,6 +411,36 @@ def main():
         check("find_site_url: «кутузовой вуза» (падеж) → страница Кутузовой целиком",
               _ws.find_site_url("кутузовой вуза") == "https://example.edu/kaf/persons/98849")
     finally:
+        _ws._get_ddgs, _ws._google_translate = _orig_ddgs, _orig_tr
+
+    # Веб-Google доступен — выдача берётся из него, DDG не зовётся;
+    # варианты для списка — та же выдача после фильтра платформ
+    class _NoDDGS:
+        def text(self, q, max_results=5):
+            raise AssertionError("DDG не должен вызываться")
+    _ws._get_ddgs = lambda: _NoDDGS
+    _ws._google_translate = lambda text: None
+    _ws.google_web_links = lambda q, n=10: [
+        {"href": "https://ru.wikipedia.org/wiki/X", "title": "преподавателяина — Википедия"},
+        {"href": "https://example.edu/kaf/persons/1914/",
+         "title": "СТАСЫШИНА Т. Л. - Общая информация - вуза"},
+        {"href": "https://vuzopedia.ru/teacher/stasyshina", "title": "преподавателяина"}]
+    try:
+        check("find_site_url: движок google — адрес из веб-выдачи Google",
+              _ws.find_site_url("преподавателяина вуза")
+              == "https://example.edu/kaf/persons/1914/")
+        check("site_choices: выдача резолва без википедии, в порядке выдачи",
+              [u for u, _t in _ws.site_choices("стасышина  вуза")]
+              == ["https://example.edu/kaf/persons/1914/",
+                  "https://vuzopedia.ru/teacher/stasyshina"])
+        _ws.google_web_links = lambda q, n=10: None
+        _ws._get_ddgs = lambda: _FakeDDGS
+        links, used = _ws.search_links("ютуб", engine="google")
+        check("search_links: Google недоступен → выдача DDG, движок ddg",
+              used == "ddg"
+              and links[1]["href"] == "https://www.youtube.com/")
+    finally:
+        _ws.google_web_links = _orig_gweb
         _ws._get_ddgs, _ws._google_translate = _orig_ddgs, _orig_tr
 
     # ── 5г. Этап 2: мульти-команды, поиск на сайте, история браузера ──
@@ -466,7 +543,7 @@ def main():
               for h, js in RECIPES.values()))
 
     # Номерные результаты: «третье видео» → recipe:search_pick:3
-    from app.features.computer_control import ordinal_recipe
+    from app.features.computer_control import ordinal_recipe, next_video_recipe
     check("ordinal: «третье видео»/«2 результат»/«пятое видео»",
           ordinal_recipe("третье видео") == "search_pick:3"
           and ordinal_recipe("2 результат") == "search_pick:2"
@@ -501,6 +578,47 @@ def main():
     check("_build_action: маркер [RUN_TASK:третий результат] → search_pick:3",
           ms2._build_action("task", "третий результат")
           == {"kind": "task", "key": "третий результат", "value": "recipe:search_pick:3"})
+
+    # «Следующее видео» — встроенный рецепт youtube_next, БЕЗ записи в tasks
+    # (персонам больше не нужно перечислять рецепты в allowlist)
+    check("next_video_recipe: «следующее видео»/«следующий ролик»/"
+          "«следующий трек»/«next video» → youtube_next",
+          next_video_recipe("следующее видео") == "youtube_next"
+          and next_video_recipe("следующий ролик") == "youtube_next"
+          and next_video_recipe("следующий трек") == "youtube_next"
+          and next_video_recipe("next video") == "youtube_next"
+          and next_video_recipe("Следующее Видео") == "youtube_next")
+    check("next_video_recipe: консервативно — «дальше»/«вперёд»/пусто — None",
+          next_video_recipe("дальше") is None
+          and next_video_recipe("вперёд") is None
+          and next_video_recipe("следующее") is None
+          and next_video_recipe("") is None)
+    m_empty_tasks = make(cfg={**CFG, "tasks": {}})
+    check("resolve: bare «следующее видео» → recipe:youtube_next БЕЗ tasks",
+          m_empty_tasks.resolve("следующее видео")
+          == {"kind": "task", "key": "следующее видео",
+              "value": "recipe:youtube_next"})
+    check("resolve: bare «первый результат» → recipe:search_pick:1 БЕЗ tasks",
+          m_empty_tasks.resolve("первый результат")
+          == {"kind": "task", "key": "первый результат",
+              "value": "recipe:search_pick:1"})
+    act_nv, err_nv = m_empty_tasks.resolve_click("следующее видео", None, None)
+    check("resolve_click: «нажми следующее видео» → recipe:youtube_next БЕЗ tasks",
+          err_nv is None
+          and act_nv == {"kind": "task", "key": "следующее видео",
+                         "value": "recipe:youtube_next"})
+    check("_build_action: маркер [RUN_TASK:следующее видео] → youtube_next БЕЗ tasks",
+          m_empty_tasks._build_action("task", "следующее видео")
+          == {"kind": "task", "key": "следующее видео", "value": "recipe:youtube_next"})
+    check("needs_confirm: task-действие recipe youtube_next — по общему confirm "
+          "(как ordinal-рецепты)",
+          m_empty_tasks.needs_confirm(act_nv) is m_empty_tasks.confirm)
+    block_empty_tasks = m_empty_tasks.instruction_block()
+    check("инструкция: заметка про номерные результаты И «следующее видео» — "
+          "БЕЗ recipe-записей в tasks (устройство доступно всегда)",
+          "Numbered search results" in block_empty_tasks
+          and "следующее видео" in block_empty_tasks
+          and "(not configured)" in block_empty_tasks)
 
     _captured = {}
     _orig_ae = _ba._run_apple_events
@@ -722,7 +840,9 @@ def main():
                         "host": "example.edu/827", "steps": ["студентам"]})
         check("nav: «элемент потерян» — один повтор шага, успех",
               _ct_n["n"] == 2)
-        # Клик без видимого эффекта (closed-loop) — тоже один повтор шага
+        # Клик без видимого эффекта (closed-loop): клик уже доставлен —
+        # повтор переключил бы тоггл обратно; на последнем шаге — честное
+        # «не уверен» с именем шага, второго клика нет
         _ct_n2 = {"n": 0}
         def _ct_uncertain(host, idx, tab_id=None):
             _ct_n2["n"] += 1
@@ -730,10 +850,14 @@ def main():
                 raise _ba.ClickUncertain("клик отправлен, но страница не изменилась")
             return "clicked"
         _ba.click_tagged = _ct_uncertain
-        mnav._navigate({"kind": "nav", "value": "https://example.edu/827",
-                        "host": "example.edu/827", "steps": ["студентам"]})
-        check("nav: клик без эффекта — один повтор шага, успех",
-              _ct_n2["n"] == 2)
+        _nav_unc = ""
+        try:
+            mnav._navigate({"kind": "nav", "value": "https://example.edu/827",
+                            "host": "example.edu/827", "steps": ["студентам"]})
+        except _ba.ClickUncertain as e:
+            _nav_unc = str(e)
+        check("nav: клик без эффекта — без повторного клика, честное «не уверен»",
+              _ct_n2["n"] == 1 and "на шаге «студентам»" in _nav_unc)
         def _ct_dead(host, idx, tab_id=None):
             raise _ba.BrowserUnavailable("элемент потерян — страница изменилась")
         _ba.click_tagged = _ct_dead
@@ -1873,12 +1997,20 @@ def main():
         check("view: «покажи страницу» — скриншот с allow_focus=True",
               _view_focus == [True])
         txt_v = page_view_text(rep["url"], rep["host"], rep["items"])
-        check("view: текст — группы поля/кнопки/ссылки, дедуп дублей",
-              "Поля ввода: Поиск" in txt_v
-              and "Кнопки: Корзина" in txt_v
-              and "Ссылки: Пицца" in txt_v
+        check("view: текст — группы поля/кнопки/ссылки построчно, дедуп дублей",
+              "**Поля ввода** (1):\n• Поиск" in txt_v
+              and "**Кнопки** (2):\n• Корзина" in txt_v
+              and "**Ссылки** (1):\n• Пицца" in txt_v
               and txt_v.count("Пицца") == 1
               and "dodopizza.ru" in txt_v)
+        _many = [_it(100 + i, "a", f"Пицца {i}") for i in range(11)]
+        _modal = [dict(_it(200, "button", "В корзину за 408 ₽"), md=True)]
+        txt_m = page_view_text("https://d.ru", "d.ru", _modal + _many)
+        check("view: окно — первой группой, длинная группа урезана с «…и ещё»",
+              txt_m.index("**Открытое окно**") < txt_m.index("**Ссылки**")
+              and "• В корзину за 408 ₽" in txt_m
+              and "**Ссылки** (11):" in txt_m and "…и ещё 3" in txt_m
+              and "• Пицца 8" not in txt_m)
         rec_v = json.loads((tmp / "s8-view" / "audit.jsonl")
                            .read_text(encoding="utf-8").strip().splitlines()[-1])
         check("view: аудит kind=page_view, ok",
@@ -2079,10 +2211,12 @@ def main():
             _subs.append(submit), "submitted")[1]
         real6 = ComputerControlManager(context="t", base_dir=tmp / "s8-sub2",
                                        config={})
+        # origin=fast — явная команда пользователя: отправку решает политика
+        # (без источника гейт требует «да», см. test_cc_gate)
         ok_s, _ = real6.execute({"kind": "type", "idx": 0, "text": "привет",
                                  "element": "Сообщение", "host": "chat.deepseek.com",
                                  "value": "https://chat.deepseek.com",
-                                 "submit": True}, "c")
+                                 "submit": True, "origin": "fast"}, "c")
         check("submit: execute прокинул submit=True в fill_tagged",
               ok_s and _subs == [True])
     finally:
@@ -2117,7 +2251,7 @@ def main():
         check("send: подтверждение называет действие и место",
               msn.confirm_question(act_n)
               == "Отправить сообщение на chat.deepseek.com (Enter)?")
-        ok_n, _ = msn.execute(act_n, "c8s")
+        ok_n, _ = msn.execute(dict(act_n, origin="fast"), "c8s")
         rec_n = json.loads((tmp / "s8-send" / "audit.jsonl")
                            .read_text(encoding="utf-8").strip().splitlines()[-1])
         check("send: execute → press_enter, аудит kind=send ok",
@@ -3414,6 +3548,17 @@ def main():
     m.set_pending("c7", {"kind": "url", "value": "https://youtube.com"})
     m.clear_pending("c7")
     check("pending сбрасывается", m.get_pending("c7") is None)
+    # «Берусь за задачу?» живёт дольше минуты, обычный pending — минуту
+    from app.features import computer_control as _ccm
+    m.set_pending("c7", {"kind": "task", "goal": "закажи пиццу"})
+    left = m._pending["c7"]["expires_at"] - time.time()
+    check("запуск задачи: срок подтверждения — TASK_START_TTL_SEC",
+          _ccm.TASK_START_TTL_SEC - 5 < left <= _ccm.TASK_START_TTL_SEC)
+    m.set_pending("c7", {"kind": "task", "key": "x", "value": "y"})
+    left = m._pending["c7"]["expires_at"] - time.time()
+    check("task-рецепт конфига: срок прежний (PENDING_TTL_SEC)",
+          left <= _ccm.PENDING_TTL_SEC)
+    m.clear_pending("c7")
 
     # ── 7. Детект да/нет ──
     for t in ("да", "Давай!", "ок", "конечно", "открывай", "yes", "угу"):
@@ -4159,11 +4304,11 @@ def main():
           mp2._last_host == "youtube.com/watch"
           and mp2._last_url == "https://youtube.com/watch")
     check("инструкция: при контексте — строка про открытую страницу",
-          "Сейчас открытая мной страница: youtube.com/watch"
+          "The page I currently have open: youtube.com/watch"
           in mp2.instruction_block())
     mp3 = SpyManager(context="t", config=CFG, base_dir=tmp / "s8p-empty")
     check("инструкция: без контекста — без строки про страницу",
-          "Сейчас открытая мной страница" not in mp3.instruction_block())
+          "The page I currently have open" not in mp3.instruction_block())
 
     # Снапшот: флаг ed (поле ввода) парсится; без него — False
     _u3, _its3 = _ba._parse_snapshot(json.dumps(
@@ -4178,9 +4323,15 @@ def main():
     check("инструкция: маркеры + ключи + whitelist доменов + запрос подтверждения",
           "OPEN_URL" in block and "OPEN_APP" in block and "RUN_TASK" in block
           and "safari" in block and "chrome" in block and "youtube.com" in block
-          and "ОБЯЗАН спрашивать подтверждение" in block and "ЕСТЬ доступ" in block)
-    check("инструкция immediate-режима: без подтверждения",
-          "выполняется сразу" in make(cfg={**CFG, "confirm": False}).instruction_block())
+          and "NOT executed immediately" in block and "DO HAVE access" in block)
+    check("инструкция при confirm=False: маркер всё равно ждёт «да»",
+          "NOT executed immediately" in make(cfg={**CFG, "confirm": False}).instruction_block())
+    check("инструкция: строка языка пользователя в конце (en / ru / неизвестен)",
+          make().instruction_block("en").endswith(
+              "write all free-text output in English.")
+          and make().instruction_block("ru").endswith(
+              "write all free-text output in Russian.")
+          and "language is not known yet" in make().instruction_block())
 
     # ── 10. Интеграция: prepare_messages + guard conversation_style ──
     from app.core.persona import PersonaLayer
@@ -4607,7 +4758,9 @@ def main():
     cc1 = FakeCC(sc_tmp)
     sm1 = ScenarioManager(context="sctest1", computer_control=cc1,
                           base_dir=sc_tmp / "sc1")
-    write_trace(sc_tmp, "c1", TRACE4)
+    # Адрес open от LLM принимается, только если он есть в трассе
+    write_trace(sc_tmp, "c1", [("url", {"value": "https://dodopizza.ru/city"})]
+                + TRACE4[1:])
     llm_json = json.dumps({
         "aliases": ["закажи пиццу"],
         "steps": [
@@ -4851,8 +5004,8 @@ def main():
     # В промпте восстановления — дорожная карта: что сделано (✓), где встали (✗)
     p12 = rt12.prompts[0] if rt12.prompts else ""
     check("sc: промпт восстановления содержит дорожную карту сценария",
-          "✓ 1. открыть https://x.ru" in p12
-          and "✗ 2. нажать «Расписание»" in p12)
+          "✓ 1. open https://x.ru" in p12
+          and '✗ 2. click "Расписание"' in p12)
     # LLM ответила «нет» — честный стоп, восстановления не было
     cc13 = FakeCC(sc_tmp, fail=True,
                   snapshot_items=[{"idx": 10, "tag": "button", "role": "",
@@ -5272,10 +5425,13 @@ def main():
               _ba.click_tagged("x.ru", _new_idx) == "clicked"
               and _mk_page.marks[("data-vpc-idx", _new_idx)].clicked == 1)
         # Отложенное исполнение (подтверждение «да» через минуту): разметка
-        # за это время сменилась — честный отказ, а не клик наугад
+        # за это время сменилась, подтверждённого элемента в ней нет —
+        # честный отказ, а не клик наугад (элемент с ТОЙ ЖЕ подписью
+        # перенаходится и кликается — scripts/test_cc_execution.py)
         _mk_page.state = 0
         _ba.snapshot_elements("x.ru")          # страница пересняла разметку
-        _stale_act = {"kind": "click", "idx": _new_idx, "element": "Скачать",
+        _stale_act = {"kind": "click", "idx": _new_idx,
+                      "element": "Методичка по SQL",
                       "host": "x.ru", "goal": "методичка по sql"}
         real_mk = ComputerControlManager(context="t", base_dir=tmp, config={})
         ok_mk, det_mk = real_mk.execute(_stale_act, "c")
@@ -5454,7 +5610,9 @@ def main():
                 raise RuntimeError("страница блокирует evaluate")
             # Замер «до» клика/наведения — тот же _DOM_STATE_JS, обёрнутый
             # условной докруткой элемента во вьюпорт (_state_js)
-            if js is _ba._DOM_STATE_JS or _ba._DOM_STATE_JS in js:
+            # (клик — отпечаток без фокуса, _DOM_STATE_CLICK_JS)
+            if js is _ba._DOM_STATE_JS or _ba._DOM_STATE_JS in js \
+                    or _ba._DOM_STATE_CLICK_JS in js:
                 return (self.states.pop(0) if len(self.states) > 1
                         else self.states[0])
             return ""
@@ -6459,8 +6617,8 @@ console.log(%s);
                          _it(60, "div", "Пирожное эклер", dd=True)],
             _CapRouter("1"))
         check("cov: строки кандидатов LLM помечены контекстом слоя",
-              _cap and "Пирожное картошка — в открытом окне" in _cap[-1]
-              and "Пирожное эклер — в открытом списке" in _cap[-1]
+              _cap and "Пирожное картошка — in an open dialog" in _cap[-1]
+              and "Пирожное эклер — in an open list" in _cap[-1]
               and "Пирожное муравейник\n" in _cap[-1] + "\n")
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
             "https://x.ru", "x.ru", _vis_items)
@@ -6541,6 +6699,12 @@ console.log(%s);
             _cap.append((host, x, y, tab_id)), "clicked")[1]
         m_zone_exec = ComputerControlManager(context="t", config=dict(CFG),
                                              base_dir=tmp / "s-zone-exec")
+        # Без «да» клик по точке гейт execute не пропускает
+        ok_z0, _ = m_zone_exec.execute(dict(act_z), "vz1")
+        check("зоны: клик по точке без подтверждения — отказ гейта",
+              ok_z0 is False and _cap == [])
+        # Исполнение после «да» (pending) — токен подтверждения
+        m_zone_exec.grant_confirmation(act_z, "pending")
         ok_z, _ = m_zone_exec.execute(act_z, "vz1")
         _ba.click_at_point = _orig_cap
         check("зоны: dispatch → click_at_point(центр зоны)",
@@ -6704,6 +6868,16 @@ console.log(%s);
     check("intent prompt: перечисляет действия и none",
           '{"action":"none"}' in intent_prompt("тест")
           and '"action":"click"' in intent_prompt("тест"))
+    check("intent prompt: язык пользователя — по фразе или явный",
+          intent_prompt("нажми войти").endswith("output in Russian.")
+          and intent_prompt("click sign in").endswith("output in English.")
+          and intent_prompt("нажми войти", lang="en").endswith("output in English."))
+    from app.features.computer_control import _llm_said_no, _llm_said_skip
+    check("ответ LLM «нет»/«no» и «пропустить»/«skip» — оба языка",
+          _llm_said_no("нет") and _llm_said_no("No.") and _llm_said_no('"none"')
+          and not _llm_said_no("3") and not _llm_said_no("nothing 3")
+          and _llm_said_skip("пропустить") and _llm_said_skip("Skip")
+          and not _llm_said_skip("2"))
 
     class _IntentRouter:
         def __init__(self, resp): self.resp = resp
@@ -6879,8 +7053,8 @@ console.log(%s);
              _it(1, "a", "Пиццы")], rw_s)
         check("wide: скоуп-цель — промпт поясняет форму и даёт контекст",
               idx_s == 0 and rw_s.calls
-              and "может быть подписан просто «закрыть»" in rw_s.calls[-1]
-              and "(блок: 4 товара на 1 330 ₽)" in rw_s.calls[-1])
+              and 'it may be labelled just "закрыть"' in rw_s.calls[-1]
+              and "(block: 4 товара на 1 330 ₽)" in rw_s.calls[-1])
         # Ввод: «в поле емейл» при подписи «Электронная почта» — LLM выбирает
         # поле по смыслу, точное имя поля знать не нужно
         _ba.snapshot_elements = lambda host=None, tab_id=None: (
@@ -6897,7 +7071,7 @@ console.log(%s);
               and act_wt["choose"]["path"] == "llm_wide")
         check("wide: для ввода промпт — «поле ввода», поля первыми",
               rw_t.calls and "1) [input/-] Электронная почта" in rw_t.calls[-1]
-              and "поле ввода" in rw_t.calls[-1])
+              and "input field" in rw_t.calls[-1])
         # LLM «нет» для поля → подсказка с перечнем полей, как прежде
         no_wt, err_wt2 = m_w.resolve_type("мой@mail.ru в поле емейл", None,
                                           _WideRouter("нет"), chat_id="w7")
@@ -7050,7 +7224,11 @@ console.log(%s);
           and parse_close_request("закрой вкладку") is None
           and parse_close_request("закрой страницу") is None
           and parse_close_request("закрой окно") is not None
-          and parse_close_request("закрой соусы к бортикам") is not None)
+          # Произвольный объект без места («закрой рот/тему») — не fast-path:
+          # закрытие по названию попапа решает LLM-ярус
+          and parse_close_request("закрой соусы к бортикам") is None
+          and parse_close_request("закрой соусы к бортикам на додо")
+          is not None)
     check("tab_op parse: назад/вперёд по истории вкладки",
           parse_tab_op("назад") == ("back", None)
           and parse_tab_op("обратно") == ("back", None)
@@ -7258,8 +7436,12 @@ console.log(%s);
     from app.features.computer_control import parse_close_request
     check("parse close: «закрой окно» / объект / не-команда / сайт",
           parse_close_request("закрой окно") == ("закрой окно", None)
-          and parse_close_request("закрой соусы к бортикам")
-          == ("закрой соусы к бортикам", None)
+          # Без места объект должен быть элементом интерфейса («закрой рот»
+          # — речь); с сайтом — целевое закрытие по названию
+          and parse_close_request("закрой соусы к бортикам") is None
+          and parse_close_request("закрой соусы к бортикам на додо")
+          == ("закрой соусы к бортикам", "додо")
+          and parse_close_request("закрой рот") is None
           and parse_close_request("скрой попап на ютубе")
           == ("скрой попап", "ютубе")
           and parse_close_request("нажми кнопку") is None)
@@ -7384,6 +7566,14 @@ console.log(%s);
     _ba.set_slider = lambda host, label, value, tab_id=None, unit="": (
         _slider_calls.append((host, label, value, tab_id, unit)),
         str(value))[1]
+    # Слайдер громкости сперва пробует громкость <video>; видео нет —
+    # обычный слайдер (живой браузер не трогаем)
+    _orig_mvo_s = _ba.media_volume_op
+
+    def _no_video(host, op, tab_id=None):
+        raise _ba.BrowserUnavailable("нет видео на странице")
+
+    _ba.media_volume_op = _no_video
     try:
         m_s = make()
         act_s, err_s = m_s.resolve_slider(("рабочие часы", 8), None,
@@ -7518,6 +7708,7 @@ console.log(%s);
         _ba.snapshot_elements = _orig_snap_s
         _ba.dismiss_overlay = _orig_dis_s
         _ba.set_slider = _orig_set_s
+        _ba.media_volume_op = _orig_mvo_s
 
     # ── Фикстуры снапшотов: регрессия скоринга ──
     from scripts.eval_snapshot_scoring import run as _eval_fixtures
@@ -7974,8 +8165,11 @@ console.log(%s);
     _ba.snapshot_elements = lambda host=None, tab_id=None: (
         "https://youtube.com/watch", "youtube.com", [_it(0, "a", "Войти")])
     try:
-        m_us = make(cfg={**CFG, "allow_domains": [],
-                         "sites": {"ютуб": "https://youtube.com"}})
+        # Свой base_dir: общий tmp хранит страницы других чатов (last_tab.json
+        # по чатам), вызов вне хода писал бы в восстановленный чат
+        m_us = SpyManager(context="test", base_dir=tmp / "s-us-place",
+                          config={**CFG, "allow_domains": [],
+                                  "sites": {"ютуб": "https://youtube.com"}})
         m_us._last_host = "youtube.com"
         m_us._last_url = "https://youtube.com/watch"
         _unknown = {
@@ -8186,9 +8380,10 @@ console.log(%s);
     m_mki = make(cfg={**CFG, "confirm": False})
     m_mki.process_markers("Открываю. [OPEN_URL:youtube.com] [OPEN_APP:safari]",
                           "mk2")
-    check("маркеры: immediate-режим исполняет multi одним действием",
-          len(m_mki.calls) == 1 and m_mki.calls[0]["kind"] == "multi"
-          and len(m_mki.calls[0]["items"]) == 2)
+    _pend_mki = m_mki.get_pending("mk2")
+    check("маркеры: confirm=False — multi одним pending, не исполнен",
+          m_mki.calls == [] and _pend_mki is not None
+          and _pend_mki["kind"] == "multi" and len(_pend_mki["items"]) == 2)
 
     # «закрой вкладку» без цели: id закрытой неизвестен — отслеживаемый
     # сбрасываем, иначе следующая команда ждёт мёртвую вкладку ~10 с
@@ -8469,6 +8664,7 @@ console.log(%s);
             context=b.context, config={"confirm": cc_confirm, "click": False},
             base_dir=tmp / f"authz_{id(b)}")
         b.scenario_manager = None
+        b.task_agent = None
         b.proactive = None
         b.addons = []
         b.self_memory = None
@@ -8499,6 +8695,10 @@ console.log(%s);
     _authz_calls = {"set_mode": [], "rescue": 0}
     _ba.set_control_mode = lambda chat_id, on: _authz_calls["set_mode"].append((str(chat_id), on))
     _ba.rescue_pool_h = lambda *a, **kw: (_authz_calls.__setitem__("rescue", _authz_calls["rescue"] + 1) or True)
+    from app.features import web_llm as _wl_authz
+    _orig_finish_rescue = _wl_authz.finish_idle_rescue
+    _finish_calls = []
+    _wl_authz.finish_idle_rescue = lambda: (_finish_calls.append(1), True)[1]
     # cc_reply без банка фраз уходит в живой запрос к LLM — в тесте не
     # нужен, форсируем честный шаблон
     _flavor.cc_reply = lambda *a, **kw: None
@@ -8526,7 +8726,17 @@ console.log(%s);
         r_resc_owner = b_owner_r.process_message(
             "почини браузер", user_id="OWNER", chat_id=AUTHZ_CHAT)
         check("authz: владелец — «почини браузер» запускает rescue",
-              _authz_calls["rescue"] == 1 and "Открыл браузер" in r_resc_owner)
+              _authz_calls["rescue"] == 1 and "Открыл браузер" in r_resc_owner
+              and not _finish_calls)
+        # Следующая реплика — «готово»: rescue, которому чинить нечего,
+        # завершается (только у авторизованного, как и сам rescue)
+        b_owner_r.process_message("готово", user_id="OWNER", chat_id=AUTHZ_CHAT)
+        n_finish_owner = len(_finish_calls)
+        make_authz_bot().process_message("готово", user_id="OTHER",
+                                         chat_id=AUTHZ_CHAT)
+        check("authz: реплика владельца после rescue проверяет, не пора ли "
+              "его завершить; реплика чужого — нет",
+              n_finish_owner == 1 and len(_finish_calls) == 1)
 
         _authz_calls["rescue"] = 0
         b_other_r = make_authz_bot()
@@ -8542,8 +8752,14 @@ console.log(%s);
             AUTHZ_CHAT, {"kind": "url", "value": "https://example.com"})
         r_pend_owner = b_pend_owner.process_message(
             "да", user_id="OWNER", chat_id=AUTHZ_CHAT, raw_user_text="да")
+        # «да» владельца ставит токен подтверждения (гейт execute) — его
+        # сверяем отдельно, остальное действие — как было
+        _pc = b_pend_owner.computer_control.calls
         check("authz: владелец — «да» на pending исполняет действие и снимает pending",
-              b_pend_owner.computer_control.calls == [{"kind": "url", "value": "https://example.com"}]
+              [{k: v for k, v in c.items() if k != "confirmed"} for c in _pc]
+              == [{"kind": "url", "value": "https://example.com",
+                   "origin": "pending"}]
+              and getattr(_pc[0].get("confirmed"), "via", None) == "pending"
               and b_pend_owner.computer_control.get_pending(AUTHZ_CHAT) is None
               and b_pend_owner.router.calls == 0)
 
@@ -8565,9 +8781,12 @@ console.log(%s);
                                       reply=MARKER_REPLY)
         r_mark_owner = b_mark_owner.process_message(
             "Как у тебя дела?", user_id="OWNER", chat_id=AUTHZ_CHAT)
-        check("authz: владелец — маркер LLM исполняется и срезается из ответа",
-              b_mark_owner.computer_control.calls == [{"kind": "url", "value": "https://example.com"}]
-              and "[OPEN_URL" not in r_mark_owner)
+        check("authz: владелец — маркер LLM уходит в pending (всегда с «да»), "
+              "срезается из ответа, вопрос — шаблон",
+              b_mark_owner.computer_control.calls == []
+              and b_mark_owner.computer_control.get_pending(AUTHZ_CHAT) is not None
+              and "[OPEN_URL" not in r_mark_owner
+              and "Открыть example.com?" in r_mark_owner)
         check("authz: владельцу инструкция о маркерах уходит в системный промпт",
               "COMPUTER CONTROL" in
               (b_mark_owner.persona.last_kwargs.get("computer_control_context") or ""))
@@ -8597,12 +8816,15 @@ console.log(%s);
                                       allowed_users=["ALLOWED"], reply=MARKER_REPLY)
         r_allow_mark = b_allow_mark.process_message(
             "Как у тебя дела?", user_id="ALLOWED", chat_id=AUTHZ_CHAT)
-        check("authz: allowed_users исполняет маркеры LLM (не только владелец)",
-              b_allow_mark.computer_control.calls == [{"kind": "url", "value": "https://example.com"}]
+        check("authz: allowed_users получает маркеры LLM в pending (не только владелец)",
+              b_allow_mark.computer_control.calls == []
+              and b_allow_mark.computer_control.get_pending(
+                  AUTHZ_CHAT, user_id="ALLOWED") is not None
               and "[OPEN_URL" not in r_allow_mark)
     finally:
         _ba.set_control_mode = _orig_set_mode
         _ba.rescue_pool_h = _orig_rescue
+        _wl_authz.finish_idle_rescue = _orig_finish_rescue
         _flavor.cc_reply = _orig_cc_reply
 
     # ── 14. is_owner/_cc_allowed — юнит-уровень ──

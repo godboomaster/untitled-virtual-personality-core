@@ -5,7 +5,6 @@ import { useSyncExternalStore } from 'react';
 
 export interface PersonaCreatePrefill {
   name?: string;
-  archetypeId?: string;
 }
 
 let pending: PersonaCreatePrefill | null = null;

@@ -37,6 +37,7 @@ from app.core import timeutil
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.persona_context import _extract_json
+from app.core.language import detect_dialogue_language, user_language_line
 
 logger = logging.getLogger(__name__)
 
@@ -70,129 +71,145 @@ def _titles_similar(a: str, b: str) -> bool:
 
 # ── Промпты ─────────────────────────────────────────────────────────────
 
-_SEED_PROMPT = """Ты — парсер карточек персонажей. Из system_prompt ниже извлеки упомянутых людей, организации, места и фоновые сюжетные обстоятельства персонажа.
+_SEED_PROMPT = """You are a character card parser. From the system_prompt below, extract the people, organizations, places and background story circumstances of the character that are mentioned.
 
-Верни СТРОГО JSON без markdown:
+Return STRICTLY JSON without markdown:
 {{
-  "npcs": [{{"name": "...", "role": "кем приходится персонажу/собеседнику", "relationship_status": "краткое состояние отношений"}}],
-  "places": [{{"name": "...", "type": "город/здание/локация", "atmosphere": "краткая атмосфера"}}],
-  "storylines": [{{"title": "...", "summary": "фоновая линия, если есть"}}]
+  "npcs": [{{"name": "...", "role": "who they are to the character/the interlocutor", "relationship_status": "brief state of the relationship"}}],
+  "places": [{{"name": "...", "type": "city/building/location", "atmosphere": "brief atmosphere"}}],
+  "storylines": [{{"title": "...", "summary": "background storyline, if any"}}]
 }}
-Если категории пусты — пустые списки (это нормально: база наполнится из диалогов).
+If a category is empty — empty lists (that is fine: the database will fill up from dialogues).
+Keep names as they are written in the system_prompt.
 
 system_prompt:
 ---
 {system_prompt}
----"""
+---
+{language_line}"""
 
 # Фолбэк-сеялка: основной сид часто не находит сюжетных линий в промпте,
 # а без них сценаристу нечего двигать. Здесь просим ПРИДУМАТЬ фоновые линии,
 # следующие лору, — это штатно для «жизни между диалогами»: открытые
 # обстоятельства жизни самой персоны.
-_STORYLINE_SEED_PROMPT = """Ты — сценарист базы мира персонажа. По system_prompt ниже придумай 1-2 ФОНОВЫЕ сюжетные линии САМОЙ персоны (не пользователя): незавершённые обстоятельства её жизни, которые могут тихо развиваться между разговорами. Линии обязаны следовать лору вселенной и характеру; открытые ситуации, а не разрешённые конфликты.
+_STORYLINE_SEED_PROMPT = """You are the screenwriter of a character's world database. Based on the system_prompt below, come up with 1-2 BACKGROUND storylines of the persona ITSELF (not the user): unfinished circumstances of its life that can quietly develop between conversations. The storylines must follow the lore of the universe and the character; open situations, not resolved conflicts.
 
-Верни СТРОГО JSON без markdown:
-{{"storylines": [{{"title": "короткое название", "summary": "1-2 предложения: что за линия и почему она открыта"}}]}}
+Return STRICTLY JSON without markdown:
+{{"storylines": [{{"title": "short title", "summary": "1-2 sentences: what the storyline is and why it is open"}}]}}
 
 system_prompt:
 ---
 {system_prompt}
----"""
+---
+{language_line}"""
 
-_WORLD_EVENT_PROMPT = """Сгенерируй одно короткое событие из жизни персонажа за последние часы.
-Используй ПРЕЖДЕ ВСЕГО данные ниже. Разрешено ввести НЕ БОЛЕЕ ОДНОГО нового
-NPC или места, если событие этого естественно требует (новый NPC/место
-должны следовать лору и характеру) — остальное не выдумывай.
-Недавние события могут иметь последствия: событие может продолжать их.
-Соблюдай ограничения характера персонажа — событие описывает ЧТО произошло,
-а не то, как персонаж должен об этом рассказывать: финальную подачу сделает
-другая модель отдельно.
+_WORLD_EVENT_PROMPT = """Generate one short event from the character's life over the last few hours.
+Use FIRST OF ALL the data below. You may introduce NO MORE THAN ONE new
+NPC or place if the event naturally requires it (the new NPC/place
+must follow the lore and the character) — do not invent anything else.
+Recent events may have consequences: the event may continue them.
+Respect the character's constraints — the event describes WHAT happened,
+not how the character should talk about it: the final delivery will be done
+by another model separately.
 
-Верни JSON:
+Return JSON:
 {{
-  "event": "1-2 предложения, черновик",
-  "involves_npc": [{{"name": "...", "interaction": "что было"}}],
+  "event": "1-2 sentences, a draft",
+  "involves_npc": [{{"name": "...", "interaction": "what happened"}}],
   "involves_place": "...",
-  "new_npc": {{"name": "...", "role": "кем приходится"}} | null,
+  "new_npc": {{"name": "...", "role": "who they are to the character"}} | null,
   "new_place": {{"name": "...", "type": "..."}} | null,
   "new_plan": {{"title": "...", "detail": "...", "due_in_hours": <int 2..72>}} | null,
-  "storyline_update": {{"title": "...", "new_status": "started|ongoing|resolved", "note": "что изменилось"}},
+  "storyline_update": {{"title": "...", "new_status": "started|ongoing|resolved", "note": "what changed"}},
   "mood_impact": {{"valence_delta": 0.0, "tag": "..."}}
 }}
-new_npc/new_place = null, если новых нет (это норма — новизна редка).
-new_plan — РЕДКО, только если событие естественно порождает конкретный
-датированный план персонажа («завтра экзамен», «в пятницу встреча»).
-storyline_update = null, если событие не относится ни к одной линии.
-mood_impact.valence_delta — маленький (обычно -0.2..0.2).
+new_npc/new_place = null if there are none (this is normal — novelty is rare).
+new_plan — RARELY, only if the event naturally gives rise to a concrete
+dated plan of the character ("exam tomorrow", "meeting on Friday").
+storyline_update = null if the event does not relate to any storyline.
+mood_impact.valence_delta — small (usually -0.2..0.2).
 
-КОНТЕКСТ:
-Имя персонажа: {persona_name}
-Характер (кратко): {personality_summary}
-Ограничения: {behavioral_rules}
-Известные NPC: {npc_list}
-Известные места: {place_list}
-Активные storylines: {storylines}
-Планы персонажа (уже запланировано): {plans}
-Недавние события (возможные причины): {recent_events}
-Текущее состояние: {state}
-Время: {daytime}
-{resolve_block}{stimulus_block}"""
+CONTEXT:
+Character name: {persona_name}
+Personality (brief): {personality_summary}
+Constraints: {behavioral_rules}
+Known NPCs: {npc_list}
+Known places: {place_list}
+Active storylines: {storylines}
+Character's plans (already scheduled): {plans}
+Recent events (possible causes): {recent_events}
+Current state: {state}
+Time: {daytime}
+{resolve_block}{stimulus_block}
+{language_line}"""
 
 # Внутримировой стимул для fictional_universe — генерируется, не ищется
-_INWORLD_STIMULUS_INSTRUCTION = """Внешний стимул (внутри вселенной персонажа, симулируй сам в её духе):
-Вселенная: {universe_note}
-Локация: {location}
-Придумай уместный вселенным факт-фон (погода/атмосфера/локальное происшествие) и учти его в событии."""
+_INWORLD_STIMULUS_INSTRUCTION = """External stimulus (inside the character's universe, simulate it yourself in its spirit):
+Universe: {universe_note}
+Location: {location}
+Come up with a background fact fitting the universe (weather/atmosphere/local incident) and take it into account in the event."""
 
-_REALWORLD_STIMULUS_INSTRUCTION = """Последний внешний стимул из реального мира (учти, если релевантен):
+_REALWORLD_STIMULUS_INSTRUCTION = """Latest external stimulus from the real world (take it into account if relevant):
 {stimulus}"""
 
 # Офлайн-события примитивного существа — физические действия (в т.ч. с
 # предметами инвентаря), не «мысли»
-_WORLD_EVENT_PROMPT_PRIMITIVE = """Сгенерируй одно короткое ФИЗИЧЕСКОЕ событие из жизни примитивного существа за последние часы.
-Это НЕ мысль и не размышление — только действие: что-то сделало, обнюхало, сгрызло, нашло, уронило, спрятало.
-Используй только известные места и предметы — не выдумывай новых имён.
+_WORLD_EVENT_PROMPT_PRIMITIVE = """Generate one short PHYSICAL event from the life of a primitive creature over the last few hours.
+This is NOT a thought or a reflection — only an action: it did something, sniffed, gnawed, found, dropped, hid something.
+Use only known places and items — do not invent new names.
 
-Верни JSON:
+Return JSON:
 {{
-  "event": "1 короткое предложение: что физически произошло",
-  "inventory_action": {{"action": "add|use|remove", "item": "имя предмета", "description": "краткое описание (только для add)"}} | null,
+  "event": "1 short sentence: what physically happened",
+  "inventory_action": {{"action": "add|use|remove", "item": "item name", "description": "brief description (only for add)"}} | null,
   "involves_place": "...",
-  "mood_impact": {{"valence_delta": 0.0, "tag": "1-2 слова, например: довольно, испуг"}}
+  "mood_impact": {{"valence_delta": 0.0, "tag": "1-2 words, for example: content, scared"}}
 }}
-inventory_action = null, если событие не связано с предметами. add — существо ДОСТАЛО/нашло новый предмет; use — использовало/сломало/съело существующий; remove — потеряло/уничтожило.
+inventory_action = null if the event is not related to items. add — the creature GOT/found a new item; use — used/broke/ate an existing one; remove — lost/destroyed it.
 
-КОНТЕКСТ:
-Существо: {persona_name} ({personality_summary})
-Текущее состояние: {state}
-Время: {daytime}
-Известные места: {place_list}
-Предметы в инвентаре: {inventory_list}"""
+CONTEXT:
+Creature: {persona_name} ({personality_summary})
+Current state: {state}
+Time: {daytime}
+Known places: {place_list}
+Items in the inventory: {inventory_list}
+{language_line}"""
 
-_DIALOGUE_DETECT_PROMPT = """Проанализируй фрагмент диалога. Определи, упомянуты ли НОВЫЕ персонажи (NPC) или места, которых нет в известном списке. Речь идёт о мире, окружающем собеседников (друзья, коллеги, кафе, города...) — НЕ о самих собеседниках (пользователе и ассистенте).
+_DIALOGUE_DETECT_PROMPT = """Analyze the dialogue fragment. Determine whether NEW characters (NPCs) or places that are not in the known list are mentioned. This is about the world around the interlocutors (friends, colleagues, cafes, cities...) — NOT about the interlocutors themselves (the user and the assistant).
 
-Верни JSON:
-{{"new_npcs": [{{"name": "...", "role": "...", "context": "как упомянут"}}], "new_places": [{{"name": "...", "type": "...", "context": "..."}}]}}
-Если ничего нового — оба списка пустые.
+Return JSON:
+{{"new_npcs": [{{"name": "...", "role": "...", "context": "how they were mentioned"}}], "new_places": [{{"name": "...", "type": "...", "context": "..."}}]}}
+If there is nothing new — both lists are empty.
 
-Известные NPC: {npc_list}
-Известные места: {place_list}
+Known NPCs: {npc_list}
+Known places: {place_list}
 
-Диалог:
-{dialog}"""
+Dialogue:
+{dialog}
+{language_line}"""
 
-_STIMULUS_FILTER_PROMPT = """Оцени внешний факт из интернета: подходит ли он как фон для жизни персонажа?
+_STIMULUS_FILTER_PROMPT = """Evaluate an external fact from the internet: is it suitable as a background for the character's life?
 
-Персонаж: {personality_summary}
-Интересы: {interests}
-Категория: {category}
-Факт: {fact}
+Character: {personality_summary}
+Interests: {interests}
+Category: {category}
+Fact: {fact}
 
-Критерии:
-- RELEVANCE: относится к интересам/бытовой жизни персонажа
-- SAFETY: без шок-контента, политики вражды, трагедий в ленте персонажа-компаньона
+Criteria:
+- RELEVANCE: relates to the character's interests/everyday life
+- SAFETY: no shock content, hostile politics, tragedies in the feed of a companion character
 
-Верни JSON: {{"pass": true/false, "relevance": 0.0-1.0, "reason": "кратко"}}"""
+Return JSON: {{"pass": true/false, "relevance": 0.0-1.0, "reason": "brief"}}
+{language_line}"""
+
+# Время суток для промптов (англ.); ключи распорядка персоны — русские
+# (утро/день/вечер/ночь), см. persona_context.DEFAULT_PERSONA_CONTEXT
+_NONE = "(none)"
+
+
+def _daytime_en(hour: int) -> str:
+    return ("morning" if 5 <= hour < 12 else "afternoon" if 12 <= hour < 18
+            else "evening" if 18 <= hour < 23 else "night")
 
 
 class WorldEngine:
@@ -211,7 +228,7 @@ class WorldEngine:
         # whitelist-категории внешних стимулов из YAML персоны; пустой
         # список — категории выводятся из persona_context.interests
         self.allowed_categories = list(allowed_categories or [])
-        self.local = get_local_router()
+        self.local = get_local_router(context)
         self._lock = threading.RLock()
 
         db = get_db_paths(context)
@@ -385,10 +402,13 @@ class WorldEngine:
 
     # ── Засев базы из system_prompt ─────────────────────────
 
-    def seed_from_system_prompt(self, system_prompt: str, router) -> bool:
+    def seed_from_system_prompt(self, system_prompt: str, router,
+                                user_language: Optional[str] = None) -> bool:
         """Разовый парсинг system_prompt основной LLM (npc_seed_on_create).
         Возвращает True, если база была засеяна. Для primitive засева нет:
-        у существа без социального мира нечего сеять — помечаем и уходим."""
+        у существа без социального мира нечего сеять — помечаем и уходим.
+        user_language — язык пользователя (LivingPersona.global_language):
+        свободный текст карточек пишется на нём."""
         with self._lock:
             if self._world.get("seeded"):
                 return False
@@ -405,9 +425,10 @@ class WorldEngine:
             try:
                 response = router.get_response(
                     messages=[
-                        {"role": "system", "content": "Ты извлекаешь структурированные данные. Отвечаешь строго JSON."},
+                        {"role": "system", "content": "You extract structured data. You answer strictly in JSON."},
                         {"role": "user", "content": _SEED_PROMPT.format(
-                            system_prompt=(system_prompt or "")[:12000])},
+                            system_prompt=(system_prompt or "")[:12000],
+                            language_line=user_language_line(user_language))},
                     ],
                     temperature=0.1,
                     max_tokens=700,
@@ -424,9 +445,10 @@ class WorldEngine:
             try:
                 response = router.get_response(
                     messages=[
-                        {"role": "system", "content": "Ты возвращаешь только валидный JSON без пояснений."},
+                        {"role": "system", "content": "You return only valid JSON without explanations."},
                         {"role": "user", "content": _STORYLINE_SEED_PROMPT.format(
-                            system_prompt=(system_prompt or "")[:12000])},
+                            system_prompt=(system_prompt or "")[:12000],
+                            language_line=user_language_line(user_language))},
                     ],
                     temperature=0.7,
                     max_tokens=300,
@@ -481,7 +503,8 @@ class WorldEngine:
         logger.info(f"[WorldEngine] База засеяна: NPC={counts[0]}, мест={counts[1]}, лорий={counts[2]}")
         return True
 
-    def ensure_storylines(self, system_prompt: str, router) -> bool:
+    def ensure_storylines(self, system_prompt: str, router,
+                          user_language: Optional[str] = None) -> bool:
         """Одноразовый бэкфилл сюжетов для мира, засеянного БЕЗ них
         (seeded=true, storylines=[] — сценаристу нечего двигать).
         Действует и на уже созданные миры; флаг storylines_seeded не даёт
@@ -501,9 +524,10 @@ class WorldEngine:
         try:
             response = router.get_response(
                 messages=[
-                    {"role": "system", "content": "Ты возвращаешь только валидный JSON без пояснений."},
+                    {"role": "system", "content": "You return only valid JSON without explanations."},
                     {"role": "user", "content": _STORYLINE_SEED_PROMPT.format(
-                        system_prompt=(system_prompt or "")[:12000])},
+                        system_prompt=(system_prompt or "")[:12000],
+                        language_line=user_language_line(user_language))},
                 ],
                 temperature=0.7,
                 max_tokens=300,
@@ -578,10 +602,12 @@ class WorldEngine:
 
     # ── Детекция NPC/мест из диалога ────────────────────────
 
-    def detect_from_dialogue(self, messages: List[dict]) -> int:
+    def detect_from_dialogue(self, messages: List[dict],
+                             user_language: Optional[str] = None) -> int:
         """LLM-классификатор на последние реплики. Возвращает число новых карт.
         primitive: детекции нет — у существа без социального мира карточки
-        NPC/мест не заводятся. Не чаще раза в DETECT_THROTTLE_SEC."""
+        NPC/мест не заводятся. Не чаще раза в DETECT_THROTTLE_SEC.
+        user_language — язык пользователя; не задан — по самим репликам."""
         if self.primitive:
             return 0
         if not messages or not self.local.is_available(task="world_engine"):
@@ -600,16 +626,19 @@ class WorldEngine:
             return 0
 
         with self._lock:
-            npc_names = ", ".join(n["name"] for n in self._world["npcs"][:15]) or "(нет)"
-            place_names = ", ".join(p["name"] for p in self._world["places"][:15]) or "(нет)"
+            npc_names = ", ".join(n["name"] for n in self._world["npcs"][:15]) or _NONE
+            place_names = ", ".join(p["name"] for p in self._world["places"][:15]) or _NONE
+        if user_language is None:
+            user_language = detect_dialogue_language("", messages)
 
         try:
             response = self.local.get_response(
                 messages=[
-                    {"role": "system", "content": "Ты возвращаешь только валидный JSON."},
+                    {"role": "system", "content": "You return only valid JSON."},
                     {"role": "user", "content": _DIALOGUE_DETECT_PROMPT.format(
                         npc_list=npc_names, place_list=place_names,
-                        dialog="\n".join(dialog_lines))},
+                        dialog="\n".join(dialog_lines),
+                        language_line=user_language_line(user_language))},
                 ],
                 temperature=0.1,
                 max_tokens=250,
@@ -652,24 +681,26 @@ class WorldEngine:
                                state: dict,
                                external_stimulus: Optional[str],
                                inventory_items: Optional[List[str]] = None,
-                               resolve_plan: Optional[dict] = None) -> Optional[dict]:
+                               resolve_plan: Optional[dict] = None,
+                               user_language: Optional[str] = None) -> Optional[dict]:
         """Одно офлайн-событие через LLM. Возвращает payload события
         (event/mood_impact/storyline_update/new_plan/... ) или None.
         resolve_plan — просроченный план: событие обязано быть его исходом
-        (follow-through). Для primitive — физическое действие."""
+        (follow-through). Для primitive — физическое действие.
+        user_language — язык пользователя чата: текст события и тег
+        настроения пишутся на нём (иначе тянут ответ персоны на свой язык)."""
         if not self.local.is_available(task="world_engine"):
             return None
         try:
-            hour = timeutil.now().hour
-            daytime = ("утро" if 5 <= hour < 12 else "день" if 12 <= hour < 18
-                       else "вечер" if 18 <= hour < 23 else "ночь")
+            daytime = _daytime_en(timeutil.now().hour)
+            language_line = user_language_line(user_language)
 
             if self.primitive:
                 # События примитивного существа — действия с предметами
                 with self._lock:
                     place_list = "; ".join(
-                        p["name"] for p in self._world["places"][:10]) or "(нет)"
-                inv_list = "; ".join((inventory_items or [])[:15]) or "(пусто)"
+                        p["name"] for p in self._world["places"][:10]) or _NONE
+                inv_list = "; ".join((inventory_items or [])[:15]) or "(empty)"
                 prompt = _WORLD_EVENT_PROMPT_PRIMITIVE.format(
                     persona_name=self.persona_name,
                     personality_summary=(persona_context or {}).get("personality_summary", "")[:300],
@@ -677,6 +708,7 @@ class WorldEngine:
                     daytime=daytime,
                     place_list=place_list,
                     inventory_list=inv_list,
+                    language_line=language_line,
                 )
                 max_tokens = 250
             else:
@@ -688,32 +720,32 @@ class WorldEngine:
                         stimulus=external_stimulus[:400])
                 else:
                     stimulus_block = _INWORLD_STIMULUS_INSTRUCTION.format(
-                        universe_note=binding.get("universe_note") or "мир, похожий на реальный, но свой",
-                        location=binding.get("location") or "обычные места персонажа")
+                        universe_note=binding.get("universe_note") or "a world similar to the real one, but its own",
+                        location=binding.get("location") or "the character's usual places")
 
                 with self._lock:
                     npc_list = "; ".join(
-                        f"{n['name']} ({n['role']})" for n in self._world["npcs"][:10]) or "(нет)"
+                        f"{n['name']} ({n['role']})" for n in self._world["npcs"][:10]) or _NONE
                     place_list = "; ".join(
-                        f"{p['name']} ({p['type']})" for p in self._world["places"][:10]) or "(нет)"
+                        f"{p['name']} ({p['type']})" for p in self._world["places"][:10]) or _NONE
                     storylines = "; ".join(
                         f"{s['title']} [{s['status']}]"
-                        for s in self.active_storylines()) or "(нет)"
+                        for s in self.active_storylines()) or _NONE
                     # Цепочки: недавние события чата — возможные причины нового
                     journal = self._world.get("event_journal", {}).get(str(chat_id), [])
-                    recent_events = "; ".join(journal[-3:]) or "(нет)"
+                    recent_events = "; ".join(journal[-3:]) or _NONE
                     plans = "; ".join(
-                        f"{p['title']} (к {timeutil.from_ts(p['due_at']).strftime('%d.%m %H:%M')})"
+                        f"{p['title']} (by {timeutil.from_ts(p['due_at']).strftime('%d.%m %H:%M')})"
                         for p in self._world["plans"]
-                        if p.get("status") == "pending" and p.get("due_at")) or "(нет)"
+                        if p.get("status") == "pending" and p.get("due_at")) or _NONE
 
                 # Просроченный план: событие обязано быть его исходом
                 if resolve_plan:
                     resolve_block = (
-                        "ВАЖНО: событие ДОЛЖНО быть исходом запланированного: "
-                        f"«{resolve_plan.get('title', '')}»"
+                        "IMPORTANT: the event MUST be the outcome of what was planned: "
+                        f"\"{resolve_plan.get('title', '')}\""
                         + (f" ({resolve_plan.get('detail')})" if resolve_plan.get("detail") else "")
-                        + ". Опиши, как оно прошло/сорвалось.\n")
+                        + ". Describe how it went / fell through.\n")
                 else:
                     resolve_block = ""
 
@@ -730,12 +762,13 @@ class WorldEngine:
                     daytime=daytime,
                     resolve_block=resolve_block,
                     stimulus_block=stimulus_block,
+                    language_line=language_line,
                 )
                 max_tokens = 350
 
             response = self.local.get_response(
                 messages=[
-                    {"role": "system", "content": "Ты возвращаешь только валидный JSON."},
+                    {"role": "system", "content": "You return only valid JSON."},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.7,
@@ -786,7 +819,7 @@ class WorldEngine:
                     self._world["npcs"].append({
                         "id": self._next_id, "name": name,
                         "role": str(nn.get("role", ""))[:200],
-                        "relationship_status": "появился в офлайн-событии",
+                        "relationship_status": "appeared in an offline event",
                         "last_mentioned_at": now_iso, "created_at": now_iso,
                         "origin": "generated_from_event",
                     })
@@ -801,7 +834,7 @@ class WorldEngine:
                     self._world["places"].append({
                         "id": self._next_id, "name": name,
                         "type": str(np_.get("type", ""))[:80],
-                        "atmosphere": "появилось в офлайн-событии",
+                        "atmosphere": "appeared in an offline event",
                     })
                     self._world["places"] = self._world["places"][-MAX_PLACES:]
                     payload.setdefault("place", name)
@@ -879,7 +912,8 @@ class WorldEngine:
             self._next_fetch_at = time.time() + random.uniform(1, 3) * 86400
             self._save()
 
-    def fetch_external_stimulus(self, persona_context: dict) -> Optional[dict]:
+    def fetch_external_stimulus(self, persona_context: dict,
+                                user_language: Optional[str] = None) -> Optional[dict]:
         """web_search по whitelist-категории → LLM relevance+safety фильтр
         → external_stimulus(used=false). Вызывать ТОЛЬКО после gate
         external_stimuli_allowed (real_world) — движок не ходит в интернет
@@ -895,7 +929,9 @@ class WorldEngine:
             self.schedule_next_fetch()
             return None
 
-        category = random.choice(categories) if categories else "местные события"
+        # Категория по умолчанию — поисковый запрос: на языке пользователя
+        category = random.choice(categories) if categories else (
+            "местные события" if user_language == "ru" else "local events")
         query = f"{location} {category}".strip()
 
         # Следующий fetch планируем при ЛЮБОМ провале ветки поиска: иначе
@@ -935,11 +971,12 @@ class WorldEngine:
             try:
                 response = self.local.get_response(
                     messages=[
-                        {"role": "system", "content": "Ты возвращаешь только валидный JSON."},
+                        {"role": "system", "content": "You return only valid JSON."},
                         {"role": "user", "content": _STIMULUS_FILTER_PROMPT.format(
                             personality_summary=(persona_context or {}).get("personality_summary", ""),
                             interests=", ".join(interests),
-                            category=category, fact=fact[:800])},
+                            category=category, fact=fact[:800],
+                            language_line=user_language_line(user_language))},
                     ],
                     temperature=0.1, max_tokens=120,
                     task="world_engine",

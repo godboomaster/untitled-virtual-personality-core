@@ -12,6 +12,7 @@ data/.
 Плюс безопасная запись .env (см. persist_env/remove_env).
 """
 
+import json
 import re
 import threading
 from pathlib import Path
@@ -148,3 +149,87 @@ def safe_segment(value) -> str:
     s = _UNSAFE_SEGMENT_RE.sub("_", str(value))
     s = s[:128]
     return s or "_"
+
+
+# ── Лимит размера тела запроса ──
+# FastAPI читает и разбирает тело целиком ДО зависимостей и валидации
+# полей: лимиты вроде «3 МБ на файл скина» срабатывают, когда многомегабайтный
+# JSON уже в памяти и распарсен. BodySizeLimit — ASGI-middleware для
+# выбранных маршрутов, отказывает раньше: по Content-Length — сразу, не
+# читая тела; тело без длины (chunked) или с заниженной длиной читается с
+# потолком и при превышении обрывается тем же 413. Уложившееся тело
+# отдаётся приложению из буфера как обычно.
+
+class BodySizeLimit:
+    """rules — [(метод, regex полного пути, лимит в байтах)]: первое
+    совпадение задаёт лимит; остальные запросы проходят без изменений."""
+
+    def __init__(self, app, rules):
+        self.app = app
+        self.rules = [(m.upper(), re.compile(p), int(n)) for m, p, n in rules]
+
+    def _limit(self, method: str, path: str) -> int | None:
+        for m, pattern, limit in self.rules:
+            if m == method and pattern.fullmatch(path):
+                return limit
+        return None
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        limit = self._limit(scope.get("method", ""), scope.get("path", ""))
+        if limit is None:
+            return await self.app(scope, receive, send)
+
+        declared = None
+        for name, value in scope.get("headers") or ():
+            if name.lower() == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    return await _reply(send, 400, "Некорректный Content-Length")
+                break
+        if declared is not None and declared > limit:
+            return await _reply(send, 413, _too_large(limit))
+
+        chunks, total = [], 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return  # клиент ушёл, не дослав тело — отвечать некому
+            body = message.get("body", b"")
+            total += len(body)
+            if total > limit:
+                return await _reply(send, 413, _too_large(limit))
+            chunks.append(body)
+            if not message.get("more_body"):
+                break
+
+        buffered = {"type": "http.request", "body": b"".join(chunks), "more_body": False}
+        replayed = False
+
+        async def replay():
+            # Тело — одним сообщением; дальше — настоящий receive (разрыв
+            # соединения для StreamingResponse/SSE)
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return buffered
+            return await receive()
+
+        await self.app(scope, replay, send)
+
+
+def _too_large(limit: int) -> str:
+    return f"Тело запроса больше {limit / 1024 / 1024:.0f} МБ"
+
+
+async def _reply(send, status: int, detail: str) -> None:
+    # Ответ в формате HTTPException FastAPI: {"detail": ...}
+    body = json.dumps({"detail": detail}, ensure_ascii=False).encode("utf-8")
+    await send({"type": "http.response.start", "status": status, "headers": [
+        (b"content-type", b"application/json; charset=utf-8"),
+        (b"content-length", str(len(body)).encode()),
+        (b"connection", b"close"),
+    ]})
+    await send({"type": "http.response.body", "body": body})

@@ -30,7 +30,9 @@ vision-агента): открыть сайт, открыть приложени
         navigate_new_domain: true  # новый домен (не из sites/allow_domains)
         type_text_safe_fields: false # поисковые поля — сразу; пароль/email/tel — всегда confirm
       allow_domains: []         # пусто = любые http(s); иначе whitelist доменов
-      apps:                     # ключ → что запускать (строка или per-OS)
+      private_hosts: []         # скриншоты/текст этих страниц — не в облачные LLM
+                                # (плюс встроенные: bank/pay/login/auth/id.…)
+      apps:                   # ключ → что запускать (строка или per-OS)
         safari: Safari
         chrome: {darwin: "Google Chrome", win32: "chrome"}
       tasks:                    # ключ → shell-команда (строка или per-OS)
@@ -40,6 +42,9 @@ vision-агента): открыть сайт, открыть приложени
 во втором случае allowlist'ы сохраняются (так пишет веб-настройка фич).
 """
 
+import contextlib
+import contextvars
+import functools
 import json
 import logging
 import re
@@ -49,17 +54,45 @@ import threading
 import time
 import unicodedata
 import webbrowser
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from app.core.language import detect_language, user_language_line
 from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
 MARKER_RE = re.compile(r"\[(OPEN_URL|OPEN_APP|RUN_TASK):([^\]\n]{1,300})\]")
+# Последняя фраза модели прямо перед маркером — её собственный вопрос/анонс
+# действия; заменяется шаблоном confirm_question (скобки исключены, чтобы
+# не съесть соседний маркер)
+# Точка внутри слова («evil.com») — не конец фразы
+_MARKER_LEAD_RE = re.compile(
+    r"(?:[^.!?…\n\[\]]|\.(?=[^\s.\[]))*[.!?…]*[ \t]*"
+    r"(?=\[(?:OPEN_URL|OPEN_APP|RUN_TASK):)")
+# Человек сам просит открыть/запустить — только тогда маркер из хода с
+# недоверенным текстом (страница/веб/OCR/файл/цитата) допустим
+_MARKER_CMD_RE = re.compile(
+    r"(?<![a-zа-яё])(?:открой|откройте|открыть|запусти|запустите|запустить|"
+    r"включи|включите|перейди|зайди|выполни|поставь|"
+    r"open|launch|start|run|play|go\s+to)(?![a-zа-яё])", re.IGNORECASE)
 
-PENDING_TTL_SEC = 300
+# Подтверждение живёт минуту: «да» спустя полчаса разговора — уже ответ на
+# что-то другое, а не согласие на отложенный клик/открытие
+PENDING_TTL_SEC = 60
+# «Берусь за задачу «X»?» — дольше: «да» только запускает агента, каждый
+# рискованный шаг прогона всё равно спрашивается отдельно (минуты на ответ
+# хватало не всем — «да» через 2 минуты получало «подтверждение истекло»)
+TASK_START_TTL_SEC = 600
+# Список вариантов сайта читается дольше, чем «Открыть X?» — минуты мало
+CHOICE_TTL_SEC = 180
+# Сколько вариантов показывать в списке «какой сайт открыть?»
+SITE_CHOICES_MAX = 5
+# Сколько помним, что pending протух по TTL: голое «да» вдогонку получает
+# честное «подтверждение истекло», а не уходит молча в болтовню
+PENDING_EXPIRED_GRACE_SEC = 600
 
 # Клавиши, чьё нажатие — обратимое взаимодействие со страницей (плеер,
 # закрытие диалога); Enter/Tab/Backspace сюда не входят — могут отправить
@@ -71,6 +104,375 @@ _RISK_SAFE_KEYS = frozenset({
     # вместо капризного пробела, и без него то же действие внезапно
     # требовало подтверждения
     "m", "k", "Escape"})
+
+# ── Рискованные подписи элементов (единый источник для needs_confirm,
+# task_agent и scenario_manager) ──
+# Финальный коммит заказа/формы — подтверждение человеком всегда (поверх
+# risk_overrides и правила промпта «спроси перед необратимым шагом»). Узко:
+# «купить» на карточке каталога обычно кладёт в корзину — его не трогаем
+_COMMIT_RE = re.compile(
+    r"оформить\s+заказ|подтвердить\s+заказ|заказать\s+сейчас|сделать\s+заказ|"
+    r"отправить\s+заказ|забронировать|place\s+order|confirm\s+order|"
+    r"submit\s+order|complete\s+(?:order|purchase)|buy\s+(?:it\s+)?now|book\s+now|"
+    # «Купить сейчас» — русская «Buy now» (мгновенная покупка, не корзина)
+    r"купить\s+сейчас|"
+    # «Оформить» (но не «Оформить подписку» — это оплата, см. _PAYMENT_RE),
+    # «Перейти к оформлению», «Купить в 1 клик», «Заказать» в начале
+    # подписи, Amazon «Place your order», «Order now»
+    r"(?<![а-яё])оформить(?!\s+подписк)(?![а-яё])|к\s+оформлению|"
+    r"купить\s+в\s+(?:1|один|одн)\s*клик|^\s*заказать(?![а-яё])|"
+    r"place\s+(?:your\s+)?order|order\s+now|"
+    # Другие языки (de/fr/es/it/pt/pl/uk/tr): заказ, бронь, «к кассе». Голые
+    # «купить» (Kaufen, Comprar, Acquista, Kup, Купити) — нет, как и
+    # «Купить»: на карточке каталога они кладут в корзину
+    r"(?<![a-zäöü])bestell(?:en|ung\s+(?:absenden|abschlie(?:ß|ss)en|"
+    r"best[äa]tigen|aufgeben))(?![a-zäöü])|zur\s+kasse|"
+    r"(?<![a-z])command(?:er|ez)(?![a-z])|"
+    r"(?:valider|passer|confirmer|finaliser)\s+(?:la\s+|ma\s+|votre\s+)?"
+    r"commande|(?<![a-z])r[ée]server(?![a-z])|"
+    r"(?:realizar|confirmar|hacer|tramitar|finalizar|fazer|enviar)\s+"
+    r"(?:el\s+|o\s+|mi\s+|meu\s+)?pedido|finalizar\s+(?:la\s+|a\s+)?compra|"
+    r"terminer\s+(?:ma\s+|la\s+|votre\s+)?commande|je\s+commande|"
+    r"(?<![a-z])reserve(?![a-z])|al[ıi][şs]veri[şs]i\s+tamamla|"
+    r"(?<![a-z])(?:reservar|encomendar)(?![a-z])|"
+    r"(?:conferma|invia|completa|procedi\s+(?:con\s+)?)\s*"
+    r"(?:l['’]\s*|all['’]\s*)?ordine|(?<![a-z])ordina\s+(?:ora|adesso)|"
+    r"(?<![a-z])prenota(?![a-z])|"
+    r"zamawiam|z[łl][óo][żz]\s+zam[óo]wienie|potwierd[źz]\s+zam[óo]wienie|"
+    r"(?<![a-ząćęłńóśźż])zam[óo]w(?![a-ząćęłńóśźż])|zarezerwuj|"
+    r"(?<![а-яёіїє])замов(?:ити|ляю)(?![а-яёіїє])|"
+    r"(?<![а-яёіїє])оформити(?![а-яёіїє])|підтвердити\s+замовлення|"
+    r"забронювати|"
+    r"sipari[şs]\w*\s+(?:ver|onayla|tamamla)\w*|sat[ıi]n\s+al|"
+    r"rezervasyon\s+yap|"
+    # Отмена заказа/брони/поездки/записи, вызов такси/курьера — тоже
+    # необратимо (поездку спишут с сохранённой карты)
+    r"(?<![а-яё])отменить\s+(?:мой\s+|этот\s+)?(?:заказ\w*|брон\w*|"
+    r"поездк\w*|запис\w*)|\bcancel\s+(?:my\s+|this\s+)?(?:order|booking|"
+    r"reservation|ride|trip|appointment)\b|"
+    r"(?<![а-яё])(?:вызвать|заказать)\s+(?:такси|машину|курьер\w*)|"
+    r"\brequest\s+(?:a\s+)?(?:ride|uber\w*|car|taxi|courier)\b|"
+    r"\bterminer\s+(?:la\s+)?r[ée]servation|\bfinaliser\b|\bvalider\b",
+    re.IGNORECASE)
+# Мгновенная покупка — заказ сразу со списанием с сохранённой карты («Buy
+# now», «Купить в 1 клик», Amazon «Place your order»). Для агента задач это
+# оплата (передача человеку), а не коммит с «да»: одно «да» списывало деньги
+_INSTANT_BUY_RE = re.compile(
+    r"buy\s+(?:it\s+)?now|купить\s+сейчас|купить\s+в\s+(?:1|один|одн)\s*клик|"
+    r"(?:1|one)[\s-]?click|в\s+(?:1|один)\s+клик|"
+    r"place\s+(?:your\s+)?order|order\s+now|complete\s+(?:your\s+)?purchase|"
+    r"confirm\s+(?:your\s+)?purchase|jetzt\s+kaufen|sofort\s+kaufen|"
+    r"acheter\s+maintenant|comprar\s+(?:ahora|agora|ya)|"
+    r"(?:acquista|compra)\s+ora|kup\s+teraz|купити\s+(?:зараз|в\s+(?:1|один)\s*клік)|"
+    r"hemen\s+al|[şs]imdi\s+(?:sat[ıi]n\s+)?al",
+    re.IGNORECASE)
+# Отправка формы/сообщения/публикация кнопкой — необратимо уходит на сервер.
+# Только в НАЧАЛЕ подписи: «Отправить», «Send message», но не «Способы
+# отправки» и не «Отправленные» (папка почты)
+_SUBMIT_LABEL_RE = re.compile(
+    # «подписать» (документ), но не «Подписаться» на канал
+    r"^\s*(?:отправить|отправь|опубликовать|подтвердить|подписать(?![а-яё])|"
+    r"send(?![a-z])|submit\w*|publish\w*|post(?![a-z])|confirm(?![a-z])|"
+    # запись, регистрация, ответ — тоже уходят на сервер
+    r"записаться|запишите(?:сь)?|записать(?:ся)?|зарегистрир\w*|ответить|"
+    r"reply(?![a-z])|register(?![a-z])|sign\s*up|"
+    # de/fr/es/pt/it/pl/uk/tr
+    r"(?:ab)?senden(?![a-z])|best[äa]tigen|ver[öo]ffentlichen|"
+    r"envoyer|confirmer|publier|s['’]inscrire|"
+    r"enviar|confirmar|publicar|registrar(?:se)?|inscribir(?:se)?|"
+    r"invia(?:re)?(?![a-z])|conferma(?:re)?(?![a-z])|pubblica(?:re)?(?![a-z])|"
+    r"wy[śs]lij|potwierd[źz]|opublikuj|zarejestruj|"
+    r"надіслати|відправити|підтвердити|опублікувати|зареєструват\w*|"
+    r"g[öo]nder|onayla|yay[ıi]nla|kay[ıi]t\s+ol|"
+    # Заявка, голос, пост; разрешение доступа (OAuth) — тоже уходят на
+    # сервер/открывают доступ. Голое «Allow all» (cookie) — нет
+    r"подать\s+заявк\w*|apply\s+now|проголосовать|vote(?![a-z])|"
+    r"tweet(?![a-z])|allow(?:\s+access)?\s*[.!]*$|grant\s+access|"
+    r"разрешить(?:\s+доступ)?\s*[.!]*$|подключить(?:\s+услугу|\s+тариф\w*)?\s*[.!]*$|"
+    r"активировать\s*[.!]*$|продлить\s*[.!]*$|renew\s*[.!]*$)",
+    re.IGNORECASE)
+# Платёжный текст. Узко, но с запасом в сторону «отрезать» (деньги — всегда
+# за человеком):
+#   * открытое «карт[аоые]» ловит «карточку» и «картошку» — поэтому формы
+#     слова «карта» перечислены явно;
+#   * голое «\bмир\b» ловит любое слово «мир» — «Мир Pay»/«mirpay» отдельно.
+_PAYMENT_RE = re.compile(
+    # платёж как действие/предмет
+    r"оплат\w*|оплач\w*|\bплат[еёи]ж\w*|\bплатить\b|\bзаплат\w*|"
+    # бренды и способы оплаты
+    r"visa|mastercard|maestro|\bpay\b|apple\s?pay|google\s?pay|samsung\s?pay|"
+    r"\bmir\s?pay\b|\bmirpay\b|сбербанк|\bсбп\b|тинькофф|альфа-?банк|"
+    r"\bcheckout\b|\bcvv\b|\bcvc\b|"
+    # английские формы: подписи на англоязычных сайтах и шаги, которые LLM
+    # обобщения (промпт на английском) может переписать по-английски;
+    # «card» — как одиночное «карта»: в спорном случае шаг лучше отрезать
+    r"\bpayments?\b|\bpaying\b|\bbilling\b|\bcards?\b|"
+    # деньги со счёта: перевод/вывод (с суммой или «деньги/средства/на
+    # карту» — голое «Перевести» — это перевод текста), пополнение,
+    # пожертвование, платная подписка
+    r"(?<![а-яё])(?:перевести|вывести)\s+(?:\d|деньг|средств|на\s+(?:карт|сч[её]т)"
+    r"|по\s+номеру)|(?<![а-яё])пополни(?:ть|те)?(?![а-яё])|"
+    r"пополнени[ея]\s+(?:баланса|сч[её]та|кошелька|карты)|"
+    r"(?<![а-яё])(?:пожертвова\w*|задонат\w*)|оформить\s+подписк\w*|"
+    r"\bdonat(?:e|ion)s?\b|\bwithdraw\w*|\btransfer\s+(?:money|funds)\b|"
+    r"\bsend\s+money\b|\btop[\s-]?up\b|\b(?:wire|bank)\s+transfer\b|"
+    # «Transfer» в начале подписи — перевод денег (кроме файлов/данных/
+    # владения); «Перевод» — только с денежным контекстом: голое «Перевод» —
+    # это и переключатель перевода текста (см. _BARE_TRANSFER_RE)
+    r"^\s*transfer(?![a-z])(?!\s+(?:files?|data|photos?|ownership|domain|"
+    r"call|chat|to\s+(?:a\s+)?(?:new\s+)?(?:device|phone)))|"
+    r"(?<![а-яё])перевод(?:а|ы|ом)?\s+(?:\d[\d\s.,]*\s*(?:₽|руб|р\b|\$|€|usd|"
+    r"eur|rub)|деньг|денег|средств|на\s+(?:карт|сч[её]т)|"
+    r"по\s+(?:номеру|телефону|реквизитам)|между\s+(?:сч|сво)|клиенту|"
+    r"в\s+другой\s+банк)|"
+    # закрытие вклада/депозита — деньги уходят со вклада («Досрочно закрыть
+    # вклад», «Закрытие вклада»); «вкладку» (вкладку браузера) не ловит
+    r"(?<![а-яё])(?:закрыть|закрой(?:те)?|закрыти[ея]|расторгнуть|"
+    r"расторжени[ея])\s+(?:(?:мой|свой|этот|my|this)\s+)?"
+    r"(?:вклад(?:а|у|ом|е|ы|ов)?|депозит(?:а|у|ом|е|ы|ов)?)(?![а-яё])|"
+    r"\bclose\s+(?:(?:my|your|this|the)\s+)?(?:deposit|savings)\b|"
+    # формы слова «карта» (но не «карточка», «картинка», «картошка»)
+    r"\bкарт(?:а|ы|е|у|ой|ою|ам|ами|ах)\b|"
+    # способы оплаты одним словом (\bpay\b их не ловит) и рассрочка
+    r"paypal|sber\s?pay|сбер\s?(?:пэй|пей|pay)|tinkoff\s?pay|t-pay|"
+    r"yoo?money|юmoney|ю\s?касс\w*|yookassa|klarna|afterpay|"
+    r"(?<![а-яё])долями(?![а-яё])|(?<![а-яё-])сплит(?:ом)?(?![а-яё-])|"
+    # de/fr/es/pt/it/pl/uk/tr: «оплатить/оплата»
+    # Глаголы и фразы «заплатить», а не существительные: «Métodos de pago»,
+    # «Zahlungsart», «Metody płatności» — пункты меню, не платёж
+    r"bezahl\w*|zahlungspflichtig|kostenpflichtig\s+bestellen|"
+    r"(?<![a-z])payer(?![a-z])|proc[ée]der\s+au\s+paiement|"
+    r"(?<![a-z])pagar(?![a-z])|(?<![a-z])paga\s+(?:ora|adesso)|"
+    r"(?:realizar|efectuar|efetuar|confirmar|procesar|completar)\s+"
+    r"(?:el\s+|o\s+)?pag(?:o|amento)|"
+    # «płacę» — только с диакритикой: «place» английского не ловим
+    r"zap[łl]a[ćc]\w*|zap[łl]at[yę]|(?<![a-z])(?:płac[ęe]|plac[ę])(?![a-z])|"
+    r"(?<![а-яёіїє])сплат\w*|"
+    r"(?<![a-zçğıöşü])öde(?:me\w*|yin|yiniz)?(?![a-zçğıöşü])", re.IGNORECASE)
+# «Карта» бывает и географической — единственное исключение, явным списком
+# сочетаний, а не смягчением правила выше
+_MAP_SENSE_RE = re.compile(
+    r"\bкарт(?:а|ы|е|у|ой|ою|ам|ами|ах)\s+"
+    r"(?:сайта|города|метро|мира|местности|проезда|памяти|"
+    r"маршрут\w*|окрестност\w*)\b", re.IGNORECASE)
+# Голая кнопка «Перевод/Перевести/Переводы» — платёж только на денежном
+# хосте (банк/кошелёк/платёжка): на обычном сайте это перевод текста
+_BARE_TRANSFER_RE = re.compile(
+    r"^\s*(?:перевод|переводы|перевести|перевод\s+денег)\s*[.!…]*\s*$",
+    re.IGNORECASE)
+_MONEY_HOST_RE = re.compile(
+    r"bank|tinkoff|tbank|qiwi|yoomoney|paypal|revolut|wise\.com|"
+    r"(?:^|\.)(?:pay|payment|payments|wallet|billing|checkout)\.",
+    re.IGNORECASE)
+# Закрытие аккаунта/профиля/счёта — разрушительно, как «Удалить аккаунт».
+# Голое «Закрыть» (диалог/попап) сюда не попадает: нужен объект-аккаунт
+_ACCOUNT_CLOSE_RE = re.compile(
+    r"(?<![а-яё])(?:закрыть|закрой|close)\s+(?:(?:мой|свой|my|your|this)\s+)?"
+    r"(?:аккаунт\w*|учётн\w*\s+запис\w*|учетн\w*\s+запис\w*|профил[ьяюе]\w*|"
+    r"сч[её]т(?:а|у|ом)?(?![а-яё])|account|profile)",
+    re.IGNORECASE)
+# Покупка по ПОДПИСИ кнопки (не по вводимому тексту: поисковый запрос
+# «купить айфон за 50 000 ₽» — не оплата, поэтому не в _PAYMENT_RE).
+# Цена в подписи + глагол покупки/подписки/продления — деньги уходят кликом
+_PRICE_RE = re.compile(
+    r"[$€£₽¥₴₸]\s*\d|\d[\d\s  .,]*\s*(?:₽|\$|€|£|¥|₴|₸|"
+    r"руб(?:\.|л\w*|\b)|р\.|(?:usd|eur|rub|gbp|uah|kzt|грн|тг)(?![a-zа-яё]))",
+    re.IGNORECASE)
+_PURCHASE_VERB_RE = re.compile(
+    r"(?<![a-zа-яё])(?:"
+    r"buy|purchase|pay|subscribe|order|pre-?order|renew|rent|upgrade|get|"
+    r"unlock|start|join|donate|tip|try|continue|proceed|checkout|check\s+out|"
+    r"go\s+(?:pro|premium|plus)|add\s+funds|top\s+up|"
+    r"купить|купи(?:те)?|оплатить|оплати(?:те)?|подписаться|подпишись|"
+    r"подпишитесь|продлить|продли(?:те)?|заказать|закажи(?:те)?|арендовать|"
+    r"арендуй(?:те)?|взять\s+(?:в\s+аренду|напрокат)|приобрести|приобретите|"
+    r"оформить|подключить|подключи(?:те)?|активировать|получить|"
+    r"разблокировать|открыть\s+доступ|перейти\s+на|попробовать|пополнить|"
+    r"продолжить|задонатить)(?![a-zа-яё])", re.IGNORECASE)
+# Покупка без цены в подписи: платный объект при глаголе покупки/продления,
+# «Buy»/«Rent» целиком (магазины приложений/кино: мгновенная покупка).
+# Голое «Купить» — нет: на карточке каталога оно кладёт в корзину
+_PURCHASE_LABEL_RE = re.compile(
+    r"^\s*(?:buy|purchase|rent|pre-?order)\s*[.!]*\s*$|"
+    r"(?<![a-z])(?:buy|purchase)\s+(?:(?:a|the|this|now|more)\s+)?(?:"
+    r"subscriptions?|premium|pro|plus|membership|access|licen[cs]e|credits?|"
+    r"coins?|gems?|tokens?|tickets?|gift\s+cards?|full\s+version|game|album|"
+    r"movie|season|episode|book|app|upgrade)(?![a-z])|"
+    r"(?<![a-z])(?:renew|extend)\s+(?:(?:my|your|the)\s+)?(?:subscription|"
+    r"membership|plan|licen[cs]e|premium|domain|hosting)(?![a-z])|"
+    r"(?<![a-z])upgrade\s+(?:to\s+|now|plan|account|(?:my|your)\s+plan)|"
+    r"(?<![a-z])(?:subscribe|join)\s+(?:to\s+|for\s+)?(?:premium|pro|plus|"
+    r"membership)(?![a-z])|"
+    r"(?<![a-z])start\s+(?:(?:my|your)\s+)?(?:free\s+)?(?:trial|"
+    r"subscription|membership)(?![a-z])|"
+    r"(?<![a-z])rent\s+(?:now|for|movie|this|it)(?![a-z])|"
+    r"(?<![а-яё])(?:купить|купите|приобрести)\s+(?:подписк\w*|премиум\w*|"
+    r"доступ\w*|тариф\w*|pro|plus|билет\w*|лицензи\w*|полную\s+версию|игру|"
+    r"фильм|книгу|абонемент\w*|сертификат\w*)|"
+    r"(?<![а-яё])(?:продлить|продлите|продли)\s+(?:подписк\w*|тариф\w*|"
+    r"доступ\w*|лицензи\w*|премиум\w*|аренд\w*|абонемент\w*|план\w*|"
+    r"услуг\w*|домен\w*|хостинг\w*)|"
+    r"(?<![а-яё])(?:арендовать|взять\s+(?:в\s+аренду|напрокат))(?![а-яё])|"
+    r"(?<![а-яё])(?:подключить|перейти\s+на|оформить)\s+(?:премиум\w*|"
+    r"платн\w*|тариф\w*|pro|plus)(?![а-яёa-z])|"
+    r"(?<![а-яё])(?:попробовать|начать)\s+(?:бесплатн\w*\s+)?(?:пробн\w*\s+)?"
+    r"(?:период|подписк\w*)", re.IGNORECASE)
+
+
+def _label_purchase(label: str) -> bool:
+    """Подпись кнопки — покупка/подписка/продление за деньги."""
+    s = " ".join(str(label or "").split())
+    if not s:
+        return False
+    if _PURCHASE_LABEL_RE.search(s):
+        return True
+    return bool(_PRICE_RE.search(s) and _PURCHASE_VERB_RE.search(s))
+
+
+# Латинские двойники кириллицы и обратно: «Удaлить» (латинская a),
+# «Dеlete» (кириллическая е) — подпись со страницы недоверенная
+_LAT2CYR = str.maketrans("AaBCcEeHKMOoPpTXxYy", "АаВСсЕеНКМОоРрТХхУу")
+_CYR2LAT = str.maketrans("АаВСсЕеНКМОоРрТХхУу", "AaBCcEeHKMOoPpTXxYy")
+_CYR_CH_RE = re.compile(r"[а-яё]", re.IGNORECASE)
+_LAT_CH_RE = re.compile(r"[a-z]", re.IGNORECASE)
+
+
+_ZW_SPACES = frozenset("​‌‍⁠﻿")
+
+
+def _risk_text(text) -> str:
+    """Подпись для словаря риска: NFKC, без невидимых символов (мягкий
+    перенос «Уда\\xadлить», zero-width), слово со смесью алфавитов — к
+    алфавиту большинства его букв."""
+    s = unicodedata.normalize("NFKC", str(text or ""))
+    # Невидимые разделители слов (zero-width space/joiner, word joiner, BOM)
+    # — пробел: «Оформить​заказ» иначе склеился бы в одно слово мимо
+    # словаря; прочие Cf (мягкий перенос внутри слова) — убрать
+    s = "".join(" " if ch in _ZW_SPACES else ch for ch in s
+                if ch in _ZW_SPACES or unicodedata.category(ch) != "Cf")
+    out = []
+    for w in s.split(" "):
+        nc, nl = len(_CYR_CH_RE.findall(w)), len(_LAT_CH_RE.findall(w))
+        if nc and nl:
+            w = w.translate(_LAT2CYR if nc >= nl else _CYR2LAT)
+        out.append(w)
+    return " ".join(out)
+
+
+# Кнопка-согласие без своего смысла — смысл в тексте окна вокруг неё:
+# «Подтвердите заказ на 1 299 ₽ [ОК]», «Удалить аккаунт? [Да]», «Списать
+# 1 299 ₽ с карты? [Продолжить]»
+_GENERIC_CONFIRM_RE = re.compile(
+    r"^\s*(?:ок|ok|okay|да|yes|ага|продолжить|continue|далее|next|готово|"
+    r"done|принять|принимаю|accept|согласен|согласна|agree|хорошо|sure|"
+    r"понятно|proceed|go|верно|вс[её]\s+верно|подтверждаю|ja|oui|s[ií]|"
+    r"weiter|continuer|continuar|continua|dalej|tamam|evet)\s*[!.…]*\s*$",
+    re.IGNORECASE)
+_DIALOG_CHARGE_RE = re.compile(
+    r"спис\w*|автоплат\w*|charge|debit|с\s+(?:вашей\s+)?карты|"
+    r"from\s+(?:your\s+)?card", re.IGNORECASE)
+_DIALOG_DESTRUCTIVE_RE = re.compile(
+    r"удал\w*|сотр\w*|стер\w*|очист\w*|выйти|выход\w*|"
+    r"\bdelete|\bremove|\berase|\bclear\b|sign\s*out|log\s*out", re.IGNORECASE)
+_DIALOG_COMMIT_RE = re.compile(
+    r"заказ\w*|оформ\w*|отправ\w*|опубликов\w*|подтверд\w*|брон\w*|запис\w*|"
+    r"подпис\w*|order|send|publish|confirm|book|submit|recipients|"
+    r"получател\w*|subscri\w*", re.IGNORECASE)
+
+
+# «Да»-подобная кнопка — ответ на вопрос окна/блока; «Далее/Продолжить» —
+# шаг формы (на оформлении их решает гейт submit-кнопок, A3)
+_YES_LIKE_RE = re.compile(
+    r"^\s*(?:ок|ok|okay|да|yes|ага|sure|верно|вс[её]\s+верно|подтверждаю|"
+    r"ja|oui|s[ií]|evet|tamam)\s*[!.…]*\s*$", re.IGNORECASE)
+# Текст про cookie/согласие на обработку данных — не про заказ, даже если
+# там «in order to», «оформлять заказы» или «payments»
+_COOKIE_CTX_RE = re.compile(r"cookie|куки", re.IGNORECASE)
+# Опасно и в cookie-тексте: удаление аккаунта, выход, подтверждение/
+# отправка заказа («Удалить аккаунт? Мы используем cookie»). Просто «удалить
+# cookie», «отправки уведомлений», «при выходе» — нет
+_DIALOG_HARD_RE = re.compile(
+    r"удал\w*\s+(?:ваш\w*\s+|мой\s+|свой\s+)?(?:аккаунт|профил|учётн|учетн)|"
+    r"\bdelete\s+(?:your\s+|my\s+)?(?:account|profile)|выйти\s+из|"
+    r"\blog\s*out|\bsign\s*out|закрыть\s+(?:аккаунт|сч[её]т)|"
+    r"подтверд\w*\s+(?:ваш\w*\s+)?заказ|\bconfirm\s+(?:your\s+)?order|"
+    r"оформить\s+заказ|\bplace\s+(?:your\s+)?order|"
+    r"отправить\s+(?:ваш\w*\s+)?(?:заявк|письм|сообщ|заказ|анкет|отзыв)|"
+    r"опубликова\w*|\bpublish|\bsubmit\s+(?:your\s+)?application|"
+    r"\bsend\s+(?:to|the|this|your)\b", re.IGNORECASE)
+# Списание денег: глагол списания рядом с суммой/картой (не «Список товаров»,
+# не «Списать 120 бонусов», не «free of charge» / «Delivery charge: $0»)
+_STRONG_CHARGE_RE = re.compile(
+    r"(?<![а-яё])спис(?:ать|ание|ано|аны|ывается|ываем|ывать|ем|ут|ала|ал)\s+"
+    r"(?!бонус|балл)[^.!?]{0,40}?(?:\d[\d\s\u00a0.,]*\s*(?:₽|руб|\$|€|£)|"
+    r"карт[аыуе]|\*\d{2,4})|"
+    r"\d[\d\s\u00a0.,]*\s*(?:₽|руб|\$|€|£)[^.!?]{0,40}?"
+    r"(?:будет\s+списан|спиш)|"
+    r"с\s+(?:вашей\s+)?карты\s+(?:\*?\d|будет|спиш)|автоплат\w*|автопродл\w*|"
+    r"\bcharge[sd]?\s+(?:you\s+)?(?:[$€£]\s*[1-9]|(?:to\s+)?your\s+card)|"
+    r"\bdebit(?:ed)?\s+(?:from\s+)?your\s+(?:card|account)", re.IGNORECASE)
+_AMOUNT_RE = re.compile(
+    r"\d[\d\s\u00a0.,]*\s*(?:₽|руб|\$|€|£)|[$€£]\s*\d", re.IGNORECASE)
+
+
+# Переход к странице оформления — не создание заказа и не оплата: «К
+# оформлению заказа», «Перейти к оформлению», «Proceed to checkout», «Zur
+# Kasse». Подпись целиком (с суммой или «Оформить заказ» — как раньше)
+_CHECKOUT_STEP_RE = re.compile(
+    r"(?:перейти\s+)?к\s+оформлению(?:\s+заказа)?|"
+    r"(?:proceed|go|continue)\s+to\s+(?:the\s+)?checkout|"
+    r"zur\s+kasse(?:\s+gehen)?", re.IGNORECASE)
+
+
+def checkout_step_label(action: Optional[dict]) -> bool:
+    """Клик — переход к оформлению (_CHECKOUT_STEP_RE): подпись и aria/title,
+    если они есть, — только такие. Заказ создаёт финальная кнопка на
+    странице оформления — её гейт и спрашивает, платит человек."""
+    if not isinstance(action, dict) or action.get("kind") != "click":
+        return False
+    labs = [re.sub(r"^\W+|\W+$", "", " ".join(str(action.get(k) or "").split()))
+            for k in ("element", "aria", "title")]
+    labs = [x for x in labs if x]
+    return bool(labs) and all(_CHECKOUT_STEP_RE.fullmatch(x) for x in labs)
+
+
+def dialog_risk(label, context, in_dialog: bool = True) -> Optional[str]:
+    """Кнопка-согласие («ОК», «Да», «Продолжить») — риск по тексту окна/
+    блока вокруг неё: 'payment' | 'destructive' | 'commit' | None. Сама
+    подпись нейтральна, и гейт по одной подписи пропускал «ОК» в «Подтвердите
+    заказ на 1 299 ₽». in_dialog=False — кнопка в блоке страницы, не в
+    окне: «Да/ОК» — по полному правилу, «Далее/Продолжить» — только
+    удаление (оформление по шагам не превращается в «оформляю заказ?»)."""
+    lab = _risk_text(label)
+    if not _GENERIC_CONFIRM_RE.match(lab):
+        return None
+    t = _risk_text(context)
+    if not t.strip():
+        return None
+    strong = _STRONG_CHARGE_RE.search(t)
+    if _COOKIE_CTX_RE.search(t) and not strong and not _AMOUNT_RE.search(t) \
+            and not _DIALOG_HARD_RE.search(t):
+        return None  # «Принять» в cookie-баннере
+    full = in_dialog or bool(_YES_LIKE_RE.match(lab))
+    if strong or (full and (_is_payment(t) or _label_purchase(t))):
+        # Списание с карты — оплата и для «Продолжить/Готово» вне окна
+        return "payment"
+    if _DIALOG_DESTRUCTIVE_RE.search(t) or _ACCOUNT_CLOSE_RE.search(t):
+        return "destructive"
+    if full and (_DIALOG_COMMIT_RE.search(t) or _COMMIT_RE.search(t)):
+        return "commit"
+    return None
+
+
+def _is_payment(text: str) -> bool:
+    """Про оплату ли этот текст (цель клика, подпись поля, значение).
+    Единственная точка решения «это платёжный шаг» — needs_confirm, обрезка
+    сценария, граница оплаты агента."""
+    s = _risk_text(text)
+    # Географическую карту вычёркиваем и смотрим, осталось ли платёжное:
+    # «карта города» — нет, «карта города и оплата картой» — да
+    s = _MAP_SENSE_RE.sub(" ", s)
+    return bool(_PAYMENT_RE.search(s))
 
 
 def config_enabled(cfg) -> bool:
@@ -99,12 +501,30 @@ def config_enabled(cfg) -> bool:
 #   3. YES — только если во всём сообщении нет ни одной NO-клаузы, оно не
 #      вопрос («?») и достаточно короткое (да-слово — это и есть ответ,
 #      а не случайное слово в длинном тексте/OCR).
+#   4. YES — только для ГОЛОГО согласия: кроме да-слов в реплике допустимы
+#      лишь слова-наполнители (пожалуйста/please/ну…), имя персоны, знаки и
+#      эмодзи. «давай лучше посмотрим котиков», «ок, а теперь нажми войти» —
+#      не согласие на отложенное действие, а новая реплика/команда.
 _YES_WORDS = frozenset({
-    "да", "давай", "ок", "окей", "ok", "okay", "yes", "конечно", "поехали",
-    "угу", "ага", "открывай", "запускай", "включай", "go", "sure",
+    "да", "давай", "давайте", "ок", "окей", "оке", "ok", "okay", "yes", "yeah",
+    "yep", "yup", "конечно", "поехали", "угу", "ага", "открывай", "запускай",
+    "включай", "go", "sure", "хорошо", "ладно", "подтверждаю", "confirm",
+    "confirmed", "действуй", "делай", "выполняй", "жми", "нажимай", "вперед",
+    "вперёд", "го",
 })
+# Наполнители голого согласия: сами по себе не ответ, но и не «другое
+# содержание» — «да, пожалуйста», «ну давай», «go ahead», «yes please»
+_YES_FILLER = frozenset({
+    "пожалуйста", "плиз", "please", "pls", "plz", "ну", "же", "ж", "уж",
+    "тогда", "так", "можно", "конечно", "ahead", "do", "it", "then", "sure",
+    "уже", "быстрее", "скорее", "именно", "верно", "точно", "absolutely",
+    "of", "course",
+})
+# «хватит»/«stop» — тоже отказ: при живом pending это и «не выполняй»,
+# и (при идущем листании) его остановка, см. stop_scroll_if_active
 _NO_WORDS = frozenset({
-    "нет", "отмена", "отменяй", "стоп", "no", "nope", "cancel",
+    "нет", "отмена", "отменяй", "стоп", "хватит", "no", "nope", "cancel",
+    "stop",
 })
 # Слова, которые сами по себе не ответ («надо» голое — не «да»), но под
 # отрицанием складываются в отказ: «не надо», «не нужно», «не хочу», «не буду».
@@ -144,8 +564,43 @@ def _clause_verdict(clause: str) -> Optional[str]:
     return None
 
 
-def classify_confirmation(text: str) -> str:
+_ANY_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _bare_yes(text: str, names=None) -> bool:
+    """Реплика — голое согласие: каждое слово (включая цифры) — да-слово,
+    наполнитель или имя персоны (names — обращения к ней), хотя бы одно —
+    да-слово. Знаки и эмодзи в \\w не входят и не мешают."""
+    extra = set()
+    for n in names or ():
+        extra.update(t.lower() for t in _ANY_WORD_RE.findall(str(n or "")))
+    tokens = [t.lower() for t in _ANY_WORD_RE.findall(text)]
+    if not tokens or not any(t in _YES_WORDS for t in tokens):
+        return False
+    return all(t in _YES_WORDS or t in _YES_FILLER or t in extra
+               for t in tokens)
+
+
+# Голая команда остановки — одно правило для «стоп» до лока хода (бот) и
+# отмены задачи агента (раньше у агента был свой список: «стой», «abort»,
+# «останови», «отмени всё» задачу не отменяли)
+STOP_CMD_RE = re.compile(
+    r"^\s*(?:отмена|отмени(?:\s+(?:задачу|это|всё|все))?|стоп|стой|хватит|"
+    r"прекрати|брось|не\s+надо|останови(?:сь)?|остановить|"
+    r"cancel|stop|abort|halt)"
+    # «хватит листать» / «stop scrolling» / «stop the scroll» — та же остановка
+    r"(?:\s+(?:листать|листание|прокрутку|скроллить|мотать|"
+    r"(?:the\s+)?scroll(?:ing)?))?\s*[.!…]*\s*$"
+    r"|^\s*enough\s+scrolling\s*[.!…]*\s*$", re.IGNORECASE)
+# «не надо»/«хватит» в ответ на вопрос или «да/нет» агента — это «нет» на
+# вопрос, а не отмена всей задачи
+SOFT_STOP_RE = re.compile(r"^\s*(?:не\s+надо|хватит)\s*[.!…]*\s*$",
+                          re.IGNORECASE)
+
+
+def classify_confirmation(text: str, names=None) -> str:
     # Ответ пользователя на «выполнить действие?» → YES | NO | UNKNOWN.
+    # names — как обращаются к персоне («Коннор, да») — не «другое содержание»
     if not text:
         return "UNKNOWN"
     norm = _DONT_RE.sub("do not", text)
@@ -165,7 +620,57 @@ def classify_confirmation(text: str) -> str:
         return "UNKNOWN"  # «да?», «...да или нет?» — вопрос, не ответ
     if len(text.split()) > _MAX_YES_WORDS:
         return "UNKNOWN"  # длинный текст (в т.ч. составной ввод с OCR) — да-слово внутри не в счёт
+    if not _bare_yes(norm, names):
+        return "UNKNOWN"  # «ок, а теперь нажми войти» — новая команда, не согласие
     return "YES"
+
+
+# Ответ номером на список вариантов («2», «второй», «открой 2-й», «second»):
+# в реплике ровно один номер, остальное — наполнители выбора
+_CHOICE_ORDINALS = {
+    **{w: 1 for w in ("первый", "первая", "первое", "первую", "первого",
+                      "первой", "first", "1st")},
+    **{w: 2 for w in ("второй", "вторая", "второе", "вторую", "второго",
+                      "second", "2nd")},
+    **{w: 3 for w in ("третий", "третья", "третье", "третью", "третьего",
+                      "третьей", "third", "3rd")},
+    **{w: 4 for w in ("четвертый", "четвертая", "четвертое", "четвертую",
+                      "четвертого", "четвертой", "fourth", "4th")},
+    **{w: 5 for w in ("пятый", "пятая", "пятое", "пятую", "пятого", "пятой",
+                      "fifth", "5th")},
+}
+_CHOICE_FILLER = frozenset({
+    "номер", "вариант", "ссылку", "ссылка", "сайт", "открой", "открывай",
+    "давай", "выбираю", "беру", "мне", "нужен", "нужна", "нужно", "тот",
+    "та", "то", "ту", "й", "я", "е", "ю", "го", "ой",
+    "number", "option", "link", "site", "open", "the", "one", "take",
+})
+
+
+def parse_choice(text: Optional[str], names=None) -> Optional[int]:
+    """Номер варианта (с 1) из ответа на список или None — реплика не
+    выбор. Как classify_confirmation: сомнение = не выбор — вопрос,
+    отрицание («не 2»), второй номер или постороннее слово дают None.
+    names — обращения к персоне («Коннор, 2»). Диапазон не проверяем:
+    «7» при пяти вариантах вызывающий переспрашивает сам."""
+    if not text or "?" in text or len(text.split()) > 6:
+        return None
+    extra = set()
+    for n in names or ():
+        extra.update(t.lower() for t in _ANY_WORD_RE.findall(str(n or "")))
+    num = None
+    for t in _ANY_WORD_RE.findall(_fold_diacritics(text.lower())):
+        v = int(t) if t.isdigit() and len(t) <= 2 else _CHOICE_ORDINALS.get(t)
+        if v is not None:
+            if num is not None:
+                return None  # «1 или 2» — не выбор
+            num = v
+        elif t in _NO_WORDS or t in _NEGATORS:
+            return None
+        elif t not in _CHOICE_FILLER and t not in _YES_FILLER \
+                and t not in extra:
+            return None
+    return num if num else None
 
 
 def _fold_diacritics(t: str) -> str:
@@ -205,6 +710,15 @@ def _norm_match(s) -> str:
     for ch in _APOSTROPHES:
         t = t.replace(ch, "'")
     return " ".join(_fold_diacritics(t).split())
+
+
+def _page_key(url: str) -> str:
+    """Ключ «та же страница» для сверки перед повтором действия: хост +
+    путь + query без фрагмента (якорь/хэш прокрутки — та же страница) и
+    хвостового слэша."""
+    p = urlparse(str(url or ""))
+    return ((p.hostname or "").lower() + (p.path or "").rstrip("/")
+            + ("?" + p.query if p.query else ""))
 
 
 def _word_in(word: str, hay: str) -> bool:
@@ -409,12 +923,68 @@ def _layer_note(it: dict) -> str:
     окно (md) / открытый список (dd) / перекрыт затемнением (cov). Компактно
     — одна пометка, самая «горячая» первой: список → окно → затемнение."""
     if it.get("dd"):
-        return " — в открытом списке"
+        return " — in an open list"
     if it.get("md"):
-        return " — в открытом окне"
+        return " — in an open dialog"
     if it.get("cov"):
-        return " — под затемнением"
+        return " — under a dimmed overlay"
     return ""
+
+
+# Значимые подписи-символы: крестик, плюс/минус количества, стрелки,
+# бургер, троеточие — законная цель клика, в отличие от «/» и «•»
+_GLYPH_LABELS = frozenset("+-−–×✕✖✗⨯←→‹›<>«»↑↓☰≡⋮⋯…?★☆♥❤")
+
+
+def _wide_label_ok(it: dict) -> bool:
+    """Подпись элемента годится в список широкого LLM-резолва: не служебный
+    обрывок — бейдж длительности «0:13», разделитель «/»/«•», строка
+    метаданных «33 тыс. 1 г. назад». Номер страницы («2») и значимый
+    символ (×, +) — годятся. Хоть одна годная подпись из text/aria/title —
+    элемент берём."""
+    from app.features.browser_actions import (
+        _DURATION_TEXT_RE, _SERVICE_WORDS_RE)
+    for k in ("text", "aria", "title"):
+        lab = " ".join(str(it.get(k) or "").split())
+        if not lab:
+            continue
+        if lab in _GLYPH_LABELS or re.fullmatch(r"\d{1,4}", lab):
+            return True
+        if not re.search(r"[^\W\d_]", lab) or _DURATION_TEXT_RE.match(lab):
+            continue  # ни одной буквы: «0:48 / 8:13», «/», «•»
+        if re.search(r"\d", lab) and len(lab) <= 48 and (
+                _SERVICE_WORDS_RE.search(lab) or re.search(r"[•·|]", lab)):
+            continue  # метаданные карточки: просмотры/давность
+        return True
+    return False
+
+
+def _boxes_coincide(a: dict, b: dict) -> bool:
+    """Две рамки (зона vision и элемент снапшота, координаты вьюпорта) —
+    один и тот же контрол: центр одной лежит внутри другой."""
+    def _rect(r: dict) -> Tuple[float, float, float, float]:
+        x, y = float(r.get("x") or 0), float(r.get("y") or 0)
+        return x, y, x + float(r.get("w") or 0), y + float(r.get("h") or 0)
+
+    ax0, ay0, ax1, ay1 = _rect(a)
+    bx0, by0, bx1, by1 = _rect(b)
+    if ax1 <= ax0 or ay1 <= ay0 or bx1 <= bx0 or by1 <= by0:
+        return False
+    acx, acy = (ax0 + ax1) / 2, (ay0 + ay1) / 2
+    bcx, bcy = (bx0 + bx1) / 2, (by0 + by1) / 2
+    return (bx0 <= acx <= bx1 and by0 <= acy <= by1) \
+        or (ax0 <= bcx <= ax1 and ay0 <= bcy <= ay1)
+
+
+def _zone_same_label(box: dict, it: dict) -> bool:
+    """Подпись зоны не противоречит подписи элемента снапшота: у одного
+    контрола они из одного DOM и делят слово. Совпадения одной геометрии
+    мало — зона-обёртка («Подписаться» во всю плашку) накрывает и чужой
+    элемент. Пустая подпись с любой стороны — не противоречие."""
+    zw = set(re.findall(r"[a-z0-9а-яё]+", _norm_match(str(box.get("text") or ""))))
+    lw = set(re.findall(r"[a-z0-9а-яё]+", _norm_match(" ".join(
+        str(it.get(k) or "") for k in ("text", "aria", "title")))))
+    return not zw or not lw or bool(zw & lw)
 
 
 def _cand_line(n: int, it: dict, lab_max: int = 120) -> str:
@@ -428,12 +998,12 @@ def _cand_line(n: int, it: dict, lab_max: int = 120) -> str:
     if not lab:
         # Безымянная иконка — сопоставить её с целью может только vision;
         # контекст блока — внутри той же скобки, без пустой подписи впереди
-        lab = f"(без подписи, блок: {ctx[:60]})" if ctx else "(без подписи)"
+        lab = f"(no label, block: {ctx[:60]})" if ctx else "(no label)"
     elif ctx and len(lab) <= 15:
         # Короткая подпись («закрыть», «×») без контекста блока LLM не
         # привязать к скоуп-цели («закрыть на корзина» — крестик сам по
         # себе «корзины» не содержит) — добавляем контекст
-        lab = f"{lab} (блок: {ctx[:60]})"
+        lab = f"{lab} (block: {ctx[:60]})"
     return (f"{n}) [{str(it.get('tag'))[:24]}/{str(it.get('role') or '-')[:24]}] "
             f"{lab[:lab_max]}{_layer_note(it)}")
 
@@ -532,6 +1102,19 @@ def _parse_pick_answer(resp, strict: bool = False
     return int(nums[0]), conf, False
 
 
+def _llm_said_no(resp) -> bool:
+    """Ответ «ничего не подходит» на промпт выбора по номеру: промпты на
+    английском просят «no», старые/русскоязычные модели отвечают «нет»."""
+    s = str(resp or "").strip().lower().lstrip("«\"'*`")
+    return s.startswith("нет") or bool(re.match(r"(?:no|none)\b", s))
+
+
+def _llm_said_skip(resp) -> bool:
+    # Ответ «шаг уже не нужен» (skip) — принимаем и русское «пропустить».
+    s = str(resp or "").strip().lower().lstrip("«\"'*`")
+    return s.startswith("пропуст") or s.startswith("skip")
+
+
 def _dedup_same_target_cards(items: List[dict]) -> List[dict]:
     """Схлопывание дублей одной карточки перед нарезкой топ-N для vision:
     на одну ссылку у карточки часто висит несколько разных a[href]
@@ -582,10 +1165,27 @@ def _dedup_same_target_cards(items: List[dict]) -> List[dict]:
 _OPEN_VERB_RE = re.compile(
     r"^(?:открой|открыть|запусти|запустить|включи|включить|open|launch|start)\s+",
     re.IGNORECASE)
+# Вежливые слова — одно определение для всех парсеров команд: хвост
+# «…, пожалуйста» / «… please» и голова «пожалуйста, …» срезаются одинаково
+_POLITE_ALT = r"пожалуйста|плиз|плз|please|pls|plz"
+_POLITE_TAIL_RE = re.compile(
+    rf"[\s,]*(?:{_POLITE_ALT})\s*[.!?…]*\s*$", re.IGNORECASE)
+_POLITE_HEAD_RE = re.compile(rf"^\s*(?:{_POLITE_ALT})[\s,]+", re.IGNORECASE)
+# Обрамление цели: запятые/кавычки/точки по краям («ютуб,», «"ютуб"»)
+_TARGET_EDGE_CHARS = " \t,;:.!?…\"'«»“”„`"
+
+
+def _strip_polite(s: str) -> str:
+    """«нажми войти, пожалуйста» → «нажми войти»; «пожалуйста, открой
+    ютуб» → «открой ютуб». Вежливость в середине фразы не трогаем."""
+    s = _POLITE_HEAD_RE.sub("", s or "")
+    return _POLITE_TAIL_RE.sub("", s).strip()
+
+
 _OPEN_FILLER_RE = re.compile(
-    r"(?:пожалуйста|плиз|мне|нам|сайт|страницу|страница|вкладку|вкладка|"
-    r"приложение|программу|программа)\s+", re.IGNORECASE)
-_OPEN_TAIL_RE = re.compile(r"\s+(?:пожалуйста|плиз)\s*$", re.IGNORECASE)
+    rf"^(?:{_POLITE_ALT}|мне|нам|сайт|страницу|страница|вкладку|вкладка|"
+    r"приложение|программу|программа)[\s,]+", re.IGNORECASE)
+_OPEN_TAIL_RE = _POLITE_TAIL_RE
 
 # Поиск на конкретном сайте: «включи фильм на стриминге»,
 # «открой шоу на ютуб», «open a movie on youtube»
@@ -594,6 +1194,21 @@ _SEARCH_ON_SITE_RE = re.compile(
     r"открой|открыть|запусти|запустить|open|play|watch|find|search|launch|start)"
     r"\s+(.+?)\s+(?:на|в|во|on|in)\s+(\S+)\s*[.!?…]*\s*$",
     re.IGNORECASE)
+# Элементы интерфейса страницы/плеера: «открой комментарии на ютубе»,
+# «включи субтитры» — это клик (или медиа-клавиша), а не поиск ролика с
+# таким названием. Вся цель целиком — одно из этих слов
+_UI_ELEMENT_RE = re.compile(
+    r"^(?:комментари\w*|коммент\w*|настройк\w*|параметр\w*|звук|субтитр\w*|"
+    r"полн\w*\s+экран\w*|полноэкранн\w*(?:\s+режим\w*)?|описани\w*|"
+    r"плейлист\w*|меню|чат\w*|уведомлени\w*|профил\w*|аккаунт\w*|корзин\w*|"
+    r"фильтр\w*|сортировк\w*|главн\w*(?:\s+страниц\w*)?|"
+    r"comments?|settings|subtitles|captions|full\s*screen|description|"
+    r"playlist|sound|notifications|menu|cart|chat)$", re.IGNORECASE)
+# Элементы плеера, которые и без сайта в фразе — про открытую страницу
+# («включи субтитры»), а не про приложение/сайт
+_UI_PLAYER_RE = re.compile(
+    r"^(?:субтитр\w*|полн\w*\s+экран\w*|полноэкранн\w*(?:\s+режим\w*)?|"
+    r"subtitles|captions|full\s*screen)$", re.IGNORECASE)
 
 # Глаголы-«поисковики»: с них открывается СТРАНИЦА ПОИСКА сайта, даже если у
 # сайта есть regex first. Остальные глаголы — «открыть непосредственно»:
@@ -659,17 +1274,62 @@ def ordinal_recipe(name: str) -> Optional[str]:
     return None
 
 
+# «Следующее видео» — кнопка .ytp-next-button плеера (recipe youtube_next):
+# встроенная фраза, как номерные результаты — без ключа в yaml. Консервативно:
+# только эти формы, «дальше»/«вперёд» — слишком общие слова для других команд
+# (листание, навигация по истории и т.п.), их recipe не заберёт
+_NEXT_VIDEO_RE = re.compile(
+    r"^(?:следующее\s+видео|следующий\s+(?:ролик|трек)|next\s+video)"
+    r"\s*[.!?…]*\s*$", re.IGNORECASE)
+
+
+def next_video_recipe(name: str) -> Optional[str]:
+    """«следующее видео» / «следующий ролик» / «следующий трек» / «next
+    video» → «youtube_next». Глагол («включи»/«нажми») к этому моменту уже
+    срезан вызывающей стороной (parse_open_many/_CLICK_REQUEST_RE) — фраза
+    голая. None — не такая команда."""
+    if not name:
+        return None
+    if _NEXT_VIDEO_RE.match(" ".join(name.strip().lower().split())):
+        return "youtube_next"
+    return None
+
+
 # ── Агентный клик «нажми X» ─────────────────────────────
 
 _CLICK_REQUEST_RE = re.compile(
     r"^\s*(?:нажми|нажать|кликни|кликнуть|тыкни|щёлкни|щелкни|click|press|tap)\s+"
     r"(.+?)\s*[.!?…]*\s*$",
     re.IGNORECASE)
-# «кнопку/ссылку» в начале цели срезаем — LLM ищет по тексту элемента
+# «(на/по) кнопку/ссылку» в начале цели срезаем — LLM ищет по тексту
+# элемента: «на войти», «по кнопке войти», «on the login button» → «войти»/
+# «login». Существительные — в любом падеже
 _CLICK_FILLER_RE = re.compile(
-    r"^(?:(?:на|по)\s+)?(?:кнопку|кнопка|ссылку|ссылка|пункт|иконку|значок)\s+",
-    re.IGNORECASE)
+    r"^(?:(?:на|по|on|onto)\s+)?(?:the\s+)?"
+    r"(?:(?:кнопк\w*|ссылк\w*|пункт\w*|иконк\w*|значк\w*|значок|"
+    r"button|link|icon)\s+)?", re.IGNORECASE)
+# Англ. порядок «the login button» — носитель хвостом
+_CLICK_FILLER_TAIL_RE = re.compile(r"\s+(?:button|link|icon)$", re.IGNORECASE)
+# Хвост-место «… на <сайт>» — ОДНО определение для клика/наведения/
+# скачивания/чтения/закрытия
 _CLICK_SITE_RE = re.compile(r"\s+(?:на|в|во|on|in)\s+(\S+)\s*$", re.IGNORECASE)
+# То же место в НАЧАЛЕ цели: «нажми на ютубе подписаться». Сайт — слово в
+# предложном падеже («ютубе», «почте»); носители элемента и области
+# страницы («на кнопке», «в корзине», «в меню») сайтом не считаем
+_CLICK_SITE_HEAD_RE = re.compile(
+    r"^(?:на|в|во)\s+([a-zа-яё0-9-]+е)\s+(\S.*)$", re.IGNORECASE)
+_CLICK_SITE_HEAD_NOT_RE = re.compile(
+    r"^(?:кнопк|ссылк|пункт|иконк|значк|строк|панел|вкладк|корзин|меню|"
+    r"списк|раздел|блок|карточк|окн|модалк|форм|пол[ея]|шапк|футер|"
+    r"главн|верх|низ|угл|центр|середин|конц|начал)", re.IGNORECASE)
+# Прилагательное/числительное на -ое/-ее/-ье/-ые/-ие — не сайт в предложном
+# падеже: «нажми на красное платье», «на последнее сообщение», «на третье
+# видео», «на мое имя» — это часть цели
+_CLICK_SITE_HEAD_ADJ_RE = re.compile(r"(?:ое|ее|ье|ые|ие)$", re.IGNORECASE)
+# Открытие/включение элемента интерфейса: «открой комментарии на ютубе»
+_UI_OPEN_RE = re.compile(
+    r"^\s*(?:открой|открыть|включи|включить|покажи|показать|open|show)\s+"
+    r"(.+?)\s*[.!?…]*\s*$", re.IGNORECASE)
 # Скоуп-клик «выбрать на Цезарь с беконом»: действие + контекст карточки.
 # Срабатывает только когда плоский матч по тексту элемента ничего не нашёл
 _SCOPE_SPLIT_RE = re.compile(r"^(.+?)\s+(?:на|в|во|on|in)\s+(.+)$", re.IGNORECASE)
@@ -756,8 +1416,14 @@ _DESTRUCTIVE_CLASS_RES = {
         r"(?<![a-z0-9а-яё])(?:"
         r"отпис\w*|покин\w*|"
         r"выйти|выйди\w*|выхожу|выход(?:а|у|ом|е)?(?![а-яё])|"
-        r"unsubscribe\w*|unfollow\w*|quit\w*|exit\w*|"
-        r"log\s?out|logout|sign\s?out|signout|log\s?off"
+        # quit — без «quite»
+        r"unsubscribe\w*|unfollow\w*|quit(?:s|ting)?(?![a-z])|exit\w*|"
+        r"log\s?out|logout|sign\s?out|signout|log\s?off|"
+        # отмена подписки/членства, деактивация аккаунта
+        r"отменить\s+подписк\w*|отмени(?:те)?\s+подписк\w*|"
+        r"деактивир\w*|деактиваци\w*|"
+        r"cancel\s+(?:my\s+|your\s+)?(?:subscription|membership|plan)\w*|"
+        r"deactivat\w*"
         r")", re.IGNORECASE),
 }
 _DESTRUCTIVE_WORD_RE = re.compile(
@@ -787,6 +1453,89 @@ def _destructive_classes(text: str, anchored: bool) -> frozenset:
         if rx.match(text) if anchored else rx.search(text):
             out.add(cls)
     return frozenset(out)
+
+
+# ── Разрушительность ПОДПИСИ для гейта подтверждения (risky_label) ──
+# Вето резолвера сверяет глагол по началу подписи; гейту этого мало: кнопка
+# финального шага часто несёт префикс подтверждения или глагол в середине
+# («Да, удалить», «Yes, delete», «Навсегда удалить», «Empty trash»,
+# «Leave server», «Report and block»)
+_CONFIRM_PREFIX_RE = re.compile(
+    r"^\s*(?:да|yes|yep|ok|ок|окей|okay|хорошо|конечно|sure|точно|верно|"
+    r"confirm|подтвердить|подтверждаю|подтвердите|continue\s+and|"
+    r"продолжить\s+и|вс[её]\s+равно|anyway|"
+    r"навсегда|безвозвратно|окончательно|permanently|forever|irreversibly|"
+    r"i\s+understand(?:\s+[^,]{0,40})?|я\s+понимаю(?:\s+[^,]{0,40})?|"
+    r"понятно|got\s+it)(?![a-zа-яё])\s*[,:!.;]*\s*", re.IGNORECASE)
+# Глагол в ЛЮБОМ месте подписи — узкий словарь (инфинитив/императив, без
+# существительных): «Удалённые», «Deleted items», «Hair remover» мимо
+_DESTRUCTIVE_ANY_RE = re.compile(
+    r"(?<![a-z0-9а-яё])(?:"
+    r"удалить|удалите|удали|удалиться|удалим|стереть|сотрите|сотри|"
+    r"уничтожить|уничтожьте|"
+    r"очистить\s+(?:корзину|историю|вс[её]|чат|переписку|кэш|кеш|данные|"
+    r"папку|диалог)|"
+    r"выйти|выйдите|покинуть|покиньте|покинь|отписаться|отпишитесь|"
+    r"отпишись|заблокировать|заблокируйте|заблокируй|пожаловаться|"
+    r"деактивировать|отменить\s+подписку|"
+    r"delete|remove|erase|wipe|destroy|terminate|purge|uninstall|"
+    r"empty\s+(?:the\s+)?(?:trash|bin|recycle\s+bin|folder|spam|junk)|"
+    # «В корзину» без глагола — это корзина магазина, не удаление
+    r"(?:move|send)\s+to\s+(?:the\s+)?(?:trash|bin|recycle\s+bin)|"
+    r"(?:переместить|перенести|отправить)\s+в\s+корзину|"
+    r"clear\s+(?:all|history|data|everything|chat|conversation|messages?|"
+    r"cache|cookies|browsing\s+data)|"
+    r"leave(?:\s+(?:the|this))?\s+(?:server|group|workspace|channel|team|"
+    r"chat|conversation|community|organi[sz]ation|org|space|room|guild|"
+    r"project|household|family)|"
+    r"unsubscribe|unfollow|unfriend|deactivate|log\s?out|sign\s?out|"
+    r"block\s+(?:user|this|contact|account|number|sender|person|profile|"
+    r"channel|page|him|her|them|@\S+)|(?:and|&)\s+block|"
+    r"report\s+(?:user|spam|abuse|account|profile|post|comment|message|"
+    r"channel|group|this)|"
+    r"cancel\s+(?:(?:my|your)\s+)?(?:subscription|membership|plan|account)"
+    r")(?![a-z0-9а-яё])|"
+    # Кнопка одним словом: «Leave»/«Block»/«Report» в модалке
+    r"^\s*(?:leave|block|report)\s*[.!]*\s*$", re.IGNORECASE)
+# Папки/разделы, а не действия: «Trash», «Deleted items», «Удалённые (3)»
+_DESTRUCTIVE_FOLDER_RE = re.compile(
+    r"\s*(?:trash|bin|recycle\s+bin|deleted(?:\s+(?:items|messages|files|"
+    r"mail|posts))?|recently\s+deleted|removed|"
+    r"(?:недавно\s+)?удал[её]нн\w*(?:\s+\w+)?|корзина)"
+    r"\s*[(\[]?\s*\d*\s*[)\]]?\s*", re.IGNORECASE)
+# Заголовок статьи/вопрос, а не кнопка: «Как удалить аккаунт в Telegram?»
+_QUESTION_LABEL_RE = re.compile(
+    r"\?|^\s*(?:как|почему|зачем|что|можно\s+ли|how|why|what|can\s+i|"
+    r"should\s+i)(?![a-zа-яё])", re.IGNORECASE)
+
+
+def _label_destructive(label: str) -> bool:
+    """Подпись — удаление/выход/блокировка (классы delete/leave): по началу
+    подписи, после префикса подтверждения и узким словарём в любом месте.
+    «Закрыть» диалог — рутина, сюда не входит."""
+    s = _norm_match(label)
+    if not s or _DESTRUCTIVE_FOLDER_RE.fullmatch(s):
+        return False
+    t = s
+    for _ in range(3):
+        if _destructive_classes(t, anchored=True) & {"delete", "leave"}:
+            return True
+        t2 = _CONFIRM_PREFIX_RE.sub("", t, count=1)
+        if t2 == t or not t2:
+            break
+        t = t2
+    return (len(s) <= 64 and not _QUESTION_LABEL_RE.search(s)
+            and bool(_DESTRUCTIVE_ANY_RE.search(s)))
+
+
+def _label_submit(label: str) -> bool:
+    """Подпись начинается с отправки/подтверждения — и после префикса
+    подтверждения («Да, отправить», «Yes, publish»)."""
+    s = str(label or "")
+    if _SUBMIT_LABEL_RE.match(s):
+        return True
+    t = _CONFIRM_PREFIX_RE.sub("", _norm_match(s), count=1)
+    return bool(t) and t != _norm_match(s) and bool(_SUBMIT_LABEL_RE.match(t))
 
 
 def _destructive_label_classes(it: dict) -> frozenset:
@@ -844,19 +1593,81 @@ def _destructive_mismatch(goal: str, it: dict, op: str = "click") -> bool:
     return not (label_cls & _destructive_intent_classes(goal))
 
 
-def _goal_in_label(goal: str, label: str, host: Optional[str] = None) -> bool:
+def _goal_in_label(goal: str, label: str, host: Optional[str] = None,
+                   ctx: Optional[str] = None) -> bool:
     """Хотя бы одно значимое слово цели (стем/синоним) встречается в подписи
     элемента. Пустая цель или пустая подпись — True (проверять нечего:
-    безымянные иконки — легальная цель vision-резолва)."""
+    безымянные иконки — легальная цель vision-резолва). Слова, которых в
+    подписи не бывает по природе (номер, образ иконки, закрытие — см.
+    _label_goal_check), совпадения не требуют."""
+    return _label_goal_check(goal, label, host, ctx) != "mismatch"
+
+
+# Слова цели, которых в подписи элемента нет по природе: порядковый номер
+# («третье на новости» — позиция, а не текст), образ иконки («крестик» —
+# открытый бургер рисуется крестиком и подписан «бургер-меню»), действие
+# закрытия («закрыть» у безымянного крестика). Сверка подписи с целью их
+# не требует — иначе верный выбор vision ветировался как галлюцинация
+_LABEL_FREE_WORDS = frozenset(_ORDINALS) | frozenset({
+    "последний", "последнее", "последняя", "предпоследний",
+    "предпоследнее", "предпоследняя"})
+_LABEL_FREE_ROOTS = ("закры", "закро", "close", "крест", "сверн", "сворач",
+                     "dismiss")
+
+
+# Порядковое во всех падежах («нажми третью ссылку»), не только словарные
+# формы _ORDINALS
+_ORDINAL_WORD_RE = re.compile(
+    r"^(?:перв|втор|трет|четв[её]рт|пят|шест|седьм|восьм|девят|десят)"
+    r"(?:ый|ий|ой|ое|ье|ая|ья|ую|ью|ого|ему|ому|ым|ом)$")
+# Род элемента при номере («третье ВИДЕО», «вторую ССЫЛКУ»): подпись у такого
+# элемента — заголовок, а не слово «видео»
+_ORDINAL_KIND_ROOTS = ("видео", "ролик", "ссылк", "кнопк", "результат",
+                       "пункт", "элемент", "стать", "карточк", "товар",
+                       "пост", "запис", "video", "link", "button", "result",
+                       "item")
+
+
+def _label_free_word(w: str) -> bool:
+    return (w in _LABEL_FREE_WORDS or w.isdigit()
+            or bool(_ORDINAL_WORD_RE.match(w))
+            or w.startswith(_LABEL_FREE_ROOTS)
+            or w.startswith(_ICON_WORD_ROOTS))
+
+
+def _label_goal_check(goal: str, label: str, host: Optional[str] = None,
+                      ctx: Optional[str] = None) -> str:
+    """Сверка подписи выбранного моделью элемента с целью:
+    "match" — слово цели (стем/синоним) есть в подписи;
+    "unverified" — сверять нечем (остались только номер/иконка/закрытие)
+    или оставшиеся слова нашлись лишь в контексте блока (ctx): выбор
+    принимаем, но с подтверждением человеком;
+    "mismatch" — значимые слова цели есть, а в подписи/контексте их нет."""
     words = [w for w in re.findall(r"[a-z0-9а-яё]+", _norm_match(goal))
              if len(w) >= 3]
     hay = _norm_match(label)
     if not words or not hay:
-        return True
+        return "match"
     from app.features.web_search import _stem
-    return any(_word_in(w, hay) or _word_in(_stem(w), hay)
-               or any(_word_in(s, hay) for s in _goal_synonyms(w, host))
-               for w in words)
+
+    def _in(w: str, h: str) -> bool:
+        return bool(_word_in(w, h) or _word_in(_stem(w), h)
+                    or any(_word_in(s, h) for s in _goal_synonyms(w, host)))
+
+    if any(_in(w, hay) for w in words):
+        return "match"
+    rest = [w for w in words if not _label_free_word(w)]
+    if len(rest) < len(words) and any(
+            w in _LABEL_FREE_WORDS or w.isdigit() or _ORDINAL_WORD_RE.match(w)
+            for w in words):
+        # Цель с номером: род элемента в подписи не пишут
+        rest = [w for w in rest if not w.startswith(_ORDINAL_KIND_ROOTS)]
+    if not rest:
+        return "unverified"
+    cx = _norm_match(ctx)
+    if cx and any(_in(w, cx) for w in rest):
+        return "unverified"
+    return "mismatch"
 
 
 # «перетащи/поставь слайдер X на N [единиц]»: ползунок (input[type=range]/
@@ -870,6 +1681,29 @@ _SLIDER_REQUEST_RE = re.compile(
     r"(?:\s*(%|процент\w*|мин\.?|минут\w*|сек\.?|секунд\w*))?"
     r"\s*[.!?…]*\s*$",
     re.IGNORECASE)
+_SLIDER_DRAG_VERB_RE = re.compile(
+    r"^\s*(?:перетащи|перетащить|двинь)\s", re.IGNORECASE)
+# Без глагола шкалы: «слайдер громкости на 70», «сделай звук 20%»,
+# «громкость 50 процентов» — громкость (исполнение уводит её в <video>)
+_SLIDER_VOLUME_BARE_RE = re.compile(
+    r"^\s*(?:(?:сделай|поставь|выставь|установи|сделать)\s+)?"
+    r"(?:(?:ползун\w*|слайдер\w*|регулятор\w*)\s+)?"
+    r"(громкост\w*|звук\w*|volume)\s+(?:на\s+|в\s+|to\s+)?(\d{1,3})"
+    r"\s*(%|процент\w*|percent)?\s*[.!?…]*\s*$", re.IGNORECASE)
+# «перемотай ползунок на 2 минуты» — ползунок медиа-прогресса (абсолютная
+# позиция). Без слова «ползунок/слайдер» «перемотай на 2 минуты» — не про
+# абсолютную позицию (это может быть и относительный сдвиг) — не берём
+_SLIDER_SEEK_RE = re.compile(
+    r"^\s*(?:перемотай|перемотать|промотай|промотать|отмотай|отмотать)\s+"
+    r"(?:видео\s+|ролик\s+)?(?:ползун\w*|слайдер\w*|бегун\w*)"
+    r"(?:\s+(?:видео|ролика|прогресса|перемотки))?\s+(?:на|до)\s+(\d{1,4})"
+    r"\s*(мин\.?|минут\w*|сек\.?|секунд\w*)\s*[.!?…]*\s*$", re.IGNORECASE)
+# Слова шкалы: сам контрол или величина, которую ползунком задают
+_SLIDER_WORD_RE = re.compile(
+    r"(?<![а-яёa-z])(?:ползун\w*|бегун\w*|слайдер\w*|шкал\w*|громкост\w*|"
+    r"звук\w*|яркост\w*|контраст\w*|прогресс\w*|перемотк\w*|позици\w*|"
+    r"значени\w*|уровен\w*|уровн\w*|масштаб\w*|скорост\w*|"
+    r"slider|volume|progress|brightness|level|value)", re.IGNORECASE)
 
 
 def parse_slider_request(
@@ -882,11 +1716,27 @@ def parse_slider_request(
     сайтом) — целимся в текущую/названную вкладку как есть."""
     if not text or len(text) > 80:
         return None
+    mv = _SLIDER_VOLUME_BARE_RE.match(text)
+    if mv:
+        # Единица — как у общей формы: без явного % пусто; громкость 0..100
+        # исполнение и так уводит в <video> долей (N/100)
+        return (mv.group(1).lower(), int(mv.group(2)),
+                "pct" if mv.group(3) else ""), None
+    ms = _SLIDER_SEEK_RE.match(text)
+    if ms:
+        unit = "min" if ms.group(2).lower().startswith("мин") else "sec"
+        # «перемотка» — синоним шкалы прогресса у JS-поиска ползунка
+        return ("перемотка", int(ms.group(1)), unit), None
     m = _SLIDER_REQUEST_RE.match(text)
     if not m:
         return None
     label = m.group(1).strip().strip('"«»').strip()
     if len(label) > 40:
+        return None
+    # «установи будильник на 7», «передвинь встречу на 15 минут» — не
+    # ползунок: «поставь/установи/выставь/передвинь» слишком общие, им
+    # нужно слово шкалы. Перетаскивание («перетащи/двинь») — само про контрол
+    if not (_SLIDER_DRAG_VERB_RE.match(text) or _SLIDER_WORD_RE.search(text)):
         return None
     raw_unit = (m.group(3) or "").lower().rstrip(".")
     unit = ""
@@ -916,19 +1766,42 @@ _CONTROL_MODE_OFF_RE = re.compile(
     r"^\s*(?:выйди|выйти|выключи|отключи|покинь|покинуть|деактивируй)\s+"
     r"(?:из\s+)?режима?\s+управлени\w*\s*[.!…]*\s*$",
     re.IGNORECASE)
+# Англ.: «enter/exit control mode», «control mode on/off», «turn on/off
+# control mode», «switch to control mode», «leave control mode»
+_CONTROL_MODE_EN_ON_RE = re.compile(
+    r"^\s*(?:(?:enter|start|enable|activate|turn\s+on|switch\s+(?:on|to)|"
+    r"go\s+(?:in)?to)\s+(?:the\s+)?control\s+mode|"
+    r"control\s+mode(?:\s+on)?)\s*[.!…]*\s*$", re.IGNORECASE)
+_CONTROL_MODE_EN_OFF_RE = re.compile(
+    r"^\s*(?:(?:exit|leave|quit|stop|disable|deactivate|turn\s+off|"
+    r"switch\s+off|get\s+out\s+of)\s+(?:the\s+)?control\s+mode|"
+    r"control\s+mode\s+off)\s*[.!…]*\s*$", re.IGNORECASE)
 
 
 def parse_control_mode(text: str) -> Optional[bool]:
     """Команда переключения режима управления: True — включить
-    («перейди в режим управления»), False — выключить («выйди из режима
-    управления»), None — не про режим."""
+    («перейди в режим управления», «enter control mode»), False —
+    выключить («выйди из режима управления», «control mode off»),
+    None — не про режим."""
     if not text or len(text) > 60:
         return None
-    if _CONTROL_MODE_OFF_RE.match(text):
+    text = _strip_polite(text)
+    if _CONTROL_MODE_OFF_RE.match(text) or _CONTROL_MODE_EN_OFF_RE.match(text):
         return False
-    if _CONTROL_MODE_ON_RE.match(text):
+    if _CONTROL_MODE_ON_RE.match(text) or _CONTROL_MODE_EN_ON_RE.match(text):
         return True
     return None
+
+
+# Объекты закрытия, которые бывают на странице (слово целиком, любой падеж)
+_CLOSE_UI_OBJECT_RE = re.compile(
+    r"^(?:окн\w*|окошк\w*|модал\w*|попап\w*|pop-?up\w*|диалог\w*|баннер\w*|"
+    r"реклам\w*|уведомлен\w*|подсказк\w*|анкет\w*|форм[ауые]?|формочк\w*|"
+    r"меню|крестик\w*|видео|плеер\w*|миниплеер\w*|панел\w*|сайдбар\w*|"
+    r"чат\w*|комментари\w*|описани\w*|спис(?:ок|ка|ке)|раздел\w*|секци\w*|"
+    r"блок\w*|карточк\w*|превью|субтитр\w*|фильтр\w*|корзин\w*|куки|"
+    r"cookies?|оверле\w*|шторк\w*|поиск\w*|предупреждени\w*|сообщени\w*|"
+    r"это|этот|эту|его|её|ее|их)$", re.IGNORECASE)
 
 
 def parse_close_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
@@ -937,11 +1810,12 @@ def parse_close_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     resolve_click. None — не команда закрытия."""
     if not text or len(text) > 80:
         return None
+    text = _strip_polite(text)
     m = re.match(r"^\s*(закрой|закрыть|скрой|скрыть|сверни|свернуть)\s+(.+?)\s*[.!?…]*\s*$",
                  text, re.IGNORECASE)
     if not m:
         return None
-    if re.match(r"(?:(?:эту|этот|эта|текущую|текущий|текущее)\s+)?"
+    if re.match(r"(?:(?:эту|этот|эта|текущую|текущий|текущее|все|всё)\s+)?"
                 r"(?:вкладк\w*|страниц\w*|таб\w*)\b", m.group(2),
                 re.IGNORECASE):
         return None  # «закрой вкладку/страницу» — команда вкладке (parse_tab_op)
@@ -958,6 +1832,12 @@ def parse_close_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     goal = goal.strip().strip('"«»').strip()
     if not goal or len(goal) > 40:
         return None
+    # «закрой рот/глаза/тему», «скрой свои эмоции», «сверни разговор» — речь,
+    # а не страница. Без явного места (сайт/«на этой странице») объект
+    # должен быть элементом интерфейса; прочее решает LLM-ярус
+    if not site and not any(_CLOSE_UI_OBJECT_RE.match(w)
+                            for w in goal.split()[1:4]):
+        return None
     return goal, site or None
 
 
@@ -971,6 +1851,43 @@ _TAB_OP_MOD_RE = re.compile(
 # («назад на ютубе»). Всё остальное («назад в будущее») — не команда вкладки
 _TAB_OP_PLACE_RE = re.compile(r"(?:на|on|in)\s+\S+", re.IGNORECASE)
 _TAB_OP_PLACE_PREP_RE = re.compile(r"^(?:на|on|in)\s+", re.IGNORECASE)
+# Слово кнопки браузера → op (для «нажми назад» и англ. форм)
+_TAB_OP_WORDS = (
+    ("back", re.compile(r"^(?:назад|обратно|back)$", re.IGNORECASE)),
+    ("forward", re.compile(r"^(?:вперёд|вперед|forward)$", re.IGNORECASE)),
+    ("reload", re.compile(r"^(?:обнови\w*|перезагрузи\w*|refresh|reload)$",
+                          re.IGNORECASE)),
+)
+_TAB_OP_CLICK_RE = re.compile(
+    r"^\s*(?:нажми|нажать|кликни|кликнуть|тыкни|щёлкни|щелкни|click|press|"
+    r"tap|hit)\s+(?:(?:на|по|on)\s+)?(?:кнопк\w+\s+|the\s+)?"
+    r"(назад|обратно|вперёд|вперед|обновить|обнови|перезагрузить|"
+    r"перезагрузи|back|forward|refresh|reload)(?:\s+button)?\s*[.!?…]*\s*$",
+    re.IGNORECASE)
+_TAB_OP_NEW_RE = re.compile(
+    r"^\s*(?:(?:открой|открыть|создай|создать|сделай|добавь|open|create)\s+)?"
+    r"(?:(?:a|an)\s+)?(?:нов\w+\s+(?:вкладк\w*|таб\w*)|new\s+tab)"
+    r"\s*[.!?…]*\s*$", re.IGNORECASE)
+_TAB_OP_CLOSE_ALL_RE = re.compile(
+    r"^\s*(?:закрой|закрыть|close)\s+(?:все|всё|all)(?:\s+(?:the\s+)?"
+    r"(?:вкладк\w*|страниц\w*|окна|tabs|pages|windows))?"
+    r"(?:\s+(?:кроме\s+\S+|except\s+\S+))?\s*[.!?…]*\s*$", re.IGNORECASE)
+# «close the tab», «close this tab», «close the youtube tab»
+_TAB_OP_EN_CLOSE_RE = re.compile(
+    r"^\s*close\s+(?:the\s+|this\s+|current\s+|that\s+)*(?:(.+?)\s+)?tab"
+    r"\s*[.!?…]*\s*$", re.IGNORECASE)
+_TAB_OP_EN = (
+    ("back", re.compile(
+        r"^\s*(?:go\s+back|back|go\s+to\s+(?:the\s+)?previous\s+page|"
+        r"previous\s+page)(?:\s+(?:a\s+)?page)?\s*[.!?…]*\s*$",
+        re.IGNORECASE)),
+    ("forward", re.compile(
+        r"^\s*(?:go\s+)?forward(?:\s+(?:a\s+)?page)?\s*[.!?…]*\s*$",
+        re.IGNORECASE)),
+    ("reload", re.compile(
+        r"^\s*(?:refresh|reload)(?:\s+(?:the\s+|this\s+|current\s+)*"
+        r"(?:page|tab))?\s*[.!?…]*\s*$", re.IGNORECASE)),
+)
 
 
 def parse_tab_op(text: str) -> Optional[Tuple[str, Optional[str]]]:
@@ -981,9 +1898,29 @@ def parse_tab_op(text: str) -> Optional[Tuple[str, Optional[str]]]:
     None — текущая видимая. Голое «обнови»/«назад»/«вперёд» без слова
     «вкладка/страница» принимаем (в режиме управления это может быть только
     про вкладку), а «закрой» без него — нет: «закрой окно/попап» остаётся
-    клик-закрытием (parse_close_request). «обнови ленту» — тоже не сюда."""
+    клик-закрытием (parse_close_request). «обнови ленту» — тоже не сюда.
+    Особые op: "new" («открой новую вкладку») и "close_all» («закрой все
+    вкладки») — resolve_tab_op на них отвечает подсказкой, а не действием."""
     if not text or len(text) > 80:
         return None
+    text = _strip_polite(text)
+    # «нажми назад/обновить», «кликни вперёд» — это кнопки браузера, а не
+    # элементы страницы
+    m = _TAB_OP_CLICK_RE.match(text)
+    if m:
+        w = m.group(1).lower()
+        return next(op for op, rx in _TAB_OP_WORDS if rx.match(w)), None
+    if _TAB_OP_NEW_RE.match(text):
+        return "new", None
+    if _TAB_OP_CLOSE_ALL_RE.match(text):
+        return "close_all", None
+    m = _TAB_OP_EN_CLOSE_RE.match(text)
+    if m:
+        goal = _strip_tab_filler(m.group(1) or "").strip(_TARGET_EDGE_CHARS)
+        return "close", (goal or None)
+    for op, rx in _TAB_OP_EN:
+        if rx.match(text):
+            return op, None
     m = re.match(r"^\s*(?:обнови|обновить|перезагрузи|перезагрузить)\b"
                  r"\s*(.*?)\s*[.!?…]*\s*$", text, re.IGNORECASE)
     op = "reload"
@@ -1114,9 +2051,16 @@ def parse_click_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     вкладка). None — не команда клика."""
     if not text or len(text) > 80:
         return None
+    text = _strip_polite(text)
     m = _CLICK_REQUEST_RE.match(text)
+    ui_open = False
     if not m:
-        return None
+        # «открой комментарии/настройки на ютубе», «включи субтитры» —
+        # элемент интерфейса, а не сайт и не поиск ролика
+        m = _UI_OPEN_RE.match(text)
+        if not m:
+            return None
+        ui_open = True
     goal = m.group(1).strip()
     site = None
     goal, is_page = _strip_page_ref(goal)
@@ -1127,8 +2071,20 @@ def parse_click_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
         if sm:
             site = sm.group(1).strip().lower()
             goal = goal[:sm.start()].strip()
-    goal = _CLICK_FILLER_RE.sub("", goal).strip().strip('"«»').strip()
+        else:
+            hm = _CLICK_SITE_HEAD_RE.match(goal)
+            if hm and not _CLICK_SITE_HEAD_NOT_RE.match(hm.group(1)) \
+                    and not _CLICK_SITE_HEAD_ADJ_RE.search(hm.group(1)):
+                word = hm.group(1).lower()
+                goal = hm.group(2).strip()
+                # «на странице/сайте войти» — пустое указание места
+                site = None if word in _NOOP_SITE_WORDS else word
+    goal = _CLICK_FILLER_RE.sub("", goal, count=1).strip()
+    goal = _CLICK_FILLER_TAIL_RE.sub("", goal).strip(_TARGET_EDGE_CHARS)
     if not goal or len(goal) > 40:
+        return None
+    if ui_open and not (_UI_ELEMENT_RE.match(goal)
+                        and (site or _UI_PLAYER_RE.match(goal))):
         return None
     return goal, site or None
 
@@ -1174,10 +2130,18 @@ def parse_hover_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
 # Со словом «вкладку/таб» — безусловно команда переключения; голое «перейди
 # на X» — мягкая форма: сначала ищем среди открытых вкладок, промах — сайт
 # из алиасов/истории, иначе фраза уходит в обычный диалог (None)
+# «открой вкладку с почтой» — тоже переключение: со словом «вкладку» это
+# про открытую вкладку, а не про сайт «с почтой» из поисковика
 _TAB_SWITCH_RE = re.compile(
     r"^\s*(?:перейди|перейти|переключись|переключи|переключить|покажи|"
-    r"показать)\s+(?:на\s+)?(?:вкладку|вкладка|таб|табу|tab)\s+(.+?)"
+    r"показать|открой|открыть|вернись|вернуться|зайди|зайти)\s+"
+    r"(?:на\s+|во?\s+)?(?:вкладку|вкладка|вкладке|таб|табу|tab)\s+(.+?)"
     r"\s*[.!?…]*\s*$",
+    re.IGNORECASE)
+# «switch to the youtube tab», «go to tab mail», «open the mail tab»
+_TAB_SWITCH_EN_RE = re.compile(
+    r"^\s*(?:(?:switch|go|jump|move|change|get)\s+(?:back\s+)?to|open)\s+"
+    r"(?:the\s+)?(?:(?!new\s)(.+?)\s+tab|tab\s+(.+?))\s*[.!?…]*\s*$",
     re.IGNORECASE)
 _TAB_SWITCH_SOFT_RE = re.compile(
     r"^\s*(?:перейди|перейти|переключись|переключи|переключить)\s+"
@@ -1203,9 +2167,11 @@ _TAB_GOAL_FILLER_RE = re.compile(
 
 def _strip_tab_filler(goal: str) -> str:
     """Цель вкладки без слов-носителей («страницу иванов» → «иванов»,
-    «вкладка с ютубом» → «с ютубом»). Пусто — цель была одним носителем."""
+    «вкладка с ютубом» → «ютубом»: «с/со/with» после носителя — тоже
+    служебное). Пусто — цель была одним носителем."""
     g = _TAB_GOAL_FILLER_RE.sub(" ", goal or "")
-    return " ".join(g.split()).strip(" ,.-—–").strip()
+    g = " ".join(g.split()).strip(" ,.-—–").strip()
+    return re.sub(r"^(?:с|со|with)\s+", "", g, flags=re.IGNORECASE).strip()
 
 
 _TAB_WORD_RE = re.compile(r"[a-z0-9а-я]+")
@@ -1251,10 +2217,16 @@ def parse_tab_switch(text: str) -> Optional[Tuple[str, bool]]:
     переключения вкладки."""
     if not text or len(text) > 80:
         return None
+    text = _strip_polite(text)
     m = _TAB_SWITCH_RE.match(text)
     if m:
-        goal = m.group(1).strip().strip('"«»').strip()
-        goal = _strip_tab_filler(goal).strip('"«»').strip() or goal
+        goal = m.group(1).strip().strip(_TARGET_EDGE_CHARS)
+        goal = _strip_tab_filler(goal).strip(_TARGET_EDGE_CHARS) or goal
+        return (goal, True) if goal else None
+    m = _TAB_SWITCH_EN_RE.match(text)
+    if m:
+        goal = (m.group(1) or m.group(2) or "").strip(_TARGET_EDGE_CHARS)
+        goal = _strip_tab_filler(goal).strip(_TARGET_EDGE_CHARS) or goal
         return (goal, True) if goal else None
     m = _TAB_SWITCH_SOFT_RE.match(text)
     if not m:
@@ -1283,8 +2255,21 @@ _DOWNLOAD_REQUEST_RE = re.compile(
 # «файл/документ» в начале цели скачивания срезаем; в общий клик-филлер их не
 # добавляем — там «нажми файл» это про меню «Файл»
 _DOWNLOAD_FILLER_RE = re.compile(
-    r"^(?:(?:на|по)\s+)?(?:файл|файлы|документ|документы|pdf|ссылку|ссылка)\s+",
-    re.IGNORECASE)
+    r"^(?:(?:мне|нам|на|по)\s+)*(?:(?:файл|файлы|документ|документы|pdf|"
+    r"ссылку|ссылка)\s+)?", re.IGNORECASE)
+# «сохрани» — бытовое слово («сохрани это в памяти», «сохрани мой номер»):
+# скачиванием оно становится только с объектом-файлом или явным местом
+_SAVE_VERB_RE = re.compile(r"^\s*(?:сохрани|сохранить)\s", re.IGNORECASE)
+_SAVE_FILE_OBJECT_RE = re.compile(
+    r"(?<![а-яёa-z])(?:файл\w*|pdf|пдф\w*|картинк\w*|изображени\w*|фото\w*|"
+    r"фотк\w*|снимок|снимк\w*|документ\w*|видео|ролик\w*|скриншот\w*|"
+    r"вложени\w*|архив\w*|книг\w*|методичк\w*|презентаци\w*|таблиц\w*|"
+    r"image|picture|photo|file|document|video)", re.IGNORECASE)
+# «на телефоне/компе/память» — куда сохранить, а не сайт
+_SAVE_NOT_SITE_WORDS = frozenset({
+    "телефоне", "телефон", "компе", "компьютере", "ноуте", "ноутбуке",
+    "диске", "флешке", "память", "памяти", "потом", "будущее", "всякий",
+    "завтра", "всегда", "время", "later", "phone", "computer", "disk"})
 
 
 def parse_download_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
@@ -1293,11 +2278,13 @@ def parse_download_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     скачивания."""
     if not text or len(text) > 80:
         return None
+    text = _strip_polite(text)
     m = _DOWNLOAD_REQUEST_RE.match(text)
     if not m:
         return None
     goal = m.group(1).strip()
     site = None
+    site_prep = ""
     goal, is_page = _strip_page_ref(goal)
     if is_page:
         site = PAGE_REF
@@ -1305,8 +2292,19 @@ def parse_download_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
         sm = _CLICK_SITE_RE.search(goal)
         if sm:
             site = sm.group(1).strip().lower()
+            site_prep = sm.group(0).split()[0].lower()
             goal = goal[:sm.start()].strip()
-    goal = _DOWNLOAD_FILLER_RE.sub("", goal).strip().strip('"«»').strip()
+    # «сохрани это в памяти» — «в X» тут КУДА сохранить, а не сайт;
+    # «сохрани» без объекта-файла и без явного сайта («на гитхабе»,
+    # домен) — не скачивание
+    if _SAVE_VERB_RE.match(text) and not is_page \
+            and not _SAVE_FILE_OBJECT_RE.search(goal) \
+            and not (site and (_looks_like_domain(site)
+                               or (site_prep in ("на", "on")
+                                   and site not in _SAVE_NOT_SITE_WORDS))):
+        return None
+    goal = _DOWNLOAD_FILLER_RE.sub("", goal, count=1).strip()
+    goal = goal.strip(_TARGET_EDGE_CHARS)
     if not goal or len(goal) > 40:
         return None
     return goal, site or None
@@ -1364,6 +2362,17 @@ _TYPE_SUBMIT_RE = re.compile(
 # уходила в LLM-поток, который «изображал» ввод, ничего не делая
 _TYPE_SEARCH_SEP_RE = re.compile(r"\s+(?:в|во)\s+поиск\w*\s*[.!?…]*$",
                                  re.IGNORECASE)
+# Указание поля где угодно в теле: «в поле/форму/поиск/чат/строку/
+# комментарий…», «into …», «in the search box». Без него «напиши X» — не ввод
+_TYPE_FIELD_MARK_RE = re.compile(
+    r"\s(?:(?:в|во)\s+(?:пол[еяю]\w*|форм\w*|поиск\w*|поисков\w*|чат\w*|"
+    r"строк\w*|строчк\w*|окошк\w*|окн[оеа]\w*|комментари\w*|коммент\w*|"
+    r"сообщени\w*|адресн\w*|граф[уеы]\w*|ячейк\w*|инпут\w*|input\w*)|"
+    r"into|in\s+(?:the\s+)?(?:field|search|chat|box|input|form))(?![\wё])",
+    re.IGNORECASE)
+_TYPE_EXPLICIT_VERBS = frozenset({
+    "введи", "ввести", "впиши", "вписать", "набери", "набрать",
+    "type", "enter"})
 
 
 def parse_type_request(text: str) -> Optional[str]:
@@ -1380,6 +2389,21 @@ def parse_type_request(text: str) -> Optional[str]:
     # «введи меня/нас в курс дела» — идиома («расскажи»), не ввод в страницу
     if re.match(r"^(?:меня|нас)\s", body, re.IGNORECASE):
         return None
+    # «enter control mode» — переключение режима, а не ввод текста
+    if parse_control_mode(text) is not None:
+        return None
+    verb = text.split(None, 1)[0].lower()
+    marked = bool(_TYPE_FIELD_MARK_RE.search(f" {body}")
+                  or _TYPE_SUBMIT_RE.search(body))
+    # «напиши рассказ/привет» — просьба к собеседнику, а не ввод в страницу:
+    # «напиши» — команда только с указанием поля («в поле/в поиск/в чат…»)
+    if verb in ("напиши", "написать") and not marked:
+        return None
+    # Одно слово без поля — явная команда только у «введи/впиши/набери»
+    # («заполни анкету» — не текст для ввода)
+    if len(body.split()) == 1 and not marked \
+            and verb not in _TYPE_EXPLICIT_VERBS:
+        return None
     return body or None
 
 # Слова, которые командами открытия сайта НЕ являются: сущности соседних фич
@@ -1390,28 +2414,87 @@ _OPEN_STOPLIST = {
     "мне", "нам",  # «открой мне» без названия — не команда, пусть спросит LLM
     "сайт", "страницу", "страница", "вкладку", "вкладка",  # «открой сайт» — что именно?
 }
+_OPEN_TAB_BODY_RE = re.compile(
+    r"^(?:(?:нов\w+|эту|текущую|другую|соседнюю|следующую|предыдущую|"
+    r"the|a|new)\s+)?(?:вкладк\w*|tab)(?![\wё])", re.IGNORECASE)
+# Бренд-подобное имя для поискового резолва в fast-path: латиница/цифры,
+# одно-два слова («figma», «hh», «chat gpt»). Кириллица («душу», «свет»,
+# «мне секрет») и англ. фразы с артиклем/местоимением — обычные слова
+_BRAND_LIKE_RE = re.compile(
+    r"[a-z0-9][a-z0-9&+.'_-]*(?:\s+[a-z0-9][a-z0-9&+.'_-]*)?")
+_BRAND_NOT_WORDS = frozenset({
+    "the", "a", "an", "my", "your", "our", "his", "her", "their", "this",
+    "that", "it", "me", "up", "door", "window", "light", "lights", "eyes",
+    "mind", "heart", "new", "tab", "page", "site", "app"})
 
 
-def parse_open_many(text: str) -> Optional[List[str]]:
+def _brand_like_name(name: str) -> bool:
+    key = " ".join(str(name or "").lower().split())
+    if not _BRAND_LIKE_RE.fullmatch(key):
+        return False
+    return not any(w in _BRAND_NOT_WORDS for w in key.split())
+
+
+def parse_open_many(text: str, known=None) -> Optional[List[str]]:
     """«открой ютуб и запусти музыку» → [«ютуб», «музыку»]. None — не голая
     команда (длинная фраза, стоп-слова). Части после «и» могут иметь свой
-    глагол и филлеры («…и сайт универа»)."""
+    глагол и филлеры («…и сайт универа»).
+    Англ. «and» — часть названия («Barnes and Noble», «Tom and Jerry»):
+    делим по нему, только если КАЖДАЯ часть — известная цель: known(имя)
+    → True (алиас/приложение/домен, ComputerControlManager.is_known_target);
+    без known — только явные домены."""
     if not text or len(text) > 80:
         return None
-    t = text.strip().rstrip(".!?…").strip()
+    t = _strip_polite(text.strip().rstrip(".!?…").strip())
+    t = t.strip().rstrip(".!?…").strip()
     if not _OPEN_VERB_RE.match(t):
-        return None
+        # Голое «следующее видео» — тот же встроенный рецепт, что «открой
+        # следующее видео» (кнопка плеера), без глагола
+        return [t] if next_video_recipe(t) else None
     body = _OPEN_VERB_RE.sub("", t, count=1).strip()
+    # «открой (новую) вкладку (с почтой)» — про вкладки (parse_tab_op /
+    # parse_tab_switch), а не сайт «с почтой» из поисковика
+    if _OPEN_TAB_BODY_RE.match(body):
+        return None
     parts: List[str] = []
-    for part in re.split(r"\s+и\s+", body, flags=re.IGNORECASE):
-        part = part.strip()
+    chunks: List[str] = []
+    for chunk in re.split(r"\s+и\s+", body, flags=re.IGNORECASE):
+        subs = re.split(r"\s+and\s+", chunk, flags=re.IGNORECASE)
+        if len(subs) > 1:
+            names = []
+            for si, s in enumerate(subs):
+                s = s.strip(_TARGET_EDGE_CHARS)
+                if _OPEN_VERB_RE.match(s):
+                    s = _OPEN_VERB_RE.sub("", s, count=1).strip()
+                elif s and si:
+                    h = s.split(None, 1)[0].lower().split("-")[0]
+                    if h in _SC_RU_VERBS or h in _SC_EN_VERBS:
+                        # «open youtube and play music» — составная команда
+                        return None
+                names.append(_OPEN_TAIL_RE.sub("", s).strip(_TARGET_EDGE_CHARS))
+            _known = known if callable(known) else _looks_like_domain
+            try:
+                split_ok = all(n and _known(n) for n in names)
+            except Exception:
+                split_ok = False
+            if not split_ok:
+                subs = [chunk]  # «Barnes and Noble» — одно название
+        chunks.extend(subs)
+    for part in chunks:
+        part = part.strip(_TARGET_EDGE_CHARS)
         if _OPEN_VERB_RE.match(part):
             part = _OPEN_VERB_RE.sub("", part, count=1).strip()
+        else:
+            # «…и нажми на пепперони», «…, введи X и отправь» — составная
+            # команда (split_compound_command), а не второй сайт «нажми …»
+            w0 = part.split(None, 1)[0].lower().split("-")[0] if part else ""
+            if w0 in _SC_RU_VERBS or w0 in _SC_EN_VERBS:
+                return None
         prev = None
         while prev != part:  # филлеры-префиксы срезаем до упора («мне сайт …»)
             prev = part
             part = _OPEN_FILLER_RE.sub("", part, count=1).strip()
-        part = _OPEN_TAIL_RE.sub("", part).strip()
+        part = _OPEN_TAIL_RE.sub("", part).strip(_TARGET_EDGE_CHARS)
         if not part or len(part) > 40 or part.lower() in _OPEN_STOPLIST:
             return None
         parts.append(part)
@@ -1434,8 +2517,8 @@ _URL_TOKEN_RE = re.compile(
 # сегменты разделяются « - », « — », « > », «→» (дефис — только с пробелами,
 # чтобы не рвать слова вроде «англо-русский»)
 _NAV_FILLER_RE = re.compile(
-    r"^(?:пожалуйста|плиз|мне|нам|сайт|страницу|страница|вкладку|вкладка|"
-    r"раздел|пункт)\s+", re.IGNORECASE)
+    rf"^(?:{_POLITE_ALT}|мне|нам|сайт|страницу|страница|вкладку|вкладка|"
+    r"раздел|пункт)(?:[\s,]+|$)", re.IGNORECASE)
 _NAV_PREP_RE = re.compile(r"^(?:на|в|во|on|in)\s+", re.IGNORECASE)
 _NAV_SPLIT_RE = re.compile(r"\s+[-–—>]\s+|\s*→\s*")
 NAV_MAX_STEPS = 5
@@ -1469,6 +2552,11 @@ _RESOLVE_KINDS = ("click", "download", "hover", "nav", "type",
 HYBRID_BOX_MAX = 12        # рамок на скриншоте (= размер палитры рамок)
 HYBRID_TEXT_MAX = 30       # строк «без рамки» в промпте (бюджет символов — ниже)
 HYBRID_PROMPT_MAX = 6000   # символов промпта (у vision-провайдера жёсткий лимит 8192)
+# Резерв бюджета каскада под vision-ярусы (гибрид/рамки/зоны): доскролл и
+# повторный снапшот его не трогают; не больше доли бюджета — иначе при малом
+# resolve_budget_sec дешёвые ярусы не успевали бы вовсе
+VISION_RESERVE_SEC = 9.0
+VISION_RESERVE_SHARE = 0.4
 
 # Синонимы к доступным именам иконочных кнопок: aria-label кнопки —
 # «Меню аккаунта», а пользователь зовёт её «аватар». Ключ — слово цели,
@@ -1587,15 +2675,19 @@ _ACTION_WORD_ROOTS = ("замен", "выбра", "выбер", "поменя", 
                       "переключ", "включ", "измен")
 
 
-def parse_open_with_url(text: str) -> Optional[Tuple[str, List[str]]]:
+def parse_open_with_url(text: str, with_rest: bool = False
+                        ) -> Optional[Tuple[str, List[str]]]:
     """Команда открытия с ЯВНЫМ адресом в фразе → (токен адреса, шаги пути).
     «открой на example.com/827 студентам - Технологии баз данных» →
     («example.com/827», [«студентам», «технологии баз данных»]). Шагов может
     не быть — тогда просто открыть страницу. None — не команда открытия или
-    явного адреса нет (тогда шанс есть у parse_open_many)."""
+    явного адреса нет (тогда шанс есть у parse_open_many).
+    Хвост с глаголом-командой («…и нажми X», «, введи в поле Y …») в путь
+    НЕ идёт; with_rest=True → (токен, шаги, [команды-хвост]) — их
+    вызывающий исполняет отдельными шагами."""
     if not text or len(text) > 200:
         return None
-    t = text.strip().rstrip(".!?…").strip()
+    t = _strip_polite(text.strip().rstrip(".!?…").strip())
     if not _OPEN_VERB_RE.match(t):
         return None
     body = _OPEN_VERB_RE.sub("", t, count=1).strip()
@@ -1606,6 +2698,9 @@ def parse_open_with_url(text: str) -> Optional[Tuple[str, List[str]]]:
     # срезаем точечно — общий хвостовой срез съедал бы контент («б в» → «б»)
     before = re.sub(r"(?:^|\s+)(?:на|в|во|on|in)$", "", body[:m.start()].strip())
     rest = (before + " " + body[m.end():]).strip()
+    # «…и нажми на пепперони», «, введи в поле X и отправь» — отдельные
+    # команды, а не пункты меню для клика: путь режем на первом глаголе
+    rest, tail_cmds = _nav_split_commands(rest)
     prev = None
     while prev != rest:  # филлеры/предлоги в начале хвоста — до упора
         prev = rest
@@ -1613,10 +2708,39 @@ def parse_open_with_url(text: str) -> Optional[Tuple[str, List[str]]]:
         rest = _NAV_PREP_RE.sub("", rest, count=1).strip()
     steps = []
     for s in _NAV_SPLIT_RE.split(rest):
-        s = s.strip().strip('"«»').strip()
+        s = s.strip().strip(_TARGET_EDGE_CHARS)
         if s and len(s) <= 60:
             steps.append(s)
+    if with_rest:
+        return m.group(1), steps[:NAV_MAX_STEPS], tail_cmds
     return m.group(1), steps[:NAV_MAX_STEPS]
+
+
+# Связки перед глаголом-командой в хвосте адреса: «и», «, потом», «then»…
+_NAV_CMD_JOINERS = frozenset({"и", "а", "потом", "затем", "and", "then"})
+
+
+def _nav_split_commands(rest: str) -> Tuple[str, List[str]]:
+    """Хвост после адреса → (путь до первой команды, [команды]). Команда —
+    кусок, начинающийся с глагола из словаря split_compound_command и
+    стоящий в начале хвоста, после связки («и/потом/and/then») или после
+    запятой/точки с запятой. Команды дальше режет split_compound_command
+    («введи X и отправь» остаётся одной)."""
+    words = rest.split()
+    for i, raw in enumerate(words):
+        w = raw.strip(_TARGET_EDGE_CHARS).lower().split("-")[0]
+        if w not in _SC_RU_VERBS and w not in _SC_EN_VERBS:
+            continue
+        j = i
+        while j > 0 and words[j - 1].strip(",;").lower() in _NAV_CMD_JOINERS:
+            j -= 1
+        after_sep = i == 0 or j < i or words[i - 1].endswith((",", ";"))
+        if not after_sep:
+            continue
+        head = " ".join(words[:j]).strip(" ,;")
+        tail = " ".join(words[i:]).strip(" ,;")
+        return head, split_compound_command(tail)
+    return rest, []
 
 
 # Чтение со страницы: «прочитай последнее сообщение (на почте)»,
@@ -1627,11 +2751,30 @@ _READ_REQUEST_RE = re.compile(
 _READ_LAST_RE = re.compile(
     r"последн\w*\s+(?:сообщени|ответ|реплик|мессаг)|ответ\b|reply|last\s+message",
     re.IGNORECASE)
-_READ_PAGE_RE = re.compile(r"страниц|текст|содержим|page", re.IGNORECASE)
+# Чтение страницы — ВСЁ тело про страницу/её текст целиком: «прочитай
+# текст песни Yesterday» — не про открытую вкладку (раньше «текст» где
+# угодно в фразе давал чтение страницы)
+_READ_PAGE_RE = re.compile(
+    r"^(?:(?:эту|всю|текущую|открытую|открывшуюся|мне)\s+)*"
+    r"(?:страниц\w*|страничк\w*|вкладк\w*)(?:\s+(?:целиком|полностью))?$|"
+    r"^(?:(?:весь|этот|мне)\s+)*текст(?:\s+(?:страниц\w*|вкладк\w*|"
+    r"на\s+(?:этой\s+)?странице|с\s+экрана))?(?:\s+(?:целиком|полностью))?$|"
+    r"^(?:(?:всё|все)\s+)?содержим\w*(?:\s+(?:страниц\w*|вкладк\w*))?$|"
+    r"^(?:(?:the|this|current|whole)\s+)*(?:page|tab)(?:\s+text)?$|"
+    r"^(?:the\s+)?(?:page\s+)?text(?:\s+on\s+(?:the|this)\s+page)?$",
+    re.IGNORECASE)
 # Вопросительная форма: «что (мне) ответил/написал/прислал бот»
 _READ_WHAT_RE = re.compile(
     r"^\s*что\s+(?:мне\s+)?(?:ответил|ответила|написал|написала|прислал|прислала)"
     r"\s+(\S+.*?)\s*[.?…]*\s*$", re.IGNORECASE)
+# Кто «ответил» — бот/чат/модель в браузере; «что ответила мама» — вопрос
+# о жизни, а не чтение вкладки «мама». Латиница/домен («chatgpt») — тоже
+# про веб-чат
+_READ_WHAT_SUBJ_RE = re.compile(
+    r"^(?:бот\w*|чат\w*|ии|ai|нейросет\w*|нейронк\w*|модел\w*|ассистент\w*|"
+    r"помощник\w*|собеседник\w*|сайт\w*|клод\w*|гпт|чатгпт|чат\s*gpt|"
+    r"дипсик\w*|гигачат\w*|алис\w*|грок\w*|гемини|джемини|квен\w*|"
+    r"перплексит\w*|копилот\w*|[a-z0-9][a-z0-9.\- ]*)$", re.IGNORECASE)
 
 
 def parse_read_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
@@ -1640,19 +2783,29 @@ def parse_read_request(text: str) -> Optional[Tuple[str, Optional[str]]]:
     None — не команда чтения."""
     if not text or len(text) > 120:
         return None
+    text = _strip_polite(text)
     m = _READ_WHAT_RE.match(text)
     if m:
-        return "last", (m.group(1).strip().lower() or None)
+        subj = m.group(1).strip().lower()
+        sm = _CLICK_SITE_RE.search(subj)
+        if sm:
+            # «что ответила мама в телеграме» — место названо явно
+            return "last", sm.group(1).strip().lower()
+        if not _READ_WHAT_SUBJ_RE.match(subj):
+            return None
+        return "last", (subj or None)
     m = _READ_REQUEST_RE.match(text)
     if not m:
         return None
     body = m.group(1).strip()
     site = None
-    sm = _CLICK_SITE_RE.search(body)
+    # «прочитай текст на этой странице» — текущая вкладка, не сайт «странице»
+    body, _is_page = _strip_page_ref(body)
+    sm = None if _is_page else _CLICK_SITE_RE.search(body)
     if sm:
         site = sm.group(1).strip().lower()
         body = body[:sm.start()].strip()
-    if _READ_PAGE_RE.search(body):
+    if _READ_PAGE_RE.match(body.strip(_TARGET_EDGE_CHARS)):
         return "page", site
     if _READ_LAST_RE.search(body) or body in ("", "это", "её", "его"):
         return "last", site
@@ -1784,35 +2937,53 @@ def parse_page_view_request(text: str) -> Optional[Tuple[Optional[str], bool, bo
     return site, False, False
 
 
-def page_view_text(url: str, host: str, items: List[dict]) -> str:
+# «Что на странице»: пунктов в группе и длина подписи. Группа — заголовок
+# и пункты построчно: одной строкой через «;» сорок подписей читались сплошной
+# кашей, особенно в Telegram
+PAGE_VIEW_GROUP_MAX = 8
+PAGE_VIEW_LABEL_MAX = 60
+
+
+def page_view_text(url: str, host: str, items: List[dict],
+                   lang: Optional[str] = None) -> str:
     """Текстовая часть отчёта «что на странице»: сгруппированный список
-    элементов снапшота (поля ввода / кнопки / ссылки / прочее). Внутри
-    группы первыми — элементы вьюпорта: их же видно на скриншоте, который
-    уходит вместе с текстом."""
-    head = f"Страница: {host or '—'}"
+    элементов снапшота — открытое окно (модалка — то, с чем сейчас
+    работают), поля ввода, кнопки, ссылки, прочее; заголовок группы жирным,
+    элементы построчно. Внутри группы первыми — элементы вьюпорта: их же
+    видно на скриншоте, который уходит вместе с текстом. lang — язык
+    подписей (cc_texts; None — русский)."""
+    from app.features import cc_texts
+    from app.features.cc_privacy import scrub_url
+    head = f"**{cc_texts.t('pv_page', lang)}** {host or '—'}"
     if url:
-        u = str(url)
+        # Отчёт уходит облачной модели и в историю — URL без токенов/кодов
+        u = scrub_url(str(url))
         head += f"\n{u[:100] + '…' if len(u) > 100 else u}"
     if not items:
-        return head + "\nКликабельных элементов не вижу."
+        return head + "\n\n" + cc_texts.t("pv_no_items", lang)
 
     def _label(it: dict) -> str:
         t = " ".join(str(it.get("text") or it.get("aria")
                      or it.get("title") or "").split())
         if not t:
-            t = str(it.get("href") or "")
-        return t[:50]
+            t = scrub_url(str(it.get("href") or ""))
+        return (t[:PAGE_VIEW_LABEL_MAX - 1] + "…"
+                if len(t) > PAGE_VIEW_LABEL_MAX else t)
 
     def _is_btn(it: dict) -> bool:
         return (it.get("tag") == "button" or it.get("role") == "button"
                 or (it.get("tag") == "input" and not it.get("ed")))
 
-    groups = []
+    blocks = []
     rest = list(items)
-    for name, pred in (("Поля ввода", lambda it: it.get("ed")),
-                       ("Кнопки", _is_btn),
-                       ("Ссылки", lambda it: it.get("tag") == "a"),
-                       ("Прочее", lambda it: True)):
+    for name, pred in ((cc_texts.t("pv_group_modal", lang),
+                        lambda it: it.get("md")),
+                       (cc_texts.t("pv_group_fields", lang),
+                        lambda it: it.get("ed")),
+                       (cc_texts.t("pv_group_buttons", lang), _is_btn),
+                       (cc_texts.t("pv_group_links", lang),
+                        lambda it: it.get("tag") == "a"),
+                       (cc_texts.t("pv_group_other", lang), lambda it: True)):
         picked = [it for it in rest if pred(it)]
         rest = [it for it in rest if not pred(it)]
         # Вьюпорт первым, дедуп по подписи, лимит группы
@@ -1824,39 +2995,37 @@ def page_view_text(url: str, host: str, items: List[dict]) -> str:
                 continue
             seen.add(t.lower())
             labels.append(t)
-            if len(labels) >= 8:
-                break
-        if labels:
-            groups.append((name, labels, len(picked)))
-    if not groups:
-        return head + "\nКликабельных элементов не вижу."
-    lines = [head, "Вижу на странице:"]
-    shown = 0
-    for name, labels, total in groups:
-        lines.append(f"{name}: " + "; ".join(labels)
-                     + (f" (и ещё {total - len(labels)})"
-                        if total > len(labels) else ""))
-        shown += len(labels)
-    if shown < len(items):
-        lines.append(f"…всего элементов: {len(items)}.")
-    return "\n".join(lines)
+        if not labels:
+            continue
+        shown = labels[:PAGE_VIEW_GROUP_MAX]
+        lines = [f"**{name}** ({len(labels)}):"] + [f"• {t}" for t in shown]
+        if len(labels) > len(shown):
+            lines.append(cc_texts.t("pv_more", lang,
+                                    n=len(labels) - len(shown)))
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return head + "\n\n" + cc_texts.t("pv_no_items", lang)
+    return "\n\n".join([head] + blocks)
 
 
 def page_view_full_text(url: str, host: str, outline: List[dict],
-                        truncated: bool = False) -> str:
+                        truncated: bool = False,
+                        lang: Optional[str] = None) -> str:
     """Текстовое оглавление к полностраничному альбому («покажи всю
     страницу»): разделы и их позиции сверху вниз. outline собирается по
     всему DOM при захвате (уже с лимитами 12 разделов × 8 позиций).
     Сами кадры уходят альбомом — тут только навигация по ним."""
-    head = f"Страница: {host or '—'}"
+    from app.features import cc_texts
+    from app.features.cc_privacy import scrub_url
+    head = f"{cc_texts.t('pv_page', lang)} {host or '—'}"
     if url:
-        u = str(url)
+        u = scrub_url(str(url))
         head += f"\n{u[:100] + '…' if len(u) > 100 else u}"
     lines = [head]
     secs = [s for s in (outline or []) if isinstance(s, dict)
             and (s.get("head") or s.get("items"))]
     if secs:
-        lines.append("Сверху вниз:")
+        lines.append(cc_texts.t("pv_top_down", lang))
         for s in secs[:12]:
             label = " ".join(str(s.get("head") or "").split())[:60]
             items = [" ".join(str(t).split())[:50]
@@ -1867,9 +3036,9 @@ def page_view_full_text(url: str, host: str, outline: List[dict],
             elif label or row:
                 lines.append(label or row)
     else:
-        lines.append("Структуру страницы текстом не вижу — держи кадры.")
+        lines.append(cc_texts.t("pv_no_outline", lang))
     if truncated:
-        lines.append("Страница длинная — показал верхнюю часть.")
+        lines.append(cc_texts.t("pv_truncated", lang))
     return "\n".join(lines)
 
 
@@ -1887,13 +3056,21 @@ def parse_search_on_site(text: str) -> Optional[Tuple[str, str, bool]]:
     None — не поисковая команда на сайте."""
     if not text or len(text) > 120:
         return None
-    m = _SEARCH_ON_SITE_RE.match(text)
+    m = _SEARCH_ON_SITE_RE.match(_strip_polite(text))
     if not m:
         return None
     verb = m.group(1).lower()
-    query, site_word = m.group(2).strip(), m.group(3).strip().lower()
-    query = _SEARCH_QUERY_FILLER_RE.sub("", query).strip()
-    if not query or len(query) > 80:
+    query = m.group(2).strip(_TARGET_EDGE_CHARS)
+    site_word = m.group(3).strip(_TARGET_EDGE_CHARS).lower()
+    query = _SEARCH_QUERY_FILLER_RE.sub("", query).strip(_TARGET_EDGE_CHARS)
+    # «поставь громкость на 50» — число после «на» это значение (ползунок),
+    # а не сайт
+    if not query or len(query) > 80 or not site_word \
+            or site_word[0].isdigit():
+        return None
+    # «открой комментарии/настройки на ютубе», «включи звук на ютубе» —
+    # элемент страницы (клик/медиа-клавиша), а не поиск ролика
+    if _UI_ELEMENT_RE.match(query):
         return None
     return query, site_word, verb not in _SEARCH_PAGE_VERBS
 
@@ -2056,21 +3233,58 @@ _MEDIA_REQUESTS = [
     (re.compile(
         r"^\s*(?:(?:включи|верни)\s+звук|со\s+звуком|unmute)"
         r"\s*[.!…]*\s*$", re.IGNORECASE), ("m", 1, "unmute")),
+    # Англ. формы: «pause (the video)», «volume up», «turn the sound off»
+    (re.compile(
+        r"^\s*(?:(?:press|hit|click)\s+)?(?:pause|resume|unpause|play)"
+        r"(?:\s+(?:the\s+)?(?:video|music|song|track|playback|it))?"
+        r"\s*[.!…]*\s*$", re.IGNORECASE), ("Space", 1, "toggle")),
+    (re.compile(
+        r"^\s*(?:volume\s+down|quieter|(?:turn|bring)\s+(?:it|the\s+volume|"
+        r"the\s+sound)\s+down|turn\s+down\s+(?:the\s+)?(?:volume|sound)|"
+        r"(?:lower|decrease|reduce)\s+(?:the\s+)?(?:volume|sound))"
+        r"\s*[.!…]*\s*$", re.IGNORECASE), ("ArrowDown", 2, "vol_down")),
+    (re.compile(
+        r"^\s*(?:volume\s+up|louder|(?:turn|bring)\s+(?:it|the\s+volume|"
+        r"the\s+sound)\s+up|turn\s+up\s+(?:the\s+)?(?:volume|sound)|"
+        r"(?:raise|increase)\s+(?:the\s+)?(?:volume|sound))"
+        r"\s*[.!…]*\s*$", re.IGNORECASE), ("ArrowUp", 2, "vol_up")),
+    (re.compile(
+        r"^\s*(?:mute\s+(?:the\s+)?(?:video|sound|audio|it)|"
+        r"turn\s+(?:the\s+)?sound\s+off|turn\s+off\s+(?:the\s+)?sound)"
+        r"\s*[.!…]*\s*$", re.IGNORECASE), ("m", 1, "mute")),
+    (re.compile(
+        r"^\s*(?:unmute\s+(?:the\s+)?(?:video|sound|audio|it)|"
+        r"turn\s+(?:the\s+)?sound\s+(?:back\s+)?on|"
+        r"turn\s+on\s+(?:the\s+)?sound)"
+        r"\s*[.!…]*\s*$", re.IGNORECASE), ("m", 1, "unmute")),
 ]
+# Хвост-место у медиа-команды: «включи звук на ютубе» — та же клавиша
+_MEDIA_SITE_TAIL_RE = re.compile(
+    r"\s+(?:на|в|во|on|in)\s+(\S+?)\s*[.!…]*\s*$", re.IGNORECASE)
 
 
-def parse_media_request(text: str):
+def parse_media_request(text: str, with_site: bool = False):
     """«пауза» / «поставь на паузу» → ("Space", 1, "toggle"); «тише» →
     ("ArrowDown", 2, "vol_down"); «громче» → ("ArrowUp", 2, "vol_up");
     «без звука» → ("m", 1, "mute"); «включи звук» → ("m", 1, "unmute").
     None — не медиа-команда. Кортеж:
-    (клавиша playwright, нажатий, вид — для текста ответа)."""
+    (клавиша playwright, нажатий, вид — для текста ответа).
+    Хвост «на <сайте>» допускается («включи звук на ютубе»); with_site=True
+    → (кортеж, сайт|None) — сайт для resolve_key."""
     if not text or len(text) > 60:
         return None
-    t = text.strip()
-    for rx, val in _MEDIA_REQUESTS:
-        if rx.match(t):
-            return val
+    t = _strip_polite(text.strip())
+    site = None
+    for cand in (t, None):
+        if cand is None:
+            sm = _MEDIA_SITE_TAIL_RE.search(t)
+            if not sm or sm.group(1).lower() in ("паузу", "паузе", "pause"):
+                break
+            site = sm.group(1).strip(_TARGET_EDGE_CHARS).lower() or None
+            cand = t[:sm.start()]
+        for rx, val in _MEDIA_REQUESTS:
+            if rx.match(cand):
+                return (val, site) if with_site else val
     return None
 
 
@@ -2095,7 +3309,8 @@ _SCROLL_DIR_ALT = "|".join(_SCROLL_UP_WORDS + _SCROLL_DOWN_WORDS)
 _SCROLL_NOT_CONTAINER_ALT = "|".join(
     [rf"{w}\b" for w in _SCROLL_UP_WORDS + _SCROLL_DOWN_WORDS
      + tuple(_SCROLL_SIDE_WORDS)]
-    + [r"прав\w*\b", r"лев\w*\b", r"на\b", r"в\b", r"во\b",
+    + [r"прав\w*\b", r"лев\w*\b", r"на\b", r"в\b", r"во\b", r"on\b",
+       r"in\b",
        r"раздел\w*\b", r"список\w*\b", r"панел\w*\b", r"блок\w*\b",
        r"част\w*\b", r"колонк\w*\b", r"сторон\w*\b", r"половин\w*\b",
        r"меню\b"])
@@ -2104,7 +3319,7 @@ _SCROLL_START_RE = re.compile(
     r"прокрути|прокрутить|проскролль|проскроллить|скролль|скроллить|"
     r"покрути|покрутить|листай|листать|scroll)\b"
     r"(?:\s+(?:эту\s+)?(?:страниц\w+|страничк\w+|лент\w+|фид|лист|ее|её|"
-    r"дальше|" + "|".join(_SCROLL_DOWN_WORDS) + r"))*"
+    r"дальше|page|feed|it|" + "|".join(_SCROLL_DOWN_WORDS) + r"))*"
     # Именованный контейнер: «пролистай комментарии», «промотай чат» —
     # листается названный блок (панель комментариев), а не страница. Слова,
     # занятые соседними группами (сторона/направление/предлог сайта/существи-
@@ -2121,13 +3336,25 @@ _SCROLL_START_RE = re.compile(
     r"(?:\s+(" + _SCROLL_DIR_ALT + r"))?"
     r"(?:\s+(?:на|в|во|on|in)\s+(\S+))?\s*[.!?…]*\s*$",
     re.IGNORECASE)
+# Мера и частицы в команде листания: «немного/чуть/слегка/ещё», «a bit»,
+# артикль «the» — срезаются до матча (иначе становились контейнером)
+_SCROLL_SOFT_RE = re.compile(
+    r"(?<![\wё])(?:немного|немножко|немножечко|чуть(?:-чуть)?|чуточку|"
+    r"слегка|ещё|еще|a\s+bit|a\s+little|a\s+little\s+bit|bit|the|way)"
+    r"(?![\wё])",
+    re.IGNORECASE)
 # «стоп» — бытовое слово: резолвер пропускает его дальше в диалог, когда
 # листание не активно (resolver решает по состоянию менеджера)
 _SCROLL_STOP_RE = re.compile(
     r"^\s*(?:стоп|стой|погоди|остановись|останови|остановить|хватит|"
-    r"прекрати|прекращай|заканчивай|закончи|закончить|достаточно|stop)"
+    r"прекрати|прекращай|заканчивай|закончи|закончить|достаточно|stop|"
+    r"enough|halt)"
     r"(?:\s+(?:листать|прокрутку|прокручивать|скроллить|мотать|листание|"
-    r"прокрутка|скролл|читать|это|уже))?\s*[.!?…]*\s*$",
+    r"прокрутка|скролл|читать|это|уже|"
+    # «stop scrolling» / «stop the scroll» / «enough scrolling»; до двух
+    # слов хвоста — «stop scrolling now», «хватит листать уже»
+    r"(?:the\s+)?scroll(?:ing)?|reading|it|now|already)){0,2}"
+    r"\s*[.!?…]*\s*$",
     re.IGNORECASE)
 # Русское имя прокручиваемого контейнера → англ. корень для DOM-матча
 # (id/aria-label/class у зарубежных сайтов английские: ytd-comments#comments)
@@ -2164,6 +3391,13 @@ def parse_scroll_request(text: str) -> Optional[Tuple[str, Optional[str], Option
     if not text or len(text) > 60:
         return None
     t = text.strip()
+    # «scroll to comments» — доскролл до цели (parse_scroll_to_goal), а не
+    # контейнер «to comments»
+    if _SCROLL_TO_GOAL_EN_RE.match(t):
+        return None
+    # «прокрути немного вниз», «чуть ниже», «…, пожалуйста» — наречия меры и
+    # вежливость не имя контейнера
+    t = " ".join(_SCROLL_SOFT_RE.sub(" ", _strip_polite(t)).split())
     m = _SCROLL_START_RE.match(t)
     if m:
         container = (m.group(1) or "").strip().lower() or None
@@ -2219,11 +3453,21 @@ _SCROLL_FIND_RE = re.compile(
     r"^\s*(?:найди|найти|поищи|поискать|отыщи)\s+(.+?)\s+"
     r"(?:на\s+(?:этой\s+)?страниц\w*|на\s+(?:этом\s+)?сайте|здесь|тут)"
     r"\s*[.!?…]*\s*$", re.IGNORECASE)
+# Англ.: «scroll (down) to (the) comments», «scroll until X», «find X on
+# this page»
+_SCROLL_TO_GOAL_EN_RE = re.compile(
+    r"^\s*scroll\s+(?:(?:down|up)\s+)?(?:(?:the\s+)?page\s+)?"
+    r"(?:(?:down|up)\s+)?(?:to|until|till)\s+(?:the\s+)?(.+?)\s*[.!?…]*\s*$",
+    re.IGNORECASE)
+_SCROLL_FIND_EN_RE = re.compile(
+    r"^\s*find\s+(.+?)\s+(?:on\s+(?:this|the)\s+(?:page|site)|here)"
+    r"\s*[.!?…]*\s*$", re.IGNORECASE)
 # Край страницы как цель: «докрути до конца/низа» / «до начала/верха»
 _SCROLL_EDGE_WORDS = {
     "bottom": ("конца", "конец", "низа", "низ", "дна", "дно", "подвала",
-               "футера", "footer"),
-    "top": ("начала", "начало", "верха", "верх", "шапки", "header"),
+               "футера", "footer", "bottom", "end"),
+    "top": ("начала", "начало", "верха", "верх", "шапки", "header", "top",
+            "beginning"),
 }
 
 
@@ -2234,10 +3478,12 @@ def parse_scroll_to_goal(text: str) -> Optional[str]:
     страница сайта)."""
     if not text or len(text) > 90:
         return None
-    m = _SCROLL_TO_GOAL_RE.match(text) or _SCROLL_FIND_RE.match(text)
+    text = _strip_polite(text)
+    m = (_SCROLL_TO_GOAL_RE.match(text) or _SCROLL_FIND_RE.match(text)
+         or _SCROLL_TO_GOAL_EN_RE.match(text) or _SCROLL_FIND_EN_RE.match(text))
     if not m:
         return None
-    goal = " ".join(m.group(1).strip().split())
+    goal = " ".join(m.group(1).strip(_TARGET_EDGE_CHARS).split())
     if not 2 <= len(goal) <= 60:
         return None
     return goal
@@ -2308,6 +3554,22 @@ _CART_FROM_CART_TAIL_RE = re.compile(
 _CART_NOT_PRODUCT_RE = re.compile(
     r"\b(?:громкост\w*|звук\w*|яркост\w*|скорост\w*|свет\w*|температур\w*|"
     r"шрифт\w*|масштаб\w*)\b", re.IGNORECASE)
+# Слова корзины: с ними голое «увеличь/убавь X» — точно про товар
+_CART_WORD_RE = re.compile(
+    r"(?<![а-яёa-z])(?:корзин\w*|штук\w*|шт\.?|количеств\w*|порци\w*|"
+    r"позици\w*|товар\w*|заказ\w*)", re.IGNORECASE)
+_CART_IN_CART_TAIL_RE = re.compile(
+    r"\s+(?:в|во|из)\s+(?:корзин\w*|заказ\w*)\s*$", re.IGNORECASE)
+_CART_QTY_WORD_RE = re.compile(r"(?<![а-яё])количеств\w*", re.IGNORECASE)
+# Идиомы и абстракции после «убавь/прибавь»: «убавь пыл», «прибавь шагу/
+# газу/ходу», «убавь аппетиты» — речь, а не товар
+_CART_IDIOM_RE = re.compile(
+    r"^(?:пыл\w*|шаг\w*|темп\w*|газ[уа]?|оборот\w*|ход[уа]?|жар\w*|огон\w*|"
+    r"огн\w*|аппетит\w*|амбици\w*|зарплат\w*|оклад\w*|цен[уыа]|сил[уы]?|"
+    r"мощност\w*|энерги\w*|усили\w*|настроени\w*|голос\w*|громк\w*|пафос\w*|"
+    r"спес\w*|гонор\w*|эмоци\w*|рвени\w*|ставк\w*|срок\w*|нагрузк\w*|"
+    r"расход\w*|вес[а]?|шанс\w*|себе|мне|ему|ей|нам|им|тебе|немного|чуть)"
+    r"(?:\s|$)", re.IGNORECASE)
 
 
 def parse_cart_request(text: str) -> Optional[Tuple[str, str]]:
@@ -2322,24 +3584,42 @@ def parse_cart_request(text: str) -> Optional[Tuple[str, str]]:
     if not t or len(t) > 80:
         return None
     op = None
+    bare = False  # голое «убавь/прибавь X» без количества и «из корзины»
     m = _CART_REMOVE_RE.match(t)
     if m:
         op = "remove"
     if not m:
-        m = _CART_DEC_NUM_RE.match(t) or _CART_DEC_RE.match(t)
+        m = _CART_DEC_NUM_RE.match(t)
+        if not m:
+            m = _CART_DEC_RE.match(t)
+            bare = bool(m)
         if m:
             op = "decrease"
     if not m:
-        m = _CART_INC_NUM_RE.match(t) or _CART_INC_RE.match(t)
+        m = _CART_INC_NUM_RE.match(t)
+        if not m:
+            m = _CART_INC_RE.match(t)
+            bare = bool(m)
         if m:
             op = "increase"
+    if bare and not _CART_WORD_RE.search(t):
+        # «увеличь зарплату», «убавь пыл», «прибавь шагу» — не корзина.
+        # «увеличь/уменьши» слишком общие — без слова корзины не берём;
+        # «убавь/прибавь X» — товар, если X не идиома/абстракция
+        if re.match(r"^\s*(?:увеличь|уменьши)\b", t, re.IGNORECASE):
+            return None
+        if _CART_IDIOM_RE.match(m.group(1).strip()):
+            return None
     if not m:
         m = _CART_EDIT_RE.match(t)
         if m:
             op = "edit"
     if not m:
         return None
-    product = _CART_FILLER_RE.sub(" ", m.group(1))
+    # «увеличь количество колы в корзине» — служебные слова не название
+    product = _CART_IN_CART_TAIL_RE.sub("", m.group(1))
+    product = _CART_QTY_WORD_RE.sub(" ", product)
+    product = _CART_FILLER_RE.sub(" ", product)
     product = " ".join(product.split()).strip(" ,.;!?")
     # «плюс один начос» — квантификатор не часть названия
     product = _CART_QTY_HEAD_RE.sub("", product)
@@ -2423,6 +3703,376 @@ def parse_page_question(text: str) -> Optional[Tuple[str, Optional[str], str]]:
     return query, site, full_query
 
 
+# ── Нормализация команды перед лесенкой парсеров ──
+# Парсеры якорятся на голый императив в начале фразы («^открой …»), а люди
+# пишут «Коннор, можешь открыть ютуб, пожалуйста?». Снимаем обращение,
+# вежливость, частицы и обрамляющую пунктуацию — парсеры видят «открой
+# ютуб». Оригинал фразы остаётся вызывающему (классификация «да/нет»,
+# запись в историю).
+
+_NC_POLITE_ALT = (
+    r"(?:пожалуйста|плиз|плз|please|pls|plz|kindly|"
+    r"будь(?:те)?\s+(?:добр(?:а|ы)?|любезн(?:а|ы)?)|"
+    r"если\s+(?:не\s+)?(?:трудно|сложно|можно))")
+# Вежливость снимаем только по краям фразы и сразу после глагола:
+# внутри запроса/текста/кавычек она — часть содержимого («найди Please
+# Please Me», «напиши в чат «приходи, пожалуйста, завтра»»)
+_NC_POLITE_HEAD_RE = re.compile(
+    rf"^{_NC_POLITE_ALT}(?:\s*[,!]\s*|\s+)", re.IGNORECASE)
+_NC_POLITE_TAIL_RE = re.compile(
+    rf"(?:\s*,\s*|\s+){_NC_POLITE_ALT}\s*[.!?…]*\s*$", re.IGNORECASE)
+# После первого слова-глагола: «открой пожалуйста ютуб» (одно слово — и без
+# запятых), «включи, будь добр, музыку» (многословное — только в запятых)
+_NC_POLITE_AFTER_VERB_RE = re.compile(
+    r"^(?P<verb>[\w-]+)(?:\s*,\s*|\s+)(?:"
+    r"(?:пожалуйста|плиз|плз)(?:\s*,\s*|\s+)|"
+    rf"{_NC_POLITE_ALT}\s*,\s*)", re.IGNORECASE)
+# Вводные слова в начале: «а», «ну», «давай», «слушай», «теперь»…
+_NC_LEAD_RE = re.compile(
+    r"^(?:(?:а|ну|давай(?:те)?|так|слушай|эй|hey|ok(?:ay)?|окей|ок|ладно|"
+    r"теперь|now)(?:\s*[,!]\s*|\s+))+",
+    re.IGNORECASE)
+# «(ты) можешь (ли ты) / не мог бы ты» + инфинитив → императив
+_NC_CAN_RE = re.compile(
+    r"^(?:ты\s+)?(?:не\s+)?(?:можешь|сможешь|мог(?:ла|ли)?\s+бы|можете|"
+    r"сможете)(?:\s+ли)?(?:\s+ты|\s+вы)?\s+"
+    r"(?P<verb>[а-яё]+(?:ть|ти|чь)(?:ся|сь)?)(?P<rest>(?:\s.*)?)$",
+    re.IGNORECASE | re.DOTALL)
+_NC_CAN_EN_RE = re.compile(
+    r"^(?:(?:can|could|would|will)\s+you\s+|"
+    r"(?:i\s+(?:want|need)\s+you\s+to|i'?d\s+like\s+you\s+to)\s+)",
+    re.IGNORECASE)
+# Частица «-ка»: «открой-ка», «нажми-ка»
+_NC_KA_RE = re.compile(r"(?<=[а-яё])-ка\b", re.IGNORECASE)
+_NC_EDGE_PUNCT = " \t\n\r,.!?;:…"
+_NC_QUOTE_CHARS = "\"'«»“”„`"
+_NC_QUOTE_PAIRS = {"«": "»", "“": "”", "„": "“", '"': '"', "'": "'", "`": "`"}
+
+
+def _nc_strip_edges(s: str) -> str:
+    """Обрамляющая пунктуация; кавычки — только парой вокруг ВСЕЙ фразы
+    («"открой ютуб"»). Закрывающую кавычку текста («напиши в чат
+    «привет»») не трогаем."""
+    s = s.strip(_NC_EDGE_PUNCT)
+    while len(s) >= 2 and _NC_QUOTE_PAIRS.get(s[0]) == s[-1] \
+            and not any(ch in _NC_QUOTE_CHARS for ch in s[1:-1]):
+        s = s[1:-1].strip(_NC_EDGE_PUNCT)
+    return s
+
+
+def _nc_is_type_command(s: str) -> bool:
+    # Ввод с указанием поля: хвост фразы — текст для поля, его не чистим
+    return bool(_TYPE_REQUEST_RE.match(s)
+                and _TYPE_FIELD_MARK_RE.search(f" {s}"))
+
+
+# Инфинитив → императив только для частых глаголов команд: без морфологии
+# остальное надёжнее оставить как есть (фраза уйдёт дальше без замены)
+_NC_INF2IMP = {
+    "открыть": "открой", "закрыть": "закрой", "нажать": "нажми",
+    "кликнуть": "кликни", "включить": "включи", "выключить": "выключи",
+    "найти": "найди", "показать": "покажи", "поставить": "поставь",
+    "перейти": "перейди", "зайти": "зайди", "вернуться": "вернись",
+    "прокрутить": "прокрути", "пролистать": "пролистай",
+    "промотать": "промотай", "листать": "листай", "скачать": "скачай",
+    "ввести": "введи", "написать": "напиши", "набрать": "набери",
+    "отправить": "отправь", "прочитать": "прочитай", "прочесть": "прочти",
+    "обновить": "обнови", "перезагрузить": "перезагрузи",
+    "увеличить": "увеличь", "уменьшить": "уменьши", "добавить": "добавь",
+    "удалить": "удали", "убрать": "убери", "выбрать": "выбери",
+    "заказать": "закажи", "купить": "купи", "запустить": "запусти",
+    "остановить": "останови", "переключить": "переключи",
+    "переключиться": "переключись", "навести": "наведи",
+    "сделать": "сделай", "посмотреть": "посмотри", "поискать": "поищи",
+    "стереть": "сотри", "сбросить": "сбрось", "перетащить": "перетащи",
+    "оформить": "оформи", "вставить": "вставь", "отметить": "отметь",
+    "свернуть": "сверни", "развернуть": "разверни",
+    "пролистнуть": "пролистни", "докрутить": "докрути",
+}
+
+
+def normalize_command(text: str, persona_names=()) -> str:
+    """«Коннор, можешь открыть ютуб, пожалуйста?» → «открой ютуб».
+    persona_names — как обращаются к персоне (BotInstance._address_names).
+    Снимает обращение по имени в начале/конце, вежливые слова, вводные
+    частицы, «-ка», «можешь X-ть» → императив (по словарю частых глаголов),
+    «can you …» и обрамляющую пунктуацию/кавычки. Пустой результат —
+    исходная строка (без обрамляющих пробелов)."""
+    src = (text or "").strip()
+    s = src
+    if not s:
+        return ""
+    names = sorted({str(n).strip() for n in (persona_names or ())
+                    if n and len(str(n).strip()) >= 2}, key=len, reverse=True)
+    for _ in range(3):
+        prev = s
+        s = _nc_strip_edges(s)
+        for n in names:
+            # «Коннор, открой…» / «эй Коннор открой…» / «открой ютуб, Коннор»
+            s = re.sub(rf"^(?:(?:эй|hey)\s*,?\s*)?{re.escape(n)}(?:\s*[,:!]\s*|\s+)",
+                       "", s, flags=re.IGNORECASE)
+            s = re.sub(rf"\s*,\s*{re.escape(n)}\s*[.!?…]*$", "", s,
+                       flags=re.IGNORECASE)
+        s = _NC_LEAD_RE.sub("", s)
+        s = _NC_POLITE_HEAD_RE.sub("", s)
+        s = _NC_POLITE_AFTER_VERB_RE.sub(lambda mm: mm.group("verb") + " ", s)
+        if not _nc_is_type_command(s):
+            s = _NC_POLITE_TAIL_RE.sub("", s)
+        s = _NC_KA_RE.sub("", s)
+        m = _NC_CAN_RE.match(s)
+        if m and m.group("verb").lower() in _NC_INF2IMP:
+            s = _NC_INF2IMP[m.group("verb").lower()] + m.group("rest")
+        s = _NC_CAN_EN_RE.sub("", s)
+        s = re.sub(r"\s+([,.!?])", r"\1", re.sub(r"\s{2,}", " ", s)).strip()
+        if s == prev:
+            break
+    s = _nc_strip_edges(s)
+    return s or src
+
+
+# ── Гейт LLM-яруса: похоже ли сообщение на команду ──
+# LLM-разбор — лишний вызов модели ДО основного ответа; на «как дела?» в
+# режиме управления он только тормозит. Дешёвая эвристика: императив/
+# «хочу X-ть»/слова про страницу. Языки, для которых regex не судья (не
+# ru/en), пропускаем в LLM-ярус как раньше.
+_LC_RU_VERB_RE = re.compile(
+    r"^[а-яё]{2,}(?:ай|яй|ей|уй|юй|ой|и|ь|ите|йте|ьте|ись|йся|ься|ьтесь)$",
+    re.IGNORECASE)
+_LC_RU_NOT_VERB = frozenset({
+    "мой", "твой", "свой", "какой", "такой", "никакой", "другой", "иной",
+    "любой", "простой", "большой", "плохой", "хороший", "эй", "ой", "мои",
+    "твои", "свои", "эти", "те", "все", "они", "люди", "дети", "мысли",
+    "деньги", "новости", "очень", "почти", "кстати", "зачем", "почему",
+    "сегодня", "день", "жизнь", "вещь", "ночь", "мать", "дочь", "путь",
+    "очередь", "здравствуй", "здравствуйте", "прости", "извини",
+    "извините", "простите", "спокойной", "доброй", "добрый", "вообщем",
+    "ладно", "спасибо", "привет", "пожалуйста", "кажется", "похоже",
+})
+_LC_RU_WANT_RE = re.compile(
+    r"^(?:я\s+)?(?:хочу|хотел(?:а)?\s+бы|надо|нужно|необходимо|пора)\s+"
+    r"[а-яё]+(?:ть|ти|чь)(?:ся|сь)?\b", re.IGNORECASE)
+_LC_EN_VERBS = frozenset(
+    "open click press tap hit go navigate visit browse scroll swipe play "
+    "pause resume stop mute unmute search find look type enter write fill "
+    "send submit close show display read zoom add remove delete buy order "
+    "purchase checkout turn switch download select choose pick check "
+    "uncheck toggle start launch run reload refresh back forward drag move "
+    "set put hover watch listen book sign log subscribe like follow copy "
+    "paste erase clear increase decrease raise lower skip next previous "
+    "rewind expand collapse accept reject dismiss cancel confirm save "
+    "upload attach take".split())
+_LC_EN_LEAD_RE = re.compile(
+    r"^(?:i\s+(?:want|need|would\s+like)\s+to|i'd\s+like\s+to|let'?s|"
+    r"go\s+ahead\s+and)\b", re.IGNORECASE)
+_LC_HINT_RE = re.compile(
+    r"(?:вкладк|вкладок|страниц|сайт|кнопк|браузер|ссылк|корзин|масштаб|"
+    # Плеер и навигация: «погромче», «на паузу», «субтитры», «полный экран»
+    r"громч|потиш|тише|пауз|звук|субтитр|полноэкран|полный\s+экран|"
+    r"перемот|плеер|избранн|"
+    r"\btabs?\b|\bpage\b|\bbutton\b|\bsite\b|\bbrowser\b|\bcart\b|\blink\b|"
+    r"\bvolume\b|\bsubtitles?\b|\bfullscreen\b|\bcaptions?\b|"
+    r"https?://|\bwww\.|\b[\w-]+\.(?:ru|com|org|net|io|ua|by|kz|рф|tv|me|"
+    r"app|dev)\b)", re.IGNORECASE)
+# Буква вне базовых латиницы/кириллицы (é, ö, ñ, і, ї, иероглифы, арабица…)
+# — язык не ru/en: detect_language скриптовый и такое отдаёт как ru/en
+_LC_OTHER_LETTER_RE = re.compile(r"[^\W\d_a-zA-Zа-яА-ЯёЁ]")
+# Частые слова/глаголы-команды других латинских языков без диакритики
+# («abre youtube», «haz clic») — ASCII-фраза без них считается английской
+_LC_FOREIGN_WORDS = frozenset(
+    "abre abrir abra pon ponme haz busca buscar cierra cierre puedes "
+    "quiero por una muestra oeffne mach mache "
+    "bitte zeig zeige schliesse suche kannst ich und der das ein eine "
+    "ouvre ouvrir ferme clique cherche mets montre peux veux les des une "
+    "apri chiudi cerca metti mostra clicca puoi voglio favore feche "
+    "clique pesquise mostre quero voce".split())
+# Короткая фраза (1–3 слова) в режиме управления — скорее команда без
+# глагола («вниз», «дальше», «на главную», «в избранное»), кроме болтовни:
+# первое слово — местоимение/вопрос/междометие/благодарность
+_LC_SHORT_MAX_WORDS = 3
+_LC_SHORT_NOT_FIRST = frozenset(
+    "я мне меня мой моя ты тебе тебя твой мы нам он она оно они это этот "
+    "как что чё че почему зачем кто когда где куда откуда какой какая "
+    "привет здравствуй здравствуйте спасибо спс благодарю пока ну да нет "
+    "ага угу ок окей хорошо ладно понял поняла понятно ясно круто класс "
+    "супер отлично норм нормально ого вау ура хаха ахах лол доброе добрый "
+    "спокойной i me my you your we it its this that how what why who when "
+    "where which thanks thank hi hello hey bye yes no yeah yep nope ok "
+    "okay cool nice great good lol wow sure fine hmm".split())
+
+
+# Секрет в САМОЙ команде («введи пароль Kotik2019 …», «ivan / Kotik2019!»)
+# — единый список слов/пар в cc_privacy (им же пользуется фильтр логов);
+# здесь реэкспорт для bot_instance/task_agent
+from app.features.cc_privacy import (  # noqa: E402,F401
+    _CMD_SECRET_FILLER, _CMD_SECRET_VERB_RE, _CMD_SECRET_WORD_RE,
+    audit_pop_chat, audit_restore_lines,
+    command_has_secret, command_secret_values)
+
+
+def looks_like_command(text: str, lang: Optional[str] = None) -> bool:
+    """Дешёвый гейт LLM-яруса разбора команды. text — уже нормализованная
+    фраза (normalize_command); lang — код языка (detect_language), None —
+    неизвестен. True — стоит спросить LLM, что это за действие."""
+    s = " ".join(str(text or "").split())
+    if not s:
+        return False
+    if _LC_HINT_RE.search(s):
+        return True
+    # Язык не ru/en (по буквам — detect_language их не различает): regex
+    # не судья, решает LLM-ярус
+    if _LC_OTHER_LETTER_RE.search(s):
+        return True
+    low = s.lower()
+    words = re.findall(r"[\w'-]+", low)
+    if not words:
+        return False
+    if any(w in _LC_FOREIGN_WORDS for w in words):
+        return True
+    w0 = re.split(r"['-]", words[0])[0].replace("ё", "е")
+    if len(words) <= _LC_SHORT_MAX_WORDS and w0 \
+            and w0 not in _LC_SHORT_NOT_FIRST \
+            and words[0] not in _LC_SHORT_NOT_FIRST:
+        return True
+    if re.match(r"^[а-яё'-]+$", words[0]):
+        if _LC_RU_WANT_RE.match(low):
+            return True
+        for w in words[:2]:
+            w = w.split("-")[0]
+            # «-шь» — 2-е лицо («думаешь», «знаешь»): вопрос, не приказ
+            if w in _LC_RU_NOT_VERB or w.endswith("шь"):
+                continue
+            if _LC_RU_VERB_RE.match(w):
+                return True
+        # Кириллица не русская (uk/be/…): regex не судья
+        return lang not in (None, "ru", "en")
+    if re.match(r"^[a-z'-]+$", words[0]):
+        if _LC_EN_LEAD_RE.match(low) or words[0] in _LC_EN_VERBS:
+            return True
+        # Латиница не английская (es/de/fr…)
+        return lang not in (None, "ru", "en")
+    # Другие алфавиты: решает LLM-ярус
+    return lang not in ("ru", "en")
+
+
+def tag_origin(action: Optional[dict], origin: str) -> Optional[dict]:
+    """Пометка источника действия для аудита (action["origin"]: fast /
+    intent_llm / marker / pending / scenario / task). Уже заданный источник
+    не перетирается; multi — вместе с вложенными действиями."""
+    if isinstance(action, dict):
+        action.setdefault("origin", origin)
+        for it in action.get("items") or ():
+            if isinstance(it, dict):
+                it.setdefault("origin", origin)
+    return action
+
+
+# ── Составная команда: «открой додо и нажми на пепперони фреш» ──
+# Режем только там, где после связки стоит глагол-команда: «открой ютуб и
+# гитхаб» — одна команда на два сайта (parse_open_many), «найди чёрный и
+# белый чай» — один запрос. Русские глаголы — по словарю (окончание «-и/-й»
+# носят и существительные: «ссылки», «чай»)
+_SC_RU_VERBS = frozenset(_NC_INF2IMP.values()) | frozenset({
+    "тыкни", "жми", "иди", "вруби", "выруби", "подожди", "листни",
+    "проверь", "ткни", "набей", "скинь", "сохрани", "залогинься", "войди",
+    "выйди", "перейди", "открой", "нажми", "включи", "поставь", "запусти",
+    "покажи", "пришли", "скопируй", "прибавь", "убавь", "сними", "отметь",
+    "листай", "мотай", "промотай", "пролистай", "кликни", "наведи",
+})
+_SC_EN_VERBS = _LC_EN_VERBS - frozenset({
+    "back", "next", "previous", "like", "set", "order", "book", "watch",
+    "run", "log", "sign", "check", "lower", "raise", "take"})
+_SC_SEP_RE = re.compile(
+    r"\s*(?:,\s*)?(?:\s(?:и|а)\s+(?:потом|затем|после\s+этого|ещё)\s+|"
+    r"\sи\s+|\s*,\s*(?:потом|затем|после\s+этого)\s+|\s(?:потом|затем)\s+|"
+    r"\s*;\s*|\s*,\s*|\sand\s+(?:then\s+)?|\s*,?\s*then\s+)",
+    re.IGNORECASE)
+# «введи X и отправь» — ввод с Enter одной командой (parse_type_request)
+_SC_SUBMIT_TAIL_RE = re.compile(
+    r"^(?:отправь|отправить|пошли|send|submit)\s*[.!]*$", re.IGNORECASE)
+# Явная связка шагов: только она режет тело ввода и подпись клика
+_SC_EXPLICIT_SEP_RE = re.compile(r"потом|затем|после\s+этого|\bthen\b",
+                                 re.IGNORECASE)
+# Англ. клик: «click Accept and close» — подпись кнопки целиком (инфинитив
+# и императив в английском совпадают); по голому «and» не режем
+_SC_CLICK_HEAD_RE = re.compile(
+    r"^(?:click|press|tap|hit|нажми|кликни|тыкни|ткни|щёлкни|щелкни|жми)\s",
+    re.IGNORECASE)
+
+
+def _sc_type_piece(piece: str) -> bool:
+    """Кусок начинается командой ввода («введи …», «напиши в чат …»): его
+    тело — текст для поля, связки внутри относятся к тексту."""
+    m = _TYPE_REQUEST_RE.match(piece)
+    if not m:
+        return False
+    verb = piece.split(None, 1)[0].lower()
+    return verb in _TYPE_EXPLICIT_VERBS \
+        or bool(_TYPE_FIELD_MARK_RE.search(f" {m.group(1)}"))
+
+
+def split_compound_command(text: str) -> List[str]:
+    """«открой додо и нажми на пепперони фреш» → [«открой додо», «нажми на
+    пепперони фреш»]; «открой ютуб, потом включи музыку» → два шага.
+    Режет по связкам (и / потом / затем / , / ; / and / then), только если
+    следующий кусок начинается с глагола-команды и вне кавычек. Тело ввода
+    («напиши в чат …») и англ. подпись клика («click Save and close») режутся
+    только явной связкой (потом/затем/после этого/then). Не составная —
+    [text]."""
+    s = " ".join(str(text or "").split())
+    if not s:
+        return []
+    parts: List[str] = []
+    start = 0
+    for m in _SC_SEP_RE.finditer(s):
+        head = s[:m.start()]
+        # Внутри кавычек («введи «привет и пока»») не режем
+        if head.count("«") > head.count("»") or head.count('"') % 2:
+            continue
+        nxt = s[m.end():]
+        w = re.match(r"[\w'-]+", nxt)
+        if not w:
+            continue
+        word = w.group(0).lower().split("-")[0]
+        if word not in _SC_RU_VERBS and word not in _SC_EN_VERBS:
+            continue
+        if _SC_SUBMIT_TAIL_RE.match(nxt):
+            continue
+        sep = m.group(0)
+        explicit = bool(_SC_EXPLICIT_SEP_RE.search(sep))
+        rest_piece = s[start:]
+        if _sc_type_piece(rest_piece):
+            # «напиши в чат ок, открой ссылку» — «, открой ссылку» часть
+            # текста. Режем только по явной связке и только после поля
+            # (если поле вообще названо): «напиши в чат привет, потом
+            # открой ютуб»
+            if not explicit:
+                continue
+            if _TYPE_FIELD_MARK_RE.search(f" {rest_piece}") \
+                    and not _TYPE_FIELD_MARK_RE.search(
+                        f" {s[start:m.start()]}"):
+                continue
+        elif _SC_CLICK_HEAD_RE.match(rest_piece) and not explicit \
+                and not re.search(r"[,;]", sep) \
+                and re.search(r"\band\b", sep, re.IGNORECASE):
+            continue
+        piece = s[start:m.start()].strip(" ,;")
+        if piece:
+            parts.append(piece)
+        start = m.end()
+    tail = s[start:].strip(" ,;")
+    if tail:
+        parts.append(tail)
+    return parts or [s]
+
+
+def is_goal_task(action: Optional[dict]) -> bool:
+    """Многошаговая цель для агента ({"kind": "task", "goal"} от LLM-яруса),
+    а не task-рецепт конфига ({"kind": "task", "key", "value"} — ярлык/
+    рецепт, исполняется execute)."""
+    return (isinstance(action, dict) and action.get("kind") == "task"
+            and bool(action.get("goal")) and not action.get("value"))
+
+
 # ── LLM-ярус разбора команды (последний, после regex-каскада) ──
 # Текстовый JSON-протокол вместо tool-calling: работает на всех провайдерах
 # роутера, включая webchat (модель там видит только текст) и локальные
@@ -2439,47 +4089,77 @@ _INTENT_KEYS = frozenset({
 _INTENT_JSON_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
 
 
-def intent_prompt(text: str) -> str:
+def _intent_int(v) -> Optional[int]:
+    """Число из JSON LLM-разбора (int/float/«8»); мусор — None."""
+    if isinstance(v, bool):
+        return None
+    try:
+        return int(round(float(str(v).strip())))
+    except (TypeError, ValueError):
+        return None
+
+
+def intent_prompt(text: str, lang: Optional[str] = None) -> str:
     """Промпт классификации команды управления в JSON-действие (плоский
-    объект, без вложенности — parse_intent_action его и ждёт)."""
+    объект, без вложенности — parse_intent_action его и ждёт). lang — язык
+    пользователя; None — по самой фразе."""
     return (
-        "Режим управления компьютером пользователя. Определи, какое ДЕЙСТВИЕ "
-        "просит фраза, и ответь ТОЛЬКО одним JSON-объектом, без пояснений.\n"
-        "Действия (site — название сайта/вкладки, если назван явно, иначе "
-        "null; поля без значения опускай):\n"
-        '{"action":"click","goal":"что нажать","site":null} — нажать/выбрать '
-        "элемент страницы\n"
-        '{"action":"hover","goal":"на что навести","site":null} — навести '
-        "курсор на элемент (без клика: раскрыть hover-меню/кнопки)\n"
-        '{"action":"open","target":"сайт или приложение"} — открыть сайт, '
-        "запустить программу\n"
-        '{"action":"type","text":"текст","field":"поле","site":null} — ввести '
-        "текст в поле на странице\n"
-        '{"action":"download","goal":"что скачать","site":null} — скачать '
-        "файл со страницы\n"
-        '{"action":"scroll","side":"left|right","direction":"up","stop":false}'
-        " — листать страницу/остановить листание\n"
+        "Mode: controlling the user's computer. Determine which ACTION the "
+        "phrase asks for and reply with ONLY one JSON object, no explanations.\n"
+        "Actions (site — the site/tab name if it is named explicitly, otherwise "
+        "null; omit fields that have no value). Copy goal/target/text/field/"
+        "query values from the phrase in its own wording, do not translate "
+        "them:\n"
+        '{"action":"click","goal":"what to click","site":null} — click/select '
+        "a page element\n"
+        '{"action":"hover","goal":"what to hover","site":null} — move the '
+        "cursor over an element (no click: reveal a hover menu/buttons)\n"
+        '{"action":"open","target":"site or app"} — open a site, '
+        "launch a program\n"
+        '{"action":"type","text":"text","field":"field","site":null} — type '
+        "text into a field on the page\n"
+        '{"action":"download","goal":"what to download","site":null} — download '
+        "a file from the page\n"
+        '{"action":"scroll","side":"left|right","direction":"up|down",'
+        '"stop":false} — keep scrolling the page (auto-scroll)/stop '
+        "scrolling\n"
+        '{"action":"scroll_to","goal":"what to find|top|bottom"} — scroll '
+        "the page until a named thing is visible, or to its top/bottom\n"
         '{"action":"key","key":"Space|Enter|Escape|Tab|Backspace|ArrowUp|'
-        'ArrowDown|ArrowLeft|ArrowRight"} — нажать клавишу в страницу '
-        "(пауза/плей плеера — это Space)\n"
-        '{"action":"send","site":null} — отправить набранное сообщение (Enter)\n'
-        '{"action":"close","goal":"что закрыть"} — закрыть окно/попап/блок\n'
-        '{"action":"reload_tab","site":null} — обновить/перезагрузить '
-        "вкладку браузера (F5)\n"
-        '{"action":"close_tab","goal":"какая вкладка","site":null} — закрыть '
-        "вкладку браузера (goal — если названа)\n"
-        '{"action":"back","site":null} — вернуться назад по истории вкладки\n'
-        '{"action":"forward","site":null} — перейти вперёд по истории '
-        "вкладки\n"
-        '{"action":"read","mode":"last|page","site":null} — прочитать '
-        "последнее сообщение чата / страницу\n"
-        '{"action":"switch_tab","goal":"название вкладки"} — переключиться '
-        "на открытую вкладку\n"
-        '{"action":"search","query":"запрос","site":"сайт"} — поиск на '
-        "конкретном сайте\n"
-        '{"action":"none"} — это НЕ команда управления компьютером/браузером '
-        "(обычный разговор, вопрос, просьба что-то написать)\n"
-        f"Фраза: «{text}»")
+        'ArrowDown|ArrowLeft|ArrowRight","times":1} — press a key in the page '
+        "(player pause/play is Space; times — how many presses)\n"
+        '{"action":"zoom","direction":"in|out|reset","site":null} — change '
+        "the page zoom\n"
+        '{"action":"slider","goal":"slider label","value":50,'
+        '"unit":"pct|min|sec|"} — set a slider on the page to a number\n'
+        '{"action":"cart","op":"remove|increase|decrease|edit",'
+        '"product":"item"} — change an item in the site\'s shopping cart\n'
+        '{"action":"page_view","screenshot":false,"full":false,"site":null}'
+        " — describe/show what is on the open page (screenshot — a picture "
+        "was asked for; full — the whole page, not just the visible part)\n"
+        '{"action":"send","site":null} — send the typed message (Enter)\n'
+        '{"action":"close","goal":"what to close"} — close a window/popup/block\n'
+        '{"action":"reload_tab","site":null} — refresh/reload the '
+        "browser tab (F5)\n"
+        '{"action":"close_tab","goal":"which tab","site":null} — close '
+        "a browser tab (goal — if it is named)\n"
+        '{"action":"back","site":null} — go back in the tab history\n'
+        '{"action":"forward","site":null} — go forward in the tab '
+        "history\n"
+        '{"action":"read","mode":"last|page","site":null} — read the '
+        "last chat message / the page\n"
+        '{"action":"switch_tab","goal":"tab name"} — switch '
+        "to an open tab\n"
+        '{"action":"search","query":"query","site":"site"} — search on '
+        "a specific site\n"
+        '{"action":"task","goal":"the whole goal"} — a GOAL that needs a chain '
+        "of several actions across a site/sites, not one command (order food, "
+        "buy/book something, find and download a file somewhere, fill in and "
+        "send a form); goal — the user's request in their own wording\n"
+        '{"action":"none"} — this is NOT a computer/browser control command '
+        "(ordinary conversation, a question, a request to write something)\n"
+        f"Phrase: \"{text}\"\n"
+        + user_language_line(lang or detect_language(text)))
 
 
 def parse_intent_action(resp: str) -> Optional[dict]:
@@ -2536,6 +4216,11 @@ def parse_intent_action(resp: str) -> Optional[dict]:
             out["side"] = side
         if _s("direction", 10) == "up":
             out["direction"] = "up"
+    elif kind == "scroll_to":
+        goal = _s("goal", 60)
+        if not goal:
+            return None
+        out["goal"] = goal
     elif kind == "key":
         key = _s("key", 20)
         if not key:
@@ -2544,6 +4229,34 @@ def parse_intent_action(resp: str) -> Optional[dict]:
         if key not in _INTENT_KEYS:
             return None
         out["key"] = key
+        times = _intent_int(data.get("times"))
+        if times and times > 1:
+            out["times"] = min(times, _ERASE_MAX)
+    elif kind == "zoom":
+        direction = _s("direction", 10)
+        if direction not in ("in", "out", "reset"):
+            return None
+        out["direction"] = direction
+    elif kind == "slider":
+        goal = _s("goal", 40)
+        value = _intent_int(data.get("value"))
+        if not goal or value is None:
+            return None
+        out["goal"] = goal
+        out["value"] = value
+        unit = _s("unit", 10)
+        out["unit"] = unit if unit in ("pct", "min", "sec") else ""
+    elif kind == "cart":
+        op = _s("op", 10)
+        product = _s("product", 60)
+        if op not in ("remove", "increase", "decrease", "edit") \
+                or not product:
+            return None
+        out["op"] = op
+        out["product"] = product
+    elif kind == "page_view":
+        out["screenshot"] = bool(data.get("screenshot"))
+        out["full"] = bool(data.get("full"))
     elif kind == "send":
         pass
     elif kind == "read":
@@ -2557,6 +4270,11 @@ def parse_intent_action(resp: str) -> Optional[dict]:
         goal = _s("goal", 60)  # какая вкладка; None — текущая видимая
         if goal:
             out["goal"] = goal
+    elif kind == "task":
+        goal = _s("goal", 400)
+        if not goal:
+            return None
+        out["goal"] = goal
     elif kind == "search":
         query = _s("query", 80)
         if not query or not site:
@@ -2567,6 +4285,250 @@ def parse_intent_action(resp: str) -> Optional[dict]:
     return out
 
 
+def intent_pseudo_action(act: dict) -> Optional[dict]:
+    """LLM-разбор → действие, которое исполняет сам бот, а не резолверы:
+    task (цель для агента), scroll_goal (доскролл до цели), page_view
+    (отчёт о странице) — тем же кодом, что regex-ветки. None — обычное
+    действие для резолверов."""
+    kind = act.get("action")
+    if kind == "task":
+        # От task-рецептов конфига ({"kind": "task", "key", "value"})
+        # отличается ключом goal; подтверждение (force_confirm) ставит бот
+        return {"kind": "task", "goal": str(act["goal"])}
+    if kind == "scroll_to":
+        goal = str(act["goal"])
+        goal = {"top": "начала", "bottom": "конца"}.get(goal.lower(), goal)
+        return {"kind": "scroll_goal", "goal": goal}
+    if kind == "page_view":
+        return {"kind": "page_view", "site": act.get("site"),
+                "screenshot": bool(act.get("screenshot")),
+                "full": bool(act.get("full"))}
+    return None
+
+
+# «закрыть на на джем» — сдвоенный предлог из склейки цели и скопа
+_DUP_PREP_RE = re.compile(
+    r"\b(на|в|во|по|к|ко|с|со|у|о|об|за|из|от|до)\s+\1\b", re.IGNORECASE)
+# Цель клика, которая на деле клавиша («ArrowDown», «PageDown», «пробел»)
+_NON_CLICK_KEY_RE = re.compile(
+    r"^(?:arr?o?w\s*(?:up|down|left|right)|arrordown|page\s*(?:up|down)"
+    # «home» и «стрелку вправо» не берём: ссылка «Home» и стрелка карусели —
+    # обычные цели клика на сайтах
+    r"|" + "|".join(map(re.escape, sorted(_KEY_MAP, key=len, reverse=True)))
+    + r")$", re.IGNORECASE)
+# …листание (в т.ч. с опечатками: «пролситать»)
+_NON_CLICK_SCROLL_RE = re.compile(
+    r"^(?:прол\w*с\w*т\w*|прокрут\w*|листа\w*|скрол\w*|scroll\w*)\b",
+    re.IGNORECASE)
+# …название сайта («сайт додо пицца»)
+_NON_CLICK_SITE_RE = re.compile(r"^(?:сайт|site|website)\s+(\S.*)$",
+                                re.IGNORECASE)
+# …звукоподражание из повторённого слога («тук-тук», «кап кап»)
+_NON_CLICK_ONOMATOPOEIA_RE = re.compile(r"^([^\W\d_]{2,5})(?:[-\s]\1){1,3}$",
+                                        re.IGNORECASE)
+
+
+# ── Состояние браузера по чатам ──────────────────────────
+# Браузер один на персону, а «где я» — у каждого чата своё: «нажми войти» в
+# личке Telegram не должно уходить во вкладку, открытую из веб-чата, «стоп»
+# одного чата — гасить листание другого. Ключ — ключ режима управления
+# (chat_id, у веб-чата без chat_id — user_id), как у cc_turn_enter/request_stop.
+
+# Текущий чат вызова: ставят входные точки (execute, резолвы с chat_id,
+# ход бота) на время вызова, снимается токеном — в потоке пула не залипает
+_CC_CHAT: contextvars.ContextVar = contextvars.ContextVar("vpc_cc_chat",
+                                                          default=None)
+# Сколько чатов держит last_tab.json (свежие по ts)
+LAST_TAB_MAX_CHATS = 50
+
+
+@dataclass
+class ChatBrowserState:
+    """«Где я» одного чата: отслеживаемая вкладка (id/хост/URL), кэш списка
+    вкладок, сеанс авто-листания и видимый хост на последнем действии бота
+    (база _follow_visible_tab)."""
+    last_host: Optional[str] = None
+    last_tab_id: Optional[int] = None
+    last_url: Optional[str] = None
+    known_tabs: List[dict] = field(default_factory=list)
+    scroll: Optional[dict] = None
+    scroll_ended: Optional[Tuple[float, str]] = None
+    vis_baseline: Optional[str] = None
+    ts: float = 0.0  # последняя запись на диск — обрезка last_tab.json
+
+
+def _chat_key(chat_id) -> str:
+    # «None» — след str(chat_id) у веб-чата без chat_id, не ключ чата
+    k = "" if chat_id is None else str(chat_id).strip()
+    return "" if k == "None" else k
+
+
+class _ChatAttr:
+    """Атрибут менеджера (_last_host, _scroll, …) → поле состояния ТЕКУЩЕГО
+    чата: код и тесты читают/пишут mgr._last_host как раньше."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            return self
+        return getattr(obj._st(), self.name)
+
+    def __set__(self, obj, value):
+        setattr(obj._st(), self.name, value)
+
+
+def _in_chat(fn):
+    """Входная точка менеджера: на время вызова текущий чат — аргумент
+    chat_id (пустой — остаётся чат хода)."""
+    import inspect
+    names = list(inspect.signature(fn).parameters)
+    pos = names.index("chat_id") - 1  # без self
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        cid = kwargs.get("chat_id") if "chat_id" in kwargs else (
+            args[pos] if len(args) > pos else None)
+        k = _chat_key(cid)
+        if not k:
+            return fn(self, *args, **kwargs)
+        tok = _CC_CHAT.set(k)
+        try:
+            return fn(self, *args, **kwargs)
+        finally:
+            _CC_CHAT.reset(tok)
+    return wrapper
+
+
+# ── Инвариант подтверждения (единая точка — execute) ─────
+# Рискованное действие (подпись оплаты/коммита/удаления, force_confirm,
+# непроверенная подпись, клик по точке vision, ввод в чувствительное поле,
+# маркер модели, адрес из поиска) исполняется ТОЛЬКО с токеном
+# подтверждения. Токен — объект, а не строка: из JSON/маркера/ответа LLM его
+# не собрать; ставит его только grant_confirmation (pending «да» владельца,
+# «да» агенту задач, «да» шагу сценария). needs_confirm решает, СПРАШИВАТЬ
+# ли; execute отказывает, если вызывающий спросить забыл.
+
+class _ConfirmToken:
+    """Подтверждение человека. steps — для nav-продолжения: {номер шага:
+    подпись элемента, которую человек видел в вопросе}."""
+
+    def __init__(self, via: str, by=None, steps: Optional[Dict[int, str]] = None):
+        self.via = str(via or "")
+        self.by = None if by is None else str(by)
+        self.ts = time.time()
+        self.steps = dict(steps or {})
+
+    def __repr__(self) -> str:
+        return f"<confirmed via={self.via}>"
+
+
+class NeedsConfirm(RuntimeError):
+    """Исполнение остановлено гейтом: действие (или шаг маршрута) требует
+    подтверждения, а токена нет. info — что спросить (action["confirm_required"])."""
+    error_class = "needs_confirm"
+
+    def __init__(self, msg: str, info: Optional[dict] = None):
+        super().__init__(msg)
+        self.info = dict(info or {})
+
+
+# Причины гейта → пояснение в вопросе (cc_texts: gate_risk_<причина>)
+GATE_RISKS = ("payment", "commit", "destructive", "force_confirm",
+              "label_unverified", "point", "sensitive_field", "marker",
+              "via_search")
+# Явная команда пользователя в этом ходе (regex-разбор его фразы): отправку
+# для неё решает политика confirm, а не гейт. LLM-ярус сюда не входит —
+# «а как тут отправить?» модель может прочитать как команду
+_USER_CMD_ORIGINS = ("fast",)
+# Клавиши, которые могут отправить форму/нажать кнопку в фокусе
+_SUBMIT_KEYS = frozenset({"Enter", "Space", "Tab"})
+
+
+def _gate_label_norm(s) -> str:
+    return " ".join(str(s or "").lower().replace("ё", "е").split())[:80]
+
+
+def forget_chat_files(base_dir, chat_id) -> dict:
+    """Файловая часть очистки диалога (без живого менеджера — режим
+    управления выключен, а файлы прошлых запусков остались): запись чата из
+    last_tab.json и его строки аудита → {"last_tab": …, "audit": […]}
+    (+ "last_tab_legacy" — старый формат без chats, одна страница на
+    персону — удалена целиком)."""
+    base = Path(base_dir)
+    ck = _chat_key(chat_id)
+    out: dict = {}
+    if not ck:
+        return out
+    path = base / "last_tab.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        chats = data.get("chats")
+        if isinstance(chats, dict):
+            rec = chats.pop(ck, None)
+            if rec is not None:
+                out["last_tab"] = rec
+                # «Последняя запись» наверху — справочная копия свежего чата:
+                # если это был он, наверх — следующий по свежести или ничего
+                if isinstance(rec, dict) and data.get("url") == rec.get("url") \
+                        and data.get("host") == rec.get("host"):
+                    rest = sorted((r for r in chats.values()
+                                   if isinstance(r, dict)),
+                                  key=lambda r: float(r.get("ts") or 0))
+                    for k in ("host", "url", "ts"):
+                        data.pop(k, None)
+                    if rest:
+                        data.update(host=rest[-1].get("host"),
+                                    url=rest[-1].get("url"),
+                                    ts=rest[-1].get("ts"))
+        elif data.get("host"):
+            out["last_tab_legacy"] = dict(data)
+            data = {}
+        if out:
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False),
+                           encoding="utf-8")
+            tmp.replace(path)
+    audit = audit_pop_chat(base / "audit.jsonl", ck)
+    if audit:
+        out["audit"] = audit
+    return out
+
+
+def restore_chat_files(base_dir, chat_id, data: dict) -> None:
+    # Обратно к forget_chat_files: запись last_tab.json и строки аудита
+    base = Path(base_dir)
+    ck = _chat_key(chat_id)
+    if not ck or not data:
+        return
+    rec, legacy = data.get("last_tab"), data.get("last_tab_legacy")
+    if isinstance(rec, dict) or isinstance(legacy, dict):
+        path = base / "last_tab.json"
+        try:
+            cur = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            cur = {}
+        if not isinstance(cur, dict):
+            cur = {}
+        if isinstance(rec, dict):
+            cur.setdefault("chats", {}).setdefault(ck, rec)
+            if not cur.get("host"):
+                cur.update(host=rec.get("host"), url=rec.get("url"),
+                           ts=rec.get("ts"))
+        elif not cur:
+            cur = dict(legacy)
+        base.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(cur, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    if data.get("audit"):
+        audit_restore_lines(base / "audit.jsonl", data["audit"])
+
+
 class ComputerControlManager:
     # Разбор маркеров, allowlist-валидация, pending-подтверждения, исполнение.
 
@@ -2575,6 +4537,10 @@ class ComputerControlManager:
         self.context = context
         self._pending: Dict[str, dict] = {}
         self._lock = threading.Lock()
+        # Браузер один на всех: действия двух чатов не должны чередоваться
+        # (клик одного посреди навигации другого). RLock — execute
+        # вложенно зовётся из сценариев/задач того же потока
+        self._exec_lock = threading.RLock()
         self.stats = {"markers": 0, "executed": 0, "failed": 0,
                       "confirmed": 0, "declined": 0, "rejected": 0,
                       # Выбор элемента: сколько решений принял
@@ -2587,67 +4553,197 @@ class ComputerControlManager:
                       "vision_invalid": 0}
         self.base_dir = base_dir or data_dir() / context / "computer_control"
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        # Последняя вкладка, открытая/тронутая ботом — цель клика по умолчанию
-        self._last_host: Optional[str] = None
-        # Стабильный AppleScript-id этой вкладки (macOS): точнее _last_host —
-        # «на этой странице …» целится в неё, а не в любую вкладку того же сайта
-        self._last_tab_id: Optional[int] = None
-        # URL последней страницы — для строки в инструкции LLM и логов
-        self._last_url: Optional[str] = None
-        # Кэш живых вкладок (обновляется при каждом list_open_tabs) —
-        # «хранимый» список для подсказок и аудита
-        self._known_tabs: List[dict] = []
-        # Авто-листание страницы («промотай страницу» → фон до «стоп»):
-        # {thread, stop(Event), box(причина конца), host, tab_id} или None
-        self._scroll: Optional[dict] = None
-        # (когда, причина) последнего САМОСТОЯТЕЛЬНОГО конца листания —
-        # «стоп» вдогонку отвечает честно, чем кончилось (_SCROLL_END_GRACE_SEC)
-        self._scroll_ended: Optional[Tuple[float, str]] = None
+        # «Где я» — по чатам (ChatBrowserState): отслеживаемая вкладка
+        # (_last_host/_last_tab_id/_last_url — цель команд без сайта), кэш
+        # вкладок (_known_tabs), авто-листание (_scroll/_scroll_ended), база
+        # видимой вкладки (_vis_baseline). Атрибуты с этими именами читают и
+        # пишут состояние текущего чата (_ChatAttr, _cur_chat)
+        self._chat_state_map: Dict[str, ChatBrowserState] = {}
+        self._chat_state_lock = threading.RLock()
+        # Сеансы листания всех чатов — под одним локом
         self._scroll_lock = threading.Lock()
         self.update_config(config)
         # Контекст «с каким сайтом работали» переживает перезапуск процесса
         self._restore_last_page()
 
+    # ── Состояние браузера по чатам ───────────────────────
+
+    _last_host = _ChatAttr("last_host")
+    _last_tab_id = _ChatAttr("last_tab_id")
+    _last_url = _ChatAttr("last_url")
+    _known_tabs = _ChatAttr("known_tabs")
+    _scroll = _ChatAttr("scroll")
+    _scroll_ended = _ChatAttr("scroll_ended")
+    _vis_baseline = _ChatAttr("vis_baseline")
+
+    def _chat_states(self) -> Dict[str, ChatBrowserState]:
+        # Через __dict__ — и у менеджеров тестов, собранных без __init__
+        return self.__dict__.setdefault("_chat_state_map", {})
+
+    def _state_lock(self):
+        lk = self.__dict__.get("_chat_state_lock")
+        if lk is None:
+            lk = self.__dict__.setdefault("_chat_state_lock", threading.RLock())
+        return lk
+
+    def _cur_chat(self) -> str:
+        """Чей контекст браузера сейчас: чат вызова (chat_scope / входная
+        точка с chat_id) → чат хода этого потока (set_turn) → последний
+        активный чат (вызов вне хода: тесты, служебные пути) → "" (шаблон)."""
+        k = _CC_CHAT.get() or _chat_key(self.turn_key())
+        if k:
+            self.__dict__["_last_chat"] = k
+            return k
+        return self.__dict__.get("_last_chat") or ""
+
+    def _st(self, key: Optional[str] = None) -> ChatBrowserState:
+        """Состояние чата (key None — текущего). Новый чат начинается с
+        шаблона "": умолчание из старого last_tab.json (в тестах — то, что
+        выставили до первого чата); состояния других чатов в него не пишутся."""
+        k = self._cur_chat() if key is None else _chat_key(key)
+        states = self._chat_states()
+        st = states.get(k)
+        if st is not None:
+            return st
+        with self._state_lock():
+            st = states.get(k)
+            if st is None:
+                tpl = states.get("") if k else None
+                st = (ChatBrowserState(
+                    last_host=tpl.last_host, last_tab_id=tpl.last_tab_id,
+                    last_url=tpl.last_url, known_tabs=list(tpl.known_tabs),
+                    vis_baseline=tpl.vis_baseline)
+                    if tpl is not None else ChatBrowserState())
+                states[k] = st
+        return st
+
+    @contextlib.contextmanager
+    def chat_scope(self, chat_id):
+        """Контекст браузера чата chat_id на время блока (ход бота, поток
+        листания). Пустой ключ ничего не меняет."""
+        k = _chat_key(chat_id)
+        if not k:
+            yield
+            return
+        tok = _CC_CHAT.set(k)
+        try:
+            yield
+        finally:
+            _CC_CHAT.reset(tok)
+
+    def _init_vis_baseline(self, opened: Optional[str]) -> None:
+        """Бот открыл/переключил вкладку (opened — её URL или хост) — база
+        _follow_visible_tab: что пользователь видит сейчас. Открытие и
+        переключение поднимают вкладку (focus=True), так что видимая — она;
+        браузер не спрашиваем (лишний вызов на каждое открытие). Ставится
+        ВСЕМ чатам: видимая вкладка сменилась действием бота, а не человеком,
+        — команда другого чата не примет это за ручное переключение."""
+        h = str(opened or "").strip()
+        host = (urlparse(h).hostname if "://" in h
+                else h.split("/")[0]) or ""
+        host = host.lower()
+        if not _user_page_host(host):
+            return
+        with self._state_lock():
+            for st in list(self._chat_states().values()):
+                st.vis_baseline = host
+        self._st().vis_baseline = host
+
     # ── Контекст открытой страницы (диск) ─────────────────
 
     def _save_last_page(self, url: Optional[str] = None):
-        """Последняя открытая ботом страница → last_tab.json: после перезапуска
-        бот помнит, с каким сайтом работали. id вкладки не сохраняем — между
-        процессами он не стабилен, вкладка находится заново по хосту.
+        """Страница текущего чата → last_tab.json: после перезапуска каждый
+        чат помнит свой сайт и базу видимой вкладки. id вкладки не сохраняем —
+        между процессами он не стабилен, вкладка находится заново по хосту.
         Служебные хосты веб-чатов не пишем: они не рабочая страница
         пользователя, а попап-детект их уже фильтрует (страховка на диске)."""
         try:
-            if not self._last_host:
+            st = self._st()
+            if not st.last_host:
                 return
             from app.features import browser_actions as _ba
-            if _ba.is_service_host(self._last_host):
+            if _ba.is_service_host(st.last_host):
                 return
             if url:
-                self._last_url = url
-            (self.base_dir / "last_tab.json").write_text(
-                json.dumps({"host": self._last_host,
-                            "url": self._last_url or "",
-                            "ts": time.time()}, ensure_ascii=False),
-                encoding="utf-8")
+                st.last_url = url
+            st.ts = time.time()
+            self._write_last_tabs(st)
         except Exception as e:
             logger.debug(f"[CompControl] last_tab.json не записан: {e}")
 
+    def _write_last_tabs(self, latest: ChatBrowserState) -> None:
+        """{"chats": {ключ: {host, url, vis, ts}}, host/url/ts — последняя
+        запись (справочно: умолчанием для чатов читается только старый
+        формат без chats). URL — без токенов/фрагмента (правила аудита);
+        свежие LAST_TAB_MAX_CHATS чатов."""
+        from app.features import browser_actions as _ba
+        from app.features.cc_privacy import scrub_url
+        with self._state_lock():
+            items = sorted(
+                ((k, s) for k, s in self._chat_states().items()
+                 if k and s.last_host and not _ba.is_service_host(s.last_host)),
+                key=lambda kv: kv[1].ts, reverse=True)[:LAST_TAB_MAX_CHATS]
+            data = {"chats": {k: {"host": s.last_host,
+                                  "url": scrub_url(s.last_url or ""),
+                                  "vis": s.vis_baseline or "", "ts": s.ts}
+                              for k, s in items},
+                    "host": latest.last_host,
+                    "url": scrub_url(latest.last_url or ""), "ts": latest.ts}
+            path = self.base_dir / "last_tab.json"
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False),
+                           encoding="utf-8")
+            tmp.replace(path)
+
     def _restore_last_page(self):
+        """last_tab.json → контекст страниц чатов. Старый формат (один хост
+        на персону, без chats) — умолчание для всех чатов (шаблон "")."""
         try:
             data = json.loads(
                 (self.base_dir / "last_tab.json").read_text(encoding="utf-8"))
-            host = str(data.get("host") or "").strip()
-            if host:
-                # Грязный контекст прошлых запусков: служебная вкладка веб-чата
-                # LLM — не рабочая страница пользователя
-                from app.features import browser_actions as _ba
-                if _ba.is_service_host(host):
-                    return
-                self._last_host = host
-                self._last_url = str(data.get("url") or "") or None
-                logger.info(f"[CompControl] Контекст страницы с диска: {host}")
         except Exception:
-            pass
+            return
+        if not isinstance(data, dict):
+            return
+        from app.features import browser_actions as _ba
+
+        def _ok(host: str) -> bool:
+            # Грязный контекст прошлых запусков: служебная вкладка веб-чата
+            # LLM — не рабочая страница пользователя
+            return bool(host) and not _ba.is_service_host(host)
+
+        chats = data.get("chats")
+        if isinstance(chats, dict):
+            states = self._chat_states()
+            best = None
+            for k, rec in chats.items():
+                key = _chat_key(k)
+                host = (str(rec.get("host") or "").strip()
+                        if isinstance(rec, dict) else "")
+                if not key or not _ok(host):
+                    continue
+                try:
+                    ts = float(rec.get("ts") or 0)
+                except (TypeError, ValueError):
+                    ts = 0.0
+                states[key] = ChatBrowserState(
+                    last_host=host, last_url=str(rec.get("url") or "") or None,
+                    vis_baseline=str(rec.get("vis") or "") or None, ts=ts)
+                if best is None or ts >= states[best].ts:
+                    best = key
+            if best:
+                # Вызовы вне хода (тесты, служебные пути) — к свежему чату
+                self.__dict__["_last_chat"] = best
+                logger.info(f"[CompControl] Контекст страниц с диска: "
+                            f"{len(states) - ('' in states)} чат(ов)")
+            return
+        host = str(data.get("host") or "").strip()
+        if _ok(host):
+            tpl = self._st("")
+            tpl.last_host = host
+            tpl.last_url = str(data.get("url") or "") or None
+            logger.info(f"[CompControl] Контекст страницы с диска (старый "
+                        f"формат, умолчание для чатов): {host}")
 
     def update_config(self, config: Optional[dict]):
         """(Пере)прочитать конфиг: allowlist'ы и confirm применяются на живую
@@ -2658,6 +4754,11 @@ class ComputerControlManager:
         # Агентный клик «нажми X» — отдельный под-переключатель: клики можно
         # выключить, оставив открытие сайтов/приложений и поиск на сайте
         self.click: bool = bool(cfg.get("click", True))
+        # Поисковик резолва «открой X» без алиаса/истории: google (дефолт) —
+        # веб-выдача Google в пуле H (точнее на узких запросах; пул H не
+        # поднят/капча — DDG) или ddg. Неизвестное значение — google
+        engine = str(cfg.get("site_search") or "google").strip().lower()
+        self.site_search: str = engine if engine in ("ddg", "google") else "google"
         # Визуальный фолбэк резолва: скриншот вьюпорта + vision-модель
         # для иконочных UI, где текстовый скоринг бессилен
         self.vision_fallback: bool = bool(cfg.get("vision_fallback", True))
@@ -2675,6 +4776,14 @@ class ComputerControlManager:
         # ответил невалидно
         wm = str(cfg.get("wide_mode", "hybrid")).strip().lower()
         self.wide_mode: str = wm if wm in ("hybrid", "text") else "hybrid"
+        # Общий бюджет каскада резолва элемента (снапшоты, доскролл, LLM и
+        # vision-ярусы вместе): за ним оставшиеся ярусы не зовутся, ответ —
+        # честный отказ, а не минута тишины
+        try:
+            self.resolve_budget_sec: float = max(
+                1.0, float(cfg.get("resolve_budget_sec", 25)))
+        except (TypeError, ValueError):
+            self.resolve_budget_sec = 25.0
         # Подтверждение по типу действия (риск), поверх общего confirm:
         # {click: false, navigate_known_domain: false, navigate_new_domain: true,
         #  type_text: true, type_text_safe_fields: false, download: true}
@@ -2684,6 +4793,16 @@ class ComputerControlManager:
             for k, v in (cfg.get("risk_overrides") or {}).items()}
         self.allow_domains: List[str] = [
             str(d).strip().lower() for d in (cfg.get("allow_domains") or []) if str(d).strip()]
+        # Приватные страницы (cc_privacy.is_private_page): скриншоты и текст
+        # страницы не уходят облачным/веб-чат моделям — vision-ярусы
+        # пропускаются, LLM-выбор только локальной моделью или по скорингу.
+        # Плюс встроенные признаки входа/оплаты (bank/pay/login/id.…),
+        # private_hosts_builtin: false — только явный список
+        self.private_hosts: List[str] = [
+            str(d).strip().lower() for d in (cfg.get("private_hosts") or [])
+            if str(d).strip()]
+        self.private_hosts_builtin: bool = bool(
+            cfg.get("private_hosts_builtin", True))
         self.apps: Dict[str, object] = {
             str(k).strip().lower(): v for k, v in (cfg.get("apps") or {}).items()}
         self.tasks: Dict[str, object] = {
@@ -2742,89 +4861,120 @@ class ComputerControlManager:
     def available_tasks(self) -> List[str]:
         return sorted(self.tasks)
 
-    def instruction_block(self) -> str:
+    def instruction_block(self, lang: Optional[str] = None) -> str:
         """Инструкция о маркерах для system_prompt (когда фича включена).
-        На русском: отвечающие модели (в т.ч. маленькие локальные) следуют
-        русским инструкциям в русском промпте заметно стабильнее, а прямое
-        «у тебя ЕСТЬ доступ» гасит шаблонный отказ «нет доступа к ОС»."""
+        На английском, язык ответа — строкой языка пользователя в конце
+        (lang — язык диалога, detect_dialogue_language; None — нейтральная
+        строка). Прямое «у тебя ЕСТЬ доступ» гасит шаблонный отказ «нет
+        доступа к ОС»."""
         domain_rule = ""
         if self.allow_domains:
-            domain_rule = f" Разрешены только домены: {', '.join(self.allow_domains)}."
-        apps = ", ".join(self.available_apps()) or "(не настроены)"
-        tasks = ", ".join(self.available_tasks()) or "(не настроены)"
-        # Номерные результаты («второй результат», «третье видео») не перечислены
-        # в tasks ключами — сообщаем модели, что такие ключи валидны
-        ordinal_note = ""
-        if any(str(v).startswith("recipe:") for v in self.tasks.values()):
-            ordinal_note = ("  Также доступны номерные результаты выдачи: ключи вида "
-                            "«второй результат», «третье видео» (1–10) — как RUN_TASK.\n")
-        # Маркерный путь — url/app/task: app/task идут по общему confirm,
-        # для url могут действовать risk_overrides (navigate_*_domain).
-        # Флоу «спроси подтверждение» в промпте нужен, если хоть какой-то
-        # маркер реально уйдёт в pending
-        confirm_flow = self.confirm or self.needs_confirm(
-            {"kind": "url", "value": "https://example.com"})
-        if confirm_flow:
-            flow = (
-                "Действие НЕ выполняется сразу — пользователь должен подтвердить. "
-                "Поэтому твой видимый ответ ОБЯЗАН спрашивать подтверждение в твоём "
-                "стиле (например, «Открыть YouTube?»), с маркером в конце."
-            )
-            example = "Открыть YouTube? [OPEN_URL:youtube.com]"
-        else:
-            flow = "Действие выполняется сразу — скажи, что именно открываешь или запускаешь."
-            example = "Открываю YouTube. [OPEN_URL:youtube.com]"
+            domain_rule = f" Only these domains are allowed: {', '.join(self.allow_domains)}."
+        apps = ", ".join(self.available_apps()) or "(not configured)"
+        tasks = ", ".join(self.available_tasks()) or "(not configured)"
+        # Номерные результаты («второй результат», «третье видео») и
+        # «следующее видео» — встроенные рецепты (_build_action), не
+        # перечислены в tasks ключами (yaml персоны их знать не обязан) —
+        # сообщаем модели, что такие ключи валидны, независимо от того, есть
+        # ли в tasks персоны свои recipe-записи. Ключи — русские: их ждёт
+        # _build_action
+        ordinal_note = ("  Numbered search results are also available: keys like "
+                        "«второй результат», «третье видео» (1–10), and «следующее "
+                        "видео» (next video) — as RUN_TASK.\n")
+        # Маркерное действие всегда ждёт «да» (process_markers), а вопрос
+        # задаёт система шаблоном — модель его не формулирует и не
+        # объявляет действие сделанным
+        flow = (
+            "The action is NOT executed immediately: the system itself appends a "
+            "fixed confirmation question and waits for the user's yes. Do not ask "
+            "for confirmation yourself and never say it is already done — just "
+            "put the marker at the very end of your reply."
+        )
+        example = "Sure. [OPEN_URL:youtube.com]"
         block = (
             "[COMPUTER CONTROL — system capability]\n"
-            "У тебя ЕСТЬ доступ к компьютеру пользователя: ты можешь открывать сайты, "
-            "запускать приложения и выполнять именованные задачи. Никогда не утверждай, "
-            "что у тебя нет такого доступа, — действие выполняет система по твоему маркеру.\n"
-            "Когда пользователь ЯВНО просит что-то открыть или запустить, добавь ОДИН "
-            "маркер в самый конец ответа:\n"
-            "  [OPEN_URL:https://example.com] — открыть сайт (только http/https)."
+            "You DO HAVE access to the user's computer: you can open sites, "
+            "launch applications and run named tasks. Never claim "
+            "that you have no such access — the system performs the action from your marker.\n"
+            "When the user EXPLICITLY asks to open or launch something, add ONE "
+            "marker at the very end of the reply:\n"
+            "  [OPEN_URL:https://example.com] — open a site (http/https only)."
             f"{domain_rule}\n"
-            f"  [OPEN_APP:ключ] — запустить приложение. Доступные: {apps}\n"
-            f"  [RUN_TASK:ключ] — выполнить задачу. Доступные: {tasks}\n"
+            f"  [OPEN_APP:key] — launch an application. Available: {apps}\n"
+            f"  [RUN_TASK:key] — run a task. Available: {tasks}\n"
             f"{ordinal_note}"
             f"{flow}\n"
-            "Пример. Пользователь: «открой ютуб».\n"
-            f"Твой ответ: {example}\n"
-            "Маркеры используются только по явной просьбе пользователя, никогда — по "
-            "твоей инициативе. Существуют только перечисленные ключи приложений и задач, "
-            "другие не выдумывай. Маркер скрыт от пользователя; без маркера ничего не "
-            "произойдёт. Если не знаешь ТОЧНЫЙ адрес запрошенного сайта — маркер НЕ "
-            "ставь и URL не выдумывай: ответь текстом и уточни, какой сайт открыть. "
-            "Клики по элементам страницы и ввод текста в поля выполняет отдельная "
-            "система по точным фразам пользователя («нажми X», «введи X в поле Y») — "
-            "у тебя таких маркеров НЕТ: никогда не пиши от себя «Нажато»/«Введено» "
-            "и не описывай результат таких действий — это ложь, без системного "
-            "действия ничего не происходит. Листание страницы («промотай страницу») "
-            "и его остановка («стоп») — тоже системные команды, не твои маркеры."
+            "Example. User: \"open youtube\" / «открой ютуб».\n"
+            f"Your reply (in the user's language): {example}\n"
+            "Markers are used only at the user's explicit request, never on "
+            "your own initiative. Only the listed application and task keys exist, "
+            "do not invent others. The marker is hidden from the user; without a marker nothing "
+            "happens. If you do not know the EXACT address of the requested site — do NOT "
+            "put a marker and do not invent a URL: reply with text and ask which site to open. "
+            "Clicks on page elements and typing text into fields are performed by a separate "
+            "system from the user's exact phrases (\"click X\", \"type X into field Y\") — "
+            "you have NO such markers: never write \"Clicked\"/\"Typed\" on your own "
+            "and do not describe the result of such actions — that is a lie, without a system "
+            "action nothing happens. Scrolling the page (\"scroll the page\") "
+            "and stopping it (\"stop\") are also system commands, not your markers."
         )
         # Контекст открытой страницы: чтобы модель понимала «мы на сайте X»,
         # а не отвечала в отрыве от браузерного контекста
         if self._last_host:
-            block += (f"\nСейчас открытая мной страница: {self._last_host}"
-                      + (f" ({self._last_url})" if self._last_url else "")
-                      + ". Просьбы нажать/ввести/скачать без явного названия "
-                        "сайта относятся к ней.")
-        return block
+            # URL в system prompt (часто облачный провайдер): без токенов,
+            # фрагмента и секретных параметров; приватной страницы — только хост
+            from app.features.cc_privacy import scrub_url
+            page_url = (scrub_url(self._last_url) if self._last_url
+                        and not self.is_private_page(self._last_url) else "")
+            block += (f"\nThe page I currently have open: {self._last_host}"
+                      + (f" ({page_url})" if page_url else "")
+                      + ". Requests to click/type/download without an explicit site "
+                        "name refer to it.")
+        return block + "\n" + user_language_line(lang)
 
     # ── Маркеры ──────────────────────────────────────────
 
-    def process_markers(self, answer: str, chat_id: str) -> Tuple[str, List[str]]:
+    @_in_chat
+    def process_markers(self, answer: str, chat_id: str, user_id=None,
+                        untrusted: bool = False,
+                        user_text: Optional[str] = None,
+                        lang: Optional[str] = None
+                        ) -> Tuple[str, List[str]]:
         """Срезает маркеры из ответа. Возвращает (чистый текст, уведомления
-        пользователю). confirm-режим: маркер → pending (уведомлений нет,
-        вопрос задаёт текст самого ответа); иначе — исполнение сразу,
-        уведомление только при неудаче."""
+        пользователю). Маркер пишет модель, а она видит недоверенный текст —
+        поэтому маркерное действие ВСЕГДА уходит в pending (origin="marker"),
+        а вопрос — шаблон confirm_question, не слова модели (её фраза перед
+        маркером вырезается: инъекция не подменит, ЧТО спрашивается).
+        untrusted — в ходе был чужой текст (страница, веб-выдача, OCR/файл,
+        цитата): маркеры тогда отбрасываются целиком, если сам человек
+        (user_text — то, что он написал) не просил открыть/запустить.
+        Обычный ответ модели делает старый pending этого пользователя
+        недействительным — он снимается.
+        lang — язык уведомлений и вопроса (None — язык хода, set_turn)."""
+        from app.features import cc_texts
+        lang = lang or self.turn_lang()
         notices: List[str] = []
+        try:
+            self.clear_pending(chat_id, user_id)
+        except Exception:
+            pass
         if not answer:
             return answer, notices
         matches = list(MARKER_RE.finditer(answer))
         if not matches:
             return answer, notices
-        clean = MARKER_RE.sub("", answer)
+        # Фраза модели прямо перед маркером («Открыть YouTube?») — её вопрос;
+        # спрашиваем шаблоном, поэтому её убираем вместе с маркером
+        clean = _MARKER_LEAD_RE.sub("", answer)
+        clean = MARKER_RE.sub("", clean)
         clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+        if untrusted and not _MARKER_CMD_RE.search(str(user_text or "")):
+            self.stats["rejected"] += len(matches)
+            logger.warning(
+                f"[CompControl] Маркеры отброшены: в ходе недоверенный текст, "
+                f"а пользователь не просил действия "
+                f"({', '.join(self._marker_log(m) for m in matches)})")
+            return clean, notices
         passed: List[dict] = []
         for m in matches:
             self.stats["markers"] += 1
@@ -2834,10 +4984,26 @@ class ComputerControlManager:
             if action is None:
                 self.stats["rejected"] += 1
                 logger.info(f"[CompControl] Маркер отклонён allowlist'ом: "
-                            f"{m.group(1)}:{target[:80]}")
-                if not self.confirm:
-                    notices.append(f"⚠️ Не могу выполнить «{target[:60]}» — нет в списке разрешённых.")
+                            f"{self._marker_log(m)}")
+                notices.append(cc_texts.t("marker_not_allowed", lang,
+                                          target=target[:60]))
                 continue
+            _pu = urlparse(str(action.get("value") or "")) \
+                if action.get("kind") == "url" else None
+            if _pu is not None and (_pu.query or _pu.fragment) \
+                    and not _MARKER_CMD_RE.search(str(user_text or "")):
+                # Адрес с данными в query/fragment — канал утечки
+                # (?d=<телефон> из чужой реплики в истории): такой маркер —
+                # недоверенный, без глагола человека в этой реплике не идёт
+                self.stats["rejected"] += 1
+                logger.warning(f"[CompControl] Маркер с параметрами в адресе "
+                               f"без команды человека отброшен: "
+                               f"{self._marker_log(m)}")
+                _nt = cc_texts.t("marker_url_params", lang)
+                if _nt not in notices:
+                    notices.append(_nt)
+                continue
+            action["origin"] = "marker"
             passed.append(action)
         # Несколько маркеров в одном ответе — ОДНО действие multi (например,
         # «открой сайт А и сайт Б»): раздельная обработка через set_pending
@@ -2848,23 +5014,30 @@ class ComputerControlManager:
         if len(passed) == 1:
             accepted = passed[0]
         elif passed:
-            accepted = {"kind": "multi", "items": passed}
+            accepted = {"kind": "multi", "items": passed, "origin": "marker"}
         if accepted is not None:
-            if self.needs_confirm(accepted):
-                self.set_pending(chat_id, accepted)
-                logger.info(f"[CompControl] Ожидаю подтверждения: "
-                            f"{self.describe(accepted)}")
-            else:
-                ok, detail = self.execute(accepted, chat_id)
-                if not ok:
-                    notices.append(f"⚠️ Не удалось {self.describe(accepted)}: "
-                                   f"{detail}")
-        if not clean and accepted is not None:
-            # Маркер был единственным содержимым ответа — без видимого текста
-            # пользователь получит пустое сообщение; подставляем шаблон
-            clean = (self.confirm_question(accepted) if self.needs_confirm(accepted)
-                     else f"Готово, {self.describe_done(accepted)}.")
+            # needs_confirm для origin="marker" — всегда True: исполнения
+            # сразу по маркеру нет ни при каком confirm/risk_overrides
+            self.set_pending(chat_id, accepted, user_id=user_id)
+            logger.info(f"[CompControl] Ожидаю подтверждения: "
+                        f"{self._describe_log(accepted)}")
+            q = self.confirm_question(accepted, lang=lang)
+            clean = f"{clean}\n\n{q}" if clean else q
         return clean, notices
+
+    @staticmethod
+    def _marker_log(m) -> str:
+        # Маркер для лога: URL — без токенов/фрагмента (scrub_url), прочее —
+        # redact_inline (email/карты/телефоны/токены маской)
+        from app.features.cc_privacy import redact_inline, scrub_url
+        target = m.group(2).strip()
+        if m.group(1) == "OPEN_URL":
+            if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", target):
+                target = scrub_url(target)
+            else:
+                # «evil.com/cb?token=…» без схемы — чистим как https
+                target = scrub_url("https://" + target)[len("https://"):]
+        return f"{m.group(1)}:{redact_inline(target, 80)}"
 
     def _build_action(self, kind: str, target: str) -> Optional[dict]:
         # Валидация по allowlist'ам. None — маркер отклонён.
@@ -2877,8 +5050,9 @@ class ComputerControlManager:
         table = self.apps if kind == "app" else self.tasks
         value = self._resolve_platform(table.get(target.strip().lower()))
         if value is None and kind == "task":
-            # «N-ый результат/видео» — номерной рецепт без явного ключа в yaml
-            oc = ordinal_recipe(target)
+            # «N-ый результат/видео» / «следующее видео» — встроенные
+            # рецепты без явного ключа в yaml
+            oc = ordinal_recipe(target) or next_video_recipe(target)
             if oc:
                 value = f"recipe:{oc}"
         if value is None:
@@ -2941,10 +5115,39 @@ class ComputerControlManager:
         переопределить нельзя."""
         if not isinstance(action, dict):
             return self.confirm
+        if action.get("force_confirm"):
+            # Вызывающий требует подтверждения независимо от политики
+            # (цель-задача из LLM-яруса): risk_overrides не отменяют
+            return True
         kind = action.get("kind")
         if kind == "multi":
             return any(self.needs_confirm(a) for a in action.get("items") or [])
+        if action.get("origin") == "marker":
+            # Маркер пишет модель, а она видит недоверенный текст (страница,
+            # веб-выдача, OCR, файлы) — prompt injection не должен исполнять
+            # действия без «да» человека, какими бы ни были confirm/overrides
+            return True
+        if action.get("via_search"):
+            # Адрес выбрал поисковик, а не пользователь/конфиг/история:
+            # «открой душу» → случайный домен из выдачи — только после «да»
+            return True
+        if self.risky_label(action):
+            # Оплата / финальный коммит заказа / отправка / удаление / выход
+            # из аккаунта — необратимо, risk_overrides.click это не отменяет
+            return True
+        if kind == "nav" and any(
+                self.risky_label({"kind": "click", "element": str(s),
+                                  "host": action.get("host")})
+                for s in action.get("steps") or []):
+            # Шаг маршрута назван рискованным («… - Оформить заказ») —
+            # спрашиваем до открытия; найденный элемент шага ещё раз сверит
+            # гейт маршрута (_nav_gate)
+            return True
         ov = self.risk_overrides
+        if kind == "tab_switch":
+            # Переключение вкладки — обратимо и ничего не активирует; одно
+            # правило для regex- и LLM-пути разбора
+            return False
         if kind == "scroll_stop":
             # Остановка СВОЕГО же листания — не действие на странице, а отбой
             # своей команды: в режиме с подтверждением «стоп» уходил в pending,
@@ -2984,34 +5187,543 @@ class ComputerControlManager:
             return bool(ov.get(key, self.confirm))
         return self.confirm
 
+    @staticmethod
+    def risky_label(action: Optional[dict]) -> Optional[str]:
+        """Необратимый элемент по подписи → 'payment' | 'commit' |
+        'destructive' | None. Для click/type/key/press/send: подпись —
+        element (+ aria/title, если резолвер их положил). Разрушительность —
+        только классы delete/leave: «Закрыть» диалог — рутина, а «Удалить
+        аккаунт»/«Выйти» — нет."""
+        if not isinstance(action, dict) or action.get("kind") not in (
+                "click", "type", "key", "press", "send"):
+            return None
+        labels = [_risk_text(action.get(k)) for k in ("element", "aria", "title")]
+        labels = [s for s in labels if s.strip() and not s.startswith("#")]
+        if not labels:
+            return None
+        if any(_is_payment(s) for s in labels):
+            return "payment"
+        if (_MONEY_HOST_RE.search(str(action.get("host") or ""))
+                and any(_BARE_TRANSFER_RE.match(s) for s in labels)):
+            # Голое «Перевод» в банке — перевод денег, а не текста
+            return "payment"
+        if action.get("kind") == "type":
+            # Для ввода подпись — имя поля: «Удалить…»/«Отправить» у поля
+            # не бывает, а коммит заказа вводом не делается
+            return None
+        if any(_label_purchase(s) for s in labels):
+            # «Купить за 299 ₽», «Subscribe — $9.99/mo», «Renew subscription»
+            return "payment"
+        if "task" in (action.get("origin"), action.get("pending_from")) \
+                and any(_INSTANT_BUY_RE.search(s) for s in labels):
+            # Мгновенная покупка («Buy now», «Купить в 1 клик», «Place your
+            # order») для агента — оплата: её делает человек, одно «да» на
+            # клик агента списало бы деньги с сохранённой карты
+            return "payment"
+        if any(_COMMIT_RE.search(s) or _label_submit(s) for s in labels):
+            return "commit"
+        for s in labels:
+            # Глагол удаления/выхода — по началу, после «Да,/Yes,/Навсегда»
+            # и узким словарём в любом месте подписи
+            if _label_destructive(s) or _ACCOUNT_CLOSE_RE.search(s):
+                return "destructive"
+        return None
+
+    # ── Гейт подтверждения (инвариант исполнения) ─────────
+
+    @classmethod
+    def confirm_reason(cls, action: Optional[dict]) -> Optional[str]:
+        """Почему действие исполняется только с токеном подтверждения
+        (одна из GATE_RISKS) или None. multi — причина первого такого
+        пункта; nav — None: маршрут сверяет каждый найденный элемент сам
+        (_nav_gate). Риск по подписи — первым: сценарий по нему решает,
+        спросить или передать оплату человеку."""
+        if not isinstance(action, dict):
+            return None
+        kind = action.get("kind")
+        if kind == "multi":
+            for a in action.get("items") or []:
+                r = cls.confirm_reason(a)
+                if r:
+                    return r
+            return None
+        if kind == "nav":
+            return None
+        if "task" in (action.get("origin"), action.get("pending_from")) \
+                and checkout_step_label(action):
+            # Агент задач идёт к оформлению («К оформлению заказа»): не
+            # коммит — «да» на переход и потом на сам заказ спрашивали дважды
+            risk = None
+        else:
+            risk = cls.risky_label(action)
+        if risk:
+            return risk
+        if "task" in (action.get("origin"), action.get("pending_from")) \
+                and kind == "click":
+            # «ОК»/«Да» в окне сайта — по тексту окна (агент кладёт его в
+            # context): страховка, если вызывающий спросить забыл
+            risk = dialog_risk(action.get("element"), action.get("context"),
+                               in_dialog=bool(action.get("in_dialog")))
+            if risk:
+                return risk
+        ch = action.get("choose")
+        if action.get("label_unverified") or (
+                isinstance(ch, dict) and ch.get("label_unverified")):
+            return "label_unverified"
+        if action.get("force_confirm"):
+            return "force_confirm"
+        if kind == "click" and action.get("point"):
+            return "point"
+        if kind == "type" and action.get("field_sensitive"):
+            return "sensitive_field"
+        if "marker" in (action.get("origin"), action.get("pending_from")):
+            return "marker"
+        if action.get("via_search"):
+            return "via_search"
+        if kind in ("key", "press") \
+                and str(action.get("key") or "") in _SUBMIT_KEYS \
+                and action.get("origin") not in _USER_CMD_ORIGINS \
+                and not action.get("search_enter"):
+            # Enter/Space/Tab могут отправить форму или нажать кнопку в
+            # фокусе: не от явной команды человека — только с «да» (раньше
+            # защита была лишь в агенте). search_enter — код агента: Enter
+            # сразу после ввода в строго поисковое поле
+            return "commit"
+        if kind in ("app", "task") and action.get("origin") == "task" \
+                and not str(action.get("value") or "").startswith("recipe:"):
+            # Алиас приложения/команды из конфига, выбранный моделью агента
+            # задач, — запуск программы на компьютере человека: только с «да»
+            return "force_confirm"
+        if (kind == "send" or (kind == "type" and action.get("submit")
+                               and not action.get("field_safe"))) \
+                and action.get("origin") not in _USER_CMD_ORIGINS:
+            # Отправка (Enter/submit) необратима: сценарий, агент, маркер и
+            # действие без источника — только с «да». Явная команда
+            # пользователя («отправь») — как решит политика needs_confirm
+            return "commit"
+        return None
+
+    @staticmethod
+    def is_confirmed(action: Optional[dict]) -> bool:
+        return isinstance(action, dict) and isinstance(
+            action.get("confirmed"), _ConfirmToken)
+
+    @staticmethod
+    def grant_confirmation(action: Optional[dict], via: str, by=None):
+        """Токен подтверждения. Звать ТОЛЬКО из потока подтверждения: «да»
+        владельца на pending, «да» автора задачи агенту, «да» шагу сценария
+        (или ответ человека на слот сценария для этого же поля).
+        nav-продолжение (gate_label) подтверждает ровно показанную подпись
+        своего первого шага."""
+        if not isinstance(action, dict):
+            return action
+        steps = None
+        if action.get("kind") == "nav" and action.get("gate_label"):
+            steps = {0: _gate_label_norm(action["gate_label"])}
+        action["confirmed"] = _ConfirmToken(via, by=by, steps=steps)
+        return action
+
+    def _confirm_gate(self, action: dict) -> None:
+        """Единая точка инварианта (зовёт _execute_locked до _dispatch): без
+        токена рискованное действие не исполняется — NeedsConfirm, а в
+        action["confirm_required"] — что спросить."""
+        reason = self.confirm_reason(action)
+        if not reason or self.is_confirmed(action):
+            return
+        target = action
+        if action.get("kind") == "multi":
+            target = next((a for a in action.get("items") or []
+                           if self.confirm_reason(a)), action)
+        label = str(target.get("element") or target.get("aria")
+                    or target.get("title") or "")
+        info = {"reason": reason, "label": label[:80],
+                "kind": target.get("kind")}
+        action["confirm_required"] = info
+        raise NeedsConfirm(f"нужно подтверждение ({reason})", info)
+
+    def _nav_gate(self, action: dict, step_i: int, step: str,
+                  item: Optional[dict], meta: Optional[dict],
+                  ctx: dict) -> None:
+        """Гейт клика шага маршрута — по ФАКТИЧЕСКИ найденному элементу:
+        «Корзина → Продолжить» может привести к «Продолжить и оплатить».
+        Подтверждение маршрута покрывает рискованный шаг, только если
+        человек видел в вопросе шаг того же класса риска («… → Оформить
+        заказ») или nav-продолжение подтвердило ровно эту подпись. Иначе —
+        стоп маршрута: NeedsConfirm с пройденными шагами и тем, что спросить."""
+        it = item if isinstance(item, dict) else {}
+        host = ctx.get("host") or action.get("host")
+        probe: Dict[str, object] = {"kind": "click", "host": host}
+        for k, dst in (("text", "element"), ("aria", "aria"),
+                       ("title", "title")):
+            v = " ".join(str(it.get(k) or "").split())
+            if v:
+                probe[dst] = v[:80]
+        reason = self.risky_label(probe)
+        m = meta if isinstance(meta, dict) else {}
+        if not reason and m.get("force_confirm"):
+            reason = ("label_unverified" if m.get("label_unverified")
+                      else "force_confirm")
+        if not reason and m.get("point"):
+            reason = "point"
+        if not reason:
+            return
+        label = str(probe.get("element") or probe.get("aria")
+                    or probe.get("title") or step)[:80]
+        tok = action.get("confirmed")
+        if isinstance(tok, _ConfirmToken):
+            if step_i in tok.steps:
+                if tok.steps[step_i] == _gate_label_norm(label):
+                    return
+            elif reason in ("payment", "commit", "destructive") and \
+                    self.risky_label({"kind": "click", "element": str(step),
+                                      "host": host}) == reason:
+                return
+        steps = list(action.get("steps") or [])
+        info = {"reason": reason, "label": label, "kind": "nav",
+                "step_i": step_i, "step": str(step),
+                "done": list(ctx.get("done") or []),
+                "rest": steps[step_i:], "tab_id": ctx.get("tab_id"),
+                "host": host, "url": ctx.get("url") or action.get("value"),
+                "idx": ctx.get("idx")}
+        action["confirm_required"] = info
+        from app.features.cc_privacy import redact_inline
+        logger.info(f"[CompControl] Навигация: шаг «{redact_inline(step, 40)}» "
+                    f"→ «{redact_inline(label, 40)}» ({reason}) — стоп "
+                    "маршрута до подтверждения")
+        raise NeedsConfirm(f"шаг «{step[:40]}»: нужно подтверждение "
+                           f"({reason})", info)
+
+    # Поля исполнения, которые в pending-копию не переносятся
+    _GATE_VOLATILE = ("confirm_required", "confirmed", "duration_ms",
+                      "_result")
+
+    def gate_followup(self, action: Optional[dict],
+                      lang: Optional[str] = None
+                      ) -> Optional[Tuple[dict, str]]:
+        """Отказ гейта → (действие для pending, вопрос) или None — отказа не
+        было. Простое действие — оно же без служебных полей; маршрут —
+        продолжение с рискованного шага на той же вкладке, в вопросе —
+        подпись, которая реально нашлась. Оплата спрашивается, как у
+        обычного клика (явная команда человека); агент и сценарий передают
+        её человеку сами."""
+        info = action.get("confirm_required") if isinstance(action, dict) \
+            else None
+        if not isinstance(info, dict):
+            return None
+        from app.features import cc_texts
+        if info.get("kind") == "nav":
+            rest = [str(s) for s in info.get("rest") or []]
+            cont: Dict[str, object] = {
+                "kind": "nav", "value": info.get("url") or action.get("value"),
+                "host": info.get("host") or action.get("host"),
+                "steps": rest, "resume_tab": info.get("tab_id"),
+                "gate_label": info.get("label"),
+                "gate_reason": info.get("reason")}
+            for k in ("origin", "rest_steps", "chain_site"):
+                if action.get(k) is not None:
+                    cont[k] = action[k]
+            done = [str(s) for s in info.get("done") or []]
+            q = cc_texts.t(
+                "gate_nav_question", lang,
+                done=(cc_texts.t("gate_nav_done", lang,
+                                 steps=" → ".join(done)) if done else ""),
+                host=cont.get("host") or "", label=info.get("label") or "",
+                risk=cc_texts.gate_risk(info.get("reason"), lang),
+                tail=(cc_texts.t("gate_nav_tail", lang,
+                                 steps=" → ".join(rest[1:]))
+                      if len(rest) > 1 else ""))
+            return cont, q
+        pend = {k: v for k, v in action.items()
+                if k not in self._GATE_VOLATILE}
+        return pend, self.confirm_question(pend, lang=lang)
+
     # ── Pending-подтверждение ────────────────────────────
+    # Pending — на чат, но «да» принимается только от того, кто просил
+    # (user_id): в группе чужое «да» не должно исполнять чужое действие.
+    # Кто просит в этом ходе — note_requester() в начале хода; явный
+    # user_id в set_pending важнее.
 
-    def set_pending(self, chat_id: str, action: dict):
+    def note_requester(self, chat_id: str, user_id) -> None:
+        # Автор текущего хода в чате: им подписывается новый pending
         with self._lock:
-            self._pending[str(chat_id)] = {
-                "action": action, "expires_at": time.time() + PENDING_TTL_SEC}
+            self.__dict__.setdefault("_requesters", {})[str(chat_id)] = (
+                str(user_id) if user_id is not None else None)
 
-    def get_pending(self, chat_id: str) -> Optional[dict]:
+    def current_requester(self, chat_id) -> Optional[str]:
+        # Автор текущего хода чата (note_requester) — владелец подтверждений
+        # шагов сценария; None — неизвестен
+        with self._lock:
+            return self.__dict__.get("_requesters", {}).get(str(chat_id))
+
+    def set_pending(self, chat_id: str, action: dict, user_id=None):
+        with self._lock:
+            if user_id is None:
+                user_id = self.__dict__.get("_requesters", {}).get(str(chat_id))
+            ttl = (TASK_START_TTL_SEC if is_goal_task(action)
+                   else CHOICE_TTL_SEC if action.get("choices")
+                   else PENDING_TTL_SEC)
+            self._pending[str(chat_id)] = {
+                "action": action,
+                "expires_at": time.time() + ttl,
+                "user_id": str(user_id) if user_id is not None else None}
+            self.__dict__.setdefault("_pending_expired", {}).pop(
+                str(chat_id), None)
+
+    @staticmethod
+    def _pending_owner_ok(entry: dict, user_id) -> bool:
+        # Владелец не записан (старый вызов) или не спрашиваем — пропускаем
+        owner = entry.get("user_id")
+        return owner is None or user_id is None or owner == str(user_id)
+
+    def get_pending(self, chat_id: str, user_id=None) -> Optional[dict]:
+        """Живой pending чата. user_id — кто отвечает: pending другого
+        участника ему не виден (None). Протухший по TTL снимается и
+        запоминается для pending_expired_recently."""
         with self._lock:
             entry = self._pending.get(str(chat_id))
             if not entry:
                 return None
             if time.time() > entry["expires_at"]:
                 self._pending.pop(str(chat_id), None)
+                self.__dict__.setdefault("_pending_expired", {})[str(chat_id)] = (
+                    time.time(), entry.get("user_id"))
+                return None
+            if not self._pending_owner_ok(entry, user_id):
                 return None
             return dict(entry["action"])
 
-    def clear_pending(self, chat_id: str):
+    def pending_expired_recently(self, chat_id: str, user_id=None) -> bool:
+        """Pending этого пользователя протух по TTL недавно — голое «да»
+        вдогонку заслуживает «подтверждение истекло». Флаг одноразовый."""
         with self._lock:
+            exp = self.__dict__.setdefault("_pending_expired", {})
+            rec = exp.get(str(chat_id))
+            if not rec:
+                return False
+            ts, owner = rec
+            if time.time() - ts > PENDING_EXPIRED_GRACE_SEC:
+                exp.pop(str(chat_id), None)
+                return False
+            if not self._pending_owner_ok({"user_id": owner}, user_id):
+                return False
+            exp.pop(str(chat_id), None)
+            return True
+
+    def clear_pending(self, chat_id: str, user_id=None):
+        """Снять pending чата. user_id — снимает только свой (реплика
+        другого участника группы не сбрасывает чужое ожидание)."""
+        with self._lock:
+            entry = self._pending.get(str(chat_id))
+            if entry and not self._pending_owner_ok(entry, user_id):
+                return
             self._pending.pop(str(chat_id), None)
+            self.__dict__.setdefault("_pending_expired", {}).pop(
+                str(chat_id), None)
+
+    # ── Очистка диалога (/api/chat/clear, app/api/memory_wipe.py) ────
+
+    def forget_chat(self, chat_id) -> dict:
+        """«Очистить диалог»: бот забывает, что просили и где он был в этом
+        чате — pending, листание, контекст страницы (память и last_tab.json),
+        записи аудита (из них сценарий «запиши, что я делал» собирает
+        трассу). → срез для корзины (forget_chat_files). Браузер не
+        трогаем: открытые вкладки — пользователя, не память бота."""
+        ck = _chat_key(chat_id)
+        if not ck:
+            return {}
+        try:
+            self.stop_scroll_if_active(None, chat_id=ck)
+        except Exception as e:
+            logger.debug(f"[CompControl] листание при очистке: {e}")
+        with self._lock:
+            self._pending.pop(ck, None)
+            for name in ("_pending_expired", "_requesters"):
+                self.__dict__.get(name, {}).pop(ck, None)
+        self._stop_chats().discard(ck)
+        with self._state_lock():
+            self._chat_states().pop(ck, None)
+            if self.__dict__.get("_last_chat") == ck:
+                self.__dict__.pop("_last_chat", None)
+            out = forget_chat_files(self.base_dir, ck)
+            if out.get("last_tab_legacy"):
+                # Старый формат был умолчанием для всех чатов — шаблон тоже
+                self._chat_states().pop("", None)
+        return out
+
+    def restore_chat(self, chat_id, data: dict) -> None:
+        """Отмена очистки диалога: срез forget_chat — обратно (файлы и
+        контекст страницы чата, если с тех пор чат не открыл новую)."""
+        ck = _chat_key(chat_id)
+        if not ck or not data:
+            return
+        with self._state_lock():
+            restore_chat_files(self.base_dir, ck, data)
+            rec = data.get("last_tab")
+            host = str((rec or {}).get("host") or "").strip()
+            cur = self._chat_states().get(ck)
+            if host and (cur is None or not cur.last_host):
+                self._chat_states()[ck] = ChatBrowserState(
+                    last_host=host, last_url=str(rec.get("url") or "") or None,
+                    vis_baseline=str(rec.get("vis") or "") or None,
+                    ts=float(rec.get("ts") or 0))
+
+    @_in_chat
+    def stop_scroll_if_active(self, text: Optional[str] = None,
+                              chat_id=None) -> bool:
+        """«стоп»/«хватит» при живом pending — отказ И остановка листания.
+        text — реплика человека: листание гасим, только если в ней есть
+        стоп-фраза (голое «нет» на чужой вопрос страницу не останавливает).
+        Гасится листание чата chat_id (пусто — чата хода): «стоп» другого
+        чата чужую страницу не останавливает."""
+        # Вежливость («stop scrolling please») — как у parse_scroll_request
+        if text is not None and not any(
+                _SCROLL_STOP_RE.match(_strip_polite(c))
+                for c in re.split(r"[,.;!…]+", str(text))):
+            return False
+        try:
+            if self._scroll_active():
+                self._scroll_stop_now()
+                return True
+        except Exception as e:
+            logger.debug(f"[CompControl] остановка листания не удалась: {e}")
+        return False
+
+    # «стоп» до лока хода: бот ставит флаг, долгие циклы (шаги навигации,
+    # доскролл до цели) проверяют его между шагами. Флаг живёт до начала
+    # следующего хода этого чата (stop_clear) — иначе «стоп», пришедший,
+    # пока ход ещё думал (LLM), терялся бы до старта исполнения
+    def _stop_chats(self) -> set:
+        return self.__dict__.setdefault("_stop_chat_set", set())
+
+    # Чей execute идёт и В КАКОМ ПОТОКЕ: любая запись _exec_chat (execute,
+    # тест) привязывает его к писавшему потоку — ход другого чата в своём
+    # потоке чужой исполняемый чат за свой «стоп» не примет
+    @property
+    def _exec_chat(self) -> Optional[str]:
+        return self.__dict__.get("_exec_chat")
+
+    @_exec_chat.setter
+    def _exec_chat(self, value) -> None:
+        self.__dict__["_exec_chat"] = value
+        self.__dict__["_exec_thread"] = (threading.get_ident() if value
+                                         else None)
+
+    def _stop_key(self, chat_id=None) -> str:
+        """ЕДИНСТВЕННОЕ место, где решается, чей «стоп» проверять: явный
+        чат (след str(None)/пусто — не ключ, _chat_key) → чат, чей execute
+        идёт В ЭТОМ потоке → ход этого потока (set_turn). Через него идут
+        stop_requested/_sleep_or_stop/_stop_check/_raise_if_stopped — забытый
+        путь не может взять чужой ключ или «None»."""
+        k = _chat_key(chat_id)
+        if k:
+            return k
+        d = self.__dict__
+        if d.get("_exec_thread") == threading.get_ident():
+            k = _chat_key(d.get("_exec_chat"))
+            if k:
+                return k
+        return _chat_key(self.turn_key())
+
+    def request_stop(self, chat_id) -> None:
+        k = _chat_key(chat_id)
+        if k:
+            self._stop_chats().add(k)
+
+    def stop_clear(self, chat_id) -> None:
+        self._stop_chats().discard(_chat_key(chat_id))
+
+    def stop_requested(self, chat_id=None) -> bool:
+        chats = self._stop_chats()
+        if not chats:
+            return False
+        key = self._stop_key(chat_id)
+        return bool(key) and key in chats
+
+    # Ход, который сейчас идёт в этом потоке: ключ режима (chat_id, у веб-чата
+    # без chat_id — user_id, как в cc_turn_enter/request_stop) и язык. Бот
+    # ставит его в начале каждого хода: execute/опросы без chat_id берут
+    # «стоп» по этому ключу, служебные тексты — на языке хода
+    def _turn_tl(self):
+        return self.__dict__.setdefault("_turn_local", threading.local())
+
+    def set_turn(self, key, lang: Optional[str] = None) -> None:
+        tl = self._turn_tl()
+        tl.key = str(key or "") or None
+        tl.lang = lang
+        # Опросы браузера этого потока (wait_dom_idle, доскролл, ожидание
+        # вкладки) видят «стоп» хода и вне execute: резолв, сценарий, агент
+        try:
+            from app.features import browser_actions as _ba
+            _ba._STOP_TL.check = (self._stop_check(tl.key) if tl.key
+                                  else None)
+        except Exception:
+            pass
+
+    def turn_key(self) -> Optional[str]:
+        return getattr(self._turn_tl(), "key", None)
+
+    def turn_lang(self) -> Optional[str]:
+        return getattr(self._turn_tl(), "lang", None)
+
+    def _tx(self, key: str, **values) -> str:
+        """Отказ/подсказка резолвера на языке хода — единственный источник
+        этих текстов (cc_texts): русский литерал в ответе английского хода —
+        баг. Страж — AST-скан резолверов в test_cc_state."""
+        from app.features import cc_texts
+        return cc_texts.t(key, self.turn_lang(), **values)
+
+    def _qt(self, s) -> str:
+        # Цитата в перечне (вкладки, поля) — кавычками языка хода
+        from app.features import cc_texts
+        return f"\"{s}\"" if cc_texts.is_en(self.turn_lang()) else f"«{s}»"
+
+    def _stop_check(self, chat_id=None):
+        # Дешёвая проверка «стоп» для опросов browser_actions — по ключу,
+        # зафиксированному сейчас в потоке вызова (поток воркера своего хода
+        # не знает)
+        key = self._stop_key(chat_id)
+        return lambda: bool(key) and self.stop_requested(key)
+
+    def executing_for(self, chat_id) -> bool:
+        # Идёт ли сейчас исполнение действия этого чата (execute под локом)
+        k = _chat_key(chat_id)
+        return bool(k) and _chat_key(self._exec_chat) == k
+
+    def _raise_if_stopped(self, chat_id=None) -> None:
+        if self.stop_requested(chat_id):
+            from app.features import cc_texts
+            raise RuntimeError(cc_texts.t("stopped_by_user", self.turn_lang()))
+
+    def _sleep_or_stop(self, sec: float, chat_id=None) -> bool:
+        # Пауза опроса; True — пришёл «стоп». Флагов нет ни у кого — один
+        # обычный слип (как раньше), иначе кусками по 0.1 с
+        if not self._stop_chats():
+            time.sleep(sec)
+            return self.stop_requested(chat_id)
+        end = time.time() + max(0.0, float(sec))
+        while True:
+            if self.stop_requested(chat_id):
+                return True
+            left = end - time.time()
+            if left <= 0:
+                return False
+            time.sleep(min(0.1, left))
 
     # ── Исполнение ───────────────────────────────────────
 
     @staticmethod
-    def describe(action: dict) -> str:
+    def describe(action: dict, lang: Optional[str] = None) -> str:
+        # lang="en" — английская ветка (cc_texts), иначе русский шаблон
+        from app.features import cc_texts
+        if cc_texts.is_en(lang):
+            return cc_texts.describe_en(action, "do")
         if action["kind"] == "multi":
             return " и ".join(
                 ComputerControlManager.describe(a) for a in action["items"])
+        if action["kind"] == "nav" and action.get("gate_label"):
+            # Продолжение маршрута после «да» на рискованный шаг
+            return (f"продолжить на {action.get('host', '')}: "
+                    f"{' → '.join(action.get('steps', []))}")
         if action["kind"] == "nav":
             return (f"открыть {action.get('host', '')} и пройти: "
                     f"{' → '.join(action.get('steps', []))}")
@@ -3128,12 +5840,37 @@ class ComputerControlManager:
         seg = next((s for s in reversed(p.path.split("/")) if s), "")
         return f"{host}/{seg}" if seg else host
 
+    @staticmethod
+    def _url_params_note(action: dict, lang: Optional[str] = None) -> str:
+        """Адрес с query/fragment: в вопросе — сам адрес (без токенов,
+        scrub_url), иначе «Открыть evil.example/c?» прячет, что в
+        ?d=+7999… уходят данные."""
+        if action.get("kind") != "url" or action.get("search_query"):
+            return ""
+        v = str(action.get("value") or "")
+        p = urlparse(v)
+        if not (p.query or p.fragment):
+            return ""
+        from app.features import cc_texts
+        from app.features.cc_privacy import scrub_url
+        return "\n" + cc_texts.t("url_params_note", lang,
+                                 url=cc_texts.clip(scrub_url(v), 200))
+
     @classmethod
-    def confirm_question(cls, action: dict) -> str:
+    def confirm_question(cls, action: dict, lang: Optional[str] = None) -> str:
         # Шаблон вопроса на подтверждение для fast-path (без LLM).
+        from app.features import cc_texts
+        if action.get("kind") == "url" and len(action.get("choices") or ()) >= 2:
+            return cls._choices_question(action, lang)
+        if cc_texts.is_en(lang):
+            return (cc_texts.describe_en(action, "ask", host_fn=cls._host)
+                    + cls._url_params_note(action, lang))
         if action["kind"] == "multi":
             q = " и ".join(cls.describe(a) for a in action["items"])
             return q[0].upper() + q[1:] + "?"
+        if action["kind"] == "nav" and action.get("gate_label"):
+            return (f"Продолжить на {action.get('host', '')}: "
+                    f"{' → '.join(action.get('steps', []))}?")
         if action["kind"] == "nav":
             return (f"Открыть {action.get('host', '')} и пройти: "
                     f"{' → '.join(action.get('steps', []))}?")
@@ -3149,7 +5886,10 @@ class ComputerControlManager:
                     f"на {action.get('host', '')}?")
         if action["kind"] == "type":
             tail = " и отправить" if action.get("submit") else ""
-            return (f"Ввести «{str(action.get('text') or '')[:40]}» в поле "
+            # Человек подтверждает, что именно уйдёт в поле, — до ~200
+            # символов, длиннее — с многоточием
+            _typed = cc_texts.clip(action.get("text"), cc_texts.TYPE_PREVIEW_MAX)
+            return (f"Ввести «{_typed}» в поле "
                     f"«{action.get('element', '')}» на {action.get('host', '')}{tail}?")
         if action["kind"] == "read":
             what = ("страницу" if action.get("mode") == "page"
@@ -3212,18 +5952,41 @@ class ComputerControlManager:
                 return f"Открыть «{action['search_query']}» на {action['search_site']}?"
             return f"Найти «{action['search_query']}» на {action['search_site']}?"
         if action["kind"] == "url":
-            return f"Открыть {cls._host(action)}?"
+            return (f"Открыть {cls._host(action)}?"
+                    + cls._url_params_note(action, lang))
         if action["kind"] == "app":
             return f"Запустить «{action.get('key', '')}»?"
         return f"Выполнить задачу «{action.get('key') or action['kind']}»?"
 
+    @staticmethod
+    def _choices_question(action: dict, lang: Optional[str] = None) -> str:
+        """«Какой сайт открыть?» — нумерованные варианты: заголовок из
+        выдачи и адрес (без схемы и секретных параметров, scrub_url)."""
+        from app.features import cc_texts
+        from urllib.parse import unquote
+        from app.features.cc_privacy import scrub_url
+        lines = []
+        for i, c in enumerate(action.get("choices") or (), 1):
+            addr = re.sub(r"^https?://(www\.)?", "",
+                          unquote(scrub_url(c.get("url"))))
+            addr = cc_texts.clip(addr.rstrip("/"), 90)
+            title = cc_texts.clip(" ".join(str(c.get("title") or "").split()), 70)
+            lines.append(f"{i}. {title} — {addr}" if title else f"{i}. {addr}")
+        return cc_texts.t("site_choices", lang, items="\n".join(lines))
+
     @classmethod
-    def describe_done(cls, action: dict) -> str:
+    def describe_done(cls, action: dict, lang: Optional[str] = None) -> str:
         # «Готово, …» — прошедшее время для шаблонного подтверждения.
+        from app.features import cc_texts
+        if cc_texts.is_en(lang):
+            return cc_texts.describe_en(action, "done", host_fn=cls._host)
         if action["kind"] == "multi":
             return ", ".join(cls.describe_done(a) for a in action["items"])
         if action["kind"] == "nav":
             steps = action.get("steps", [])
+            if action.get("gate_label"):
+                return (f"прошёл до «{steps[-1] if steps else ''}» "
+                        f"на {action.get('host', '')}")
             return (f"открыл {action.get('host', '')} и прошёл до "
                     f"«{steps[-1] if steps else ''}»")
         if action["kind"] == "download":
@@ -3372,10 +6135,18 @@ class ComputerControlManager:
             return None
         return next((k for k in table if _stem(k) == sk), None)
 
-    def resolve(self, name: str) -> Optional[dict]:
+    def resolve(self, name: str, web_search=True) -> Optional[dict]:
         """Слово места → действие: allowlist apps/tasks → алиасы sites →
         домен с точкой → история браузера → лёгкий поисковый резолв сайта.
-        None — пусть разбирает LLM-путь."""
+        None — пусть разбирает LLM-путь.
+        web_search: True — поисковый резолв разрешён; False — только
+        алиасы/история/явный домен; "auto" (fast-path) — поиск лишь для
+        бренд-подобных латинских имён («figma»): «открой душу», «включи
+        свет» — обычные слова, поисковик дал бы случайный домен за 6-15 с,
+        их решает LLM-ярус. Адрес от поисковика помечен via_search."""
+        name = str(name or "").strip(_TARGET_EDGE_CHARS)
+        if not name:
+            return None
         key = " ".join(name.lower().split())
         k = self._lookup(self.apps, key)
         if k is not None:
@@ -3389,8 +6160,9 @@ class ComputerControlManager:
         if k is not None:
             return {"kind": "url", "value": self.sites[k]}
         # «третье видео» / «2 результат» — номерной результат выдачи (recipe
-        # search_pick), без явного ключа в yaml
-        oc = ordinal_recipe(key)
+        # search_pick), «следующее видео» — recipe youtube_next: встроенные
+        # рецепты без явного ключа в yaml
+        oc = ordinal_recipe(key) or next_video_recipe(key)
         if oc:
             return {"kind": "task", "key": key, "value": f"recipe:{oc}"}
         if _looks_like_domain(key):
@@ -3405,9 +6177,12 @@ class ComputerControlManager:
             url = None
         if url and self._domain_allowed(url):
             return {"kind": "url", "value": url}
+        if web_search is False or (web_search == "auto"
+                                   and not _brand_like_name(key)):
+            return None
         try:
             from app.features.web_search import find_site_url
-            url = find_site_url(name)
+            url = find_site_url(name, engine=getattr(self, "site_search", "google"))
         except Exception as e:
             logger.debug(f"[CompControl] Резолв сайта не удался: {e}")
             url = None
@@ -3415,8 +6190,52 @@ class ComputerControlManager:
             # Поисковый резолв — единственный путь, где адрес не подтверждён
             # ни автором конфига (алиас), ни прошлыми визитами (история):
             # пометка для мягкой верификации title после навигации
-            return {"kind": "url", "value": url, "expect_name": name}
+            # via_search — адрес от поисковика: needs_confirm всегда спросит
+            act = {"kind": "url", "value": url, "expect_name": name,
+                   "via_search": True}
+            choices = self._site_choices(name, url)
+            if len(choices) >= 2:
+                # Вопрос — нумерованный список: человек выбирает номером
+                act["choices"] = choices
+            return act
         return None
+
+    def _site_choices(self, name: str, best: str) -> List[dict]:
+        """Варианты списка «какой сайт открыть?»: выбранный резолвом адрес
+        первым, дальше — остальная выдача того же поиска (без дублей по
+        хост+путь и без доменов вне allow_domains), до SITE_CHOICES_MAX."""
+        try:
+            from app.features.web_search import site_choices
+            found = site_choices(name)
+        except Exception as e:
+            logger.debug(f"[CompControl] Варианты резолва недоступны: {e}")
+            return []
+
+        def _key(u: str) -> Tuple[str, str]:
+            p = urlparse(u)
+            return ((p.hostname or "").lower().removeprefix("www."),
+                    p.path.rstrip("/"))
+        title = next((t for u, t in found if _key(u) == _key(best)), "")
+        out, seen = [{"url": best, "title": title}], {_key(best)}
+        for u, t in found:
+            if len(out) >= SITE_CHOICES_MAX:
+                break
+            k = _key(u)
+            if k in seen or not self._domain_allowed(u):
+                continue
+            seen.add(k)
+            out.append({"url": u, "title": t})
+        return out
+
+    @staticmethod
+    def pick_choice(action: dict, idx: int) -> dict:
+        """Ответ на список вариантов: адрес варианта idx (с 0) становится
+        адресом действия, список снимается. Номер — в аудит (choice)."""
+        choices = action.pop("choices", None) or []
+        if 0 <= idx < len(choices):
+            action["value"] = choices[idx]["url"]
+            action["choice"] = idx + 1
+        return action
 
     def resolve_url(self, token: str) -> Optional[dict]:
         """Явный адрес из фразы («example.com/827») → url-действие.
@@ -3437,19 +6256,53 @@ class ComputerControlManager:
         return {"kind": "nav", "value": act["value"], "steps": steps,
                 "host": self._host(act)}
 
-    def resolve_many(self, names: List[str]) -> Optional[dict]:
+    def is_known_target(self, name: str) -> bool:
+        """Цель открытия известна без поиска: алиас сайта/приложения/задачи,
+        поисковый шаблон, имя хоста алиаса («youtube» у youtube.com) или
+        явный домен. Для parse_open_many: «X and Y» делим, только если
+        известны обе части («Barnes and Noble» — одно название)."""
+        key = " ".join(str(name or "").strip(_TARGET_EDGE_CHARS)
+                       .lower().split())
+        if not key:
+            return False
+        for table in (self.apps, self.tasks, self.sites, self.search_urls):
+            if self._lookup(table, key) is not None:
+                return True
+        if _looks_like_domain(key):
+            return True
+        for u in self.sites.values():
+            host = (urlparse(u).hostname or "").lower()
+            labels = host.split(".")
+            if key in labels[:-1] and key not in ("www", "m"):
+                return True
+        return False
+
+    def resolve_many(self, names: List[str], web_search="auto"
+                     ) -> Optional[dict]:
         """«сайт А и сайт Б» → multi-действие. Резолвятся должны ВСЕ цели,
-        иначе None — сообщение целиком уходит в LLM-путь."""
+        иначе None — сообщение целиком уходит в LLM-путь. web_search — как
+        у resolve; по умолчанию "auto" (fast-path regex-лесенки: обычные
+        слова поисковиком не угадываем). LLM-ярус передаёт True."""
         actions = []
         for n in names:
-            a = self.resolve(n)
+            a = self.resolve(n, web_search=web_search)
             if a is None:
                 return None
             actions.append(a)
         if not actions:
             return None
-        return actions[0] if len(actions) == 1 else {"kind": "multi", "items": actions}
+        if len(actions) == 1:
+            return actions[0]
+        for a in actions:
+            # Вопрос о нескольких сайтах — одной строкой, без списков
+            # вариантов: «да» открывает лучший адрес каждого
+            a.pop("choices", None)
+        multi = {"kind": "multi", "items": actions}
+        if any(a.get("via_search") for a in actions):
+            multi["via_search"] = True
+        return multi
 
+    @_in_chat
     def resolve_intent_llm(self, text: str, router, chat_id: str = ""
                            ) -> Tuple[Optional[dict], Optional[str]]:
         """Последний ярус разбора команды в режиме управления: ни один
@@ -3474,11 +6327,40 @@ class ComputerControlManager:
         if not act or act["action"] == "none":
             return None, None
         self.stats["llm_intent"] = self.stats.get("llm_intent", 0) + 1
-        logger.info(f"[CompControl] LLM-разбор: «{text[:50]}» → "
+        # Текст команды ввода («введи пароль …») в лог не пишем — только
+        # длину; остальное — без секретоподобных фрагментов
+        from app.features.cc_privacy import redact_inline
+        shown = (f"{len(text)} симв." if act["action"] == "type"
+                 else redact_inline(text, 50))
+        logger.info(f"[CompControl] LLM-разбор: «{shown}» → "
                     f"{act['action']}")
+        # origin="intent_llm" ставит вызывающий (лесенка бота) — tag_origin
+        pseudo = intent_pseudo_action(act)
+        if pseudo is not None:
+            return pseudo, None
+        return self.intent_to_action(act, router, chat_id=chat_id)
+
+    @_in_chat
+    def intent_to_action(self, act: dict, router, chat_id: str = ""
+                         ) -> Tuple[Optional[dict], Optional[str]]:
+        """Разобранный LLM-ответ (parse_intent_action) → действие теми же
+        резолверами, что у regex-пути (псевдо-действия бота — см.
+        intent_pseudo_action)."""
         kind = act["action"]
         site = act.get("site")
         try:
+            if kind == "zoom":
+                return self.resolve_zoom(str(act["direction"]), site,
+                                         chat_id=chat_id)
+            if kind == "slider":
+                return self.resolve_slider(
+                    (str(act["goal"]), int(act["value"]),
+                     str(act.get("unit") or "")),
+                    site, router, chat_id=chat_id)
+            if kind == "cart":
+                return self.resolve_cart((str(act["op"]),
+                                          str(act["product"])),
+                                         site, router, chat_id=chat_id)
             if kind == "click":
                 return self.resolve_click(str(act["goal"]), site, router,
                                           chat_id=chat_id)
@@ -3496,7 +6378,8 @@ class ComputerControlManager:
                         if act.get("field") else str(act["text"]))
                 return self.resolve_type(body, site, router, chat_id=chat_id)
             if kind == "open":
-                return self.resolve_many([str(act["target"])]), None
+                return self.resolve_many([str(act["target"])],
+                                         web_search=True), None
             if kind == "search":
                 return self.resolve_search(str(act["query"]),
                                            str(act["site"])), None
@@ -3505,7 +6388,9 @@ class ComputerControlManager:
                     "start", act.get("side"), act.get("direction"))
                 return self.resolve_scroll(mode, site, router, chat_id=chat_id)
             if kind == "key":
-                return self.resolve_key(act["key"], site, router,
+                key_goal = ((act["key"], int(act["times"]), None)
+                            if act.get("times") else act["key"])
+                return self.resolve_key(key_goal, site, router,
                                         chat_id=chat_id)
             if kind == "send":
                 return self.resolve_send(None, site, router, chat_id=chat_id)
@@ -3528,8 +6413,7 @@ class ComputerControlManager:
             # «изобразила» бы успех. Честная причина
             logger.warning(f"[CompControl] LLM-разбор: резолвер «{kind}» "
                            f"не удался: {e}")
-            return None, (f"Понял команду как «{kind}», но выполнить не "
-                          f"получилось: {e}")
+            return None, self._tx("rs_intent_failed", kind=kind, detail=e)
         return None, None
 
     def resolve_search(self, query: str, site_word: str,
@@ -3804,8 +6688,8 @@ class ComputerControlManager:
         if isinstance(meta, dict):
             meta["veto"] = "destructive"
             meta["path"] = "none"
-        logger.info(f"[CompControl] Выбор «{lab[:30]}» ветирован "
-                    f"(деструктивный без запроса) для «{goal[:40]}»"
+        logger.info(f"[CompControl] Выбор «{self._label_for_log(lab, limit=30)}» "
+                    f"ветирован (деструктивный без запроса) для «{goal[:40]}»"
                     + (f" [{where}]" if where else ""))
         return True
 
@@ -3831,10 +6715,23 @@ class ComputerControlManager:
             return False
         lab = str(item.get("text") or item.get("aria")
                   or item.get("title") or "")
-        if not lab.strip() or _goal_in_label(goal, lab, host):
+        chk = _label_goal_check(goal, lab, host, item.get("ctx")) \
+            if lab.strip() else "match"
+        if chk == "unverified":
+            # Сверять нечем (номер/иконка/закрытие) или совпал только
+            # контекст блока: не вето, но клик — после «да» человека
+            if isinstance(meta, dict):
+                meta["force_confirm"] = True
+                meta["label_unverified"] = True
+            logger.info(f"[CompControl] Выбор «{self._label_for_log(lab, host)}» "
+                        f"для «{goal[:40]}» "
+                        "подписью не подтверждён — спрошу подтверждение"
+                        + (f" [{where}]" if where else ""))
             return False
-        logger.info(f"[CompControl] Выбор «{lab[:40]}» ветирован: подпись не "
-                    f"содержит цель «{goal[:40]}»"
+        if chk == "match":
+            return False
+        logger.info(f"[CompControl] Выбор «{self._label_for_log(lab, host)}» "
+                    f"ветирован: подпись не содержит цель «{goal[:40]}»"
                     + (f" [{where}]" if where else ""))
         if isinstance(meta, dict):
             meta["veto"] = "label_mismatch"
@@ -3842,7 +6739,9 @@ class ComputerControlManager:
 
     def _choose_element(self, goal: str, items: List[dict],
                         router=None, host: Optional[str] = None,
-                        op: str = "click") -> Tuple[Optional[int], dict]:
+                        op: str = "click",
+                        page_url: Optional[str] = None
+                        ) -> Tuple[Optional[int], dict]:
         """Выбор элемента: явный лидер по скору — без LLM; близкие кандидаты —
         top-5 в LLM, ответ строго одной цифрой; невалидный ответ — фолбэк на
         лучшего по скору (без «докручивания» парсинга) или честный отказ.
@@ -3851,6 +6750,11 @@ class ComputerControlManager:
         Разрушительные кандидаты отсеивает сам скоринг (вето — инвариант), а
         единственный выход наружу (_out) проверяет это ещё раз.
         → (idx|None, meta) — meta (путь/кандидаты/сырой ответ LLM) идёт в аудит."""
+        # Подписи кандидатов — текст страницы: с приватной — только локально.
+        # page_url — полный адрес снапшота (приватность по пути: vk.com/im);
+        # без него _privacy_router сверит хост с отслеживаемым URL чата
+        if host or page_url:
+            router = self._privacy_router(router, page_url, host)
         meta: Dict[str, object] = {"path": None, "candidates": [],
                                    "llm_response": None}
         # Активный слой поверх затемнённого фона (боковая корзина, модалка
@@ -3920,9 +6824,10 @@ class ComputerControlManager:
                 f"{str(it.get('text') or '')[:80]}{_layer_note(it)}"
                 for n, (s, it) in enumerate(scored[:n_llm], 1))
             prompt = (
-                f"Задача: нажать «{goal}».\nКандидаты:\n{lines}\n"
-                f"Ответь ТОЛЬКО одной цифрой (1-{n_llm}) — номером подходящего "
-                "элемента. Если ничего не подходит — ответь «нет».")
+                f"Task: click \"{goal}\".\nCandidates:\n{lines}\n"
+                f"Reply with ONLY one number (1-{n_llm}) — the number of the matching "
+                "element. If nothing matches — reply \"no\".\n"
+                + user_language_line(detect_language(goal)))
             try:
                 resp = router.get_response([{"role": "user", "content": prompt}],
                                            temperature=0.0, max_tokens=8, top_p=0.1,
@@ -3939,7 +6844,7 @@ class ComputerControlManager:
                 picked_it = scored[int(m.group(1)) - 1][1]
                 self.stats["llm_valid"] += 1
                 return _out(picked_it["idx"], "llm", picked_it)
-            if (resp or "").strip().lower().startswith("нет"):
+            if _llm_said_no(resp):
                 self.stats["llm_valid"] += 1  # валидный ответ: подходящего нет
                 logger.info(f"[CompControl] LLM: нет подходящего элемента "
                             f"для «{goal[:40]}»")
@@ -3990,8 +6895,14 @@ class ComputerControlManager:
             return None, err
         return (url, host, items, tab_id), None
 
+    def take_dismissed(self, chat_id) -> Optional[str]:
+        """Текст контрола, нажатого авто-закрытием оверлея в последнем
+        снапшоте чата (_snapshot_for), — один раз."""
+        return self.__dict__.get("_dismissed", {}).pop(_chat_key(chat_id), None)
+
+    @_in_chat
     def _snapshot_for(self, site_word: Optional[str], chat_id: str = "",
-                      auto_dismiss: bool = False):
+                      auto_dismiss=False):
         """Общее для клика, скачивания и ввода: вкладка (алиас/явный домен/
         «на этой странице»/отслеживаемая) и её снапшот; отслеживаемую,
         которая ещё грузится, опрашиваем до NAV_LOAD_TIMEOUT_SEC, умершую
@@ -4011,9 +6922,7 @@ class ComputerControlManager:
             # «на этой/открывшейся странице» — отслеживаемая вкладка
             tab_id = self._last_tab_id
             if tab_id is None and not self._last_host:
-                return None, None, None, None, (
-                    "Пока нет открытой мной страницы — сначала «открой …», "
-                    "потом уточняй «на этой странице …».")
+                return None, None, None, None, self._tx("rs_no_page")
         elif site_word:
             sw = " ".join(site_word.lower().split())
             k = self._lookup(self.sites, sw)
@@ -4033,10 +6942,8 @@ class ComputerControlManager:
                 # вкладку бил бы мимо адресата — честный отказ с причиной
                 logger.info(f"[CompControl] Место «{site_word[:40]}» не "
                             "опознано — отказ вместо подмены вкладкой")
-                return None, None, None, None, (
-                    f"Не знаю, где «{site_word}»: такого алиаса в sites нет "
-                    "и на домен не похоже. Открой сайт («открой …»), назови "
-                    "домен («на example.edu») или скажи «на этой странице».")
+                return None, None, None, None, self._tx(
+                    "rs_unknown_place", site=site_word)
         if host_part is None and tab_id is None:
             # Без указания места цель — отслеживаемая вкладка (последняя
             # открытая/тронутая ботом или та, на которую сказали «перейди
@@ -4076,9 +6983,12 @@ class ComputerControlManager:
         # выбором элемента (auto_dismiss=True); цели-закрытия («закрой
         # окно») — исключение и там: крестик ищет скоринг, авто-клик мешает
         if auto_dismiss:
+            # "consent" — только cookie/consent-баннер (агент задач: любой
+            # другой диалог — часть наблюдения, решает модель через гейт)
+            kw = {"consent_only": True} if auto_dismiss == "consent" else {}
             try:
                 from app.features import browser_actions as _ba
-                dismissed = _ba.dismiss_overlay(host_part, tab_id=tab_id)
+                dismissed = _ba.dismiss_overlay(host_part, tab_id=tab_id, **kw)
             except Exception:
                 dismissed = None
             if dismissed:
@@ -4086,6 +6996,11 @@ class ComputerControlManager:
                                       "value": dismissed,
                                       "host": host_part or self._last_host or ""},
                             True, "auto")
+                if auto_dismiss == "consent":
+                    # Агент задач пишет автонажатие в историю шага (своё —
+                    # общего режима команды человека агент не приписывает)
+                    self.__dict__.setdefault("_dismissed", {})[
+                        _chat_key(chat_id)] = dismissed
         # Панель плеера YouTube прячется автохайдом — раскрываем ДО снапшота:
         # кнопки паузы/звука/настроек становятся видимыми для скоринга и
         # кликов (и просто видны пользователю). Не-YouTube — тихий no-op
@@ -4099,15 +7014,34 @@ class ComputerControlManager:
             from app.features.browser_actions import snapshot_elements
             url, host, items = snapshot_elements(host_part, tab_id=tab_id)
         except Exception as e:
+            fb_host = (urlparse(host_part).hostname
+                       if tab_id is None and host_part
+                       and "://" in str(host_part) else None)
+            if fb_host:
+                # Записанный полный URL устарел (SSO-редирект: одноразовые
+                # state/nonce в auth…?…) — та же страница по имени хоста
+                try:
+                    url, host, items = snapshot_elements(fb_host)
+                    logger.info(f"[CompControl] Полный URL вкладки устарел — "
+                                f"снапшот по хосту {fb_host}")
+                    return url, host, items, None, None
+                except Exception as e_fb:
+                    e = e_fb
             if tab_id is None:
                 logger.info(f"[CompControl] Снапшот страницы не удался: {e}")
-                return None, None, None, None, f"Не удалось: {e}"
+                return None, None, None, None, self._tx(
+                    "rs_snapshot_failed", detail=e)
             # Отслеживаемая вкладка может ещё грузиться (только что открыта,
             # фоновые вкладки Chrome грузятся небыстро) — опрашиваем, прежде
             # чем считать её мёртвой
             deadline = time.time() + NAV_LOAD_TIMEOUT_SEC
             while items is None and time.time() < deadline:
-                time.sleep(NAV_POLL_SEC)
+                if self._sleep_or_stop(NAV_POLL_SEC, chat_id):
+                    # «стоп» пользователя — вкладку не забываем (она может
+                    # быть просто медленной), честно говорим «остановлено»
+                    from app.features import cc_texts
+                    return None, None, None, None, cc_texts.t(
+                        "stopped", self.turn_lang())
                 try:
                     url, host, items = snapshot_elements(host_part, tab_id=tab_id)
                 except Exception as e2:
@@ -4116,13 +7050,16 @@ class ComputerControlManager:
                 # Вкладка умерла (закрыли?) — забываем и пробуем по хосту
                 logger.info(f"[CompControl] Отслеживаемая вкладка #{tab_id} "
                             f"недоступна: {e}")
-                self._last_tab_id = None
+                # Мёртвый id — у ВСЕХ чатов (_forget_tab без URL: хосты не
+                # трогаем): иначе каждый другой чат ждал бы её те же ~10 с
+                self._forget_tab(tab_id)
                 tab_id = None
                 try:
                     url, host, items = snapshot_elements(self._last_host)
                 except Exception as e3:
                     logger.info(f"[CompControl] Снапшот страницы не удался: {e3}")
-                    return None, None, None, None, f"Не удалось: {e3}"
+                    return None, None, None, None, self._tx(
+                        "rs_snapshot_failed", detail=e3)
         if tab_id is not None and tab_id == self._last_tab_id and url:
             self._refresh_tracked_page(url, host)
         return url, host, items, tab_id, None
@@ -4160,21 +7097,30 @@ class ComputerControlManager:
     def _resolve_fail_kind(meta: dict) -> str:
         """Почему выбор элемента не состоялся: подходило только разрушительное
         (вето) / пусто в снапшоте / кандидаты были, но LLM сказала «нет» /
-        кандидаты были, но скор слабый."""
+        кандидаты были, но скор слабый / кончился бюджет каскада."""
         if meta.get("veto") == "destructive":
             return "destructive_veto"
         if meta.get("veto") == "label_mismatch":
             # Модель назвала номер, но подпись кандидата цели не содержит
             # (галлюцинация) — это не «низкий скор» и не «пусто в снапшоте»
             return "label_mismatch"
+        if meta.get("budget_hit"):
+            # Ярусы пропущены по бюджету времени — вердикта «нет» не было
+            return "budget"
         if not meta.get("candidates"):
             return "not_in_snapshot"
-        if str(meta.get("llm_response") or "").strip().lower().startswith("нет"):
+        if _llm_said_no(meta.get("llm_response")):
+            # «Нет» модели на цель, слов которой нет на странице вовсе, — это
+            # «нет в снапшоте», а не вето: в список её просто не было из чего
+            # включить
+            if meta.get("goal_absent"):
+                return "not_in_snapshot"
             return "llm_veto"
         return "low_score"
 
     def _scroll_hunt(self, _ba, host: str, tab_id: Optional[int],
-                     search_goal: str, page_url: str = ""):
+                     search_goal: str, page_url: str = "",
+                     deadline: Optional[float] = None):
         """Доскролл-поиск цели для виртуализированных списков/лент: текст цели
         появляется в DOM только после прокрутки в область. Фаза 1 — до 3
         экранов ОКНА вниз; фаза 2 — крупнейший внутренний контейнер (очередь
@@ -4186,20 +7132,35 @@ class ComputerControlManager:
         (пользователь не должен обнаружить страницу уехавшей).
         На свайп-лентах (shorts/reels) не работаем совсем: прокрутка там
         листает ролики, а не список элементов (см. _SWIPE_FEED_URL_RE).
+        deadline (time.monotonic) — бюджет каскада: за ним шаги не делаем,
+        прокрутку возвращаем как при промахе.
         → (url, items) последнего целевого снапшота."""
         from app.features.browser_actions import snapshot_for_goal
         if page_url and _SWIPE_FEED_URL_RE.search(page_url):
             logger.info(f"[CompControl] «{search_goal[:40]}»: свайп-лента "
                         f"({page_url[:60]}), доскролл-поиск пропущен")
             return "", []
+
+        # «стоп» пользователя — как исчерпанный бюджет: шаги не делаем,
+        # прокрутку возвращаем. Ключ — ход потока (у веб-чата без chat_id —
+        # user_id), вызывающие chat_id сюда не передают
+        stop = self._stop_check()
+
+        def _late() -> bool:
+            return (deadline is not None and time.monotonic() >= deadline) \
+                or stop()
+
         y0 = _ba.scroll_position(host, tab_id)
         win_back = False
         g_url, g_items = "", []
         for _ in range(3):
+            if _late():
+                break
             step = _ba.scroll_step(host, tab_id)
             if not step.get("moved"):
                 break
-            _ba.wait_dom_idle(host, tab_id, timeout_sec=1.5, min_wait=0.2)
+            _ba.wait_dom_idle(host, tab_id, timeout_sec=1.5, min_wait=0.2,
+                              stop=stop)
             try:
                 g_url, g_items = snapshot_for_goal(host, search_goal,
                                                    tab_id=tab_id)
@@ -4209,7 +7170,7 @@ class ComputerControlManager:
                 logger.info(f"[CompControl] «{search_goal[:40]}» нашлось "
                             "после доскролла")
                 break
-        if not g_items:
+        if not g_items and not _late():
             # Фаза 2: виртуализированный список ВНУТРИ страницы (очередь
             # плеера) — окно его не прокручивает. Сначала возвращаем ОКНО на
             # исходную позицию: фаза 1 проскроллила страницу вниз, и
@@ -4223,12 +7184,15 @@ class ComputerControlManager:
                 win_back = True   # окно уже на месте — второй раз не гоняем
             cy0 = None
             for _ in range(10):
+                if _late():
+                    break
                 step = _ba.scroll_container_step(host, tab_id)
                 if cy0 is None and step.get("y0") is not None:
                     cy0 = step["y0"]
                 if not step.get("moved"):
                     break
-                _ba.wait_dom_idle(host, tab_id, timeout_sec=1.5, min_wait=0.2)
+                _ba.wait_dom_idle(host, tab_id, timeout_sec=1.5, min_wait=0.2,
+                                  stop=stop)
                 try:
                     g_url, g_items = snapshot_for_goal(host, search_goal,
                                                        tab_id=tab_id)
@@ -4247,20 +7211,123 @@ class ComputerControlManager:
             _ba.scroll_restore(host, tab_id, y0)
         return g_url, g_items
 
+    def _clear_leader(self, goal: str, meta: Optional[dict],
+                      items: List[dict]) -> bool:
+        """Выбор дешёвого яруса уверенный — по тем же правилам, что у
+        _choose_element (LEADER_MIN_SCORE, отрыв LEADER_MARGIN от второго),
+        только без LLM (путь score). Единственный кандидат лидером считаем,
+        лишь когда слова цели стоят в его подписи буквально: совпадение по
+        основе («соусы» → «2 соуса 89 ₽») — повод поискать точный текст за
+        бюджетом снапшота."""
+        if not isinstance(meta, dict) or meta.get("path") != "score":
+            return False
+        cands = meta.get("candidates") or []
+        if not cands:
+            return False
+        top = float(cands[0].get("score") or 0.0)
+        if top < LEADER_MIN_SCORE:
+            return False
+        if len(cands) > 1:
+            return top - float(cands[1].get("score") or 0.0) >= LEADER_MARGIN
+        it = self._element_by_idx(items, cands[0].get("idx")) or {}
+        hay = _norm_match(" ".join(str(it.get(k) or "")
+                                   for k in ("text", "aria", "title")))
+        words = [w for w in re.findall(r"[a-z0-9а-яё]+", _norm_match(goal))
+                 if len(w) >= 3]
+        return bool(words) and all(_word_in(w, hay) for w in words)
+
+    @staticmethod
+    def _goal_in_snapshot(goal: str, items: Optional[List[dict]],
+                          host: Optional[str] = None) -> bool:
+        """Хоть одно значимое слово цели (стем/синоним) есть где-то в
+        снапшоте — в подписи или контексте любого элемента. False — цели на
+        странице нет вовсе: «нет» модели тогда не вето, а «нет в снапшоте»."""
+        words = [w for w in re.findall(r"[a-z0-9а-яё]+", _norm_match(goal))
+                 if len(w) >= 3]
+        if not words:
+            return True
+        from app.features.web_search import _stem
+        hay = _norm_match(" ".join(
+            " ".join(str(it.get(k) or "")
+                     for k in ("text", "aria", "title", "tid", "ctx"))
+            for it in (items or [])))
+        if not hay:
+            return False
+        return any(_word_in(w, hay) or _word_in(_stem(w), hay)
+                   or any(_word_in(s, hay) for s in _goal_synonyms(w, host))
+                   for w in words)
+
+    def _follow_visible_tab(self) -> None:
+        """Команда без названного сайта: пользователь сам переключился на
+        другую вкладку после прошлого резолва — цель та, что он видит.
+        Сравниваем видимый хост с видимым на прошлом резолве (_vis_baseline):
+        не изменился — отслеживаемая вкладка остаётся целью даже невидимой
+        (тихое фоновое открытие сайта ботом окно не поднимает — видимой
+        остаётся прежняя страница, это не переключение). Изменился и это
+        другой сайт, чем отслеживаемый — видимая становится контекстом.
+        База — своя у чата; открытие/переключение вкладки ботом ставит её
+        сразу (_init_vis_baseline), и она переживает перезапуск
+        (last_tab.json) — ручное переключение до первой команды заметно."""
+        if self._last_tab_id is None and not self._last_host:
+            return  # контекста нет — _snapshot_for и так берёт видимую
+        try:
+            from app.features import browser_actions as _ba
+            vis = _ba.visible_page_info()
+        except Exception:
+            vis = None
+        if not vis or not vis[1] or not _user_page_host(vis[1]):
+            return
+        v_url, v_host = vis
+        prev = getattr(self, "_vis_baseline", None)
+        self._vis_baseline = v_host
+
+        def _same(a: Optional[str], b: Optional[str]) -> bool:
+            # _last_host бывает с сегментом пути («youtube.com/watch»)
+            a = str(a or "").lower().split("/")[0]
+            b = str(b or "").lower().split("/")[0]
+            if not a or not b:
+                return False
+            return a == b or a.endswith("." + b) or b.endswith("." + a) \
+                or ".".join(a.split(".")[-2:]) == ".".join(b.split(".")[-2:])
+
+        if prev is None or _same(prev, v_host) \
+                or _same(self._last_host, v_host):
+            if str(prev or "").lower() != v_host.lower():
+                # База сменилась — на диск (без смены страницы)
+                self._save_last_page()
+            return
+        logger.info(f"[CompControl] Пользователь переключился на вкладку "
+                    f"{v_host} (была {prev}, отслеживалась "
+                    f"{self._last_host}) — цель команды видимая вкладка")
+        self._last_tab_id = None
+        self._last_host = v_host
+        self._last_url = v_url
+        try:
+            self._save_last_page(v_url)
+        except Exception:
+            pass
+
     def _resolve_element(self, goal: str, site_word: Optional[str], router,
                          chat_id: str = "", auto_dismiss: bool = True,
-                         op: str = "click"):
+                         op: str = "click", share: Optional[dict] = None):
         """Единственная точка выхода каскада резолва наружу (клик, наведение,
         скачивание): зовёт _resolve_element_pick и проверяет инвариант вето —
         элемент (или подписанная зона vision), выбранный любой веткой, не
         может быть контролом закрытия/удаления, пока такого намерения нет в
         цели. Поэтому веткам каскада своих копий вето держать не нужно.
         op — тип операции: для неактивирующих (наведение) вето не работает
-        (см. _destructive_mismatch)."""
+        (см. _destructive_mismatch).
+        share — общее состояние нескольких попыток одного запроса («закрой
+        X»: целевой крестик → общий → «свернуть»): один снапшот, один
+        дедлайн бюджета, один vision-кадр (см. _resolve_element_pick)."""
+        share = share if share is not None else {}
         r = self._resolve_element_pick(goal, site_word, router,
                                        chat_id=chat_id,
-                                       auto_dismiss=auto_dismiss, op=op)
+                                       auto_dismiss=auto_dismiss, op=op,
+                                       share=share)
         url, host, items, idx, tab_id, meta, err = r
+        if isinstance(meta, dict) and share.get("t0") is not None:
+            meta["resolve_ms"] = int((time.monotonic() - share["t0"]) * 1000)
         if err is not None:
             return r
         item = None
@@ -4271,10 +7338,7 @@ class ComputerControlManager:
             # зоны (безымянная зона разрушительной не считается — не по чему)
             item = {"text": str((meta or {})["point"].get("label") or "")}
         if self._veto_destructive(goal, item, meta, str(host or ""), op=op):
-            reason = (f"На странице {host} для «{goal}» подходит только "
-                      "кнопка закрытия/удаления — не жму её без явной "
-                      "просьбы. Скажи «закрой …» или «удали …», если это "
-                      "то, что нужно.")
+            reason = self._tx("rs_destructive_veto", host=host, goal=goal)
             self._audit_resolve(chat_id, goal, host, reason,
                                 "destructive_veto", meta=meta)
             return None, None, None, None, None, meta, reason
@@ -4282,7 +7346,7 @@ class ComputerControlManager:
 
     def _resolve_element_pick(self, goal: str, site_word: Optional[str], router,
                               chat_id: str = "", auto_dismiss: bool = True,
-                              op: str = "click"):
+                              op: str = "click", share: Optional[dict] = None):
         """Общее для клика и скачивания: вкладка и снапшот (_snapshot_for),
         скоринг, при неоднозначности — выбор номера через LLM (top-5, один
         токен). Ярус 1 скоринга — только видимые элементы (vp): цель почти
@@ -4291,24 +7355,77 @@ class ComputerControlManager:
         список и эскалация со скроллом. → (url, host, items, idx, tab_id,
         meta, None) или (None…, причина).
         Неудачи резолва пишутся в audit.jsonl с классом причины
-        (_audit_resolve) — так отказы разбираются по логам, а не вслепую."""
+        (_audit_resolve) — так отказы разбираются по логам, а не вслепую.
+        Бюджет: весь каскад укладывается в resolve_budget_sec — за дедлайном
+        оставшиеся ярусы не зовутся (fail_reason «budget»). share — общее
+        состояние попыток одного запроса: t0/deadline, снапшот (snap),
+        vision-состояние (vis), флаг сделанного повторного снапшота."""
         from app.features import browser_actions as _ba
-        snap, err = self._snapshot_state(site_word, chat_id, auto_dismiss)
-        if err:
-            self._audit_resolve(
-                chat_id, goal, None, err,
-                "no_page" if str(err).startswith("Пока нет") else "snapshot_error")
-            return None, None, None, None, None, None, err
+        share = share if share is not None else {}
+        if share.get("t0") is None:
+            share["t0"] = time.monotonic()
+            share["deadline"] = share["t0"] + float(
+                getattr(self, "resolve_budget_sec", 25.0))
+        deadline = float(share["deadline"])
+
+        def _late() -> bool:
+            # Бюджет каскада исчерпан: дальше только честный отказ
+            if time.monotonic() >= deadline:
+                share["budget_hit"] = True
+                return True
+            return False
+
+        def _stamp(m: Optional[dict]) -> Optional[dict]:
+            if isinstance(m, dict):
+                m["resolve_ms"] = int((time.monotonic() - share["t0"]) * 1000)
+                if share.get("budget_hit"):
+                    m["budget_hit"] = True
+            return m
+
+        snap = share.get("snap")
+        if snap is None:
+            if not site_word:
+                # Пользователь сам переключил вкладку после прошлого действия
+                # бота — команда про то, что он видит (см. _follow_visible_tab)
+                self._follow_visible_tab()
+            snap, err = self._snapshot_state(site_word, chat_id, auto_dismiss)
+            if err:
+                # Хост — в аудит даже при сбое снапшота: иначе отказ не
+                # привязать к сайту
+                err_host = (site_word if site_word and site_word != PAGE_REF
+                            else self._last_host)
+                self._audit_resolve(
+                    chat_id, goal, err_host, err,
+                    "no_page" if str(err).startswith("Пока нет")
+                    else "snapshot_error",
+                    meta=_stamp({}))
+                return None, None, None, None, None, None, err
+            share["snap"] = snap
         # Состояние снапшота — одна четвёрка: url/host/items/tab_id всегда
         # меняются вместе (см. _snapshot_state)
         url, host, items, tab_id = snap
+        # Приватная страница: LLM-выбор только локальной моделью, без vision
+        router = self._privacy_router(router, url or host)
+        # Дедлайн дешёвых ярусов (доскролл, другие вкладки, повторный
+        # снапшот): хвост бюджета держим под vision — на живой ленте DOM не
+        # затихает, и доскролл съедал весь бюджет, а иконку («лайк») находил
+        # только гибрид, до которого очередь уже не доходила. Vision нет
+        # (выключен, приватная страница) — резерв не нужен
+        pre_vis_deadline = deadline
+        if self._vision_ready(router):
+            pre_vis_deadline -= min(
+                VISION_RESERVE_SEC,
+                VISION_RESERVE_SHARE * (deadline - float(share["t0"])))
+
+        def _pre_vis_late() -> bool:
+            return time.monotonic() >= pre_vis_deadline
+
         # Активная вкладка — наш чат: кликать там нечего, а другую вкладку
         # гадать опасно (промах по чужому сайту хуже отказа)
         p = urlparse(url)
         if p.hostname in ("localhost", "127.0.0.1") and p.port in (5173, 8000):
-            return None, None, None, None, None, None, (
-                "Сейчас активна вкладка чата — там кликать нечего. "
-                "Назови сайт («нажми X на ютубе») или переключись на страницу.")
+            return None, None, None, None, None, None, self._tx(
+                "rs_click_chat_tab")
         # Ярус 1 — только видимое: «нажми X» почти всегда про то, что
         # пользователь видит на экране; опечатки покрывает fuzzy-ярус
         # скоринга и снятие диакритики («cafe» = «café»). Нашлось на видимой
@@ -4331,15 +7448,34 @@ class ComputerControlManager:
             idx, meta = self._choose_element(goal, items, router, host=host,
                                             op=op)
         gen_top = meta["candidates"][0]["score"] if meta["candidates"] else None
+        # Скоринг (с fuzzy-ярусом: «кэшбек» ≈ «Кешбэк») нашёл кандидатов —
+        # цель на странице есть, и «нет» модели дальше — вето, а не «нет в
+        # снапшоте», даже если итоговую мету перепишет широкий ярус
+        had_cands = gen_top is not None
+        # Состояние vision на этот резолв: сбой скриншота / лежащая
+        # vision-цепочка / след ярусов для аудита (см. _vision_ready). Общее
+        # на попытки одного запроса: кадр один, лежащая цепочка не зовётся
+        # повторно. Гибрид для иконки может отработать до доскролла
+        # (hybrid_done) — второй раз его не зовём
+        vis: Dict[str, object] = share.setdefault("vis", {})
+        hmeta = None
+        hybrid_done = False
         # Слабый лидер общего снапшота (ниже точного попадания в текст/aria)
         # — цель могла просто не влезть в его бюджет: «соусы» уехало в
         # «2 соуса 89 ₽» по основе слова, а карточка «Соусы» не влезла в
         # сотню. Даём целевому снапшоту шанс найти точный текст по всему DOM
         # и заменяем выбор, только если он увереннее. Выбор яруса 1
         # (видимая страница, vp_first) не оспариваем — иначе страница
-        # уезжает из-под глаз к равносильному матчу ниже по ленте
+        # уезжает из-под глаз к равносильному матчу ниже по ленте. Явный
+        # лидер дешёвого яруса (LEADER_MIN_SCORE/LEADER_MARGIN) тоже не
+        # оспариваем: целевой снапшот со scrollIntoView на уверенном выборе
+        # только двигает страницу и тратит бюджет
+        m_scope0 = _SCOPE_SPLIT_RE.match(" ".join(goal.split()))
         if idx is None or (not meta.get("vp_first")
-                           and gen_top is not None and gen_top < 90.0):
+                           and gen_top is not None and gen_top < 90.0
+                           and not (not m_scope0
+                                    and self._clear_leader(goal, meta, items))
+                           and not _late()):
             # Элемент мог просто не влезть в снапшот: бюджет 100 на богатых
             # страницах съедают шапка и верхние разделы каталога — на
             # каталоге с сотнями кликабельных элементов нужный пункт может
@@ -4347,7 +7483,7 @@ class ComputerControlManager:
             # Целевой снапшот: по ВСЕМУ DOM элементы, чей текст содержит цель
             # (для скоуп-цели «выбрать на Цезарь» ищем скоуп — «цезарь»)
             from app.features.browser_actions import snapshot_for_goal
-            m_scope = _SCOPE_SPLIT_RE.match(" ".join(goal.split()))
+            m_scope = m_scope0
             search_goal = goal
             if m_scope:
                 # «сырный в части слева»: искать на странице «части слева»
@@ -4357,23 +7493,51 @@ class ComputerControlManager:
                     if _SPATIAL_SCOPE_RE.match(_norm_match(m_scope.group(2))) \
                     else m_scope.group(2)
             search_goal = _goal_with_synonyms(search_goal, host)
-            try:
-                g_url, g_items = snapshot_for_goal(host, search_goal,
-                                                   tab_id=tab_id)
-            except Exception as e:
-                g_items = []
-                logger.debug(f"[CompControl] Целевой снапшот не удался: {e}")
-            if not g_items:
+            g_url, g_items = "", []
+            if not _late():
+                try:
+                    g_url, g_items = snapshot_for_goal(host, search_goal,
+                                                       tab_id=tab_id)
+                except Exception as e:
+                    g_items = []
+                    logger.debug(f"[CompControl] Целевой снапшот не удался: {e}")
+            if not g_items and idx is None and not had_cands \
+                    and self.wide_mode == "hybrid" and not _late() \
+                    and (_icon_goal(goal)
+                         or not self._goal_in_snapshot(goal, items, host)):
+                # Ни одного текстового совпадения — ни скоринга, ни слов
+                # цели (с синонимами) в снапшоте, ни по всему DOM: обычно
+                # иконка без подписи («лайк»). Доскролл ищет по тексту и её
+                # не найдёт — гибрид (рамки видимых кандидатов) раньше
+                # доскролла, пока бюджет не съеден. Чужую подпись гибрид
+                # не выберет: сверка подписи ветирует несовпадение
+                hybrid_done = True
+                hidx, hmeta = self._hybrid_pick(goal, items, host, tab_id,
+                                                router, op=op, vis=vis)
+                self._note_tier(vis, "vision_hybrid", hmeta)
+                if hidx is not None:
+                    return (url, host, items, hidx, tab_id,
+                            _stamp(self._with_tiers(hmeta, vis)), None)
+            if not g_items and idx is None and not _pre_vis_late():
                 # Виртуализированный список/бесконечная лента: цель не
                 # отрендерена, пока её не доскроллили — доскролл-поиск
-                # (на свайп-лентах сам пропускается: там он листает ролики)
+                # (на свайп-лентах сам пропускается: там он листает ролики).
+                # Только при промахе: уже найденный выбор доскроллом не
+                # оспариваем — страница видимо уезжала на удачных кликах.
+                # Дедлайн — без резерва под vision-ярусы
                 g_url, g_items = self._scroll_hunt(_ba, host, tab_id,
-                                                   search_goal, page_url=url)
+                                                   search_goal, page_url=url,
+                                                   deadline=pre_vis_deadline)
+                if hybrid_done and g_items:
+                    # Кадр гибрида снят до прокрутки, а на находке доскролл
+                    # страницу назад не возвращает — кадр устарел (на промахе
+                    # прокрутка возвращена, кадр годен)
+                    vis.pop("shot", None)
             if g_items:
                 g_idx, g_meta = self._choose_element(goal, g_items, router,
                                                      host=host, op=op)
                 llm_veto = str(g_meta.get("llm_response") or "")
-                if g_idx is None and not llm_veto.strip().lower().startswith("нет"):
+                if g_idx is None and not _llm_said_no(llm_veto):
                     # Кандидаты уже отфильтрованы по тексту цели на странице:
                     # единственный из них безопасен и без LLM (а вето LLM
                     # уважаем — она посмотрела и сказала «нет»)
@@ -4391,7 +7555,7 @@ class ComputerControlManager:
                 if g_idx is None and m_scope \
                         and not _SPATIAL_SCOPE_RE.match(
                             _norm_match(m_scope.group(2))) \
-                        and not llm_veto.strip().lower().startswith("нет"):
+                        and not _llm_said_no(llm_veto):
                     # Скоуп — секция страницы («сыры чеддер и пармезан В
                     # ДОБАВИТЬ ПО ВКУСУ»), а не текст карточки: её слов нет в
                     # ctx контролов секции, и скоуп-скоринг полной цели пуст.
@@ -4441,15 +7605,20 @@ class ComputerControlManager:
             # «текущий сайт» липкий, и клик по чужой вкладке хуже отказа —
             # ошибка адресата опаснее честного «не нашёл».
             # Берём только ЕДИНСТВЕННЫЙ явный лидер без LLM — гадать опаснее
-            alt = self._element_on_other_pages(goal, url, only_host=host,
-                                               op=op)
+            alt = None if _late() or _pre_vis_late() \
+                else self._element_on_other_pages(
+                    goal, url, only_host=host, op=op,
+                    deadline=pre_vis_deadline)
             if alt is not None:
                 url, host, items, idx, tab_id, meta = alt
-        if idx is None:
+        if idx is None and not share.get("retry_done") and not _late() \
+                and not _pre_vis_late():
             # Контент мог не дорендериться после прошлого действия (панель
             # выбора подгружается лениво): ждём стабилизации DOM
             # (не слепой слип) + ОДИН повторный снапшот с обычным выбором.
-            # Второй промах — уже честный отказ
+            # Второй промах — уже честный отказ. Одна на запрос: попытки
+            # «закрой X» делят снапшот и повтор не множат
+            share["retry_done"] = True
             logger.info(f"[CompControl] «{goal[:40]}» не нашлось — повторный "
                         "снапшот после стабилизации DOM")
             _ba.wait_dom_idle(host, tab_id, timeout_sec=3.0, min_wait=1.0)
@@ -4460,18 +7629,29 @@ class ComputerControlManager:
                 # искали бы метки в другой вкладке (отслеживаемая могла
                 # умереть и подмениться хостом), а vision получал бы
                 # скриншот не той страницы
+                def _sig(s):
+                    return (s[0], s[3], [(it.get("idx"), it.get("text"),
+                                          it.get("x"), it.get("y"))
+                                         for it in s[2] or []])
+
+                if _sig(snap2) != _sig((url, host, items, tab_id)):
+                    # Кадр vision от прежнего снапшота устарел (гибрид до
+                    # доскролла мог его уже снять); страница та же — кадр
+                    # годен, второй скриншот не нужен
+                    vis.pop("shot", None)
                 url, host, items, tab_id = snap2
+                share["snap"] = snap2
                 idx, meta = self._choose_element(goal, items, router,
                                                  host=host, op=op)
+                had_cands = had_cands or bool(meta.get("candidates"))
                 if idx is not None:
+                    # Дальше — только проверка сомнительного выбора в конце
+                    # каскада (vision-ярусы ниже идут лишь при промахе):
+                    # ничья одноимённых после повтора вслепую не кликается
                     meta["retried"] = True
-                    return url, host, items, idx, tab_id, meta, None
-        # Состояние vision на этот резолв: сбой скриншота / лежащая
-        # vision-цепочка / след ярусов для аудита (см. _vision_ready)
-        vis: Dict[str, object] = {}
-        hmeta = None
         h_fail = None
-        if idx is None and self.wide_mode == "hybrid":
+        if idx is None and self.wide_mode == "hybrid" and not hybrid_done \
+                and not _late():
             # Гибридный ярус (zero-match): один vision-вызов видит рамки
             # видимых кандидатов И текстовый список элементов без рамки —
             # вместо пары «широкий текстовый резолв → vision-рамки». По данным
@@ -4483,19 +7663,20 @@ class ComputerControlManager:
             self._note_tier(vis, "vision_hybrid", hmeta)
             if hidx is not None:
                 return (url, host, items, hidx, tab_id,
-                        self._with_tiers(hmeta, vis), None)
-            if hmeta is not None:
-                # Повод спросить текстовый широкий резолв: ответ невалиден
-                # или рамка с подписью ветирована сверкой (label_mismatch) —
-                # «другое название» видимого элемента решит независимая
-                # текстовая модель, один вызов и только на вето
-                h_fail = hmeta.get("fail") or (
-                    "label_mismatch"
-                    if hmeta.get("veto") == "label_mismatch" else None)
-                if not (meta or {}).get("veto"):
-                    # Vision уже посмотрела страницу — её вердикт в аудит;
-                    # более конкретное вето прошлых ярусов не затираем
-                    meta = hmeta
+                        _stamp(self._with_tiers(hmeta, vis)), None)
+        if idx is None and hmeta is not None:
+            # (и для гибрида до доскролла — hybrid_done)
+            # Повод спросить текстовый широкий резолв: ответ невалиден
+            # или рамка с подписью ветирована сверкой (label_mismatch) —
+            # «другое название» видимого элемента решит независимая
+            # текстовая модель, один вызов и только на вето
+            h_fail = hmeta.get("fail") or (
+                "label_mismatch"
+                if hmeta.get("veto") == "label_mismatch" else None)
+            if not (meta or {}).get("veto"):
+                # Vision уже посмотрела страницу — её вердикт в аудит;
+                # более конкретное вето прошлых ярусов не затираем
+                meta = hmeta
         # Широкий LLM-резолв (zero-match): скоринг не дал ни одного
         # кандидата — слова цели не совпали с подписями на странице
         # («почта» при «Электронная почта»). LLM выбирает из компактного
@@ -4506,15 +7687,17 @@ class ComputerControlManager:
         # через cc_provider, другой канал. Явное «нет» и вето разрушительного
         # — вердикт, текстовый не зовём
         if idx is None and (hmeta is None
-                            or h_fail in ("invalid", "label_mismatch")):
-            widx, wmeta = self._llm_wide_pick(goal, items, router, op=op)
+                            or h_fail in ("invalid", "label_mismatch")) \
+                and not _late():
+            widx, wmeta = self._llm_wide_pick(goal, items, router, op=op,
+                                              host=host)
             self._note_tier(vis, "llm_wide", wmeta)
             if widx is not None:
                 return (url, host, items, widx, tab_id,
-                        self._with_tiers(wmeta, vis), None)
+                        _stamp(self._with_tiers(wmeta, vis)), None)
             if wmeta is not None:
                 meta = wmeta  # LLM посмотрела страницу — её вердикт в аудит
-        if idx is None and hmeta is None:
+        if idx is None and hmeta is None and not _late():
             # Визуальный фолбэк: текстовый скоринг структурно бессилен
             # при иконочных UI (пустые accessible name) — скриншот вьюпорта
             # с пронумерованными рамками кандидатов в vision-модель. Гибрид
@@ -4525,12 +7708,12 @@ class ComputerControlManager:
             self._note_tier(vis, "vision", vmeta)
             if vidx is not None:
                 return (url, host, items, vidx, tab_id,
-                        self._with_tiers(vmeta, vis), None)
+                        _stamp(self._with_tiers(vmeta, vis)), None)
             if vmeta is not None and not (meta or {}).get("veto"):
                 # Вердикт визуального яруса — в аудит; уже записанное вето
                 # (более конкретная причина) не затираем
                 meta = vmeta
-        if idx is None:
+        if idx is None and not _late():
             # Зональный vision-фолбэк: DOM нечитаем совсем (canvas/WebGL,
             # ARIA-скрытая разметка) — рамки вокруг всех кликабельных зон
             # вьюпорта; выбранная зона кликается по координатам (meta["point"]).
@@ -4538,13 +7721,30 @@ class ComputerControlManager:
             pnt, pmeta = self._vision_zones(goal, host, tab_id, router,
                                             op=op, vis=vis)
             self._note_tier(vis, "vision_zones", pmeta)
+            if pnt is not None and (pmeta or {}).get("agree_idx") is not None:
+                # Зоны независимо указали на тот же элемент, что гибрид
+                # (ветированный сверкой подписи): два согласных vision-ответа
+                # — клик по DOM-метке, но только после «да» человека
+                a_idx = int(pmeta["agree_idx"])
+                pmeta.pop("point", None)
+                pmeta["force_confirm"] = True
+                return (url, host, items, a_idx, tab_id,
+                        _stamp(self._with_tiers(pmeta, vis)), None)
             if pnt is not None:
                 return (url, host, items, None, tab_id,
-                        self._with_tiers(pmeta, vis), None)
+                        _stamp(self._with_tiers(pmeta, vis)), None)
             if pmeta is not None and not (meta or {}).get("veto"):
                 meta = pmeta  # вердикт зонального яруса — в аудит
         meta = self._with_tiers(meta, vis)
         if idx is None:
+            if not isinstance(meta, dict):
+                meta = {"path": "none", "candidates": [],
+                        "llm_response": None}
+            _stamp(meta)
+            # Слов цели нет на странице вовсе — «нет» модели это не вето,
+            # а «нет в снапшоте» (_resolve_fail_kind)
+            meta["goal_absent"] = not had_cands and not self._goal_in_snapshot(
+                goal, items, host)
             fail_kind = self._resolve_fail_kind(meta)
             # Антибот-стена: ретраи выше уже отработали, дальше — только
             # ручное прохождение проверки; честный отказ вместо «не нашёл»
@@ -4555,14 +7755,16 @@ class ComputerControlManager:
                 pass
             if antibot:
                 fail_kind = "captcha"
-                reason = (f"Похоже, {host} показывает проверку «я не робот» "
-                          f"({antibot}) — пройди её в браузере вручную и повтори.")
+                reason = self._tx("rs_antibot", host=host, kind=antibot)
+            elif fail_kind == "budget":
+                reason = self._tx("rs_budget", host=host, goal=goal,
+                                  sec=int(self.resolve_budget_sec))
             else:
-                reason = f"На странице {host} не нашёл элемента для «{goal}»."
+                reason = self._tx("rs_no_element", host=host, goal=goal)
             self._audit_resolve(chat_id, goal, host, reason, fail_kind,
                                 meta=meta)
             return None, None, None, None, None, meta, reason
-        if idx is not None:
+        if idx is not None and not _late():
             # Сомнительный выбор (слабый ярус скора или ничья одноимённых
             # кандидатов) — до клика вслепую спрашиваем зональный vision:
             # общий дизамбигуатор без привязки к сайту
@@ -4571,8 +7773,28 @@ class ComputerControlManager:
                                                      vis=vis)
             if g_idx is None and g_meta.get("point"):
                 return (url, host, items, None, tab_id,
-                        self._with_tiers(g_meta, vis), None)
-        return url, host, items, idx, tab_id, self._with_tiers(meta, vis), None
+                        _stamp(self._with_tiers(g_meta, vis)), None)
+            from app.features.cc_privacy import PrivateRouter
+            why = self._choice_doubt(idx, meta) \
+                if isinstance(router, PrivateRouter) else None
+            if why and isinstance(meta, dict):
+                # Приватная страница (корзина/ЛК/вход): vision-проверки нет —
+                # сомнительный выбор (ничья «Изменить» в рядах) только с «да»
+                logger.info(f"[CompControl] «{goal[:40]}» приватная страница, "
+                            f"выбор сомнителен ({why}) — с подтверждением")
+                meta["force_confirm"] = True
+                meta["private_doubt"] = why
+        elif idx is not None and isinstance(meta, dict):
+            # За бюджетом vision-проверки нет: сомнительный выбор (те же
+            # критерии) не кликаем вслепую — только после «да» человека
+            why = self._choice_doubt(idx, meta)
+            if why:
+                logger.info(f"[CompControl] «{goal[:40]}» бюджет исчерпан, "
+                            f"выбор сомнителен ({why}) — с подтверждением")
+                meta["force_confirm"] = True
+                meta["budget_doubt"] = why
+        return (url, host, items, idx, tab_id,
+                _stamp(self._with_tiers(meta, vis)), None)
 
     def _vision_gate_choice(self, goal: str, host: str, tab_id,
                             idx: int, meta: Dict[str, object], router,
@@ -4589,26 +7811,9 @@ class ComputerControlManager:
         координатный клик по выбранной зоне."""
         if not self.vision_fallback or router is None:
             return idx, meta
-        if not isinstance(meta, dict) \
-                or meta.get("path") not in ("score", "llm", "llm_fallback"):
+        why = self._choice_doubt(idx, meta)
+        if not why:
             return idx, meta
-        cands = meta.get("candidates") or []
-        top = next((float(c.get("score") or 0.0) for c in cands
-                    if c.get("idx") == idx), 0.0)
-        if top <= 0.0:
-            return idx, meta
-        chosen_txt = _norm_match(next((str(c.get("text") or "")
-                                       for c in cands
-                                       if c.get("idx") == idx), ""))
-        tied = bool(chosen_txt) and any(
-            c.get("idx") != idx
-            and _norm_match(str(c.get("text") or "")) == chosen_txt
-            and abs(float(c.get("score") or 0.0) - top) < 5.0
-            for c in cands)
-        weak = top < 55.0
-        if not (weak or tied):
-            return idx, meta
-        why = "ничья одноимённых" if tied else f"слабый скор {top:.1f}"
         logger.info(f"[CompControl] «{goal[:40]}» выбор сомнителен ({why}) — "
                     "проверяю зональным vision")
         pnt, pmeta = self._vision_zones(goal, host, tab_id, router, op=op,
@@ -4619,8 +7824,37 @@ class ComputerControlManager:
         pmeta["vision_gate"] = why
         return None, pmeta
 
+    @staticmethod
+    def _choice_doubt(idx, meta) -> Optional[str]:
+        """Выбор текстового яруса сомнителен? → причина или None. Критерии
+        общие для vision-проверки (_vision_gate_choice) и выбора за дедлайном
+        бюджета (там проверки нет — только подтверждение): слабый скор (<55)
+        или ничья одноимённых кандидатов с близким скором."""
+        if not isinstance(meta, dict) \
+                or meta.get("path") not in ("score", "llm", "llm_fallback"):
+            return None
+        cands = meta.get("candidates") or []
+        top = next((float(c.get("score") or 0.0) for c in cands
+                    if c.get("idx") == idx), 0.0)
+        if top <= 0.0:
+            return None
+        chosen_txt = _norm_match(next((str(c.get("text") or "")
+                                       for c in cands
+                                       if c.get("idx") == idx), ""))
+        tied = bool(chosen_txt) and any(
+            c.get("idx") != idx
+            and _norm_match(str(c.get("text") or "")) == chosen_txt
+            and abs(float(c.get("score") or 0.0) - top) < 5.0
+            for c in cands)
+        if tied:
+            return "ничья одноимённых"
+        if top < 55.0:
+            return f"слабый скор {top:.1f}"
+        return None
+
     def _llm_wide_pick(self, goal: str, items: List[dict], router,
-                       for_field: bool = False, op: str = "click"
+                       for_field: bool = False, op: str = "click",
+                       host: Optional[str] = None
                        ) -> Tuple[Optional[int], Optional[dict]]:
         """Широкий LLM-резолв (zero-match): текстовый скоринг не дал ни
         одного кандидата — слова пользователя не совпали с подписями на
@@ -4647,9 +7881,13 @@ class ComputerControlManager:
         # детект) — не режем в ноль (_active_layer)
         items = _active_layer(items)
         # Безымянные элементы (ни текста, ни aria — иконки-SVG) текстовой
-        # LLM нечем сопоставить с целью — их разбирает vision-фолбэк
+        # LLM нечем сопоставить с целью — их разбирает vision-фолбэк.
+        # Служебные обрывки («0:13», «/», «•», «33 тыс. 1 г. назад») тоже
+        # не берём: они съедали бюджет LLM_WIDE_MAX, и цель в список не
+        # попадала вовсе (_wide_label_ok)
         named = [it for it in items
-                 if it.get("text") or it.get("aria") or it.get("title")]
+                 if (it.get("text") or it.get("aria") or it.get("title"))
+                 and (for_field and it.get("ed") or _wide_label_ok(it))]
         # Порядок для промпта: для цели ввода — поля первыми, затем видимые
         # во вьюпорте; псевдокликабельные фрагменты (span имени канала с
         # унаследованным cursor:pointer) — после настоящих контролов: в
@@ -4664,7 +7902,7 @@ class ComputerControlManager:
         if not pool:
             return None, None
         lines = "\n".join(_cand_line(n, it) for n, it in enumerate(pool, 1))
-        task = "выбрать поле ввода" if for_field else "нажать"
+        task = "select the input field" if for_field else "click"
         scope_hint = ""
         if not for_field:
             m_sc = _SCOPE_SPLIT_RE.match(" ".join(goal.split()))
@@ -4672,13 +7910,14 @@ class ComputerControlManager:
                 # Скоуп-форма «закрыть на корзина»: LLM ищет в списке всю
                 # фразу и, не находя, отвечает «нет» — поясняем, что искомый
                 # элемент может называться только действием («закрыть»)
-                scope_hint = (f" (элемент «{m_sc.group(1)}», относящийся к "
-                              f"«{m_sc.group(2)}»; может быть подписан "
-                              f"просто «{m_sc.group(1)}»)")
+                scope_hint = (f" (the element \"{m_sc.group(1)}\" belonging to "
+                              f"\"{m_sc.group(2)}\"; it may be labelled "
+                              f"just \"{m_sc.group(1)}\")")
         prompt = (
-            f"Задача: {task} «{goal}»{scope_hint}.\nЭлементы страницы:\n{lines}\n"
-            f"Ответь ТОЛЬКО одной цифрой (1-{len(pool)}) — номером подходящего "
-            "элемента. Если ничего не подходит — ответь «нет».")
+            f"Task: {task} \"{goal}\"{scope_hint}.\nPage elements:\n{lines}\n"
+            f"Reply with ONLY one number (1-{len(pool)}) — the number of the matching "
+            "element. If nothing matches — reply \"no\".\n"
+            + user_language_line(detect_language(goal)))
         try:
             resp = router.get_response([{"role": "user", "content": prompt}],
                                        temperature=0.0, max_tokens=8, top_p=0.1,
@@ -4692,7 +7931,12 @@ class ComputerControlManager:
             "candidates": [{"idx": int(it["idx"]),
                             "text": str(it.get("text") or "")[:60],
                             "score": 0.0} for it in pool[:LLM_TOP_N]],
-            "llm_response": str(resp or "")[:200]}
+            "llm_response": str(resp or "")[:200],
+            # Сколько элементов реально ушло в промпт (после фильтра
+            # служебных обрывков) и есть ли цель на странице вообще —
+            # «нет» на отсутствующую цель не вето, а «нет в снапшоте»
+            "n_pool": len(pool),
+            "goal_absent": not self._goal_in_snapshot(goal, items, host)}
         m = re.fullmatch(r"\s*(\d{1,2})\s*", str(resp or ""))
         if m and 1 <= int(m.group(1)) <= len(pool):
             meta["picked_n"] = int(m.group(1))
@@ -4714,7 +7958,7 @@ class ComputerControlManager:
             logger.info(f"[CompControl] «{goal[:40]}» выбрано широким "
                         f"LLM-резолвом: кандидат {m.group(1)} (idx {idx})")
             return idx, meta
-        if str(resp or "").strip().lower().startswith("нет"):
+        if _llm_said_no(resp):
             self.stats["llm_valid"] += 1
             logger.info(f"[CompControl] Широкий LLM-резолв: нет подходящего "
                         f"элемента для «{goal[:40]}»")
@@ -4739,18 +7983,96 @@ class ComputerControlManager:
         except Exception:
             return False
 
-    @staticmethod
-    def _vision_shot(host: str, tab_id, vis: dict) -> Optional[bytes]:
+    def is_private_page(self, host_or_url) -> bool:
+        """Приватная страница (вход/оплата/банк или private_hosts конфига):
+        её скриншоты и текст облачным/веб-чат моделям не отправляются."""
+        from app.features.cc_privacy import is_private_page
+        return is_private_page(host_or_url,
+                               getattr(self, "private_hosts", ()),
+                               getattr(self, "private_hosts_builtin", True))
+
+    def _privacy_router(self, router, *where):
+        """Роутер для LLM-решений по странице: на приватной — только
+        локальная модель (PrivateRouter), vision выключен. where — полные
+        URL и/или хосты страницы; приватен хоть один — обёртка (vk.com
+        обычный, vk.com/im — переписка). Единая точка: передан только хост
+        — проверяется и отслеживаемый URL чата на том же хосте, так что
+        забытый на вызове полный адрес не отдаёт приватную страницу облаку.
+        Отслеживаемый URL того же хоста добавляется и при полных адресах:
+        адрес действия бывает адресом файла/вложения (download), а не
+        страницы, на которой оно лежит."""
+        from app.features.cc_privacy import (PrivateRouter, _host_of,
+                                             private_router)
+        if router is None or isinstance(router, PrivateRouter):
+            return router
+        cands = [str(w) for w in where if w]
+        if cands:
+            def _h(s: str) -> str:
+                h = _host_of(s)[0]
+                return h[4:] if h.startswith("www.") else h
+            try:
+                last = self._last_url
+            except Exception:
+                last = None
+            if last and _h(str(last)) in {_h(c) for c in cands}:
+                cands.append(str(last))
+        return private_router(router, cands,
+                              getattr(self, "private_hosts", ()),
+                              getattr(self, "private_hosts_builtin", True))
+
+    def _page_private(self, action) -> bool:
+        """Страница действия приватная — по полным URL (value/url) и хосту,
+        у multi — и вложенных действий (cc_privacy.page_candidates)."""
+        from app.features.cc_privacy import page_candidates
+        try:
+            return any(self.is_private_page(c)
+                       for c in page_candidates(action))
+        except Exception:
+            return False
+
+    def _label_for_log(self, text, *where, idx=None, limit: int = 40) -> str:
+        """Подпись элемента/вкладки для лога процесса (виден в /api/logs):
+        на приватной странице (переписка, суммы, имена) — только номер или
+        длина, иначе обрезанная. where — URL и/или хосты страницы; нет
+        полного URL — берётся и отслеживаемый URL чата (того же хоста, а
+        без where — любой), как в _privacy_router."""
+        from app.features.cc_privacy import _host_of
+        s = "" if text is None else str(text)
+        cands = [str(w) for w in where if w]
+        try:
+            if not any("://" in c for c in cands):
+                last = getattr(self, "_last_url", None)
+                hosts = {_host_of(c)[0].removeprefix("www.") for c in cands}
+                if last and (not cands or _host_of(str(last))[0]
+                             .removeprefix("www.") in hosts):
+                    cands.append(str(last))
+            priv = any(self.is_private_page(c) for c in cands)
+        except Exception:
+            priv = True  # проверить не вышло — консервативно
+        if priv:
+            return f"#{idx}" if idx is not None else f"<{len(s)} симв.>"
+        return s[:limit]
+
+    def _vision_shot(self, host: str, tab_id, vis: dict) -> Optional[bytes]:
         """Скриншот вьюпорта для vision-яруса — один на резолв: и удачный
         кадр (vis["shot"]), и неудача запоминаются. screenshot_viewport уже
         ретраит внутри, а между ярусами одного резолва нет ни кликов, ни
         прокрутки (доскролл-поиск и повторный снапшот — ДО vision-ярусов,
         vis заводится после них) — кадр актуален. Ярус, который начнёт
-        крутить страницу, обязан сбросить vis["shot"]."""
+        крутить страницу, обязан сбросить vis["shot"].
+        Приватная страница — кадр не снимается вовсе: он ушёл бы
+        vision-провайдеру (облако/веб-чат)."""
         if vis.get("shot_failed"):
             return None
         if vis.get("shot"):
             return vis["shot"]
+        if host and self.is_private_page(host):
+            vis["shot_failed"] = True
+            vis["private"] = True
+            self._note_tier(vis, "vision", {"fail": "private_page"})
+            logger.info(f"[CompControl] {host} — приватная страница: "
+                        "скриншот в vision не отправляю")
+            return None
         from app.features import browser_actions as ba
         try:
             shot = ba.screenshot_viewport(host, tab_id)
@@ -4845,7 +8167,8 @@ class ComputerControlManager:
         rec: Dict[str, object] = {"path": path}
         if meta.get("llm_response"):
             rec["resp"] = str(meta["llm_response"])[:60]
-        for k in ("conf", "veto", "fail", "n_boxes", "n_text", "picked_n"):
+        for k in ("conf", "veto", "fail", "n_boxes", "n_text", "picked_n",
+                  "n_pool", "agree"):
             if meta.get(k) is not None:
                 rec[k] = meta[k]
         vis.setdefault("tiers", []).append(rec)
@@ -4930,41 +8253,43 @@ class ComputerControlManager:
                 pos.get(int(it["idx"]), 0)))
             rows = rows[:HYBRID_TEXT_MAX]
         k = len(boxes)
-        verb = "навести курсор на" if op == "hover" else "нажать"
+        verb = "hover the cursor over" if op == "hover" else "click"
         # Цель — в пределах 200 символов: иначе бюджет промпта не жёсткий
         g_short = goal if len(goal) <= 200 else goal[:200] + "…"
         scope_hint = ""
         m_sc = _SCOPE_SPLIT_RE.match(" ".join(g_short.split()))
         if m_sc:
             # Скоуп-форма «закрыть на корзина» — как в _llm_wide_pick
-            scope_hint = (f" (элемент «{m_sc.group(1)}», относящийся к "
-                          f"«{m_sc.group(2)}»; может быть подписан "
-                          f"просто «{m_sc.group(1)}»)")
+            scope_hint = (f" (the element \"{m_sc.group(1)}\" belonging to "
+                          f"\"{m_sc.group(2)}\"; it may be labelled "
+                          f"just \"{m_sc.group(1)}\")")
+        lang_line = user_language_line(detect_language(goal))
 
         def _prompt(lab_box: int, lab_row: int, rows_: List[dict]) -> str:
             parts = [
-                f"Задача: {verb} «{g_short}»{scope_hint}.",
-                "Скриншот страницы браузера. Цветные рамки с номерными "
-                f"бейджами отмечают элементы 1..{k} (номер — в бейдже цвета "
-                "рамки):",
+                f"Task: {verb} \"{g_short}\"{scope_hint}.",
+                "A screenshot of the browser page. Colored boxes with numbered "
+                f"badges mark elements 1..{k} (the number is in the badge of the "
+                "box's color):",
                 "\n".join(_cand_line(n, it, lab_box)
                           for n, it in enumerate(boxes, 1)),
-                "Если приложен второй скриншот — это та же страница без "
-                "разметки: сверяйся с ним, что закрыто рамками и бейджами."]
+                "If a second screenshot is attached, it is the same page without "
+                "markup: check it for what is covered by the boxes and badges."]
             if rows_:
-                parts.append("Элементы без рамки (в основном ниже экрана):")
+                parts.append("Elements without a box (mostly below the screen):")
                 parts.append("\n".join(
                     _cand_line(k + n, it, lab_row)
                     # Видимый, но без рамки (не влез в бюджет рамок)
-                    + (" — на экране, без рамки" if it.get("vp", True) else "")
+                    + (" — on screen, no box" if it.get("vp", True) else "")
                     for n, it in enumerate(rows_, 1)))
             # Уверенность C — данные для настройки (пишется в аудит), на
             # приём выбора не влияет. Формат — описанием, без числа-образца:
             # с примером «C=0.8» модели повторяли именно 0.8
             parts.append(
-                f"Ответ — ТОЛЬКО номер подходящего элемента (1-{k + len(rows_)}), "
-                "затем через пробел C=<уверенность от 0 до 1>. "
-                "Если ничего не подходит — ответь «нет».")
+                f"Answer — ONLY the number of the matching element (1-{k + len(rows_)}), "
+                "then, after a space, C=<confidence from 0 to 1>. "
+                "If nothing matches — reply \"no\".")
+            parts.append(lang_line)
             return "\n".join(parts)
 
         # Лимит промпта: сначала короче подписи, затем без самых слабых строк
@@ -5043,6 +8368,14 @@ class ComputerControlManager:
         # отказ — каскад идёт на следующий ярус
         if self._veto_model_pick(goal, picked, meta, host, "гибрид", op=op,
                                  label_check=not row):
+            if meta.get("veto") == "label_mismatch" and picked.get("vp", True):
+                # Запоминаем ветированную рамку: если зональный vision
+                # независимо укажет на неё же — это согласие двух ответов,
+                # а не вторая галлюцинация (см. _vision_zones)
+                vis["label_vetoed"] = picked
+                # vis общий на попытки «закрой X» с разными целями —
+                # согласие засчитываем только для той же цели
+                vis["label_vetoed_goal"] = goal
             return None, meta
         idx = int(picked["idx"])
         logger.info(f"[CompControl] «{goal[:40]}» выбрано гибридным ярусом: "
@@ -5081,13 +8414,14 @@ class ComputerControlManager:
             f"{n}) {str(it.get('text') or it.get('aria') or it.get('tag') or '?')[:40]}"
             for n, it in enumerate(cands, 1))
         prompt = (
-            f"Скриншот страницы браузера. Цветные рамки с номерными "
-            f"бейджами отмечают элементы 1..{len(cands)} (номер — в бейдже "
-            f"цвета рамки):\n{lines}\n"
-            f"Какой из них — «{goal[:200]}»? Ответь ТОЛЬКО цифрой. "
-            "Если ничего не подходит — ответь «нет».\n"
-            "Если приложен второй скриншот — это та же страница без "
-            "разметки: сверяйся с ним, что закрыто рамками и бейджами.")
+            f"A screenshot of the browser page. Colored boxes with numbered "
+            f"badges mark elements 1..{len(cands)} (the number is in the badge "
+            f"of the box's color):\n{lines}\n"
+            f"Which of them is \"{goal[:200]}\"? Reply with ONLY the number. "
+            "If nothing matches — reply \"no\".\n"
+            "If a second screenshot is attached, it is the same page without "
+            "markup: check it for what is covered by the boxes and badges.\n"
+            + user_language_line(detect_language(goal)))
         resp = self._vision_call(prompt, boxed, shot, router, vis, "vision")
         if resp is None:
             return None, None  # vision лежит — не вердикт «нет»
@@ -5101,7 +8435,7 @@ class ComputerControlManager:
         if not m or not (1 <= int(m.group(1)) <= len(cands)):
             # Vision посмотрела и сказала «нет» (или ответила невалидно) —
             # вердикт в аудит, иначе отказ неотличим от «ярус не запускался»
-            if resp.strip().lower().startswith("нет"):
+            if _llm_said_no(resp):
                 self.stats["vision_valid"] += 1
             else:
                 self.stats["vision_invalid"] += 1
@@ -5158,17 +8492,18 @@ class ComputerControlManager:
         if boxed is None:
             return None, None
         lines = "\n".join(
-            f"{n}) {str(b.get('text') or '').strip() or f'зона {n}'}"
+            f"{n}) {str(b.get('text') or '').strip() or f'zone {n}'}"
             for n, b in enumerate(boxes, 1))
         prompt = (
-            f"Задача: нажать «{goal[:200]}».\n"
-            "Скриншот страницы браузера. Цветные рамки с номерными "
-            "бейджами — кликабельные зоны "
-            f"1..{len(boxes)} (номер — в бейдже цвета рамки):\n{lines}\n"
-            "Ответь ТОЛЬКО цифрой зоны, которую нужно нажать. "
-            "Если подходящей зоны нет — ответь «нет».\n"
-            "Если приложен второй скриншот — это та же страница без "
-            "разметки: сверяйся с ним, что закрыто рамками и бейджами.")
+            f"Task: click \"{goal[:200]}\".\n"
+            "A screenshot of the browser page. Colored boxes with numbered "
+            "badges are clickable zones "
+            f"1..{len(boxes)} (the number is in the badge of the box's color):\n{lines}\n"
+            "Reply with ONLY the number of the zone to click. "
+            "If there is no matching zone — reply \"no\".\n"
+            "If a second screenshot is attached, it is the same page without "
+            "markup: check it for what is covered by the boxes and badges.\n"
+            + user_language_line(detect_language(goal)))
         resp = self._vision_call(prompt, boxed, shot, router, vis,
                                  "vision_zones")
         if resp is None:
@@ -5182,7 +8517,7 @@ class ComputerControlManager:
             "llm_response": resp[:200]}
         m = re.fullmatch(r"\s*(\d{1,2})\s*", resp)
         if not m or not (1 <= int(m.group(1)) <= len(boxes)):
-            if resp.strip().lower().startswith("нет"):
+            if _llm_said_no(resp):
                 self.stats["vision_valid"] += 1
             else:
                 self.stats["vision_invalid"] += 1
@@ -5190,6 +8525,31 @@ class ComputerControlManager:
         self.stats["vision_valid"] += 1
         meta["picked_n"] = int(m.group(1))
         box = boxes[int(m.group(1)) - 1]
+        lv = vis.get("label_vetoed")
+        if isinstance(lv, dict) and lv.get("idx") is not None \
+                and vis.get("label_vetoed_goal", goal) == goal \
+                and _boxes_coincide(box, lv) and _zone_same_label(box, lv) \
+                and not self._veto_destructive(goal, lv, meta,
+                                               "vision_zones", op=op):
+            # Гибрид выбрал этот же элемент, и его ветировала сверка подписи
+            # (открытый бургер рисуется крестиком): два независимых
+            # vision-ответа согласны — берём элемент гибрида по DOM-метке,
+            # но только с подтверждением человеком
+            lab = str(lv.get("text") or lv.get("aria") or lv.get("title")
+                      or goal)
+            meta["agree_idx"] = int(lv["idx"])
+            meta["agree"] = "hybrid+zones"
+            meta["force_confirm"] = True
+            point = {"x": float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
+                     "y": float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
+                     "label": lab[:80], "zone": int(m.group(1))}
+            if isinstance(box.get("sig"), dict):
+                point["sig"] = box["sig"]  # сверка перед кликом (_dispatch)
+            meta["point"] = point
+            logger.info(f"[CompControl] «{goal[:40]}»: зоны и гибрид согласны "
+                        f"на «{self._label_for_log(lab, host)}» — беру с "
+                        "подтверждением")
+            return point, meta
         # Та же проверка выбора по номеру, что у визуального фолбэка: зоны
         # DOM-метки не имеют, и клик по ним координатный — галлюцинация
         # номера тут особенно дорога. Судим по подписи зоны (безымянная —
@@ -5208,9 +8568,13 @@ class ComputerControlManager:
         point = {"x": float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
                  "y": float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
                  "label": label, "zone": int(m.group(1))}
+        if isinstance(box.get("sig"), dict):
+            # Отпечаток центра зоны со времени скриншота: после
+            # подтверждения _dispatch сверяет его перед координатным кликом
+            point["sig"] = box["sig"]
         meta["point"] = point
         logger.info(f"[CompControl] «{goal[:40]}» выбрано зональным vision: "
-                    f"зона {m.group(1)} «{label[:40]}»")
+                    f"зона {m.group(1)} «{self._label_for_log(label, host)}»")
         return point, meta
 
     @staticmethod
@@ -5236,7 +8600,8 @@ class ComputerControlManager:
 
     def _element_on_other_pages(self, goal: str, cur_url: str,
                                 only_host: Optional[str] = None,
-                                op: str = "click"):
+                                op: str = "click",
+                                deadline: Optional[float] = None):
         """Кросс-страничный поиск элемента: снапшот каждой открытой страницы
         (кроме текущей, чата и пустых; only_host — только вкладки этого сайта:
         матч по СЕМЕЙСТВУ хостов — поддомены одного сайта тоже считаются им же),
@@ -5252,6 +8617,8 @@ class ComputerControlManager:
         site = ba._site_key(only_host) if only_host else None
         found = None
         for purl, phost in pages:
+            if deadline is not None and time.monotonic() >= deadline:
+                break  # бюджет каскада: снапшот каждой вкладки не бесплатен
             if not phost or purl == cur_url:
                 continue
             if phost in ("localhost", "127.0.0.1"):
@@ -5291,8 +8658,66 @@ class ComputerControlManager:
         if found is not None:
             logger.info(f"[CompControl] «{goal[:40]}» нашлось на другой "
                         f"странице: {found[1]}")
+            # Клик в невидимой вкладке пользователь не видит — такую цель
+            # называем в ответе и спрашиваем подтверждение (other_tab →
+            # force_confirm в resolve_click); видимая вкладка — как обычно
+            try:
+                vis_p = ba.visible_page_info()
+            except Exception:
+                vis_p = None
+            if not (vis_p and vis_p[0] == found[0]):
+                found[5]["other_tab"] = True
+                found[5]["force_confirm"] = True
         return found
 
+    @staticmethod
+    def _non_click_hint(goal: str, lang: Optional[str] = None
+                        ) -> Optional[str]:
+        """Цель — не элемент страницы: подсказка, как сказать правильно
+        (на языке lang); None — обычная цель клика."""
+        from app.features import cc_texts
+        g = " ".join(str(goal or "").strip(" .,!?«»\"'").split())
+        if not g:
+            return None
+        if _NON_CLICK_KEY_RE.match(g):
+            return cc_texts.t("rs_hint_key", lang, goal=g)
+        if _NON_CLICK_SCROLL_RE.match(g):
+            return cc_texts.t("rs_hint_scroll", lang)
+        m = _NON_CLICK_SITE_RE.match(g)
+        if m:
+            return cc_texts.t("rs_hint_site", lang, site=m.group(1))
+        if _NON_CLICK_ONOMATOPOEIA_RE.match(g):
+            return cc_texts.t("rs_hint_noise", lang, goal=g)
+        return None
+
+    @staticmethod
+    def _act_from_meta(act: dict, meta: Optional[dict],
+                       tab_id: Optional[int]) -> dict:
+        """Флаги резолва — на уровень действия: needs_confirm смотрит
+        action["force_confirm"], а не choose. Без этого непроверенная подпись,
+        согласие гибрида и зон и клик в НЕвидимой вкладке (other_tab)
+        исполнялись бы молча у персоны с confirm:false. Хост вкладки
+        подтверждение называет само (describe)."""
+        if tab_id is not None:
+            act["tab_id"] = tab_id
+        if isinstance(meta, dict):
+            if meta.get("force_confirm") or meta.get("other_tab"):
+                act["force_confirm"] = True
+            if meta.get("retried"):
+                act["retried"] = True
+        return act
+
+    @staticmethod
+    def _with_labels(act: dict, item: Optional[dict]) -> dict:
+        """aria/title элемента — в действие: у иконки без текста element
+        = «#idx», и risky_label без них не видел «Оплатить»/«Удалить»."""
+        for k in ("aria", "title"):
+            v = " ".join(str((item or {}).get(k) or "").split())
+            if v:
+                act[k] = v[:80]
+        return act
+
+    @_in_chat
     def resolve_click(self, goal: str, site_word: Optional[str],
                       router, chat_id: str = ""
                       ) -> Tuple[Optional[dict], Optional[str]]:
@@ -5302,6 +8727,16 @@ class ComputerControlManager:
         «закрой соусы к бортикам» — целевое закрытие: крестик в контексте
         названного блока, промах — обычный крестик. LLM-путь клик не получает
         никогда: «сыграть» его он может."""
+        # Цель — не элемент страницы (клавиша, листание, сайт, звукоподражание):
+        # весь каскад (снапшоты, LLM, vision) отработал бы впустую и кончился
+        # «не нашёл» — сразу честный отказ с подсказкой
+        hint = self._non_click_hint(goal, self.turn_lang())
+        if hint:
+            self._audit_resolve(chat_id, goal, self._last_host, hint,
+                                "not_a_click")
+            return None, hint
+        # «закрыть на на джем» — сдвоенный предлог из склейки скопа
+        goal = _DUP_PREP_RE.sub(r"\1", goal)
         if site_word and site_word != PAGE_REF:
             k = self._lookup(self.sites, " ".join(site_word.lower().split()))
             if not k and not _looks_like_domain(site_word) \
@@ -5311,9 +8746,11 @@ class ComputerControlManager:
                 goal = f"{goal} на {site_word}"
                 site_word = None
         # Номерная команда («первое видео в shorts», «третий результат») —
-        # рецепт по разметке полки/выдачи: детерминированно, без скоринга и
-        # нейронки; скоуп («в shorts») ordinal_recipe срезает сам
-        oc = ordinal_recipe(" ".join(goal.split()))
+        # рецепт по разметке полки/выдачи, «следующее видео» — рецепт
+        # youtube_next: детерминированно, без скоринга и нейронки; скоуп
+        # («в shorts») ordinal_recipe срезает сам
+        oc = ordinal_recipe(" ".join(goal.split())) \
+            or next_video_recipe(" ".join(goal.split()))
         if oc is not None:
             return {"kind": "task", "key": goal, "value": f"recipe:{oc}"}, None
         goal_n = " ".join(goal.lower().split())
@@ -5325,6 +8762,10 @@ class ComputerControlManager:
         close_m = _CLOSE_VERB_RE.match(goal_n)
         close_goal = bool(close_m) or bool(_CLOSE_GOAL_RE.search(goal_n))
         close_obj = close_m.group(1).strip() if close_m else ""
+        # «закрыть на джем» (скоуп-форма от разбора) — объект без предлога,
+        # иначе целевое закрытие строило «закрыть на на джем»
+        close_obj = re.sub(r"^(?:на|в|во|у)\s+", "", close_obj,
+                           flags=re.IGNORECASE)
         if close_goal:
             # «закрытие модального окна» → «закрыть»: ищем крестик, а не текст.
             # Авто-закрытие оверлея перед снапшотом тут ВЫКЛЮЧАЕМ: оно съело
@@ -5380,6 +8821,9 @@ class ComputerControlManager:
                     # Неоднозначность («несколько Изменить состав») —
                     # честный вопрос лучше промаха в инфо-иконку
                     return None, comp_err
+        # Попытки одного запроса («закрой X»: целевой крестик → общий →
+        # «свернуть») делят снапшот, дедлайн бюджета и vision-кадр
+        share: dict = {}
         if close_goal and close_obj and not _CLOSE_GENERIC_RE.fullmatch(close_obj):
             # Целевое закрытие («закрой соусы к бортикам»): крестик в контексте
             # названного блока — скоуп-форма «закрыть на X» (крестик модалки
@@ -5387,24 +8831,24 @@ class ComputerControlManager:
             # крестик общим проходом
             r = self._resolve_element(f"закрыть на {close_obj}", site_word,
                                       router, chat_id=chat_id,
-                                      auto_dismiss=False)
+                                      auto_dismiss=False, share=share)
             if r[6] is None and r[3] is not None:
                 url, host, items, idx, tab_id, meta, _ = r
                 item = self._element_by_idx(items, idx) or {}
                 text = str(item.get("text") or "")
                 logger.info(f"[CompControl] Целевое закрытие "
-                            f"«{close_obj[:40]}» → [{idx}] {text[:40]} "
+                            f"«{close_obj[:40]}» → [{idx}] "
+                            f"{self._label_for_log(text, url, host)} "
                             f"на {host} (путь: {meta.get('path')})")
                 act = {"kind": "click", "idx": idx,
                        "element": text or f"#{idx}", "host": host,
                        "value": url, "choose": meta,
                        "goal": f"закрыть на {close_obj}"}
-                if tab_id is not None:
-                    act["tab_id"] = tab_id
-                return act, None
+                self._with_labels(act, item)
+                return self._act_from_meta(act, meta, tab_id), None
         url, host, items, idx, tab_id, meta, err = self._resolve_element(
             goal, site_word, router, chat_id=chat_id,
-            auto_dismiss=not close_goal)
+            auto_dismiss=not close_goal, share=share)
         if err:
             if close_goal or "крест" in goal_n:
                 # «Свернуть» — это ИМЯ кнопки, а не только глагол закрытия:
@@ -5426,7 +8870,7 @@ class ComputerControlManager:
                 if collapse_try:
                     r = self._resolve_element(
                         collapse_try, site_word, router, chat_id=chat_id,
-                        auto_dismiss=False)
+                        auto_dismiss=False, share=share)
                     if r[6] is None and r[3] is not None:
                         url2, host2, items2, idx2, tab_id2, meta2, _ = r
                         it = self._element_by_idx(items2, idx2) or {}
@@ -5438,9 +8882,8 @@ class ComputerControlManager:
                                 "element": txt or f"#{idx2}", "host": host2,
                                 "value": url2, "choose": meta2,
                                 "goal": collapse_try}
-                        if tab_id2 is not None:
-                            act3["tab_id"] = tab_id2
-                        return act3, None
+                        self._with_labels(act3, it)
+                        return self._act_from_meta(act3, meta2, tab_id2), None
                 # Крестика нет в снапшоте (модалки без close-контрола —
                 # анкеты, шторки подтверждений, открытые меню YouTube
                 # без Х внутри): если диалог/меню реально виден, закрываем
@@ -5457,19 +8900,18 @@ class ComputerControlManager:
             act = {"kind": "click", "point": point,
                    "element": str(point.get("label") or goal)[:80],
                    "host": host, "value": url, "choose": meta, "goal": goal}
-            if tab_id is not None:
-                act["tab_id"] = tab_id
-            return act, None
+            return self._act_from_meta(act, meta, tab_id), None
         item = self._element_by_idx(items, idx) or {}
         text = str(item.get("text") or "")
-        logger.info(f"[CompControl] Клик «{goal[:40]}» → [{idx}] {text[:40]} "
+        logger.info(f"[CompControl] Клик «{goal[:40]}» → [{idx}] "
+                    f"{self._label_for_log(text, url, host)} "
                     f"на {host} (путь: {meta.get('path')})")
         act = {"kind": "click", "idx": idx, "element": text or f"#{idx}",
                "host": host, "value": url, "choose": meta, "goal": goal}
-        if tab_id is not None:
-            act["tab_id"] = tab_id
-        return act, None
+        self._with_labels(act, item)
+        return self._act_from_meta(act, meta, tab_id), None
 
+    @_in_chat
     def resolve_hover(self, goal: str, site_word: Optional[str],
                       router, chat_id: str = ""
                       ) -> Tuple[Optional[dict], Optional[str]]:
@@ -5500,19 +8942,18 @@ class ComputerControlManager:
             act = {"kind": "hover", "point": point,
                    "element": str(point.get("label") or goal)[:80],
                    "host": host, "value": url, "choose": meta, "goal": goal}
-            if tab_id is not None:
-                act["tab_id"] = tab_id
-            return act, None
+            return self._act_from_meta(act, meta, tab_id), None
         item = self._element_by_idx(items, idx) or {}
         text = str(item.get("text") or "")
         logger.info(f"[CompControl] Наведение «{goal[:40]}» → [{idx}] "
-                    f"{text[:40]} на {host} (путь: {meta.get('path')})")
+                    f"{self._label_for_log(text, url, host)} на {host} "
+                    f"(путь: {meta.get('path')})")
         act = {"kind": "hover", "idx": idx, "element": text or f"#{idx}",
                "host": host, "value": url, "choose": meta, "goal": goal}
-        if tab_id is not None:
-            act["tab_id"] = tab_id
-        return act, None
+        self._with_labels(act, item)
+        return self._act_from_meta(act, meta, tab_id), None
 
+    @_in_chat
     def resolve_download(self, goal: str, site_word: Optional[str],
                          router, chat_id: str = "") -> Tuple[Optional[dict], Optional[str]]:
         """«скачай „методичку по sql" (на example.edu)» → (download-действие,
@@ -5526,24 +8967,23 @@ class ComputerControlManager:
             return None, err
         if idx is None:
             # Зональный vision-фолбэк дал координатную зону — у неё нет href
-            return None, (f"Элемент «{goal[:60]}» — не ссылка на файл, "
-                          "скачивать нечего.")
+            return None, self._tx("rs_not_file_link", name=goal[:60])
         item = self._element_by_idx(items, idx) or {}
         text = str(item.get("text") or "")
         from app.features.browser_actions import href_of_tagged
         href = href_of_tagged(host, idx, tab_id=tab_id)
         if not href.startswith(("http://", "https://")):
             logger.info(f"[CompControl] Скачивание «{goal[:40]}»: у [{idx}] нет href")
-            return None, (f"Элемент «{text or goal}» — не ссылка на файл, "
-                          "скачивать нечего.")
+            return None, self._tx("rs_not_file_link", name=text or goal)
         logger.info(f"[CompControl] Скачивание «{goal[:40]}» → [{idx}] "
-                    f"{text[:40]} ({href[:60]})")
-        act = {"kind": "download", "url": href,
+                    f"{self._label_for_log(text, url, host)} ({href[:60]})")
+        # value — адрес СТРАНИЦЫ (url — файл): приватность flavor/аудита
+        # смотрит страницу, где лежит вложение (vk.com/im), а не только файл
+        act = {"kind": "download", "url": href, "value": url,
                "element": text or f"#{idx}", "host": host, "choose": meta}
-        if tab_id is not None:
-            act["tab_id"] = tab_id
-        return act, None
+        return self._act_from_meta(act, meta, tab_id), None
 
+    @_in_chat
     def resolve_read(self, mode: str, site_word: Optional[str],
                      chat_id: str = "") -> Tuple[Optional[dict], Optional[str]]:
         """«прочитай последнее сообщение (на почте)» → (read-действие, None)
@@ -5558,6 +8998,7 @@ class ComputerControlManager:
             act["tab_id"] = tab_id
         return act, None
 
+    @_in_chat
     def resolve_zoom(self, direction: str, site_word: Optional[str],
                      chat_id: str = "") -> Tuple[Optional[dict], Optional[str]]:
         """«увеличь/уменьши/сбрось масштаб (на сайте)» → (zoom-действие, None)
@@ -5567,11 +9008,13 @@ class ComputerControlManager:
             site_word, chat_id=chat_id)
         if err:
             return None, err
-        act = {"kind": "zoom", "dir": direction, "host": host}
+        # value — адрес страницы: по нему проверяется приватность
+        act = {"kind": "zoom", "dir": direction, "host": host, "value": url}
         if tab_id is not None:
             act["tab_id"] = tab_id
         return act, None
 
+    @_in_chat
     def page_view_report(self, site_word: Optional[str] = None,
                          chat_id: str = "",
                          full_page: bool = False) -> Tuple[Optional[dict], Optional[str]]:
@@ -5622,6 +9065,7 @@ class ComputerControlManager:
         return {"url": url, "host": host, "tab_id": tab_id,
                 "items": items or [], "shot": shot}, None
 
+    @_in_chat
     def scroll_to_goal(self, goal: str, site_word: Optional[str] = None,
                        chat_id: str = "") -> Tuple[Optional[dict], Optional[str]]:
         """«пролистай до X» / «найди X на странице» / «докрути до конца» —
@@ -5636,6 +9080,7 @@ class ComputerControlManager:
         if err:
             return None, err
         from app.features import browser_actions as _ba
+        from app.features import cc_texts
         g = " ".join(goal.strip().split())
         g_norm = re.sub(r"\s*(?:страниц\w*|сайт\w*|лент\w*)\s*$", "",
                         g.lower()).strip()
@@ -5651,11 +9096,14 @@ class ComputerControlManager:
                 found = True
             elif edge == "bottom":
                 for _ in range(15):
+                    if self.stop_requested(chat_id):
+                        break  # «стоп» от пользователя
                     step = _ba.scroll_step(host, tab_id)
                     if not step.get("moved"):
                         break
                     _ba.wait_dom_idle(host, tab_id, timeout_sec=1.5,
-                                      min_wait=0.2)
+                                      min_wait=0.2,
+                                      stop=self._stop_check(chat_id))
                     if step.get("bottom"):
                         break
                 found = True
@@ -5667,7 +9115,11 @@ class ComputerControlManager:
                 found = bool(g_items)
         except Exception as e:
             logger.debug(f"[CompControl] доскролл до цели не удался: {e}")
-            return None, "Не удалось пролистать страницу."
+            return None, cc_texts.t("scroll_failed", self.turn_lang())
+        if self.stop_requested(chat_id):
+            # Доскролл прерван «стоп»: ни «докрутил до низа», ни «не вижу» —
+            # честно «остановлено»
+            return None, cc_texts.t("stopped", self.turn_lang())
         shot = None
         if found:
             try:
@@ -5733,8 +9185,34 @@ class ComputerControlManager:
         text = (text or "").strip()
         if len(text) < 3:
             return None
-        return text, (host_part or self._last_host or ""), query
+        # Текст секции уходит в общий LLM-поток (часто облако/веб-чат): с
+        # приватной страницы (вход/оплата/банк) не отдаём — обычный диалог
+        page_host = host_part or self._last_host or ""
+        # Приватность — по ФАКТИЧЕСКОМУ адресу прочитанной вкладки (vk.com
+        # обычный, vk.com/im — переписка; «…на vk.com» явным хостом), плюс
+        # отслеживаемый адрес того же хоста; адрес не узнали — хост и он
+        cands = [page_host]
+        try:
+            from app.features.browser_actions import tab_url
+            cands.append(tab_url(host_part, tab_id) or "")
+        except Exception as e:
+            logger.debug(f"[CompControl] адрес вкладки секции не узнан: {e}")
+        last = self._last_url
+        if last:
+            from app.features.cc_privacy import _host_of
 
+            def _h(s) -> str:
+                h = _host_of(str(s or ""))[0]
+                return h[4:] if h.startswith("www.") else h
+            if host_part is None or _h(last) == _h(page_host):
+                cands.append(str(last))
+        if any(self.is_private_page(c) for c in cands if c):
+            logger.info(f"[CompControl] {page_host} — приватная страница: "
+                        "текст секции в LLM не отдаю")
+            return None
+        return text, page_host, query
+
+    @_in_chat
     def resolve_send(self, _goal, site_word: Optional[str],
                      router=None, chat_id: str = "") -> Tuple[Optional[dict], Optional[str]]:
         """«отправь» — Enter в поле ввода вкладки (та же адресация, что у
@@ -5749,6 +9227,7 @@ class ComputerControlManager:
             act["tab_id"] = tab_id
         return act, None
 
+    @_in_chat
     def resolve_key(self, goal, site_word: Optional[str],
                     router=None, chat_id: str = ""
                     ) -> Tuple[Optional[dict], Optional[str]]:
@@ -5791,6 +9270,7 @@ class ComputerControlManager:
             act["tab_id"] = tab_id
         return act, None
 
+    @_in_chat
     def resolve_slider(self, goal, site_word: Optional[str],
                        router=None, chat_id: str = ""
                        ) -> Tuple[Optional[dict], Optional[str]]:
@@ -5856,9 +9336,11 @@ class ComputerControlManager:
         дозорный: конец ленты (легли на дно и оно не подросло) или смерть/
         навигация вкладки завершают сеанс сами. Запуск синхронно: вкладка
         мертва или страница уже внизу — честная ошибка, а не «листаю» без
-        движения. Один сеанс на бота: повторный старт при живом отсекается
-        резолвером."""
+        движения. Один сеанс на чат: повторный старт при живом отсекается
+        резолвером; сеанс и его конец пишутся в состояние СВОЕГО чата (поток
+        дозорного знает ключ — контекста хода у него нет)."""
         from app.features import browser_actions as ba
+        chat = self._cur_chat()
         host, tab_id = action.get("host"), action.get("tab_id")
         side = action.get("side")
         direction = action.get("dir")
@@ -5912,28 +9394,32 @@ class ComputerControlManager:
                     # Страница ушла навигацией/перезагрузкой — анимации нет
                     box["end"] = "lost"
                     break
-            self._scroll_finished(stop_evt, box)
+            self._scroll_finished(stop_evt, box, chat)
 
         t = threading.Thread(target=_loop, daemon=True, name="vpc-scroll")
+        st = self._st(chat)
         with self._scroll_lock:
-            self._scroll = {"thread": t, "stop": stop_evt, "box": box,
-                            "host": host, "tab_id": tab_id}
-            self._scroll_ended = None
+            st.scroll = {"thread": t, "stop": stop_evt, "box": box,
+                         "host": host, "tab_id": tab_id, "chat": chat}
+            st.scroll_ended = None
         t.start()
         logger.info(f"[CompControl] Начал листать страницу: {host}")
 
-    def _scroll_finished(self, stop_evt, box: Dict[str, str]):
+    def _scroll_finished(self, stop_evt, box: Dict[str, str],
+                         chat: Optional[str] = None):
         """Листание кончилось САМО (конец ленты, вкладка ушла, потолок
         времени) — снимаем сеанс: иначе он числился бы живым вечно, на
         «промотай» шло бы «я уже листаю», а бытовое «стоп» спустя время
         перехватывалось бы как команда. Причину помним недолго —
-        «стоп» вдогонку получит честный ответ."""
+        «стоп» вдогонку получит честный ответ. chat — чей сеанс (поток
+        дозорного); None — текущий чат."""
+        st = self._st(chat)
         with self._scroll_lock:
-            s = self._scroll
+            s = st.scroll
             if s is None or s["stop"] is not stop_evt:
                 return  # сеанс уже сняли «стопом» или сменили новым
-            self._scroll = None
-            self._scroll_ended = (time.monotonic(), box.get("end") or "lost")
+            st.scroll = None
+            st.scroll_ended = (time.monotonic(), box.get("end") or "lost")
 
     def _scroll_recent_end(self) -> Optional[str]:
         """Причина самозавершения, если оно было только что (иначе None).
@@ -5964,6 +9450,7 @@ class ComputerControlManager:
         s["thread"].join(timeout=3)
         return s["box"].get("end")
 
+    @_in_chat
     def resolve_scroll(self, mode, site_word: Optional[str],
                        router=None, chat_id: str = "") -> Tuple[Optional[dict], Optional[str]]:
         """«промотай страницу (на ютубе)» → (scroll-действие, None);
@@ -5992,17 +9479,14 @@ class ComputerControlManager:
                 return None, None
             return {"kind": "scroll_stop"}, None
         if self._scroll_active():
-            return None, ("Я уже листаю страницу — скажи «стоп», "
-                          "и остановлюсь.")
+            return None, self._tx("rs_already_scrolling")
         url, host, items, tab_id, err = self._snapshot_for(
             site_word, chat_id=chat_id)
         if err:
             return None, err
         p = urlparse(url)
         if p.hostname in ("localhost", "127.0.0.1") and p.port in (5173, 8000):
-            return None, ("Сейчас активна вкладка чата — листать там нечего. "
-                          "Назови сайт («промотай страницу на ютубе») или "
-                          "переключись на неё.")
+            return None, self._tx("rs_scroll_chat_tab")
         act = {"kind": "scroll", "host": host, "value": url}
         if side:
             act["side"] = side
@@ -6036,9 +9520,9 @@ class ComputerControlManager:
         try:
             tabs = self.list_open_tabs()
         except Exception as e:
-            return f"Не вижу браузер: {e}"
+            return self._tx("rs_no_browser", detail=e)
         if not tabs:
-            return "В браузере бота нет открытых вкладок."
+            return self._tx("tabs_none")
         shown = tabs[:10]
         cur_id = self._last_tab_id
         cur_idx = next((i for i, t in enumerate(shown)
@@ -6050,11 +9534,13 @@ class ComputerControlManager:
                     (i for i, t in enumerate(shown)
                      if t["host"].lower().removeprefix("www.") == cur_host),
                     None)
-        parts = [f"«{(t['title'] or t['host'])[:40]}» ({t['host']})"
-                 + (" ← текущая" if i == cur_idx else "")
+        mark = self._tx("tabs_current")
+        parts = [f"{self._qt((t['title'] or t['host'])[:40])} ({t['host']})"
+                 + (mark if i == cur_idx else "")
                  for i, t in enumerate(shown)]
-        tail = "" if len(tabs) <= 10 else f" и ещё {len(tabs) - 10}"
-        return "Открытые вкладки: " + ", ".join(parts) + tail + "."
+        tail = ("" if len(tabs) <= 10
+                else self._tx("tabs_more", n=len(tabs) - 10))
+        return self._tx("tabs_list", tabs=", ".join(parts), more=tail)
 
     def _scored_tabs(self, goal: str, tabs: List[dict]
                      ) -> List[Tuple[float, dict]]:
@@ -6103,6 +9589,7 @@ class ComputerControlManager:
         scored.sort(key=lambda x: -x[0])
         return scored
 
+    @_in_chat
     def resolve_tab_switch(self, goal: str, explicit: bool = True,
                            chat_id: str = ""
                            ) -> Tuple[Optional[dict], Optional[str]]:
@@ -6117,34 +9604,36 @@ class ComputerControlManager:
         try:
             tabs = self.list_open_tabs()
         except Exception as e:
-            return None, f"Не вижу браузер: {e}"
+            return None, self._tx("rs_no_browser", detail=e)
         scored = self._scored_tabs(goal, tabs)
         if scored and (len(scored) == 1
                        or scored[0][0] - scored[1][0] >= 10.0):
             t = scored[0][1]
             label = t["title"] or t["host"]
             logger.info(f"[CompControl] Переключение на вкладку "
-                        f"#{t['tab_id']} «{label[:40]}» ({t['host']})")
+                        f"#{t['tab_id']} "
+                        f"«{self._label_for_log(label, t.get('url'))}» "
+                        f"({t['host']})")
             return {"kind": "tab_switch", "tab_id": t["tab_id"],
                     "value": t["url"], "host": t["host"],
                     "element": label[:80]}, None
-        names = ", ".join(f"«{(t['title'] or t['host'])[:30]}»"
+        names = ", ".join(self._qt((t['title'] or t['host'])[:30])
                           for t in tabs[:5]) or "—"
         if len(scored) > 1:
-            cands = ", ".join(f"«{(t['title'] or t['host'])[:30]}»"
+            cands = ", ".join(self._qt((t['title'] or t['host'])[:30])
                               for _s, t in scored[:4])
-            return None, (f"Под «{goal}» подходят несколько вкладок: "
-                          f"{cands}. Уточни, какую.")
+            return None, self._tx("rs_tabs_ambiguous", goal=goal,
+                                  cands=cands)
         if not explicit:
             # Мягкая форма и вкладки нет — возможно, имелось в виду «открой»:
             # алиас/история (поисковый резолв на мягкую фразу не гоняем)
-            alt = self.resolve(goal)
+            alt = self.resolve(goal, web_search=False)
             if alt and not alt.get("expect_name"):
                 return alt, None
             return None, None  # не наша команда — пусть разбирает диалог
-        return None, (f"Вкладка «{goal}» не найдена. Открыты: {names}. "
-                      "Скажи «открой …», если нужна новая.")
+        return None, self._tx("rs_tab_not_found_open", goal=goal, names=names)
 
+    @_in_chat
     def resolve_tab_op(self, goal: Optional[str], op: str, router=None,
                        chat_id: str = ""
                        ) -> Tuple[Optional[dict], Optional[str]]:
@@ -6154,6 +9643,13 @@ class ComputerControlManager:
         подтверждения пользователь мог сменить вкладку — обновить/закрыть
         надо ту, что он видит СЕЙЧАС). С подтверждением: закрытие
         необратимо, перезагрузка теряет неотправленный ввод."""
+        # Особые op парсера (parse_tab_op): пустую вкладку открывать незачем,
+        # а «закрыть все» разом — слишком разрушительно для одной фразы
+        if op == "new":
+            return None, self._tx("rs_tab_new")
+        if op == "close_all" or (op == "close" and goal and " ".join(
+                goal.lower().split()) in ("все", "всё", "all")):
+            return None, self._tx("rs_tab_close_all")
         tab_id: Optional[int] = None
         host = ""
         label = ""
@@ -6161,7 +9657,7 @@ class ComputerControlManager:
             try:
                 tabs = self.list_open_tabs()
             except Exception as e:
-                return None, f"Не вижу браузер: {e}"
+                return None, self._tx("rs_no_browser", detail=e)
             scored = self._scored_tabs(goal, tabs)
             if scored and (len(scored) == 1
                            or scored[0][0] - scored[1][0] >= 10.0):
@@ -6170,15 +9666,15 @@ class ComputerControlManager:
                 host = t["host"]
                 label = t["title"] or t["host"]
             elif len(scored) > 1:
-                cands = ", ".join(f"«{(t['title'] or t['host'])[:30]}»"
+                cands = ", ".join(self._qt((t['title'] or t['host'])[:30])
                                   for _s, t in scored[:4])
-                return None, (f"Под «{goal}» подходят несколько вкладок: "
-                              f"{cands}. Уточни, какую.")
+                return None, self._tx("rs_tabs_ambiguous", goal=goal,
+                                      cands=cands)
             else:
-                names = ", ".join(f"«{(t['title'] or t['host'])[:30]}»"
+                names = ", ".join(self._qt((t['title'] or t['host'])[:30])
                                   for t in tabs[:5]) or "—"
-                return None, (f"Вкладка «{goal}» не найдена. "
-                              f"Открыты: {names}.")
+                return None, self._tx("rs_tab_not_found", goal=goal,
+                                      names=names)
         else:
             # Имя для вопроса-подтверждения — видимая вкладка сейчас
             # (visible_page_info отдаёт (url, host); title возьмём из
@@ -6197,7 +9693,7 @@ class ComputerControlManager:
                 hit = next((t for t in tabs if t["url"] == info[0]), None)
                 label = (hit["title"] or hit["host"]) if hit else host
         logger.info(f"[CompControl] tab_op {op}: "
-                    f"{label[:40] or goal or '(видимая)'}")
+                    f"{self._label_for_log(label, host) if label else (goal or '(видимая)')}")
         return {"kind": "tab_op", "op": op, "tab_id": tab_id,
                 "host": host, "element": label[:80]}, None
 
@@ -6230,7 +9726,7 @@ class ComputerControlManager:
             logger.info(f"[CompControl] «{str(product_raw)[:30]}» → {op_ru} "
                         f"«{product[:40]}» в корзине на {host}")
             act = {"kind": "cart", "op": op, "product": product,
-                   "host": host}
+                   "host": host, "value": url}  # value — адрес страницы
             if tab_id is not None:
                 act["tab_id"] = tab_id
             return act
@@ -6265,20 +9761,20 @@ class ComputerControlManager:
                 logger.info(f"[CompControl] «{str(product_raw)[:30]}» → "
                             f"редактор состава «{product[:40]}» на {host}")
                 act = {"kind": "comp_edit", "product": product,
-                       "host": host}
+                       "host": host, "value": url}  # value — адрес страницы
                 if tab_id is not None:
                     act["tab_id"] = tab_id
                 return act, None
             if st == "multi":
                 vs = "; ".join(str(v) for v in (res.get("variants") or []))
-                return None, ("На странице несколько «Изменить состав»"
-                              + (f" ({vs})" if vs else "")
-                              + " — уточни, для какого товара.")
+                return None, self._tx("rs_comp_edit_multi",
+                                      variants=f" ({vs})" if vs else "")
         except Exception as e:
             logger.debug(f"[CompControl] Поиск редактора состава не "
                          f"удался: {e}")
         return None, None
 
+    @_in_chat
     def resolve_cart(self, parsed, site_word: Optional[str],
                      router=None, chat_id: str = "") -> Tuple[Optional[dict], Optional[str]]:
         """(op, product) из parse_cart_request → (cart-действие, None) или
@@ -6291,21 +9787,20 @@ class ComputerControlManager:
             return None, err
         p = urlparse(url)
         if p.hostname in ("localhost", "127.0.0.1") and p.port in (5173, 8000):
-            return None, ("Сейчас активна вкладка чата — корзины там нет. "
-                          "Переключись на страницу магазина.")
-        act = {"kind": "cart", "op": op, "product": product, "host": host}
+            return None, self._tx("rs_cart_chat_tab")
+        act = {"kind": "cart", "op": op, "product": product, "host": host,
+               "value": url}  # value — адрес страницы (приватность)
         if tab_id is not None:
             act["tab_id"] = tab_id
         return act, None
 
     # ── Ввод текста «введи X в поле Y» ─────────────────────
 
-    @staticmethod
-    def _type_fields_hint(msg: str, inputs: List[dict]) -> str:
+    def _type_fields_hint(self, msg: str, inputs: List[dict]) -> str:
         labels = [str(it.get("text") or "")[:30] for it in inputs[:5]]
         labels = [l for l in labels if l]
-        return msg + (f" Вижу поля: {', '.join(f'«{l}»' for l in labels)}."
-                      if labels else "")
+        return msg + (self._tx("rs_fields_seen", labels=", ".join(
+            self._qt(l) for l in labels)) if labels else "")
 
     def _hidden_fields_note(self, host: str, tab_id: Optional[int],
                             goal: str) -> Optional[str]:
@@ -6329,9 +9824,8 @@ class ComputerControlManager:
             hay = label.lower()
             if (g_words and all(w in hay or _stem(w) in hay for w in g_words)) \
                     or (want_search and item.get("q")):
-                return (f"Поле «{label[:40]}» на странице {host} есть, "
-                        "но сейчас скрыто (свёрнутое меню или закрытый "
-                        "попап). Открой его и повтори — тогда введу.")
+                return self._tx("rs_hidden_field", label=label[:40],
+                                host=host)
         return None
 
     @staticmethod
@@ -6405,6 +9899,7 @@ class ComputerControlManager:
         text = _TYPE_PREP_EDGE_RE.sub("", text).strip()
         return it, text or None
 
+    @_in_chat
     def resolve_type(self, body: str, site_word: Optional[str],
                      router, chat_id: str = ""
                      ) -> Tuple[Optional[dict], Optional[str]]:
@@ -6473,21 +9968,24 @@ class ComputerControlManager:
             if explicit:
                 return None, err
             return None, None  # «в стиле …», но страницы нет — не наше
+        # Форма входа/оплаты — поля выбирает только локальная модель/скоринг
+        router = self._privacy_router(router, url or host)
         p = urlparse(url)
         if p.hostname in ("localhost", "127.0.0.1") and p.port in (5173, 8000):
-            return None, ("Сейчас активна вкладка чата — туда вводить нечего. "
-                          "Назови сайт («введи X в поле Y на ютубе») или "
-                          "переключись на страницу.")
+            return None, self._tx("rs_type_chat_tab")
         inputs = [it for it in items if it.get("ed")]
         if not inputs:
             if explicit:
                 hidden = self._hidden_fields_note(host, tab_id, body)
                 if hidden:
                     return None, hidden
-                self._audit_resolve(chat_id, body, host,
-                                    f"На странице {host} нет полей ввода.",
-                                    "no_fields")
-                return None, f"На странице {host} нет полей ввода."
+                # body — «ТЕКСТ в поле ПОЛЕ»: вводимый текст (пароль, слот
+                # сценария) в аудит и лог — только маской
+                from app.features.cc_privacy import redact_type_body
+                no_fields = self._tx("rs_no_fields", host=host)
+                self._audit_resolve(chat_id, redact_type_body(body), host,
+                                    no_fields, "no_fields")
+                return None, no_fields
             return None, None
         field_goal: Optional[str] = None
         text: Optional[str] = None
@@ -6504,8 +10002,7 @@ class ComputerControlManager:
         elif _TYPE_FIELD_END_RE.search(body):
             # «привет в поле» — сепаратор на краю, названия поля нет
             return None, self._type_fields_hint(
-                "Не понял, в какое поле ввести. "
-                "Скажи так: «введи ТЕКСТ в поле НАЗВАНИЕ».", inputs)
+                self._tx("rs_type_which_field"), inputs)
         elif _TYPE_SEARCH_SEP_RE.search(body):
             # «X в поиск»: «поиск» — само название поля (search-инпут)
             m = _TYPE_SEARCH_SEP_RE.search(body)
@@ -6524,18 +10021,16 @@ class ComputerControlManager:
             if item is None:
                 if explicit:
                     return None, self._type_fields_hint(
-                        f"Не разобрал, что и куда ввести из «{body[:60]}». "
-                        "Скажи так: «введи ТЕКСТ в поле НАЗВАНИЕ».", inputs)
+                        self._tx("rs_type_unparsed", body=body[:60]), inputs)
                 return None, None
             if not text:
-                return None, (f"Не понял, какой текст ввести в "
-                              f"«{str(item.get('text') or '')[:40]}» — "
-                              "добавь текст после названия поля.")
+                return None, self._tx(
+                    "rs_type_no_text",
+                    field=str(item.get('text') or '')[:40])
         if field_goal is None and item is None:
             # «текст в поле» — сепаратор есть, а названия поля после него нет
             return None, self._type_fields_hint(
-                "Не понял, в какое поле ввести. "
-                "Скажи так: «введи ТЕКСТ в поле НАЗВАНИЕ».", inputs)
+                self._tx("rs_type_which_field"), inputs)
         if field_goal is not None:
             idx, meta = self._choose_element(field_goal, inputs, router,
                                              host=host)
@@ -6569,7 +10064,8 @@ class ComputerControlManager:
                 if hidden:
                     return None, hidden
                 msg = self._type_fields_hint(
-                    f"На странице {host} не нашёл поля «{field_goal}».", inputs)
+                    self._tx("rs_no_field", host=host, field=field_goal),
+                    inputs)
                 self._audit_resolve(chat_id, field_goal, host, msg,
                                     self._resolve_fail_kind(meta), meta=meta)
                 return None, msg
@@ -6581,17 +10077,18 @@ class ComputerControlManager:
             # «мой город» — город из местоположения пользователя
             city = self._home_city()
             if city is None:
-                return None, ("Не знаю твой город: местоположение выключено "
-                              "(досье → «Настройки» → местоположение). "
-                              "Назови город текстом.")
+                return None, self._tx("rs_no_city")
             text = city
         if not text or len(text) > 200:
-            return None, "Не понял, какой текст ввести."
+            return None, self._tx("rs_type_bad_text")
         label = str(item.get("text") or f"#{item['idx']}")
-        logger.info(f"[CompControl] Ввод «{label[:40]}» ← {len(text)} симв. "
-                    f"на {host} (путь: {meta.get('path')})")
+        logger.info(f"[CompControl] Ввод «{self._label_for_log(label, url, host, idx=item['idx'])}» "
+                    f"← {len(text)} симв. на {host} (путь: {meta.get('path')})")
         act = {"kind": "type", "idx": int(item["idx"]), "text": text,
                "element": label, "host": host, "value": url, "choose": meta}
+        # aria/title поля — в действие: поле «Номер карты» только в aria
+        # иначе проходило мимо risky_label (ввод карты без подтверждения)
+        self._with_labels(act, item)
         # Риск ввода (needs_confirm): чувствительное поле (пароль/email/tel —
         # флаг sn снапшота) подтверждается всегда; поисковое (флаг q) может
         # идти без confirm по risk_overrides.type_text_safe_fields
@@ -6645,12 +10142,62 @@ class ComputerControlManager:
                         f"не удалось: {e}")
             return None
 
+    @_in_chat
     def execute(self, action: dict, chat_id: str = "",
                 router=None) -> Tuple[bool, str]:
         """Исполняет действие из allowlist'а. Возвращает (ok, detail).
-        router — для LLM-выбора элемента в многошаговой навигации."""
+        router — для LLM-выбора элемента в многошаговой навигации.
+        Один браузер на все чаты — исполнение под _exec_lock: действия
+        разных чатов не чередуются на одной странице. Контекст вкладок —
+        чата chat_id (пусто — чата хода, @_in_chat)."""
+        if chat_id:
+            # Новое исполненное действие делает отложенное устаревшим:
+            # страница уже другая, «да» потом не должно исполнять старое
+            try:
+                self.clear_pending(chat_id)
+            except Exception:
+                pass
+        lock = self.__dict__.get("_exec_lock")
+        if lock is None:
+            lock = self.__dict__.setdefault("_exec_lock", threading.RLock())
+        with lock:
+            # Чей ход сейчас исполняется — для «стоп» до лока хода
+            # (stop_requested/executing_for); вложенный вызов не сбрасывает.
+            # Веб-чат без chat_id — ключ хода (user_id): тот же, по которому
+            # cc_turn_enter ставит request_stop
+            depth = self.__dict__.get("_exec_depth", 0)
+            if not depth:
+                # str(None) задачи/сценария веб-чата — не ключ (_chat_key)
+                self._exec_chat = (_chat_key(chat_id)
+                                   or _chat_key(self.turn_key()))
+            self._exec_depth = depth + 1
+            try:
+                from app.features import browser_actions as _ba
+                # Долгие опросы браузера внутри действия (снапшот, DOM,
+                # ожидание вкладки) выходят по «стоп» досрочно
+                with _ba.stop_scope(self._stop_check(self._exec_chat)):
+                    return self._execute_locked(action, chat_id, router)
+            finally:
+                self._exec_depth = depth
+                if not depth:
+                    self._exec_chat = None
+
+    def _execute_locked(self, action: dict, chat_id: str,
+                        router) -> Tuple[bool, str]:
         error_class = None
+        # LLM-решения по приватной странице (вход/оплата) — только локальной
+        # моделью: снапшот/скриншот не уходят облаку и веб-чатам
+        # По ПОЛНЫМ адресам (value/url, у multi — всех шагов) и хосту:
+        # приватность бывает по пути (vk.com/im, */login, */cart)
+        from app.features.cc_privacy import page_candidates
+        router = self._privacy_router(router, *page_candidates(action))
+        t0 = time.monotonic()
+        action.pop("confirm_required", None)
         try:
+            # Инвариант подтверждения — здесь, до любого пути исполнения:
+            # рискованное действие без токена человека не исполняется
+            # (шаги маршрута сверяет _nav_gate внутри _navigate)
+            self._confirm_gate(action)
             self._dispatch(action, router=router)
             ok = True
             # read: detail — это прочитанный текст, он и есть ответ пользователю
@@ -6665,8 +10212,35 @@ class ComputerControlManager:
             # Класс ошибки для аудита: «не уверен, что сработало» —
             # отдельный класс от «элемент не найден»/«браузер недоступен»
             error_class = getattr(e, "error_class", None) or "error"
+            if self.stop_requested():
+                # Опрос вышел по «стоп» и шаг упал на недождавшейся странице —
+                # честное «остановлено», а не ошибка сайта
+                from app.features import cc_texts
+                ok, detail = False, cc_texts.t("stopped_by_user",
+                                               self.turn_lang())
+                error_class = "stopped"
+                action.pop("confirm_required", None)
+            elif isinstance(action.get("confirm_required"), dict):
+                # Гейт: ничего не нажато (маршрут — до рискованного шага);
+                # вызывающий превращает отказ в вопрос (gate_followup).
+                # Отказ распознаётся по полю, даже если исключение обернули
+                from app.features import cc_texts
+                error_class = "needs_confirm"
+                detail = cc_texts.t(
+                    "gate_blocked", self.turn_lang(),
+                    risk=cc_texts.gate_risk(
+                        action["confirm_required"].get("reason"),
+                        self.turn_lang()))
+        action["duration_ms"] = int((time.monotonic() - t0) * 1000)
         self.stats["executed" if ok else "failed"] += 1
-        self._audit(chat_id, action, ok, detail, error_class=error_class)
+        # Аудит гейта: чьим «да» исполнено / почему остановлено
+        _gx: Dict[str, object] = {}
+        if self.is_confirmed(action):
+            _gx["confirmed"] = action["confirmed"].via
+        if isinstance(action.get("confirm_required"), dict):
+            _gx["gate"] = str(action["confirm_required"].get("reason"))
+        self._audit(chat_id, action, ok, detail, error_class=error_class,
+                    extra=_gx or None)
         if ok:
             # Запоминаем хост последней открытой вкладки — цель клика по умолчанию
             if action["kind"] == "url":
@@ -6679,11 +10253,77 @@ class ComputerControlManager:
                     if a["kind"] == "url":
                         self._last_host = self._host(a)
             if action["kind"] in ("url", "nav", "multi") and self._last_host:
+                # Открытая вкладка поднята — она и видна пользователю
+                _opened = action.get("value") or next(
+                    (a.get("value") for a in reversed(action.get("items") or ())
+                     if isinstance(a, dict) and a.get("kind") == "url"), None)
+                self._init_vis_baseline(_opened or self._last_host)
                 self._save_last_page(action.get("value"))
-            logger.info(f"[CompControl] Выполнено: {self.describe(action)}")
+            logger.info(f"[CompControl] Выполнено: {self._describe_log(action)}")
         else:
-            logger.warning(f"[CompControl] Не удалось {self.describe(action)}: {detail}")
+            logger.warning(f"[CompControl] Не удалось "
+                           f"{self._describe_log(action)}: "
+                           f"{self._label_for_log(detail, *page_candidates(action), limit=200)}")
         return ok, detail
+
+    def _describe_log(self, action: dict) -> str:
+        """_describe_safe для лога процесса (виден в /api/logs): на приватной
+        странице подпись элемента (суммы, имена, переписка) — номером, как
+        _label_for_log; вопрос человеку строит _describe_safe/describe."""
+        from app.features.cc_privacy import page_candidates
+
+        def _hide(a):
+            if not isinstance(a, dict):
+                return a
+            if a.get("kind") == "multi":
+                return dict(a, items=[_hide(x) for x in a.get("items") or []])
+            if not any(a.get(k) for k in ("element", "aria", "title")):
+                return a
+            cands = page_candidates(a)
+            last = getattr(self, "_last_url", None)
+            if last and not any("://" in c for c in cands):
+                cands.append(str(last))
+            try:
+                priv = any(self.is_private_page(c) for c in cands)
+            except Exception:
+                priv = True  # проверить не вышло — консервативно
+            if not priv:
+                return a
+            return dict(a, element=f"#{a.get('idx')}" if a.get("idx") is not None
+                        else "<hidden>", aria="", title="")
+        try:
+            return self._describe_safe(_hide(action))
+        except Exception:
+            return str(action.get("kind"))
+
+    @staticmethod
+    def _expect_label(action: dict) -> dict:
+        """Подпись, которую браузер сверит с узлом в момент клика/ввода
+        (click_tagged/fill_tagged expect=): для шага агента задач — номер
+        из снимка, взятого десятки секунд (или минуты «да») назад, мог
+        достаться другому узлу, а гейт проверял старую подпись."""
+        if "task" in (action.get("origin"), action.get("pending_from")) \
+                and action.get("element"):
+            return {"expect": str(action["element"])}
+        return {}
+
+    def _describe_safe(self, action: dict, lang: Optional[str] = None) -> str:
+        # describe() для логов: введённый текст — ТОЛЬКО длиной, в любое
+        # поле (пароль в безымянное «#1» по подписи не распознать), URL —
+        # без токенов. Для чувствительного поля вопрос task_agent'а видит
+        # ту же маску, что и раньше давал redact_typed
+        from app.features.cc_privacy import mask, redact_inline
+
+        def _safe(a: dict) -> dict:
+            if a.get("kind") == "type":
+                return dict(a, text=mask(a.get("text")))
+            return a
+        try:
+            if action.get("kind") == "multi":
+                action = dict(action, items=[_safe(a) for a in action["items"]])
+            return redact_inline(self.describe(_safe(action), lang=lang))
+        except Exception:
+            return str(action.get("kind"))
 
     def _dispatch(self, action: dict, router=None):
         # Системный вызов (в тестах подменяется).
@@ -6701,6 +10341,9 @@ class ComputerControlManager:
             if action.get("host"):
                 self._last_host = action["host"]
             self._last_url = url
+            # Активированная вкладка видна — база ручного переключения
+            self._init_vis_baseline(url or action.get("host"))
+            self._save_last_page()
             if title and not action.get("element"):
                 action["element"] = title[:80]
             return
@@ -6750,11 +10393,14 @@ class ComputerControlManager:
             point = action.get("point")
             if point is not None:
                 # Зона зонального vision-фолбэка без DOM-метки (canvas и
-                # т.п.) — клик по координатам; closed-loop в click_at_point,
-                # протухших меток нет — повтор не нужен
+                # т.п.) — клик по координатам; closed-loop в click_at_point.
+                # Точка снята со скриншота ДО подтверждения: отпечаток
+                # (scrollY + элемент под точкой) сверяется перед кликом —
+                # страница прокрутилась/перерисовалась → честный отказ
+                _pkw = {"expect": point["sig"]} if point.get("sig") else {}
                 ba.click_at_point(action.get("host"), float(point["x"]),
                                   float(point["y"]),
-                                  tab_id=action.get("tab_id"))
+                                  tab_id=action.get("tab_id"), **_pkw)
             else:
                 # Номер элемента сквозной (блоки _mark_base): он сам
                 # определяет, какой снапшот и какой фрейм его пометил, а
@@ -6762,38 +10408,34 @@ class ComputerControlManager:
                 # чужому элементу после смены разметки невозможен
                 try:
                     ba.click_tagged(action.get("host"), int(action["idx"]),
-                                    tab_id=action.get("tab_id"))
+                                    tab_id=action.get("tab_id"),
+                                    **self._expect_label(action))
+                except ba.ClickUncertain:
+                    # Клик ДОСТАВЛЕН, эффекта не видно: повтор перещёлкнул
+                    # бы тоггл (бургер/аккордеон открылся и тут же закрылся)
+                    # — честное «не уверен, что сработало», без второго клика
+                    raise
                 except Exception as e:
-                    from app.features.browser_actions import ClickUncertain
-                    retryable = isinstance(e, ClickUncertain) \
-                        or "элемент потерян" in str(e)
-                    goal = action.get("goal")
-                    if not retryable or not goal:
+                    if "элемент потерян" not in str(e) \
+                            or not action.get("goal"):
                         raise
-                    # Между резолвом и кликом лежит подтверждение пользователя,
-                    # живые страницы (карусель баннеров) за эти секунды
-                    # перерисовываются и метка протухает: свежий снапшот →
-                    # свежий выбор → ОДИН повторный клик (как у шагов nav)
-                    _, host2, items2 = ba.snapshot_elements(
-                        action.get("host"), tab_id=action.get("tab_id"))
-                    idx2, _meta2 = self._choose_element(goal, items2, router,
-                                                        host=host2)
-                    if idx2 is None:
-                        raise RuntimeError(
-                            "элемент потерян — страница изменилась, "
-                            f"и «{str(goal)[:40]}» заново не нашёлся")
+                    # Между резолвом и кликом лежит подтверждение
+                    # пользователя, живые страницы (карусель баннеров) за эти
+                    # секунды перерисовываются и метка протухает — клик НЕ
+                    # ушёл. Перенаходим ТОТ ЖЕ подтверждённый элемент и
+                    # кликаем ОДИН раз
+                    idx2 = self._refind_confirmed(action, router)
+                    action["retried"] = True
                     ba.click_tagged(action.get("host"), int(idx2),
                                     tab_id=action.get("tab_id"))
                     action["idx"] = int(idx2)
-                    found = self._element_by_idx(items2, int(idx2))
-                    if found:
-                        action["element"] = str(found.get("text") or "")[:80]
             pop = ba.follow_popup(pre)
             if pop is not None:
                 # Клик открыл новое окно (вход в аккаунт через сторонний сервис и т.п.) —
                 # следующие «введи …»/«нажми …» работают уже в нём
                 tid, host, url = pop
                 self._last_tab_id, self._last_host, self._last_url = tid, host, url
+                self._init_vis_baseline(url or host)
                 self._save_last_page(url)
                 logger.info(f"[CompControl] Отслеживаю попап: {host}")
             else:
@@ -6805,42 +10447,35 @@ class ComputerControlManager:
             from app.features import browser_actions as ba
             point = action.get("point")
             if point is not None:
+                _pkw = {"expect": point["sig"]} if point.get("sig") else {}
                 ba.hover_at_point(action.get("host"), float(point["x"]),
                                   float(point["y"]),
-                                  tab_id=action.get("tab_id"))
+                                  tab_id=action.get("tab_id"), **_pkw)
             else:
                 try:
                     ba.hover_tagged(action.get("host"), int(action["idx"]),
                                     tab_id=action.get("tab_id"))
                 except Exception as e:
                     # Как у клика: метка могла протухнуть за секунды
-                    # подтверждения — свежий снапшот и ОДИН повтор. Ретраим
-                    # только потерю элемента: «не уверен, что сработало»
-                    # повтором не лечится
-                    goal = action.get("goal")
-                    if "элемент потерян" not in str(e) or not goal:
+                    # подтверждения — перенаходим тот же элемент и ОДИН
+                    # повтор. Ретраим только потерю элемента: «не уверен, что
+                    # сработало» повтором не лечится
+                    if "элемент потерян" not in str(e) \
+                            or not action.get("goal"):
                         raise
-                    _, _host2, items2 = ba.snapshot_elements(
-                        action.get("host"), tab_id=action.get("tab_id"))
-                    idx2, _meta2 = self._choose_element(goal, items2, router,
-                                                        host=_host2)
-                    if idx2 is None:
-                        raise RuntimeError(
-                            "элемент потерян — страница изменилась, "
-                            f"и «{str(goal)[:40]}» заново не нашёлся")
+                    idx2 = self._refind_confirmed(action, router)
+                    action["retried"] = True
                     ba.hover_tagged(action.get("host"), int(idx2),
                                     tab_id=action.get("tab_id"))
                     action["idx"] = int(idx2)
-                    found = self._element_by_idx(items2, int(idx2))
-                    if found:
-                        action["element"] = str(found.get("text") or "")[:80]
             self._remember_tab(action)
             return
         if action["kind"] == "type":
             from app.features import browser_actions as ba
             ba.fill_tagged(action.get("host"), int(action["idx"]),
                            action["text"], tab_id=action.get("tab_id"),
-                           submit=bool(action.get("submit")))
+                           submit=bool(action.get("submit")),
+                           **self._expect_label(action))
             self._remember_tab(action)
             return
         if action["kind"] == "read":
@@ -6849,7 +10484,9 @@ class ComputerControlManager:
             from app.features import browser_actions as ba
             action["_result"] = ba.read_text(
                 action.get("host"), tab_id=action.get("tab_id"),
-                mode=str(action.get("mode") or "last"))
+                mode=str(action.get("mode") or "last"),
+                **({"task": True} if action.get("read_scope") == "task"
+                   else {}))
             self._remember_tab(action)
             return
         if action["kind"] == "send":
@@ -6879,6 +10516,29 @@ class ComputerControlManager:
             # и выставляет значение (unit: pct — доля шкалы, min/sec —
             # медиа-прогресс); фактическое — в отчёт ответа
             from app.features import browser_actions as ba
+            _lab = str(action.get("slider_label") or "").lower()
+            _unit = str(action.get("slider_unit") or "")
+            _val = int(action.get("slider_value") or 0)
+            if re.search(r"звук|громк|volume", _lab) \
+                    and _unit in ("", "pct") and 0 <= _val <= 100:
+                # Громкость при живом <video> — напрямую у медиа-элемента:
+                # ползунок плеера (YouTube) свёрнут до наведения и часто
+                # «не принимает» значение, а громкость медиа — надёжна.
+                # Видео нет — обычный слайдер
+                try:
+                    got = ba.media_volume_op(action.get("host"),
+                                             f"={_val / 100:g}",
+                                             tab_id=action.get("tab_id"))
+                except ba.BrowserUnavailable as e:
+                    if "нет видео" not in str(e):
+                        raise
+                else:
+                    action["slider_done"] = (got[4:] + "%"
+                                             if got.startswith("vol:")
+                                             else got)
+                    action["slider_path"] = "media_vol"
+                    self._remember_tab(action)
+                    return
             action["slider_done"] = ba.set_slider(
                 action.get("host"), action.get("slider_label") or "",
                 int(action.get("slider_value") or 0),
@@ -6975,6 +10635,58 @@ class ComputerControlManager:
             return
         subprocess.Popen(value, shell=True)  # noqa: S602
 
+    def _refind_confirmed(self, action: dict, router) -> int:
+        """Перенайти подтверждённый пользователем элемент после «элемент
+        потерян» (метка протухла, клик НЕ ушёл). Пользователь подтвердил
+        конкретный элемент Y — молча нажать Z нельзя: вкладка ушла с
+        подтверждённой страницы → отказ; сначала ищем элемент с ТОЧНО той же
+        подписью, иначе обычный выбор по цели, но только если его подпись
+        совпала с подтверждённой. → номер элемента свежей разметки."""
+        from app.features import browser_actions as ba
+        goal = str(action.get("goal") or "")
+        url2, host2, items2 = ba.snapshot_elements(
+            action.get("host"), tab_id=action.get("tab_id"))
+        was = str(action.get("value") or "")
+        if was.startswith("http") and str(url2 or "").startswith("http") \
+                and _page_key(was) != _page_key(url2):
+            raise RuntimeError(
+                "элемент потерян — страница уже сменилась, повторно не "
+                "нажимаю; повтори команду")
+
+        def _lab(s) -> str:
+            return " ".join(str(s or "").lower().split())[:80]
+
+        want = str(action.get("element") or "")
+        # «#12» — подписи у элемента не было: сверять не с чем
+        want_l = "" if re.fullmatch(r"#\d+", want.strip()) else _lab(want)
+        if want_l:
+            same = [it for it in items2 if _lab(it.get("text")) == want_l]
+            if len(same) == 1:
+                return int(same[0]["idx"])
+        # Свежий снапшот: подписи кандидатов — текст страницы; приватность
+        # по его ПОЛНОМУ адресу (vk.com/im) и подтверждённому, не по хосту
+        router = self._privacy_router(router, url2, was if was.startswith(
+            "http") else None, host2 or action.get("host"))
+        private = self.is_private_page(url2 or host2 or "") or (
+            was.startswith("http") and self.is_private_page(was))
+        idx2, _meta2 = self._choose_element(goal, items2, router, host=host2,
+                                            page_url=url2 or None)
+        if idx2 is None:
+            raise RuntimeError(
+                "элемент потерян — страница изменилась, "
+                f"и «{goal[:40]}» заново не нашёлся")
+        found = self._element_by_idx(items2, int(idx2)) or {}
+        if _lab(found.get("text")) != want_l:
+            # Подпись найденного на приватной странице (переписка, счёт) —
+            # в ответ/историю/flavor не несём
+            now = ("другой элемент" if private else
+                   f"«{str(found.get('text') or '?')[:40]}»")
+            raise RuntimeError(
+                "элемент потерян — страница изменилась, а на месте "
+                f"«{(want or goal)[:40]}» теперь {now}; не нажимаю, "
+                "повтори команду")
+        return int(idx2)
+
     def _verify_opened_site(self, action: dict):
         """Мягкая верификация после навигации: если сайт резолвился
         поиском (expect_name), сверяем title/og:site_name открывшейся
@@ -6994,7 +10706,9 @@ class ComputerControlManager:
                 break  # бэкенд без eval (AppleScript-Chrome) — не проверяем
             if ident.strip(" |"):
                 break
-            time.sleep(0.5)  # title ещё не поднялся — страница грузится
+            # title ещё не поднялся — страница грузится; «стоп» — не ждём
+            if self._sleep_or_stop(0.5):
+                break
         ok = None
         if ident.strip(" |"):
             hay = _norm_match(ident)
@@ -7015,8 +10729,9 @@ class ComputerControlManager:
         action["name_check"] = {"expect": name[:40], "ok": ok,
                                 "title": ident[:80]}
         if ok is False:
-            logger.warning(f"[CompControl] Открытая страница не похожа на "
-                           f"«{name}»: {ident[:60]}")
+            logger.warning(
+                f"[CompControl] Открытая страница не похожа на «{name}»: "
+                + self._label_for_log(ident, action.get("value"), limit=60))
 
     def _forget_tab(self, tab_id: Optional[int], url: str = "",
                     host: Optional[str] = None):
@@ -7026,14 +10741,35 @@ class ComputerControlManager:
         id: иначе он указывал на мёртвую вкладку и КАЖДАЯ следующая команда
         ждала её до NAV_LOAD_TIMEOUT_SEC (~10 с), прежде чем упасть на хост.
         Хост/URL забываем только если закрыли именно их страницу: по хосту
-        снапшот ещё может найти другую живую вкладку того же сайта."""
+        снапшот ещё может найти другую живую вкладку того же сайта.
+        Закрытая вкладка мертва для всех чатов — её id снимаем у каждого, кто
+        её отслеживал; хост/URL — только у текущего. Без id (закрыта видимая)
+        другие чаты сверяются по странице: чья отслеживаемая — закрытый URL
+        или его сайт, тот id теряет. Промах в сторону «забыть» дёшев (цель по
+        хосту найдёт живую вкладку сайта сразу), мёртвый id стоил бы ~10 с."""
+        # Хост закрытой — по её фактическому URL (у tab_id=None хост действия
+        # — видимая на РЕЗОЛВЕ, а закрыта видимая на исполнении)
+        closed = (urlparse(url or "").hostname or host or "").lower()
+
+        def _same_site(h: Optional[str]) -> bool:
+            h = (h or "").lower()
+            return bool(closed and h) and (h == closed
+                                           or h.endswith("." + closed)
+                                           or closed.endswith("." + h))
+        with self._state_lock():
+            for _s in self._chat_states().values():
+                if _s.last_tab_id is None:
+                    continue
+                if tab_id is not None:
+                    dead = _s.last_tab_id == tab_id
+                else:
+                    dead = bool(url and _s.last_url == url) \
+                        or _same_site(_s.last_host)
+                if dead:
+                    _s.last_tab_id = None
         if tab_id is None or self._last_tab_id == tab_id:
             self._last_tab_id = None
-        closed = (host or urlparse(url or "").hostname or "").lower()
-        last = (self._last_host or "").lower()
-        if closed and last and (last == closed
-                                or last.endswith("." + closed)
-                                or closed.endswith("." + last)):
+        if _same_site(self._last_host):
             self._last_host = None
             self._last_url = None
 
@@ -7066,11 +10802,54 @@ class ComputerControlManager:
         честная ошибка, если застряли.
         Вкладка открывается отслеживаемой (стабильный id) — ни старые вкладки
         того же сайта, ни порядок окон навигации не мешают.
-        Осечка — RuntimeError с честным текстом: что прошли и где встали."""
+        Осечка — RuntimeError с честным текстом: что прошли и где встали.
+        Пути выбора шагов пишутся в action["choose"] и при осечке — по
+        аудиту видно, на каком шаге и каким путём встали."""
+        trace: Dict[str, object] = {"paths": [], "tiers": [], "done": [],
+                                    "meta": {}}
+        try:
+            self._navigate_steps(action, router, trace)
+        finally:
+            self._nav_record(action, trace)
+
+    @staticmethod
+    def _nav_record(action: dict, trace: Dict[str, object]):
+        """Пути выбора шагов nav → action["choose"] (аудит): на успехе и
+        на осечке одинаково."""
+        step_paths = trace["paths"]
+        step_tiers = trace["tiers"]
+        done = trace["done"]
+        meta = trace["meta"] or {}
+        if not step_paths:
+            return
+        # Пути выбора шагов — в аудит: видно, где понадобилась LLM
+        action["choose"] = {"path": ",".join(step_paths),
+                            "candidates": meta.get("candidates") if done else [],
+                            "llm_response": meta.get("llm_response") if done else None}
+        # Поля выбора последнего шага (гибрид: уверенность, номер, бюджеты)
+        # и след ярусов всех шагов — пересборка их не теряет
+        if done:
+            for k in ("conf", "wide_mode", "offscreen", "picked_n",
+                      "n_boxes", "n_text"):
+                if meta.get(k) is not None:
+                    action["choose"][k] = meta[k]
+        if step_tiers:
+            action["choose"]["tiers"] = step_tiers
+
+    def _navigate_steps(self, action: dict, router,
+                        trace: Dict[str, object]):
+        # Тело _navigate; trace — общий с _nav_record след шагов
         from app.features import browser_actions as ba
         tab_id = None
         tab_host = ""
-        if sys.platform == "darwin" or ba.backend_forced():
+        if action.get("gate_label"):
+            # Продолжение маршрута после «да» на рискованный шаг: та же
+            # вкладка, где маршрут остановился, — новую не открываем
+            tab_id = action.get("resume_tab")
+            if tab_id is None:
+                tab_host = (urlparse(str(action.get("value") or "")).hostname
+                            or str(action.get("host") or ""))
+        elif sys.platform == "darwin" or ba.backend_forced():
             # Открытие по просьбе пользователя: переключаемся на страницу
             tab_id = ba.open_new_tab(action["value"], focus=True)
         else:
@@ -7086,19 +10865,37 @@ class ComputerControlManager:
                 _segs = [s for s in _p.path.split("/") if s]
                 tab_host = (_p.hostname or action.get("host") or "") + (
                     "/" + _segs[0] if _segs else "")
-        done: List[str] = []
-        step_paths: List[str] = []
+        done: List[str] = trace["done"]
+        step_paths: List[str] = trace["paths"]
         # След vision/широких ярусов эскалации по всем шагам — в аудит
-        step_tiers: List[dict] = []
+        step_tiers: List[dict] = trace["tiers"]
         steps = list(action["steps"])
+        # Первый шаг сразу после открытия: страница ещё грузится (скелет без
+        # ссылок → «нет кликабельных элементов»). Ждём готовности документа
+        # и стабилизации DOM до первого снапшота; best effort
+        try:
+            ba.wait_dom_idle(tab_host or action.get("host"), tab_id,
+                             timeout_sec=NAV_SETTLE_SEC + 2.0, min_wait=0.8)
+        except Exception:
+            pass
 
         def _step_click(step_idx: int):
             """Клик шага + детект новой вкладки (target=_blank, window.open):
             открывшаяся страница становится вкладкой маршрута — следующие
             шаги целятся уже в неё («мы перешли на новую»), а старая вкладка
             остаётся открытой и нетронутой. На не-CDP бэкендах follow_popup
-            молча None — маршрут остаётся на той же вкладке."""
+            молча None — маршрут остаётся на той же вкладке.
+            Единственный клик шага маршрута — и единственная точка гейта
+            подтверждения по фактически найденному элементу (подпись/aria/
+            title, флаги выбора шага): все три пути выбора шага идут сюда."""
             nonlocal tab_id, host, url
+            _m = meta if isinstance(meta, dict) else {}
+            self._nav_gate(
+                action, step_i, step,
+                _m.get("picked_item")
+                or self._element_by_idx(items or [], int(step_idx)),
+                _m, {"host": host, "url": url, "tab_id": tab_id,
+                     "done": done, "idx": int(step_idx)})
             pre_urls = ba.page_urls()
             ba.click_tagged(host, int(step_idx), tab_id=tab_id)
             try:
@@ -7111,6 +10908,8 @@ class ComputerControlManager:
                             f"#{tab_id} ({host}) — маршрут переходит на неё")
 
         for step_i, step in enumerate(steps):
+            # «стоп» от пользователя — между шагами маршрута
+            self._raise_if_stopped()
             # Ждём страницу с кликабельными элементами: первая загрузка и
             # переходы между страницами занимают секунды — опрашиваем снапшот
             url = host = items = None
@@ -7122,10 +10921,22 @@ class ComputerControlManager:
                     break
                 except Exception as e:
                     last_err = e
-                    time.sleep(NAV_POLL_SEC)
+                    if self._sleep_or_stop(NAV_POLL_SEC):
+                        self._raise_if_stopped()
             if items is None:
                 where = f"после «{' → '.join(done)}»" if done else "после открытия"
+                step_paths.append("no_items")
+                if "нет кликабельных" in str(last_err):
+                    raise RuntimeError(
+                        f"страница {where} за {NAV_LOAD_TIMEOUT_SEC:g} с так "
+                        "и не показала кликабельных элементов (пустая, "
+                        "ошибка сайта или ещё грузится) — шаг "
+                        f"«{step}» не с чего начать")
                 raise RuntimeError(f"не читается страница {where}: {last_err}")
+            # Маршрут мог привести на страницу входа/оплаты (в т.ч. по пути:
+            # site.com/login) — дальше LLM-решения только локальной моделью;
+            # обёртка «липкая»: вернуться к облаку в том же маршруте нельзя
+            router = self._privacy_router(router, url or host)
             # Оверлей-блокер (куки/подписка/geo-попап) снимаем до выбора
             # элемента: он перекрывает цель шага. Сняли — снапшот протух,
             # переснимаем (индексы разметки относились к удалённым узлам)
@@ -7150,26 +10961,46 @@ class ComputerControlManager:
                     step_paths.append(f"skip_ahead:{step[:20]}")
                     continue
             # Клик по шагу. DOM живых сайтов перерисовывается между снапшотом
-            # и кликом (меню с таймерами) — «элемент потерян» лечим одним
-            # повтором: свежий снапшот → свежий выбор → повторный клик.
-            # «Клик без эффекта» (closed-loop) — тоже один повтор
+            # и кликом (меню с таймерами) — «элемент потерян» (клик НЕ ушёл)
+            # лечим одним повтором: свежий снапшот → свежий выбор (тот же
+            # пункт по подписи) → повторный клик. «Клик без эффекта»
+            # (ClickUncertain — клик ДОСТАВЛЕН) не повторяем никогда:
+            # тоггл-меню открылось бы и тут же закрылось
             meta: Dict[str, object] = {}
+            last_lab = ""
             for attempt in (1, 2):
                 idx, meta = self._choose_element(step, items, router,
                                                  host=host)
-                step_paths.append(str(meta.get("path") or "?"))
+                if attempt == 2 and idx is not None and last_lab:
+                    # Повтор целится в ТОТ ЖЕ пункт: при нескольких кандидатах
+                    # предпочитаем элемент с прежней подписью
+                    _same = [it for it in items
+                             if " ".join(str(it.get("text") or "").lower()
+                                         .split())[:80] == last_lab]
+                    if len(_same) == 1:
+                        idx = int(_same[0]["idx"])
+                step_paths.append(str(meta.get("path") or "?")
+                                  + (":retry" if attempt == 2 else ""))
                 if idx is None:
                     break  # выбора нет — ниже эскалация резолва шага
+                _it = self._element_by_idx(items, int(idx)) or {}
+                last_lab = " ".join(str(_it.get("text") or "").lower()
+                                    .split())[:80]
                 try:
-                    _step_click(idx)
+                    self._nav_click_honest(_step_click, idx, step, so_far,
+                                           step_i == len(steps) - 1,
+                                           step_paths)
                     break
+                except (ba.ClickUncertain, NeedsConfirm):
+                    # последний шаг: доставлен, эффекта не видно; гейт —
+                    # стоп маршрута до «да», без повтора и обёртки
+                    raise
                 except Exception as e:
-                    from app.features.browser_actions import ClickUncertain
-                    retryable = isinstance(e, ClickUncertain) \
-                        or "элемент потерян" in str(e)
-                    if attempt == 2 or not retryable:
+                    if attempt == 2 or "элемент потерян" not in str(e):
                         raise RuntimeError(f"на шаге «{step}»{so_far}: {e}")
-                    time.sleep(NAV_POLL_SEC)
+                    action["retried"] = True
+                    if self._sleep_or_stop(NAV_POLL_SEC):
+                        self._raise_if_stopped()
                     url, host, items = ba.snapshot_elements(tab_host, tab_id=tab_id)
             if idx is None:
                 # Эскалация резолва шага — тот же каскад, что у агентного
@@ -7181,7 +11012,11 @@ class ComputerControlManager:
                 step_tiers.extend(meta.get("tiers") or [])
                 if idx is not None:
                     try:
-                        _step_click(idx)
+                        self._nav_click_honest(_step_click, idx, step, so_far,
+                                               step_i == len(steps) - 1,
+                                               step_paths)
+                    except (ba.ClickUncertain, NeedsConfirm):
+                        raise
                     except Exception as e:
                         raise RuntimeError(f"на шаге «{step}»{so_far}: {e}")
             if idx is None:
@@ -7205,36 +11040,47 @@ class ComputerControlManager:
                                       + ":after_recover")
                     if idx is not None:
                         try:
-                            _step_click(idx)
+                            self._nav_click_honest(
+                                _step_click, idx, step, so_far,
+                                step_i == len(steps) - 1, step_paths)
+                        except (ba.ClickUncertain, NeedsConfirm):
+                            raise
                         except Exception as e:
                             raise RuntimeError(f"на шаге «{step}»{so_far}: {e}")
             if idx is None:
                 raise RuntimeError(
                     f"не нашёл на странице пункт «{step}»{so_far}")
             done.append(step)
+            trace["meta"] = meta
             # Переход + загрузка следующей страницы: ждём стабилизации DOM,
             # а не слепой слип — статичная страница отпускает раньше, живая
             # (дорендер SPA) — держит дольше в пределах бюджета
             ba.wait_dom_idle(tab_host or host, tab_id,
                              timeout_sec=NAV_SETTLE_SEC + 2.0, min_wait=0.5)
-        if step_paths:
-            # Пути выбора шагов — в аудит: видно, где понадобилась LLM
-            action["choose"] = {"path": ",".join(step_paths),
-                                "candidates": meta.get("candidates") if done else [],
-                                "llm_response": meta.get("llm_response") if done else None}
-            # Поля выбора последнего шага (гибрид: уверенность, номер, бюджеты)
-            # и след ярусов всех шагов — пересборка их не теряет
-            if done:
-                for k in ("conf", "wide_mode", "offscreen", "picked_n",
-                          "n_boxes", "n_text"):
-                    if meta.get(k) is not None:
-                        action["choose"][k] = meta[k]
-            if step_tiers:
-                action["choose"]["tiers"] = step_tiers
         if tab_id is not None:
             # Финальная страница пути — «открывшаяся страница» для следующих
             # команд («скачай на открывшейся странице …»)
             self._last_tab_id = tab_id
+
+    @staticmethod
+    def _nav_click_honest(click, idx: int, step: str, so_far: str,
+                          last: bool, step_paths: List[str]):
+        """Клик шага nav без повтора доставленного клика. ClickUncertain
+        (клик ушёл, видимого эффекта нет — меню на CSS, тоггл) на
+        промежуточном шаге — идём дальше: проверкой служит следующий шаг
+        (его пункт найдётся, только если меню раскрылось); на последнем —
+        честное «не уверен» с именем шага (класс ошибки uncertain).
+        Остальные ошибки — наружу как есть (решает вызывающий)."""
+        from app.features import browser_actions as ba
+        try:
+            click(idx)
+        except ba.ClickUncertain as e:
+            step_paths.append("uncertain")
+            if last:
+                raise ba.ClickUncertain(f"на шаге «{step}»{so_far}: {e}")
+            logger.info(f"[CompControl] Навигация: шаг «{step[:40]}» — клик "
+                        "без видимого эффекта, не повторяю; проверит "
+                        "следующий шаг")
 
     def _later_step_leader(self, later: List[str], items: List[dict],
                            host: Optional[str] = None) -> Optional[str]:
@@ -7268,6 +11114,7 @@ class ComputerControlManager:
         На свайп-лентах (page_url с /shorts/|/reels/) доскролл-поиск внутри
         _scroll_hunt сам пропускается: там он листает ролики."""
         from app.features import browser_actions as _ba
+        router = self._privacy_router(router, page_url or host)
         search_goal = _goal_with_synonyms(step, host)
         pick: Optional[int] = None
         pick_meta: Dict[str, object] = {}
@@ -7341,6 +11188,13 @@ class ComputerControlManager:
         if pick is not None and self._veto_destructive(
                 step, self._element_by_idx(pick_items, pick), pick_meta, host):
             return None, pick_meta
+        if pick is not None and isinstance(pick_meta, dict):
+            # Подписи выбранного элемента — гейту клика маршрута (_nav_gate):
+            # целевой снапшот нумерует элементы вне общего списка шага
+            _pi = self._element_by_idx(pick_items, pick) or {}
+            pick_meta["picked_item"] = {k: _pi.get(k) for k in
+                                        ("text", "aria", "title")
+                                        if _pi.get(k)}
         return pick, pick_meta
 
     def _nav_step_recover(self, step: str, steps: List[str], step_i: int,
@@ -7354,6 +11208,7 @@ class ComputerControlManager:
         пропускаем; False — честный отказ. Тот же приём, что
         LLM-восстановление шагов сценария (ScenarioManager._llm_recover):
         модель выбирает из реальных элементов, клик исполняет система."""
+        router = self._privacy_router(router, host)
         if router is None or not items:
             return False
         try:
@@ -7377,16 +11232,17 @@ class ComputerControlManager:
             mark = "✓" if n < step_i else ("✗" if n == step_i else "·")
             roadmap.append(f"{mark} {n + 1}. {s}")
         prompt = (
-            "Открываю страницу по шагам (✓ — уже сделано, ✗ — сломались "
-            "здесь, · — дальше):\n" + "\n".join(roadmap) + "\n\n"
-            f"На шаге ✗ нужно нажать «{step}», но такого элемента среди "
-            f"видимых на странице {host} нет.\n"
-            f"Видимые элементы страницы:\n{lines}\n"
-            "Возможно, сначала нужно открыть меню, закрыть всплывающее окно "
-            "или элемент называется иначе. Ответь ТОЛЬКО номером элемента, "
-            "который стоит нажать, чтобы приблизиться к цели шага ✗. "
-            "Если шаг ✗ уже не нужен (страница сама ушла дальше по плану) — "
-            "ответь «пропустить». Если ничего не поможет — ответь «нет».")
+            "I am opening a page step by step (✓ — already done, ✗ — broke "
+            "here, · — next):\n" + "\n".join(roadmap) + "\n\n"
+            f"At step ✗ I need to click \"{step}\", but there is no such element among "
+            f"the visible ones on the page {host}.\n"
+            f"Visible page elements:\n{lines}\n"
+            "Maybe a menu has to be opened first, a popup closed, "
+            "or the element has a different name. Reply with ONLY the number of the element "
+            "worth clicking to get closer to the goal of step ✗. "
+            "If step ✗ is no longer needed (the page already moved on along the plan) — "
+            "reply \"skip\". If nothing will help — reply \"no\".\n"
+            + user_language_line(detect_language(step)))
         try:
             resp = router.get_response([{"role": "user", "content": prompt}],
                                        temperature=0.0, max_tokens=8, top_p=0.1,
@@ -7395,7 +11251,7 @@ class ComputerControlManager:
             logger.debug(f"[CompControl] LLM-восстановление шага недоступно: {e}")
             return False
         self.stats["llm_calls"] += 1
-        if (resp or "").strip().lower().startswith("пропуст"):
+        if _llm_said_skip(resp):
             logger.info(f"[CompControl] Навигация: шаг «{step[:40]}» устарел "
                         "по мнению LLM — пропускаю")
             return "skip"
@@ -7409,10 +11265,23 @@ class ComputerControlManager:
         # проверяем перед ним (ранжирования нет, уступать некому: отказ)
         if self._veto_destructive(step, item, None, "восстановление шага"):
             return False
+        # Вспомогательный клик выбрала модель по недоверенным подписям:
+        # оплату/оформление/отправку/удаление им не жмём никогда (гейт
+        # маршрута на нём не спросит — это не шаг, а обходной клик). Шаг
+        # встанет честным «не нашёл», человек нажмёт сам или скажет явно
+        _probe = {"kind": "click", "host": host}
+        for _k, _dst in (("text", "element"), ("aria", "aria"),
+                         ("title", "title")):
+            if item.get(_k):
+                _probe[_dst] = str(item[_k])[:80]
+        if self.risky_label(_probe):
+            logger.info(f"[CompControl] LLM-восстановление шага: выбор "
+                        f"рискованный ({self.risky_label(_probe)}) — не жму")
+            return False
         from app.features import browser_actions as ba
         from app.features.browser_actions import ClickUncertain
         logger.info(f"[CompControl] LLM-восстановление шага «{step[:40]}»: "
-                    f"жму «{str(item.get('text') or '')[:40]}»")
+                    f"жму «{self._label_for_log(item.get('text') or '', host, idx=item.get('idx'))}»")
         try:
             ba.click_tagged(host, int(item["idx"]), tab_id=tab_id)
         except ClickUncertain:
@@ -7428,21 +11297,78 @@ class ComputerControlManager:
                error_class: Optional[str] = None,
                extra: Optional[Dict[str, object]] = None):
         try:
+            from app.features.cc_privacy import (
+                audit_append, contains_value, known_secret_values, mask,
+                redact_audit_record, redact_typed)
+            # Единая точка маски ввода, какой бы ни была подпись поля и путь
+            # исполнения (агент, сценарий, маркер, «да»): приватная страница
+            # (по полному URL и хосту, у multi — любого шага) и известные
+            # секреты чатов (пароль, данный ответом, — в поле «Поиск»)
+            known = known_secret_values()
+            private = self._page_private(action)
+
+            def _typed(a: dict) -> str:
+                t = a.get("text")
+                if private or contains_value(t, known):
+                    return mask(t)
+                return redact_typed(t, a.get("element"),
+                                    bool(a.get("field_sensitive")))
+            if action.get("kind") == "multi":
+                # describe() печатает введённый текст — для лога описываем
+                # копии с уже замаскированным вводом
+                value = " ; ".join(self.describe(
+                    dict(a, text=_typed(a))
+                    if a.get("kind") == "type" else a)
+                    for a in action["items"])
+            else:
+                value = action.get("value")
             record = {
                 "ts": time.time(), "chat_id": str(chat_id), "ok": ok,
                 "kind": action.get("kind"), "key": action.get("key"),
-                "value": (action.get("value") if action.get("kind") != "multi"
-                          else " ; ".join(self.describe(a) for a in action["items"])),
+                "value": value,
                 "detail": detail,
             }
             # Семантика действия для записи сценариев (ScenarioManager строит
             # шаги по тексту элемента, а не по idx — он между сессиями нестабилен)
             if action.get("element"):
-                record["element"] = str(action["element"])[:80]
+                el = str(action["element"])[:80]
+                if private and ("task" in (action.get("origin"),
+                                           action.get("pending_from"))
+                                or re.search(r"\d", el) or len(el) > 30):
+                    # Приватная страница: подпись с суммой/временем/номером
+                    # или длинная (имя, текст переписки) и любой шаг агента —
+                    # длиной. Короткие «Войти»/«Пароль»/«Далее» остаются:
+                    # по ним записанный сценарий входа находит шаг
+                    el = mask(el)
+                record["element"] = el
             if action.get("host"):
                 record["host"] = action["host"]
+            if action.get("field_sensitive"):
+                # Флаг поля (пароль/email/tel) — сценарий сделает из ввода
+                # слот «спросить каждый раз», аудит — маску
+                record["field_sensitive"] = True
             if action["kind"] == "type" and action.get("text"):
-                record["text"] = str(action["text"])[:80]
+                t = str(action["text"])
+                record["text"] = (mask(t) if private or contains_value(t, known)
+                                  else t[:80])
+            # Наблюдаемость без утечек: откуда пришло действие, был ли
+            # повтор, длительность исполнения и каскада резолва
+            # from_search — адрес из выдачи собственного поиска агента задач
+            # (только для аудита, гейт его не видит — в отличие от via_search)
+            for k in ("origin", "pending_from", "retried", "via_search",
+                      "from_search", "choice", "duration_ms", "task_run"):
+                if action.get(k) is not None:
+                    record[k] = action[k]
+            # Корзина/состав: value у них пуст — товар и операция, иначе по
+            # аудиту не понять, что именно не удалилось; op — и у
+            # tab_op/media_vol; slider_path — громкость ушла в <video>
+            if action.get("kind") in ("cart", "comp_edit") \
+                    and action.get("product"):
+                record["product"] = str(action["product"])[:80]
+            if action.get("op") is not None:
+                record["op"] = str(action["op"])[:20]
+            if action.get("slider_path"):
+                record["slider_path"] = action["slider_path"]
             # Наблюдаемость: какой путь сработал (score/LLM/fallback),
             # какие кандидаты рассматривались и с каким скором, сырой ответ
             # LLM, результат closed-loop проверки и класс ошибки
@@ -7457,7 +11383,8 @@ class ComputerControlManager:
             # уверенность модели, номер ответа, бюджеты гибрида, выбор
             # строкой вне экрана и след всех ярусов резолва
             for k in ("conf", "offscreen", "picked_n", "n_boxes", "n_text",
-                      "tiers"):
+                      "tiers", "resolve_ms", "n_pool", "label_unverified",
+                      "other_tab"):
                 if choose.get(k) is not None:
                     record[k] = choose[k]
             if action.get("kind") in _RESOLVE_KINDS:
@@ -7478,10 +11405,25 @@ class ComputerControlManager:
                 record["name_check"] = action["name_check"]
             if extra:
                 record.update(extra)
-            with open(self.base_dir / "audit.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            # Секреты в лог не пишем: маска ввода в чувствительные поля и
+            # секретоподобных значений, URL без токенов/фрагментов, тексты
+            # страницы обрезаны (cc_privacy — те же правила, что у
+            # scripts/scrub_cc_audit.py). Ротация 10 МБ × 3 файла
+            record, _ = redact_audit_record(
+                record, getattr(self, "private_hosts", ()),
+                getattr(self, "private_hosts_builtin", True), known)
+            audit_append(self.base_dir / "audit.jsonl", record)
         except Exception as e:
             logger.debug(f"[CompControl] Аудит-лог не записан: {e}")
+        # Каждый исполненный ввод (любой путь: сценарий, агент, маркер,
+        # «да») — хуку приватности истории бота (маска ввода в STM и
+        # KnownSecrets), до записи ответа хода
+        hook = getattr(self, "on_typed", None)
+        if callable(hook) and action.get("kind") in ("type", "multi"):
+            try:
+                hook(action)
+            except Exception as e:
+                logger.debug(f"[CompControl] хук ввода упал: {e}")
 
     def _audit_resolve(self, chat_id: str, goal: str, host: Optional[str],
                        detail: str, fail_reason: str,
@@ -7490,7 +11432,9 @@ class ComputerControlManager:
         audit.jsonl, чтобы причины отказов были видны, а не выяснялись
         вслепую по жалобам. fail_reason: no_page | snapshot_error |
         not_in_snapshot | low_score | llm_veto | destructive_veto | no_fields |
-        captcha — база для авто-классификации причин отказов."""
+        captcha | label_mismatch | budget (кончился бюджет каскада) |
+        not_a_click (цель — клавиша/листание/сайт, а не элемент) — база для
+        авто-классификации причин отказов."""
         extra: Dict[str, object] = {"fail_reason": fail_reason}
         if meta:
             if meta.get("path"):
@@ -7500,7 +11444,7 @@ class ComputerControlManager:
             if meta.get("llm_response"):
                 extra["llm_response"] = meta["llm_response"]
             for k in ("conf", "offscreen", "picked_n", "n_boxes", "n_text",
-                      "tiers"):
+                      "tiers", "resolve_ms", "origin", "n_pool"):
                 if meta.get(k) is not None:
                     extra[k] = meta[k]  # как в _audit — сравнение режимов
             if meta.get("veto"):
@@ -7511,5 +11455,7 @@ class ComputerControlManager:
                               "value": str(goal)[:80],
                               "host": host or ""},
                     False, detail, extra=extra)
-        logger.info(f"[CompControl] Резолв «{str(goal)[:40]}» не удался "
-                    f"({fail_reason}): {str(detail)[:80]}")
+        from app.features.cc_privacy import redact_inline
+        logger.info(f"[CompControl] Резолв «{redact_inline(str(goal)[:40])}» "
+                    f"не удался ({fail_reason}): "
+                    f"{redact_inline(str(detail)[:80])}")

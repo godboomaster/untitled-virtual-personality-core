@@ -138,22 +138,26 @@ def main():
     lm.render_setup_reply("история", "confirmed", "раз в день", user_language="ru")
     setup_sys = lm._router.calls[-1][0]["content"]
     check("render_setup_reply: язык из параметра в промпте",
-          "The user's language is Russian." in setup_sys and "Reply ONLY in Russian." in setup_sys)
+          "The user speaks Russian in the dialogue" in setup_sys
+          and setup_sys.rstrip().endswith("in Russian."))
 
     lm.render_setup_reply("history", "reask")
     setup_sys_fb = lm._router.calls[-1][0]["content"]
-    check("render_setup_reply без языка — старая строка-инструкция",
-          "Reply in the language of the user's messages." in setup_sys_fb)
+    check("render_setup_reply без языка — нейтральная строка языка",
+          "The user's language is not known yet" in setup_sys_fb)
 
     lm.render_continue_reply("c1", "YES", user_language="en")
     cont_sys = lm._router.calls[-1][0]["content"]
     check("render_continue_reply: язык из параметра в промпте",
-          "The user's language is English." in cont_sys and "Reply ONLY in English." in cont_sys)
+          "The user speaks English in the dialogue" in cont_sys
+          and cont_sys.rstrip().endswith("in English."))
 
     # ── 7. Инструкции перегенерации держат язык ──
     print("инструкции перегенерации:")
     from app.features import conversation_style as cs
-    check("_REGEN_INSTRUCTION требует сохранить язык", "language" in cs._REGEN_INSTRUCTION)
+    check("регенерация задаёт язык пользователя",
+          "speaks Russian" in cs._regen_instruction([{"role": "user", "content": "привет"}])
+          and "speaks English" in cs._regen_instruction([], "en"))
     import app.bot_instance as bi
     src = Path(bi.__file__).read_text(encoding="utf-8")
     check("continuation требует тот же язык",
@@ -210,6 +214,28 @@ def main():
     check("rhythm: пользователь en → English", ry_en._lang("c1") == "English")
     check("rhythm: без памяти → Russian",
           RhythmManager(context="lang_smoke", config=RhythmConfig.from_dict({}))._lang("c1") == "Russian")
+    check("rhythm: без истории — язык персоны (en)",
+          RhythmManager(context="lang_smoke", config=RhythmConfig.from_dict({}),
+                        persona=SimpleNamespace(system_prompt="You are Connor."))._lang("c1") == "English")
+
+    # Промпты ритма и напоминаний — на английском, язык пользователя строкой
+    import re as _re
+    ry._router = _FakeRouter("Доброе утро, соня!")
+    ry._persona = SimpleNamespace(system_prompt="You are Connor.")
+    ry._generate_text("morning", "Monday, 01.01.2026, 08:00", "Russian")
+    sys_rm, usr_rm = ry._router.calls[-1][0]["content"], ry._router.calls[-1][1]["content"]
+    check("rhythm: строка языка пользователя (Russian)",
+          "The user speaks Russian in the dialogue" in sys_rm)
+    check("rhythm: user-промпт на английском", not _re.search(r"[а-яё]", usr_rm, _re.I))
+    rm._router = _FakeRouter("Не забудь позвонить маме!")
+    rm._persona = SimpleNamespace(system_prompt="You are Connor.")
+    rm._living = None
+    rm._generate_reminder_text("User", "позвонить маме", "Russian")
+    sys_rem, usr_rem = rm._router.calls[-1][0]["content"], rm._router.calls[-1][1]["content"]
+    check("reminder: строка языка пользователя (Russian)",
+          "The user speaks Russian in the dialogue" in sys_rem)
+    check("reminder: обёртка user-промпта на английском",
+          usr_rem == "Remind the user: позвонить маме")
 
     # ── 10. Самоинициатива: явный язык в промпте монолога ──
     print("proactive:")
@@ -233,10 +259,31 @@ def main():
         [{"role": "user", "content": "Привет, как дела?"}], [], "Аня", 6.0, "c1", None)
     check("монолог: явный язык пользователя (ru)",
           "The user's language is Russian. Write ONLY in Russian" in msgs_pm_ru[0]["content"])
+    sys_pm = msgs_pm[0]["content"]
+    check("монолог: директива языка — последняя в системном блоке",
+          sys_pm.rstrip().endswith("Do not mix languages.")
+          and "[MESSAGE LANGUAGE" in sys_pm)
+    check("монолог: язык повторён в конце запроса",
+          msgs_pm[1]["content"].rstrip().endswith("Write the thought in English."))
+
+    # Страховка: инициатива на чужом языке переводится или отбрасывается
+    pm.router = _FakeRouter(reply="Walked by the river today, it was cold.")
+    check("страховка: язык совпал — без перевода",
+          pm._ensure_user_language("Walked by the river.", "en") == "Walked by the river."
+          and not pm.router.calls)
+    check("страховка: язык не совпал — перевод",
+          pm._ensure_user_language("Сегодня гулял у реки, было холодно.", "en")
+          == "Walked by the river today, it was cold." and len(pm.router.calls) == 1)
+    pm.router = _FakeRouter(reply="Всё ещё по-русски.")
+    check("страховка: перевод не помог — инициатива пропущена",
+          pm._ensure_user_language("Сегодня гулял у реки.", "en") is None)
+    check("страховка: язык пользователя неизвестен — как есть",
+          pm._ensure_user_language("Сегодня гулял.", None) == "Сегодня гулял.")
 
     # ── 11. Дневник: self_memory и offline_summarizer ──
     print("дневник:")
     from app.core import self_memory as sm_mod
+    from app.core.language import user_language_line
     captured_sm = []
 
     class CapRouterSM:
@@ -249,7 +296,7 @@ def main():
     sm_full = sm_mod.BotSelfMemory(tempfile.mkdtemp(), "Connor", CapRouterSM(), mode="full")
     sm_full._write_episode([{"role": "user", "content": "Hey, how was your day?", "user_name": "Ann"}])
     check("эпизод self_memory: явный язык в системном сообщении",
-          captured_sm and "The user's language is English." in captured_sm[-1])
+          captured_sm and user_language_line("en") in captured_sm[-1])
 
     from app.core.offline_summarizer import OfflineSummarizer
     cap_sum = []
@@ -266,10 +313,10 @@ def main():
     persona_stub = SimpleNamespace(system_prompt="You are Connor.")
     os_sum._theses_to_episode(["walked", "slept"], persona_stub, user_language="en")
     check("офлайн-эпизод: явный язык в промпте (en)",
-          cap_sum and "Язык записи — английский." in cap_sum[-1][1]["content"])
+          cap_sum and user_language_line("en") in cap_sum[-1][1]["content"])
     os_sum._theses_to_episode(["гулял"], persona_stub, user_language="ru")
     check("офлайн-эпизод: явный язык в промпте (ru)",
-          "Язык записи — русский." in cap_sum[-1][1]["content"])
+          user_language_line("ru") in cap_sum[-1][1]["content"])
 
     print(f"\n{'PASS' if ok > 0 else 'FAIL'}: {ok} проверок")
     return 0 if ok > 0 else 1

@@ -21,6 +21,7 @@ from app.core import timeutil
 from app.core.paths import data_dir
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.bounded_cache import BoundedCache
+from app.core.language import detect_language, user_language_line
 from app.core.local_router import get_local_router
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,8 @@ Rules:
 - personal_facts: ONLY what the user explicitly said about themselves — name, city, profession, age.
   Do NOT include: the user's tasks, their requests to the bot, mentioned amounts of money, game/movie titles.
   If there are no explicit facts about the person — an empty list [].
-- Write the values in the language of the user's messages.
+- Keep the JSON keys exactly as above (in English).
+- {language_line}
 
 User messages:
 {messages}
@@ -212,7 +214,7 @@ class ChatDossier:
         self._file = data_dir() / context / "chat_dossier.json"
         self._file.parent.mkdir(parents=True, exist_ok=True)
         self._router = router  # основной роутер бота (побочные — fallback минус primary)
-        self._local_router = get_local_router()
+        self._local_router = get_local_router(context)
         # Уже обработанные сообщения (chat_id → маркеры): analyze_chat идёт по
         # последним 50 сообщениям каждые 5 входящих — без дедупликации старые
         # сообщения экстрактились бы заново на каждом цикле (спам LLM-вызовами).
@@ -485,13 +487,20 @@ class ChatDossier:
         # Пакетная экстракция фактов: один LLM-вызов на все новые сообщения
         # отправителя за цикл, а не по вызову на сообщение
         extracted: Dict[str, List[str]] = {}
+        # Язык чата — по последней реплике пользователя с буквами (STM чата);
+        # у каждого отправителя свой язык, чат — фолбэк
+        chat_lang = self._user_lang(
+            [m.get("content", "") for m in messages if m.get("role") == "user"])
         for sender_id, contents in new_facts.items():
-            facts = self._extract_user_facts(chat_id, sender_id, contents)
+            facts = self._extract_user_facts(
+                chat_id, sender_id, contents,
+                lang=self._user_lang(contents, chat_lang))
             if facts:
                 extracted[sender_id] = facts
         # Анализируем каждого пользователя отдельно (интересы/топики с его user_id)
         analyses: Dict[str, Optional[dict]] = {
-            sender_id: self._analyze_with_llm(user_messages)
+            sender_id: self._analyze_with_llm(
+                user_messages, lang=self._user_lang(user_messages, chat_lang))
             for sender_id, user_messages in by_user.items()
         }
 
@@ -611,7 +620,17 @@ class ChatDossier:
             uf.facts = uf.facts[-20:]
             uf.last_updated = time.time()
 
-    def _analyze_with_llm(self, user_messages: List[str]) -> Optional[dict]:
+    @staticmethod
+    def _user_lang(contents: List[str], fallback: Optional[str] = None) -> Optional[str]:
+        # Язык по последнему сообщению, где он определим; иначе — фолбэк
+        for text in reversed(contents or []):
+            lang = detect_language(text)
+            if lang:
+                return lang
+        return fallback
+
+    def _analyze_with_llm(self, user_messages: List[str],
+                          lang: Optional[str] = None) -> Optional[dict]:
         # Анализирует сообщения через LLM (fallback-цепочка без основного).
         if self._router is None and not self._local_router.is_available():
             return None
@@ -619,11 +638,13 @@ class ChatDossier:
         try:
             messages_text = "\n---\n".join(user_messages[-30:])
 
-            prompt = _DOSSIER_ANALYSIS_PROMPT.format(messages=messages_text)
+            prompt = _DOSSIER_ANALYSIS_PROMPT.format(
+                messages=messages_text, language_line=user_language_line(lang))
 
             response = self._side_response(
                 messages=[
-                    {"role": "system", "content": "You are an analyst. Extract facts from messages. Answer ONLY with JSON."},
+                    {"role": "system", "content": "You are an analyst. Extract facts from messages. Answer ONLY with JSON.\n"
+                                                  + user_language_line(lang)},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
@@ -768,7 +789,8 @@ class ChatDossier:
                 return True
         return False
 
-    def _extract_user_facts(self, chat_id: str, user_id: str, contents: List[str]) -> List[str]:
+    def _extract_user_facts(self, chat_id: str, user_id: str, contents: List[str],
+                            lang: Optional[str] = None) -> List[str]:
         """Извлекает факты о пользователе ПАКЕТОМ: один LLM-вызов на все
         новые сообщения цикла анализа, а не по вызову на сообщение.
 
@@ -786,27 +808,30 @@ class ChatDossier:
             "Extract concrete facts about the user: name, city, job, hobbies, age, goals.\n"
             "Only what is explicitly stated in the messages. No guesses.\n"
             "If there is nothing — answer with one word: NONE\n"
-            "Format: one line = one fact. No explanations, no 'not specified', no 'unknown'.\n\n"
-            f"{block}"
+            "Format: one line = one fact. No explanations, no 'not specified', no 'unknown'.\n"
+            "The NONE marker stays in English.\n\n"
+            f"{block}\n\n"
+            f"{user_language_line(lang)}"
         )
 
         try:
             response = self._side_response(
                 messages=[
-                    {"role": "system", "content": "You extract facts about the user. Only facts, nothing extra."},
+                    {"role": "system", "content": "You extract facts about the user. Only facts, nothing extra.\n"
+                                                  + user_language_line(lang)},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.2,
                 max_tokens=100,
             )
 
-            if not response or response.strip().upper() == "NONE":
+            if not response or response.strip().strip(".").upper() in ("NONE", "НЕТ"):
                 return []
 
             facts: List[str] = []
             for line in response.strip().split("\n"):
                 line = line.strip()
-                if not line or line.upper() == "NONE":
+                if not line or line.strip(".").upper() in ("NONE", "НЕТ"):
                     continue
                 # Форматы: "Факт: значение" или просто "значение"
                 if ":" in line:

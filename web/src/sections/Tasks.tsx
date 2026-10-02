@@ -6,6 +6,12 @@ import type { ReminderEntry, TodoEntry } from '../api';
 import { useApiOnline } from '../apiData';
 import FormModal from '../components/FormModal';
 import InfoButton from '../components/InfoButton';
+import Select from '../components/Select';
+import { alertDialog } from '../dialogStore';
+import { parseReminderWhen } from '../reminderWhen';
+
+// «ЧЧ:ММ» с ведущими нулями — для предзаполнения полей формы и сравнения дат
+const pad2 = (n: number) => String(n).padStart(2, '0');
 
 // Добавленные через модалки элементы и правки моковых (module-level —
 // переживают перемонтирование секции при переключении вкладок досье)
@@ -110,7 +116,7 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
         text: r.task,
         time: r.trigger_at ? fmtDateTime(r.trigger_at) : t('tasks.noDate'),
         repeat: fmtRecurrence(r.recurrence),
-        active: true,
+        active: r.active !== false,
       }))
     : [
         ...(remindersByPersona[persona.id] ?? []).map((r) => editedReminders[r.id] ?? r),
@@ -140,10 +146,37 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
     setVersion((v) => v + 1);
   };
 
-  // Удаление напоминания (API) — по индексу из списка активных
+  // Удаление напоминания (API) — по стабильному id (номер строки мог сдвинуться)
   const deleteReminder = (r: Reminder) => {
     if (!apiOnline) return;
-    api.cancelReminder(persona.id, r.id).then((res) => setApiReminders(res.items)).catch(() => {});
+    const raw = apiReminders?.find((x) => x.index === r.id);
+    if (!raw) {
+      api.getReminders(persona.id).then((res) => setApiReminders(res.items)).catch(() => {});
+      void alertDialog({ message: t('skin.actStale') });
+      return;
+    }
+    api.cancelReminderById(persona.id, raw.id).then((res) => setApiReminders(res.items)).catch(() => {});
+  };
+
+  // Пауза/продолжение напоминания: на паузе оно не срабатывает
+  const toggleReminder = (r: Reminder) => {
+    if (apiOnline) {
+      const raw = apiReminders?.find((x) => x.index === r.id);
+      if (!raw) {
+        api.getReminders(persona.id).then((res) => setApiReminders(res.items)).catch(() => {});
+        void alertDialog({ message: t('skin.actStale') });
+        return;
+      }
+      api
+        .updateReminder(persona.id, raw.id, { active: !r.active })
+        .then((res) => setApiReminders(res.items))
+        .catch((e) => alertDialog({ message: e instanceof Error ? e.message : String(e) }));
+      return;
+    }
+    const idx = added.reminders.findIndex((x) => x.id === r.id);
+    if (idx >= 0) added.reminders[idx] = { ...added.reminders[idx], active: !r.active };
+    else editedReminders[r.id] = { ...r, active: !r.active };
+    setVersion((v) => v + 1);
   };
 
   // Удаление дела (API)
@@ -157,8 +190,23 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
     if (r) {
       const { kind, days } = parseRepeat(r.repeat, repeatOptions, weekdays, customDaysLabel);
       setReminderText(r.text);
-      setReminderTime(r.time.match(/(\d{1,2}:\d{2})/)?.[1] ?? '');
-      setReminderDate('');
+      if (apiOnline) {
+        // Дата/время — из точного trigger_at сырой записи, а не из
+        // отформатированной строки списка (иначе при сохранении без правки
+        // срок сместится на округление отображения)
+        const raw = apiReminders?.find((x) => x.index === r.id);
+        if (raw?.trigger_at) {
+          const d = new Date(raw.trigger_at * 1000);
+          setReminderDate(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`);
+          setReminderTime(`${pad2(d.getHours())}:${pad2(d.getMinutes())}`);
+        } else {
+          setReminderDate('');
+          setReminderTime('');
+        }
+      } else {
+        setReminderTime(r.time.match(/(\d{1,2}:\d{2})/)?.[1] ?? '');
+        setReminderDate('');
+      }
       setReminderRepeat(kind);
       setReminderDays(days);
       setModal({ kind: 'reminder', id: r.id });
@@ -181,20 +229,35 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
     const text = reminderText.trim();
     if (!text || !modal) return;
     if (apiOnline) {
-      // API-режим: разовое напоминание, срок из даты+времени (дефолт — через час)
-      let delay = 3600;
-      if (reminderDate || reminderTime) {
-        const d = reminderDate ? new Date(reminderDate) : new Date();
-        const [hh, mm] = (reminderTime || '09:00').split(':').map(Number);
-        d.setHours(hh, mm, 0, 0);
-        if (!reminderDate && d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
-        delay = Math.max(60, Math.round((d.getTime() - Date.now()) / 1000));
+      // Дату/время разбираем через parseReminderWhen (локальные даты, «завтра»,
+      // ISO — не new Date(строка), которая «01.10» читает как 2001 год, а ISO
+      // «2026-10-01» — как полночь UTC); нет ни даты, ни времени — через час.
+      const locale = lang === 'en' ? 'en' : 'ru';
+      const when = parseReminderWhen(reminderDate, reminderTime, locale);
+      if (!when.ok) {
+        const key = when.error === 'date' ? 'skin.actBadDate' : when.error === 'time' ? 'skin.actBadTime' : 'skin.actPast';
+        const vars = when.error === 'date' ? { v: reminderDate } : when.error === 'time' ? { v: reminderTime } : undefined;
+        void alertDialog({ message: t(key, vars) });
+        return;
       }
-      const doAdd = () =>
+      if (modal.id != null) {
+        // Правка на месте по стабильному id (атомарно, повтор сохраняется)
+        const raw = apiReminders?.find((x) => x.index === modal.id);
+        if (!raw) {
+          setModal(null);
+          api.getReminders(persona.id).then((r) => setApiReminders(r.items)).catch(() => {});
+          void alertDialog({ message: t('skin.actStale') });
+          return;
+        }
+        const patch: { task: string; trigger_at?: number } = { task: text };
+        // Поля даты/времени были заполнены (из raw.trigger_at или человеком) —
+        // пересчитываем срок; пусты (напоминание без trigger_at) — не трогаем
+        if (reminderDate.trim() || reminderTime.trim()) patch.trigger_at = Math.round(when.at.getTime() / 1000);
+        api.updateReminder(persona.id, raw.id, patch).then((r) => setApiReminders(r.items)).catch(() => {});
+      } else {
+        const delay = Math.max(60, Math.round((when.at.getTime() - Date.now()) / 1000));
         api.addReminder(persona.id, text, delay).then((r) => setApiReminders(r.items)).catch(() => {});
-      // Правка = отмена старого + новое
-      if (modal.id != null) api.cancelReminder(persona.id, modal.id).then(doAdd).catch(() => {});
-      else doAdd();
+      }
       setModal(null);
       return;
     }
@@ -305,7 +368,7 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
                 </div>
                 <div className="reminder-side">
                   <label className="switch">
-                    <input type="checkbox" defaultChecked={r.active} readOnly />
+                    <input type="checkbox" checked={r.active} onChange={() => toggleReminder(r)} />
                     <span className="switch-slider" />
                   </label>
                   <InfoButton helpKey="tasks.reminderSwitch" />
@@ -390,16 +453,12 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
           </div>
           <div className="field" style={{ marginBottom: 0, marginTop: 14 }}>
             <label className="field-label" htmlFor="task-rem-repeat">{t('tasks.repeat')}</label>
-            <select
+            <Select
               id="task-rem-repeat"
-              className="input"
               value={reminderRepeat}
-              onChange={(e) => setReminderRepeat(e.target.value)}
-            >
-              {repeatChoices.map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
+              options={repeatChoices.map((r) => ({ value: r, label: r }))}
+              onChange={setReminderRepeat}
+            />
           </div>
           {reminderRepeat === customDaysLabel && (
             <div className="day-chips">
