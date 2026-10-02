@@ -294,7 +294,6 @@ def create_handlers(bot: BotInstance) -> dict:
             "/ltm_export — выгрузить твою память файлом (в личку)",
             "/relations — связи участников чата",
             "/last N — последние N сообщений этого чата",
-            "/context — какой контекст уходит в промпт",
         ]
         if bot._rate_limit_enabled:
             lines.append("/ratelimits — статистика лимитов")
@@ -348,6 +347,7 @@ def create_handlers(bot: BotInstance) -> dict:
                 "",
                 "👑 Owner",
                 "/erase N — удалить последние N сообщений STM",
+                "/context — какой контекст уходит в промпт",
                 "/resetall — стереть ВСЮ память бота",
             ]
 
@@ -444,11 +444,14 @@ def create_handlers(bot: BotInstance) -> dict:
         await update.message.reply_text(text)
 
     async def context_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Показывает, какой контекст ушёл бы в промпт — файлом.
+        # Показывает, какой контекст ушёл бы в промпт — файлом. Только владельцу:
+        # в группе дамп содержит факты других участников
         import os
         import tempfile
         import shutil
         user_id = str(update.effective_user.id)
+        if user_id not in {bot.owner, os.getenv("OWNER_USER_ID", "")}:
+            return
         chat_id = str(update.effective_chat.id)
         text = await asyncio.to_thread(bot.debug_context, user_id, chat_id)
         tmp_dir = tempfile.mkdtemp(prefix="ctx_")
@@ -1177,48 +1180,27 @@ def register_handlers(app: Application, bot: BotInstance):
     # не отвечаем.
     _NEW = filters.UpdateType.MESSAGE
 
-    app.add_handler(CommandHandler("start", h["start"], filters=_NEW))
-    app.add_handler(CommandHandler("help", h["help"], filters=_NEW))
-    app.add_handler(CommandHandler("stats", h["stats"], filters=_NEW))
-    app.add_handler(CommandHandler("erase", h["erase"], filters=_NEW))
-    app.add_handler(CommandHandler("last", h["last"], filters=_NEW))
-    app.add_handler(CommandHandler("reset", h["reset"], filters=_NEW))
-    app.add_handler(CommandHandler("forget", h["forget"], filters=_NEW))
-    app.add_handler(CommandHandler("context", h["context"], filters=_NEW))
-    app.add_handler(CommandHandler("relations", h["relations"], filters=_NEW))
-    app.add_handler(CommandHandler("resetall", h["resetall"], filters=_NEW))
-    app.add_handler(CommandHandler("ltm_privacy", h["ltm_privacy"], filters=_NEW))
-    app.add_handler(CommandHandler("ltm_export", h["ltm_export"], filters=_NEW))
+    # Команды проходят тот же гейт, что и сообщения (blocked_users,
+    # allowed_dm_users, punish, rate limit, модерация): иначе заблокированный
+    # или упёршийся в лимит звал /remind, /learn, /add_inventory (вызовы LLM,
+    # общий инвентарь) и /reset. Владельца pre_check пропускает сразу
+    def _gated(handler):
+        async def run(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            msg, user = update.message, update.effective_user
+            if msg and user and await _gate_update(
+                    bot, msg, str(user.id),
+                    update.effective_chat.type == "private", msg.text or ""):
+                return
+            await handler(update, context)
+        return run
 
-    if h.get("reset_diary"):
-        app.add_handler(CommandHandler("reset_diary", h["reset_diary"], filters=_NEW))
-
-    if h.get("files"):
-        app.add_handler(CommandHandler("files", h["files"], filters=_NEW))
-    if h.get("reset_files"):
-        app.add_handler(CommandHandler("reset_files", h["reset_files"], filters=_NEW))
-    if h.get("ratelimits"):
-        app.add_handler(CommandHandler("ratelimits", h["ratelimits"], filters=_NEW))
-    if h.get("web"):
-        app.add_handler(CommandHandler("web", h["web"], filters=_NEW))
-    if h.get("todo"):
-        app.add_handler(CommandHandler("todo", h["todo"], filters=_NEW))
-    if h.get("reminders"):
-        app.add_handler(CommandHandler("reminders", h["reminders"], filters=_NEW))
-    if h.get("cancel_reminder"):
-        app.add_handler(CommandHandler("cancel_reminder", h["cancel_reminder"], filters=_NEW))
-    if h.get("inventory"):
-        app.add_handler(CommandHandler("inventory", h["inventory"], filters=_NEW))
-    if h.get("remind"):
-        app.add_handler(CommandHandler("remind", h["remind"], filters=_NEW))
-    if h.get("add_todo"):
-        app.add_handler(CommandHandler("add_todo", h["add_todo"], filters=_NEW))
-    if h.get("add_inventory"):
-        app.add_handler(CommandHandler("add_inventory", h["add_inventory"], filters=_NEW))
-    if h.get("learn"):
-        app.add_handler(CommandHandler("learn", h["learn"], filters=_NEW))
-    if h.get("stop_learning"):
-        app.add_handler(CommandHandler("stop_learning", h["stop_learning"], filters=_NEW))
+    for name in ("start", "help", "stats", "erase", "last", "reset", "forget",
+                 "context", "relations", "resetall", "ltm_privacy", "ltm_export",
+                 "reset_diary", "files", "reset_files", "ratelimits", "web",
+                 "todo", "reminders", "cancel_reminder", "inventory", "remind",
+                 "add_todo", "add_inventory", "learn", "stop_learning"):
+        if h.get(name):
+            app.add_handler(CommandHandler(name, _gated(h[name]), filters=_NEW))
 
     # Debug
     async def debug_all(update: Update, context: ContextTypes.DEFAULT_TYPE):

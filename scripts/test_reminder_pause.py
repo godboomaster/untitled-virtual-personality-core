@@ -245,7 +245,7 @@ def run_api(tmp: Path):
     server_mod._api_token = ""
     try:
         with mock.patch.object(server_mod, "_get_bot", fake_get_bot):
-            client = TestClient(server_mod.app)
+            client = TestClient(server_mod.app, base_url="http://127.0.0.1")
             base = "/api/personas/pauseapi/reminders"
             client.post(base, json={"task": "первое", "delay_seconds": 600})
             client.post(base, json={"task": "второе", "delay_seconds": 1200})

@@ -175,7 +175,7 @@ def test_http_endpoints():
     server_mod._api_token = ""
     try:
         timeutil._cache = ("", None)
-        client = TestClient(server_mod.app)
+        client = TestClient(server_mod.app, base_url="http://127.0.0.1")
         r = client.get("/api/settings/timezone")
         check("GET: 200 и поля timezone/effective/source",
               r.status_code == 200 and {"timezone", "effective", "source"} <= set(r.json()))

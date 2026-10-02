@@ -244,7 +244,7 @@ def main():
         handler = _Capture(level=_logging.WARNING)
         server_mod.logger.addHandler(handler)
         try:
-            client = TestClient(server_mod.app)
+            client = TestClient(server_mod.app, base_url="http://127.0.0.1")
             r1 = client.post("/api/presence", json={"active": True, "chat_id": "c1"})
             check("POST /api/presence без persona: 200, а не 422 (старый фронт)",
                   r1.status_code == 200)

@@ -374,6 +374,22 @@ html[data-vpc-shell] .detroit-bg {
   color: var(--term-dim);
 }
 
+.boot-token-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.boot-cmd-copy:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .boot-cmd-copy {
   flex-shrink: 0;
   padding: 3px 8px;

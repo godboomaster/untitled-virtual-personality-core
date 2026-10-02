@@ -350,7 +350,7 @@ def test_fastapi_endpoints():
     orig_token = server_mod._api_token
     server_mod._api_token = ""  # детерминированно: не зависим от реального .env
     try:
-        client = TestClient(server_mod.app)
+        client = TestClient(server_mod.app, base_url="http://127.0.0.1")
 
         r = client.get("/api/health")
         check("GET /api/health: 200 без авторизации", r.status_code == 200)
@@ -482,7 +482,7 @@ def test_persona_yaml_nonblocking():
         return orig_read_text(self, *a, **kw)
 
     try:
-        client = TestClient(server_mod.app)
+        client = TestClient(server_mod.app, base_url="http://127.0.0.1")
         with mock.patch.object(Path, "read_text", _slow_read_text):
             result = {}
 

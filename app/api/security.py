@@ -220,6 +220,64 @@ class BodySizeLimit:
         await self.app(scope, replay, send)
 
 
+# ── Только свой фронт ──
+# API слушает 127.0.0.1, но до него достаёт JavaScript любой страницы,
+# открытой в браузере на этой машине, в том числе в браузере бота (выдача
+# поиска, магазины агента задач). Две проверки:
+#  - Origin. Браузер ставит его на кросс-доменные запросы и на любые не-GET;
+#    такой запрос принимается, только если страница — свой фронт. Одного CORS
+#    мало: он лишь не даёт прочитать ответ, а «простые» запросы (POST без
+#    тела, multipart) сервер всё равно исполнил бы;
+#  - Host — от DNS rebinding: домен атакующего указывает на 127.0.0.1, и для
+#    браузера это «тот же сайт», Origin свой. Принимаются только известные
+#    имена хоста.
+# Запросы без Origin (curl, скрипты, TestClient) проходят: локальный процесс
+# и так может всё.
+
+# Якоря — на случай Starlette, где allow_origin_regex проверяется через match
+LOOPBACK_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def host_without_port(value: str) -> str:
+    v = value.strip().lower()
+    if v.startswith("["):  # IPv6: [::1]:8000
+        return v[1:v.find("]")] if "]" in v else v
+    return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
+
+
+class LocalOriginGuard:
+    """origins — разрешённые Origin ("*" — любой), origin_regex — шаблон
+    разрешённых Origin, hosts — разрешённые имена в заголовке Host
+    (None — Host не проверяется)."""
+
+    def __init__(self, app, origins=(), origin_regex=None, hosts=None):
+        self.app = app
+        self.any_origin = "*" in origins
+        self.origins = {o.strip().rstrip("/").lower() for o in origins}
+        self.origin_re = re.compile(origin_regex) if origin_regex else None
+        self.hosts = {h.lower() for h in hosts} if hosts is not None else None
+
+    def origin_allowed(self, origin: str) -> bool:
+        if self.any_origin:
+            return True
+        o = origin.strip().rstrip("/").lower()
+        return o in self.origins or bool(self.origin_re and self.origin_re.fullmatch(o))
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = {k.lower(): v.decode("latin-1") for k, v in scope.get("headers") or ()}
+        if self.hosts is not None:
+            host = host_without_port(headers.get(b"host", ""))
+            if host not in self.hosts:
+                return await _reply(send, 400, f"Host {host!r} не разрешён (API_ALLOWED_HOSTS)")
+        origin = headers.get(b"origin")
+        if origin is not None and not self.origin_allowed(origin):
+            return await _reply(send, 403, f"Источник {origin!r} не разрешён (API_CORS_ORIGINS)")
+        await self.app(scope, receive, send)
+
+
 def _too_large(limit: int) -> str:
     return f"Тело запроса больше {limit / 1024 / 1024:.0f} МБ"
 

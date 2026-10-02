@@ -345,7 +345,7 @@ def run():
     orig_token = server_mod._api_token
     try:
         server_mod._api_token = "secret"
-        client = TestClient(server_mod.app)
+        client = TestClient(server_mod.app, base_url="http://127.0.0.1")
         r = client.post("/api/skins/generate", json=body())
         check("без токена — 401", r.status_code == 401)
         server_mod._api_token = ""

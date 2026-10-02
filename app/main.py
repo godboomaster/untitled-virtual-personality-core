@@ -121,7 +121,6 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
         ("forget", "Забыть факт: /forget <что забыть>"),
         ("relations", "Связи участников чата"),
         ("last", "Последние N сообщений чата"),
-        ("context", "Контекст, уходящий в промпт"),
         ("ratelimits", "Статистика лимитов"),
         ("ltm_privacy", "Приватность памяти: smart | strict"),
         ("ltm_export", "Выгрузить мою память файлом (в личку)"),
@@ -148,6 +147,7 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
     # Owner-only команды — показываем только владельцу (scope на его чат)
     owner_commands = [
         ("erase", "Удалить последние N сообщений STM"),
+        ("context", "Контекст, уходящий в промпт"),
         ("resetall", "Стереть ВСЮ память бота"),
     ]
     if bot_instance.self_memory:

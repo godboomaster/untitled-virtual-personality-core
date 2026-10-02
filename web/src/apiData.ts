@@ -3,7 +3,7 @@
    работают на моковых данных (прототипный режим). */
 
 import { useEffect, useReducer } from 'react';
-import { api } from './api';
+import { api, ApiError } from './api';
 import type { ApiPersona, LivingStateData, PersonaLlmConfig, ProviderInfo } from './api';
 import type { Persona, PersonaFeature } from './mockData';
 
@@ -92,8 +92,10 @@ export function useApiPersonas(): Persona[] | null {
 
 // Сбросить кеш и перечитать список (после создания/удаления/дублирования персоны).
 // Промис резолвится, когда новый список уже в кеше (смена id ждёт его,
-// чтобы переключить выбор на новый id, а не на первую персону)
-export function refetchPersonas(): Promise<void> {
+// чтобы переключить выбор на новый id, а не на первую персону).
+// Ошибка запроса — в результате (null — список получен): экран запуска
+// по 401 спрашивает токен
+export function refetchPersonas(): Promise<ApiError | null> {
   // Старый список держим до прихода нового: сброс кеша в null на время запроса
   // выглядел бы как «бэкенд офлайн» (мок-данные, сброс выбора персоны в чате)
   failedAt = 0;
@@ -101,10 +103,12 @@ export function refetchPersonas(): Promise<void> {
     .getPersonas()
     .then((list) => {
       cache = list.map(mapPersona);
+      return null;
     })
-    .catch(() => {
+    .catch((e: unknown) => {
       cache = null;
       failedAt = Date.now();
+      return e instanceof ApiError ? e : new ApiError(0, String(e));
     })
     .finally(() => listeners.forEach((l) => l()));
 }

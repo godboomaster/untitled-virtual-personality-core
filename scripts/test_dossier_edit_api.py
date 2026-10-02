@@ -97,7 +97,7 @@ def run():
     server_mod._api_token = ""
     try:
         with mock.patch.object(server_mod, "_get_bot", fake_get_bot):
-            client = TestClient(server_mod.app)
+            client = TestClient(server_mod.app, base_url="http://127.0.0.1")
             run_reminders(client, rm)
             run_stm(client, stm)
             run_llm_patch(client)

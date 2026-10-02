@@ -29,7 +29,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.api import runtime
 from app.api.runtime import chat_lock, get_persona_info, list_personas
-from app.api.security import BodySizeLimit, PersonaIdPath, PersonaIdQuery
+from app.api.security import (BodySizeLimit, LOOPBACK_HOSTS, LOOPBACK_ORIGIN_RE,
+                              LocalOriginGuard, PersonaIdPath, PersonaIdQuery)
 from app.api.schemas import (
     ActiveProviderRequest,
     CalendarEntryCreate,
@@ -129,21 +130,38 @@ app.add_middleware(BodySizeLimit, rules=[
     ("POST", r"/api/personas/[^/]+/room/style/describe", 2 * 1024 * 1024),
 ])
 
-_cors_origins = os.getenv("API_CORS_ORIGINS", "*")
+# Источники: API_CORS_ORIGINS — явный список ("*" — любой сайт); не задано
+# или пусто — только свой фронт на этой машине: localhost/127.0.0.1/[::1] на
+# любом порту (vite dev 5173, preview 4173 и др.)
+_cors_origins = [o.strip() for o in os.getenv("API_CORS_ORIGINS", "").split(",") if o.strip()]
+_cors_regex = None if _cors_origins else LOOPBACK_ORIGIN_RE
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins.split(",") if o.strip()],
+    allow_origins=_cors_origins,
+    allow_origin_regex=_cors_regex,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 _bearer = HTTPBearer(auto_error=False)
 _api_token = os.getenv("API_TOKEN", "")
+_api_host = os.getenv("API_HOST", "127.0.0.1")
+
+# Origin и Host (security.LocalOriginGuard) — снаружи CORS: чужая страница
+# получает отказ раньше, чем её запрос исполнится. Host: при привязке к
+# loopback — локальные имена и API_ALLOWED_HOSTS; при привязке наружу без
+# API_ALLOWED_HOSTS имя хоста заранее неизвестно — не проверяется
+_extra_hosts = {h.strip().lower() for h in os.getenv("API_ALLOWED_HOSTS", "").split(",") if h.strip()}
+if _api_host in LOOPBACK_HOSTS or _extra_hosts:
+    _allowed_hosts = set(LOOPBACK_HOSTS) | _extra_hosts
+else:
+    _allowed_hosts = None
+app.add_middleware(LocalOriginGuard, origins=_cors_origins, origin_regex=_cors_regex,
+                   hosts=_allowed_hosts)
 
 # Не-loopback хост без токена — API открыт всем в локальной сети/интернете
 # без единой проверки: не роняем процесс (это может быть осознанный выбор
 # в доверенном окружении), но громко предупреждаем в лог при старте.
-_api_host = os.getenv("API_HOST", "127.0.0.1")
 if _api_host not in ("127.0.0.1", "localhost", "::1") and not _api_token:
     logging.getLogger(__name__).warning(
         f"[Security] API_HOST={_api_host!r} (не loopback), а API_TOKEN не задан — "

@@ -73,7 +73,7 @@ def run(tmp: Path):
     personas = ["alex", "mira"]
     try:
         with mock.patch.object(server_mod, "list_personas", lambda: list(personas)):
-            client = TestClient(server_mod.app)
+            client = TestClient(server_mod.app, base_url="http://127.0.0.1")
             run_endpoints(client, tmp)
             run_body_limit(client)
         run_persona_hooks()
@@ -248,7 +248,7 @@ def run_body_limit(client):
         # Content-Length больше лимита: отказ по заголовку, тело не читается
         r = client.post("/api/skins", content=b"{}",
                         headers={"content-type": "application/json", "content-length": over,
-                                 "origin": "http://example.test"})
+                                 "origin": "http://localhost:5173"})
         check("POST /api/skins: Content-Length сверх лимита → 413",
               r.status_code == 413 and "МБ" in r.json().get("detail", ""))
         check("413 уходит с CORS-заголовком (middleware внутри CORS)",

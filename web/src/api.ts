@@ -1,13 +1,45 @@
 /* HTTP-клиент бэкенда (app/api/server.py). Базовый URL — из
    VITE_API_URL (см. web/.env), по умолчанию локальный сервер.
-   Токен (если на бэке задан API_TOKEN) хранится в localStorage
-   под ключом vpc-api-token. */
+   Токен (если на бэке задан API_TOKEN) вводится на экране запуска и
+   хранится в localStorage под ключом vpc-api-token. */
 
 import type { RoomArtData, RoomArtPatch, RoomFocus, RoomLayout, RoomLayoutPatch, RoomSource, RoomStyle, RoomView } from './room/roomTypes';
 
 const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000';
 // Адрес бэкенда без схемы — для подписей в UI (экран загрузки)
 export const API_HOST = BASE_URL.replace(/^https?:\/\//, '');
+
+const TOKEN_KEY = 'vpc-api-token';
+
+export function getApiToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function setApiToken(token: string) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* хранилище недоступно — токен проживёт до перезагрузки только в форме */
+  }
+}
+
+// 401 от ядра: на бэке задан API_TOKEN, а токена нет или он неверный —
+// экран запуска (BootGate) ловит событие и спрашивает токен
+export const AUTH_REQUIRED_EVENT = 'vpc-auth-required';
+
+function authHeader(): Record<string, string> {
+  const token = getApiToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function noteAuthFailure(res: Response) {
+  if (res.status === 401) window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+}
 
 // Пользователь веб-интерфейса — один на всех персон (память у персон изолирована контекстом)
 export const WEB_USER_ID = 'web_user';
@@ -101,16 +133,16 @@ export class StreamInterruptedError extends ApiError {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('vpc-api-token');
   const res = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
       ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...authHeader(),
       ...init?.headers,
     },
   });
   if (!res.ok) {
+    noteAuthFailure(res);
     let detail = `HTTP ${res.status}`;
     try {
       const body = await res.json();
@@ -813,7 +845,6 @@ export async function streamChat(
   onPartBreak?: () => void,
   onReplyTs?: (ts: number) => void,
 ): Promise<ApiChatResponse> {
-  const token = localStorage.getItem('vpc-api-token');
   // Сетевой сбой до ответа (fetch отклонён) — запрос мог и дойти до сервера:
   // считаем обрывом, чат сверится с историей по last_ts
   let res: Response;
@@ -822,7 +853,7 @@ export async function streamChat(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...authHeader(),
       },
       body: JSON.stringify({
         persona: params.persona,
@@ -838,6 +869,7 @@ export async function streamChat(
     throw new StreamInterruptedError(e instanceof Error ? e.message : String(e));
   }
   if (!res.ok || !res.body) {
+    noteAuthFailure(res);
     // Достаём detail из JSON-тела ошибки (например, 409 «персона заморожена»)
     let detail = `HTTP ${res.status}`;
     try {
@@ -967,17 +999,17 @@ export async function streamSkinGeneration(
   onStatus?: (status: string, info: { round?: number; direction?: ApiSkinDirection }) => void,
   signal?: AbortSignal,
 ): Promise<ApiSkinGenResult> {
-  const token = localStorage.getItem('vpc-api-token');
   const res = await fetch(`${BASE_URL}/api/skins/generate`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...authHeader(),
     },
     body: JSON.stringify(params),
     signal,
   });
   if (!res.ok || !res.body) {
+    noteAuthFailure(res);
     let detail = `HTTP ${res.status}`;
     try {
       const body = await res.json();

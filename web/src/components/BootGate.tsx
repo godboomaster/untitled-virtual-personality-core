@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { api, API_HOST } from '../api';
+import { api, API_HOST, AUTH_REQUIRED_EVENT, getApiToken, setApiToken } from '../api';
 import { refetchPersonas } from '../apiData';
 import { useI18n } from '../i18n';
 import { getInitialTheme } from '../useAppTheme';
@@ -14,7 +14,9 @@ import { DetroitBackground } from '../effects/DetroitBackground';
    (прототипный режим) — через пару секунд доступен выход в MOCK.
    Браузер не отличит «ядро стартует» от «ядро не запущено» (порт закрыт
    в обоих случаях), поэтому долгое молчание считаем вторым: экран
-   объясняет, что без бэкенда интерфейс не работает, и как его поднять. */
+   объясняет, что без бэкенда интерфейс не работает, и как его поднять.
+   Ядро с API_TOKEN отвечает на список персон 401 — тогда экран спрашивает
+   токен; то же, если 401 пришёл посреди работы (токен на бэке сменили). */
 
 const POLL_MS = 700; // пауза между попытками достучаться до ядра
 const POLL_BG_MS = 3000; // то же после выхода в MOCK: ядро подхватится, как только встанет
@@ -28,6 +30,8 @@ const DONE_HOLD_MS = 450; // задержка на «всё готово», чт
 
 // 0 — ждём ядро, 1 — грузим персон, 2 — готово
 type Stage = 0 | 1 | 2;
+// Запрос токена: need — токена нет, wrong — сохранённый не подошёл
+type Auth = null | 'need' | 'wrong';
 
 function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -41,6 +45,9 @@ export default function BootGate({ children }: { children: ReactNode }) {
   const [elapsed, setElapsed] = useState(0);
   const [open, setOpen] = useState(false); // приложение смонтировано
   const [copied, setCopied] = useState(false);
+  const [auth, setAuth] = useState<Auth>(null);
+  const [tokenDraft, setTokenDraft] = useState('');
+  const [run, setRun] = useState(0); // смена — запуск последовательности заново (после ввода токена)
   const openRef = useRef(false);
   useEffect(() => {
     openRef.current = open;
@@ -81,9 +88,14 @@ export default function BootGate({ children }: { children: ReactNode }) {
       }
       if (cancelled) return;
       setStage(1);
-      // Ошибку списка персон refetchPersonas гасит сам (приложение уйдёт в
-      // MOCK и перечитает при навигации) — висеть на экране из-за неё незачем
-      await refetchPersonas();
+      // Прочие ошибки списка персон refetchPersonas гасит сам (приложение уйдёт
+      // в MOCK и перечитает при навигации) — висеть на экране из-за них незачем
+      const err = await refetchPersonas();
+      if (cancelled) return;
+      if (err?.status === 401) {
+        setAuth(getApiToken() ? 'wrong' : 'need');
+        return;
+      }
       finish();
     };
 
@@ -94,6 +106,17 @@ export default function BootGate({ children }: { children: ReactNode }) {
       window.clearTimeout(timer);
       window.clearInterval(tick);
     };
+  }, [run]);
+
+  // 401 посреди работы — назад на экран запуска с вопросом о токене
+  useEffect(() => {
+    const onAuthRequired = () => {
+      setAuth(getApiToken() ? 'wrong' : 'need');
+      setStage(1);
+      setOpen(false);
+    };
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
   }, []);
 
   if (open) return <>{children}</>;
@@ -108,33 +131,53 @@ export default function BootGate({ children }: { children: ReactNode }) {
       .catch(() => {});
   };
 
+  const submitToken = () => {
+    const token = tokenDraft.trim();
+    if (!token) return;
+    setApiToken(token);
+    setTokenDraft('');
+    setAuth(null);
+    setRun((n) => n + 1);
+  };
+
   // Ядро так и не ответило — считаем, что бэкенд не запущен (опрос идёт
   // дальше: поднимется — экран сам перейдёт к загрузке персон)
   const offline = stage === 0 && elapsed >= OFFLINE_AFTER_MS;
   const steps: { label: string; state: 'ok' | 'run' | 'wait' | 'fail' }[] = [
     { label: t('boot.stepWeb'), state: 'ok' },
     { label: t('boot.stepApi', { host: API_HOST }), state: stage > 0 ? 'ok' : offline ? 'fail' : 'run' },
-    { label: t('boot.stepPersonas'), state: stage > 1 ? 'ok' : stage === 1 ? 'run' : 'wait' },
+    {
+      label: t('boot.stepPersonas'),
+      state: auth ? 'fail' : stage > 1 ? 'ok' : stage === 1 ? 'run' : 'wait',
+    },
   ];
   const tag = { ok: '[ OK ]', run: '[ .. ]', wait: '[ -- ]', fail: '[FAIL]' };
   // Горящие ячейки прогресса: по трети на каждый пройденный этап
   const litCells = Math.round((CELLS * (stage + 1)) / 3);
 
   return (
-    <div className={`boot${stage === 2 ? ' boot--done' : ''}${offline ? ' boot--offline' : ''}`}>
+    <div className={`boot${stage === 2 ? ' boot--done' : ''}${offline || auth ? ' boot--offline' : ''}`}>
       <DetroitBackground />
-      <div className="boot-panel bracketed" role={offline ? 'alert' : 'status'} aria-live="polite">
+      <div className="boot-panel bracketed" role={offline || auth ? 'alert' : 'status'} aria-live="polite">
         <span className="corner tl plus" />
         <span className="corner tr" />
         <span className="corner bl" />
         <span className="corner br" />
 
-        <div className="home-eyebrow">{offline ? t('boot.offlineEyebrow') : t('boot.eyebrow')}</div>
+        <div className="home-eyebrow">
+          {auth ? t('boot.authEyebrow') : offline ? t('boot.offlineEyebrow') : t('boot.eyebrow')}
+        </div>
         <h1 className="home-title glitch boot-title" data-text="Virtual Persona Core">
           Virtual Persona Core
         </h1>
         <p className="boot-lead">
-          {stage === 2 ? t('boot.ready') : offline ? t('boot.offlineLead') : t('boot.lead')}
+          {auth
+            ? t('boot.authLead')
+            : stage === 2
+              ? t('boot.ready')
+              : offline
+                ? t('boot.offlineLead')
+                : t('boot.lead')}
         </p>
 
         <ul className="boot-steps">
@@ -175,6 +218,36 @@ export default function BootGate({ children }: { children: ReactNode }) {
           </div>
         )}
         {offline && <p className="boot-hint">{t('boot.offlineWait')}</p>}
+
+        {auth && (
+          <form
+            className="boot-cmd"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitToken();
+            }}
+          >
+            <label className="boot-cmd-label" htmlFor="boot-token">
+              {t('boot.authLabel')}
+            </label>
+            <div className="boot-cmd-row">
+              <span className="boot-cmd-prompt">$</span>
+              <input
+                id="boot-token"
+                className="boot-token-input"
+                type="password"
+                autoComplete="current-password"
+                autoFocus
+                value={tokenDraft}
+                onChange={(e) => setTokenDraft(e.target.value)}
+              />
+              <button type="submit" className="boot-cmd-copy" disabled={!tokenDraft.trim()}>
+                {t('boot.authSubmit')}
+              </button>
+            </div>
+            {auth === 'wrong' && <p className="boot-hint">{t('boot.authWrong')}</p>}
+          </form>
+        )}
 
         {stage === 0 && elapsed >= SKIP_AFTER_MS && (
           <div className="boot-actions">

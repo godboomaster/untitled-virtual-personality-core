@@ -2,23 +2,55 @@
 Лёгкий HTTP-сервер экспорта данных памяти из ChromaDB.
 Работает в фоновом потоке основного приложения на отдельном порту.
 
-Доступ: если задан EXPORT_TOKEN — требуется ?token=... или заголовок
-"Authorization: Bearer ...". Биндинг: EXPORT_HOST (по умолчанию 127.0.0.1).
+Доступ — только по токену: ?token=... или заголовок "Authorization: Bearer ...".
+Токен — EXPORT_TOKEN, а без него — случайный, созданный при первом запуске
+в <data>/export_token. Биндинг: EXPORT_HOST (по умолчанию 127.0.0.1).
 """
 
+import hmac
 import json
 import os
+import secrets
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import chromadb
 from app.core.config import Config, get_db_paths
+from app.core.paths import data_dir
 from app.core.persona import PersonaLayer
 import logging
 
 logger = logging.getLogger(__name__)
 
-EXPORT_TOKEN = os.getenv("EXPORT_TOKEN", "")
+# Задаётся в start_export_server; пустой — сервер не запущен, доступа нет
+EXPORT_TOKEN = ""
+
+
+def _token_file() -> str:
+    return str(data_dir() / "export_token")
+
+
+def _load_token() -> str:
+    # Без токена экспорт отдавал память всех персон любому локальному процессу
+    # и любой открытой в браузере странице (ответ шёл с CORS *), поэтому
+    # открытого режима нет: нет EXPORT_TOKEN — свой токен в файле (права 0600)
+    env = os.getenv("EXPORT_TOKEN", "").strip()
+    if env:
+        return env
+    path = _token_file()
+    try:
+        with open(path, encoding="utf-8") as f:
+            token = f.read().strip()
+        if token:
+            return token
+    except FileNotFoundError:
+        pass
+    token = secrets.token_urlsafe(24)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(token + "\n")
+    return token
 
 
 def _build_db_sources() -> dict:
@@ -68,11 +100,14 @@ def dump_collection(db_path: str, collection_name: str) -> dict:
 class ExportHandler(BaseHTTPRequestHandler):
     def _authorized(self, parsed) -> bool:
         if not EXPORT_TOKEN:
-            return True
-        params = parse_qs(parsed.query)
-        if params.get("token", [None])[0] == EXPORT_TOKEN:
-            return True
-        return self.headers.get("Authorization", "") == f"Bearer {EXPORT_TOKEN}"
+            return False
+        expected = EXPORT_TOKEN.encode("utf-8")
+        given = [parse_qs(parsed.query).get("token", [""])[0]]
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            given.append(auth[len("Bearer "):])
+        # compare_digest — без раннего выхода на первом несовпавшем символе
+        return any(hmac.compare_digest(g.encode("utf-8"), expected) for g in given if g)
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -81,7 +116,8 @@ class ExportHandler(BaseHTTPRequestHandler):
             self.send_response(401)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write("Unauthorized: задайте ?token= или Authorization: Bearer".encode("utf-8"))
+            self.wfile.write("Unauthorized: задайте ?token= или Authorization: Bearer "
+                             "(токен — EXPORT_TOKEN или файл export_token в папке данных)".encode("utf-8"))
             return
 
         if parsed.path == "/api/export-memory":
@@ -98,7 +134,6 @@ class ExportHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
@@ -117,7 +152,6 @@ class ExportHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps(listing, ensure_ascii=False, indent=2).encode("utf-8"))
 
@@ -138,11 +172,14 @@ class ExportHandler(BaseHTTPRequestHandler):
 
 def start_export_server(port: int = 8080, host: str = None):
     # По умолчанию слушаем только localhost; EXPORT_HOST=0.0.0.0 открывает наружу.
+    global EXPORT_TOKEN
     bind_host = host or os.getenv("EXPORT_HOST", "127.0.0.1")
+    EXPORT_TOKEN = _load_token()
+    token_src = "EXPORT_TOKEN" if os.getenv("EXPORT_TOKEN", "").strip() else _token_file()
 
     def _run():
         server = HTTPServer((bind_host, port), ExportHandler)
-        logger.info(f"[ExportServer] Started on {bind_host}:{port} (token: {'on' if EXPORT_TOKEN else 'off'})")
+        logger.info(f"[ExportServer] Started on {bind_host}:{port} (токен: {token_src})")
         server.serve_forever()
 
     thread = threading.Thread(target=_run, daemon=True, name="export-server")

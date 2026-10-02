@@ -304,7 +304,8 @@ python -m app.main api
 API_HOST=127.0.0.1        # хост
 API_PORT=8000             # порт
 API_TOKEN=secret          # если задан — все /api/* требуют "Authorization: Bearer <token>"
-API_CORS_ORIGINS=*        # список origin через запятую
+API_CORS_ORIGINS=         # страницы, которым можно в API, через запятую; пусто — только localhost/127.0.0.1 (свой фронт), * — любой сайт
+API_ALLOWED_HOSTS=        # имена хоста сверх localhost/127.0.0.1 (защита от DNS rebinding)
 API_WARMUP_HOURS=48       # при старте в фоне поднять персоны, которым писали/чат которых открывали за N часов (0 — выкл)
 ```
 
