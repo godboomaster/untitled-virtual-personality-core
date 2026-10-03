@@ -10,12 +10,19 @@ Playwright с локальными страницами (set_content) — без
   нажимается); D4 — force-клик сквозь чужой слой не делается;
 * D5 — клик-пустышка не засчитывается по одному фокусу;
 * D6 — маска телефона «+7 (___)»: 10 цифр — «filled», +7… — честная ошибка;
-* D8 — чтение для агента: шторка корзины первой, итог внизу не обрезан.
+* D8 — чтение для агента: шторка корзины первой, итог внизу не обрезан;
+* страж Enter фоновой вкладки (03.10, цикл клавиши headless Chrome): страж
+  ставится до Enter и снимается после (и при упавшем dispatch), сбои
+  установки/снятия отправку не роняют; на настоящей странице — кто поглотил
+  Enter (сайт/страж/поле), Enter с символом в поле чата не отменяется
+  (keypress duck.ai доходит), вне поля, в readOnly и при stopPropagation
+  сайта — отменяется; после снятия следующий Enter не трогается.
 
 Запуск: python -m scripts.test_ba_sandbox
 """
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -32,6 +39,250 @@ class _W:
 
     def _all_pages(self):
         return [self.page]
+
+
+class _LogRec(logging.Handler):
+    # Сообщения логгера browser_actions — проверка диагностики стража
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.msgs = []
+
+    def emit(self, record):
+        self.msgs.append((record.levelno, record.getMessage()))
+
+
+def _guard_checks(ba, page, cdp, check):
+    """Страж Enter фоновой вкладки (см. _ENTER_GUARD_JS): порядок вызовов на
+    подменах, затем НАСТОЯЩИЕ _raw_enter/_raw_eval/_raw_chat_fill_send на
+    странице песочницы — подменён только транспорт _raw_tab_call (CDP-сессия
+    Playwright вместо сокета пула). Сам цикл клавиш headless-shell Playwright
+    не воспроизводит (он только у Chrome --headless=new на macOS — проверка
+    на отдельном Chrome), здесь — логика стража в движке Blink."""
+    blog = logging.getLogger(ba.__name__)
+    rec = _LogRec()
+    blog.addHandler(rec)
+    old_level = blog.level
+    blog.setLevel(logging.DEBUG)
+    _rtc, _rev = ba._raw_tab_call, ba._raw_eval
+    try:
+        # ── порядок вызовов на подменах ──
+        calls = []
+        cfg = {"fail": None, "off": "guard"}
+
+        def fake_eval(tab, js, timeout_sec=None):
+            kind = ("on" if "'armed'" in js
+                    else "off" if js == ba._ENTER_GUARD_OFF_JS else "js")
+            calls.append(kind if kind != "on" else ("on", js))
+            if cfg["fail"] == kind:
+                raise ba.BrowserUnavailable(f"имитация сбоя {kind}")
+            return "armed" if kind == "on" else cfg["off"]
+
+        def fake_call(tab, method, params=None, timeout=None):
+            calls.append(params["type"])
+            if cfg["fail"] == "dispatch":
+                raise ba.RawCallTimeout("имитация: dispatch не ответил")
+            return {}
+
+        def kinds():
+            return [c[0] if isinstance(c, tuple) else c for c in calls]
+
+        ba._raw_eval, ba._raw_tab_call = fake_eval, fake_call
+        ba._raw_enter(1)
+        raw_order, raw_js = kinds(), calls[0][1]
+        calls.clear()
+        ba._raw_enter(1, with_text=True, input_sel="textarea[name=user-prompt]")
+        txt_order, txt_js = kinds(), calls[0][1]
+        check("страж Enter: установка ДО Enter, снятие ПОСЛЕ keyUp (rawKeyDown "
+              "и keyDown с символом); в страж уходят with_text и селектор поля",
+              raw_order == ["on", "rawKeyDown", "keyUp", "off"]
+              and txt_order == ["on", "keyDown", "keyUp", "off"]
+              and raw_js.endswith("(false,\"\")")
+              and txt_js.endswith("(true,\"textarea[name=user-prompt]\")"))
+        calls.clear()
+        cfg["fail"] = "dispatch"
+        raised = None
+        try:
+            ba._raw_enter(1)
+        except ba.RawCallTimeout as e:
+            raised = e
+        check("страж Enter: dispatch упал — страж всё равно снят, исключение "
+              "dispatch'а уходит наверх",
+              kinds() == ["on", "rawKeyDown", "off"] and raised is not None)
+        calls.clear()
+        cfg["fail"] = "on"
+        try:
+            ba._raw_enter(1)
+            on_fail_ok = True
+        except Exception:
+            on_fail_ok = False
+        check("страж Enter: сбой установки — Enter всё равно отправлен (как до "
+              "стража), снятие всё равно пробуется",
+              on_fail_ok and kinds() == ["on", "rawKeyDown", "keyUp", "off"])
+        calls.clear()
+        cfg["fail"] = "off"
+        try:
+            ba._raw_enter(1)
+            off_fail_ok = True
+        except Exception:
+            off_fail_ok = False
+        check("страж Enter: сбой снятия отправку не роняет",
+              off_fail_ok and kinds() == ["on", "rawKeyDown", "keyUp", "off"])
+        cfg["fail"] = None
+        infos = []
+        for res in ("guard", "site", "field", "unfired", ""):
+            cfg["off"] = res
+            rec.msgs.clear()
+            ba._raw_enter(1)
+            infos.append(any(lv == logging.INFO for lv, _m in rec.msgs))
+        check("страж Enter: в лог INFO — только «поглотил страж» и «не дошёл "
+              "до стража» (сайт/поле/смена документа — DEBUG)",
+              infos == [True, False, False, True, False])
+        cfg["off"] = "guard"
+        rec.msgs.clear()
+        ba._raw_enter(1)
+        check("страж Enter: «поглотил страж» — с номером вкладки",
+              any(lv == logging.INFO and "#1" in m and "страж" in m
+                  for lv, m in rec.msgs))
+
+        # ── настоящий JS стража на странице песочницы ──
+        ba._raw_tab_call = (lambda tab, method, params=None, timeout=None:
+                            cdp.send(method, params or {}))
+        ba._RAW_TABS[1] = {"targetId": "t", "sessionId": "s", "pool": "h"}
+        offs = []
+
+        def rec_eval(tab, js, timeout_sec=None):
+            r = _rev(tab, js, timeout_sec=timeout_sec)
+            if js == ba._ENTER_GUARD_OFF_JS:
+                offs.append(r)
+            return r
+        ba._raw_eval = rec_eval
+
+        def run(html, with_text, sel, prep="t.focus();t.value='hello'"):
+            # Глобалы окна переживают set_content (document.open оставляет
+            # тот же Window) — счётчик прошлой страницы обнуляем заранее
+            page.evaluate("()=>{window.sent=null;}")
+            page.set_content(html)
+            page.evaluate("()=>{var t=document.getElementById('t');" + prep + "}")
+            offs.clear()
+            ba._raw_enter(1, with_text=with_text, input_sel=sel)
+            page.wait_for_timeout(100)
+            st = page.evaluate(
+                "()=>[document.getElementById('t').value, window.sent,"
+                "window.__vpcEnterGuard||null]")
+            return (offs[-1] if offs else None), st[0], st[1], st[2]
+
+        bare = "<textarea id='t'></textarea>"
+        r = run(bare, False, "#t")
+        check("страж (Blink): rawKeyDown в поле без обработчика сайта — "
+              "поглотил страж, страж снят", r == ("guard", "hello", None, None))
+        r = run(bare, True, "#t")
+        check("страж (Blink): Enter с символом в поле чата не отменён — "
+              "перевод строки вставлен (поле поглотило), итог field",
+              r == ("field", "hello\n", None, None))
+        r = run(bare, True, "#other")
+        check("страж (Blink): Enter с символом, фокус НЕ в поле чата — "
+              "отменён на keydown (символ не вставлен), итог guard",
+              r == ("guard", "hello", None, None))
+        r = run("<textarea id='t' readonly>hello</textarea>", True, "#t",
+                prep="t.focus()")
+        check("страж (Blink): readOnly-поле — не «рабочее», Enter отменён",
+              r == ("guard", "hello", None, None))
+        r = run("<p>нет поля</p><textarea id='t' style='display:none'>"
+                "hello</textarea>", True, "#t", prep="document.body.focus()")
+        check("страж (Blink): фокус на body, Enter с символом — отменён",
+              r[0] == "guard")
+        site_kd = ("<textarea id='t'></textarea><script>var sent=0;"
+                   "document.getElementById('t').addEventListener('keydown',"
+                   "function(e){if(e.key==='Enter'){e.preventDefault();sent++;"
+                   "this.value='';}});</script>")
+        r = run(site_kd, False, "#t")
+        check("страж (Blink): сайт отправил по keydown с preventDefault — "
+              "обработчик сайта сработал, итог site",
+              r == ("site", "", 1, None))
+        stop = ("<textarea id='t'></textarea><script>var sent=0;"
+                "var t=document.getElementById('t');"
+                "t.addEventListener('keydown',function(e){if(e.key==='Enter')"
+                "e.stopPropagation();});"
+                "t.addEventListener('keypress',function(e){if(e.key==='Enter')"
+                "{e.preventDefault();sent++;this.value='';}});</script>")
+        r = run(stop, True, "#other")
+        check("страж (Blink): сайт остановил всплытие keydown без "
+              "preventDefault — страж отменил его микрозадачей (keypress не "
+              "дошёл), итог guard", r == ("guard", "hello", 0, None))
+        r = run(stop, True, "#t")
+        check("страж (Blink): та же страница, фокус в поле чата — keypress "
+              "сайта дошёл (отправка duck.ai не сломана), итог field",
+              r == ("field", "", 1, None))
+        # Синтетический keydown сайта стража не расходует (isTrusted)
+        page.set_content(bare)
+        _rev(1, ba._ENTER_GUARD_JS % ("false", "\"#t\""))
+        page.evaluate("()=>window.dispatchEvent(new KeyboardEvent('keydown',"
+                      "{key:'Enter',bubbles:true,cancelable:true}))")
+        armed = page.evaluate("()=>typeof window.__vpcEnterGuard")
+        off = _rev(1, ba._ENTER_GUARD_OFF_JS)
+        check("страж (Blink): синтетический keydown сайта стража не "
+              "расходует; снятие несработавшего — unfired",
+              armed == "function" and off == "unfired"
+              and page.evaluate("()=>window.__vpcEnterGuard") is None)
+        # После упавшего dispatch страж снят: следующий Enter (как печатает
+        # человек в видимом окне rescue) не отменяется
+        page.set_content(bare)
+        page.evaluate("()=>{var t=document.getElementById('t');t.focus();"
+                      "t.value='a';window.late=[];}")
+        ba._raw_tab_call = (lambda tab, method, params=None, timeout=None:
+                            (_ for _ in ()).throw(ba.RawCallTimeout("имитация"))
+                            if method == "Input.dispatchKeyEvent"
+                            else cdp.send(method, params or {}))
+        try:
+            ba._raw_enter(1, input_sel="#t")
+        except ba.RawCallTimeout:
+            pass
+        ba._raw_tab_call = (lambda tab, method, params=None, timeout=None:
+                            cdp.send(method, params or {}))
+        page.evaluate("()=>addEventListener('keydown',function(e){"
+                      "if(e.key==='Enter')late.push(e.defaultPrevented);})")
+        for ev in ({"type": "keyDown", "key": "Enter", "code": "Enter",
+                    "windowsVirtualKeyCode": 13, "text": "\r"},
+                   {"type": "keyUp", "key": "Enter", "code": "Enter",
+                    "windowsVirtualKeyCode": 13}):
+            cdp.send("Input.dispatchKeyEvent", ev)
+        page.wait_for_timeout(100)
+        check("страж (Blink): dispatch упал — страж снят, следующий Enter "
+              "не отменён (перевод строки вставлен)",
+              offs[-1:] == ["unfired"]
+              and page.evaluate("()=>[late, document.getElementById('t')"
+                                ".value, window.__vpcEnterGuard||null]")
+              == [[False], "a\n", None])
+        # Настоящий _raw_chat_fill_send (duck.ai-подобная страница: отправка
+        # по keypress) — селектор поля доходит до стража, отправка проходит
+        page.set_content(
+            "<textarea id='t'></textarea><script>var sent=0;"
+            "document.getElementById('t').addEventListener('keypress',"
+            "function(e){if(e.key==='Enter'){e.preventDefault();sent++;"
+            "this.value='';}});</script>")
+        seen = {}
+        _re = ba._raw_enter
+
+        def spy_enter(tab, with_text=False, input_sel=None):
+            seen.update(with_text=with_text, input_sel=input_sel)
+            return _re(tab, with_text=with_text, input_sel=input_sel)
+        ba._raw_enter = spy_enter
+        offs.clear()
+        try:
+            res = ba._raw_chat_fill_send(1, "#t", "привет", enter_text=True)
+        except Exception as e:
+            res = f"{type(e).__name__}: {e}"
+        finally:
+            ba._raw_enter = _re
+        check("страж: _raw_chat_fill_send передаёт селектор поля в _raw_enter; "
+              "duck.ai-подобная отправка по keypress — sent",
+              res == "sent" and seen == {"with_text": True, "input_sel": "#t"}
+              and offs == ["field"] and page.evaluate("()=>sent") == 1)
+    finally:
+        ba._raw_tab_call, ba._raw_eval = _rtc, _rev
+        ba._RAW_TABS.pop(1, None)
+        blog.removeHandler(rec)
+        blog.setLevel(old_level)
 
 
 def main():
@@ -532,8 +783,9 @@ el.value=f;});</script>"""
         # Enter фоновой вкладки: duck.ai отправляет только по keyDown с
         # символом «\r» (keypress), rawKeyDown без символа — нет (01.10)
         sent_evs = []
-        _rtc = ba._raw_tab_call
+        _rtc, _rev = ba._raw_tab_call, ba._raw_eval
         ba._raw_tab_call = lambda tab, method, params: sent_evs.append(params)
+        ba._raw_eval = lambda tab, js, timeout_sec=None: ""  # страж Enter
         try:
             ba._raw_enter(1, with_text=True)
             with_txt = list(sent_evs)
@@ -541,7 +793,7 @@ el.value=f;});</script>"""
             ba._raw_enter(1)
             plain = list(sent_evs)
         finally:
-            ba._raw_tab_call = _rtc
+            ba._raw_tab_call, ba._raw_eval = _rtc, _rev
         page.set_content(
             "<textarea id='t'></textarea><script>var sent=0;"
             "document.getElementById('t').addEventListener('keypress',"
@@ -560,6 +812,7 @@ el.value=f;});</script>"""
               _fired(with_txt) == 1 and _fired(plain) == 0
               and with_txt[0]["type"] == "keyDown"
               and plain[0]["type"] == "rawKeyDown")
+        _guard_checks(ba, page, cdp, check)
         page.set_content(
             "<nav style='position:sticky;top:0'><a>Пиццы</a><a>Напитки</a>"
             "</nav><main><section><div><h2>Пиццы</h2></div>"

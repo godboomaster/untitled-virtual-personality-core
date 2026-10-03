@@ -9672,19 +9672,173 @@ def _raw_url(tab_id: int) -> str:
     return str((info.get("targetInfo") or {}).get("url") or "")
 
 
-def _raw_enter(tab_id: int, with_text: bool = False):
+# «Страж Enter» фоновой вкладки. Баг headless Chrome на macOS (--headless=new,
+# Chrome 154, замер 03.10 на отдельном Chrome с флагами пула H): keyDown из
+# Input.dispatchKeyEvent, который страница НЕ обработала (никто не вызвал
+# preventDefault и у элемента нет действия по умолчанию), браузер бесконечно
+# пересылает сам себе ([NSApp sendEvent:] → performKeyEquivalent → NSMenu).
+# Один такой Enter — 60–100% ядра навсегда, четыре — CDP пула H молчит через
+# ~12 с. До JS страницы пересылки не доходят (там ровно один keydown), гасят
+# цикл только перезагрузка/навигация/закрытие вкладки, а вкладки веб-чатов
+# постоянные — каждый «утонувший» Enter (сайт его не взял, бот отправил
+# кнопкой) оставлял вечный цикл, циклы копились, и Chrome пула H зависал
+# (02.10). Цикл запускают: Enter при фокусе на body; rawKeyDown в поле без
+# обработчика сайта (символа нет — перевода строки нет). Не запускают:
+# keyDown с «\r» в фокусированной textarea (вставлен перевод строки), сайт
+# сам вызвал preventDefault; keyUp безвреден.
+# Поэтому ДО Enter ставится одноразовый обработчик keydown на window: фаза
+# всплытия на самом верхнем узле — он срабатывает ПОСЛЕ обработчиков сайта
+# (их отправку не ломает), и если Enter никто не поглотил — preventDefault:
+# браузер получает «обработано», цикла нет (замер: и в textarea, и на body).
+# Нужного действия по умолчанию preventDefault не отменяет: фокус — в поле
+# чата (_CHAT_FILL_JS), у rawKeyDown в поле действия нет вовсе (потому и
+# цикл), Enter с символом в поле пропускается (ниже); ушёл фокус на ссылку/
+# кнопку (их Enter нажимает) — нажимать их бот и не собирался.
+# Результат — в window.__vpcEnterGuardRes: site — сайт поглотил сам (штатно);
+# guard — не поглотил никто, спас страж (сайт Enter не принял — диагностика);
+# field — Enter с символом в поле чата пропущен как есть (см. ниже).
+# with_text: Chrome шлёт объединённый keyDown — Blink диспатчит keydown, а
+# keypress (и вставку символа) только если keydown не отменён. duck.ai
+# отправляет ровно по этому keypress/вставке, и preventDefault на keydown
+# сломал бы ему отправку. Поэтому с символом страж отменяет Enter, только
+# если фокус НЕ в рабочем поле чата (поле по селектору адаптера или внутри
+# него, не disabled/readOnly): там ломать нечего, а в поле Enter и так
+# поглощён вставкой перевода строки (замер: textarea, input, contenteditable
+# — цикла нет; readOnly-поле — цикл есть, поэтому оно не «рабочее»).
+# Решение — в момент события, а не при установке: фокус мог уйти между
+# установкой и нажатием.
+# Сайт, остановивший всплытие keydown (stopPropagation без preventDefault —
+# замер: цикл есть), до window событие не пропустит. Поэтому второй
+# обработчик — на window в фазе ПЕРЕХВАТА (он первый на пути события):
+# Enter бота он не трогает, а лишь оборачивает этому экземпляру события
+# stopPropagation/stopImmediatePropagation. Сайт их вызвал — то же решение
+# принимается микрозадачей: у события от браузера микрозадачи исполняются
+# сразу после вернувшегося обработчика, ещё ВНУТРИ диспатча, так что
+# preventDefault успевает, а сайт к этому моменту уже сделал своё
+# (legacy cancelBubble=true не обёрнут — в современных сайтах его нет).
+# Решение принимается один раз (кто первый: всплытие или микрозадача) и
+# снимает оба обработчика. Чужой keydown (не Enter, синтетический
+# dispatchEvent сайта) стража не расходует.
+_ENTER_GUARD_JS = (
+    "(function(withText,sel){var w=window;"
+    "if(typeof w.__vpcEnterGuard==='function')w.__vpcEnterGuard();"
+    "w.__vpcEnterGuardRes='';"
+    "function onField(){var a=document.activeElement;"
+    "if(!a||a===document.body||a===document.documentElement)return false;"
+    "if(!(a.tagName==='TEXTAREA'||a.tagName==='INPUT'||a.isContentEditable))"
+    "return false;"
+    "if(a.disabled||a.readOnly)return false;"
+    "if(!sel)return true;"
+    "try{return !!a.closest(sel);}catch(x){return false;}}"
+    "function mine(e){return e.key==='Enter'&&e.isTrusted;}"
+    "function off(){removeEventListener('keydown',g);"
+    "removeEventListener('keydown',c,true);"
+    "if(w.__vpcEnterGuard===off)w.__vpcEnterGuard=null;}"
+    "function decide(e){if(w.__vpcEnterGuard!==off)return;off();"
+    "if(e.defaultPrevented){w.__vpcEnterGuardRes='site';return;}"
+    "if(withText&&onField()){w.__vpcEnterGuardRes='field';return;}"
+    "e.preventDefault();w.__vpcEnterGuardRes='guard';}"
+    "var g=function(e){if(mine(e))decide(e);};"
+    "var c=function(e){if(!mine(e))return;"
+    "['stopPropagation','stopImmediatePropagation'].forEach(function(m){"
+    "var f=e[m];e[m]=function(){"
+    "queueMicrotask(function(){decide(e);});"
+    "return f.apply(this,arguments);};});};"
+    "w.__vpcEnterGuard=off;addEventListener('keydown',c,true);"
+    "addEventListener('keydown',g);"
+    "return 'armed';})(%s,%s)"
+)
+# Снятие стража после отправки + его итог одним вызовом: не сработал —
+# снимаем (unfired: keydown до окна не дошёл вовсе — фокус во фрейме, Enter
+# не доставлен); сработал — сам уже снят, отдаём, кто поглотил Enter.
+# Пустая строка — документ сменился (Enter увёл на новую страницу), стража
+# и так нет
+_ENTER_GUARD_OFF_JS = (
+    "(function(){var w=window,off=w.__vpcEnterGuard,"
+    "r=w.__vpcEnterGuardRes||'';"
+    "if(typeof off==='function'){off();r='unfired';}"
+    "w.__vpcEnterGuardRes='';return r;})()"
+)
+# Потолок установки/снятия стража: обычный eval в только что ответившей
+# странице (fill был миллисекунды назад) — дефолтные 20 с вызова тут лишь
+# задержали бы отправку на странице, которая и так не отвечает
+ENTER_GUARD_TIMEOUT_SEC = 5.0
+
+
+def _raw_enter(tab_id: int, with_text: bool = False,
+               input_sel: Optional[str] = None):
     # Доверенный Enter (Input-домен). with_text — keyDown с символом «\r»,
     # как keyboard.press у playwright: duck.ai отправляет только по нему,
     # rawKeyDown без символа там не срабатывает (замер 01.10); остальным
-    # сайтам — как было
+    # сайтам — как было. input_sel — поле чата: Enter с символом в нём
+    # страж пропускает (см. _ENTER_GUARD_JS); без селектора полем считается
+    # любое рабочее поле ввода в фокусе
     events = ((("keyDown", {"text": "\r", "unmodifiedText": "\r"}),
                ("keyUp", {})) if with_text
               else (("rawKeyDown", {}), ("keyUp", {})))
-    for ev_type, extra in events:
-        _raw_tab_call(tab_id, "Input.dispatchKeyEvent",
-                      dict({"type": ev_type, "key": "Enter", "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13}, **extra))
+    try:
+        _raw_eval(tab_id, _ENTER_GUARD_JS % (
+            json.dumps(bool(with_text)),
+            json.dumps(str(input_sel or ""), ensure_ascii=False)),
+            timeout_sec=ENTER_GUARD_TIMEOUT_SEC)
+    except Exception as e:
+        # Страж не встал — Enter всё равно отправляем, как до стража.
+        # Отказ eval'а значит, что вкладка закрыта (тогда и Enter честно
+        # упадёт тем же «закрыта»), страница в переходе (её контекст
+        # пересоздаётся — цикл гасится той же навигацией) или renderer не
+        # ответил за потолок. Без Enter сообщение не уйдёт наверняка, а
+        # цикл грозит, только если сайт ещё и не поглотит Enter — это редкий
+        # случай редкого случая, и зависание Chrome пула H на этот край
+        # лечится автоперезапуском (_pool_h_hang_suspect). Снятие ниже всё
+        # равно пробуем: eval мог исполниться в странице, не успев ответить
+        logger.warning(f"[BrowserActions] Вкладка #{tab_id}: страж Enter не "
+                       f"встал ({str(e)[:100]}) — Enter без стража")
+    sent = False
+    try:
+        for ev_type, extra in events:
+            _raw_tab_call(tab_id, "Input.dispatchKeyEvent",
+                          dict({"type": ev_type, "key": "Enter", "code": "Enter",
+                                "windowsVirtualKeyCode": 13,
+                                "nativeVirtualKeyCode": 13}, **extra))
+        sent = True
+    finally:
+        # Снятие — и когда dispatch упал: в rescue окно пула H видимое,
+        # человек сам печатает в нём (капча, вход), и оставшийся страж съел
+        # бы его Enter. Сбой снятия отправку не роняет: страж одноразовый —
+        # съест разве что один следующий Enter, который сайт сам не взял
+        # (перевод строки в поле), а навигация/перезагрузка убирает его
+        # вместе с документом и следующая установка снимает прежний
+        _raw_enter_guard_off(tab_id, sent)
+
+
+def _raw_enter_guard_off(tab_id: int, sent: bool):
+    """Снять страж Enter (если не сработал) и записать в лог его итог."""
+    try:
+        res = _raw_eval(tab_id, _ENTER_GUARD_OFF_JS,
+                        timeout_sec=ENTER_GUARD_TIMEOUT_SEC)
+    except Exception as e:
+        logger.debug(f"[BrowserActions] Вкладка #{tab_id}: страж Enter не "
+                     f"снят ({str(e)[:100]})")
+        return
+    if res == "guard":
+        # Enter никто не поглотил: сайт его не принял (поле не то/заперто,
+        # фокус ушёл, сайт ждёт другого события) или отреагировал без
+        # preventDefault — без стража тут крутился бы вечный цикл клавиши.
+        # Диагностика «сайт не взял Enter» (дальше обычно кнопка отправки)
+        logger.info(f"[BrowserActions] Вкладка #{tab_id}: Enter не поглотил "
+                    f"сайт (нет preventDefault) — поглотил страж, иначе "
+                    f"вечный цикл клавиши в headless Chrome")
+    elif res == "unfired" and sent:
+        # Enter отправлен, а keydown до окна не дошёл вовсе (ни перехват,
+        # ни всплытие): фокус во фрейме, сайт гасит событие собственным
+        # перехватом на window. Поглощён ли он — неизвестно; в лог для
+        # разбора зависаний
+        logger.info(f"[BrowserActions] Вкладка #{tab_id}: keydown Enter не "
+                    f"дошёл до стража — если сайт его не поглотил, возможен "
+                    f"цикл клавиши")
+    else:
+        logger.debug(f"[BrowserActions] Вкладка #{tab_id}: страж Enter — "
+                     f"{res or 'документ сменился'}")
 
 
 def _raw_insert_text(tab_id: int, text: str):
@@ -9760,7 +9914,9 @@ def _raw_chat_fill_send(tab_id: int, input_sel: str, text: str,
     if _norm_ws(text[:200]) not in _norm_ws(got):
         raise BrowserUnavailable("поле чата не приняло текст")
     pre = _raw_state(tab_id)
-    _raw_enter(tab_id, with_text=enter_text)
+    # Селектор поля — стражу Enter (см. _ENTER_GUARD_JS): Enter с символом
+    # в поле чата он пропускает, всё прочее неподхваченное — гасит
+    _raw_enter(tab_id, with_text=enter_text, input_sel=input_sel)
     deadline = time.time() + SUBMIT_VERIFY_SEC
     while time.time() < deadline:
         try:
