@@ -264,6 +264,8 @@ class TimezoneRequest(BaseModel):
     # Часовой пояс пользователя (app/core/timeutil): IANA-имя зоны;
     # пустая строка — сброс на системный пояс машины.
     timezone: str = ""
+    # Окно самоинициативы "HH:MM-HH:MM"; явный null — снять окно (круглые сутки)
+    initiative_hours: Optional[str] = None
 
 
 class LocationRequest(BaseModel):

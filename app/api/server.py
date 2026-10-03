@@ -2212,7 +2212,9 @@ async def initiative(persona: PersonaIdPath, chat_id: str = "web_user"):
 async def initiative_update(persona: PersonaIdPath, req: InitiativeUpdate):
     # Записать параметры проактивности в YAML персоны и в живой конфиг
     from app.api import settings_api
-    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    # Только присланные поля; null имеет смысл лишь у окна часов — «снять окно»
+    sent = req.model_dump(exclude_unset=True)
+    patch = {k: v for k, v in sent.items() if v is not None or k == "initiative_hours"}
     result = await asyncio.to_thread(settings_api.update_persona_proactive, persona, patch)
     if result is None:
         raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
