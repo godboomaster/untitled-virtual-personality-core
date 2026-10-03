@@ -330,6 +330,58 @@ async def system_memory():
         return {"ok": False}
 
 
+# ── Панель на рабочем столе (desktop/) ────────────────────────────────
+# Панель следит за бэкендом снаружи: живость — /api/health, остальное —
+# здесь. Браузеры бота и карантины веб-чатов общие для процесса — в inbox
+# они те же, но inbox требует персону.
+
+@app.get("/api/system/status", dependencies=[Depends(require_auth)])
+async def system_status():
+    # pool_status пробует CDP пула H по сети (до 2 с) — не в event loop
+    try:
+        from app.features import browser_actions as _ba
+        pools = await asyncio.to_thread(_ba.pool_status)
+    except Exception:
+        pools = {}
+    try:
+        from app.features import web_llm as _wl
+        quarantine = _wl.quarantine_status()
+    except Exception:
+        quarantine = {}
+    return {"pid": os.getpid(), "browser_pools": pools,
+            "webchat_quarantine": quarantine}
+
+
+@app.post("/api/system/shutdown", dependencies=[Depends(require_auth)])
+async def system_shutdown():
+    # Мягкая остановка: тот же путь, что Ctrl+C/kill — uvicorn ловит SIGTERM,
+    # гасит сервер и зовёт shutdown-хуки (браузер бота). Сигнал — после
+    # ответа, иначе панель не узнала бы, что запрос принят. На Windows мягко
+    # иначе не остановить: процесс без консоли не получает Ctrl+C/Ctrl+Break
+    import signal
+    logger.info("[API] Остановка по запросу панели")
+    asyncio.get_running_loop().call_later(0.3, signal.raise_signal, signal.SIGTERM)
+    return {"ok": True, "pid": os.getpid()}
+
+
+@app.post("/api/browser/rescue", dependencies=[Depends(require_auth)])
+async def browser_rescue():
+    # «Показать браузер бота»: пул H — видимым (вход в веб-чаты, капча), как
+    # по реплике «почини браузер». Перезапуск Chrome блокирующий
+    from app.features import browser_actions as _ba
+    ok = await asyncio.to_thread(_ba.rescue_pool_h)
+    return {"ok": bool(ok)}
+
+
+@app.post("/api/browser/rescue/finish", dependencies=[Depends(require_auth)])
+async def browser_rescue_finish():
+    # «Готово»: правило то же, что у реплики после «почини браузер» — rescue
+    # кончается, если капч/входов не ждёт ни один процесс бота
+    from app.features import web_llm as _wl
+    finished = await asyncio.to_thread(_wl.finish_idle_rescue)
+    return {"finished": bool(finished)}
+
+
 @app.get("/api/personas", response_model=list[PersonaInfo],
          dependencies=[Depends(require_auth)])
 async def personas():

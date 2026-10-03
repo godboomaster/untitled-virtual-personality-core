@@ -286,6 +286,10 @@ python -m app.main api         # API-сервер для веб-фронта (п
 BOT_TARGET=arrodes python -m app.main
 ```
 
+### Панель на рабочем столе
+
+Значок в трее (macOS и Windows): запуск, перезапуск и остановка бэкенда и веб-интерфейса, состояние браузеров бота, Ollama и памяти, живой лог (файлы — в `logs/`), кнопка «показать браузер бота». Сборка и устройство — [desktop/README.md](desktop/README.md).
+
 ---
 
 ## API-сервер (FastAPI)
@@ -350,6 +354,10 @@ API_WARMUP_HOURS=48       # при старте в фоне поднять пе�
 | POST | `/api/providers/active` | Сменить активного провайдера (`{"provider": "groq"}`) |
 | GET | `/api/personas/{p}/config` | Конфиг персоны: settings, stm_size, features |
 | PUT | `/api/personas/{p}/config` | Обновить конфиг (settings/stm_size — сразу, features — после рестарта) |
+| GET | `/api/system/status` | Браузеры бота (пулы H/V, rescue) и карантины веб-чатов — для панели `desktop/` |
+| POST | `/api/system/shutdown` | Штатная остановка процесса (как Ctrl+C) — панель так останавливает бота и на Windows |
+| POST | `/api/browser/rescue` | Пул H видимым: вход в веб-чаты, капча (как «почини браузер») |
+| POST | `/api/browser/rescue/finish` | «Готово»: rescue кончается, если капч/входов больше не ждут |
 
 В API-режиме фоновые циклы бота (напоминания, обучение, проактивность) запускаются автоматически при первом обращении к персоне. Их сообщения складываются в inbox очередь (in-memory, до 100 шт.) — фронт забирает их polling'ом раз в 15 секунд.
 
