@@ -113,6 +113,10 @@ def main():
 
     # Опрос в тестах без пауз — ускоряет прогон
     wl.POLL_SEC = 0
+    # Перепроверка конца rescue (фоновый поток раз в 20 с) выключена: иначе
+    # поток, заведённый «ждём» одного раздела, позже сам завершал бы rescue
+    # посреди другого. Её проверяет раздел 6m — с управляемым периодом
+    wl.RESCUE_RECHECK_SEC = 0
 
     # Якорное чтение (answer_blocks_after) по умолчанию «не находит якорь» —
     # старые проверки идут по baseline-пути; якорные сценарии стабят его сами
@@ -1051,8 +1055,13 @@ def main():
         t0 = wl.time.time()
         wl.quarantine_site("qwen", "тест", ttl=600)
         pub = _l_read(_l_own) or {}
-        check("публикация: капча → файл процесса {сайт: срок карантина}",
-              list(pub) == ["qwen"] and abs(pub["qwen"] - (t0 + 600)) < 5)
+        _l_q = pub.get("qwen") or {}
+        check("публикация: капча → файл процесса {сайт: {срок, время "
+              "постановки, вид}}",
+              list(pub) == ["qwen"]
+              and abs(_l_q.get("until", 0) - (t0 + 600)) < 5
+              and t0 <= _l_q.get("since", 0) <= wl.time.time()
+              and _l_q.get("kind") == "challenge")
         wl.quarantine_site("zai", "лимит", ttl=600, kind="ratelimit")
         wl.quarantine_site("kimi", "отказ", ttl=600, kind="refused")
         wl.quarantine_site("chatgpt", "тест", ttl=600, pool="v")
@@ -1194,6 +1203,451 @@ def main():
         _rescue_file.unlink(missing_ok=True)
         for p in _l_files:
             p.unlink(missing_ok=True)
+
+    # ── 6m. Один сайт ждут два процесса: капчу/вход прошли в одном — он
+    #       отмечает решение в <rescue>.solved.<pid> ({сайт: {вид: время}}),
+    #       и у остальных этот сайт, поставленный в карантин РАНЬШЕ решения,
+    #       больше никого не держит: ни rescue (раньше висел до конца
+    #       срока), ни сам сайт после rescue (раньше пропускался до TTL).
+    #       Сосед, которого ждал rescue, вышел — rescue завершает
+    #       перепроверка (фоновый поток), а не только следующая реплика.
+    #       Второй процесс — файлы с pid родителя теста (жив), завершившегося
+    #       подпроцесса (мёртв) и спящего подпроцесса, убиваемого посреди ──
+    import glob as _m_glob
+    _m_me = os.getpid()
+    _m_own_solved = Path(f"{_rescue_file}.solved.{_m_me}")
+    _m_peer_wait = Path(f"{_rescue_file}.wait.{_l_peer_pid}")
+    _m_peer_solved = Path(f"{_rescue_file}.solved.{_l_peer_pid}")
+    _m_dead_solved = Path(f"{_rescue_file}.solved.{_l_dead_pid}")
+    _m_bad_solved = Path(f"{_rescue_file}.solved.1")  # живой чужой pid, битый
+    _m_sleeper = None
+    _sv_m = (ba._POOL_H_MODE_OVERRIDE, ba._POOL_H_RESCUE_UNTIL,
+             ba._POOL_H_RESCUE_SHARED, ba.detect_antibot,
+             ba.try_challenge_autoclick, wl.atomic_write_json,
+             ba.pool_h_rescue_active, wl._rescue_solved_marks,
+             wl.RESCUE_RECHECK_SEC, threading.excepthook)
+    _m_sites = ("deepseek", "qwen", "zai", "kimi", "chatgpt")
+    _m_exc = []
+    _m_reads = []
+    _m_real_marks = wl._rescue_solved_marks
+
+    def _m_count_marks(*a, **kw):
+        _m_reads.append(1)
+        return _m_real_marks(*a, **kw)
+
+    def _m_clean():
+        # Свои карантины сняты (их файл ожидания убирает публикация), чужие
+        # файлы ожидания/отметок и свои отметки в памяти — заново
+        _k_reset()
+        for p in _m_glob.glob(_m_glob.escape(str(_rescue_file)) + ".*"):
+            if p != f"{_rescue_file}.wait.{_m_me}":
+                Path(p).unlink(missing_ok=True)
+        with wl._RESCUE_SOLVED_LOCK:
+            wl._RESCUE_SOLVED_PUB.update(pid=None, path=None, data={})
+        wl._SOLVED_CHECK_AT.clear()
+        _k_logs.clear()
+
+    def _m_wait_rec(kind="challenge", since=None, ttl=600):
+        t = wl.time.time()
+        return {"until": t + ttl, "since": t - 1 if since is None else since,
+                "kind": kind}
+
+    def _m_since(site):
+        with wl._QUARANTINE_LOCK:
+            return float(wl._SITE_QUARANTINE[site]["since"])
+
+    def _m_after_logs(marker):
+        # Хвосты строк «… ещё ждём: …»
+        return [m.split(marker, 1)[1] for m in _k_logs if marker in m]
+
+    def _m_thread():
+        return wl._RESCUE_RECHECK.get("thread")
+
+    def _m_recheck_threads():
+        return [t for t in threading.enumerate()
+                if t.name == "rescue-recheck" and t.is_alive()]
+
+    def _m_wake_join(th, timeout=5.0):
+        wl._RESCUE_RECHECK_WAKE.set()
+        if th is not None:
+            th.join(timeout)
+
+    def _m_fail(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    wl.logger.addHandler(_k_handler)
+    wl.logger.setLevel(logging.INFO)
+    ba.detect_antibot = lambda *a, **kw: None  # страница чистая
+    threading.excepthook = lambda args: _m_exc.append(args.exc_value)
+    try:
+        check("6m: эмуляция соседей — пути во временном каталоге, не у "
+              "профиля", "Application Support" not in str(_rescue_file))
+
+        # (1) Этот процесс — A: решил X, у соседа B та же X поставлена в
+        # карантин раньше решения — B её больше не ждёт, rescue завершён
+        _m_clean()
+        _own_rescue()
+        _k_reset(("qwen", "challenge"))
+        _l_put(_m_peer_wait, {"qwen": _m_wait_rec()})
+        check("решение: до решения сосед ждёт ту же капчу",
+              wl._foreign_rescue_waits(ba) == {"qwen": [_l_peer_pid]})
+        t_solve = wl.time.time()
+        _k_llm("qwen", "m1")._challenge_check(ba, 42)
+        marks = _l_read(_m_own_solved) or {}
+        check("решение: отметка в файле процесса {сайт: {вид: время}}",
+              list(marks) == ["qwen"] and list(marks["qwen"]) == ["challenge"]
+              and marks["qwen"]["challenge"] >= t_solve)
+        check("решение: та же капча соседа (поставлена раньше решения) "
+              "ждущей не считается — rescue завершён, общий файл удалён",
+              wl._foreign_rescue_waits(ba) == {}
+              and not ba.pool_h_rescue_active() and not _rescue_file.exists()
+              and not _m_after_logs("ещё ждём:"))
+        # У соседа есть и другая капча — rescue ждёт только её
+        _own_rescue()
+        _k_reset(("qwen", "challenge"))
+        _l_put(_m_peer_wait, {"qwen": _m_wait_rec(),
+                              "deepseek": _m_wait_rec()})
+        _k_llm("qwen", "m2")._challenge_check(ba, 42)
+        tails = _m_after_logs("ещё ждём:")
+        check("решение: у соседа ещё другая капча — rescue идёт, ждём только "
+              "её",
+              ba.pool_h_rescue_active() and len(tails) == 1
+              and "deepseek (другой процесс бота)" in tails[0]
+              and "qwen" not in tails[0])
+        _l_put(_m_peer_wait, {"qwen": _m_wait_rec()})  # сосед снял deepseek
+        check("решение: другой капчи у соседа нет — реплика завершает rescue "
+              "(его запись X ещё в файле, но решена)",
+              wl.finish_idle_rescue() is True
+              and not ba.pool_h_rescue_active())
+
+        # (1') Этот процесс — B: свою X решил сосед после её постановки —
+        # правило конца снимает свой карантин и завершает rescue
+        _m_clean()
+        _own_rescue()
+        _k_reset(("qwen", "challenge"))
+        _l_put(_m_peer_solved, {"qwen": {"challenge": _m_since("qwen") + 1e-6}})
+        check("сосед решил ту же капчу позже постановки — свой карантин "
+              "снят, rescue завершён репликой",
+              wl.finish_idle_rescue() is True
+              and not wl.site_quarantined("qwen")
+              and not ba.pool_h_rescue_active())
+        check("сосед решил: в логе — кто прошёл; свой файл ожидания убран",
+              any(f"qwen: капчу прошли в другом процессе бота (pid "
+                  f"{_l_peer_pid}) — карантин снят" in m for m in _k_logs)
+              and not _l_own.exists())
+
+        # (2) Горячий путь (site_quarantined, и вне rescue: после rescue B не
+        # должен пропускать X до TTL): чужая отметка новее since снимает,
+        # старее (свежая капча после решения) — нет; сверка не чаще
+        # SOLVED_CHECK_SEC и только для карантина капчи/входа пула H
+        _m_clean()
+        _k_reset(("qwen", "challenge"))
+        _l_put(_m_peer_solved, {"qwen": {"challenge": _m_since("qwen") + 1e-6}})
+        wl._rescue_solved_marks = _m_count_marks
+        _m_reads.clear()
+        wl._SOLVED_CHECK_AT["qwen"] = wl.time.time()  # только что сверяли
+        check("горячий путь: сверка не чаще SOLVED_CHECK_SEC — файлы не "
+              "читаются, карантин держится",
+              wl.site_quarantined("qwen") is True and not _m_reads
+              and wl.SOLVED_CHECK_SEC >= 1.0)
+        wl._SOLVED_CHECK_AT.clear()
+        check("горячий путь: чужая отметка новее since — свой карантин снят "
+              "(без rescue и без своего вызова к сайту)",
+              wl.site_quarantined("qwen") is False and len(_m_reads) == 1
+              and wl.quarantine_kind("qwen") is None
+              and any("qwen: капчу прошли в другом процессе бота" in m
+                      for m in _k_logs))
+        # Свежая капча после решения. Пауза — чтобы её since был заведомо
+        # позже отметки (без неё весь путь укладывается в доли миллисекунды)
+        wl.time.sleep(0.01)
+        wl.quarantine_site("qwen", "тест", ttl=600)
+        wl._SOLVED_CHECK_AT.clear()
+        check("свежая капча после решения (since новее отметки) — отметка её "
+              "не снимает",
+              wl.site_quarantined("qwen") is True
+              and wl.quarantine_kind("qwen") == "challenge"
+              and _m_since("qwen") > _l_read(_m_peer_solved)["qwen"]["challenge"])
+        _k_reset(("zai", "ratelimit"), ("chatgpt", "challenge", "v"))
+        _m_reads.clear()
+        wl._SOLVED_CHECK_AT.clear()
+        check("горячий путь: лимит и капча пула V — отметки не читаются",
+              wl.site_quarantined("zai") is True
+              and wl.site_quarantined("chatgpt") is True and not _m_reads)
+        wl._rescue_solved_marks = _m_real_marks
+        # У соседа — то же: его запись новее отметки ждёт
+        _own_rescue()
+        _k_reset()
+        _t_old = wl.time.time() - 5
+        _l_put(_m_peer_solved, {"deepseek": {"challenge": _t_old}})
+        _l_put(_m_peer_wait, {"deepseek": _m_wait_rec(since=_t_old + 1)})
+        check("свежая капча соседа после решения — ждёт, rescue идёт",
+              wl._foreign_rescue_waits(ba) == {"deepseek": [_l_peer_pid]}
+              and wl.finish_idle_rescue() is False
+              and ba.pool_h_rescue_active())
+        ba.end_rescue_pool_h()
+
+        # (3) Вид: отметка капчи не снимает карантин входа, и наоборот
+        _m_clean()
+        _k_reset()
+        wl.quarantine_site("deepseek", "разлогин", ttl=600, kind="login")
+        _s_login = _m_since("deepseek")
+        _l_put(_m_peer_solved, {"deepseek": {"challenge": _s_login + 1e-6}})
+        wl._SOLVED_CHECK_AT.clear()
+        check("вид: отметка капчи карантин входа не снимает",
+              wl.site_quarantined("deepseek") is True
+              and wl.quarantine_kind("deepseek") == "login")
+        _l_put(_m_peer_solved, {"deepseek": {"challenge": _s_login + 1e-6,
+                                             "login": _s_login + 1e-6}})
+        wl._SOLVED_CHECK_AT.clear()
+        check("вид: отметка входа снимает карантин входа, недоставленное "
+              "«разлогинен» снято",
+              wl.site_quarantined("deepseek") is False
+              and not [a for a in wl.pop_quarantine_alerts()
+                       if a["site"] == "deepseek"]
+              and any("deepseek: вход выполнен в другом процессе бота" in m
+                      for m in _k_logs))
+        _own_rescue()
+        _k_reset()
+        _l_put(_m_peer_wait, {"kimi": _m_wait_rec(kind="login")})
+        wl._mark_rescue_solved("kimi", "challenge")
+        check("вид: сосед ждёт вход, решена капча того же сайта — ждёт",
+              wl.finish_idle_rescue() is False and ba.pool_h_rescue_active())
+        _k_reset(("kimi", "login"))
+        _k_llm("kimi", "m3")._login_restored(ba)
+        check("вид: вход восстановлен — отметка входа, вход соседа решён, "
+              "rescue завершён",
+              "login" in ((_l_read(_m_own_solved) or {}).get("kimi") or {})
+              and not ba.pool_h_rescue_active())
+
+        # (4) Прежний формат файла ожидания {сайт: срок} (сосед на старом
+        # коде) и мусор — без падения: старый ждёт по сроку (since
+        # неизвестен — отметкой не снимается), мусор пропущен
+        _m_clean()
+        _own_rescue()
+        _t4 = wl.time.time()
+        _l_put(_m_peer_wait, {"qwen": _t4 + 600, "zai": "abc", "kimi": [1, 2],
+                              "deepseek": {"until": "плохо"},
+                              "chatgpt": None})
+        wl._mark_rescue_solved("qwen", "challenge")
+        try:
+            fw, raised = wl._foreign_rescue_waits(ba), None
+        except Exception as e:
+            fw, raised = None, e
+        check("старый формат: читается без падения, ждёт по сроку, мусор "
+              "пропущен",
+              raised is None and fw == {"qwen": [_l_peer_pid]}
+              and wl.finish_idle_rescue() is False
+              and ba.pool_h_rescue_active())
+        _l_put(_m_peer_wait, {"qwen": _t4 - 5})
+        check("старый формат: срок вышел — не ждёт, rescue завершён",
+              wl.finish_idle_rescue() is True)
+
+        # Файлы отметок: вышедший процесс — в счёт (факт про общий профиль),
+        # его устаревшие — нет (файл удаляется); битые/мусор — без падения;
+        # свои устаревшие выкидываются при записи
+        _m_clean()
+        _own_rescue()
+        _k_reset(("qwen", "challenge"))
+        _m_bad_solved.write_text("{битый")
+        _l_put(_m_peer_solved, {"qwen": "x", "zai": {"challenge": "плохо"},
+                                "kimi": [1]})
+        _l_put(_m_dead_solved, {"qwen": {"challenge": _m_since("qwen") + 1e-6}})
+        check("отметка вышедшего процесса (pid мёртв) — в счёт: свой карантин "
+              "снят, rescue завершён; битые файлы не мешают",
+              wl.finish_idle_rescue() is True
+              and not wl.site_quarantined("qwen") and _m_dead_solved.exists())
+        _l_put(_m_dead_solved, {"qwen": {
+            "challenge": wl.time.time() - wl._solved_keep_sec() - 10}})
+        m_all = wl._rescue_solved_marks(ba)
+        check("устаревшие отметки вышедшего процесса не в счёт, его файл "
+              "удалён; файлы живых — нет",
+              "qwen" not in m_all and not _m_dead_solved.exists()
+              and _m_peer_solved.exists() and _m_bad_solved.exists())
+        wl._mark_rescue_solved("zai", "challenge")
+        with wl._RESCUE_SOLVED_LOCK:
+            wl._RESCUE_SOLVED_PUB["data"]["deepseek"] = {
+                "challenge": wl.time.time() - wl._solved_keep_sec() - 10}
+        wl._mark_rescue_solved("kimi", "challenge")
+        check("свои устаревшие отметки выкидываются при записи",
+              sorted(_l_read(_m_own_solved) or {}) == ["kimi", "zai"])
+
+        # (6) Сбой записи отметки не ломает _challenge_check: карантин снят,
+        # rescue завершён, отметка — в памяти (своя сверка идёт по ней)
+        _m_clean()
+        _own_rescue()
+        _k_reset(("qwen", "challenge"))
+        wl.atomic_write_json = _m_fail
+        try:
+            got, raised = _k_llm("qwen", "m6")._challenge_check(ba, 42), None
+        except Exception as e:
+            got, raised = None, e
+        wl.atomic_write_json = _sv_m[5]
+        check("сбой записи отметки: _challenge_check не упал, карантин снят, "
+              "rescue завершён, отметка в памяти, файла нет",
+              raised is None and got is False
+              and not wl.site_quarantined("qwen")
+              and not ba.pool_h_rescue_active()
+              and not _m_own_solved.exists()
+              and "challenge" in (wl._RESCUE_SOLVED_PUB["data"].get("qwen")
+                                  or {}))
+        # Сбой чтения отметок — «не решён»: карантин держится, вызовы не падают
+
+        def _m_boom(*a, **kw):
+            raise OSError(5, "Input/output error")
+        _own_rescue()
+        _k_reset(("qwen", "challenge"))
+        wl._rescue_solved_marks = _m_boom
+        wl._SOLVED_CHECK_AT.clear()
+        try:
+            res6 = (wl.site_quarantined("qwen"), wl.finish_idle_rescue(),
+                    wl._foreign_rescue_waits(ba))
+            raised = None
+        except Exception as e:
+            res6, raised = None, e
+        wl._rescue_solved_marks = _m_real_marks
+        check("сбой чтения отметок: карантин держится, правило «ждём», "
+              "без падения",
+              raised is None and res6 == (True, False, {})
+              and ba.pool_h_rescue_active())
+        ba.end_rescue_pool_h()
+
+        # (5) Перепроверка конца rescue: сосед, которого ждали, вышел —
+        # rescue завершает фоновый поток. Период большой — поток будится
+        # событием (без реальных ожиданий по 20 с)
+        _m_clean()
+        wl.RESCUE_RECHECK_SEC = 3600.0
+        _own_rescue()
+        _l_put(_m_peer_wait, {"deepseek": _m_wait_rec()})
+        first = wl.finish_idle_rescue()
+        th = _m_thread()
+        for _ in range(3):
+            wl.finish_idle_rescue()
+        check("перепроверка: «ждём» при rescue заводит ОДИН поток-демон, "
+              "повторные «ждём» второго не заводят",
+              first is False and th is not None and th.is_alive()
+              and th.daemon and _m_recheck_threads() == [th]
+              and _m_thread() is th)
+        wl._RESCUE_RECHECK_WAKE.set()
+        for _ in range(200):
+            if not wl._RESCUE_RECHECK_WAKE.is_set():
+                break
+            wl.time.sleep(0.01)
+        wl.time.sleep(0.2)
+        check("перепроверка: сосед ещё ждёт — круг rescue не трогает, поток "
+              "жив", ba.pool_h_rescue_active()
+              and th is not None and th.is_alive())
+        _k_logs.clear()
+        _m_peer_wait.unlink()  # сосед вышел штатно: atexit удалил его файл
+        _m_wake_join(th)
+        check("перепроверка: сосед вышел (файл ожидания удалён) — rescue "
+              "завершён потоком, поток вышел",
+              th is not None and not th.is_alive()
+              and not ba.pool_h_rescue_active()
+              and not _rescue_file.exists() and _m_thread() is None
+              and any("завершаю" in m for m in _k_logs))
+        # Сосед умер без уборки (kill): файл есть, pid мёртв
+        import subprocess as _m_sp
+        _m_sleeper = _m_sp.Popen([sys.executable, "-c",
+                                  "import time; time.sleep(60)"])
+        _m_sl_wait = Path(f"{_rescue_file}.wait.{_m_sleeper.pid}")
+        _own_rescue()
+        _l_put(_m_sl_wait, {"zai": _m_wait_rec()})
+        first = wl.finish_idle_rescue()
+        th = _m_thread()
+        _m_sleeper.kill()
+        _m_sleeper.wait()
+        _m_wake_join(th)
+        check("перепроверка: сосед умер без уборки — rescue завершён, его "
+              "файл подчищен",
+              first is False and th is not None and not th.is_alive()
+              and not ba.pool_h_rescue_active() and not _m_sl_wait.exists())
+        # Rescue кончился без неё (другой процесс, срок) — поток сам выходит
+        _own_rescue()
+        _l_put(_m_peer_wait, {"deepseek": _m_wait_rec()})
+        wl.finish_idle_rescue()
+        th = _m_thread()
+        ba.end_rescue_pool_h()
+        _m_wake_join(th)
+        check("перепроверка: rescue кончился без неё — поток остановился",
+              th is not None and not th.is_alive() and _m_thread() is None
+              and not _m_recheck_threads())
+        # Без побудки — по периоду
+        wl.RESCUE_RECHECK_SEC = 0.05
+        _own_rescue()
+        wl.finish_idle_rescue()
+        th = _m_thread()
+        _m_peer_wait.unlink()
+        if th is not None:
+            th.join(5)
+        check("перепроверка: по периоду RESCUE_RECHECK_SEC (без побудки) — "
+              "rescue завершён, поток вышел",
+              th is not None and not th.is_alive()
+              and not ba.pool_h_rescue_active())
+        # Сбои проверки — поток не падает, после RESCUE_RECHECK_FAILS_MAX
+        # подряд выходит (rescue не трогает)
+        wl.RESCUE_RECHECK_SEC = 0.01
+        _own_rescue()
+        _l_put(_m_peer_wait, {"deepseek": _m_wait_rec()})
+        _m_active = ba.pool_h_rescue_active
+        _m_fails = []
+
+        def _m_flaky():
+            if threading.current_thread().name == "rescue-recheck":
+                _m_fails.append(1)
+                raise OSError("сбой проверки")
+            return _m_active()
+        ba.pool_h_rescue_active = _m_flaky
+        wl.finish_idle_rescue()
+        th = _m_thread()
+        if th is not None:
+            th.join(5)
+        ba.pool_h_rescue_active = _m_active
+        check("перепроверка: сбои — без исключений в потоке, после "
+              "RESCUE_RECHECK_FAILS_MAX подряд поток вышел, rescue не тронут",
+              th is not None and not th.is_alive() and not _m_exc
+              and len(_m_fails) == wl.RESCUE_RECHECK_FAILS_MAX
+              and _m_thread() is None and ba.pool_h_rescue_active())
+        # Выключена (RESCUE_RECHECK_SEC ≤ 0) — не заводится
+        wl.RESCUE_RECHECK_SEC = 0
+        check("перепроверка: RESCUE_RECHECK_SEC ≤ 0 — не заводится",
+              wl.finish_idle_rescue() is False and _m_thread() is None
+              and not _m_recheck_threads())
+        ba.end_rescue_pool_h()
+        check("6m: исключений в фоновых потоках нет", not _m_exc)
+    finally:
+        wl.RESCUE_RECHECK_SEC = 0  # поток, если жив, на побудке выйдет
+        if _m_thread() is not None:
+            _m_wake_join(_m_thread())
+        wl._RESCUE_RECHECK_WAKE.clear()
+        if _m_sleeper is not None and _m_sleeper.poll() is None:
+            _m_sleeper.kill()
+            _m_sleeper.wait()
+        (ba._POOL_H_MODE_OVERRIDE, ba._POOL_H_RESCUE_UNTIL,
+         ba._POOL_H_RESCUE_SHARED, ba.detect_antibot,
+         ba.try_challenge_autoclick, wl.atomic_write_json,
+         ba.pool_h_rescue_active, wl._rescue_solved_marks,
+         wl.RESCUE_RECHECK_SEC, threading.excepthook) = _sv_m
+        wl.logger.removeHandler(_k_handler)
+        wl.logger.setLevel(_k_level)
+        for s in _m_sites:
+            wl.clear_quarantine(s)
+        wl.pop_quarantine_alerts()
+        wl._LOGIN_PROBE_AT.clear()
+        _rescue_file.unlink(missing_ok=True)
+        for p in _m_glob.glob(_m_glob.escape(str(_rescue_file)) + ".*"):
+            Path(p).unlink(missing_ok=True)
+        with wl._RESCUE_SOLVED_LOCK:
+            wl._RESCUE_SOLVED_PUB.update(pid=None, path=None, data={})
+        wl._SOLVED_CHECK_AT.clear()
+    _m_real = os.path.realpath(os.path.expanduser(
+        "~/Library/Application Support"))
+    _m_left = [p for pat in (f"*.wait.{_m_me}", f"*.solved.{_m_me}")
+               for p in _m_glob.glob(os.path.join(_m_glob.escape(_m_real),
+                                                  pat))]
+    check("6m: у настоящих профилей файлов ожидания/отметок этого процесса "
+          "нет, временный каталог убран",
+          not _m_left
+          and not _m_glob.glob(_m_glob.escape(str(_rescue_file)) + ".*"))
 
     # ── 6f. «Реформулировка вместо ответа»: страница чата непрогрета —
     #       baseline=0, хотя в ленте уже лежит СТАРЫЙ завершённый ответ

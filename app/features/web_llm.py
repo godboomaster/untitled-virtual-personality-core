@@ -134,7 +134,9 @@ class _TabLost(Exception):
 QUARANTINE_TTL_SEC = 1800.0
 RATE_LIMIT_DEFAULT_TTL_SEC = 3600.0  # сайт не назвал время восстановления
 _QUARANTINE_LOCK = threading.Lock()
-_SITE_QUARANTINE: Dict[str, dict] = {}  # site → {"until": ts, "reason": str, "kind": str}
+# site → {"until": ts, "reason": str, "kind": str, "pool": str, "since": ts
+# последней постановки}
+_SITE_QUARANTINE: Dict[str, dict] = {}
 _PENDING_ALERTS: List[dict] = []        # {"site","reason","kind","until","ts"} для пользователя
 
 # ── A/B-сравнение ответов ──
@@ -532,13 +534,18 @@ def quarantine_site(site: str, reason: str, ttl: float = None,
     входы СВОЕГО пула (_rescue_pending_sites) — капчу сайта пула V он не
     покажет и не снимет. Дефолт «h»: так открывает страницы и поиск Google
     (web_search, open_headless_tab). Капча/вход пула H публикуются для
-    других процессов бота (_publish_rescue_wait)."""
+    других процессов бота (_publish_rescue_wait).
+    since — время ПОСЛЕДНЕЙ постановки: повторный карантин того же сайта —
+    свежее наблюдение (капча снова на странице, вход всё ещё не выполнен),
+    и отметка «решено» другого процесса бота, сделанная раньше него, этот
+    карантин уже не снимает (_clear_if_solved_elsewhere)."""
     with _QUARANTINE_LOCK:
         already = site in _SITE_QUARANTINE
         eff_ttl = ttl if ttl and ttl > 0 else QUARANTINE_TTL_SEC
-        until = time.time() + eff_ttl
+        now = time.time()
+        until = now + eff_ttl
         _SITE_QUARANTINE[site] = {"until": until, "reason": reason,
-                                  "kind": kind, "pool": pool}
+                                  "kind": kind, "pool": pool, "since": now}
         if not already:
             _PENDING_ALERTS.append({"site": site, "reason": reason,
                                     "kind": kind, "until": until,
@@ -574,9 +581,24 @@ def site_quarantined(site: str) -> bool:
         q = _SITE_QUARANTINE.get(site)
         if not q:
             return False
-        if time.time() < float(q.get("until") or 0):
-            return True
-        _SITE_QUARANTINE.pop(site, None)
+        now = time.time()
+        if now < float(q.get("until") or 0):
+            # Капчу/вход пула H могли уже пройти в ДРУГОМ процессе бота
+            # (Chrome пула H и профиль с куками общие) — сверка с отметками
+            # решения (_clear_if_solved_elsewhere). Только для такого
+            # карантина и не чаще SOLVED_CHECK_SEC на сайт: это горячий путь
+            # каждого вызова веб-чата, а сверка — листинг каталога профиля
+            if not _waits_rescue(q) or (now - _SOLVED_CHECK_AT.get(site, 0.0)
+                                        < SOLVED_CHECK_SEC):
+                return True
+            _SOLVED_CHECK_AT[site] = now
+            probe = q
+        else:
+            _SITE_QUARANTINE.pop(site, None)
+            probe = None
+    if probe is not None:
+        # Файлы — вне лока карантинов: соседние потоки ФС не ждут
+        return not _clear_if_solved_elsewhere(site, probe)
     # Истёк (лениво, здесь) — публикация ожидания rescue без него. Публикуем
     # только по факту выброса: проверка карантина — горячий путь каждого
     # вызова веб-чата
@@ -622,11 +644,25 @@ def _waits_rescue(q: dict) -> bool:
             and str(q.get("pool") or "h") == "h")
 
 
-def _rescue_pending_sites() -> List[str]:
+def _rescue_pending_sites(marks: Optional[dict] = None) -> List[str]:
     """Сайты ЭТОГО процесса, ради которых rescue пула H ещё нужен
-    (_waits_rescue). Сайты соседних процессов — _foreign_rescue_waits."""
-    return sorted(s for s, q in quarantine_status().items()
-                  if _waits_rescue(q))
+    (_waits_rescue). Карантин, решение которого (тот же сайт и вид) любой
+    процесс бота отметил позже его постановки, здесь же снимается
+    (_clear_if_solved_elsewhere): без этого процесс ждал бы капчу, уже
+    пройденную в общем окне, пока сам не сходит к сайту. marks — отметки
+    решения (_rescue_solved_marks), None — прочитать здесь. Сайты соседних
+    процессов — _foreign_rescue_waits."""
+    waits = {s: q for s, q in quarantine_status().items() if _waits_rescue(q)}
+    if not waits:
+        return []
+    if marks is None:
+        try:
+            marks = _rescue_solved_marks()
+        except Exception as e:
+            logger.debug(f"[WebChat] Отметки решения rescue не прочитаны: {e}")
+            marks = {}
+    return sorted(s for s, q in waits.items()
+                  if not _clear_if_solved_elsewhere(s, q, marks))
 
 
 # ── Кого ждёт rescue: общее между процессами бота ──
@@ -638,8 +674,11 @@ def _rescue_pending_sites() -> List[str]:
 # сняв последний карантин, rescue не завершал (не владелец) — окно висело до
 # действия A или до конца срока. Поэтому каждый процесс публикует свои
 # ждущие сайты (_waits_rescue) со сроками карантина в СВОЙ файл
-# <профиль>.bot-rescue.wait.<pid> — JSON {site: until}, — а правило конца
-# rescue (_finish_rescue_if_done) читает файлы всех живых процессов.
+# <профиль>.bot-rescue.wait.<pid> — JSON {site: {"until", "since", "kind"}}
+# (since — время последней постановки карантина, для сверки с отметками
+# решения, см. ниже), — а правило конца rescue (_finish_rescue_if_done)
+# читает файлы всех живых процессов. Прежний формат {site: until} (процесс
+# на старом коде) читатель понимает: ждёт по сроку, без сверки с отметками.
 # Файл на процесс, а не один общий: каждый файл пишет только его процесс
 # (атомарно, tmp + os.replace) — межпроцессный лок не нужен, а процесс,
 # умерший без уборки (kill -9, падение), отсекается по живости pid: его
@@ -675,7 +714,12 @@ def _publish_rescue_wait():
         with _RESCUE_WAIT_LOCK:
             now = time.time()
             with _QUARANTINE_LOCK:
-                data = {s: round(float(q.get("until") or 0), 3)
+                data = {s: {"until": round(float(q.get("until") or 0), 3),
+                            # since — без округления: его сравнивают с
+                            # отметкой решения строго, и округление вверх
+                            # переставило бы близкие события местами
+                            "since": float(q.get("since") or 0),
+                            "kind": str(q.get("kind") or "challenge")}
                         for s, q in _SITE_QUARANTINE.items()
                         if _waits_rescue(q)
                         and float(q.get("until") or 0) > now}
@@ -740,12 +784,204 @@ def _drop_rescue_wait():
 atexit.register(_drop_rescue_wait)
 
 
-def _foreign_rescue_waits(ba) -> Dict[str, List[int]]:
+# ── Решено: общее между процессами бота ──
+# Один сайт могут ждать сразу несколько процессов: капчу X поймали и A, и B.
+# Человек проходит её в общем окне rescue — кука общая (профиль один), — A
+# видит чистую страницу и снимает свой карантин, а карантин X у B снялся бы
+# только следующим вызовом B к X. До него B публиковал X ждущим (rescue висел
+# до конца срока), а после rescue пропускал X до TTL карантина (30 мин), хотя
+# капча пройдена. Поэтому подтверждённое решение (_finish_rescue_if_done с
+# cleared: чистая страница, поле ввода, проба поиска Google) процесс отмечает
+# в СВОЁМ файле <профиль>.bot-rescue.solved.<pid> — JSON {site: {kind: ts}}.
+# Сверка — с временем ПОСЛЕДНЕЙ постановки карантина (since): отметка новее —
+# этот карантин решён (_clear_if_solved_elsewhere, правило в
+# _foreign_rescue_waits); старее — после решения капча случилась снова
+# (свежее наблюдение), и отметка её не снимает. Вид хранится и сравнивается:
+# пройденная капча не доказывает вход в аккаунт, и наоборот.
+# Отдельный файл, а не поле в .wait: у них разная жизнь. Ожидание — память
+# процесса: процесс вышел — ждать его нечего (atexit удаляет, умерший
+# отсекается живостью pid), ждущих нет — файла нет. Отметка — факт про общий
+# профиль: она верна и после выхода её процесса (A решил X и вышел — B всё
+# равно должен снять свой карантин), поэтому на выходе не удаляется и
+# живостью pid не отсекается, а устаревает по возрасту: старше самого
+# длинного TTL карантина капчи/входа (_solved_keep_sec) она не может быть
+# новее since ни одного живого карантина. Такие записи выкидывает владелец
+# при записи, а файл умершего процесса без свежих отметок — любой читатель.
+# Файл на процесс — как и .wait: пишет только владелец (атомарно), лок между
+# процессами не нужен.
+_RESCUE_SOLVED_INFIX = ".solved."
+_RESCUE_SOLVED_LOCK = threading.Lock()
+# Свои отметки: pid — чьи (ребёнок после fork начинает с пустых: отметки
+# родителя публикует родитель), path — файл (сменился профиль пула H —
+# отметки старого про ЕГО куки, к новому не относятся), data — {site:
+# {kind: ts}}. Своя сверка идёт по памяти — и когда файл не записался
+_RESCUE_SOLVED_PUB: dict = {"pid": None, "path": None, "data": {}}
+# Сверка своего карантина с отметками в site_quarantined — не чаще раза в
+# столько секунд на сайт (горячий путь)
+SOLVED_CHECK_SEC = 2.0
+_SOLVED_CHECK_AT: Dict[str, float] = {}  # site → время сверки; под _QUARANTINE_LOCK
+
+
+def _rescue_solved_prefix(ba=None) -> str:
+    # Путь файлов отметок без pid — от общего файла rescue, как у ожидания
+    if ba is None:
+        from app.features import browser_actions as ba
+    return ba._pool_h_rescue_path() + _RESCUE_SOLVED_INFIX
+
+
+def _solved_keep_sec() -> float:
+    # Сколько отметка может что-то снять: живой карантин капчи/входа поставлен
+    # не раньше, чем его TTL назад
+    return max(QUARANTINE_TTL_SEC, LOGIN_QUARANTINE_TTL_SEC)
+
+
+def _mark_rescue_solved(site: str, kind: str = "challenge"):
+    """Отметить подтверждённое решение капчи/входа сайта пула H (см. выше):
+    в памяти и в файле процесса. Сбой записи — только debug, вызов не
+    падает: своя сверка идёт по памяти, а худшее — соседи не узнают о
+    решении и снимут свой карантин сами (вызовом к сайту или по TTL), как до
+    отметок."""
+    now = time.time()
+    try:
+        with _RESCUE_SOLVED_LOCK:
+            pid = os.getpid()
+            path = f"{_rescue_solved_prefix()}{pid}"
+            pub = _RESCUE_SOLVED_PUB
+            if pub["pid"] != pid or pub["path"] != path:
+                pub.update(pid=pid, path=path, data={})
+            data = pub["data"]
+            # Без округления (как since в файле ожидания): сравнение строгое
+            data.setdefault(site, {})[kind] = now
+            edge = now - _solved_keep_sec()
+            for s in list(data):
+                data[s] = {k: t for k, t in data[s].items() if t > edge}
+                if not data[s]:
+                    del data[s]
+            atomic_write_json(Path(path), data, indent=None)
+    except Exception as e:
+        logger.debug(f"[WebChat] {site}: отметка решения ({kind}) для других "
+                     f"процессов бота не записана ({e}) — свой карантин они "
+                     "снимут сами")
+
+
+def _rescue_solved_marks(ba=None) -> Dict[str, Dict[str, Tuple[float, int]]]:
+    """Отметки решения всех процессов бота — живых и вышедших (см. выше):
+    {site: {kind: (ts, pid)}}, самая поздняя на сайт и вид. Свои — из памяти
+    (файл мог не записаться). Не в счёт: устаревшие (_solved_keep_sec),
+    нечитаемый файл (только debug), чужие tmp. Файл умершего процесса без
+    свежих отметок удаляется — его больше никто не обновит."""
+    if ba is None:
+        from app.features import browser_actions as ba
+    prefix = _rescue_solved_prefix(ba)
+    me, now = os.getpid(), time.time()
+    edge = now - _solved_keep_sec()
+    out: Dict[str, Dict[str, Tuple[float, int]]] = {}
+
+    def add(data, pid) -> int:
+        fresh = 0
+        if not isinstance(data, dict):
+            return 0
+        for site, kinds in data.items():
+            if not isinstance(kinds, dict):
+                continue
+            for kind, ts in kinds.items():
+                try:
+                    ts = float(ts)
+                except (TypeError, ValueError):
+                    continue
+                if ts <= edge:
+                    continue
+                fresh += 1
+                cur = out.setdefault(str(site), {}).get(str(kind))
+                if cur is None or ts > cur[0]:
+                    out[str(site)][str(kind)] = (ts, pid)
+        return fresh
+
+    own_path = f"{prefix}{me}"
+    with _RESCUE_SOLVED_LOCK:
+        pub = _RESCUE_SOLVED_PUB
+        mine = pub["pid"] == me and pub["path"] == own_path
+        own = {s: dict(k) for s, k in pub["data"].items()} if mine else {}
+    add(own, me)
+    for path in glob.glob(glob.escape(prefix) + "*"):
+        tail = path[len(prefix):]
+        if not tail.isdigit() or (mine and path == own_path):
+            continue
+        pid = int(tail)
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as e:
+            logger.debug(f"[WebChat] Файл отметок решения rescue {path} не "
+                         f"прочитан ({e}) — не в счёт")
+            continue
+        if not add(data, pid) and pid != me and not ba._pid_alive(pid):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    return out
+
+
+def _clear_if_solved_elsewhere(site: str, q: dict,
+                               marks: Optional[dict] = None) -> bool:
+    """Свой карантин капчи/входа пула H (q — его запись или её копия) решён
+    позже своей постановки — отметка того же вида новее since (обычно другого
+    процесса бота: свой, решив, карантин уже снял) → снять, True. marks —
+    _rescue_solved_marks, None — прочитать здесь. Сбой чтения — «не решён»
+    (только debug): худшее — прежнее поведение, карантин ждёт своего вызова к
+    сайту или TTL."""
+    try:
+        since = float(q.get("since") or 0)
+        kind = str(q.get("kind") or "challenge")
+        if since <= 0:
+            return False  # время постановки неизвестно — сравнивать не с чем
+        if marks is None:
+            marks = _rescue_solved_marks()
+        ts, pid = (marks.get(site) or {}).get(kind) or (0.0, None)
+    except Exception as e:
+        logger.debug(f"[WebChat] {site}: отметки решения rescue не "
+                     f"прочитаны ({e}) — карантин не трогаю")
+        return False
+    if ts <= since:
+        return False
+    with _QUARANTINE_LOCK:
+        cur = _SITE_QUARANTINE.get(site)
+        if (not cur or cur.get("since") != q.get("since")
+                or str(cur.get("kind") or "challenge") != kind):
+            # Пока читали файлы, карантин сняли или поставили заново (свежая
+            # капча — новый since): эта отметка его не решает
+            return False
+        _SITE_QUARANTINE.pop(site, None)
+    if kind == "login":
+        # Как _login_restored: недоставленное «выкинул из аккаунта» пришло бы
+        # уже после входа
+        _drop_pending_alerts(site, "login")
+    where = ("в этом процессе" if pid == os.getpid()
+             else f"в другом процессе бота (pid {pid})")
+    what = "вход выполнен" if kind == "login" else "капчу прошли"
+    logger.info(f"[WebChat] {site}: {what} {where} — карантин снят")
+    _publish_rescue_wait()
+    return True
+
+
+def _foreign_rescue_waits(ba, solved: Optional[dict] = None
+                          ) -> Dict[str, List[int]]:
     """Ждущие rescue сайты ДРУГИХ живых процессов бота: {site: [pid, ...]}.
     Свой процесс — не отсюда, а из памяти (_rescue_pending_sites): его файл
     мог не записаться. Не в счёт: файл мёртвого процесса (умер без уборки —
     файл подчищается), просроченные записи (истечение у владельца ленивое),
+    запись, решённая ЛЮБЫМ процессом (включая этот) позже её since (отметка
+    того же вида, solved — _rescue_solved_marks; None — прочитать здесь),
     нечитаемый файл (только debug) и чужие tmp."""
+    if solved is None:
+        try:
+            solved = _rescue_solved_marks(ba)
+        except Exception as e:
+            logger.debug(f"[WebChat] Отметки решения rescue не прочитаны: {e}")
+            solved = {}
     prefix = _rescue_wait_prefix(ba)
     me, now = os.getpid(), time.time()
     out: Dict[str, List[int]] = {}
@@ -773,18 +1009,35 @@ def _foreign_rescue_waits(ba) -> Dict[str, List[int]]:
             continue
         if not isinstance(data, dict):
             continue
-        for site, until in data.items():
+        for site, rec in data.items():
+            site = str(site)
             try:
-                waiting = float(until) > now
-            except (TypeError, ValueError):
+                if isinstance(rec, dict):
+                    until = float(rec.get("until") or 0)
+                    since = float(rec.get("since") or 0)
+                    kind = str(rec.get("kind") or "challenge")
+                else:
+                    # Прежний формат {site: until} (сосед на старом коде): ни
+                    # since, ни вида — с отметками решения не сравнить, ждёт
+                    # по сроку, как и раньше
+                    until, since, kind = float(rec), 0.0, ""
+            except (TypeError, ValueError, AttributeError):
                 continue
-            if waiting:
-                out.setdefault(str(site), []).append(pid)
+            if until <= now:
+                continue
+            mark = (solved.get(site) or {}).get(kind)
+            if since > 0 and mark and mark[0] > since:
+                # Решён (этим или другим процессом) позже постановки карантина
+                # у соседа — его карантин уже ничего не ждёт, сосед снимет
+                # его сам при первой проверке (site_quarantined)
+                continue
+            out.setdefault(site, []).append(pid)
     return out
 
 
 def _finish_rescue_if_done(ba, cleared: Optional[str] = None,
-                           pool: str = "h") -> bool:
+                           pool: str = "h", kind: str = "challenge",
+                           _recheck: bool = False) -> bool:
     """Единое правило конца rescue пула H: rescue идёт, и капч/входов не
     ждёт НИ ОДИН живой процесс бота — ни этот (_rescue_pending_sites), ни
     соседи (их файлы ожидания, _foreign_rescue_waits). Тогда rescue
@@ -792,8 +1045,12 @@ def _finish_rescue_if_done(ba, cleared: Optional[str] = None,
     общие (end_rescue_pool_h удаляет общий файл — rescue кончается у всех).
     Зовут его реплика «готово» (finish_idle_rescue) и снятие карантина
     вызовом к сайту (_challenge_check, _login_restored; web_search — капча
-    поиска Google; cleared — сайт, чей карантин только что снят, для лога;
-    pool — пул этого сайта).
+    поиска Google; cleared — сайт, чей карантин только что снят, для лога и
+    отметки решения; kind — вид снятого: challenge (капча), login (вход);
+    pool — пул этого сайта). Снятие с cleared — подтверждённое решение: оно
+    отмечается для других процессов бота (_mark_rescue_solved) — и вне
+    rescue: кука общая, решение верно для всех, — и их карантин того же
+    сайта и вида больше никого не держит (см. «Решено» выше).
     Почему не завершать по первому снятому карантину: капчи бывают у
     нескольких сайтов (и процессов) сразу — rescue, снятый по первой,
     перезапустил бы пул H headless посреди решения второй, и её карантин
@@ -801,14 +1058,25 @@ def _finish_rescue_if_done(ba, cleared: Optional[str] = None,
     отношения не имеет (капчу он проходил не в окне rescue) — не повод.
     Сбой чтения соседей — как «соседи не ждут» (только debug): худшее —
     прежнее поведение, правило по одному своему процессу.
+    «Ждём» при активном rescue заводит перепроверку (_ensure_rescue_recheck):
+    ждать могли соседа, который потом вышел, — событий, зовущих правило, от
+    него больше не будет. _recheck — вызов из неё самой (лог «ещё ждём» —
+    debug: он шёл бы каждые RESCUE_RECHECK_SEC).
     → True — rescue завершён."""
     if pool != "h":
         return False
+    if cleared:
+        _mark_rescue_solved(cleared, kind)
     if not ba.pool_h_rescue_active():
         return False
-    pending = _rescue_pending_sites()
     try:
-        foreign = _foreign_rescue_waits(ba)
+        marks = _rescue_solved_marks(ba)
+    except Exception as e:
+        logger.debug(f"[WebChat] Отметки решения rescue не прочитаны: {e}")
+        marks = {}
+    pending = _rescue_pending_sites(marks)
+    try:
+        foreign = _foreign_rescue_waits(ba, marks)
     except Exception as e:
         logger.debug(f"[WebChat] Ожидание rescue соседей не прочитано: {e}")
         foreign = {}
@@ -816,11 +1084,96 @@ def _finish_rescue_if_done(ba, cleared: Optional[str] = None,
         waiting = pending + [f"{s} (другой процесс бота)"
                              for s in sorted(foreign) if s not in pending]
         head = f"{cleared}: карантин снят, rescue" if cleared else "Rescue"
-        logger.info(f"[WebChat] {head} пула H продолжается — ещё ждём: "
-                    f"{', '.join(waiting)}")
+        (logger.debug if _recheck else logger.info)(
+            f"[WebChat] {head} пула H продолжается — ещё ждём: "
+            f"{', '.join(waiting)}")
+        if not _recheck:
+            _ensure_rescue_recheck(ba)
         return False
+    if _recheck:
+        logger.info("[WebChat] Rescue пула H: капч/входов больше не ждёт ни "
+                    "один процесс бота (ждали вышедший процесс или решение "
+                    "в другом) — завершаю")
     ba.end_rescue_pool_h()
     return True
+
+
+# ── Перепроверка конца rescue ──
+# Правило конца rescue (_finish_rescue_if_done) зовут события: снятие
+# карантина вызовом к сайту, реплика пользователя, проба поиска Google. Но
+# rescue мог ждать соседа, который потом ВЫШЕЛ (его файл ожидания удалён
+# atexit, или pid умер): событий, зовущих правило, больше нет, и окно висело
+# до следующей реплики, снятия или конца срока (15 мин). Поэтому процесс,
+# получивший «ждём» при активном rescue, заводит ОДИН фоновый поток, который
+# раз в RESCUE_RECHECK_SEC зовёт то же правило, пока rescue активен; rescue
+# кончился (кем угодно, по сроку) — поток выходит. Поток — демон: процесс на
+# выходе не держит. Сбои — debug; RESCUE_RECHECK_FAILS_MAX подряд — выход
+# (следующее «ждём» заведёт снова), чтобы сломанная проверка не крутилась
+# вечно. RESCUE_RECHECK_SEC ≤ 0 — перепроверки нет (тесты); разбудить поток
+# раньше срока — _RESCUE_RECHECK_WAKE.set() (тесты).
+RESCUE_RECHECK_SEC = 20.0
+RESCUE_RECHECK_FAILS_MAX = 3
+_RESCUE_RECHECK_LOCK = threading.Lock()
+_RESCUE_RECHECK_WAKE = threading.Event()
+# thread/pid — чей поток (после fork у ребёнка потока нет); kick — счётчик
+# «ждём»: поток, решивший выйти, сверяет его под локом, чтобы не выйти мимо
+# «ждём», сказанного, пока он проверял (иначе новый rescue остался бы без
+# перепроверки — заводить второй поток ensure не стал бы, этот ещё жив)
+_RESCUE_RECHECK: dict = {"thread": None, "pid": None, "kick": 0}
+
+
+def _ensure_rescue_recheck(ba):
+    """Завести перепроверку конца rescue, если её ещё нет (одна на процесс).
+    Сбой — только debug: худшее — прежнее поведение (правило зовут только
+    события)."""
+    if RESCUE_RECHECK_SEC <= 0:
+        return
+    try:
+        with _RESCUE_RECHECK_LOCK:
+            st = _RESCUE_RECHECK
+            st["kick"] += 1
+            t = st["thread"]
+            if t is not None and st["pid"] == os.getpid() and t.is_alive():
+                return
+            t = threading.Thread(target=_rescue_recheck_loop, args=(ba,),
+                                 name="rescue-recheck", daemon=True)
+            st.update(thread=t, pid=os.getpid())
+            t.start()
+        logger.debug("[WebChat] Rescue пула H ждёт — перепроверка раз в "
+                     f"{RESCUE_RECHECK_SEC:g} с")
+    except Exception as e:
+        logger.debug(f"[WebChat] Перепроверка конца rescue не заведена: {e}")
+
+
+def _rescue_recheck_loop(ba):
+    # Тело потока перепроверки (см. выше)
+    fails = 0
+    while True:
+        if RESCUE_RECHECK_SEC > 0:
+            _RESCUE_RECHECK_WAKE.wait(RESCUE_RECHECK_SEC)
+            _RESCUE_RECHECK_WAKE.clear()
+        with _RESCUE_RECHECK_LOCK:
+            seen = _RESCUE_RECHECK["kick"]
+        if RESCUE_RECHECK_SEC <= 0:
+            done = True  # перепроверку выключили (в том числе пока ждали)
+        else:
+            try:
+                done = (not ba.pool_h_rescue_active()
+                        or _finish_rescue_if_done(ba, _recheck=True))
+                fails = 0
+            except Exception as e:
+                fails += 1
+                logger.debug(f"[WebChat] Перепроверка конца rescue не "
+                             f"удалась ({e})")
+                done = fails >= RESCUE_RECHECK_FAILS_MAX
+        if not done:
+            continue
+        with _RESCUE_RECHECK_LOCK:
+            if _RESCUE_RECHECK["kick"] != seen:
+                continue  # пока проверяли, снова «ждём» — ещё круг
+            if _RESCUE_RECHECK["thread"] is threading.current_thread():
+                _RESCUE_RECHECK["thread"] = None
+            return
 
 
 def finish_idle_rescue() -> bool:
@@ -1889,9 +2242,11 @@ class WebChatLLM:
             # Вошли в видимом окне rescue — пул H возвращается в штатный
             # режим, но только если это был последний карантин капчи/входа
             # во всех процессах бота (_finish_rescue_if_done): иначе окно
-            # закрылось бы посреди капчи соседнего сайта или процесса
+            # закрылось бы посреди капчи соседнего сайта или процесса.
+            # kind=login: отметка решения снимет у соседей только карантин
+            # входа — капчу вход не опровергает
             _finish_rescue_if_done(ba, cleared=self.site,
-                                   pool=self.browser_pool)
+                                   pool=self.browser_pool, kind="login")
         except Exception:
             pass
 
@@ -1916,7 +2271,9 @@ class WebChatLLM:
             # Страница чиста. Если сайт был в карантине КАПЧИ — челлендж
             # пройден (пользователь в rescue): снимаем карантин; rescue
             # завершается, только если капч/входов больше не ждёт ни один
-            # процесс бота (_finish_rescue_if_done).
+            # процесс бота (_finish_rescue_if_done; оно же отмечает решение
+            # для других процессов — их карантин этой капчи снимется без
+            # их вызова к сайту).
             # Чистая страница снимает только вид challenge. Разлогин так не
             # снимается: на странице входа капчи тоже нет — его снимает
             # только проба поля ввода (_login_state). Лимит (ratelimit) и
