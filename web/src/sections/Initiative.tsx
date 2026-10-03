@@ -4,17 +4,8 @@ import type { InitiativeEvent, InitiativeState } from '../mockData';
 import { api } from '../api';
 import type { InitiativeData } from '../api';
 import { useApiOnline } from '../apiData';
+import { INIT_TYPE_MAP } from '../initiativeTypes';
 import InfoButton from '../components/InfoButton';
-
-// Тип инициативы ядра → ближайший тип UI
-const TYPE_MAP: Record<string, InitiativeEvent['type']> = {
-  continuation: 'continuation',
-  memory_recall: 'observation',
-  self_reflection: 'thought',
-  user_reflection: 'thought',
-  todo_reflection: 'observation',
-  inventory_reflection: 'observation',
-};
 
 interface InitiativeProps {
   personaId?: string; // фиксированная персона (модалка «Досье») — без табов персон
@@ -67,7 +58,7 @@ export default function Initiative({ personaId: fixedId, embedded }: InitiativeP
   const history: InitiativeEvent[] = apiOnline
     ? (apiData?.history ?? []).map((h, i) => ({
         id: i + 1,
-        type: TYPE_MAP[h.type] ?? 'thought',
+        type: INIT_TYPE_MAP[h.type] ?? 'thought',
         typeLabel: h.type,
         text: h.message,
         time: h.date,

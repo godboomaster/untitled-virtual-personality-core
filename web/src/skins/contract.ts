@@ -42,9 +42,10 @@ export const PAYLOAD_FIELDS = {
   persona: tx('текущая персона (см. persona.*)', 'current persona (see persona.*)'),
   env: tx('окружение: тема, язык, подписи UI, время суток, погода (см. env.*)', 'environment: theme, locale, UI labels, time of day, weather (see env.*)'),
   typing: tx('персона печатает ответ', 'persona is typing a reply'),
+  historyLoading: tx('v3: история диалога ещё грузится (→ data-vpc-loading на контейнере ленты)', 'v3: chat history is still loading (→ data-vpc-loading on the feed container)'),
   messages: tx('лента чата, от старых к новым (см. message.*)', 'chat feed, oldest first (see message.*)'),
   reply: tx('плашка «ответ на…»: {author, text} или null', '"replying to" bar: {author, text} or null'),
-  personas: tx('список персон: {id, name, statusText, active}', 'persona list: {id, name, statusText, active}'),
+  personas: tx('список персон: {id, name, statusText, active, avatar?, unread?} (avatar, unread — v3)', 'persona list: {id, name, statusText, active, avatar?, unread?} (avatar, unread — v3)'),
   context: tx('контекстная панель чата, строки уже локализованы (см. context.*)', 'chat context panel, strings already localized (see context.*)'),
   todos: tx('дела: {id, text, done}', 'todos: {id, text, done}'),
   inventory: tx('инвентарь: {icon, name, description, tag}', 'inventory: {icon, name, description, tag}'),
@@ -74,6 +75,8 @@ export const MESSAGE_FIELDS = {
   text: tx('текст', 'text'),
   time: tx('время, строкой', 'time, as a string'),
   image: tx('картинка, data-URL', 'image, data-URL'),
+  images: tx('v3: картинки ответа персоны (скриншоты), data-URL; поле image шаблона повторяется на каждый кадр', "v3: images of the persona's reply (screenshots), data-URL; the template image field is repeated for each frame"),
+  status: tx("v3: доставка — 'queued' | 'sent' | 'read' (у персоны только 'read'); → data-status на корне сообщения и поле delivery", "v3: delivery — 'queued' | 'sent' | 'read' (persona messages: 'read' only); → data-status on the message root and the delivery field"),
   quote: tx('цитата ответа: {author, text}', 'replied-to quote: {author, text}'),
 } satisfies FieldDocs<SkinChatMessage>;
 
@@ -102,6 +105,7 @@ export const CONTEXT_FIELDS = {
   nextReminder: tx('ближайшее напоминание', 'next reminder'),
   learning: tx("активный курс ('' — нет)", "active course ('' — none)"),
   features: tx('подписи включённых модулей', 'labels of enabled modules'),
+  lastInitiative: tx('v3: последняя самоинициатива одной строкой (нет — поле отсутствует)', 'v3: last proactive message as one line (absent — none)'),
 } satisfies FieldDocs<SkinContext>;
 
 export const DOSSIER_FIELDS = {
@@ -178,6 +182,7 @@ export const TEXT_SLOTS: SkinSlotDoc[] = [
   { name: 'ctx-last-reply', screens: ['chat'], desc: tx('последний ответ пользователя', 'last user reply') },
   { name: 'ctx-next-reminder', screens: ['chat'], desc: tx('ближайшее напоминание', 'next reminder') },
   { name: 'ctx-learning', screens: ['chat'], desc: tx('активный курс', 'active course') },
+  { name: 'ctx-last-init', screens: ['chat'], desc: tx('v3: последняя самоинициатива (пусто — не было)', 'v3: last proactive message (empty — none)') },
   { name: 'ini-probability', screens: ['dossier'], desc: tx('вероятность, %', 'probability, %') },
   { name: 'ini-threshold', screens: ['dossier'], desc: tx('порог молчания, мин', 'silence threshold, min') },
   { name: 'ini-max-per-day', screens: ['dossier'], desc: tx('максимум в день', 'max per day') },
@@ -193,6 +198,7 @@ export const TEXT_SLOTS: SkinSlotDoc[] = [
   { name: 'room-mood', screens: ['room'], desc: tx('настроение', 'mood') },
   { name: 'room-energy', screens: ['room'], desc: tx('энергия', 'energy') },
   { name: 'room-place', screens: ['room'], desc: tx('место в комнате', 'spot in the room') },
+  { name: 'room-duration', screens: ['room'], desc: tx('v3: длительность занятия', 'v3: pastime duration') },
   { name: 'room-pet-label', screens: ['room'], desc: tx('подпись питомца', 'pet label') },
   { name: 'local-time', screens: ['chat', 'dossier', 'room'], desc: tx("локальное время 'HH:MM' (v2; часовой пояс — из настроек приложения)", "local time 'HH:MM' (v2; time zone from the app settings)") },
   { name: 'weather', screens: ['chat', 'dossier', 'room'], desc: tx('строка погоды (v2; пусто — погоды нет)', 'weather line (v2; empty — no weather)') },
@@ -203,7 +209,7 @@ export const TEXT_SLOTS: SkinSlotDoc[] = [
 export const CONTROL_HOOKS: SkinSlotDoc[] = [
   { name: 'input', screens: ['chat'], desc: tx('поле ввода (<input>/<textarea>), Enter = отправка', 'message input (<input>/<textarea>), Enter sends') },
   { name: 'send', screens: ['chat'], desc: tx('кнопка отправки', 'send button') },
-  { name: 'messages', screens: ['chat'], desc: tx('контейнер ленты; + <template data-vpc="message">', 'feed container; + <template data-vpc="message">') },
+  { name: 'messages', screens: ['chat'], desc: tx('контейнер ленты; + <template data-vpc="message">; v3: data-vpc-loading, пока грузится история', 'feed container; + <template data-vpc="message">; v3: data-vpc-loading while history loads') },
   { name: 'typing-indicator', screens: ['chat'], desc: tx('получает data-active, пока персона печатает', 'gets data-active while the persona is typing') },
   { name: 'persona-avatar', screens: ['chat', 'dossier', 'room'], desc: tx('<img> получает src, иначе — первая буква имени текстом', '<img> gets src, otherwise the first letter of the name as text') },
   { name: 'open-dossier', screens: ['chat'], desc: tx('клик = открыть досье', 'click = open dossier') },
@@ -215,7 +221,7 @@ export const CONTROL_HOOKS: SkinSlotDoc[] = [
   { name: 'clear-chat', screens: ['dossier'], desc: tx('клик = очистить диалог (только в опасной зоне досье)', 'click = clear the dialog (dossier danger zone only)') },
   { name: 'ini-silence-bar', screens: ['dossier'], desc: tx('полоса прогресса молчания: style.width в %', 'silence progress bar: style.width in %') },
   { name: 'room-scene', screens: ['room'], desc: tx('корень сцены комнаты', 'room scene root') },
-  { name: 'room-avatar', screens: ['room'], desc: tx('аватар; приложение ставит CSS-переменные --vpc-x / --vpc-y (%)', 'avatar; the app sets CSS vars --vpc-x / --vpc-y (%)') },
+  { name: 'room-avatar', screens: ['room'], desc: tx('аватар; приложение ставит CSS-переменные --vpc-x / --vpc-y (%); v3: атрибуты data-vpc-pose / data-vpc-spot (поза и место — см. room.pose / room.spot); data-vpc-action="poke" на нём = «заглянуть» к персоне', 'avatar; the app sets CSS vars --vpc-x / --vpc-y (%); v3: data-vpc-pose / data-vpc-spot attributes (see room.pose / room.spot); data-vpc-action="poke" on it = "check in" on the persona') },
   { name: 'room-bg', screens: ['room'], desc: tx('<img> пользовательского фона', 'custom background <img>') },
   { name: 'room-sprite', screens: ['room'], desc: tx('<img> спрайта аватара', 'avatar sprite <img>') },
   { name: 'room-pet', screens: ['room'], desc: tx("питомец: data-pet='cat|crow', hidden без питомца", "pet: data-pet='cat|crow', hidden when none") },
@@ -233,8 +239,8 @@ export interface SkinListDoc {
 
 // Повторяющиеся списки: контейнер + <template>-образец одного элемента
 export const LIST_HOOKS: SkinListDoc[] = [
-  { box: 'messages', tpl: 'message', fields: ['text', 'time', 'image', 'quote-author', 'quote-text'], root: 'data-role="user|persona"', itemActions: ['reply'], screens: ['chat'] },
-  { box: 'persona-list', tpl: 'persona-item', fields: ['name', 'status'], root: 'data-active (selected persona); click = switch persona', count: 'personas', screens: ['chat'] },
+  { box: 'messages', tpl: 'message', fields: ['text', 'time', 'image (v3: repeated per frame)', 'delivery (v3: ◷ / ✓ / ✓✓)', 'quote-author', 'quote-text'], root: 'data-role="user|persona", v3: data-status="queued|sent|read"', itemActions: ['reply'], screens: ['chat'] },
+  { box: 'persona-list', tpl: 'persona-item', fields: ['name', 'status', 'avatar (v3, <img>)', 'unread (v3)'], root: 'data-active (selected persona), v3: data-unread; click = switch persona', count: 'personas', screens: ['chat'] },
   { box: 'todo-list', tpl: 'todo-item', fields: ['text'], root: 'data-done', count: 'todos', itemActions: ['toggle-todo', 'edit-todo', 'delete-todo'], screens: ['chat', 'dossier'] },
   { box: 'inventory-list', tpl: 'inventory-item', fields: ['icon', 'name', 'description', 'tag'], count: 'inventory', screens: ['chat'] },
   { box: 'feature-list', tpl: 'feature-item', fields: ['label'], count: 'features', screens: ['chat'] },
@@ -261,6 +267,7 @@ export const FORM_ACTIONS: { action: string; inputs: string[]; screens: SkinScre
   { action: 'add-course', inputs: ['subject', 'frequency'], screens: ['dossier'] },
   { action: 'trim-stm', inputs: ['count'], screens: ['dossier'] },
   { action: 'add-inventory-item', inputs: ['name', 'icon'], screens: ['room'] },
+  { action: 'poke', inputs: [], screens: ['room'] },
   { action: 'cancel-reply', inputs: [], screens: ['chat'] },
 ];
 
@@ -285,6 +292,7 @@ export const MARKUP_ATTRS: { attr: string; desc: SkinDocText }[] = [
   { attr: 'data-vpc-setting="key"', desc: tx('инпут настройки: приложение ставит значение и принимает change (чекбокс — checked)', 'settings input: the app sets the value and accepts change (checkbox — checked)') },
   { attr: 'data-vpc-label="key"', desc: tx('v2: текст элемента заменяется локализованной подписью; без ключа остаётся исходный текст. Ставь на отдельный <span> — содержимое заменяется целиком', 'v2: element text is replaced by the localized label; without the key the original text stays. Put it on a dedicated <span> — the content is replaced entirely') },
   { attr: 'data-vpc-label-placeholder / -title / -aria="key"', desc: tx('v2: то же для атрибутов placeholder / title / aria-label', 'v2: same for placeholder / title / aria-label attributes') },
+  { attr: 'data-vpc-no-fallback="typing reply-bar attach images delivery unread loading panels | all"', desc: tx('v3: на корне экрана — отключить дорисовку bridge для перечисленных частей (см. «Дорисовка»)', 'v3: on the screen root — turn off bridge fallbacks for the listed parts (see "Fallbacks")') },
 ];
 
 // Атрибуты <html>, которые выставляет приложение
@@ -346,6 +354,18 @@ export const SKIN_RULES: SkinDocText[] = [
   tx('Документ скина не должен уходить со своей страницы: ссылки (кроме #якорей) не срабатывают, а переход через location/reload приложение считает поломкой и отключает скин.', 'The skin document must not leave its page: links (except #anchors) do nothing, and navigating via location/reload is treated as a failure — the app disables the skin.'),
   tx('Файл не больше 3 МБ. Необработанная ошибка JS скина отключает скин.', 'File size up to 3 MB. An unhandled skin JS error disables the skin.'),
   tx('Объяви версию контракта: <meta name="vpc-skin-contract" content="N">; скин новее приложения не загрузится. Без меты — v1.', 'Declare the contract version: <meta name="vpc-skin-contract" content="N">; a skin newer than the app is rejected. No meta — v1.'),
+];
+
+/* ── Дорисовка (v3): чего нет в скине, bridge добавляет сам ── */
+export const SKIN_FALLBACKS: { key: string; desc: SkinDocText }[] = [
+  { key: 'typing', desc: tx('нет [data-vpc="typing-indicator"] — строка «печатает…» под лентой', 'no [data-vpc="typing-indicator"] — a "typing…" line under the feed') },
+  { key: 'reply-bar', desc: tx('нет [data-vpc="reply-bar"] — плашка «ответ на…» над полем ввода', 'no [data-vpc="reply-bar"] — a "replying to" bar above the input') },
+  { key: 'attach', desc: tx('есть [data-vpc="attach-image"], но нет превью — превью и отмена рядом с полем ввода', 'has [data-vpc="attach-image"] but no preview — preview and cancel next to the input') },
+  { key: 'images', desc: tx('в шаблоне сообщения нет поля image — картинки дописываются в конец сообщения', 'no image field in the message template — images are appended to the message') },
+  { key: 'delivery', desc: tx('в шаблоне сообщения нет поля delivery — ◷ / ✓ / ✓✓ после времени', 'no delivery field in the message template — ◷ / ✓ / ✓✓ after the time') },
+  { key: 'unread', desc: tx('в шаблоне persona-item нет поля unread — счётчик-бейдж в элементе', 'no unread field in the persona-item template — a counter badge in the item') },
+  { key: 'loading', desc: tx('лента пуста, а история грузится — строка «Загрузка истории» в ленте', 'empty feed while history loads — a "Loading history" line in the feed') },
+  { key: 'panels', desc: tx('боковая панель чата (список персон, контекст, дела…) скрыта CSS на текущей ширине — кнопка у края выдвигает её поверх; Esc / клик мимо закрывает', 'a chat side panel (persona list, context, todos…) is hidden by CSS at the current width — an edge button slides it over the screen; Esc / click outside closes it') },
 ];
 
 const SCREENS: SkinScreen[] = ['chat', 'dossier', 'room'];
@@ -417,6 +437,12 @@ export function buildSkinContractDoc(locale: SkinDocLocale): string {
 
   h(ru ? '## Атрибуты разметки' : '## Markup attributes');
   MARKUP_ATTRS.forEach((a) => out.push(`- \`${a.attr}\` — ${L(a.desc)}`));
+
+  h(ru ? '## Дорисовка (v3)' : '## Fallbacks (v3)');
+  out.push(ru
+    ? 'Если в экране нет точки для части интерфейса, bridge дорисует минимальный блок с классом .vpc-fallback (наследует шрифт и цвет; можно стилизовать). Отключение — data-vpc-no-fallback на корне экрана.'
+    : 'When a screen has no hook point for a part of the UI, the bridge adds a minimal block with class .vpc-fallback (inherits font and color; can be styled). Turn off with data-vpc-no-fallback on the screen root.');
+  SKIN_FALLBACKS.forEach((f) => out.push(`- \`${f.key}\` — ${L(f.desc)}`));
 
   h(ru ? '## Атрибуты <html>, которые ставит приложение' : '## <html> attributes set by the app');
   HTML_ATTRS.forEach((a) => out.push(`- \`${a.attr}\` — ${L(a.desc)}`));

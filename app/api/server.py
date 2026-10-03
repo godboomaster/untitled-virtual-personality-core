@@ -2173,6 +2173,9 @@ async def initiative(persona: PersonaIdPath, chat_id: str = "web_user"):
             # окно самоинициативы "HH:MM-HH:MM" (нет — круглые сутки)
             "initiative_hours": cfg.get("initiative_hours"),
             "ignore_streak": streak,
+            # Порог молчания, после которого персона пишет сама (менеджера
+            # нет — адаптивный не посчитать, отдаём заданный)
+            "effective_silence_minutes": min(1440, int(cfg.get("silence_threshold_minutes", 180))),
             "initiatives_today": 0,
             "emotional_state": "",
             "history": [],
@@ -2194,6 +2197,9 @@ async def initiative(persona: PersonaIdPath, chat_id: str = "web_user"):
             "feedback_enabled": cfg.feedback_enabled,
             "initiative_hours": "-".join(cfg.initiative_hours) if cfg.initiative_hours else None,
             "ignore_streak": (getattr(p, "_ignore_streak", {}) or {}).get(key, 0),
+            # Порог молчания, после которого персона пишет сама: адаптивный
+            # (две медианы интервала между репликами) или заданный
+            "effective_silence_minutes": round(min(1440, p._calculate_adaptive_threshold(key, log=False))),
             "initiatives_today": p._get_daily_count(key),
             "emotional_state": p._get_emotional_state(key),
             "history": list(history.get(key, []))[-20:],

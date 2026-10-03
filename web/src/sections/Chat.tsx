@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, useMockData } from '../i18n';
-import type { ChatMessage, InventoryItem, LearningSession, LtmFact, Reminder, TodoItem } from '../mockData';
+import type { ChatMessage, DiaryEntry, InitiativeEvent, InventoryItem, LearningSession, LtmFact, PersonaFile, Reminder, TodoItem } from '../mockData';
 import { api, streamChat, StreamInterruptedError } from '../api';
 import type { ApiHistoryMessage, ClearPart, InitiativeData, PersonaConfig, ReminderEntry } from '../api';
 import { refetchPersonaLlm, useApiOnline, useApiPersonaLlm, useApiProviders, usePersonaLivingState } from '../apiData';
-import { alertDialog } from '../dialogStore';
+import { alertDialog, confirmDialog } from '../dialogStore';
 import {
   getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setControlMode, setFastPoll, setGenerating, touchActivity, useInbox,
 } from '../inboxStore';
@@ -14,6 +14,7 @@ import { consumeChatPersonaRequest, useChatOverviewRequest, useChatPersonaReques
 import { captureRects, playFlip } from '../flip';
 import type { FlipRects } from '../flip';
 import ChatOverview from './ChatOverview';
+import { INIT_TYPE_MAP } from '../initiativeTypes';
 import { usePersonaAvatars } from '../avatarStore';
 import PersonaDossier from '../components/PersonaDossier';
 import PersonaYamlModal from '../components/PersonaYamlModal';
@@ -173,6 +174,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   const [selectedId, setSelectedId] = useState(initialPersonaId);
   // Выбор оператора (клик, переход из других секций)
   const pickPersona = (id: string) => {
+    setSkinBypass(false);
     setSelectedId(id);
   };
   const avatars = usePersonaAvatars();
@@ -197,6 +199,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   const [yamlOpen, setYamlOpen] = useState(false);
   // Режим чата: классический (переписка) или голосовой (аватарка персоны)
   const [chatMode, setChatMode] = useState<'classic' | 'voice'>('classic');
+  // «Обычный вид» поверх назначенного скина (до возврата кнопкой «Вид скина»):
+  // в стандартном интерфейсе есть всё, чего скин может не рисовать
+  const [skinBypass, setSkinBypass] = useState(false);
   const [draft, setDraft] = useState('');
   // Ответ на конкретное сообщение (id цитируемого)
   const [replyToId, setReplyToId] = useState<number | null>(null);
@@ -818,6 +823,65 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         }
       : null
     : (initiativeByPersona[persona.id] ?? []).at(-1);
+  // Дневник и файлы для скин-досье с бэкенда (раньше — моки даже онлайн).
+  // Только при назначенном скине: дефолтное досье грузит их само
+  const [skinSideState, setSkinSide] = useState<{ persona: string; diary: DiaryEntry[]; files: PersonaFile[] } | null>(null);
+  const skinAssigned = !!(skins.chat || skins.dossier);
+  useEffect(() => {
+    if (!apiOnline || !skinAssigned) {
+      setSkinSide(null);
+      return;
+    }
+    const id = persona.id;
+    let stale = false;
+    const loc = lang === 'ru' ? 'ru-RU' : 'en-US';
+    const fmt = (d: Date) =>
+      Number.isNaN(d.getTime()) ? '' : d.toLocaleString(loc, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    Promise.allSettled([api.getDiary(id), api.getFiles(id)]).then(([dr, fr]) => {
+      if (stale) return;
+      let diary: DiaryEntry[] = [];
+      if (dr.status === 'fulfilled') {
+        const d = dr.value;
+        // Как в разделе «Память»: эпизоды и заметки одной лентой, свежие сверху
+        const entries = [
+          ...d.episodes.map((e) => ({ date: fmt(new Date(e.timestamp)) || e.timestamp, text: e.text, ts: e.timestamp })),
+          ...d.notes.map((n) => ({ date: fmt(new Date(n.timestamp)) || n.timestamp, text: n.text, ts: n.timestamp })),
+        ].sort((a, b) => (a.ts < b.ts ? 1 : -1));
+        if (d.life_summary) entries.unshift({ date: 'Σ', text: d.life_summary, ts: '' });
+        diary = entries.map((e, i) => ({ id: i + 1, date: e.date, text: e.text }));
+      }
+      const files: PersonaFile[] = fr.status === 'fulfilled'
+        ? fr.value.files.map((f, i) => ({
+            id: i + 1,
+            name: f.filename,
+            kind: /\.(png|jpe?g|gif|webp)$/i.test(f.filename) ? 'image' as const : 'document' as const,
+            size: f.size >= 1000 ? `${Math.round(f.size / 100) / 10}k` : String(f.size),
+            date: fmt(new Date(f.timestamp)),
+            description: '',
+            content: '', // содержимое — по запросу (download-file → getFileContent)
+          }))
+        : [];
+      setSkinSide({ persona: id, diary, files });
+    });
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiOnline, skinAssigned, persona.id, waiting, sideEpoch]);
+  const skinSide = skinSideState?.persona === persona.id ? skinSideState : null;
+  const skinFiles: PersonaFile[] = apiOnline ? (skinSide?.files ?? []) : (filesByPersona[persona.id] ?? []);
+  // Самоинициативы онлайн — история бэкенда (как в разделе «Самоинициатива»)
+  const skinInitiatives: InitiativeEvent[] = apiOnline
+    ? (initApi?.history ?? []).map((h, i) => ({
+        id: i + 1,
+        type: INIT_TYPE_MAP[h.type] ?? 'thought',
+        typeLabel: h.type,
+        text: h.message,
+        time: h.date,
+        outcome: 'pending' as const,
+      }))
+    : (initiativeByPersona[persona.id] ?? []);
+
   // Краткие списки для раскрывающихся блоков панели
   const todos = (sideData ? sideData.todos : (todosByPersona[persona.id] ?? [])).slice(0, 4);
   const inventory = (sideData ? sideData.inventory : (inventoryByPersona[persona.id] ?? [])).slice(0, 4);
@@ -896,11 +960,19 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   const send = () => {
     const text = draft.trim();
     if (!text && !pendingImage) return;
+    const image = pendingImage;
+    setPendingImage(null);
+    setDraft('');
+    submitMessage(text, image);
+  };
+
+  // Реплика пользователя — общий путь поля ввода, скина и голосового режима:
+  // пузырь + отправка на бэкенд со стримом ответа
+  const submitMessage = (text: string, image: string | null) => {
+    if (!text && !image) return;
     if (!apiOnline) {
       // Офлайн-режим (моки): картинка остаётся локальным пузырём
-      pushMessage(text, pendingImage);
-      setPendingImage(null);
-      setDraft('');
+      pushMessage(text, image);
       return;
     }
     // Цитата уходит на бэкенд как reply_context (как ответ на сообщение в мессенджерах);
@@ -910,13 +982,22 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     const pid = persona.id;
     const personaName = persona.name; // имя фиксируем здесь: за время генерации selectedId может смениться
     const quoted = replyToId != null ? messages.find((m) => m.id === replyToId) : undefined;
-    const image = pendingImage;
-    setPendingImage(null);
-    setDraft('');
     markBotRead(pid); // пользователь ответил — реплики бота прочитаны
 
     pushMessage(text, image, 'sent');
     startGeneration(pid, personaName, text, quoted?.text, image);
+  };
+
+  // Полная очистка диалога из скина — с тем же подтверждением, что в досье:
+  // кнопка скина (или его скрипт) не стирает всё одним нажатием
+  const confirmClearFromSkin = async () => {
+    const ok = await confirmDialog({
+      title: t('dossier.clearDialog'),
+      message: t('dossier.confirmClear', { name: persona.name }),
+      confirmLabel: t('dossier.yesClear'),
+      danger: true,
+    });
+    if (ok) clearStm();
   };
 
   // Отправка сообщения и стриминг ответа
@@ -1057,7 +1138,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       });
   };
 
-  // Реплика персоны в историю (голосовой режим: мок-ответ озвучивается в VoiceChat)
+  // Реплика персоны в историю (досылаемые части ответа — extra_messages)
   const pushPersonaMessage = (text: string, ts?: number) => {
     const msg: ChatMessage = {
       id: Date.now(),
@@ -1437,15 +1518,19 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         setReplyToId(null);
         break;
       case 'download-file': {
-        const file = (filesByPersona[persona.id] ?? []).find((f) => f.id === numId);
-        if (file) {
-          const url = URL.createObjectURL(new Blob([file.content], { type: 'text/plain' }));
+        const file = skinFiles.find((f) => f.id === numId);
+        if (!file) break;
+        const save = (content: string) => {
+          const url = URL.createObjectURL(new Blob([content], { type: 'text/plain' }));
           const a = document.createElement('a');
           a.href = url;
           a.download = file.name;
           a.click();
           URL.revokeObjectURL(url);
-        }
+        };
+        // Онлайн содержимое — с бэкенда (в списке его нет), офлайн — из мока
+        if (apiOnline) api.getFileContent(persona.id, file.name).then((r) => save(r.content)).catch(reportSkinError);
+        else save(file.content);
         break;
       }
     }
@@ -1509,9 +1594,17 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     messages,
     mood,
     pastimeLabel: pastime?.label ?? '',
-    allPersonas: personas.map((p) => ({ persona: p, statusText: t(`status.${p.status}`) })),
+    allPersonas: personas.map((p) => ({
+      persona: p,
+      statusText: t(`status.${p.status}`),
+      avatar: avatars[p.id],
+      unread: unread[p.id] ?? 0,
+    })),
+    avatar: avatars[persona.id],
+    historyLoading,
     context: {
       pastimePlace: pastime?.place ?? '',
+      lastInitiative: lastInit ? `${lastInit.time} — ${lastInit.text}` : undefined,
       trend,
       initiative: t('chat.probLine', {
         p: Math.round(initProb * 100),
@@ -1530,12 +1623,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       return q ? { author: q.role === 'user' ? t('chat.you') : persona.name, text: q.text } : null;
     })(),
     todos: skinTodos,
-    inventory: sideData ? sideData.inventory : (inventoryByPersona[persona.id] ?? []),
+    // Онлайн, пока данные не пришли, — пусто, а не моковые предметы
+    inventory: sideData ? sideData.inventory : apiOnline ? [] : (inventoryByPersona[persona.id] ?? []),
     dossier: {
       facts: skinFacts,
       reminders: skinReminders,
-      initiatives: initiativeByPersona[persona.id] ?? [],
-      diary: diaryByPersona[persona.id] ?? [],
+      initiatives: skinInitiatives,
+      diary: apiOnline ? (skinSide?.diary ?? []) : (diaryByPersona[persona.id] ?? []),
       stm: skinStm,
       courses: skinCourses,
     },
@@ -1566,7 +1660,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       n: 99,
       max: apiOnline ? initBase.silenceThresholdMin : (overlay.init.silence ?? initBase.silenceThresholdMin),
     }),
-    files: filesByPersona[persona.id] ?? [],
+    files: skinFiles,
     providers:
       apiOnline && apiProviders
         ? apiProviders.map((p) => ({
@@ -1606,24 +1700,60 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   });
   // Скин персоны — отдельные файлы по экранам; сломанный экран откатывается
   // на дефолт, остальные остаются кастомными
-  const chatSkin = broken.chat ? null : (skins.chat ?? null);
-  const dossierSkin = broken.dossier ? null : (skins.dossier ?? null);
+  const chatSkinFile = broken.chat ? null : (skins.chat ?? null);
+  const dossierSkinFile = broken.dossier ? null : (skins.dossier ?? null);
+  // «Обычный вид» и голосовой режим показывают стандартный интерфейс поверх
+  // назначенного скина (в скине нет ни голоса, ни всех частей интерфейса)
+  const chatSkin = skinBypass || chatMode === 'voice' ? null : chatSkinFile;
+  const dossierSkin = skinBypass ? null : dossierSkinFile;
   const activeScreen: 'chat' | 'dossier' = dossierOpen ? 'dossier' : 'chat';
   const activeSkin = activeScreen === 'dossier' ? dossierSkin : chatSkin;
-  // Пока скин активен, каркас приложения (сайдбар, топбар) красится в его палитру
-  useShellTheme(activeSkin);
+  // Пока у персоны есть скин, каркас приложения (сайдбар, топбар) красится
+  // в его палитру — и на дефолтных экранах (досье без своего файла,
+  // обычный вид), чтобы интерфейс не прыгал между палитрами
+  useShellTheme(activeSkin ?? chatSkinFile ?? dossierSkinFile);
 
-  // Активный скин заменяет соответствующий вид целиком
+  // Активный скин заменяет соответствующий вид целиком; сверху — тонкая
+  // панель приложения: то, чего в контракте скина нет (все чаты, голос,
+  // YAML, обычный вид со всеми частями интерфейса)
   if (activeSkin) {
     return (
-      <div className="chat-layout">
+      <div className="chat-layout chat-layout--skin">
+        <div className="skin-hostbar">
+          <button type="button" className="btn btn--chip" onClick={onBack} title={t('chat.allChatsTitle')}>
+            <span aria-hidden="true">←</span>
+            {t('chat.allChats')}
+          </button>
+          <span className="skin-hostbar-spacer" />
+          {activeScreen === 'chat' && (
+            <button type="button" className="btn btn--chip" title={t('chat.modeVoiceTitle')} onClick={() => setChatMode('voice')}>
+              <Icon name="voice" size={13} />
+              {t('chat.modeVoice')}
+            </button>
+          )}
+          {apiOnline && (
+            <button type="button" className="btn btn--chip" title={t('chat.personaYaml')} onClick={() => setYamlOpen(true)}>
+              YAML
+            </button>
+          )}
+          <button type="button" className="btn btn--chip" title={t('chat.skinClassicTitle')} onClick={() => setSkinBypass(true)}>
+            {t('chat.skinClassic')}
+          </button>
+        </div>
+        {yamlOpen && apiOnline && (
+          <PersonaYamlModal
+            personaId={persona.id}
+            onClose={() => setYamlOpen(false)}
+            onRenamed={(newId) => pickPersona(newId)}
+          />
+        )}
         <SkinFrame
           className="skin-frame skin-frame--chat"
           skin={activeSkin}
           screen={activeScreen}
           state={skinChatState}
-          onSend={(text, image) => pushMessage(text, image ?? null)}
-          onClear={() => clearStm()}
+          onSend={(text, image) => submitMessage(text.trim(), image ?? null)}
+          onClear={() => { void confirmClearFromSkin(); }}
           onSelectPersona={(id) => {
             pickPersona(id);
             setReplyToId(null);
@@ -1718,8 +1848,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         <VoiceChat
           persona={persona}
           messages={messages}
-          onUserMessage={(text) => pushMessage(text, null)}
-          onPersonaMessage={pushPersonaMessage}
+          avatar={avatars[persona.id]}
+          typing={typing}
+          onSend={(text) => submitMessage(text, null)}
           onSwitchToClassic={() => setChatMode('classic')}
         />
       ) : (
@@ -1762,6 +1893,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             {apiOnline && (
               <button className="btn btn--chip" title={t('chat.personaYaml')} onClick={() => setYamlOpen(true)}>
                 YAML
+              </button>
+            )}
+            {skinBypass && chatSkinFile && (
+              <button className="btn btn--chip" title={t('chat.skinBackTitle')} onClick={() => setSkinBypass(false)}>
+                {t('chat.skinBack')}
               </button>
             )}
           </div>

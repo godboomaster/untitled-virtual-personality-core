@@ -1169,6 +1169,9 @@ export interface InitiativeParams {
 export interface InitiativeData extends InitiativeParams {
   enabled: boolean;
   ignore_streak: number;
+  // Порог молчания, после которого персона пишет сама (адаптивный или
+  // заданный), минуты; нет у старого сервера
+  effective_silence_minutes?: number;
   initiatives_today: number;
   emotional_state: string;
   history: { message: string; timestamp: number; date: string; type: string }[];

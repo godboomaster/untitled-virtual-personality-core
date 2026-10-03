@@ -7,6 +7,7 @@ import ArtPanel from '../components/ArtPanel';
 import RoomEditor from '../components/RoomEditor';
 import SkinFrame from '../components/SkinFrame';
 import Icon from '../components/icons';
+import { usePersonaAvatars } from '../avatarStore';
 import { usePersonaSkin } from '../skins/skinStore';
 import { buildRoomPayload } from '../skins/payloads';
 import { useShellTheme } from '../skins/shellTheme';
@@ -15,6 +16,7 @@ import InventoryCard from '../room/InventoryCard';
 import RoomFeed from '../room/RoomFeed';
 import { RoomFocusControls, RoomFocusOverlay } from '../room/RoomFocus';
 import RoomScene from '../room/RoomScene';
+import { claimPoke } from '../room/poke';
 import RoomTelemetry, { AwayStrip } from '../room/RoomTelemetry';
 import { patchRoomLayout } from '../room/roomLayoutStore';
 import { spotPoint } from '../room/roomModel';
@@ -140,8 +142,18 @@ export default function Room() {
   const { skins, broken, reportBroken, reset } = usePersonaSkin(persona.id);
   const roomSkin = broken.room ? null : (skins.room ?? null);
   const skinActive = roomSkin != null;
-  // Пока скин активен, каркас приложения (сайдбар, топбар) красится в его палитру
-  useShellTheme(roomSkin);
+  // Каркас приложения (сайдбар, топбар) красится в палитру скина персоны:
+  // своего файла комнаты нет (или он сломан) — палитра любого другого
+  // экрана того же скина, чтобы дефолтная комната не выпадала из темы
+  useShellTheme(
+    roomSkin
+      ?? (broken.chat ? null : skins.chat)
+      ?? (broken.dossier ? null : skins.dossier)
+      ?? null,
+  );
+  const avatars = usePersonaAvatars();
+  // Управление инвентарём при скине: карточка раскрывается кнопкой в шапке
+  const [skinInventoryOpen, setSkinInventoryOpen] = useState(false);
   const avatarPoint = useMemo(
     () => spotPoint({ spotKey: activity.spot, config: cfg, floorPoints: roomBg?.floorPoints ?? null, items }),
     [activity.spot, cfg, roomBg, items],
@@ -167,6 +179,7 @@ export default function Room() {
         spot: activity.spot,
         pose,
         pastimeSince: activity.since,
+        avatar: avatars[persona.id],
       })
     : null;
 
@@ -211,9 +224,30 @@ export default function Room() {
         </div>
         <div className="room-header-actions">
           {/* Поработать вместе: 25/50 мин, персона садится за работу */}
-          {!skinActive && <RoomFocusControls focus={focus} />}
+          <RoomFocusControls focus={focus} />
+          {/* Скин рисует сцену и инвентарь сам — редактор размещения и
+              управление предметами (правка, удаление) остаются здесь */}
+          {skinActive && (
+            <>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => setEditorOpen(true)}
+              >
+                <Icon name="pin" size={13} /> {t('editor.blockTitle')}
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                aria-expanded={skinInventoryOpen}
+                onClick={() => setSkinInventoryOpen((v) => !v)}
+              >
+                {t('room.inventory')} · {items.length}
+              </button>
+            </>
+          )}
           {/* PiP: только Chromium (Document Picture-in-Picture); иначе кнопки нет */}
-          {!skinActive && pipOk && (
+          {pipOk && (
             <button
               type="button"
               className="btn btn--ghost"
@@ -223,17 +257,15 @@ export default function Room() {
               {pipHere ? t('room.pip.back') : t('room.pip.open')}
             </button>
           )}
-          {!skinActive && (
-            <button
-              type="button"
-              className="btn btn--ghost"
-              title={t('room.sceneFullscreen')}
-              aria-label={t('room.sceneFullscreen')}
-              onClick={openFullscreen}
-            >
-              <Icon name="fullscreen" size={13} />
-            </button>
-          )}
+          <button
+            type="button"
+            className="btn btn--ghost"
+            title={t('room.sceneFullscreen')}
+            aria-label={t('room.sceneFullscreen')}
+            onClick={openFullscreen}
+          >
+            <Icon name="fullscreen" size={13} />
+          </button>
           <span className="badge badge--active">{persona.name} · {t(`status.${persona.status}`)}</span>
         </div>
       </div>
@@ -265,33 +297,90 @@ export default function Room() {
       {/* «Пока тебя не было»: что изменилось с прошлого визита */}
       {cues.away && <AwayStrip summary={cues.away} onDismiss={cues.dismissAway} />}
 
-      {/* Скин персоны заменяет сцену и телеметрию целиком */}
-      {skinActive && skinRoomState ? (
-        <SkinFrame
-          className="skin-frame skin-frame--room"
-          skin={roomSkin}
-          screen="room"
-          state={skinRoomState}
-          onAction={(action, values) => {
-            // Действия записи из скина комнаты (whitelist). Онлайн предмет
-            // уходит в инвентарь бэкенда, офлайн — в локальный стор
-            if (action === 'add-inventory-item' && values.name?.trim()) {
-              setItems([
-                ...items,
-                {
-                  id: Date.now(),
-                  icon: values.icon?.trim() || 'book',
-                  name: values.name.trim(),
-                  description: t('room.addedByOperator'),
-                  tag: 'gift',
-                },
-              ]);
-            }
-          }}
-          onError={(m) => reportBroken('room', m)}
-          title={t('skin.frameTitle')}
-        />
-      ) : (
+      {/* Скин персоны заменяет сцену и телеметрию целиком. Оверлей фокуса
+          (полоса сессии, пузырь реплики) — поверх iframe, он вне контракта */}
+      {skinActive && skinRoomState ? (() => {
+        const frame = (fullscreen: boolean) => (
+          <SkinFrame
+            // В фулскрине iframe заполняет модальное окно (flex: 1 у --chat)
+            className={fullscreen ? 'skin-frame skin-frame--chat' : 'skin-frame skin-frame--room'}
+            skin={roomSkin}
+            screen="room"
+            state={skinRoomState}
+            onAction={(action, values) => {
+              // Действия из скина комнаты (whitelist). Онлайн предмет
+              // уходит в инвентарь бэкенда, офлайн — в локальный стор
+              if (action === 'add-inventory-item' && values.name?.trim()) {
+                setItems([
+                  ...items,
+                  {
+                    id: Date.now(),
+                    icon: values.icon?.trim() || 'book',
+                    name: values.name.trim(),
+                    description: t('room.addedByOperator'),
+                    tag: 'gift',
+                  },
+                ]);
+              } else if (action === 'poke') {
+                // Клик по аватару в скине — тот же тычок, что в сцене, с её кулдауном
+                if (claimPoke(persona.id)) room.sceneProps.onPoke?.();
+              }
+            }}
+            onError={(m) => reportBroken('room', m)}
+            title={t('skin.frameTitle')}
+          />
+        );
+        if (!sceneFullscreen) {
+          return (
+            <div style={{ position: 'relative' }}>
+              {frame(false)}
+              {overlay}
+            </div>
+          );
+        }
+        // Полный экран: скин в том же модальном окне, что и сцена (портал
+        // в <body> — см. комментарий у сцены ниже)
+        return createPortal(
+          <div
+            className="card room-scene-card room-scene-card--fullscreen"
+            onClick={() => setSceneFullscreen(false)}
+          >
+            <div className="room-modal-frame">
+              <div className="room-modal-head" onClick={(e) => e.stopPropagation()}>
+                <div className="corner tl" />
+                <div className="corner tr" />
+                <span className="room-modal-title">
+                  {persona.name} · {away ? t('room.statusAway') : activity.label}
+                </span>
+                <span className="badge">ROOM // LIVE</span>
+                <button
+                  type="button"
+                  className="pxe-close"
+                  title={t('room.sceneExitFullscreen')}
+                  aria-label={t('room.sceneExitFullscreen')}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSceneFullscreen(false);
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="corner bl" />
+              <div className="corner br" />
+            </div>
+            <div
+              className="room-scene"
+              onClick={(e) => e.stopPropagation()}
+              style={{ display: 'flex', flexDirection: 'column', width: 'min(74vw, 1024px)', height: '70vh' }}
+            >
+              {frame(true)}
+              {overlay}
+            </div>
+          </div>,
+          document.body,
+        );
+      })() : (
       <div className="room-layout">
         {/* Сцена комнаты. В фулскрине уходит порталом в <body>: анимации-предки
             (section-enter, stagger-item) держат transform и ломают position: fixed —
@@ -349,6 +438,18 @@ export default function Room() {
           />
         </div>
       </div>
+      )}
+
+      {/* Инвентарь при скине: показ — в скине, управление (правка, удаление,
+          новый предмет) — эта карточка по кнопке в шапке; лента — в скине */}
+      {skinActive && skinInventoryOpen && (
+        <InventoryCard
+          key={persona.id}
+          items={items}
+          setItems={setItems}
+          roomBgUrl={roomBg?.dataUrl}
+          onOpenEditor={() => setEditorOpen(true)}
+        />
       )}
 
       {/* Арт-мастерская: конструктор аватара + промпт-паки и загрузка арта */}

@@ -351,6 +351,20 @@
     letter-spacing: 0.02em;
   }
   .pl-status { display: block; color: var(--dim); font-size: 11.5px; }
+  /* Аватар и непрочитанные (если приложение их знает) */
+  .pl-avatar {
+    width: 30px; height: 30px; flex-shrink: 0;
+    border-radius: 50%; object-fit: cover;
+    border: 1px solid var(--accent-deep);
+  }
+  .pl-avatar + .pl-leaf { display: none; }
+  .pl-unread {
+    margin-left: auto; flex-shrink: 0;
+    min-width: 20px; padding: 0 6px; border-radius: 10px;
+    background: var(--amber); color: var(--bg);
+    font-size: 11px; font-weight: 700; line-height: 20px; text-align: center;
+    box-shadow: 0 0 10px rgba(227, 184, 94, 0.5);
+  }
 
   .grove-foot {
     margin-top: 14px;
@@ -478,6 +492,10 @@
     text-align: right;
     font-family: var(--font-mono);
   }
+  .msg-image + .msg-image { margin-top: 6px; }
+  .msg-image { cursor: zoom-in; }
+  .msg-delivery { margin-left: 5px; }
+  .msg[data-status="read"] .msg-delivery { color: var(--accent); }
 
   .msg { position: relative; }
   .msg-reply-btn {
@@ -1123,6 +1141,12 @@
   .room-pastime-plate::before { content: '❧ '; color: var(--accent-deep); }
   .room-pastime-plate .plate-name { font-family: var(--font-disp); color: var(--text); font-weight: 700; }
   .room-pastime-plate .val { color: var(--amber); font-style: italic; }
+  .room-pastime-plate .plate-dur { color: var(--dim); margin-left: 6px; font-family: var(--font-mono); font-size: 0.85em; }
+  .room-pastime-plate .plate-dur:empty { display: none; }
+  .room-avatar { cursor: pointer; }
+  /* Поза духа: дремлет — тускнеет, ушёл — едва виден */
+  .room-avatar[data-vpc-pose="sleep"] { opacity: 0.7; animation-duration: 6s; }
+  .room-avatar[data-vpc-pose="away"] { opacity: 0.4; }
 
   /* Питомец — лесной зверёк */
   .room-pet {
@@ -1272,11 +1296,13 @@
     <div data-vpc="persona-list"></div>
     <template data-vpc="persona-item">
       <button type="button" class="pl-item">
+        <img class="pl-avatar" data-vpc-field="avatar" alt="" />
         <span class="pl-leaf">❧</span>
         <span>
           <span class="pl-name" data-vpc-field="name"></span>
           <span class="pl-status" data-vpc-field="status"></span>
         </span>
+        <span class="pl-unread" data-vpc-field="unread" title="Новые вести"></span>
       </button>
     </template>
     <div class="grove-foot">❦ ✦ ❦</div>
@@ -1340,7 +1366,9 @@
         </div>
         <div class="msg-text" data-vpc-field="text"></div>
         <img class="msg-image" data-vpc-field="image" alt="" />
-        <div class="msg-time" data-vpc-field="time"></div>
+        <div class="msg-time" data-vpc-optional>
+          <span data-vpc-field="time"></span><span class="msg-delivery" data-vpc-field="delivery"></span>
+        </div>
       </div>
     </template>
 
@@ -1392,6 +1420,7 @@
     <div class="ctx-title">Порывы ветра</div>
     <div class="ctx-note" data-vpc="ctx-initiative">…</div>
     <div class="ctx-note" data-vpc="ctx-last-reply">…</div>
+    <div class="ctx-note" data-vpc="ctx-last-init"></div>
 
     <div class="ctx-title">Ближайший колокольчик</div>
     <div class="ctx-note" data-vpc="ctx-next-reminder">…</div>
@@ -1758,13 +1787,14 @@
 
     <!-- REQUIRED: аватар персоны. Приложение двигает его через
          CSS-переменные --vpc-x / --vpc-y (% сцены). -->
-    <div class="room-avatar" data-vpc="room-avatar">
+    <div class="room-avatar" data-vpc="room-avatar" data-vpc-action="poke" title="Заглянуть к духу">
       <span data-vpc="persona-avatar">?</span>
     </div>
 
     <!-- REQUIRED: подпись текущего занятия -->
     <div class="room-pastime-plate">
       <span class="plate-name" data-vpc="persona-name">…</span> · <span class="val" data-vpc="room-pastime">…</span>
+      <span class="plate-dur" data-vpc="room-duration"></span>
     </div>
 
     <!-- OPTIONAL: питомец; приложение ставит data-pet="cat|crow" -->

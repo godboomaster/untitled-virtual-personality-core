@@ -3,13 +3,13 @@
      <meta name="vpc-skin-name" content="Лесная роща">
      <meta name="vpc-skin-author" content="...">
      <meta name="vpc-skin-version" content="1.2">
-     <meta name="vpc-skin-contract" content="2">
+     <meta name="vpc-skin-contract" content="3">
 
    Разбор regex'ами (без DOM), чтобы работало и вне браузерного рендера.
    Файл без vpc-skin-contract считается скином контракта v1. */
 
 // Версия контракта (hook-точки, снапшот, события), которую поддерживает приложение
-export const SKIN_CONTRACT_VERSION = 2;
+export const SKIN_CONTRACT_VERSION = 3;
 
 export interface SkinMeta {
   name?: string;

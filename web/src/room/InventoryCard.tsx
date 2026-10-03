@@ -16,12 +16,16 @@ export default function InventoryCard({
   setItems,
   roomBgUrl,
   onOpenEditor,
+  offlineTitle,
 }: {
   items: InventoryItem[];
   setItems: (next: InventoryItem[]) => void;
   roomBgUrl?: string;
   onOpenEditor: () => void;
+  // Без бэкенда предметы не сохранить — кнопки правки выключены, это подсказка
+  offlineTitle?: string | null;
 }) {
+  const off = !!offlineTitle;
   const { t } = useI18n();
   // Редактор предмета: черновик + признак «новый предмет» (против правки существующего)
   const [itemDraft, setItemDraft] = useState<InventoryItem | null>(null);
@@ -62,7 +66,7 @@ export default function InventoryCard({
       <div className="card-title-row">
         <h3 className="card-title">{t('room.inventory')}</h3>
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button type="button" className="btn btn--ghost" onClick={onOpenEditor}>
+          <button type="button" className="btn btn--ghost" onClick={onOpenEditor} disabled={off} title={offlineTitle ?? undefined}>
             <Icon name="pin" size={13} /> {t('editor.blockTitle')}
           </button>
           <span className="badge">{t('room.itemsBadge', { n: items.length })}</span>
@@ -86,10 +90,10 @@ export default function InventoryCard({
             <div className="room-item-foot">
               <span className="badge">{t(`inv.tag.${item.tag}`)}</span>
               <span className="room-item-actions">
-                <button type="button" className="btn btn--icon" title={t('room.editItem')} aria-label={t('room.editItem')} onClick={() => openEditItem(item)}>
+                <button type="button" className="btn btn--icon" title={offlineTitle ?? t('room.editItem')} aria-label={t('room.editItem')} disabled={off} onClick={() => openEditItem(item)}>
                   <Icon name="pencil" size={12} />
                 </button>
-                <button type="button" className="btn btn--icon" title={t('room.deleteItem')} aria-label={t('room.deleteItem')} onClick={() => deleteItem(item.id)}>
+                <button type="button" className="btn btn--icon" title={offlineTitle ?? t('room.deleteItem')} aria-label={t('room.deleteItem')} disabled={off} onClick={() => deleteItem(item.id)}>
                   <Icon name="trash" size={12} />
                 </button>
               </span>
@@ -204,7 +208,7 @@ export default function InventoryCard({
           </div>
         </div>
       ) : (
-        <button type="button" className="btn btn--ghost room-add-btn" onClick={openNewItem}>
+        <button type="button" className="btn btn--ghost room-add-btn" onClick={openNewItem} disabled={off} title={offlineTitle ?? undefined}>
           + {t('room.addItem')}
         </button>
       )}

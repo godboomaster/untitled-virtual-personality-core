@@ -10,8 +10,9 @@
    направления: сервер подбирает его сам (событие status=direction), и оно
    используется для остальных запросов.
 
-   Каждый ответ проверяется: validateSkin, затем runtime-проверка в скрытой
-   песочнице (smokeTest.ts). Не прошёл — ошибки и прошлый файл уходят
+   Каждый ответ проверяется: validateSkin, сохранность hook-точек основы
+   (missingHooks — пропавшая точка = пропавшая часть интерфейса), затем
+   runtime-проверка в скрытой песочнице (smokeTest.ts). Не прошёл — ошибки и прошлый файл уходят
    обратно модели запросом на исправление; всего до MAX_ATTEMPTS попыток на
    экран. Прошедшие файлы отдаются в обычную загрузку (onGenerated →
    SkinUploader): там предпросмотр и сохранение. Журнал попыток виден. */
@@ -87,6 +88,47 @@ function nameGenerated(html: string, base: string, description: string, dirName?
     done = true;
     return `<meta name="vpc-skin-name" content="${esc}" />`;
   });
+}
+
+// Hook-атрибуты, которые bridge заполняет и слушает: каждая точка основы
+// должна дожить до результата (переносить и оборачивать можно, удалять — нет)
+const HOOK_ATTRS = ['data-vpc', 'data-vpc-field', 'data-vpc-action', 'data-vpc-setting'] as const;
+const HOOK_SELECTOR = HOOK_ATTRS.map((a) => `[${a}]`).join(',');
+const MISSING_HOOKS_SHOWN = 30;
+
+// Точки внутри узла, включая содержимое <template> (querySelectorAll в него не заходит)
+function collectHooks(root: ParentNode, out: Set<string>) {
+  root.querySelectorAll(HOOK_SELECTOR).forEach((el) => {
+    for (const a of HOOK_ATTRS) {
+      const v = el.getAttribute(a);
+      if (v) out.add(`[${a}="${v}"]`);
+    }
+  });
+  root.querySelectorAll('template').forEach((tpl) => collectHooks(tpl.content, out));
+}
+
+// Hook-точки экрана основы, которых нет в результате. У основы берём только
+// её блок [data-vpc-screen=screen] (у legacy-файла в нём все три экрана)
+function missingHooks(base: string, html: string, screen: SkinScreen): string[] {
+  const parser = new DOMParser();
+  const baseDoc = parser.parseFromString(base, 'text/html');
+  const want = new Set<string>();
+  collectHooks(baseDoc.querySelector(`[data-vpc-screen="${screen}"]`) ?? baseDoc, want);
+  const got = new Set<string>();
+  collectHooks(parser.parseFromString(html, 'text/html'), got);
+  return [...want].filter((h) => !got.has(h));
+}
+
+function missingHooksError(lang: 'ru' | 'en', missing: string[]): string {
+  const shown = missing.slice(0, MISSING_HOOKS_SHOWN).join(', ');
+  const more = missing.length - MISSING_HOOKS_SHOWN;
+  return lang === 'en'
+    ? `Hook points of the base file are missing (${missing.length}): ${shown}${more > 0 ? ` and ${more} more` : ''}. ` +
+        'Bring every one of them back: move, wrap and restyle the elements freely, but never remove or rename them — ' +
+        'without them parts of the interface are not drawn.'
+    : `Из базового файла пропали hook-точки (${missing.length}): ${shown}${more > 0 ? ` и ещё ${more}` : ''}. ` +
+        'Верни их все: элементы можно переносить, оборачивать и перестилизовать, но не удалять и не переименовывать — ' +
+        'без них часть интерфейса не рисуется.';
 }
 
 interface SkinGeneratorProps {
@@ -195,13 +237,16 @@ function GeneratorBody({ persona, entries, onGenerated }: SkinGeneratorProps) {
   const patchLog = (id: number, patch: Partial<LogEntry>) =>
     setLog((cur) => cur.map((e) => (e.id === id ? { ...e, ...patch } : e)));
 
-  // Проверка разметки: файл обязан содержать свой экран и пройти валидатор
-  const checkMarkup = (html: string, screen: SkinScreen): string[] => {
+  // Проверка разметки: файл обязан содержать свой экран, пройти валидатор
+  // и сохранить все hook-точки основы
+  const checkMarkup = (html: string, screen: SkinScreen, base: string): string[] => {
     const v = validateSkin(html);
     const errs: string[] = [];
     if (!v.screens.includes(screen)) {
       errs.push(t('skin.errScreenMissing', { file: 'skin', screen: t(SCREEN_NAME_KEY[screen]), id: screen }));
     }
+    const missing = missingHooks(base, html, screen);
+    if (missing.length) errs.push(missingHooksError(lang === 'en' ? 'en' : 'ru', missing));
     return [...errs, ...v.errors];
   };
 
@@ -333,7 +378,7 @@ function GeneratorBody({ persona, entries, onGenerated }: SkinGeneratorProps) {
           }
 
           patchLog(id, { phase: 'check' });
-          const errs = checkMarkup(res.html, screen);
+          const errs = checkMarkup(res.html, screen, skinBase ?? TEMPLATES[screen]);
           if (!errs.length) {
             const smoke = await runSkinSmokeTest(res.html, screen, statesRef.current[screen], { lang, signal });
             if (smoke.aborted) throw new Stop();

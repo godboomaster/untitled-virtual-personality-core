@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════════════════════════
-     VPC SKIN FILE · КОНТРАКТ v2 · ЭКРАН КОМНАТЫ — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ.
+     VPC SKIN FILE · КОНТРАКТ v3 · ЭКРАН КОМНАТЫ — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ.
 
      Это самодостаточный файл ОДНОГО экрана скина (визуальной оболочки)
      ИИ-персоны: её комната (сцена, аватар, состояние, лента событий,
@@ -25,7 +25,7 @@
         заблокирована политикой CSP. Картинки и шрифты — только inline
         (data-URI) или рисуй чистым CSS/SVG.
 
-     4. Мета vpc-skin-contract в <head> (сейчас content="2") — версия
+     4. Мета vpc-skin-contract в <head> (сейчас content="3") — версия
         контракта, на который рассчитан файл. Не повышай её сам: скин
         с версией новее приложения не загрузится. Нет меты — контракт v1.
         Имя/автор/версия скина — мета vpc-skin-name / -author / -version.
@@ -41,14 +41,22 @@
          [data-vpc="room-scene"]    корень сцены комнаты
          [data-vpc="room-avatar"]   аватар персоны; приложение двигает его,
                                     выставляя CSS-переменные --vpc-x и --vpc-y
-                                    (в процентах размера сцены)
+                                    (в процентах размера сцены). v3: атрибуты
+                                    data-vpc-pose (stand | sit | read | write |
+                                    look | sleep | away | with_you | glance) и
+                                    data-vpc-spot (desk | window | shelf | bed |
+                                    chair | floor | away | item:<название>) —
+                                    поза и место для CSS скина;
+                                    data-vpc-action="poke" на аватаре — клик
+                                    «заглянуть» к персоне (как в обычной комнате)
          [data-vpc="room-pastime"]  подпись текущего занятия персоны
 
      Необязательные (OPTIONAL — если есть, приложение заполнит;
      если удалишь — ничего не сломается):
 
        Скалярные слоты: persona-name, persona-status,
-         room-mood, room-energy, room-place, room-pet-label.
+         room-mood, room-energy, room-place, room-pet-label,
+         room-duration (v3: сколько длится занятие).
 
        Элементы:
          room-bg, room-sprite  (<img>, src подставит приложение)
@@ -90,7 +98,7 @@
        <span>); исходный текст — фолбэк, если подписи нет. Атрибуты:
        data-vpc-label-placeholder / -title / -aria="ключ". Ключи экрана:
        room-mood, room-energy, room-place, room-feed, inventory,
-       item-name, item-icon, add-item.
+       item-name, item-icon, add-item; v3: poke (подсказка аватара).
 
      SHELL-ТЕМА КАРКАСА (OPTIONAL): пока открыт экран персоны со скином,
      приложение перекрашивает и свой каркас — левый бар с разделами и
@@ -127,7 +135,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <!-- Метаданные скина: контракт (обязательно для v2), имя, автор, версия -->
-<meta name="vpc-skin-contract" content="2" />
+<meta name="vpc-skin-contract" content="3" />
 <meta name="vpc-skin-name" content="VPC Default" />
 <meta name="vpc-skin-author" content="Virtual Persona Core" />
 <meta name="vpc-skin-version" content="1.0" />
@@ -261,7 +269,11 @@
     color: var(--accent);
     font-size: 24px;
     background: var(--avatar-bg);
+    cursor: pointer;
   }
+  /* v3: поза персоны — приглушаем спящую и отошедшую */
+  .room-avatar[data-vpc-pose="sleep"] { opacity: .65; }
+  .room-avatar[data-vpc-pose="away"] { opacity: .35; }
 
   .room-pastime-plate {
     position: absolute;
@@ -274,6 +286,8 @@
     color: var(--dim);
   }
   .room-pastime-plate .val { color: var(--accent); }
+  .room-pastime-plate .dur { color: var(--dim); margin-left: 6px; }
+  .room-pastime-plate .dur:empty { display: none; }
 
   .room-pet {
     position: absolute;
@@ -336,13 +350,16 @@
 
     <!-- REQUIRED: аватар персоны. Приложение двигает его через
          CSS-переменные --vpc-x / --vpc-y (% сцены). -->
-    <div class="room-avatar" data-vpc="room-avatar">
+    <!-- OPTIONAL (v3): data-vpc-action="poke" — клик по аватару = «заглянуть» -->
+    <div class="room-avatar" data-vpc="room-avatar" data-vpc-action="poke" data-vpc-label-title="poke">
       <span data-vpc="persona-avatar">?</span>
     </div>
 
     <!-- REQUIRED: подпись текущего занятия -->
     <div class="room-pastime-plate">
       <span data-vpc="persona-name">…</span> · <span class="val" data-vpc="room-pastime">…</span>
+      <!-- OPTIONAL (v3): длительность занятия -->
+      <span class="dur" data-vpc="room-duration"></span>
     </div>
 
     <!-- OPTIONAL: питомец; приложение ставит data-pet="cat|crow" -->

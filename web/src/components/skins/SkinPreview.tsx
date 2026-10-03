@@ -1,6 +1,8 @@
 /* Предпросмотр файлов скина на моковых данных персоны: вкладки экранов +
    SkinFrame. Снапшоты — те же билдеры, что у боевых экранов, с окружением
-   приложения (тема, язык, подписи — usePreviewStates). Перекраска
+   приложения (тема, язык, подписи — usePreviewStates); чат — «в работе»
+   (печатает + плашка ответа — withBusyChat), чтобы были видны все его
+   части. Перекраска
    (colors/hueShift) применяется с задержкой: iframe перезагружается на
    каждое изменение, а пикер цвета шлёт их десятками в секунду. */
 
@@ -14,7 +16,7 @@ import type { Persona } from '../../mockData';
 import { useI18n } from '../../i18n';
 import SkinFrame from '../SkinFrame';
 import { SCREEN_NAME_KEY } from './skinUi';
-import { usePreviewStates } from './usePreviewStates';
+import { usePreviewStates, withBusyChat } from './usePreviewStates';
 
 const RECOLOR_DELAY_MS = 200;
 
@@ -57,7 +59,8 @@ function PreviewBody({
   const available = SKIN_SCREENS.filter((s) => files[s]);
   const [picked, setPicked] = useState<SkinScreen>(available[0] ?? 'chat');
   const screen = available.includes(picked) ? picked : (available[0] ?? 'chat');
-  const state = states[screen];
+  const base = states[screen];
+  const state = useMemo(() => (screen === 'chat' ? withBusyChat(base) : base), [screen, base]);
 
   const recolor = useDebounced(useMemo(() => ({ colors: colors ?? {}, hueShift }), [colors, hueShift]), RECOLOR_DELAY_MS);
   const html = files[screen];

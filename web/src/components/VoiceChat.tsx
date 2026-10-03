@@ -5,9 +5,10 @@ import type { ChatMessage, Persona } from '../mockData';
 import Icon from './icons';
 
 /* Голосовой режим чата: крупная аватарка персоны, общение голосом
-   (SpeechRecognition → мок-ответ → speechSynthesis) либо текстом —
-   персона в обоих случаях отвечает голосом. Полноэкранный режим
-   скрывает весь остальной интерфейс фиксированным оверлеем. */
+   (SpeechRecognition → обычная отправка в чат → ответ бэкенда →
+   speechSynthesis) либо текстом — персона в обоих случаях отвечает
+   голосом. Полноэкранный режим скрывает весь остальной интерфейс
+   фиксированным оверлеем. */
 
 // Минимальные типы Web Speech API (в lib.dom их нет)
 interface SpeechRecognitionAlternativeLike {
@@ -40,15 +41,17 @@ function getRecognitionCtor(): SpeechRecognitionCtor | null {
 interface VoiceChatProps {
   persona: Persona;
   messages: ChatMessage[];
-  // Реплика оператора уходит в общую историю чата
-  onUserMessage: (text: string) => void;
-  // Мок-ответ персоны (тоже в историю, озвучивается здесь же)
-  onPersonaMessage: (text: string) => void;
+  // Аватар персоны (data-URL), без него — первая буква имени
+  avatar?: string;
+  // Персона печатает ответ — озвучка ждёт конца ответа целиком
+  typing: boolean;
+  // Реплика оператора — тем же путём, что из поля ввода (на бэкенд)
+  onSend: (text: string) => void;
   // Возврат к классическому чату
   onSwitchToClassic: () => void;
 }
 
-export default function VoiceChat({ persona, messages, onUserMessage, onPersonaMessage, onSwitchToClassic }: VoiceChatProps) {
+export default function VoiceChat({ persona, messages, avatar, typing, onSend, onSwitchToClassic }: VoiceChatProps) {
   const { lang, t } = useI18n();
   // Как говорит оператор: голосом (микрофон) или текстом
   const [inputMode, setInputMode] = useState<'voice' | 'text'>(() => (getRecognitionCtor() ? 'voice' : 'text'));
@@ -75,21 +78,41 @@ export default function VoiceChat({ persona, messages, onUserMessage, onPersonaM
     window.speechSynthesis.speak(utter);
   };
 
-  // Отправка реплики оператора (общий путь для голоса и текста):
-  // сообщение в историю → мок-ответ персоны → озвучка ответа
+  // Отправка реплики оператора (общий путь для голоса и текста)
   const send = (raw: string) => {
     const text = raw.trim();
     if (!text) return;
-    onUserMessage(text);
+    onSend(text);
     setDraft('');
     setInterim('');
-    const replies = t('chat.voiceMockReplies').split('|');
-    const reply = replies[Math.floor(Math.random() * replies.length)];
-    window.setTimeout(() => {
-      onPersonaMessage(reply);
-      speak(reply);
-    }, 400);
   };
+
+  // Озвучка ответов: всё, что персона написала после входа в режим (или
+  // смены персоны), зачитывается, когда ответ закончен — части ответа
+  // (extra_messages) склеиваются в одну реплику. История до входа не звучит.
+  // Уже озвученное помним по id и тексту: перечитка истории может заменить
+  // пузырь копией с другим id — второй раз он не звучит
+  const spoken = useRef<{ ids: Set<number>; texts: Set<string> } | null>(null);
+  const botKey = messages.filter((m) => m.role === 'bot').map((m) => `${m.id}:${m.text.length}`).join(',');
+  useEffect(() => {
+    spoken.current = null;
+  }, [persona.id]);
+  useEffect(() => {
+    const bots = messages.filter((m) => m.role === 'bot' && m.text.trim());
+    if (spoken.current === null) {
+      spoken.current = { ids: new Set(bots.map((m) => m.id)), texts: new Set(bots.map((m) => m.text)) };
+      return;
+    }
+    if (typing) return;
+    const seen = spoken.current;
+    const fresh = bots.filter((m) => !seen.ids.has(m.id) && !seen.texts.has(m.text));
+    bots.forEach((m) => seen.ids.add(m.id));
+    if (!fresh.length) return;
+    fresh.forEach((m) => seen.texts.add(m.text));
+    speak(fresh.map((m) => m.text).join(' '));
+    // speak зависит только от lang — повторять эффект на его смену не нужно
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typing, botKey, persona.id]);
 
   // Микрофон: старт/стоп распознавания речи
   const toggleMic = () => {
@@ -181,7 +204,7 @@ export default function VoiceChat({ persona, messages, onUserMessage, onPersonaM
         <div
           className={`voice-avatar ${listening ? 'voice-avatar--listening' : ''} ${speaking ? 'voice-avatar--speaking' : ''}`}
         >
-          <img className="voice-avatar-img" src="/avatar-placeholder.png" alt={persona.name} />
+          <img className="voice-avatar-img" src={avatar || '/avatar-placeholder.png'} alt={persona.name} />
         </div>
 
         {/* Живая расшифровка во время прослушивания, иначе последняя реплика персоны */}

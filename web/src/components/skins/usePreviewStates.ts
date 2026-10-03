@@ -1,7 +1,10 @@
 /* Снапшоты предпросмотра скина на моковых данных персоны — те же билдеры,
    что у боевых экранов, плюс окружение приложения (тема, язык, подписи,
    время суток, погода — useSkinEnv). Нужны предпросмотру, runtime-проверке
-   загруженных файлов и генератору скинов. Чат и досье делят один снапшот. */
+   загруженных файлов и генератору скинов. Чат и досье делят один снапшот.
+   Снапшоты «спокойные» (без печати и плашки ответа) — смоук-тест сам
+   досылает второй с ними; предпросмотр показывает чат «в работе»
+   (withBusyChat), чтобы были видны все части экрана. */
 
 import { useMemo } from 'react';
 import type { SkinScreen } from '../../skins/engine';
@@ -11,6 +14,26 @@ import { useSkinEnv } from '../../skins/useSkinEnv';
 import { useApiOnline } from '../../apiData';
 import type { Persona } from '../../mockData';
 import { useI18n, useMockData } from '../../i18n';
+import { inferPose } from '../../room/roomModel';
+
+// «~15 мин» → 15 (минут); без числа — 0
+function durationMinutes(duration: string | undefined): number {
+  const m = /\d+/.exec(duration ?? '');
+  return m ? Number(m[0]) : 0;
+}
+
+// Чат «в работе» для предпросмотра: персона печатает, над полем ввода —
+// плашка ответа на её последнюю реплику. Без них превью не показывает
+// индикатор печати и плашку ответа — половину строки ввода
+export function withBusyChat(state: SkinStatePayload): SkinStatePayload {
+  const last = [...(state.messages ?? [])].reverse().find((m) => m.role === 'persona');
+  const text = last ? (last.text.length > 120 ? `${last.text.slice(0, 120)}…` : last.text) : '…';
+  return {
+    ...state,
+    typing: true,
+    reply: state.reply ?? { author: state.persona?.name ?? '', text },
+  };
+}
 
 export function usePreviewStates(persona: Persona): Record<SkinScreen, SkinStatePayload> {
   const { t, lang } = useI18n();
@@ -23,13 +46,14 @@ export function usePreviewStates(persona: Persona): Record<SkinScreen, SkinState
     const init = data.initiativeStateByPersona[persona.id];
     const cfg = data.roomConfigs[persona.id];
     const pastime = cfg?.pastimes[0];
+    const spot = pastime?.key ?? 'desk';
     const room = buildRoomPayload({
       persona,
       statusText,
       pastimeLabel: pastime?.label ?? '',
       pastimePlace: pastime?.place ?? '',
       duration: pastime?.duration ?? '',
-      x: cfg?.points[pastime?.key ?? 'desk'] ?? 50,
+      x: cfg?.points[spot] ?? 50,
       mood: cfg?.mood ?? '',
       energy: cfg?.energy ?? '',
       pet: cfg?.pet ?? 'none',
@@ -37,6 +61,10 @@ export function usePreviewStates(persona: Persona): Record<SkinScreen, SkinState
       feed: data.activitiesByPersona[persona.id] ?? [],
       inventory: data.inventoryByPersona[persona.id] ?? [],
       env,
+      // Как у боевой комнаты: место, поза для него и начало занятия
+      spot,
+      pose: inferPose(null, spot, []),
+      pastimeSince: pastime ? Math.floor(Date.now() / 1000) - durationMinutes(pastime.duration) * 60 : null,
     });
     // У реальной персоны (бэкенд онлайн) моковой переписки нет — берём
     // первую моковую: превью без ленты не показывает половину скина

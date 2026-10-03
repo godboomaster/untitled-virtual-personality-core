@@ -7343,6 +7343,26 @@ html[data-theme='dark'] .input::-webkit-calendar-picker-indicator {
   border: none;
 }
 
+/* Чат со скином: панель приложения над iframe (все чаты, голос, YAML,
+   обычный вид) — то, чего нет в контракте скина */
+.chat-layout--skin {
+  flex-direction: column;
+}
+
+.skin-hostbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+
+.skin-hostbar-spacer {
+  flex: 1;
+}
+
 .skin-frame--room {
   height: 72vh;
   min-height: 420px;

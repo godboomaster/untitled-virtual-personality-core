@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { Section } from '../App';
 import { useI18n } from '../i18n';
+import { useApiOnline, useCoreHealth } from '../apiData';
 import Icon from './icons';
 import type { IconName } from './icons';
 
@@ -23,6 +24,10 @@ const navItems: { id: Section; icon: IconName }[] = [
 export default function Sidebar({ current, onSelect }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const { t } = useI18n();
+  const apiOnline = useApiOnline();
+  // Связь с ядром: есть, пока опрос /api/health не сказал обратное
+  const coreHealth = useCoreHealth();
+  const coreOk = apiOnline && coreHealth !== 'down';
   const activeIndex = navItems.findIndex((item) => item.id === current);
 
   return (
@@ -51,15 +56,18 @@ export default function Sidebar({ current, onSelect }: SidebarProps) {
         ))}
       </nav>
       <div className="sidebar-footer">
-        <div className="sidebar-status-row sidebar-status-row--ok">
-          <span className="status-led" /> <span className="sidebar-footer-text">SYSTEM ONLINE</span>
+        <div className={`sidebar-status-row ${coreOk ? 'sidebar-status-row--ok' : 'sidebar-status-row--down'}`}>
+          <span className="status-led" /> <span className="sidebar-footer-text">{coreOk ? 'SYSTEM ONLINE' : 'SYSTEM OFFLINE'}</span>
         </div>
         <div className="sidebar-status-row">
           <span className="sidebar-footer-text">VPC CORE · BUILD 0.1.0</span>
         </div>
-        <div className="sidebar-status-row">
-          <span className="sidebar-footer-text">{t('sidebar.footerPrototype')}</span>
-        </div>
+        {/* Моковые данные — только без ядра (прототипный режим) */}
+        {!apiOnline && (
+          <div className="sidebar-status-row">
+            <span className="sidebar-footer-text">{t('sidebar.footerPrototype')}</span>
+          </div>
+        )}
       </div>
       <button
         type="button"

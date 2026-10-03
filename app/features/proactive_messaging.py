@@ -1193,8 +1193,9 @@ class ProactiveMessaging:
         topics_list = ", ".join(sorted(all_topics)[:10])
         return f"\n\nFORBIDDEN topics (already discussed, do NOT repeat): {topics_list}"
 
-    def _calculate_adaptive_threshold(self, chat_id: str) -> float:
+    def _calculate_adaptive_threshold(self, chat_id: str, log: bool = True) -> float:
         # Вычисляет адаптивный порог молчания на основе истории сообщений.
+        # log=False — для показа в интерфейсе (опрос не засоряет лог)
         if not self.config.adaptive_threshold:
             return self.config.silence_threshold_minutes
 
@@ -1230,7 +1231,8 @@ class ProactiveMessaging:
         threshold = median * 2
         threshold = max(self.config.min_silence_minutes, min(threshold, self.config.max_silence_minutes))
 
-        logger.info(f"[Proactive] Адаптивный порог для {chat_id}: {threshold:.0f}мин (медиана интервалов: {median:.0f}мин)")
+        if log:
+            logger.info(f"[Proactive] Адаптивный порог для {chat_id}: {threshold:.0f}мин (медиана интервалов: {median:.0f}мин)")
         return threshold
 
     def _load_stats(self):

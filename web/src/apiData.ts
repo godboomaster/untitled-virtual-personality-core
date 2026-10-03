@@ -118,6 +118,61 @@ export function useApiOnline(): boolean {
   return useApiPersonas() !== null;
 }
 
+// ── Связь с ядром (шапка, подвал сайдбара) ───────────────────────────
+// Список персон грузится один раз, и падение ядра посреди работы без
+// отдельного опроса было не заметно: шапка писала «все системы в норме».
+// /api/health — раз в 15 с, пока вкладка видна; ответ дольше 5 с — нет связи
+
+export type CoreHealth = 'ok' | 'down' | 'unknown';
+
+const HEALTH_POLL_MS = 15_000;
+const HEALTH_TIMEOUT_MS = 5_000;
+let health: CoreHealth = 'unknown';
+let healthTimer: number | null = null;
+const healthListeners = new Set<() => void>();
+
+function setHealth(next: CoreHealth) {
+  if (next === health) return;
+  health = next;
+  healthListeners.forEach((fn) => fn());
+}
+
+function checkHealth() {
+  if (document.hidden) return;
+  const ctl = new AbortController();
+  const timer = window.setTimeout(() => ctl.abort(), HEALTH_TIMEOUT_MS);
+  api
+    .health({ signal: ctl.signal })
+    .then(() => setHealth('ok'))
+    .catch(() => setHealth('down'))
+    .finally(() => window.clearTimeout(timer));
+}
+
+const onHealthVisibility = () => {
+  if (!document.hidden) checkHealth();
+};
+
+export function useCoreHealth(): CoreHealth {
+  const [, force] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => {
+    healthListeners.add(force);
+    if (healthTimer == null) {
+      checkHealth();
+      healthTimer = window.setInterval(checkHealth, HEALTH_POLL_MS);
+      document.addEventListener('visibilitychange', onHealthVisibility);
+    }
+    return () => {
+      healthListeners.delete(force);
+      if (!healthListeners.size && healthTimer != null) {
+        window.clearInterval(healthTimer);
+        healthTimer = null;
+        document.removeEventListener('visibilitychange', onHealthVisibility);
+      }
+    };
+  }, []);
+  return health;
+}
+
 // ── Провайдеры LLM с бэкенда (общий кеш, как у персон) ───────────────
 
 let provCache: ProviderInfo[] | null = null;

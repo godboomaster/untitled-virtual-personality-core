@@ -9,6 +9,7 @@ import AvatarFigure from './AvatarFigure';
 import { figureAnchor, pickSprite } from './avatarOptions';
 import type { AvatarSeat, SpriteLike } from './avatarOptions';
 import { acquiredToday, itemPoint, pointStyle, spotPoint, zonePoint } from './roomModel';
+import { claimPoke } from './poke';
 import type { Point, SceneConfig } from './roomModel';
 import { useDocumentVisible, useMinuteNow, useSeenItems } from './roomHooks';
 import type { RoomClientPose, RoomPlan, RoomPose } from './roomTypes';
@@ -58,14 +59,11 @@ export interface RoomSceneProps {
   onNoteOpen?: (id: number) => void;
 }
 
-// Реакция на клик по аватару — не чаще раза в 2 минуты на персону
-const POKE_COOLDOWN_MS = 2 * 60_000;
 const GLANCE_MS = 3500;
 const WALK_MS = 2400;
 // Смена места в первые секунды после монтирования (демо → живое состояние,
 // смена персоны) — без прогулки через комнату, фигура сразу на месте
 const SNAP_MS = 3000;
-const lastPokeAt = new Map<string, number>();
 
 function RoomSceneImpl(props: RoomSceneProps) {
   const {
@@ -86,9 +84,7 @@ function RoomSceneImpl(props: RoomSceneProps) {
     return () => clearTimeout(timer);
   }, [glancing]);
   const poke = useCallback(() => {
-    const now = Date.now();
-    if (now - (lastPokeAt.get(personaId) ?? 0) < POKE_COOLDOWN_MS) return;
-    lastPokeAt.set(personaId, now);
+    if (!claimPoke(personaId)) return;
     setGlancing(true);
     onPoke?.();
   }, [personaId, onPoke]);

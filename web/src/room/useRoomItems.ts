@@ -2,14 +2,13 @@
    редактора размещения. Онлайн (бэкенд с /room): инвентарь из GET /room +
    раскладка layout.json + зоны размещения LLM; правки меток/размеров/иконок
    уходят в PUT /room/layout (дебаунс в roomLayoutStore), добавление и
-   удаление — в инвентарь бэкенда. Офлайн/старый бэкенд — прежнее поведение:
-   локальный inventoryStore поверх моков. */
+   удаление — в инвентарь бэкенда. Без /room (бэкенд недоступен или старый)
+   предметов нет: моки и локальные офлайн-правки не показываются. */
 
 import { useCallback, useMemo } from 'react';
 import { api } from '../api';
 import { alertDialog } from '../dialogStore';
-import { useI18n, useMockData } from '../i18n';
-import { setPersonaItems, usePersonaItems } from '../inventoryStore';
+import { useI18n } from '../i18n';
 import type { InventoryItem } from '../mockData';
 import { buildOnlineItems } from './roomModel';
 import { patchRoomLayout, useRoomLayout } from './roomLayoutStore';
@@ -30,10 +29,8 @@ const sameJson = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.
 
 export function useRoomItems(persona: string, opts: UseRoomViewOptions = {}): RoomItemsApi {
   const { t } = useI18n();
-  const { inventoryByPersona } = useMockData();
   const { view, online } = useRoomView(persona, opts);
   const layout = useRoomLayout(persona, online);
-  const localOverride = usePersonaItems(persona);
 
   const items = useMemo(() => {
     if (online && view) {
@@ -43,8 +40,8 @@ export function useRoomItems(persona: string, opts: UseRoomViewOptions = {}): Ro
         placements: view.placements ?? {},
       });
     }
-    return localOverride ?? inventoryByPersona[persona] ?? EMPTY_ITEMS;
-  }, [online, view, layout, localOverride, inventoryByPersona, persona]);
+    return EMPTY_ITEMS;
+  }, [online, view, layout]);
 
   // Описание места вокруг предмета при включении тоггла «персона подходит»
   const spotFor = useCallback(
@@ -88,10 +85,8 @@ export function useRoomItems(persona: string, opts: UseRoomViewOptions = {}): Ro
 
   const setItems = useCallback(
     (next: InventoryItem[]) => {
-      if (!online) {
-        setPersonaItems(persona, next);
-        return;
-      }
+      // Без бэкенда хранить предметы негде — правка не применяется
+      if (!online) return;
       const byId = new Map(items.map((i) => [i.id, i]));
       const nextIds = new Set(next.map((i) => i.id));
       const layoutPatch: Record<string, Partial<RoomLayoutItem> | null> = {};

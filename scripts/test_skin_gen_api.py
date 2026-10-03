@@ -15,7 +15,8 @@
   - арт-направление: разбор ответа (ограды, висячие запятые, битый внешний
     объект), нормализация (hex, роли, шрифтовые стеки), shell-переменные
     (одинаковы на трёх экранах), POST /api/skins/direction (повтор с просьбой
-    о JSON, 502/422/413); направление и функциональный CSS в промпте;
+    о JSON, 502/422/413); направление и функциональный CSS в промпте
+    (включая правило узкой рамки и проверку сохранности hook-точек);
   - генерация без направления: стадия направления на сервере (события
     direction_start / direction / direction_failed, два вызова модели,
     неудача стадии не ломает генерацию, исправление стадию не запускает,
@@ -571,6 +572,17 @@ def run_prompt_direction(sg):
     room = sg.prepare(sg.SkinGenRequest(**body(screen="room")))[0][-1]["content"]
     check("правила экрана — только его", "room-scene" in room and "room-scene" not in gen
           and 'html[data-vpc-active="room"] [data-vpc-screen="room"]' in room)
+    # Узкая рамка: блоки с hook-точками не прячутся без замены (раньше
+    # сгенерированный скин скрывал контекстную панель уже на ~1150px окна)
+    check("узкая ширина: общее правило — блоки с hook-точками не прятать в @media",
+          "stays reachable at every width" in gen and "never hide it with display: none" in gen
+          and "stays reachable at every width" in room)
+    check("узкая ширина: чат — список персон и контекстная панель выезжают или уходят под ленту",
+          "slide-out drawer" in gen and "context panel" in gen and "slide-out drawer" not in room)
+    system = sg.prepare(sg.SkinGenRequest(**body()))[0][0]["content"]
+    check("системный промпт: приложение проверяет, что все hook-точки основы на месте",
+          "data-vpc-setting of the base file is still in your file" in system
+          and "a missing one fails the skin" in system)
 
     section("арт-направление: шрифтовые стеки")
     long_stack = ", ".join(f'"Font Number {i}"' for i in range(20)) + ", serif"

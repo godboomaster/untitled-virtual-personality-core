@@ -5,7 +5,6 @@
 
 import type { InventoryEntry } from '../api';
 import type { InventoryItem, InventoryTag, RoomAvatarPreset, RoomConfig, RoomPropId } from '../mockData';
-import { skinTimeOfDay } from '../skins/payloads';
 import type {
   RoomBuiltinSpot,
   RoomClientPose,
@@ -46,9 +45,7 @@ export interface SceneConfig {
   posterLabel?: string;
   spots: SceneSpot[];
   source: 'backend' | 'mock' | 'default';
-  // Моки: запасные значения телеметрии и аватар
-  mood?: string;
-  energy?: string;
+  // Моки: пресет аватара (внешний вид; данные телеметрии из моков не берутся)
   avatar?: RoomAvatarPreset;
 }
 
@@ -148,7 +145,7 @@ export function resolveRoomConfig(args: {
       posterLabel: c.poster_label ?? undefined,
       spots: spots.length ? spots : defaultSpots(t),
       source: 'backend',
-      ...(mock ? { mood: mock.mood, energy: mock.energy, avatar: mock.avatar } : {}),
+      ...(mock ? { avatar: mock.avatar } : {}),
     };
   }
   if (mock) {
@@ -168,8 +165,6 @@ export function resolveRoomConfig(args: {
       posterLabel: mock.posterLabel,
       spots,
       source: 'mock',
-      mood: mock.mood,
-      energy: mock.energy,
       avatar: mock.avatar,
     };
   }
@@ -375,55 +370,6 @@ export function inferPose(state: RoomLivingState | null | undefined, spotKey: st
   if (spotKey === 'away') return 'away';
   if (state?.pose && isServerPose(state.pose)) return state.pose;
   return spots.find((s) => s.key === spotKey)?.pose ?? poseForKey(spotKey);
-}
-
-// ── Демо-режим (бэкенд недоступен) ──
-
-export interface DemoState {
-  spot: string;
-  pose: RoomPose;
-  label: string;
-  place: string;
-  since: number; // epoch, сек — начало текущего отрезка
-  nextAt: number; // epoch, мс — следующая смена места
-}
-
-// Детерминированное по времени расписание: место меняется раз в 3–5 минут
-// (длины отрезков — из хэша дня и номера отрезка), ночью — кровать и сон
-export function demoStateAt(nowMs: number, spots: SceneSpot[], seed: string): DemoState {
-  const now = new Date(nowMs);
-  const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const dayKey = `${seed}:${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
-  const minuteOfDay = Math.floor((nowMs - dayStart) / 60000);
-  // Отрезки 3..5 минут от начала суток
-  let k = 0;
-  let cum = 0;
-  let len = 0;
-  for (;;) {
-    len = 3 + (hashStr(`${dayKey}:${k}`) % 3);
-    if (cum + len > minuteOfDay) break;
-    cum += len;
-    k += 1;
-  }
-  const segStart = dayStart + cum * 60000;
-  const nextAt = segStart + len * 60000;
-
-  const bed = spots.find((s) => s.key === 'bed');
-  if (bed && skinTimeOfDay(now.getHours()) === 'night') {
-    const h = now.getHours();
-    const nightStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (h < 12 ? 1 : 0), 22).getTime();
-    return { spot: 'bed', pose: 'sleep', label: bed.label, place: bed.place, since: nightStart / 1000, nextAt };
-  }
-  const pool = spots.filter((s) => s.key !== 'bed' && s.key !== 'away');
-  const list = pool.length ? pool : spots;
-  if (!list.length) {
-    return { spot: 'desk', pose: 'write', label: '', place: '', since: segStart / 1000, nextAt };
-  }
-  const pick = (i: number) => hashStr(`${dayKey}:pick:${i}`) % list.length;
-  let idx = pick(k);
-  if (list.length > 1 && k > 0 && idx === pick(k - 1)) idx = (idx + 1) % list.length;
-  const s = list[idx];
-  return { spot: s.key, pose: s.pose, label: s.label, place: s.place, since: segStart / 1000, nextAt };
 }
 
 // ── Длительность ──

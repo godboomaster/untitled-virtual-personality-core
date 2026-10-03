@@ -197,7 +197,7 @@ How to work:
 Output rules (hard):
 - Reply with ONLY the complete HTML document: start with <!DOCTYPE html>, end with </html>. No markdown fences, no explanations before or after.
 - Return the WHOLE file, never "…" or "rest unchanged".
-- Keep every data-vpc* attribute and every hook element of the base file (required and optional): move, wrap and restyle them freely, never remove or rename them. Keep the behaviour of the base file (tabs, sub-tabs, collapsible lists, forms) and its <script> blocks working.
+- Keep every data-vpc* attribute and every hook element of the base file (required and optional): move, wrap and restyle them freely, never remove or rename them — the app checks that every data-vpc / data-vpc-field / data-vpc-action / data-vpc-setting of the base file is still in your file, and a missing one fails the skin. Keep the behaviour of the base file (tabs, sub-tabs, collapsible lists, forms) and its <script> blocks working.
 - Elements with data-vpc-label* are localized by the app: keep the attributes; their visible fallback text may be changed, but the app replaces it with the localized label.
 - No network: no http/https URLs, CDNs, <link>, <script src>, @import, web fonts by URL. Images and fonts only as data-URI, CSS or inline SVG. Tokens like vpc-asset:3 are placeholders of inline assets — keep them verbatim where you reuse the asset.
 - Keep the VPC-BRIDGE:START / VPC-BRIDGE:END marker block with an empty stub script inside — the app replaces it.
@@ -215,6 +215,7 @@ FUNCTIONAL_CSS: dict[str, list[str]] = {
         "Never give <template> elements a display value: they are blueprints, not content.",
         "Collapsed lists: [data-collapsed]:not([data-expanded]) > [data-extra] { display: none; }. A [data-vpc-expand] button shows its .when-collapsed label by default and its .when-expanded label only with [data-expanded].",
         "Scrolling areas scroll inside the screen: overflow-y: auto plus min-height: 0 on flex/grid children.",
+        "Every block that holds hook points stays reachable at every width (the frame can be about 700–900px wide next to the app sidebar): never hide it with display: none or visibility: hidden in a @media query without a replacement — collapse it into a drawer or tab opened by a visible button, or move it below the main content.",
     ],
     "chat": [
         'The message feed [data-vpc="messages"] is the scrolling area of the conversation (flex: 1; min-height: 0; overflow-y: auto); the input row stays pinned below it and always visible.',
@@ -222,6 +223,7 @@ FUNCTIONAL_CSS: dict[str, list[str]] = {
         'Style message roles through [data-role="user"] and [data-role="persona"] on the message root; message text keeps line breaks and wraps long words (white-space: pre-wrap; overflow-wrap: anywhere); message images are width-limited.',
         'The typing indicator is hidden unless it has [data-active]. The reply bar is hidden while [hidden]. The attachment bar shows only while its [data-vpc="attach-preview"] is not hidden (e.g. with :has()).',
         "Side panels scroll on their own when their lists grow; the persona item with [data-active] is visibly selected.",
+        "Narrow frames: the persona list and the context panel (mood, todos, inventory, reminders) must not simply disappear below some width — turn them into a slide-out drawer with a visible toggle, or stack them under the feed; the feed and the input row keep priority.",
     ],
     "dossier": [
         "Tabs: the script toggles the class tab-active on [data-tab] buttons and page-active on [data-tab-panel] panels within the same [data-tab-scope]. Inactive panels MUST be hidden — [data-tab-panel]:not(.page-active) { display: none; } — and the active button clearly marked.",

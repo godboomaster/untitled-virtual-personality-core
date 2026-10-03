@@ -4,7 +4,8 @@ import type { AwaySummary } from './usePresenceCues';
 
 /* Колонка состояния справа от сцены: энергия с баром, настроение +
    последнее событие, занятие и место с реальной длительностью. Внизу —
-   приглушённо, откуда взято состояние (веб-чат или Telegram). */
+   приглушённо, откуда взято состояние (веб-чат или Telegram). Неизвестное
+   значение — прочерк, без бара и длительности. */
 
 export default function RoomTelemetry({
   energy,
@@ -31,9 +32,11 @@ export default function RoomTelemetry({
       <div className="home-tele-cell">
         <div className="home-tele-label">{t('room.energy')}</div>
         <div className="home-tele-value room-tele-text">{energy}</div>
-        <div className="room-tele-bar">
-          <div className="room-tele-bar-fill" style={{ width: `${energyPct ?? 0}%` }} />
-        </div>
+        {energyPct != null && (
+          <div className="room-tele-bar">
+            <div className="room-tele-bar-fill" style={{ width: `${energyPct}%` }} />
+          </div>
+        )}
       </div>
       <div className="home-tele-cell">
         <div className="home-tele-label">{t('room.mood')}</div>

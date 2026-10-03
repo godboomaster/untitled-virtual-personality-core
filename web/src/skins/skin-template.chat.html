@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════════════════════════
-     VPC SKIN FILE · КОНТРАКТ v2 · ЭКРАН ЧАТА — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ.
+     VPC SKIN FILE · КОНТРАКТ v3 · ЭКРАН ЧАТА — ПРОЧТИ ЭТОТ БЛОК ПОЛНОСТЬЮ.
 
      Это самодостаточный файл ОДНОГО экрана скина (визуальной оболочки)
      ИИ-персоны: экран чата с левым сайдбаром (список персон), лентой
@@ -25,7 +25,7 @@
         заблокирована политикой CSP. Картинки и шрифты — только inline
         (data-URI) или рисуй чистым CSS/SVG.
 
-     4. Мета vpc-skin-contract в <head> (сейчас content="2") — версия
+     4. Мета vpc-skin-contract в <head> (сейчас content="3") — версия
         контракта, на который рассчитан файл. Не повышай её сам: скин
         с версией новее приложения не загрузится. Нет меты — контракт v1.
         Имя/автор/версия скина — мета vpc-skin-name / -author / -version.
@@ -54,7 +54,8 @@
          persona-name, persona-avatar, persona-status, persona-model,
          persona-mood, persona-pastime,
          ctx-pastime, ctx-mood, ctx-trend, ctx-initiative, ctx-last-reply,
-         ctx-next-reminder, ctx-learning   (правый сайдбар)
+         ctx-next-reminder, ctx-learning, ctx-last-init (v3: последняя
+         самоинициатива; пусто — не было)   (правый сайдбар)
 
        Кнопки/плашки:
          typing-indicator   виден при атрибуте data-active
@@ -72,16 +73,23 @@
 
        Списки (контейнер + <template>-образец одного элемента):
          [data-vpc="persona-list"] + <template data-vpc="persona-item">
-           левый сайдбар: персоны. Поля: name, status. Корню клона
-           выставляется data-active у выбранной персоны; клик по элементу
-           переключает персону (обрабатывает bridge, вешать ничего не надо).
+           левый сайдбар: персоны. Поля: name, status, avatar (v3, <img>
+           получает src; нет аватара — поле убирается), unread (v3: число
+           непрочитанных; нет — убирается). Корню клона выставляется
+           data-active у выбранной персоны и data-unread="N" (v3), если
+           есть непрочитанные; клик по элементу переключает персону
+           (обрабатывает bridge, вешать ничего не надо).
          [data-vpc="todo-list"] + todo-item  поля: text; кнопка
            [data-vpc-item-action="toggle-todo"] в элементе переключает «сделано»
          [data-vpc="inventory-list"] + inventory-item  поля: icon, name, description, tag
          [data-vpc="feature-list"] + feature-item   поля: label
 
-       Поля сообщения: text, time, image (у <img> ставится src),
-       quote-author, quote-text. Поле с пустым значением удаляется
+       Поля сообщения: text, time, image (у <img> ставится src; v3: у
+       ответа персоны может быть несколько картинок — скриншоты, тогда
+       поле image повторяется следом за собой на каждый кадр), delivery
+       (v3: ◷ в очереди / ✓ отправлено / ✓✓ прочитано), quote-author,
+       quote-text. Корень клона получает data-status="queued|sent|read"
+       (v3; у реплик персоны — только read). Поле с пустым значением удаляется
        из клона автоматически. Клик по картинке (image / attach-preview)
        открывает её крупно — лайтбокс на стороне хоста, в скине ничего
        делать не надо. Действие элемента: кнопка
@@ -107,6 +115,21 @@
        Окружение (v2): слоты local-time («HH:MM»), weather (строка погоды,
        если задано местоположение), weather-temp («+7°C»).
 
+       Загрузка истории (v3): пока история диалога грузится, контейнер
+       ленты получает атрибут data-vpc-loading.
+
+     ДОРИСОВКА (v3). Если какой-то необязательной точки в файле нет,
+     bridge дорисует её минимальным блоком с классом .vpc-fallback
+     (наследует шрифт и цвет): «печатает…», плашку «ответ на…», превью
+     вложения, картинки ответа, значки доставки, счётчик непрочитанных,
+     строку «загрузка истории». Боковые панели (список персон, контекст),
+     скрытые твоим CSS на узкой ширине (display: none в @media), bridge
+     покажет кнопкой у края экрана — панель выдвигается поверх. Лучше
+     не прятать панели совсем, а сворачивать их своим способом; тогда
+     отключи дорисовку: data-vpc-no-fallback="panels" на корне экрана
+     (ключи: typing reply-bar attach images delivery unread loading
+     panels, или all).
+
      ТЕМА, ЯЗЫК, ВРЕМЯ СУТОК (v2). Приложение ставит на <html>:
        data-theme="light|dark"  — тема приложения. Скин ОБЯЗАН выглядеть
                                   прилично в обеих: переопредели палитру
@@ -122,7 +145,8 @@
        persona-list, open-dossier, open-dossier-title, typing,
        message-placeholder, send, attach, remove-attach, reply,
        cancel-reply, presence, mood, initiative, next-reminder, todos,
-       inventory, modules. Можно переименовать текст под стиль скина,
+       inventory, modules; v3: history-loading, msg-queued, msg-sent,
+       msg-read, unread, show-panel, hide-panel. Можно переименовать текст под стиль скина,
        убрав data-vpc-label, — тогда он не локализуется.
 
      SHELL-ТЕМА КАРКАСА (OPTIONAL): пока открыт экран персоны со скином,
@@ -169,7 +193,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <!-- Метаданные скина: контракт (обязательно для v2), имя, автор, версия -->
-<meta name="vpc-skin-contract" content="2" />
+<meta name="vpc-skin-contract" content="3" />
 <meta name="vpc-skin-name" content="VPC Default" />
 <meta name="vpc-skin-author" content="Virtual Persona Core" />
 <meta name="vpc-skin-version" content="1.0" />
@@ -268,8 +292,16 @@
   }
   .pl-item:hover { border-color: var(--line); }
   .pl-item[data-active] { border-color: var(--accent); }
+  .pl-item { position: relative; }
+  .pl-avatar { float: left; width: 30px; height: 30px; margin-right: 8px; border-radius: 50%; object-fit: cover; }
   .pl-name { display: block; font-weight: 700; }
   .pl-status { display: block; color: var(--dim); font-size: 12px; }
+  .pl-unread {
+    position: absolute; top: 8px; right: 8px;
+    min-width: 18px; padding: 0 5px; border-radius: 9px;
+    background: var(--accent); color: var(--on-accent);
+    font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+  }
 
   /* Центральная колонка */
   .chat-center {
@@ -344,8 +376,10 @@
   }
 
   .msg-text { white-space: pre-wrap; word-break: break-word; }
-  .msg-image { max-width: 240px; display: block; margin-top: 6px; }
+  .msg-image { max-width: 240px; display: block; margin-top: 6px; cursor: zoom-in; }
   .msg-time { margin-top: 4px; color: var(--dim); font-size: 11px; text-align: right; }
+  .msg-delivery { margin-left: 4px; }
+  .msg[data-status="read"] .msg-delivery { color: var(--accent); }
 
   .msg { position: relative; }
   .msg-reply-btn {
@@ -484,8 +518,11 @@
     <div data-vpc="persona-list"></div>
     <template data-vpc="persona-item">
       <button type="button" class="pl-item">
+        <!-- OPTIONAL (v3): аватар персоны и число непрочитанных -->
+        <img class="pl-avatar" data-vpc-field="avatar" alt="" />
         <span class="pl-name" data-vpc-field="name"></span>
         <span class="pl-status" data-vpc-field="status"></span>
+        <span class="pl-unread" data-vpc-field="unread" data-vpc-label-title="unread"></span>
       </button>
     </template>
   </aside>
@@ -527,7 +564,10 @@
         </div>
         <div class="msg-text" data-vpc-field="text"></div>
         <img class="msg-image" data-vpc-field="image" alt="" />
-        <div class="msg-time" data-vpc-field="time"></div>
+        <!-- OPTIONAL (v3): delivery — значок доставки (◷ / ✓ / ✓✓) -->
+        <div class="msg-time" data-vpc-optional>
+          <span data-vpc-field="time"></span><span class="msg-delivery" data-vpc-field="delivery"></span>
+        </div>
       </div>
     </template>
 
@@ -578,6 +618,8 @@
     <div class="ctx-title" data-vpc-label="initiative">Самоинициатива</div>
     <div class="ctx-note" data-vpc="ctx-initiative">…</div>
     <div class="ctx-note" data-vpc="ctx-last-reply">…</div>
+    <!-- OPTIONAL (v3): последняя самоинициатива (пусто — не было) -->
+    <div class="ctx-note" data-vpc="ctx-last-init"></div>
 
     <div class="ctx-title" data-vpc-label="next-reminder">Ближайшее напоминание</div>
     <div class="ctx-note" data-vpc="ctx-next-reminder">…</div>

@@ -3,7 +3,7 @@ import Sidebar from './components/Sidebar';
 import DevLogPanel from './components/DevLogPanel';
 import { DetroitBackground } from './effects/DetroitBackground';
 import { useI18n, useMockData } from './i18n';
-import { useApiOnline } from './apiData';
+import { useApiOnline, useCoreHealth } from './apiData';
 import { useInbox, useInboxPolling } from './inboxStore';
 import { ensureNotifyPermission, OPEN_CHAT_EVENT, setUnreadTitle } from './notifications';
 import { requestChatOverview, requestChatPersona } from './chatNavStore';
@@ -32,6 +32,9 @@ export default function App() {
   const { personas } = useMockData();
   // false — бэкенд недоступен: интерфейс показывает моковые данные прототипа
   const apiOnline = useApiOnline();
+  // Шапка: связь с ядром по опросу /api/health; онлайн — незамороженные персоны
+  const coreDown = useCoreHealth() === 'down';
+  const personasOnline = personas.filter((p) => p.status !== 'frozen').length;
   const devMode = useDevMode();
   // Единый поллер фоновых сообщений персон (напоминания, инициативы) —
   // работает на всех экранах, накапливает непрочитанные
@@ -98,9 +101,15 @@ export default function App() {
                 DARK
               </span>
             </div>
-            <div className="topbar-status">
+            <div className={`topbar-status${!apiOnline || coreDown ? ' topbar-status--down' : ''}`}>
               <span className="status-led" />
-              <span>{t('topbar.status', { n: personas.length })}</span>
+              <span>
+                {!apiOnline
+                  ? t('topbar.mock')
+                  : coreDown
+                    ? t('topbar.down')
+                    : t('topbar.status', { n: personasOnline, total: personas.length })}
+              </span>
               {!apiOnline && <span className="badge badge--muted">MOCK</span>}
             </div>
           </div>

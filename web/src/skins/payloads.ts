@@ -31,12 +31,19 @@ export interface SkinPersonaInfo {
   avatar?: string; // dataURL, если есть
 }
 
+// Доставка/прочтение реплики: наши — очередь → отправлено → прочитано
+// (бот ответил); персоны — 'read', когда пользователь её видел
+export type SkinDeliveryStatus = 'queued' | 'sent' | 'read';
+
 export interface SkinChatMessage {
   id: number;
   role: 'user' | 'persona';
   text: string;
   time: string;
   image?: string;
+  // Картинки ответа персоны (скриншоты режима управления) — v3
+  images?: string[];
+  status?: SkinDeliveryStatus; // v3
   quote?: { author: string; text: string };
 }
 
@@ -46,6 +53,8 @@ export interface SkinPersonaListItem {
   name: string;
   statusText: string;
   active: boolean; // выбранная сейчас персона
+  avatar?: string; // dataURL, если есть — v3
+  unread?: number; // непрочитанные реплики персоны — v3
 }
 
 // Правый сайдбар чата — контекстная панель (все строки уже локализованы хостом)
@@ -58,6 +67,7 @@ export interface SkinContext {
   nextReminder: string;
   learning: string; // строка об активном курсе ('' — нет)
   features: string[]; // подписи включённых модулей
+  lastInitiative?: string; // последняя самоинициатива одной строкой — v3
 }
 
 // Досье персоны: списки данных + записываемые через действия сущности
@@ -182,6 +192,9 @@ export interface SkinStatePayload {
   persona: SkinPersonaInfo;
   env?: SkinEnv;
   typing?: boolean;
+  // История диалога ещё грузится (лента может быть пустой не потому,
+  // что переписки нет) — v3
+  historyLoading?: boolean;
   messages?: SkinChatMessage[];
   // Плашка «ответ на сообщение» над вводом (null — не показывать)
   reply?: { author: string; text: string } | null;
@@ -202,6 +215,7 @@ export interface SkinStatePayload {
 // Снапшот для экрана чата (+ сайдбары и досье — один снапшот на всё)
 export function buildChatPayload(args: {
   persona: Persona;
+  avatar?: string; // аватар текущей персоны (dataURL)
   statusText: string;
   youLabel: string;
   // Индикатор «печатает» этой персоны (локальная отправка или генерация на сервере)
@@ -209,7 +223,8 @@ export function buildChatPayload(args: {
   messages: ChatMessage[];
   mood: string;
   pastimeLabel: string;
-  allPersonas: { persona: Persona; statusText: string }[];
+  allPersonas: { persona: Persona; statusText: string; avatar?: string; unread?: number }[];
+  historyLoading?: boolean;
   context: Omit<SkinContext, 'pastime' | 'mood'> & { pastimePlace: string };
   reply: { author: string; text: string } | null;
   todos: TodoItem[];
@@ -244,7 +259,7 @@ export function buildChatPayload(args: {
   env?: SkinEnv; // см. buildSkinEnv
 }): SkinStatePayload {
   const {
-    persona, statusText, youLabel, typing, messages, mood, pastimeLabel,
+    persona, avatar, historyLoading, statusText, youLabel, typing, messages, mood, pastimeLabel,
     allPersonas, context, reply, todos, inventory, dossier, files, providers,
     modelOverrides, genOverrides, courseStatusLabels, quizLineFor,
     initState, initStages, initSilenceText,
@@ -269,27 +284,36 @@ export function buildChatPayload(args: {
       model: persona.model,
       mood,
       pastime: pastimeLabel,
+      ...(avatar ? { avatar } : {}),
     },
     ...(env ? { env } : {}),
     typing: typing === true,
+    ...(historyLoading != null ? { historyLoading } : {}),
     messages: messages.map((m) => {
       const quoted = m.replyTo != null ? messages.find((q) => q.id === m.replyTo) : undefined;
+      // Наши — статус доставки как есть; персоны — только «прочитано»
+      const status: SkinDeliveryStatus | undefined =
+        m.role === 'user' ? m.status : m.read ? 'read' : undefined;
       return {
         id: m.id,
         role: m.role === 'user' ? 'user' : 'persona',
         text: m.text,
         time: m.time,
         ...(m.image ? { image: m.image } : {}),
+        ...(m.images && m.images.length ? { images: m.images } : {}),
+        ...(status ? { status } : {}),
         ...(quoted
           ? { quote: { author: quoted.role === 'user' ? youLabel : persona.name, text: quoted.text } }
           : {}),
       };
     }),
-    personas: allPersonas.map(({ persona: p, statusText: s }) => ({
+    personas: allPersonas.map(({ persona: p, statusText: s, avatar: a, unread: u }) => ({
       id: p.id,
       name: p.name,
       statusText: s,
       active: p.id === persona.id,
+      ...(a ? { avatar: a } : {}),
+      ...(u ? { unread: u } : {}),
     })),
     context: {
       pastime: pastimeLabel + (context.pastimePlace ? ' · ' + context.pastimePlace : ''),
@@ -300,6 +324,7 @@ export function buildChatPayload(args: {
       nextReminder: context.nextReminder,
       learning: context.learning,
       features: context.features,
+      ...(context.lastInitiative ? { lastInitiative: context.lastInitiative } : {}),
     },
     reply,
     todos: todos.map((td) => ({ id: td.id, text: td.text, done: td.done })),
@@ -387,6 +412,7 @@ export function buildChatPayload(args: {
 // Снапшот для экрана комнаты
 export function buildRoomPayload(args: {
   persona: Persona;
+  avatar?: string; // аватар персоны (dataURL)
   statusText: string;
   pastimeLabel: string;
   pastimePlace: string;
@@ -406,9 +432,9 @@ export function buildRoomPayload(args: {
   pose?: string;
   pastimeSince?: number | null;
 }): SkinStatePayload {
-  const { persona, statusText, feed, inventory, env, ...room } = args;
+  const { persona, avatar, statusText, feed, inventory, env, ...room } = args;
   return {
-    persona: { id: persona.id, name: persona.name, statusText, model: persona.model },
+    persona: { id: persona.id, name: persona.name, statusText, model: persona.model, ...(avatar ? { avatar } : {}) },
     ...(env ? { env } : {}),
     room: env ? { ...room, timeOfDay: env.timeOfDay } : room,
     feed: feed.map((a) => ({ time: a.time, text: a.text })),
@@ -427,6 +453,13 @@ export const SKIN_LABELS = {
   'open-dossier': 'chat.dossier',
   'open-dossier-title': 'chat.dossierTitle',
   typing: 'status.typing',
+  'history-loading': 'chat.historyLoading', // {name} — v3
+  'msg-queued': 'chat.msgQueued', // v3: подсказки статуса доставки
+  'msg-sent': 'chat.msgSent',
+  'msg-read': 'chat.msgRead',
+  unread: 'chat.unread', // v3
+  'show-panel': 'chat.expandPanel', // v3: кнопка панели, скрытой на узкой ширине
+  'hide-panel': 'chat.collapsePanel',
   'message-placeholder': 'chat.inputPh', // {name}
   send: 'chat.send',
   attach: 'chat.attachTitle',
@@ -510,6 +543,7 @@ export const SKIN_LABELS = {
   'room-energy': 'room.energy',
   'room-place': 'room.placeInRoom',
   'room-feed': 'room.feedTitle',
+  poke: 'room.pokeTitle', // {name} — v3: подсказка аватара (клик = заглянуть)
   'item-name': 'room.itemNamePh',
   'item-icon': 'skin.label.itemIcon',
   'add-item': 'room.addItem',

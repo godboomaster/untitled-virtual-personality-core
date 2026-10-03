@@ -8,6 +8,10 @@
      лента сообщений сверяется по id (узлы переиспользуются), остальные
      списки перерисовываются, только когда изменились их данные;
    - окружение: data-theme / lang / data-vpc-time-of-day на <html>;
+   - дорисовку (v3): части интерфейса, для которых у скина нет точек
+     (печатает, ответ на…, превью вложения, картинки ответа, доставка,
+     непрочитанные, загрузка истории), и выдвижные боковые панели, если
+     скин прячет их на узкой ширине (см. «Дорисовка» ниже);
    - отправку событий хосту: ready / send / clear / select-persona /
      open-dossier / close-dossier / action / set-setting / zoom-image /
      key / error;
@@ -126,7 +130,7 @@ export const BRIDGE_SOURCE = String.raw`
 
   // Значение одного поля: картинка, инпут, полоса прогресса или текст
   function setField(el, name, value) {
-    if (name === 'image') {
+    if (name === 'image' || name === 'avatar') {
       if (el.tagName === 'IMG') {
         if (el.getAttribute('src') !== value) { el.src = value; }
       } else {
@@ -164,6 +168,325 @@ export const BRIDGE_SOURCE = String.raw`
       if (o.el.querySelector('[data-vpc-field]')) { attach(o); } else { detach(o); }
     });
   }
+
+  /* ── Дорисовка (v3) ──
+     Скин мог не объявить точку для части интерфейса (или объявлен по
+     старому контракту) — тогда bridge добавляет минимальный блок с классом
+     .vpc-fallback: шрифт и цвет наследуются, оттенки — от currentColor и
+     переменных скина. Отключение — data-vpc-no-fallback="ключи | all" на
+     корне экрана. Ключи: typing reply-bar attach images delivery unread
+     loading panels. */
+  var FB_CSS =
+    '.vpc-fallback{box-sizing:border-box;font:inherit;color:inherit}' +
+    '.vpc-fb-line{padding:4px 12px;font-size:.85em;opacity:.75}' +
+    '.vpc-fb-typing:not([data-active]){display:none}' +
+    '.vpc-fb-reply{display:flex;align-items:center;gap:8px;margin:4px 8px;padding:6px 10px;font-size:.85em;' +
+      'border-left:3px solid var(--vpc-shell-accent,currentColor);background:color-mix(in srgb,currentColor 7%,transparent)}' +
+    '.vpc-fb-reply[hidden]{display:none}' +
+    '.vpc-fb-reply span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8}' +
+    '.vpc-fb-btn{font:inherit;color:inherit;background:none;cursor:pointer;line-height:1.6;padding:0 6px;' +
+      'border:1px solid color-mix(in srgb,currentColor 25%,transparent);border-radius:4px}' +
+    '.vpc-fb-attach{display:none;align-items:center;gap:6px;margin:4px 8px}' +
+    '.vpc-fb-attach:has(img:not([hidden])){display:flex}' +
+    '.vpc-fb-attach img{max-height:64px;max-width:120px;border-radius:4px;cursor:zoom-in}' +
+    '.vpc-fb-images{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}' +
+    '.vpc-fb-images img{display:block;max-width:100%;max-height:320px;border-radius:6px;cursor:zoom-in}' +
+    '.vpc-fb-delivery{margin-left:4px;opacity:.7;font-size:.9em;white-space:nowrap}' +
+    '.vpc-fb-delivery[data-status="read"]{opacity:1;color:var(--vpc-shell-accent,inherit)}' +
+    '.vpc-fb-unread{display:inline-block;min-width:1.5em;margin-left:6px;padding:0 5px;border-radius:999px;' +
+      'font-size:.75em;font-weight:600;line-height:1.5;text-align:center;' +
+      'background:var(--vpc-shell-accent,currentColor);color:var(--vpc-shell-bg,#fff)}' +
+    '.vpc-fb-loading{padding:16px;text-align:center;opacity:.6;font-size:.9em}' +
+    '.vpc-fb-panel-btn{position:fixed;top:50%;z-index:2147483001;width:22px;height:56px;margin-top:-28px;padding:0;' +
+      'font:inherit;font-size:14px;line-height:1;cursor:pointer;opacity:.85;' +
+      'background:var(--vpc-fb-bg,Canvas);color:var(--vpc-fb-fg,CanvasText);' +
+      'border:1px solid color-mix(in srgb,currentColor 25%,transparent)}' +
+    '.vpc-fb-panel-btn:hover{opacity:1}' +
+    '.vpc-fb-panel-btn[hidden]{display:none}' +
+    '.vpc-fb-panel-btn[data-side="left"]{left:0;border-left:none;border-radius:0 8px 8px 0}' +
+    '.vpc-fb-panel-btn[data-side="right"]{right:0;border-right:none;border-radius:8px 0 0 8px}' +
+    '.vpc-fb-drawer{display:block!important;position:fixed!important;top:0!important;bottom:0!important;' +
+      'height:auto!important;width:min(320px,86vw)!important;max-width:none!important;max-height:none!important;' +
+      'overflow:auto!important;z-index:2147483000!important;box-shadow:0 0 28px rgba(0,0,0,.35);' +
+      'background-color:var(--vpc-fb-bg,Canvas)!important;color:var(--vpc-fb-fg,CanvasText)}' +
+    '.vpc-fb-drawer[data-vpc-side="left"]{left:0!important;right:auto!important}' +
+    '.vpc-fb-drawer[data-vpc-side="right"]{right:0!important;left:auto!important}' +
+    '.vpc-fb-panel-btn[data-open][data-side="left"]{left:min(320px,86vw)}' +
+    '.vpc-fb-panel-btn[data-open][data-side="right"]{right:min(320px,86vw)}';
+
+  var noFb = null;
+  function fallbackOff(key) {
+    if (!noFb) {
+      noFb = {};
+      qsa('[data-vpc-no-fallback]').forEach(function (el) {
+        String(el.getAttribute('data-vpc-no-fallback') || '').split(/[\s,]+/).forEach(function (k) {
+          if (k) { noFb[k] = 1; }
+        });
+      });
+    }
+    return !!(noFb.all || noFb[key]);
+  }
+  // Стили дорисовки — перед стилями скина: скин может переопределить .vpc-fb-*
+  function ensureFbStyle() {
+    if (document.getElementById('vpc-fallback-style')) return;
+    var st = document.createElement('style');
+    st.id = 'vpc-fallback-style';
+    st.textContent = FB_CSS;
+    var head = document.head || document.documentElement;
+    head.insertBefore(st, qs('style', head) || null);
+  }
+  // Активный экран документа (prepareSkin ставит html[data-vpc-active])
+  function activeScreen() {
+    var a = document.documentElement.getAttribute('data-vpc-active');
+    return a ? qs('[data-vpc-screen="' + a + '"]') : null;
+  }
+  function chatScreen() {
+    var sc = activeScreen();
+    return sc && sc.getAttribute('data-vpc-screen') === 'chat' ? sc : null;
+  }
+  // Поле шаблона в клоне (из реестра makeClone)
+  function fieldRec(node, name) {
+    var fs = node.__vpc ? node.__vpc.fields : [];
+    for (var i = 0; i < fs.length; i++) { if (fs[i].name === name) return fs[i]; }
+    return null;
+  }
+
+  // Части, которые нужны всегда, а точек для них нет: строка «печатает»,
+  // плашка «ответ на…», превью вложения. Это обычные hook-точки (data-vpc),
+  // поэтому дальше их ведёт общий код — дорисовка только создаёт узлы.
+  // Вызывается до привязки событий (bind), чтобы кнопки тоже заработали
+  function addStaticFallbacks() {
+    var sc = chatScreen();
+    if (!sc) return;
+    var box = qs('[data-vpc="messages"]', sc);
+    if (!box || !box.parentNode) return;
+    var input = qs('[data-vpc="input"]', sc);
+    // Строка ввода — верхний предок поля, ещё не содержащий ленту
+    var row = null;
+    if (input) {
+      row = input;
+      while (row.parentElement && !row.parentElement.contains(box)) { row = row.parentElement; }
+    }
+    if (!qs('[data-vpc="typing-indicator"]', sc) && !fallbackOff('typing')) {
+      ensureFbStyle();
+      var ty = document.createElement('div');
+      ty.className = 'vpc-fallback vpc-fb-line vpc-fb-typing';
+      ty.setAttribute('data-vpc', 'typing-indicator');
+      ty.innerHTML = '<span data-vpc-label="typing"></span>…';
+      box.parentNode.insertBefore(ty, box.nextSibling);
+    }
+    if (row && row.parentNode && !qs('[data-vpc="reply-bar"]', sc) && !fallbackOff('reply-bar')) {
+      ensureFbStyle();
+      var rb = document.createElement('div');
+      rb.className = 'vpc-fallback vpc-fb-reply';
+      rb.setAttribute('data-vpc', 'reply-bar');
+      rb.hidden = true;
+      rb.innerHTML = '<b data-vpc-field="reply-author"></b><span data-vpc-field="reply-text"></span>' +
+        '<button type="button" class="vpc-fb-btn" data-vpc-action="cancel-reply" data-vpc-label-title="cancel-reply">✕</button>';
+      row.parentNode.insertBefore(rb, row);
+    }
+    if (row && row.parentNode && qs('[data-vpc="attach-image"]', sc) &&
+        !qs('[data-vpc="attach-preview"]', sc) && !fallbackOff('attach')) {
+      ensureFbStyle();
+      var ab = document.createElement('div');
+      ab.className = 'vpc-fallback vpc-fb-attach';
+      ab.innerHTML = '<img data-vpc="attach-preview" alt="" hidden>' +
+        '<button type="button" class="vpc-fb-btn" data-vpc="cancel-attach" data-vpc-label-title="remove-attach">✕</button>';
+      row.parentNode.insertBefore(ab, row);
+    }
+  }
+
+  // Картинки сообщения: первая — в поле image шаблона, остальные — его
+  // копиями следом (скриншоты ответа). Поля нет — блок картинок в конце
+  function syncFrames(node, frames) {
+    (node.__vpcFrames || []).forEach(function (x) { if (x.parentNode) { x.parentNode.removeChild(x); } });
+    node.__vpcFrames = [];
+    var f = fieldRec(node, 'image');
+    if (f) {
+      if (frames.length < 2 || f.root || !f.el.parentNode) return;
+      var after = f.el;
+      frames.slice(1).forEach(function (src) {
+        var c = f.el.cloneNode(true);
+        c.removeAttribute('id');
+        setField(c, 'image', src);
+        after.parentNode.insertBefore(c, after.nextSibling);
+        after = c;
+        node.__vpcFrames.push(c);
+      });
+      return;
+    }
+    if (!frames.length || fallbackOff('images')) return;
+    ensureFbStyle();
+    var wrap = document.createElement('div');
+    wrap.className = 'vpc-fallback vpc-fb-images';
+    frames.forEach(function (src) {
+      var img = document.createElement('img');
+      img.setAttribute('data-vpc-field', 'image'); // клик — крупный просмотр
+      img.alt = '';
+      img.src = src;
+      wrap.appendChild(img);
+    });
+    node.appendChild(wrap);
+    node.__vpcFrames.push(wrap);
+  }
+
+  // Доставка: поле delivery шаблона (◷ / ✓ / ✓✓) или значок после времени
+  var DELIVERY = { queued: '◷', sent: '✓', read: '✓✓' };
+  function syncDelivery(node, status) {
+    var title = status ? labels['msg-' + status] : null;
+    var f = fieldRec(node, 'delivery');
+    if (f) {
+      if (title) { f.el.setAttribute('title', String(title)); } else { f.el.removeAttribute('title'); }
+      return;
+    }
+    var fb = node.__vpcDelivery;
+    if (!status || !DELIVERY[status] || fallbackOff('delivery')) {
+      if (fb && fb.parentNode) { fb.parentNode.removeChild(fb); }
+      return;
+    }
+    ensureFbStyle();
+    if (!fb) {
+      fb = document.createElement('span');
+      fb.className = 'vpc-fallback vpc-fb-delivery';
+      node.__vpcDelivery = fb;
+    }
+    fb.textContent = DELIVERY[status];
+    fb.setAttribute('data-status', status);
+    if (title) { fb.setAttribute('title', String(title)); } else { fb.removeAttribute('title'); }
+    var t = fieldRec(node, 'time');
+    if (t && !t.root && t.el.parentNode) { t.el.appendChild(fb); } else { node.appendChild(fb); }
+  }
+
+  // Загрузка истории: пустая лента + historyLoading → строка в ленте
+  var loadingFb = null;
+  function dropLoadingFb() {
+    if (loadingFb && loadingFb.parentNode) { loadingFb.parentNode.removeChild(loadingFb); }
+  }
+  function syncLoadingFb(p) {
+    var box = qs('[data-vpc="messages"]');
+    if (!box) return;
+    if (p.historyLoading) { box.setAttribute('data-vpc-loading', ''); }
+    else { box.removeAttribute('data-vpc-loading'); }
+    if (!p.historyLoading || Object.keys(feed.nodes).length || !chatScreen() || fallbackOff('loading')) return;
+    ensureFbStyle();
+    if (!loadingFb) {
+      loadingFb = document.createElement('div');
+      loadingFb.className = 'vpc-fallback vpc-fb-loading';
+      loadingFb.innerHTML = '<span data-vpc-label="history-loading">…</span>';
+    }
+    box.appendChild(loadingFb);
+    applyLabels(loadingFb);
+  }
+
+  /* Боковые панели чата, скрытые CSS скина на текущей ширине (типично
+     @media (max-width: …) { .chat-right { display: none } }): у края
+     появляется кнопка, которая выдвигает панель поверх экрана. Панель —
+     ветка разметки рядом с лентой, где лежат точки списка персон,
+     контекста, дел и т.п. Пересчёт — на resize */
+  var PANEL_HOOKS = ['persona-list', 'ctx-pastime', 'ctx-mood', 'ctx-trend', 'ctx-initiative',
+    'ctx-last-reply', 'ctx-next-reminder', 'ctx-learning', 'ctx-last-init', 'todo-list',
+    'inventory-list', 'feature-list'];
+  var panels = [];
+  function closePanel(pn) {
+    pn.el.classList.remove('vpc-fb-drawer');
+    pn.btn.removeAttribute('data-open');
+    pn.btn.textContent = pn.side === 'left' ? '»' : '«';
+    var t = labels['show-panel'];
+    if (t) { pn.btn.setAttribute('title', String(t)); }
+  }
+  function openPanel(pn) {
+    panels.forEach(function (o) { if (o !== pn) { closePanel(o); } });
+    pn.el.setAttribute('data-vpc-side', pn.side);
+    pn.el.classList.add('vpc-fb-drawer');
+    pn.btn.setAttribute('data-open', '');
+    pn.btn.textContent = pn.side === 'left' ? '«' : '»';
+    var t = labels['hide-panel'];
+    if (t) { pn.btn.setAttribute('title', String(t)); }
+  }
+  // Первый непрозрачный фон от элемента вверх: выдвинутая панель лежит
+  // поверх ленты, полупрозрачный фон панели сделал бы её нечитаемой
+  function opaqueBg(el) {
+    for (var n = el; n; n = n.parentElement) {
+      var c = getComputedStyle(n).backgroundColor || '';
+      var a = c.match(/^rgba\([^)]*,\s*([\d.]+)\)$/) || c.match(/\/\s*([\d.]+%?)\s*\)$/);
+      if (c && c !== 'transparent' && (!a || parseFloat(a[1]) >= (a[1].indexOf('%') > 0 ? 100 : 1))) return c;
+    }
+    return null;
+  }
+  function scanPanels() {
+    var sc = chatScreen();
+    if (!sc || fallbackOff('panels')) return;
+    var box = qs('[data-vpc="messages"]', sc);
+    if (!box) return;
+    panels.forEach(closePanel);
+    var found = [];
+    PANEL_HOOKS.forEach(function (name) {
+      qsa('[data-vpc="' + name + '"]', sc).forEach(function (el) {
+        // Ветка рядом с лентой: ребёнок ближайшего общего с лентой предка
+        var n = el;
+        while (n.parentElement && n.parentElement !== sc.parentElement && !n.parentElement.contains(box)) {
+          n = n.parentElement;
+        }
+        if (!n.parentElement || !n.parentElement.contains(box) || n.contains(box)) return;
+        if (found.indexOf(n) < 0 && getComputedStyle(n).display === 'none') { found.push(n); }
+      });
+    });
+    // Кнопки панелей, которые снова видны сами (окно шире), прячем
+    panels.forEach(function (pn) {
+      if (found.indexOf(pn.el) < 0) { pn.btn.hidden = true; }
+    });
+    if (!found.length) return;
+    ensureFbStyle();
+    found.forEach(function (el) {
+      var pn = null;
+      panels.forEach(function (o) { if (o.el === el) { pn = o; } });
+      if (!pn) {
+        // Панель раньше ленты в разметке — слева, иначе справа
+        var side = el.compareDocumentPosition(box) & 4 ? 'left' : 'right';
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'vpc-fallback vpc-fb-panel-btn';
+        btn.setAttribute('data-side', side);
+        pn = { el: el, side: side, btn: btn };
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (pn.el.classList.contains('vpc-fb-drawer')) { closePanel(pn); } else { openPanel(pn); }
+        });
+        sc.appendChild(btn);
+        panels.push(pn);
+      }
+      pn.btn.hidden = false;
+      closePanel(pn);
+      var bg = opaqueBg(el);
+      var fg = getComputedStyle(el).color;
+      [el, pn.btn].forEach(function (x) {
+        if (bg) { x.style.setProperty('--vpc-fb-bg', bg); }
+        if (fg) { x.style.setProperty('--vpc-fb-fg', fg); }
+      });
+    });
+  }
+  var panelsRaf = 0;
+  function schedulePanels() {
+    if (panelsRaf) return;
+    panelsRaf = requestAnimationFrame(function () { panelsRaf = 0; scanPanels(); });
+  }
+  window.addEventListener('resize', schedulePanels);
+  // Выдвинутая панель закрывается кликом мимо неё и по Escape (Escape
+  // тогда не уходит хосту — сначала закрывается панель)
+  document.addEventListener('click', function (e) {
+    panels.forEach(function (pn) {
+      if (pn.el.classList.contains('vpc-fb-drawer') && !pn.el.contains(e.target) && e.target !== pn.btn) {
+        closePanel(pn);
+      }
+    });
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    var open = panels.filter(function (pn) { return pn.el.classList.contains('vpc-fb-drawer'); });
+    if (!open.length) return;
+    open.forEach(closePanel);
+    e.preventDefault();
+  }, true);
 
   // ── Привязка интерактива внутри элемента списка ──
   function bindOnchange(el) {
@@ -281,13 +604,25 @@ export const BRIDGE_SOURCE = String.raw`
         rec.sig = s;
         rec.node.setAttribute('data-role', m.role === 'user' ? 'user' : 'persona');
         rec.node.setAttribute('data-item-id', id);
+        // Картинки: вложение пользователя и/или кадры ответа персоны (v3)
+        var frames = [];
+        if (m.image) { frames.push(String(m.image)); }
+        if (m.images && m.images.length) {
+          m.images.forEach(function (x) { if (x) { frames.push(String(x)); } });
+        }
+        var status = m.status && DELIVERY[m.status] ? String(m.status) : null;
+        if (status) { rec.node.setAttribute('data-status', status); }
+        else { rec.node.removeAttribute('data-status'); }
         fillNode(rec.node, {
           text: m.text,
           time: m.time,
-          image: m.image,
+          image: frames[0],
+          delivery: status ? DELIVERY[status] : null,
           'quote-author': m.quote && m.quote.author,
           'quote-text': m.quote && m.quote.text
         });
+        syncFrames(rec.node, frames);
+        syncDelivery(rec.node, status);
         changed = true;
       }
       next[id] = rec;
@@ -337,8 +672,22 @@ export const BRIDGE_SOURCE = String.raw`
     {
       get: function (p) { return p.personas; },
       box: '[data-vpc="persona-list"]', tpl: 'persona-item', countKey: 'personas',
-      map: function (x) { return { name: x.name, status: x.statusText }; },
-      root: function (node, x) { if (x.active) node.setAttribute('data-active', ''); },
+      map: function (x) {
+        return { name: x.name, status: x.statusText, avatar: x.avatar, unread: x.unread ? String(x.unread) : '' };
+      },
+      root: function (node, x) {
+        if (x.active) node.setAttribute('data-active', '');
+        if (!x.unread) return;
+        node.setAttribute('data-unread', String(x.unread));
+        // Поля unread в шаблоне нет — счётчик-бейдж в конце элемента
+        if (fieldRec(node, 'unread') || fallbackOff('unread')) return;
+        ensureFbStyle();
+        var b = document.createElement('span');
+        b.className = 'vpc-fallback vpc-fb-unread';
+        b.textContent = String(x.unread);
+        if (labels.unread) { b.setAttribute('title', String(labels.unread)); }
+        node.appendChild(b);
+      },
       click: function (x) { return { vpc: 'skin', type: 'select-persona', id: x.id }; }
     },
     {
@@ -518,6 +867,7 @@ export const BRIDGE_SOURCE = String.raw`
     'ctx-last-reply': function (p) { return p.context && p.context.lastReply; },
     'ctx-next-reminder': function (p) { return p.context && p.context.nextReminder; },
     'ctx-learning': function (p) { return p.context && p.context.learning; },
+    'ctx-last-init': function (p) { return p.context && (p.context.lastInitiative || ''); },
     // Параметры и состояние самоинициативы (досье: вкладка «Инициатива»)
     'ini-probability': function (p) { return p.dossier && p.dossier.initState && String(p.dossier.initState.probability); },
     'ini-threshold': function (p) { return p.dossier && p.dossier.initState && String(p.dossier.initState.threshold); },
@@ -537,6 +887,7 @@ export const BRIDGE_SOURCE = String.raw`
     'room-mood': function (p) { return p.room && p.room.mood; },
     'room-energy': function (p) { return p.room && p.room.energy; },
     'room-place': function (p) { return p.room && p.room.pastimePlace; },
+    'room-duration': function (p) { return p.room && p.room.duration; },
     'room-pet-label': function (p) { return p.room && p.room.petLabel; },
     // Окружение: локальное время и погода (если бэкенд её знает)
     'local-time': function (p) { return p.env && p.env.localTime; },
@@ -656,8 +1007,12 @@ export const BRIDGE_SOURCE = String.raw`
       });
     }
 
+    dropLoadingFb();
     var added = p.messages ? renderMessages(p.messages, personaChanged) : [];
+    syncLoadingFb(p);
     LISTS.forEach(function (cfg) { renderList(cfg, p); });
+    // Скрытые на этой ширине боковые панели — после первой раскладки
+    if (!prev) { schedulePanels(); }
 
     // Инпуты настроек: значения из снапшота (не трогаем поле в фокусе).
     // Параметры самоинициативы (ini*) берутся из блока досье; чекбоксы
@@ -689,6 +1044,11 @@ export const BRIDGE_SOURCE = String.raw`
       qsa('[data-vpc="room-avatar"]').forEach(function (el) {
         el.style.setProperty('--vpc-x', (p.room.x == null ? 50 : p.room.x) + '%');
         if (p.room.y != null) { el.style.setProperty('--vpc-y', p.room.y + '%'); }
+        // Поза и место (v3) — для CSS скина: [data-vpc-pose="sleep"] и т.п.
+        if (p.room.pose) { el.setAttribute('data-vpc-pose', String(p.room.pose)); }
+        else { el.removeAttribute('data-vpc-pose'); }
+        if (p.room.spot) { el.setAttribute('data-vpc-spot', String(p.room.spot)); }
+        else { el.removeAttribute('data-vpc-spot'); }
       });
       qsa('[data-vpc="room-bg"]').forEach(function (el) { setImg(el, p.room.bg); });
       qsa('[data-vpc="room-sprite"]').forEach(function (el) { setImg(el, p.room.sprite); });
@@ -778,6 +1138,7 @@ export const BRIDGE_SOURCE = String.raw`
   }
 
   function bind() {
+    addStaticFallbacks();
     var input = qs('[data-vpc="input"]');
     var sendBtn = qs('[data-vpc="send"]');
 

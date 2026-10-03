@@ -1,9 +1,14 @@
 /* Модель сцены комнаты — один путь вычислений для раздела «Комната» и
-   PiP-окна: живое состояние (GET /room) или демо-расписание → место, поза,
-   занятие, длительность; предметы, конфиг, арт, аватар; сигналы присутствия,
+   PiP-окна: живое состояние (GET /room) → место, поза, занятие,
+   длительность; предметы, конфиг, арт, аватар; сигналы присутствия,
    записка на столе, сессия «поработать вместе». Возвращает готовые пропсы
    RoomScene (стабильные между рендерами, чтобы memo сцены держался) плюс
    данные для телеметрии, скина и заголовка вкладки.
+
+   Только настоящие данные: нет живого состояния (бэкенд недоступен, жизнь
+   персоны выключена, ещё грузится) — персона спокойно стоит на обычном
+   месте, занятие/настроение/энергия — прочерк, лента пуста (причина — в
+   feedState). Демо-расписания и мок-событий здесь нет.
 
    Документ-владелец (ownerDocument) управляет минутными часами, сигналами
    присутствия и паузой поллинга; PiP передаёт свой документ и keepAlive. */
@@ -24,7 +29,6 @@ import { useMinuteNow } from './roomHooks';
 import { useRoomLayout } from './roomLayoutStore';
 import {
   defaultAvatarFor,
-  demoStateAt,
   displayPose,
   durationSince,
   inferPose,
@@ -72,10 +76,15 @@ export function useTitleStatus(owner: string, text: string | null) {
 export interface RoomActivityNow {
   spot: string;
   pose: RoomPose;
-  label: string;
+  label: string; // '' — занятие неизвестно
   place: string;
   since: number | null; // epoch, сек
 }
+
+// Почему лента «пока тебя не было» такая: 'ok' — есть события; 'offline' —
+// бэкенд недоступен; 'loading' — комната ещё грузится; 'life-off' — жизнь
+// персоны (или синхронизация комнаты) выключена; 'empty' — событий нет
+export type RoomFeedState = 'ok' | 'offline' | 'loading' | 'life-off' | 'empty';
 
 export type RoomSceneBaseProps = Pick<
   RoomSceneProps,
@@ -94,11 +103,15 @@ export interface RoomSceneModel extends RoomItemsApi {
   art: ReturnType<typeof usePersonaArt>;
   avatar: RoomAvatarPreset;
   activity: RoomActivityNow; // с учётом сессии фокуса
-  duration: string | null;
-  energy: string;
-  energyPct: number;
-  mood: string;
+  // Занятие настоящее (живое состояние или сессия «поработать вместе»),
+  // а не спокойная поза по умолчанию
+  activityKnown: boolean;
+  duration: string | null; // null — занятие неизвестно
+  energy: string; // '—' без живого состояния
+  energyPct: number | null; // null без живого состояния
+  mood: string; // '—' без живого состояния
   feed: RoomActivity[];
+  feedState: RoomFeedState;
   lastEvent: RoomActivity | null;
   markRead: (id: number) => void;
   cues: PresenceCues;
@@ -119,7 +132,8 @@ export interface UseRoomSceneOptions {
 export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomSceneModel {
   const { rootRef, ownerDocument = null, keepAlive = false, statusWithPlace = false } = opts;
   const { t, lang } = useI18n();
-  const { activitiesByPersona, roomConfigs } = useMockData();
+  // Моки — только внешний вид сцены (геометрия, пресет аватара), не данные
+  const { roomConfigs } = useMockData();
 
   // Живая комната с бэкенда: live — /room, legacy — старый /state, demo — офлайн
   const viewOpts = useMemo(() => ({ ownerDocument, keepAlive }), [ownerDocument, keepAlive]);
@@ -141,10 +155,11 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
   const baseCfg = useMemo(() => resolveRoomConfig({ view, live, mock: mockCfg, t }), [view, live, mockCfg, t]);
   const cfg = useMemo(() => withItemSpots(baseCfg, items, t), [baseCfg, items, t]);
 
-  // Минутные часы документа-владельца: «уже N мин» и демо-расписание
+  // Минутные часы документа-владельца: «уже N мин»
   const now = useMinuteNow(rootRef, ownerDocument);
 
-  // Текущее место/поза/занятие: живое состояние или демо-расписание
+  // Текущее место/поза/занятие: живое состояние; без него — спокойно стоит
+  // на обычном месте (стол, иначе первое место в комнате), занятия нет
   const base = useMemo<RoomActivityNow>(() => {
     if (state) {
       const spot = inferSpot(state, cfg.spots);
@@ -157,9 +172,10 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
         since: state.pastime_since ?? null,
       };
     }
-    const d = demoStateAt(now, cfg.spots, persona.id);
-    return { spot: d.spot, pose: d.pose, label: d.label, place: d.place, since: d.since };
-  }, [state, cfg.spots, now, persona.id, t]);
+    const rest = cfg.spots.find((s) => s.key === 'desk')
+      ?? cfg.spots.find((s) => s.key !== 'away' && s.key !== 'bed');
+    return { spot: rest?.key ?? 'desk', pose: 'stand', label: '', place: '', since: null };
+  }, [state, cfg.spots, t]);
 
   // Сессия «поработать вместе»: сверка с view.focus, таймер окончания
   const focus = useFocusSession(persona.id, { focus: view?.focus, mode, loaded, doc: ownerDocument });
@@ -180,18 +196,21 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
       since: focusStart / 1000,
     };
   }, [base, focusStart, cfg.spots, t]);
-  const duration = focus.active ? t('room.focus.left', { n: focus.remainingMin }) : durationSince(activity.since, now, t);
+  const activityKnown = state != null || focusStart != null;
+  const duration = focus.active
+    ? t('room.focus.left', { n: focus.remainingMin })
+    : activityKnown ? durationSince(activity.since, now, t) : null;
 
-  const energyPct = state ? Math.max(0, Math.min(100, Math.round(state.energy))) : parseInt(cfg.energy ?? '', 10);
-  const energy = state ? `${energyPct}%` : (cfg.energy ?? '—');
-  const mood = state ? state.mood.tag : (cfg.mood ?? '—');
+  const energyPct = state ? Math.max(0, Math.min(100, Math.round(state.energy))) : null;
+  const energy = energyPct != null ? `${energyPct}%` : '—';
+  const mood = state?.mood.tag || '—';
 
   // Лента «пока тебя не было»: недавние события офлайн-жизни (world/state)
   // независимо от consumed — после дневника/инициативы факты остаются
-  // видимыми (приглушённо). Моки — только когда событий нет вовсе
+  // видимыми (приглушённо). Без жизни персоны — пусто
+  const livingOn = !!(view?.living?.enabled && view.living.ui_sync);
   const feed = useMemo<RoomActivity[]>(() => {
-    const events = living?.recent_events ?? [];
-    if (!events.length) return state ? [] : (activitiesByPersona[persona.id] ?? []);
+    const events = livingOn ? (view?.living?.recent_events ?? []) : [];
     return events
       .slice()
       .reverse()
@@ -202,8 +221,15 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
         dim: e.consumed === true,
       }))
       .filter((a) => a.text);
-  }, [living, state, activitiesByPersona, persona.id]);
+  }, [livingOn, view]);
   const lastEvent = feed.length ? feed[feed.length - 1] : null;
+  const feedState: RoomFeedState = feed.length
+    ? 'ok'
+    : !loaded
+      ? 'loading'
+      : mode === 'demo'
+        ? 'offline'
+        : livingOn ? 'empty' : 'life-off';
 
   // Настоящие данные комнаты: онлайн и раскладка пришла (скрытые предметы
   // уже отфильтрованы). Демо-расписание и моки в снимок «пока тебя не было» и
@@ -249,8 +275,8 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
   // Окружение: время суток и погода красят сцену (и уходят в скин)
   const skinEnv = useSkinEnv({ locale: lang, t, personaName: persona.name, apiOnline: mode !== 'demo', enabled: true });
 
-  const away = activity.spot === 'away';
-  const mainText = away ? t('room.statusAway') : activity.label;
+  const away = activityKnown && activity.spot === 'away';
+  const mainText = away ? t('room.statusAway') : activity.label || '—';
   const placeText = statusWithPlace && !away && activity.place ? activity.place : '';
   const statusLine = useMemo<ReactNode>(
     () =>
@@ -305,11 +331,13 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
     art,
     avatar,
     activity,
+    activityKnown,
     duration,
     energy,
     energyPct,
     mood,
     feed,
+    feedState,
     lastEvent,
     markRead,
     cues,
