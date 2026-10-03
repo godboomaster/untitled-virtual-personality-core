@@ -23,7 +23,14 @@
      закрыта, новая не открывается;
   з. два поиска одновременно — одна проба;
   и. адрес пробы — из того же замера (about:blank — «неизвестно»), заголовок
-     выдачи с «captcha» при отрисованной выдаче — не капча.
+     выдачи с «captcha» при отрисованной выдаче — не капча;
+  к. (проверки — в в/д и к) окно-сирота: вызов на пробе выбросил её из
+     реестра при живой странице —
+     окно закрыто по targetId, запомненному при открытии (ba.close_target);
+     Chrome перезапущен — закрытие по targetId тихое (таргета нет), поиск не
+     падает; обычное закрытие (вкладка в реестре) — как раньше, через
+     close_background_tab; сам ba.close_target — только по открытому
+     соединению пула (Chrome не поднимает), «таргета нет»/обрыв — False.
 
 Браузер — заглушки ba.*; настоящий Chrome и Google не трогаются, файлы
 рядом с профилем бота — во временной папке.
@@ -56,11 +63,14 @@ class FakeBrowser:
     """Пул H на заглушках: реестр фоновых вкладок, состояние Google по
     вкладке («sorry» — капча, «clean» — выдача, «other» — чужой сайт,
     «blank» — навигация ещё не дошла, «title» — выдача, чей заголовок
-    ловит detect_antibot)."""
+    ловит detect_antibot). Реестр (tabs) и страницы самого Chrome (targets)
+    — отдельно: вызов может выбросить вкладку из реестра, а страница
+    останется открытой (окно-сирота)."""
 
     def __init__(self, ba):
         self.ba = ba
         self.tabs = {}
+        self.targets = set()           # открытые страницы Chrome (targetId)
         self.next_id = 1_000_001
         self.rescue = True
         self.google = "sorry"         # что увидит СВЕЖАЯ вкладка
@@ -70,6 +80,8 @@ class FakeBrowser:
         self.attempts = []             # (url, rescue_probe) — все попытки
         self.opened = []               # (tab_id, url, rescue_probe) — удачные
         self.closed = []
+        self.closed_targets = []       # вызовы close_target (targetId)
+        self.close_target_raises = False
         self.navigated = []
         self.evals = 0
         self.tab_urls = 0
@@ -89,7 +101,9 @@ class FakeBrowser:
         with self.lock:
             tid = self.next_id
             self.next_id += 1
-            self.tabs[tid] = {"url": url, "state": self.google}
+            self.tabs[tid] = {"url": url, "state": self.google,
+                              "target": f"T{tid}"}
+            self.targets.add(f"T{tid}")
             self.opened.append((tid, url, rescue_probe))
         return tid
 
@@ -148,7 +162,23 @@ class FakeBrowser:
 
     def close_background_tab(self, tab_id):
         self.closed.append(tab_id)
-        return self.tabs.pop(tab_id, None) is not None
+        t = self.tabs.pop(tab_id, None)
+        if t is None:
+            return False  # записи нет — закрывать нечего (страница жива)
+        self.targets.discard(t["target"])
+        return True
+
+    def background_tab_target(self, tab_id):
+        return (self.tabs.get(tab_id) or {}).get("target")
+
+    def close_target(self, target_id, pool="h"):
+        self.closed_targets.append(target_id)
+        if self.close_target_raises:
+            raise self.ba.BrowserUnavailable("CDP Target.closeTarget: обрыв")
+        if target_id not in self.targets:
+            return False  # «No target with given id found»
+        self.targets.discard(target_id)
+        return True
 
     def navigate_tab(self, url, *a, **kw):
         self.navigated.append(url)
@@ -158,12 +188,13 @@ class FakeBrowser:
         self.tabs[tab_id]["state"] = "clean"
 
     def restart_chrome(self):
-        self.tabs.clear()  # _forget_raw_pool_tabs: реестр пула сброшен
+        self.tabs.clear()     # _forget_raw_pool_tabs: реестр пула сброшен
+        self.targets.clear()  # страницы старого Chrome умерли вместе с ним
 
 
 STUBBED = ("pool_h_rescue_active", "open_headless_tab", "is_raw_tab",
            "eval_js", "detect_antibot", "tab_url", "close_background_tab",
-           "navigate_tab")
+           "navigate_tab", "background_tab_target", "close_target")
 
 
 def main():
@@ -191,7 +222,7 @@ def main():
             setattr(fb, k, v)
         for n in STUBBED:
             setattr(ba, n, getattr(fb, n))
-        ws._GOOGLE_PROBE_TAB = None
+        ws._GOOGLE_PROBE_TAB = ws._GOOGLE_PROBE_TARGET = None
         wl.clear_quarantine(G)
         wl.pop_quarantine_alerts()
         finish_calls.clear()
@@ -249,6 +280,10 @@ def main():
         check("карантин снят", not wl.site_quarantined(G))
         check("проба закрыта и забыта",
               probe in fb.closed and ws._GOOGLE_PROBE_TAB is None)
+        check("обычное закрытие — как раньше: вкладка в реестре закрыта "
+              "close_background_tab, по targetId не закрывали, targetId "
+              "забыт", not fb.closed_targets and not fb.targets
+              and ws._GOOGLE_PROBE_TARGET is None)
         check("_finish_rescue_if_done(cleared='google')",
               finish_calls == [("google", "h")])
         check("другой запрос, rescue идёт — обычный путь: вкладка без флага, "
@@ -329,6 +364,9 @@ def main():
         quarantine()
         ws.google_web_links("иванов кафедра")
         probe = fb.opened[0][0]
+        check("при открытии пробы запомнен её targetId",
+              ws._GOOGLE_PROBE_TARGET == fb.tabs[probe]["target"])
+        old_target = ws._GOOGLE_PROBE_TARGET
         fb.restart_chrome()  # «почини браузер» ещё раз / конец rescue
         ev = fb.evals
         res = ws.google_web_links("петров")
@@ -337,16 +375,28 @@ def main():
         check("старая забыта, открыта новая (одна)",
               res is None and len(fb.opened) == 2
               and ws._GOOGLE_PROBE_TAB == fb.opened[1][0] != probe)
+        check("Chrome перезапущен: закрытие по старому targetId — тихий "
+              "промах (таргета нет), поиск не упал, запомнен новый targetId",
+              fb.closed_targets == [old_target]
+              and fb.targets == {fb.tabs[ws._GOOGLE_PROBE_TAB]["target"]}
+              and ws._GOOGLE_PROBE_TARGET
+              == fb.tabs[ws._GOOGLE_PROBE_TAB]["target"])
         check("карантин держится", wl.site_quarantined(G) and not finish_calls)
 
         # вызов на вкладке упал и выбросил её из реестра (таргета нет)
         probe = ws._GOOGLE_PROBE_TAB
+        orphan = fb.tabs[probe]["target"]
+        fb.closed_targets.clear()
         fb.eval_drops = probe
         res = ws.google_web_links("сидоров")
         check("вызов на пробе упал (вкладки нет) — забыта, открыта новая",
               res is None and len(fb.opened) == 3
               and ws._GOOGLE_PROBE_TAB == fb.opened[2][0] != probe
               and wl.site_quarantined(G))
+        check("окно-сирота (из реестра выпало, в Chrome живо) закрыто по "
+              "targetId — открытым осталось одно окно, новая проба",
+              fb.closed_targets == [orphan] and orphan not in fb.targets
+              and fb.targets == {fb.tabs[ws._GOOGLE_PROBE_TAB]["target"]})
 
         # человек увёл окно пробы на другой сайт — капчу поиска там не решить
         probe = ws._GOOGLE_PROBE_TAB
@@ -357,6 +407,25 @@ def main():
               res is None and probe in fb.closed and len(fb.opened) == 4
               and ws._GOOGLE_PROBE_TAB == fb.opened[3][0]
               and wl.site_quarantined(G) and not finish_calls)
+        check("  закрыта как раньше (в реестре — close_background_tab, не "
+              "по targetId), открытым осталось одно окно",
+              fb.closed_targets == [orphan] and len(fb.targets) == 1)
+
+        # close_target бросил (обрыв на уборке) — поиск не падает, проба
+        # забыта, новая открывается
+        probe = ws._GOOGLE_PROBE_TAB
+        fb.close_target_raises = True
+        fb.eval_drops = probe
+        try:
+            res = ws.google_web_links("сидоров")
+            raised = None
+        except Exception as e:
+            raised = e
+        fb.close_target_raises = False
+        check("сбой закрытия по targetId — поиск не упал, проба забыта, "
+              "открыта новая",
+              raised is None and res is None and len(fb.opened) == 5
+              and ws._GOOGLE_PROBE_TAB == fb.opened[4][0])
 
         # свежая проба сразу не на Google — без повтора в том же вызове
         fb = fresh(google="other")
@@ -465,11 +534,74 @@ def main():
             check("вне rescue — открывается как раньше", len(opened) == 2)
         finally:
             ba._raw_open, ba._pool_h_alive, ba.pool_h_rescue_active = saved_raw
+
+        print("\n── к. ba.close_target / background_tab_target (настоящие) ──")
+        # Транспорт — заглушка клиента пула в _RAW_CLIENTS; _raw_call и
+        # запуск Chrome подменены «капканами»: уборка их звать не должна
+        saved_cl = ba._RAW_CLIENTS.get(ba._POOL_H)
+        saved_rc, saved_ens = ba._raw_call, ba._ensure_pool_h_browser
+        trapped = []
+        ba._raw_call = lambda *a, **kw: trapped.append(("_raw_call", a)) or {}
+        ba._ensure_pool_h_browser = lambda: trapped.append(("ensure", ()))
+
+        class _Cl:
+            def __init__(self, exc=None):
+                self.exc, self.calls = exc, []
+
+            def call(self, method, params=None, session_id=None, timeout=None):
+                self.calls.append((method, params, session_id, timeout))
+                if self.exc is not None:
+                    raise self.exc
+                return {}
+        tab_key = 1_999_999
+        try:
+            with ba._RAW_TABS_LOCK:
+                ba._RAW_TABS[tab_key] = {"targetId": "TGT-1", "sessionId": "s",
+                                         "pool": ba._POOL_H}
+            check("background_tab_target: targetId вкладки из реестра; нет "
+                  "вкладки / None — None",
+                  ba.background_tab_target(tab_key) == "TGT-1"
+                  and ba.background_tab_target(tab_key + 1) is None
+                  and ba.background_tab_target(None) is None)
+            ba._RAW_CLIENTS[ba._POOL_H] = None
+            r_none = ba.close_target("TGT-1")
+            check("соединения с пулом нет (Chrome умер/пул сброшен) — False, "
+                  "Chrome не поднимается и не подключается",
+                  r_none is False and not trapped)
+            cl = _Cl()
+            ba._RAW_CLIENTS[ba._POOL_H] = cl
+            r_ok = ba.close_target("TGT-1")
+            check("живое соединение — Target.closeTarget по targetId с "
+                  "коротким потолком, True",
+                  r_ok is True and cl.calls == [
+                      ("Target.closeTarget", {"targetId": "TGT-1"}, None,
+                       ba.CLOSE_TARGET_TIMEOUT_SEC)] and not trapped)
+            gone = _Cl(ba.BrowserUnavailable(
+                "CDP Target.closeTarget: No target with given id found"))
+            ba._RAW_CLIENTS[ba._POOL_H] = gone
+            r_gone = ba.close_target("TGT-old")
+            lost = _Cl(ConnectionError("CDP-соединение оборвано"))
+            ba._RAW_CLIENTS[ba._POOL_H] = lost
+            r_lost = ba.close_target("TGT-old")
+            check("Chrome перезапущен (таргета нет) / обрыв соединения — "
+                  "тихо False, без исключения и без _raw_call",
+                  r_gone is False and r_lost is False and not trapped
+                  and len(gone.calls) == 1 and len(lost.calls) == 1)
+            check("пустой targetId — False, без вызовов",
+                  ba.close_target(None) is False and ba.close_target("") is False
+                  and len(lost.calls) == 1)
+            check("реестр вкладок close_target не трогает",
+                  ba.background_tab_target(tab_key) == "TGT-1")
+        finally:
+            ba._RAW_CLIENTS[ba._POOL_H] = saved_cl
+            ba._raw_call, ba._ensure_pool_h_browser = saved_rc, saved_ens
+            with ba._RAW_TABS_LOCK:
+                ba._RAW_TABS.pop(tab_key, None)
     finally:
         # Карантин снимаем ДО возврата путей: снятие публикует ожидание
         # rescue (web_llm._publish_rescue_wait) — по временному пути, а не
         # рядом с настоящим профилем
-        ws._GOOGLE_PROBE_TAB = None
+        ws._GOOGLE_PROBE_TAB = ws._GOOGLE_PROBE_TARGET = None
         wl.clear_quarantine(G)
         wl.pop_quarantine_alerts()
         for n, v in saved_ba.items():

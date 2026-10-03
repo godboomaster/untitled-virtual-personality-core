@@ -147,6 +147,17 @@ class FillUncertain(BrowserUnavailable):
     error_class = "uncertain"
 
 
+class EnterFocusInFrame(FillUncertain):
+    """Enter фоновой вкладки НЕ отправлен: фокус во фрейме страницы (виджет
+    капчи, встройка), и вернуть его в поле чата не удалось (_raw_enter).
+    keydown такого Enter ушёл бы в документ фрейма мимо стража Enter
+    (_ENTER_GUARD_JS) и, не поглощённый фреймом, крутился бы вечным циклом
+    в headless Chrome. Подкласс FillUncertain, потому что по смыслу это то
+    же «текст в поле, отправка не подтверждена»: web_llm._send_verified
+    ловит FillUncertain и отправляет кнопкой (_click_send_if_unsent — жмёт,
+    только пока текст лежит в поле), отдельной ветки вызывающим не нужно."""
+
+
 class RawTabUnsupported(BrowserUnavailable):
     """Операция принципиально недоступна фоновой (raw-CDP) вкладке веб-чата:
     клики, снапшоты, скриншоты, история — это playwright, а background-
@@ -9593,6 +9604,56 @@ def close_background_tab(tab_id: Optional[int]) -> bool:
         return False
 
 
+def background_tab_target(tab_id: Optional[int]) -> Optional[str]:
+    """targetId фоновой вкладки (None — вкладки нет в реестре). Его
+    запоминает тот, кто держит вкладку долго (окно-проба капчи поиска,
+    web_search._google_rescue_probe): реестр выбрасывает вкладку при сбое
+    вызова, а страница в живом Chrome остаётся — закрыть её потом можно
+    только по targetId (close_target)."""
+    if tab_id is None:
+        return None
+    with _RAW_TABS_LOCK:
+        tab = _RAW_TABS.get(int(tab_id))
+        return str(tab["targetId"]) if tab and tab.get("targetId") else None
+
+
+# Потолок close_target: уборка забытой страницы не должна держать вызывающего
+# (поиск под локом пробы) дольше короткого ответа живого Chrome
+CLOSE_TARGET_TIMEOUT_SEC = 5.0
+
+
+def close_target(target_id: Optional[str], pool: str = _POOL_H) -> bool:
+    """Закрыть страницу Chrome пула по targetId — когда реестр её уже забыл
+    и close_background_tab закрывать нечего: вызов на вкладке выбросил её из
+    реестра (_raw_eval → _raw_drop, неудачный переattach), а страница в
+    живом Chrome осталась и в rescue висит на экране окном-сиротой.
+    Тихо и best effort, False — не закрыто, и это не ошибка:
+    таргета уже нет (закрыли, Chrome перезапущен — его targetId в новом
+    Chrome не найдётся, «No target with given id»), соединения с пулом нет
+    (пул сброшен перезапуском или смертью Chrome — страница умерла вместе с
+    ним) или Chrome не ответил. Только по УЖЕ открытому соединению пула, без
+    _raw_call: тот ради одной уборки подключался бы заново, а то и
+    поднимал/перезапускал Chrome пула H (_ensure_pool_h_browser). Свою
+    живую вкладку так не закрывают — для неё close_background_tab."""
+    if not target_id:
+        return False
+    cl = _RAW_CLIENTS.get(pool)
+    if cl is None:
+        logger.debug(f"[BrowserActions] Таргет {str(target_id)[:12]}… не "
+                     f"закрыт: соединения с пулом {pool.upper()} нет")
+        return False
+    try:
+        cl.call("Target.closeTarget", {"targetId": str(target_id)},
+                timeout=CLOSE_TARGET_TIMEOUT_SEC)
+    except Exception as e:
+        logger.debug(f"[BrowserActions] Таргет {str(target_id)[:12]}… не "
+                     f"закрыт: {str(e)[:120]}")
+        return False
+    logger.info(f"[BrowserActions] Пул {pool.upper()}: закрыта страница, "
+                f"забытая реестром (таргет {str(target_id)[:12]}…)")
+    return True
+
+
 _RAW_CONTEXT_TRANSIENT = ("Cannot find context",
                           "Execution context was destroyed",
                           "Inspected target navigated or closed")
@@ -9719,6 +9780,22 @@ def _raw_url(tab_id: int) -> str:
 # Решение принимается один раз (кто первый: всплытие или микрозадача) и
 # снимает оба обработчика. Чужой keydown (не Enter, синтетический
 # dispatchEvent сайта) стража не расходует.
+# Фокус во фрейме (document.activeElement — IFRAME/FRAME, а с открытыми
+# shadow-корнями — их activeElement): keydown уходит в документ ФРЕЙМА, и
+# страж на window главного документа его не видит вовсе (замер 03.10:
+# rawKeyDown в поле srcdoc-фрейма, Enter с символом на body фрейма, поле
+# sandbox-фрейма, сфокусированное кликом, — 85–100% ядра навсегда, итог
+# стража «unfired»). Ставить страж во фреймы — дерево фреймов, OOPIF через
+# auto-attach, исполнение в контексте каждого — тяжело и хрупко, а
+# композеры всех веб-чатов — в главном документе; фокус во фрейме — это
+# виджет капчи или встройка, отнявшие его после _CHAT_FILL_JS. Поэтому
+# установка лишь СООБЩАЕТ о фрейме ('frame' вместо 'armed'; страж при этом
+# стоит — снимет его то же _ENTER_GUARD_OFF_JS), а _raw_enter возвращает
+# фокус в поле и ставит страж заново или не шлёт Enter вовсе.
+# OBJECT/EMBED — тоже вложенные документы (PDF, html через object); ложное
+# «фрейм» на них безвредно: фокус лишь вернётся в поле чата, куда Enter и
+# шёл. Закрытый shadow-корень с фреймом внутри отсюда не виден (shadowRoot
+# — null) — такой Enter останется «unfired» в логе.
 _ENTER_GUARD_JS = (
     "(function(withText,sel){var w=window;"
     "if(typeof w.__vpcEnterGuard==='function')w.__vpcEnterGuard();"
@@ -9746,11 +9823,23 @@ _ENTER_GUARD_JS = (
     "return f.apply(this,arguments);};});};"
     "w.__vpcEnterGuard=off;addEventListener('keydown',c,true);"
     "addEventListener('keydown',g);"
-    "return 'armed';})(%s,%s)"
+    "var a=document.activeElement;"
+    "while(a&&a.shadowRoot&&a.shadowRoot.activeElement)"
+    "a=a.shadowRoot.activeElement;"
+    "return a&&/^(IFRAME|FRAME|OBJECT|EMBED)$/.test(a.tagName)?'frame':'armed';"
+    "})(%s,%s)"
+)
+# Возврат фокуса в поле чата перед Enter (фокус во фрейме): тот же focus(),
+# что в _CHAT_FILL_JS. Вернулся ли он — проверяет повторная установка стража
+_ENTER_REFOCUS_JS = (
+    "(function(sel){var e=document.querySelector(sel);"
+    "if(!e)return 'no-field';e.focus();return 'ok';})(%s)"
 )
 # Снятие стража после отправки + его итог одним вызовом: не сработал —
-# снимаем (unfired: keydown до окна не дошёл вовсе — фокус во фрейме, Enter
-# не доставлен); сработал — сам уже снят, отдаём, кто поглотил Enter.
+# снимаем (unfired: keydown до окна не дошёл вовсе — фокус ушёл во фрейм уже
+# после установки или сайт погасил событие своим перехватом на window раньше
+# нашего; Enter мог остаться непоглощённым); сработал — сам уже снят,
+# отдаём, кто поглотил Enter.
 # Пустая строка — документ сменился (Enter увёл на новую страницу), стража
 # и так нет
 _ENTER_GUARD_OFF_JS = (
@@ -9766,21 +9855,31 @@ ENTER_GUARD_TIMEOUT_SEC = 5.0
 
 
 def _raw_enter(tab_id: int, with_text: bool = False,
-               input_sel: Optional[str] = None):
+               input_sel: Optional[str] = None,
+               measure: bool = False) -> Optional[_Probe]:
     # Доверенный Enter (Input-домен). with_text — keyDown с символом «\r»,
     # как keyboard.press у playwright: duck.ai отправляет только по нему,
     # rawKeyDown без символа там не срабатывает (замер 01.10); остальным
     # сайтам — как было. input_sel — поле чата: Enter с символом в нём
     # страж пропускает (см. _ENTER_GUARD_JS); без селектора полем считается
-    # любое рабочее поле ввода в фокусе
+    # любое рабочее поле ввода в фокусе. Фокус во фрейме — возврат в поле
+    # input_sel или EnterFocusInFrame без Enter (_raw_enter_refocus).
+    # measure=True — вернуть замер страницы (_raw_state) прямо ПЕРЕД
+    # нажатием, уже после возможного возврата фокуса: activeElement входит в
+    # отпечаток, и замер, снятый до _raw_enter, засчитал бы сам возврат
+    # фокуса из фрейма за эффект отправки (closed-loop _raw_chat_fill_send —
+    # ложное «sent», замер 03.10). Страж DOM не меняет — замер после его
+    # установки равен замеру до
     events = ((("keyDown", {"text": "\r", "unmodifiedText": "\r"}),
                ("keyUp", {})) if with_text
               else (("rawKeyDown", {}), ("keyUp", {})))
+    guard_js = _ENTER_GUARD_JS % (
+        json.dumps(bool(with_text)),
+        json.dumps(str(input_sel or ""), ensure_ascii=False))
+    armed = ""
     try:
-        _raw_eval(tab_id, _ENTER_GUARD_JS % (
-            json.dumps(bool(with_text)),
-            json.dumps(str(input_sel or ""), ensure_ascii=False)),
-            timeout_sec=ENTER_GUARD_TIMEOUT_SEC)
+        armed = _raw_eval(tab_id, guard_js,
+                          timeout_sec=ENTER_GUARD_TIMEOUT_SEC)
     except Exception as e:
         # Страж не встал — Enter всё равно отправляем, как до стража.
         # Отказ eval'а значит, что вкладка закрыта (тогда и Enter честно
@@ -9794,7 +9893,14 @@ def _raw_enter(tab_id: int, with_text: bool = False,
         logger.warning(f"[BrowserActions] Вкладка #{tab_id}: страж Enter не "
                        f"встал ({str(e)[:100]}) — Enter без стража")
     sent = False
+    pre = None
     try:
+        if armed == "frame":
+            # Фокус во фрейме: Enter ушёл бы мимо стража. Возврат в поле —
+            # или исключение, и Enter не уходит вовсе (снятие — в finally)
+            _raw_enter_refocus(tab_id, input_sel, guard_js)
+        if measure:
+            pre = _raw_state(tab_id)
         for ev_type, extra in events:
             _raw_tab_call(tab_id, "Input.dispatchKeyEvent",
                           dict({"type": ev_type, "key": "Enter", "code": "Enter",
@@ -9802,13 +9908,53 @@ def _raw_enter(tab_id: int, with_text: bool = False,
                                 "nativeVirtualKeyCode": 13}, **extra))
         sent = True
     finally:
-        # Снятие — и когда dispatch упал: в rescue окно пула H видимое,
-        # человек сам печатает в нём (капча, вход), и оставшийся страж съел
-        # бы его Enter. Сбой снятия отправку не роняет: страж одноразовый —
-        # съест разве что один следующий Enter, который сайт сам не взял
-        # (перевод строки в поле), а навигация/перезагрузка убирает его
-        # вместе с документом и следующая установка снимает прежний
+        # Снятие — и когда dispatch упал или Enter не отправлен (фокус во
+        # фрейме): в rescue окно пула H видимое, человек сам печатает в нём
+        # (капча, вход), и оставшийся страж съел бы его Enter. Сбой снятия
+        # отправку не роняет: страж одноразовый — съест разве что один
+        # следующий Enter, который сайт сам не взял (перевод строки в поле),
+        # а навигация/перезагрузка убирает его вместе с документом и
+        # следующая установка снимает прежний
         _raw_enter_guard_off(tab_id, sent)
+    return pre
+
+
+def _raw_enter_refocus(tab_id: int, input_sel: Optional[str], guard_js: str):
+    """Фокус во фрейме (установка стража вернула 'frame'): один раз вернуть
+    его в поле чата и поставить страж заново. Не вышло — EnterFocusInFrame,
+    Enter не отправляется: без стража он мог бы зациклиться в headless
+    Chrome, а вызывающий (web_llm) отправит кнопкой — текст в поле.
+    Без input_sel возвращать фокус некуда — сразу отказ (вызовов без
+    селектора в боте нет: _raw_chat_fill_send передаёт поле всегда).
+    Сбой eval'а здесь — тоже отказ, а не «Enter без стража», как при сбое
+    первой установки: там фрейм не был известен, а здесь он известен
+    наверняка — непоглощённый Enter во фрейме и есть вечный цикл."""
+    logger.info(f"[BrowserActions] Вкладка #{tab_id}: фокус во фрейме "
+                f"страницы (капча/встройка) — keydown Enter ушёл бы мимо "
+                f"стража, возвращаю фокус в поле чата")
+    why = ""
+    if not input_sel:
+        why = "селектора поля чата нет"
+    else:
+        try:
+            if _raw_eval(tab_id, _ENTER_REFOCUS_JS % json.dumps(
+                    str(input_sel), ensure_ascii=False),
+                    timeout_sec=ENTER_GUARD_TIMEOUT_SEC) != "ok":
+                why = "поля чата в главном документе нет"
+            elif _raw_eval(tab_id, guard_js,
+                           timeout_sec=ENTER_GUARD_TIMEOUT_SEC) == "frame":
+                why = "фокус остался во фрейме (поле его не взяло)"
+        except Exception as e:
+            why = f"страница не ответила: {str(e)[:80]}"
+    if not why:
+        logger.info(f"[BrowserActions] Вкладка #{tab_id}: фокус возвращён в "
+                    f"поле чата — Enter со стражем")
+        return
+    logger.info(f"[BrowserActions] Вкладка #{tab_id}: Enter НЕ отправлен — "
+                f"{why}; без стража он мог бы зациклиться, отправка кнопкой")
+    raise EnterFocusInFrame(
+        f"Enter не отправлен: фокус во фрейме страницы, в поле не вернулся "
+        f"({why}) — нужна отправка кнопкой")
 
 
 def _raw_enter_guard_off(tab_id: int, sent: bool):
@@ -9830,9 +9976,10 @@ def _raw_enter_guard_off(tab_id: int, sent: bool):
                     f"вечный цикл клавиши в headless Chrome")
     elif res == "unfired" and sent:
         # Enter отправлен, а keydown до окна не дошёл вовсе (ни перехват,
-        # ни всплытие): фокус во фрейме, сайт гасит событие собственным
-        # перехватом на window. Поглощён ли он — неизвестно; в лог для
-        # разбора зависаний
+        # ни всплытие): фокус ушёл во фрейм уже ПОСЛЕ установки стража (при
+        # установке фрейм ловится — _raw_enter_refocus), фрейм в закрытом
+        # shadow-корне, сайт гасит событие собственным перехватом на window.
+        # Поглощён ли он — неизвестно; в лог для разбора зависаний
         logger.info(f"[BrowserActions] Вкладка #{tab_id}: keydown Enter не "
                     f"дошёл до стража — если сайт его не поглотил, возможен "
                     f"цикл клавиши")
@@ -9913,10 +10060,13 @@ def _raw_chat_fill_send(tab_id: int, input_sel: str, text: str,
             time.sleep(0.2)
     if _norm_ws(text[:200]) not in _norm_ws(got):
         raise BrowserUnavailable("поле чата не приняло текст")
-    pre = _raw_state(tab_id)
     # Селектор поля — стражу Enter (см. _ENTER_GUARD_JS): Enter с символом
-    # в поле чата он пропускает, всё прочее неподхваченное — гасит
-    _raw_enter(tab_id, with_text=enter_text, input_sel=input_sel)
+    # в поле чата он пропускает, всё прочее неподхваченное — гасит; фокус,
+    # отнятый фреймом после ввода, возвращает в поле (или EnterFocusInFrame
+    # — Enter не ушёл, текст в поле). Замер «до» — из _raw_enter, прямо
+    # перед нажатием: возврат фокуса не должен сойти за эффект отправки
+    pre = _raw_enter(tab_id, with_text=enter_text, input_sel=input_sel,
+                     measure=True)
     deadline = time.time() + SUBMIT_VERIFY_SEC
     while time.time() < deadline:
         try:

@@ -16,7 +16,12 @@ Playwright с локальными страницами (set_content) — без
   установки/снятия отправку не роняют; на настоящей странице — кто поглотил
   Enter (сайт/страж/поле), Enter с символом в поле чата не отменяется
   (keypress duck.ai доходит), вне поля, в readOnly и при stopPropagation
-  сайта — отменяется; после снятия следующий Enter не трогается.
+  сайта — отменяется; после снятия следующий Enter не трогается;
+* страж Enter, фокус во фрейме (keydown мимо стража): установка сообщает
+  'frame' (и во фрейме внутри открытого shadow-корня), фокус возвращается в
+  поле чата и Enter уходит со стражем; поля нет/заперто/нет селектора/сбой
+  возврата — Enter не отправлен, EnterFocusInFrame (подкласс FillUncertain);
+  фрейм отнял фокус после ввода — возврат фокуса не сходит за отправку.
 
 Запуск: python -m scripts.test_ba_sandbox
 """
@@ -263,9 +268,9 @@ def _guard_checks(ba, page, cdp, check):
         seen = {}
         _re = ba._raw_enter
 
-        def spy_enter(tab, with_text=False, input_sel=None):
-            seen.update(with_text=with_text, input_sel=input_sel)
-            return _re(tab, with_text=with_text, input_sel=input_sel)
+        def spy_enter(tab, with_text=False, input_sel=None, **kw):
+            seen.update(with_text=with_text, input_sel=input_sel, **kw)
+            return _re(tab, with_text=with_text, input_sel=input_sel, **kw)
         ba._raw_enter = spy_enter
         offs.clear()
         try:
@@ -274,10 +279,260 @@ def _guard_checks(ba, page, cdp, check):
             res = f"{type(e).__name__}: {e}"
         finally:
             ba._raw_enter = _re
-        check("страж: _raw_chat_fill_send передаёт селектор поля в _raw_enter; "
-              "duck.ai-подобная отправка по keypress — sent",
-              res == "sent" and seen == {"with_text": True, "input_sel": "#t"}
+        check("страж: _raw_chat_fill_send передаёт селектор поля в _raw_enter "
+              "(и берёт из него замер «до»); duck.ai-подобная отправка по "
+              "keypress — sent",
+              res == "sent" and seen == {"with_text": True, "input_sel": "#t",
+                                         "measure": True}
               and offs == ["field"] and page.evaluate("()=>sent") == 1)
+    finally:
+        ba._raw_tab_call, ba._raw_eval = _rtc, _rev
+        ba._RAW_TABS.pop(1, None)
+        blog.removeHandler(rec)
+        blog.setLevel(old_level)
+
+
+def _guard_frame_checks(ba, page, cdp, check):
+    """Страж Enter при фокусе во фрейме (03.10): keydown уходит в документ
+    фрейма мимо стража на window — установка сообщает 'frame', _raw_enter
+    один раз возвращает фокус в поле чата и ставит страж заново, иначе Enter
+    не шлёт и бросает EnterFocusInFrame (подкласс FillUncertain — web_llm
+    отправит кнопкой). Сначала порядок вызовов на подменах, затем НАСТОЯЩИЙ
+    JS на странице песочницы (подменён только транспорт _raw_tab_call)."""
+    blog = logging.getLogger(ba.__name__)
+    rec = _LogRec()
+    blog.addHandler(rec)
+    old_level = blog.level
+    blog.setLevel(logging.DEBUG)
+    _rtc, _rev = ba._raw_tab_call, ba._raw_eval
+    refocus_head = ba._ENTER_REFOCUS_JS.split("%s")[0]
+    try:
+        # ── порядок вызовов на подменах ──
+        calls = []
+        cfg = {"on": [], "refocus": "ok", "off": "guard"}
+
+        def fake_eval(tab, js, timeout_sec=None):
+            if "'armed'" in js:
+                calls.append("on")
+                return cfg["on"].pop(0) if cfg["on"] else "armed"
+            if js.startswith(refocus_head):
+                calls.append(("refocus", js))
+                if isinstance(cfg["refocus"], Exception):
+                    raise cfg["refocus"]
+                return cfg["refocus"]
+            if js == ba._ENTER_GUARD_OFF_JS:
+                calls.append("off")
+                return cfg["off"]
+            calls.append("state")  # _DOM_STATE_JS замера «до»
+            return ""
+
+        def fake_call(tab, method, params=None, timeout=None):
+            calls.append(params["type"])
+            return {}
+
+        def kinds():
+            return [c[0] if isinstance(c, tuple) else c for c in calls]
+
+        def enter(**kw):
+            calls.clear()
+            rec.msgs.clear()
+            try:
+                return ba._raw_enter(1, **kw), None
+            except Exception as e:
+                return None, e
+
+        ba._raw_eval, ba._raw_tab_call = fake_eval, fake_call
+        cfg.update(on=["frame", "armed"], refocus="ok")
+        _r, err = enter(input_sel="#prompt-textarea", measure=True)
+        refocus_js = next(c[1] for c in calls if isinstance(c, tuple))
+        check("страж/фрейм: установка 'frame' → возврат фокуса в поле по "
+              "селектору → страж заново → замер «до» → Enter → снятие",
+              err is None and kinds() == ["on", "refocus", "on", "state",
+                                          "rawKeyDown", "keyUp", "off"]
+              and refocus_js.endswith("(\"#prompt-textarea\")"))
+        check("страж/фрейм: возврат фокуса — в лог INFO",
+              any(lv == logging.INFO and "фокус возвращён" in m
+                  for lv, m in rec.msgs))
+        cfg.update(on=["frame", "frame"], refocus="ok")
+        _r, err = enter(input_sel="#t", with_text=True)
+        check("страж/фрейм: фокус остался во фрейме — Enter НЕ отправлен, "
+              "EnterFocusInFrame (подкласс FillUncertain), страж снят",
+              isinstance(err, ba.EnterFocusInFrame)
+              and isinstance(err, ba.FillUncertain)
+              and kinds() == ["on", "refocus", "on", "off"])
+        check("страж/фрейм: отказ — в лог INFO с причиной",
+              any(lv == logging.INFO and "НЕ отправлен" in m
+                  and "остался во фрейме" in m for lv, m in rec.msgs))
+        cfg.update(on=["frame"], refocus="no-field")
+        _r, err = enter(input_sel="#t")
+        check("страж/фрейм: поля в главном документе нет — отказ без Enter",
+              isinstance(err, ba.EnterFocusInFrame)
+              and kinds() == ["on", "refocus", "off"]
+              and "поля чата в главном документе нет" in str(err))
+        cfg.update(on=["frame"])
+        _r, err = enter()
+        check("страж/фрейм: без input_sel возвращать фокус некуда — сразу "
+              "отказ, без eval'а возврата и без Enter",
+              isinstance(err, ba.EnterFocusInFrame)
+              and kinds() == ["on", "off"]
+              and "селектора поля чата нет" in str(err))
+        cfg.update(on=["frame"],
+                   refocus=ba.RawCallTimeout("имитация: страница молчит"))
+        _r, err = enter(input_sel="#t")
+        check("страж/фрейм: сбой eval'а возврата — отказ (фрейм известен "
+              "наверняка), а не Enter без стража",
+              isinstance(err, ba.EnterFocusInFrame)
+              and kinds() == ["on", "refocus", "off"])
+        cfg.update(on=[], refocus="ok")
+        r, err = enter(input_sel="#t", measure=True)
+        r2, err2 = enter(input_sel="#t")
+        check("страж/фрейм: фокус не во фрейме — как раньше (без возврата); "
+              "measure=True отдаёт замер, без него — None",
+              err is None and err2 is None and r is not None and r2 is None
+              and kinds() == ["on", "rawKeyDown", "keyUp", "off"])
+
+        # ── настоящий JS на странице песочницы ──
+        ba._raw_eval = _rev
+        ba._raw_tab_call = (lambda tab, method, params=None, timeout=None:
+                            cdp.send(method, params or {}))
+        ba._RAW_TABS[1] = {"targetId": "t", "sessionId": "s", "pool": "h"}
+        offs = []
+
+        def rec_eval(tab, js, timeout_sec=None):
+            r = _rev(tab, js, timeout_sec=timeout_sec)
+            if js == ba._ENTER_GUARD_OFF_JS:
+                offs.append(r)
+            return r
+        ba._raw_eval = rec_eval
+        frame = "<iframe id='fr' srcdoc=\"<textarea id='f'></textarea>\"></iframe>"
+
+        def load(html):
+            page.evaluate("()=>{window.sent=null;}")
+            page.set_content(html)
+            page.wait_for_function(
+                "()=>{var f=document.getElementById('fr');return !!(f&&"
+                "f.contentDocument&&f.contentDocument.getElementById('f'));}")
+
+        def st():
+            return page.evaluate(
+                "()=>{var a=document.activeElement,t=document.getElementById"
+                "('t'),f=document.getElementById('fr').contentDocument"
+                ".getElementById('f');return [a&&a.id||a&&a.tagName,"
+                "t?t.value:null,f.value,window.sent,"
+                "window.__vpcEnterGuard||null];}")
+
+        def run(with_text, sel="#t", focus="field"):
+            offs.clear()
+            page.evaluate(
+                "(w)=>{var fr=document.getElementById('fr');"
+                "if(w==='field')fr.contentDocument.getElementById('f').focus();"
+                "else fr.contentWindow.focus();}", focus)
+            try:
+                ba._raw_enter(1, with_text=with_text, input_sel=sel)
+                err = None
+            except Exception as e:
+                err = e
+            page.wait_for_timeout(100)
+            return err, (offs[-1] if offs else None), st()
+
+        guard_frame = ba._ENTER_GUARD_JS % ("false", "\"#t\"")
+        load("<textarea id='t'>hello</textarea>" + frame)
+        page.evaluate("()=>document.getElementById('fr').contentDocument"
+                      ".getElementById('f').focus()")
+        got_frame = _rev(1, guard_frame)
+        _rev(1, ba._ENTER_GUARD_OFF_JS)
+        page.evaluate("()=>document.getElementById('t').focus()")
+        got_main = _rev(1, guard_frame)
+        _rev(1, ba._ENTER_GUARD_OFF_JS)
+        page.set_content("<textarea id='t'></textarea><div id='h'></div>")
+        page.evaluate(
+            "()=>{var r=document.getElementById('h').attachShadow("
+            "{mode:'open'});r.innerHTML=\"<iframe id='sf' srcdoc=\\\"<input "
+            "id='g'>\\\"></iframe>\";}")
+        page.wait_for_function(
+            "()=>{var r=document.getElementById('h').shadowRoot,"
+            "f=r&&r.getElementById('sf');return !!(f&&f.contentDocument&&"
+            "f.contentDocument.getElementById('g'));}")
+        page.evaluate("()=>document.getElementById('h').shadowRoot"
+                      ".getElementById('sf').contentDocument"
+                      ".getElementById('g').focus()")
+        got_shadow = _rev(1, guard_frame)
+        _rev(1, ba._ENTER_GUARD_OFF_JS)
+        check("страж/фрейм (Blink): установка — 'frame' при фокусе в поле "
+              "фрейма и во фрейме внутри открытого shadow-корня, 'armed' — "
+              "при фокусе в поле главного документа",
+              (got_frame, got_main, got_shadow) == ("frame", "armed", "frame"))
+
+        load("<textarea id='t'>hello</textarea>" + frame)
+        err, off, s = run(False)
+        check("страж/фрейм (Blink): rawKeyDown, фокус в поле фрейма — фокус "
+              "возвращён в поле чата, Enter ушёл со стражем (поглотил страж), "
+              "поле фрейма не тронуто",
+              err is None and off == "guard"
+              and s == ["t", "hello", "", None, None])
+        # Поле пустое: каретка поля, ни разу не бывшего в фокусе, — в начале
+        # (в боте значение ставит _CHAT_FILL_JS, каретка в конце и focus()
+        # её сохраняет)
+        load("<textarea id='t'></textarea>" + frame)
+        err, off, s = run(True, focus="body")
+        check("страж/фрейм (Blink): Enter с символом, фокус на body фрейма — "
+              "возвращён в поле чата, перевод строки вставлен в него (field)",
+              err is None and off == "field"
+              and s == ["t", "\n", "", None, None])
+        load("<p>нет поля</p>" + frame)
+        err, off, s = run(False)
+        check("страж/фрейм (Blink): поля чата в главном документе нет — "
+              "EnterFocusInFrame, Enter не ушёл (поле фрейма не тронуто), "
+              "страж снят (unfired)",
+              isinstance(err, ba.EnterFocusInFrame) and off == "unfired"
+              and s == ["fr", None, "", None, None])
+        load("<textarea id='t' disabled>hello</textarea>" + frame)
+        err, off, s = run(True)
+        check("страж/фрейм (Blink): поле заперто (focus() не берёт) — фокус "
+              "остался во фрейме, Enter не ушёл, страж снят",
+              isinstance(err, ba.EnterFocusInFrame) and off == "unfired"
+              and s == ["fr", "hello", "", None, None])
+
+        # Полный путь: виджет во фрейме отнимает фокус после ввода (как
+        # капча с автофокусом). Сайт отправляет по keydown — sent; сайт Enter
+        # не взял — честное FillUncertain, а не «sent» из-за самого возврата
+        # фокуса (замер «до» — после него)
+        steal = ("<textarea id='t'></textarea>" + frame + "<script>"
+                 "var t=document.getElementById('t'),fr=document."
+                 "getElementById('fr');t.addEventListener('input',function(){"
+                 "setTimeout(function(){fr.contentDocument.getElementById('f')"
+                 ".focus();},120);});%s</script>")
+        site = ("t.addEventListener('keydown',function(e){if(e.key==='Enter')"
+                "{e.preventDefault();window.sent=(window.sent||0)+1;"
+                "t.value='';}});")
+        verify = ba.SUBMIT_VERIFY_SEC
+        ba.SUBMIT_VERIFY_SEC = 0.8
+        try:
+            results = []
+            for script in (site, ""):
+                load(steal % script)
+                offs.clear()
+                rec.msgs.clear()
+                try:
+                    res = ba._raw_chat_fill_send(1, "#t", "привет")
+                except Exception as e:
+                    res = e
+                results.append((res, list(offs), st(),
+                                any("фокус возвращён" in m
+                                    for _lv, m in rec.msgs)))
+        finally:
+            ba.SUBMIT_VERIFY_SEC = verify
+        (r1, o1, s1, back1), (r2, o2, s2, back2) = results
+        check("страж/фрейм (Blink): фрейм отнял фокус после ввода — фокус "
+              "возвращён, сайт отправил по keydown — sent",
+              r1 == "sent" and back1 and o1 == ["site"]
+              and s1 == ["t", "", "", 1, None])
+        check("страж/фрейм (Blink): то же, сайт Enter не взял — FillUncertain "
+              "(возврат фокуса не сошёл за эффект отправки)",
+              isinstance(r2, ba.FillUncertain)
+              and not isinstance(r2, ba.EnterFocusInFrame)
+              and back2 and o2 == ["guard"]
+              and s2 == ["t", "привет", "", None, None])
     finally:
         ba._raw_tab_call, ba._raw_eval = _rtc, _rev
         ba._RAW_TABS.pop(1, None)
@@ -813,6 +1068,7 @@ el.value=f;});</script>"""
               and with_txt[0]["type"] == "keyDown"
               and plain[0]["type"] == "rawKeyDown")
         _guard_checks(ba, page, cdp, check)
+        _guard_frame_checks(ba, page, cdp, check)
         page.set_content(
             "<nav style='position:sticky;top:0'><a>Пиццы</a><a>Напитки</a>"
             "</nav><main><section><div><h2>Пиццы</h2></div>"

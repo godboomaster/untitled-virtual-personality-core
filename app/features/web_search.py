@@ -654,6 +654,10 @@ def _google_unwrap(href: str) -> str:
 # (он просто уходит в DDG, как и без пробы).
 _GOOGLE_PROBE_LOCK = threading.Lock()
 _GOOGLE_PROBE_TAB: int | None = None  # фоновая вкладка пула H (окно rescue)
+# targetId той же вкладки — запомнен при открытии: вызов на пробе может
+# выбросить её из реестра фоновых вкладок при живой странице, и закрыть окно
+# тогда можно только по нему (_drop_google_probe)
+_GOOGLE_PROBE_TARGET: str | None = None
 # Хост Google (www./consent./ccTLD) — проба, ушедшая с него, капчу поиска
 # уже не показывает
 _GOOGLE_HOST_RE = re.compile(r"(^|\.)google\.[a-z]{2,3}(\.[a-z]{2})?$")
@@ -667,13 +671,27 @@ _GOOGLE_PROBE_JS = ("(async()=>{const r=JSON.parse(await " + _GOOGLE_RESULTS_JS
 
 def _drop_google_probe(ba, why: str) -> None:
     """Закрыть и забыть окно-пробу. Только под _GOOGLE_PROBE_LOCK. Закрытие
-    best effort: вкладки умершего Chrome уже нет в реестре (close — no-op)."""
-    global _GOOGLE_PROBE_TAB
+    best effort: вкладка в реестре — close_background_tab; реестр её уже
+    забыл — по запомненному targetId (ba.close_target): у умершего или
+    перезапущенного Chrome такого таргета нет, и это тихий no-op."""
+    global _GOOGLE_PROBE_TAB, _GOOGLE_PROBE_TARGET
     tab, _GOOGLE_PROBE_TAB = _GOOGLE_PROBE_TAB, None
+    target, _GOOGLE_PROBE_TARGET = _GOOGLE_PROBE_TARGET, None
     if tab is None:
         return
     try:
-        ba.close_background_tab(tab)
+        if ba.is_raw_tab(tab) or not target:
+            ba.close_background_tab(tab)
+        else:
+            # Вкладку выбросил из реестра вызов на ней (_raw_eval → _raw_drop,
+            # неудачный переattach), а страница в живом Chrome осталась:
+            # close_background_tab закрывать уже нечего, и видимое окно rescue
+            # висело бы сиротой, а следующий поиск открыл бы рядом новое.
+            # Chrome перезапущен — старого таргета в нём нет, close_target
+            # молча вернёт False. Гонки «в реестре → выпала до закрытия»
+            # здесь нет: пробу трогает только этот модуль под своим локом, а
+            # чужой сброс реестра — это перезапуск Chrome вместе с окном
+            ba.close_target(target)
     except Exception as e:
         logger.debug(f"[WEB_SEARCH] Google: окно-проба #{tab} не "
                      f"закрылось: {e}")
@@ -760,7 +778,7 @@ def _google_rescue_probe(ba, query: str) -> tuple[bool, dict | None]:
     Вне rescue ничего не открывает и не читает — только отпускает
     оставшуюся пробу. Запросов к Google — не больше одного за вызов (открытие
     пробы, когда её нет), повторов нет."""
-    global _GOOGLE_PROBE_TAB
+    global _GOOGLE_PROBE_TAB, _GOOGLE_PROBE_TARGET
     from urllib.parse import quote_plus
     from app.features.web_llm import (
         _finish_rescue_if_done, clear_quarantine, quarantine_kind)
@@ -794,6 +812,12 @@ def _google_rescue_probe(ba, query: str) -> tuple[bool, dict | None]:
                             f"открылось ({e})")
                 return False, None
             _GOOGLE_PROBE_TAB = tab
+            try:
+                # Сразу, пока вкладка точно в реестре: первый же замер ниже
+                # может её оттуда выбросить
+                _GOOGLE_PROBE_TARGET = ba.background_tab_target(tab)
+            except Exception:
+                _GOOGLE_PROBE_TARGET = None
             logger.info(f"[WEB_SEARCH] Google в карантине, rescue пула H — "
                         f"окно-проба капчи #{tab} открыто")
             verdict, data, url = _check_google_probe(ba, tab)
