@@ -12,4 +12,5 @@ from pathlib import Path
 
 
 def data_dir() -> Path:
-    return Path(os.getenv("VPC_DATA_DIR", "data"))
+    # Пустое значение («VPC_DATA_DIR=») — как не заданное, а не текущая папка
+    return Path(os.getenv("VPC_DATA_DIR") or "data")

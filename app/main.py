@@ -13,7 +13,7 @@ import logging
 import threading
 from pathlib import Path
 from typing import Dict, Tuple
-from dotenv import load_dotenv
+from app.core.envfile import load_env_file
 
 # .env/.env.config текущей папки — приоритет над .env ядра (у отдельного
 # проекта-аддона, запущенного не из корня ядра, свой конфиг и свои токены).
@@ -21,10 +21,10 @@ from dotenv import load_dotenv
 # повторная загрузка ничего не меняет.
 _project_root = Path(__file__).parent.parent
 _cwd = Path.cwd()
-load_dotenv(_cwd / ".env")
-load_dotenv(_cwd / ".env.config")
-load_dotenv(_project_root / ".env")
-load_dotenv(_project_root / ".env.config")
+load_env_file(_cwd / ".env")
+load_env_file(_cwd / ".env.config")
+load_env_file(_project_root / ".env")
+load_env_file(_project_root / ".env.config")
 
 from app.bot_instance import BotInstance
 from app.core.persona import PersonaLayer

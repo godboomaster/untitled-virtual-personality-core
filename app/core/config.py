@@ -1,12 +1,14 @@
 import os
-from dotenv import load_dotenv
 from pathlib import Path
 
+from app.core.envfile import load_env_file
+
 _project_root = Path(__file__).parent.parent.parent
-# .env грузим первым: load_dotenv не перезаписывает уже заданные переменные,
-# поэтому пользовательские значения из .env имеют приоритет над дефолтами .env.config
-load_dotenv(_project_root / ".env")
-load_dotenv(_project_root / ".env.config")
+# .env грузим первым: уже заданные переменные не перезаписываются,
+# поэтому пользовательские значения из .env имеют приоритет над дефолтами .env.config.
+# load_env_file, а не load_dotenv: «KEY=   # комментарий» — пустое значение
+load_env_file(_project_root / ".env")
+load_env_file(_project_root / ".env.config")
 
 # ─── Локальная модель (Ollama) ────────────────────────────
 # Единая модель для ВСЕХ локальных вызовов: чат-фолбэк (local_router),
@@ -127,7 +129,7 @@ def get_available_providers() -> dict:
 
 
 class Config:
-    DATA_DIR = os.getenv("DATA_DIR", "./data")
+    DATA_DIR = os.getenv("DATA_DIR") or "./data"
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     STM_SIZE = int(os.getenv("STM_SIZE", "500"))
     LTM_EXTRACTION_ENABLED = os.getenv("LTM_EXTRACTION_ENABLED", "true").lower() == "true"
