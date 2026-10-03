@@ -656,7 +656,7 @@ html[data-vpc-shell] .detroit-bg {
 }
 
 .sidebar--collapsed .sidebar-footer-text,
-.sidebar--collapsed .sidebar-status-row:not(.sidebar-status-row--ok) {
+.sidebar--collapsed .sidebar-status-row:not(.sidebar-status-row--ok):not(.sidebar-status-row--down) {
   display: none;
 }
 
@@ -683,6 +683,18 @@ html[data-vpc-shell] .detroit-bg {
 
 .sidebar-status-row--ok {
   color: var(--accent);
+}
+
+/* Нет связи с ядром: красный немигающий индикатор (подвал сайдбара, шапка) */
+.sidebar-status-row--down,
+.topbar-status--down {
+  color: var(--danger);
+}
+
+.sidebar-status-row--down .status-led,
+.topbar-status--down .status-led {
+  background: var(--danger);
+  animation: none;
 }
 
 /* Ромбовидный LED-индикатор */

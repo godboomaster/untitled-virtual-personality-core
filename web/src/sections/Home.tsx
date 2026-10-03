@@ -10,6 +10,7 @@ import CalendarWidget from '../components/CalendarWidget';
 import { api } from '../api';
 import type { HomeOverview } from '../api';
 import { useApiOnline } from '../apiData';
+import { agoLabel } from '../timeAgo';
 
 // Сводка главной с бэкенда обновляется раз в минуту
 const HOME_POLL_MS = 60_000;
@@ -79,18 +80,7 @@ export default function Home({ onNavigate }: HomeProps) {
   const ov = (id: string) => overview?.personas[id];
 
   // «5 мин назад» / «вчера в 14:20» / «12.08» — от живых часов now
-  const ago = (ts: number | null | undefined): string => {
-    if (!ts) return t('home.never');
-    const sec = Math.max(0, now.getTime() / 1000 - ts);
-    if (sec < 60) return t('home.agoNow');
-    if (sec < 3600) return t('home.agoMin', { n: Math.floor(sec / 60) });
-    const d = new Date(ts * 1000);
-    const hm = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
-    if (ts >= startOfToday) return t('home.agoToday', { t: hm });
-    if (ts >= startOfToday - 86400) return t('home.agoYesterday', { t: hm });
-    return d.toLocaleDateString(locale, { day: '2-digit', month: '2-digit' });
-  };
+  const ago = (ts: number | null | undefined): string => agoLabel(ts, now, t, locale);
 
   // Приветствие по времени суток
   const hour = new Date().getHours();

@@ -14,7 +14,8 @@ import { consumeChatPersonaRequest, useChatOverviewRequest, useChatPersonaReques
 import { captureRects, playFlip } from '../flip';
 import type { FlipRects } from '../flip';
 import ChatOverview from './ChatOverview';
-import { INIT_TYPE_MAP } from '../initiativeTypes';
+import { formatSilence, INIT_TYPE_MAP } from '../initiativeTypes';
+import { agoLabel } from '../timeAgo';
 import { usePersonaAvatars } from '../avatarStore';
 import PersonaDossier from '../components/PersonaDossier';
 import PersonaYamlModal from '../components/PersonaYamlModal';
@@ -790,16 +791,23 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       : initIgnoreStreak === 0
         ? t('chat.trendImproving')
         : t('chat.trendStable');
-  // Частота самоинициативы: чем свежее диалог, тем чаще персона пишет сама (мок-эвристика)
-  const initFreq =
-    persona.lastReplyFreshness === 'fresh'
-      ? t('chat.freqElevated')
-      : persona.lastReplyFreshness === 'yesterday'
-        ? t('chat.freqNormal')
-        : t('chat.freqReduced');
-  // Текущее занятие персоны: живое состояние из кеша комнаты (если она уже
-  // загружалась — свой поллинг не запускаем), иначе первое из мок-конфига её
-  // комнаты; у персоны без мока — ничего (занятия Коннора не подставляем)
+  // «Последний ответ · когда напишет сама»: время последней реплики
+  // пользователя из истории и порог молчания с бэкенда (адаптивный —
+  // две медианы интервала между репликами). Нет данных — прочерк
+  const lastUserTs = [...messages].reverse().find((m) => m.role === 'user' && m.ts)?.ts ?? null;
+  const lastReplyText = apiOnline && initApi
+    ? t('chat.lastReplyLine', {
+        t: agoLabel(lastUserTs, new Date(), t, lang === 'ru' ? 'ru-RU' : 'en-US'),
+        f: !initApi.enabled
+          ? t('chat.selfOff')
+          : t('chat.selfAfter', {
+              n: formatSilence(initApi.effective_silence_minutes ?? initApi.silence_threshold_minutes, t, lang),
+            }),
+      })
+    : t('chat.lastReplyUnknown');
+  // Текущее занятие персоны: только живое состояние из кеша комнаты (если
+  // она уже загружалась — свой поллинг не запускаем); нет его — прочерк,
+  // демо-занятия не подставляем
   const roomCache = useRoomView(persona.id, { enabled: false });
   const roomLiving = roomCache.view?.living;
   const roomState = roomLiving?.enabled && roomLiving.ui_sync ? roomLiving.state : null;
@@ -1610,7 +1618,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         today: initToday,
         max: initMax,
       }),
-      lastReply: t('chat.lastReplyLine', { t: persona.lastReply, f: initFreq }),
+      lastReply: lastReplyText,
       nextReminder: nextReminder
         ? `${nextReminder.time} — ${nextReminder.text}`
         : t('chat.noActiveReminders'),
@@ -2117,7 +2125,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             {t('chat.probLine', { p: Math.round(initProb * 100), today: initToday, max: initMax })}
           </div>
           <div className="ctx-mono">
-            {t('chat.lastReplyLine', { t: persona.lastReply, f: initFreq })}
+            {lastReplyText}
           </div>
           {lastInit && (
             <div className="ctx-note">

@@ -4,7 +4,7 @@ import type { InitiativeEvent, InitiativeState } from '../mockData';
 import { api } from '../api';
 import type { InitiativeData } from '../api';
 import { useApiOnline } from '../apiData';
-import { INIT_TYPE_MAP } from '../initiativeTypes';
+import { formatSilence, INIT_TYPE_MAP } from '../initiativeTypes';
 import InfoButton from '../components/InfoButton';
 
 interface InitiativeProps {
@@ -13,7 +13,7 @@ interface InitiativeProps {
 }
 
 export default function Initiative({ personaId: fixedId, embedded }: InitiativeProps) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { personas, initiativeStateByPersona, initiativeByPersona } = useMockData();
   const apiOnline = useApiOnline();
 
@@ -163,13 +163,12 @@ export default function Initiative({ personaId: fixedId, embedded }: InitiativeP
       .catch(() => {});
   };
 
-  // Частота самоинициативы из свежести последнего ответа (мок-эвристика)
-  const initFreq =
-    persona.lastReplyFreshness === 'fresh'
-      ? t('chat.freqElevated')
-      : persona.lastReplyFreshness === 'yesterday'
-        ? t('chat.freqNormal')
-        : t('chat.freqReduced');
+  // Когда персона пишет сама: порог молчания с бэкенда (адаптивный — под
+  // темп реплик оператора). Без бэкенда подсказки нет
+  const effSilence = apiData ? (apiData.effective_silence_minutes ?? apiData.silence_threshold_minutes) : null;
+  const freqHint = effSilence == null || !apiData
+    ? null
+    : t(apiData.adaptive_threshold ? 'init.freqHintAdaptive' : 'init.freqHint', { n: formatSilence(effSilence, t, lang) });
 
   return (
     <div className={embedded ? undefined : 'section'}>
@@ -404,9 +403,7 @@ export default function Initiative({ personaId: fixedId, embedded }: InitiativeP
           <button className="btn btn--primary" onClick={apiData ? saveParams : undefined}>
             {savedFlash ? '✓' : t('init.saveParams')}
           </button>
-          <div className="field-hint">
-            {t('init.freqHint', { t: persona.lastReply, f: initFreq })}
-          </div>
+          {freqHint && <div className="field-hint">{freqHint}</div>}
         </div>
 
         {/* Текущее состояние */}
