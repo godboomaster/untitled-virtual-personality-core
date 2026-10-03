@@ -128,7 +128,8 @@ class _TabLost(Exception):
 # ── Карантин сайтов (антибот-челленджи) ──
 # Сайт с капчей уходит в карантин: fallback-цепочка пропускает его мгновенно
 # (без тяжёлых попыток через wedged-страницу), пользователь получает
-# уведомление (alert забирает bot_instance и доносит со следующим ответом).
+# уведомление (alert забирает bot_instance и доносит со следующим ответом;
+# капчу/вход прошли раньше — недоставленное снимается, _drop_pending_alerts).
 # Карантин истекает по TTL — следующий вызов проверяет сайт заново
 # (self-healing без фонового прогрева вкладок).
 QUARANTINE_TTL_SEC = 1800.0
@@ -614,8 +615,20 @@ def clear_quarantine(site: str):
     _publish_rescue_wait()
 
 
-def quarantine_status() -> dict:
-    # Активные карантины {site: {until, reason}} — для API/статуса
+def quarantine_status(marks: Optional[dict] = None) -> dict:
+    """Активные карантины {site: {until, reason, kind, pool, since}} — для
+    API/статуса (веб: inbox, проба веб-чата в настройках) и правила конца
+    rescue (_rescue_pending_sites). Карантин капчи/входа пула H сверяется с
+    отметками решения, как в site_quarantined (_clear_if_solved_elsewhere):
+    иначе сайт, где капчу/вход уже прошли в другом процессе бота, веб
+    показывал бы в карантине до первого вызова этого процесса к сайту.
+    marks — отметки (_rescue_solved_marks), уже прочитанные вызывающим:
+    сверяются все такие карантины, файлы не читаются. None — прочитать здесь
+    один раз на вызов, и только если есть что сверять: карантин капчи/входа
+    пула H, не сверявшийся SOLVED_CHECK_SEC (счётчик на сайт — общий с
+    site_quarantined: статус опрашивает поллинг веба, это горячий путь). Без
+    таких карантинов файлы не трогаются. Сбой чтения — только debug, статус
+    как есть (без сверки)."""
     with _QUARANTINE_LOCK:
         now = time.time()
         expired = [s for s, q in _SITE_QUARANTINE.items()
@@ -623,8 +636,26 @@ def quarantine_status() -> dict:
         for s in expired:
             _SITE_QUARANTINE.pop(s, None)
         out = {s: dict(q) for s, q in _SITE_QUARANTINE.items()}
+        due = [s for s, q in out.items() if _waits_rescue(q)
+               and (marks is not None
+                    or now - _SOLVED_CHECK_AT.get(s, 0.0) >= SOLVED_CHECK_SEC)]
+        if marks is None:
+            for s in due:
+                _SOLVED_CHECK_AT[s] = now
     if expired:
         _publish_rescue_wait()
+    if due:
+        # Файлы — вне лока карантинов (как в site_quarantined)
+        if marks is None:
+            try:
+                marks = _rescue_solved_marks()
+            except Exception as e:
+                logger.debug(f"[WebChat] Отметки решения rescue не прочитаны "
+                             f"({e}) — статус карантинов без сверки")
+                return out
+        for s in due:
+            if _clear_if_solved_elsewhere(s, out[s], marks):
+                out.pop(s, None)
     return out
 
 
@@ -650,19 +681,22 @@ def _rescue_pending_sites(marks: Optional[dict] = None) -> List[str]:
     процесс бота отметил позже его постановки, здесь же снимается
     (_clear_if_solved_elsewhere): без этого процесс ждал бы капчу, уже
     пройденную в общем окне, пока сам не сходит к сайту. marks — отметки
-    решения (_rescue_solved_marks), None — прочитать здесь. Сайты соседних
-    процессов — _foreign_rescue_waits."""
-    waits = {s: q for s, q in quarantine_status().items() if _waits_rescue(q)}
-    if not waits:
-        return []
+    решения (_rescue_solved_marks), None — прочитать здесь (только если
+    ждущие есть). Сверка — в quarantine_status: ей отметки передаются
+    готовыми, второго чтения файлов нет. Сайты соседних процессов —
+    _foreign_rescue_waits."""
     if marks is None:
-        try:
-            marks = _rescue_solved_marks()
-        except Exception as e:
-            logger.debug(f"[WebChat] Отметки решения rescue не прочитаны: {e}")
-            marks = {}
-    return sorted(s for s, q in waits.items()
-                  if not _clear_if_solved_elsewhere(s, q, marks))
+        with _QUARANTINE_LOCK:
+            waits = any(_waits_rescue(q) for q in _SITE_QUARANTINE.values())
+        marks = {}
+        if waits:
+            try:
+                marks = _rescue_solved_marks()
+            except Exception as e:
+                logger.debug(f"[WebChat] Отметки решения rescue не "
+                             f"прочитаны: {e}")
+    return sorted(s for s, q in quarantine_status(marks).items()
+                  if _waits_rescue(q))
 
 
 # ── Кого ждёт rescue: общее между процессами бота ──
@@ -955,10 +989,10 @@ def _clear_if_solved_elsewhere(site: str, q: dict,
             # капча — новый since): эта отметка его не решает
             return False
         _SITE_QUARANTINE.pop(site, None)
-    if kind == "login":
-        # Как _login_restored: недоставленное «выкинул из аккаунта» пришло бы
-        # уже после входа
-        _drop_pending_alerts(site, "login")
+    # Как при своём подтверждённом решении (_finish_rescue_if_done):
+    # недоставленное «капча на X» / «выкинул из аккаунта» пришло бы уже после
+    # решения
+    _drop_pending_alerts(site, kind)
     where = ("в этом процессе" if pid == os.getpid()
              else f"в другом процессе бота (pid {pid})")
     what = "вход выполнен" if kind == "login" else "капчу прошли"
@@ -1050,7 +1084,14 @@ def _finish_rescue_if_done(ba, cleared: Optional[str] = None,
     pool — пул этого сайта). Снятие с cleared — подтверждённое решение: оно
     отмечается для других процессов бота (_mark_rescue_solved) — и вне
     rescue: кука общая, решение верно для всех, — и их карантин того же
-    сайта и вида больше никого не держит (см. «Решено» выше).
+    сайта и вида больше никого не держит (см. «Решено» выше). Оно же снимает
+    недоставленное уведомление этого сайта и вида (_drop_pending_alerts) — и
+    у сайта пула V: «капча на X» пришло бы со следующим ответом, когда она
+    уже пройдена. Здесь, а не в clear_quarantine: сюда приходит каждое
+    подтверждённое решение (_challenge_check, _login_restored, проба капчи
+    поиска в web_search), а clear_quarantine снимает и без подтверждения
+    (вручную); снятие по сроку (TTL) решения тоже не доказывает — там
+    уведомление остаётся.
     Почему не завершать по первому снятому карантину: капчи бывают у
     нескольких сайтов (и процессов) сразу — rescue, снятый по первой,
     перезапустил бы пул H headless посреди решения второй, и её карантин
@@ -1063,6 +1104,9 @@ def _finish_rescue_if_done(ba, cleared: Optional[str] = None,
     него больше не будет. _recheck — вызов из неё самой (лог «ещё ждём» —
     debug: он шёл бы каждые RESCUE_RECHECK_SEC).
     → True — rescue завершён."""
+    if cleared:
+        # До проверки пула: уведомление устарело и у сайта пула V
+        _drop_pending_alerts(cleared, kind)
     if pool != "h":
         return False
     if cleared:
@@ -1191,8 +1235,16 @@ def finish_idle_rescue() -> bool:
 
 
 def _drop_pending_alerts(site: str, kind: str):
-    # Снять недоставленные уведомления сайта этого вида (ситуация прошла)
+    """Снять недоставленные уведомления сайта этого вида: ситуация прошла
+    (капчу прошли, вход выполнен). Зовут после снятия карантина — но сайт
+    мог СНОВА попасть в карантин того же вида между снятием и этим вызовом
+    (соседний поток поймал свежую капчу): тогда ничего не снимаем — среди
+    уведомлений уже и то, что о свежем карантине. Проверка — под тем же
+    локом, под которым quarantine_site ставит карантин и копит уведомление."""
     with _QUARANTINE_LOCK:
+        q = _SITE_QUARANTINE.get(site)
+        if q and str(q.get("kind") or "challenge") == kind:
+            return
         _PENDING_ALERTS[:] = [a for a in _PENDING_ALERTS
                               if not (a["site"] == site and a["kind"] == kind)]
 
@@ -2233,9 +2285,6 @@ class WebChatLLM:
 
     def _login_restored(self, ba):
         clear_quarantine(self.site)
-        # Уведомления уходят со СЛЕДУЮЩИМ ответом бота: не доставленное к
-        # этому моменту «выкинул из аккаунта» пришло бы уже после входа
-        _drop_pending_alerts(self.site, "login")
         logger.info(f"[WebChat] {self.site}: вход восстановлен — карантин "
                     "разлогина снят")
         try:
@@ -2244,7 +2293,9 @@ class WebChatLLM:
             # во всех процессах бота (_finish_rescue_if_done): иначе окно
             # закрылось бы посреди капчи соседнего сайта или процесса.
             # kind=login: отметка решения снимет у соседей только карантин
-            # входа — капчу вход не опровергает
+            # входа — капчу вход не опровергает. Оно же снимает не
+            # доставленное к этому моменту «выкинул из аккаунта» (уведомления
+            # уходят со СЛЕДУЮЩИМ ответом бота — пришло бы уже после входа)
             _finish_rescue_if_done(ba, cleared=self.site,
                                    pool=self.browser_pool, kind="login")
         except Exception:
@@ -2273,7 +2324,7 @@ class WebChatLLM:
             # завершается, только если капч/входов больше не ждёт ни один
             # процесс бота (_finish_rescue_if_done; оно же отмечает решение
             # для других процессов — их карантин этой капчи снимется без
-            # их вызова к сайту).
+            # их вызова к сайту — и снимает недоставленное «капча на X»).
             # Чистая страница снимает только вид challenge. Разлогин так не
             # снимается: на странице входа капчи тоже нет — его снимает
             # только проба поля ввода (_login_state). Лимит (ratelimit) и

@@ -1649,6 +1649,278 @@ def main():
           not _m_left
           and not _m_glob.glob(_m_glob.escape(str(_rescue_file)) + ".*"))
 
+    # ── 6n. Статус карантинов для веба (quarantine_status) сверяется с
+    #       отметками решения, как site_quarantined: сайт, где капчу/вход
+    #       уже прошли в другом процессе бота, веб больше не показывает в
+    #       карантине (раньше — до первого вызова этого процесса к сайту).
+    #       Сверка не чаще SOLVED_CHECK_SEC на сайт (счётчик общий с
+    #       site_quarantined), одно чтение отметок на вызов, без карантинов
+    #       капчи/входа пула H — ни одного файла. Недоставленное «капча на X»
+    #       снимается при подтверждённом решении (чистая страница, чужая
+    #       отметка, проба поиска через _finish_rescue_if_done), но не при
+    #       снятии вручную или по сроку; уведомление о лимите — нет ──
+    import builtins as _n_builtins
+    _n_real_glob, _n_real_open = _m_glob.glob, _n_builtins.open
+    _sv_n = (ba._POOL_H_MODE_OVERRIDE, ba._POOL_H_RESCUE_UNTIL,
+             ba._POOL_H_RESCUE_SHARED, ba.detect_antibot,
+             wl._rescue_solved_marks, wl.RESCUE_RECHECK_SEC)
+    _n_sites = ("deepseek", "qwen", "zai", "kimi", "chatgpt", "google")
+    _n_fs = []  # (функция, путь) — файловые вызовы ЭТОГО потока под шпионом
+    _n_tid = threading.get_ident()
+
+    def _n_glob(pat, *a, **kw):
+        if threading.get_ident() == _n_tid:
+            _n_fs.append(("glob", str(pat)))
+        return _n_real_glob(pat, *a, **kw)
+
+    def _n_open(file, *a, **kw):
+        if threading.get_ident() == _n_tid:
+            _n_fs.append(("open", str(file)))
+        return _n_real_open(file, *a, **kw)
+
+    def _n_status_fs():
+        # quarantine_status() под шпионом на glob/open → (статус, вызовы)
+        _n_fs.clear()
+        _m_glob.glob, _n_builtins.open = _n_glob, _n_open
+        try:
+            st = wl.quarantine_status()
+        finally:
+            _m_glob.glob, _n_builtins.open = _n_real_glob, _n_real_open
+        return st, list(_n_fs)
+
+    def _n_peek():
+        # Недоставленные уведомления (сайт, вид) — без забора
+        with wl._QUARANTINE_LOCK:
+            return sorted((a["site"], a["kind"]) for a in wl._PENDING_ALERTS)
+
+    wl.logger.addHandler(_k_handler)
+    wl.logger.setLevel(logging.INFO)
+    ba.detect_antibot = lambda *a, **kw: None  # страница чистая
+    wl.RESCUE_RECHECK_SEC = 0  # без фонового потока перепроверки
+    try:
+        check("6n: эмуляция соседей — пути во временном каталоге, не у "
+              "профиля", "Application Support" not in str(_rescue_file))
+
+        # (1) Статус: чужая отметка новее since — сайта нет (карантин снят и
+        # в памяти), старше since (свежая капча после решения) — есть
+        _m_clean()
+        _k_reset(("qwen", "challenge"), ("deepseek", "challenge"))
+        _l_put(_m_peer_solved, {
+            "qwen": {"challenge": _m_since("qwen") + 1e-6},
+            "deepseek": {"challenge": _m_since("deepseek") - 1}})
+        wl._SOLVED_CHECK_AT.clear()
+        wl._rescue_solved_marks = _m_count_marks
+        _m_reads.clear()
+        st = wl.quarantine_status()
+        n_reads = len(_m_reads)
+        check("статус: чужая отметка новее since — сайта в статусе нет, "
+              "карантин снят; старше since — сайт в статусе",
+              "qwen" not in st and "deepseek" in st
+              and wl.quarantine_kind("qwen") is None
+              and wl.quarantine_kind("deepseek") == "challenge"
+              and any(f"qwen: капчу прошли в другом процессе бота (pid "
+                      f"{_l_peer_pid}) — карантин снят" in m for m in _k_logs))
+        check("статус: два сайта к сверке — отметки прочитаны один раз",
+              n_reads == 1)
+        # Вход, выполненный в другом процессе, — так же
+        _k_reset(("kimi", "login"))
+        _l_put(_m_peer_solved, {"kimi": {"login": _m_since("kimi") + 1e-6}})
+        wl._SOLVED_CHECK_AT.clear()
+        check("статус: вход выполнен в другом процессе — сайта в статусе нет",
+              "kimi" not in wl.quarantine_status()
+              and wl.quarantine_kind("kimi") is None)
+
+        # Троттлинг — общий с site_quarantined: только что сверял он — статус
+        # файлов не читает и показывает сайт, хотя отметка его уже снимает;
+        # срок вышел — сверяет и снимает
+        _k_reset(("zai", "challenge"))
+        wl._SOLVED_CHECK_AT.clear()
+        wl.site_quarantined("zai")  # сверил (отметки нет) — счётчик на сайт
+        _l_put(_m_peer_solved, {"zai": {"challenge": _m_since("zai") + 1e-6}})
+        _m_reads.clear()
+        st, fs = _n_status_fs()
+        check("статус: site_quarantined только что сверял — статус сайт "
+              "показывает, ни одного файла (не чаще SOLVED_CHECK_SEC)",
+              "zai" in st and not fs and not _m_reads)
+        with wl._QUARANTINE_LOCK:
+            wl._SOLVED_CHECK_AT["zai"] = (wl.time.time()
+                                          - wl.SOLVED_CHECK_SEC - 0.1)
+        st, fs = _n_status_fs()
+        check("статус: срок сверки вышел — сверено (шпион видит чтение "
+              "отметок), сайт снят",
+              "zai" not in st and len(_m_reads) == 1
+              and any(f == "glob" and ".solved." in p for f, p in fs))
+
+        # Без карантинов капчи/входа пула H — ни одного файла, хотя отметка
+        # капчи пула V есть: лимит, отказ и капча пула V не сверяются
+        _k_reset(("zai", "ratelimit"), ("kimi", "refused"),
+                 ("chatgpt", "challenge", "v"))
+        _l_put(_m_peer_solved, {"chatgpt": {"challenge": wl.time.time()},
+                                "zai": {"challenge": wl.time.time()}})
+        wl._SOLVED_CHECK_AT.clear()
+        _m_reads.clear()
+        st, fs = _n_status_fs()
+        check("статус: без карантинов капчи/входа пула H (лимит, отказ, капча "
+              "пула V) — ни одного файла, все сайты в статусе",
+              sorted(st) == ["chatgpt", "kimi", "zai"] and not fs
+              and not _m_reads)
+        # Сбой чтения отметок — статус как есть, без исключения
+        _k_reset(("qwen", "challenge"))
+
+        def _n_boom(*a, **kw):
+            raise OSError(5, "Input/output error")
+        wl._rescue_solved_marks = _n_boom
+        wl._SOLVED_CHECK_AT.clear()
+        try:
+            st, raised = wl.quarantine_status(), None
+        except Exception as e:
+            st, raised = None, e
+        wl._rescue_solved_marks = _m_count_marks
+        check("статус: сбой чтения отметок — без исключения, статус как есть",
+              raised is None and "qwen" in (st or {}))
+
+        # Правило конца rescue: отметки читаются один раз — статусу они
+        # передаются готовыми; _rescue_pending_sites без отметок читает сам
+        # (один раз), а без ждущих — не читает
+        _own_rescue()
+        _k_reset(("qwen", "challenge"), ("deepseek", "login"))
+        wl._SOLVED_CHECK_AT.clear()
+        _m_reads.clear()
+        check("rescue: правило конца — отметки прочитаны один раз (статус их "
+              "не перечитывает)",
+              wl.finish_idle_rescue() is False and len(_m_reads) == 1)
+        wl._SOLVED_CHECK_AT.clear()
+        _m_reads.clear()
+        check("rescue: _rescue_pending_sites() — читает отметки сам, один раз",
+              wl._rescue_pending_sites() == ["deepseek", "qwen"]
+              and len(_m_reads) == 1)
+        _k_reset(("zai", "ratelimit"))
+        _m_reads.clear()
+        check("rescue: _rescue_pending_sites() без ждущих — отметки не "
+              "читаются",
+              wl._rescue_pending_sites() == [] and not _m_reads)
+        ba.end_rescue_pool_h()
+        wl._rescue_solved_marks = _m_real_marks
+
+        # (2) Уведомление о капче. Чистая страница (_challenge_check): снято и
+        # у сайта пула V; лимит чистой страницей не снимается — ни карантин,
+        # ни его уведомление
+        _m_clean()
+        _k_reset()
+        wl.quarantine_site("qwen", "капча", ttl=600)
+        wl.quarantine_site("zai", "лимит", ttl=600, kind="ratelimit")
+        wl.quarantine_site("chatgpt", "капча", ttl=600, pool="v")
+        _k_llm("qwen", "n1")._challenge_check(ba, 42)
+        _k_llm("zai", "n2")._challenge_check(ba, 42)
+        _k_llm("chatgpt", "n3")._challenge_check(ba, 42)
+        check("уведомления: чистая страница — «капча» снята (и у сайта пула "
+              "V), «лимит» остался вместе с карантином",
+              _n_peek() == [("zai", "ratelimit")]
+              and wl.quarantine_kind("zai") == "ratelimit"
+              and not wl.site_quarantined("qwen")
+              and not wl.site_quarantined("chatgpt"))
+        # Капча того же сайта после истёкшего лимита: снята капча — его
+        # недоставленный «лимит» остаётся
+        _k_reset()
+        wl.quarantine_site("kimi", "лимит", ttl=600, kind="ratelimit")
+        with wl._QUARANTINE_LOCK:
+            wl._SITE_QUARANTINE["kimi"]["until"] = wl.time.time() - 1
+        wl.site_quarantined("kimi")  # истёк (лениво)
+        wl.quarantine_site("kimi", "капча", ttl=600)
+        _k_llm("kimi", "n4")._challenge_check(ba, 42)
+        check("уведомления: капча снята — недоставленный «лимит» того же "
+              "сайта остался",
+              _n_peek() == [("kimi", "ratelimit")])
+        # В rescue пройдена одна капча из двух — снято только её уведомление
+        _own_rescue()
+        _k_reset()
+        wl.quarantine_site("qwen", "капча", ttl=600)
+        wl.quarantine_site("deepseek", "капча", ttl=600)
+        _k_llm("qwen", "n5")._challenge_check(ba, 42)
+        check("уведомления: в rescue пройдена одна капча — снято только её "
+              "уведомление",
+              _n_peek() == [("deepseek", "challenge")]
+              and ba.pool_h_rescue_active())
+        ba.end_rescue_pool_h()
+
+        # Чужая отметка: через site_quarantined и через статус — «капча»
+        # снята, «лимит» — нет; отметка капчи вход не снимает — ни
+        # карантин, ни его уведомление
+        _m_clean()
+        _k_reset()
+        wl.quarantine_site("qwen", "капча", ttl=600)
+        wl.quarantine_site("deepseek", "капча", ttl=600)
+        wl.quarantine_site("kimi", "разлогин", ttl=600, kind="login")
+        wl.quarantine_site("zai", "лимит", ttl=600, kind="ratelimit")
+        _l_put(_m_peer_solved, {
+            "qwen": {"challenge": _m_since("qwen") + 1e-6},
+            "deepseek": {"challenge": _m_since("deepseek") + 1e-6},
+            "kimi": {"challenge": _m_since("kimi") + 1e-6}})
+        wl._SOLVED_CHECK_AT.clear()
+        check("уведомления: чужая отметка (site_quarantined) — «капча» снята",
+              wl.site_quarantined("qwen") is False
+              and ("qwen", "challenge") not in _n_peek()
+              and ("deepseek", "challenge") in _n_peek())
+        st = wl.quarantine_status()
+        check("уведомления: чужая отметка (статус) — «капча» снята, «лимит» "
+              "остался; отметка капчи вход не снимает",
+              "deepseek" not in st and "kimi" in st
+              and _n_peek() == [("kimi", "login"), ("zai", "ratelimit")])
+
+        # Снятие вручную (clear_quarantine — так снимает и проба поиска
+        # web_search, до правила конца) и по сроку уведомление не снимают;
+        # подтверждённое решение (_finish_rescue_if_done с cleared — следом
+        # за clear_quarantine в пробе поиска) — снимает
+        _m_clean()
+        _k_reset()
+        wl.quarantine_site("google", "капча в поиске Google")
+        wl.clear_quarantine("google")
+        check("уведомления: снятие вручную (clear_quarantine) уведомление не "
+              "снимает", _n_peek() == [("google", "challenge")])
+        wl._finish_rescue_if_done(ba, cleared="google")
+        check("уведомления: подтверждённое решение (_finish_rescue_if_done с "
+              "cleared, путь пробы поиска) — снято", _n_peek() == [])
+        wl.quarantine_site("deepseek", "капча", ttl=600)
+        with wl._QUARANTINE_LOCK:
+            wl._SITE_QUARANTINE["deepseek"]["until"] = wl.time.time() - 1
+        check("уведомления: снятие по сроку (TTL) уведомление не снимает",
+              wl.site_quarantined("deepseek") is False
+              and _n_peek() == [("deepseek", "challenge")])
+        # Гонка: свежая капча того же сайта между снятием и снятием
+        # уведомлений (соседний поток) — её уведомление остаётся
+        _k_reset()
+        wl.quarantine_site("deepseek", "капча", ttl=600)
+        wl.clear_quarantine("deepseek")
+        wl.quarantine_site("deepseek", "капча снова", ttl=600)
+        wl._drop_pending_alerts("deepseek", "challenge")
+        check("уведомления: сайт снова в карантине того же вида — "
+              "уведомления о нём не снимаются",
+              ("deepseek", "challenge") in _n_peek()
+              and wl.quarantine_kind("deepseek") == "challenge")
+    finally:
+        _m_glob.glob, _n_builtins.open = _n_real_glob, _n_real_open
+        (ba._POOL_H_MODE_OVERRIDE, ba._POOL_H_RESCUE_UNTIL,
+         ba._POOL_H_RESCUE_SHARED, ba.detect_antibot,
+         wl._rescue_solved_marks, wl.RESCUE_RECHECK_SEC) = _sv_n
+        wl.logger.removeHandler(_k_handler)
+        wl.logger.setLevel(_k_level)
+        for s in _n_sites:
+            wl.clear_quarantine(s)
+        wl.pop_quarantine_alerts()
+        _rescue_file.unlink(missing_ok=True)
+        for p in _m_glob.glob(_m_glob.escape(str(_rescue_file)) + ".*"):
+            Path(p).unlink(missing_ok=True)
+        with wl._RESCUE_SOLVED_LOCK:
+            wl._RESCUE_SOLVED_PUB.update(pid=None, path=None, data={})
+        wl._SOLVED_CHECK_AT.clear()
+    _n_left = [p for pat in (f"*.wait.{_m_me}", f"*.solved.{_m_me}")
+               for p in _m_glob.glob(os.path.join(_m_glob.escape(_m_real),
+                                                  pat))]
+    check("6n: у настоящих профилей файлов ожидания/отметок этого процесса "
+          "нет, временный каталог убран",
+          not _n_left
+          and not _m_glob.glob(_m_glob.escape(str(_rescue_file)) + ".*"))
+
     # ── 6f. «Реформулировка вместо ответа»: страница чата непрогрета —
     #       baseline=0, хотя в ленте уже лежит СТАРЫЙ завершённый ответ
     #       (реплика coref), и baseline-путь вернул бы именно её. Якорный
