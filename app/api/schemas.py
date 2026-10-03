@@ -146,9 +146,20 @@ class TodoAddRequest(BaseModel):
     user_name: str = "web"
 
 
+class ReminderRecurrence(BaseModel):
+    # Повтор напоминания: каждый день или по дням недели (0 — пн … 6 — вс).
+    # hour/minute — по часам пользователя; не заданы — из срока напоминания
+    type: Literal["daily", "weekly"]
+    weekdays: Optional[list[int]] = None
+    hour: Optional[int] = None
+    minute: Optional[int] = None
+
+
 class ReminderAddRequest(BaseModel):
     task: str
     delay_seconds: float = 3600
+    # Повтор; первое срабатывание — ближайшее по расписанию не раньше delay
+    recurrence: Optional[ReminderRecurrence] = None
     chat_id: str = "web_user"
     user_name: str = "web"
 
@@ -158,6 +169,8 @@ class ReminderUpdateRequest(BaseModel):
     task: Optional[str] = None
     trigger_at: Optional[float] = None  # unix-секунды нового срабатывания
     active: Optional[bool] = None  # False — на паузу, True — продолжить
+    # Повтор: не передан — прежний; явный null — снять (станет разовым)
+    recurrence: Optional[ReminderRecurrence] = None
     chat_id: str = "web_user"
 
 
@@ -251,6 +264,8 @@ class InitiativeUpdate(BaseModel):
     max_daily_initiatives: Optional[int] = None
     adaptive_threshold: Optional[bool] = None
     feedback_enabled: Optional[bool] = None
+    # Окно самоинициативы "HH:MM-HH:MM"; явный null — снять окно (круглые сутки)
+    initiative_hours: Optional[str] = None
 
 
 class PersonaConfigUpdate(BaseModel):
@@ -264,8 +279,6 @@ class TimezoneRequest(BaseModel):
     # Часовой пояс пользователя (app/core/timeutil): IANA-имя зоны;
     # пустая строка — сброс на системный пояс машины.
     timezone: str = ""
-    # Окно самоинициативы "HH:MM-HH:MM"; явный null — снять окно (круглые сутки)
-    initiative_hours: Optional[str] = None
 
 
 class LocationRequest(BaseModel):

@@ -683,12 +683,14 @@
           <input data-vpc-input="date" type="text" placeholder="завтра" data-vpc-label-title="reminder-date" />
           <input data-vpc-input="clock" type="text" placeholder="18:00" data-vpc-label-title="reminder-time" />
           <input data-vpc-input="text" type="text" placeholder="текст напоминания" data-vpc-label-placeholder="reminder-text" />
+          <!-- Повтор: разовое / каждый день / по будням / по выходным или дни
+               недели через запятую («пн, ср, пт»); другое приложение не примет -->
           <select data-vpc-input="repeat">
             <option>разовое</option>
-            <option>каждый час</option>
+            <option>каждый день</option>
             <option>по будням</option>
             <option>по выходным</option>
-            <option>каждый день</option>
+            <option>пн, ср, пт</option>
           </select>
           <button type="button" data-vpc-action="add-reminder">+</button>
         </div>

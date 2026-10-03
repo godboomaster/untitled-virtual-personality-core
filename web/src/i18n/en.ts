@@ -870,7 +870,8 @@ const en = {
   'tasks.todoTextLabel': 'Task text',
   'tasks.todoPh': 'E.g. sort out LTM logs',
   'tasks.noDate': 'no date',
-  'tasks.repeatOptions': 'one-time|hourly|on weekdays|on weekends|custom days',
+  'tasks.repeatOptions': 'one-time|daily|on weekdays|on weekends|custom days',
+  'tasks.pickDays': 'Pick at least one day of the week',
   'tasks.weekdays': 'Mon|Tue|Wed|Thu|Fri|Sat|Sun',
 
   // ===== Calendar (shared across personas) =====
@@ -1135,6 +1136,7 @@ const en = {
   'skin.actBadDate': 'Could not read the date “{v}”. Examples: 12/25, 12/25/2026, 2026-12-25, tomorrow.',
   'skin.actBadTime': 'Could not read the time “{v}”. Example: 18:30 or 6:30 PM.',
   'skin.actPast': 'That time has already passed — pick a moment in the future.',
+  'skin.repeatUnknown': 'Repeat "{v}" is not supported. Use: {options}, or days of the week separated by commas ({days}).',
   'skin.actStale': 'The list changed while you were looking at it — the action was cancelled and the list refreshed.',
   'skin.actConfigMissing': 'Could not load the persona settings — the toggle was not applied.',
   'skin.libraryTitle': 'Skin library',

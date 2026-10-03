@@ -9,6 +9,7 @@ import InfoButton from '../components/InfoButton';
 import Select from '../components/Select';
 import { alertDialog } from '../dialogStore';
 import { parseReminderWhen } from '../reminderWhen';
+import { fmtRecurrence, formFromRecurrence, recurrenceFromForm, REPEAT_KINDS } from '../reminderRepeat';
 
 // «ЧЧ:ММ» с ведущими нулями — для предзаполнения полей формы и сравнения дат
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -101,21 +102,13 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
       day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
     });
 
-  // Расписание повторяющегося напоминания: «↻ 09:00» / «↻ пн 09:00»
-  const fmtRecurrence = (rec: ReminderEntry['recurrence']): string => {
-    if (!rec) return repeatOptions[0]; // разовое
-    const hh = `${String(rec.hour).padStart(2, '0')}:${String(rec.minute).padStart(2, '0')}`;
-    if (rec.type === 'weekly' && rec.weekday != null) return `↻ ${weekdays[rec.weekday] ?? ''} ${hh}`;
-    return `↻ ${hh}`;
-  };
-
   const added = addedFor(persona.id);
   const reminders: Reminder[] = apiOnline
     ? (apiReminders ?? []).map((r) => ({
         id: r.index,
         text: r.task,
         time: r.trigger_at ? fmtDateTime(r.trigger_at) : t('tasks.noDate'),
-        repeat: fmtRecurrence(r.recurrence),
+        repeat: fmtRecurrence(r.recurrence, t),
         active: r.active !== false,
       }))
     : [
@@ -188,13 +181,17 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
   // Открыть модалку напоминания: пустую (новое) или предзаполненную (редактирование)
   const openReminderModal = (r?: Reminder) => {
     if (r) {
-      const { kind, days } = parseRepeat(r.repeat, repeatOptions, weekdays, customDaysLabel);
+      let { kind, days } = parseRepeat(r.repeat, repeatOptions, weekdays, customDaysLabel);
       setReminderText(r.text);
       if (apiOnline) {
         // Дата/время — из точного trigger_at сырой записи, а не из
         // отформатированной строки списка (иначе при сохранении без правки
         // срок сместится на округление отображения)
         const raw = apiReminders?.find((x) => x.index === r.id);
+        // Повтор — из расписания сервера, а не из подписи списка
+        const form = formFromRecurrence(raw?.recurrence ?? null);
+        kind = repeatOptions[REPEAT_KINDS.indexOf(form.kind)] ?? repeatOptions[0];
+        days = form.days.map((d) => weekdays[d]).filter(Boolean);
         if (raw?.trigger_at) {
           const d = new Date(raw.trigger_at * 1000);
           setReminderDate(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`);
@@ -240,8 +237,19 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
         void alertDialog({ message: t(key, vars) });
         return;
       }
+      // Повтор из формы → расписание сервера (время сервер берёт из срока
+      // напоминания — по часовому поясу пользователя, а не браузера)
+      const kindIdx = repeatOptions.indexOf(reminderRepeat);
+      const recurrence = recurrenceFromForm(
+        REPEAT_KINDS[kindIdx >= 0 ? kindIdx : 0] ?? 'once',
+        reminderDays.map((d) => weekdays.indexOf(d)).filter((d) => d >= 0),
+      );
+      if (recurrence === 'no-days') {
+        void alertDialog({ message: t('tasks.pickDays') });
+        return;
+      }
       if (modal.id != null) {
-        // Правка на месте по стабильному id (атомарно, повтор сохраняется)
+        // Правка на месте по стабильному id (атомарно)
         const raw = apiReminders?.find((x) => x.index === modal.id);
         if (!raw) {
           setModal(null);
@@ -249,14 +257,22 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
           void alertDialog({ message: t('skin.actStale') });
           return;
         }
-        const patch: { task: string; trigger_at?: number } = { task: text };
+        // Повтор отправляем всегда: выбранный в форме заменяет прежний,
+        // «разовое» (null) снимает его
+        const patch: { task: string; trigger_at?: number; recurrence: typeof recurrence } = { task: text, recurrence };
         // Поля даты/времени были заполнены (из raw.trigger_at или человеком) —
         // пересчитываем срок; пусты (напоминание без trigger_at) — не трогаем
         if (reminderDate.trim() || reminderTime.trim()) patch.trigger_at = Math.round(when.at.getTime() / 1000);
-        api.updateReminder(persona.id, raw.id, patch).then((r) => setApiReminders(r.items)).catch(() => {});
+        api
+          .updateReminder(persona.id, raw.id, patch)
+          .then((r) => setApiReminders(r.items))
+          .catch((e) => alertDialog({ message: e instanceof Error ? e.message : String(e) }));
       } else {
         const delay = Math.max(60, Math.round((when.at.getTime() - Date.now()) / 1000));
-        api.addReminder(persona.id, text, delay).then((r) => setApiReminders(r.items)).catch(() => {});
+        api
+          .addReminder(persona.id, text, delay, recurrence)
+          .then((r) => setApiReminders(r.items))
+          .catch((e) => alertDialog({ message: e instanceof Error ? e.message : String(e) }));
       }
       setModal(null);
       return;

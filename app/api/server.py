@@ -1587,12 +1587,21 @@ async def reminders_list(persona: PersonaIdPath, chat_id: str = "web_user"):
 
 @app.post("/api/personas/{persona}/reminders", dependencies=[Depends(require_auth)])
 async def reminders_add(persona: PersonaIdPath, req: ReminderAddRequest):
+    from app.features.reminder_manager import normalize_schedule
     bot = await _get_bot(persona)
     if bot.reminder_manager is None:
         raise HTTPException(status_code=400, detail="У этой персоны нет напоминаний (reminder: false)")
+    schedule = None
+    if req.recurrence is not None:
+        try:
+            schedule = normalize_schedule(req.recurrence.model_dump(exclude_none=True),
+                                          time.time() + req.delay_seconds)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=f"Недопустимый повтор: {e}")
     await asyncio.to_thread(
         bot.reminder_manager.add_reminder,
         req.chat_id, req.user_name, req.task, req.delay_seconds,
+        schedule=schedule,
     )
     return {"items": await asyncio.to_thread(_reminders, bot, req.chat_id)}
 
@@ -1621,19 +1630,25 @@ async def reminders_cancel(persona: PersonaIdPath, index: int | None = None,
 
 @app.put("/api/personas/{persona}/reminders/{rid}", dependencies=[Depends(require_auth)])
 async def reminders_update(persona: PersonaIdPath, rid: str, req: ReminderUpdateRequest):
-    # Правка текста/времени/паузы напоминания на месте, по id (повтор сохраняется)
+    # Правка текста/времени/паузы/повтора напоминания на месте, по id
+    # (повтор не передан — сохраняется, явный null — снимается)
+    from app.features.reminder_manager import UNSET
     bot = await _get_bot(persona)
     if bot.reminder_manager is None:
         raise HTTPException(status_code=400, detail="У этой персоны нет напоминаний (reminder: false)")
     task = req.task.strip() if req.task is not None else None
     if task is not None and not task:
         raise HTTPException(status_code=422, detail="Текст напоминания пустой")
+    recurrence = UNSET
+    if "recurrence" in req.model_fields_set:
+        recurrence = (req.recurrence.model_dump(exclude_none=True)
+                      if req.recurrence is not None else None)
     try:
         updated = await asyncio.to_thread(
             bot.reminder_manager.update_by_id, req.chat_id, rid, task, req.trigger_at,
-            req.active)
+            req.active, recurrence)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=f"Недопустимое время: {e}")
+        raise HTTPException(status_code=422, detail=f"Недопустимое время или повтор: {e}")
     if updated is None:
         raise HTTPException(status_code=404, detail="Напоминание не найдено")
     return {"items": await asyncio.to_thread(_reminders, bot, req.chat_id)}

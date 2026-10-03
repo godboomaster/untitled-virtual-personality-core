@@ -30,6 +30,7 @@ import { buildChatPayload } from '../skins/payloads';
 import { useShellTheme } from '../skins/shellTheme';
 import { useSkinEnv } from '../skins/useSkinEnv';
 import { parseReminderWhen } from '../reminderWhen';
+import { fmtRecurrence, formFromRepeatText, recurrenceFromForm } from '../reminderRepeat';
 import { useRoomView } from '../room/useRoomView';
 
 // Допуск сравнения серверных меток: last_ts и timestamp реплики STM — один и
@@ -601,7 +602,10 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
               : [],
           reminders:
             rem.status === 'fulfilled'
-              ? rem.value.items.map((r) => ({ id: r.index, text: r.task, time: fmtTs(r.trigger_at), repeat: '', active: r.active !== false }))
+              ? rem.value.items.map((r) => ({
+                  id: r.index, text: r.task, time: fmtTs(r.trigger_at),
+                  repeat: fmtRecurrence(r.recurrence, t), active: r.active !== false,
+                }))
               : [],
           remindersRaw: rem.status === 'fulfilled' ? rem.value.items : [],
           courses:
@@ -1314,16 +1318,33 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         if (!text) break;
         if (apiOnline) {
           // Срок из даты+времени формы (reminderWhen: локальные даты, «завтра»,
-          // формат списка). Повтор через API не создать: у /reminders нет
-          // параметра расписания — но правка существующего его сохраняет
+          // формат списка). Повтор — из текстового поля формы скина: подпись
+          // варианта («по будням») или дни («пн, ср, пт»); поля нет — при
+          // создании разовое, при правке повтор прежний; не распознан —
+          // ошибка, а не молча разовое
           const dateIn = values.date?.trim();
           const clockIn = (values.clock ?? values.time)?.trim();
+          const repeatForm = values.repeat != null ? formFromRepeatText(values.repeat) : null;
           const pid = persona.id;
           const req = (async () => {
+            // Время повтора сервер берёт из срока (пояс пользователя, не браузера)
+            const recurrence = () => {
+              if (repeatForm === 'unknown') {
+                throw skinFail('skin.repeatUnknown', {
+                  v: values.repeat?.trim() ?? '',
+                  options: t('tasks.repeatOptions').split('|').slice(0, 4).join(', '),
+                  days: t('tasks.weekdays').split('|').filter((_, i) => i % 2 === 0).slice(0, 3).join(', '),
+                });
+              }
+              if (!repeatForm) return undefined;
+              const rec = recurrenceFromForm(repeatForm.kind, repeatForm.days);
+              if (rec === 'no-days') throw skinFail('tasks.pickDays');
+              return rec;
+            };
             if (!hasId) {
               const at = reminderAt(dateIn ?? '', clockIn ?? '');
               const delay = Math.max(10, Math.round((at.getTime() - Date.now()) / 1000));
-              return api.addReminder(pid, text, delay);
+              return api.addReminder(pid, text, delay, recurrence() ?? null);
             }
             // Правка — на месте, по id (атомарно, повтор и id сохраняются).
             // Дата и время не тронуты (или поля нет в форме скина) — срок
@@ -1334,10 +1355,12 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             const orig = splitWhen(shown.time);
             const date = dateIn ?? orig.date.trim();
             const clock = clockIn ?? orig.clock.trim();
-            const patch: { task: string; trigger_at?: number } = { task: text };
+            const patch: { task: string; trigger_at?: number; recurrence?: ReturnType<typeof recurrence> } = { task: text };
             if (date !== orig.date.trim() || clock !== orig.clock.trim()) {
               patch.trigger_at = reminderAt(date, clock).getTime() / 1000;
             }
+            const rec = recurrence();
+            if (rec !== undefined) patch.recurrence = rec;
             return api.updateReminder(pid, raw.id, patch);
           })();
           req.then(bumpSide).catch((e) => {

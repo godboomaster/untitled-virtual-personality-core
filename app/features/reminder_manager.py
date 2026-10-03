@@ -882,27 +882,96 @@ def parse_recurring(text: str, trigger_words: Optional[List[str]] = None) -> Opt
     return (task if task else None, schedule)
 
 
+# Расписание повтора: {"type": "daily", "hour", "minute", "weekday": None}
+# или {"type": "weekly", "hour", "minute", "weekday": <0..6>} — один день
+# (так его заводит текст «каждый понедельник в 18»). Несколько дней недели
+# («по будням», «пн, ср, пт» из веб-модалки) — weekly с "weekdays": [0..6];
+# "weekday" рядом — первый из них (для старых читателей формата).
+
+def schedule_days(schedule: dict) -> Optional[List[int]]:
+    """Дни недели расписания (0 — понедельник) или None — каждый день."""
+    if schedule.get("type") != "weekly":
+        return None
+    days = schedule.get("weekdays")
+    if isinstance(days, list):
+        clean = sorted({d for d in days if isinstance(d, int) and 0 <= d <= 6})
+        if clean:
+            return clean
+    wd = schedule.get("weekday")
+    return [wd] if isinstance(wd, int) and 0 <= wd <= 6 else None
+
+
+def normalize_schedule(raw: dict, at_ts: Optional[float] = None) -> dict:
+    """Расписание из запроса (веб-модалка) → формат хранения. hour/minute
+    не заданы — берутся из at_ts по часам пользователя. Все 7 дней — это
+    «каждый день». ValueError — некорректное расписание."""
+    if not isinstance(raw, dict):
+        raise ValueError("некорректный повтор")
+    typ = raw.get("type")
+    if typ not in ("daily", "weekly"):
+        raise ValueError(f"неизвестный тип повтора: {typ!r}")
+    hour, minute = raw.get("hour"), raw.get("minute")
+    if hour is None or minute is None:
+        if at_ts is None:
+            raise ValueError("у повтора не задано время")
+        dt = timeutil.from_ts(at_ts)
+        hour = dt.hour if hour is None else hour
+        minute = dt.minute if minute is None else minute
+    if not (isinstance(hour, int) and 0 <= hour <= 23
+            and isinstance(minute, int) and 0 <= minute <= 59):
+        raise ValueError(f"некорректное время повтора: {hour!r}:{minute!r}")
+    if typ == "weekly":
+        days = raw.get("weekdays")
+        if days is None and raw.get("weekday") is not None:
+            days = [raw.get("weekday")]
+        if not isinstance(days, list) or not days or not all(
+                isinstance(d, int) and 0 <= d <= 6 for d in days):
+            raise ValueError("у еженедельного повтора не выбраны дни недели")
+        days = sorted(set(days))
+        if len(days) < 7:
+            return {"type": "weekly", "hour": hour, "minute": minute,
+                    "weekday": days[0], "weekdays": days}
+    return {"type": "daily", "hour": hour, "minute": minute, "weekday": None}
+
+
 def _next_occurrence(schedule: dict, after: float) -> float:
     """Ближайшее время срабатывания после `after` по времени пользователя
     (пояс из app.core.timeutil; epoch ↔ стенные часы — только через
     from_ts/to_ts, у naive-datetime .timestamp() дал бы системный пояс)."""
     base = timeutil.from_ts(after)
-    target = base.replace(hour=schedule["hour"], minute=schedule["minute"],
-                          second=0, microsecond=0)
-    if schedule["type"] == "weekly":
-        days_ahead = (schedule["weekday"] - base.weekday()) % 7
-        target = target + timedelta(days=days_ahead)
-    if timeutil.to_ts(target) <= after:
-        target = target + timedelta(days=7 if schedule["type"] == "weekly" else 1)
-    return timeutil.to_ts(target)
+    start = base.replace(hour=schedule["hour"], minute=schedule["minute"],
+                         second=0, microsecond=0)
+    days = schedule_days(schedule)
+    # 0..7 дней вперёд: тот же день недели через неделю тоже покрыт
+    for ahead in range(8):
+        target = start + timedelta(days=ahead)
+        if days is not None and target.weekday() not in days:
+            continue
+        if timeutil.to_ts(target) > after:
+            return timeutil.to_ts(target)
+    return timeutil.to_ts(start + timedelta(days=7))  # недостижимо при валидных днях
+
+
+def _join_names(names: List[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def format_schedule(schedule: dict) -> str:
-    # Человекочитаемое описание расписания: «every day at 12:30».
+    # Человекочитаемое описание расписания: «every day at 12:30»,
+    # «every weekday (Mon–Fri) at 9:00», «every Monday and Friday at 18:00».
     hh = f"{schedule['hour']:02d}:{schedule['minute']:02d}"
-    if schedule["type"] == "weekly":
-        return f"every {_WEEKDAY_NAMES[schedule['weekday']]} at {hh}"
-    return f"every day at {hh}"
+    days = schedule_days(schedule)
+    if days is None:
+        return f"every day at {hh}"
+    if days == [0, 1, 2, 3, 4]:
+        return f"every weekday (Mon–Fri) at {hh}"
+    if days == [5, 6]:
+        return f"every weekend day (Sat and Sun) at {hh}"
+    return f"every {_join_names([_WEEKDAY_NAMES[d] for d in days])} at {hh}"
+
+
+# Маркер «аргумент не передан» (update_by_id: recurrence=None — снять повтор)
+UNSET = object()
 
 
 # ─── Стабильный id напоминания ────────────────────────────
@@ -1256,8 +1325,10 @@ class ReminderManager:
             "username": username or "",
             "task": task,
             "created_at": now,
-            "trigger_at": (_next_occurrence(schedule, now) if schedule
-                           else now + delay_seconds),
+            # Повтор: ближайшее время по расписанию, но не раньше выбранного
+            # срока (веб-модалка: «начать с понедельника»); delay 0 — от «сейчас»
+            "trigger_at": (_next_occurrence(schedule, now + delay_seconds - 1 if delay_seconds > 0 else now)
+                           if schedule else now + delay_seconds),
             "topic_id": topic_id,
             "fired": False,
         }
@@ -1369,7 +1440,8 @@ class ReminderManager:
 
     def update_by_id(self, chat_id: str, rid: str, task: Optional[str] = None,
                      trigger_at: Optional[float] = None,
-                     active: Optional[bool] = None) -> Optional[dict]:
+                     active: Optional[bool] = None,
+                     recurrence=UNSET) -> Optional[dict]:
         """Правка напоминания по id на месте (веб-досье): текст, время
         срабатывания и/или пауза. Одна запись под одним локом — в отличие от
         «отменить + создать заново», сбой посередине ничего не теряет, а id,
@@ -1392,13 +1464,22 @@ class ReminderManager:
             или оставить на паузе было бы хуже. Нужно другое время —
             передаётся вместе с active в trigger_at.
 
+        recurrence (веб-модалка): не передан — повтор прежний; None — снять
+        повтор (напоминание станет разовым); расписание — заменить им
+        (normalize_schedule; время, если не задано, — из trigger_at), срок —
+        ближайший по новому расписанию, не раньше trigger_at.
+
         Возвращает обновлённую запись (копию) либо None — такого напоминания
         (не сработавшего: впереди или на паузе) в чате нет. ValueError —
-        время в прошлом.
+        время в прошлом или некорректный повтор.
         """
         now = time.time()
         if trigger_at is not None and trigger_at < now + 10:
             raise ValueError("время напоминания уже прошло")
+        if recurrence is not UNSET and recurrence is not None:
+            # Проверка до лока: некорректный повтор не должен оставить
+            # запись полуизменённой (текст уже поменян, расписание — нет)
+            normalize_schedule(recurrence, trigger_at if trigger_at is not None else now)
         rid = str(rid or "").strip().lstrip("#").lower()
         if not rid:
             return None
@@ -1410,15 +1491,36 @@ class ReminderManager:
                 return None
             if task is not None:
                 target["task"] = task or None
-            if trigger_at is not None:
+            if recurrence is not UNSET and recurrence is not None:
+                # Новое расписание: время — из запроса, иначе из нового/прежнего срока
+                schedule = normalize_schedule(
+                    recurrence, trigger_at if trigger_at is not None else target["trigger_at"])
+                target["recurrence"] = schedule
+                start = trigger_at - 1 if trigger_at is not None else now
+                target["trigger_at"] = _next_occurrence(schedule, max(start, now))
+                target["attempts"] = 0
+            elif recurrence is None and target.get("recurrence"):
+                # Снять повтор: дальше — разовое на новый (или прежний) срок
+                target.pop("recurrence", None)
+            if trigger_at is not None and (recurrence is UNSET or recurrence is None):
                 schedule = target.get("recurrence")
                 if schedule:
                     dt = timeutil.from_ts(trigger_at)
                     schedule = {**schedule, "hour": dt.hour, "minute": dt.minute}
-                    if schedule.get("type") == "weekly":
+                    one_day = schedule_days(schedule)
+                    if schedule.get("type") == "weekly" and one_day is not None and len(one_day) == 1:
+                        # Один день недели (weekday или weekdays из одного дня) —
+                        # следует за датой нового срока
                         schedule["weekday"] = dt.weekday()
+                        if schedule.get("weekdays"):
+                            schedule["weekdays"] = [dt.weekday()]
                     target["recurrence"] = schedule
-                target["trigger_at"] = float(trigger_at)
+                if schedule and schedule_days(schedule) and \
+                        timeutil.from_ts(trigger_at).weekday() not in schedule_days(schedule):
+                    # Несколько дней недели: срок — ближайший из них, не раньше нового
+                    target["trigger_at"] = _next_occurrence(schedule, trigger_at - 1)
+                else:
+                    target["trigger_at"] = float(trigger_at)
                 target["attempts"] = 0
             if active is False and not is_paused(target):
                 target["paused"] = True

@@ -347,7 +347,7 @@ export const helpTextsRu = {
   },
   'tasks.reminderRepeat': {
     title: 'Повтор',
-    body: '«Разовое» — напомнит один раз и завершится. «Ежедневно» — каждый день в указанное время. «Еженедельно» — в выбранный день недели.',
+    body: '«Разовое» — напомнит один раз и завершится. «Каждый день», «по будням», «по выходным» и «по дням недели» — повторяет в указанное время в эти дни; первое срабатывание — не раньше выбранной даты.',
   },
   'tasks.todo': {
     title: 'Список дел',
@@ -702,7 +702,7 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
   },
   'tasks.reminderRepeat': {
     title: 'Repeat',
-    body: '"One-time" — reminds once and completes. "Daily" — every day at the set time. "Weekly" — on the chosen day of the week.',
+    body: '"One-time" — reminds once and completes. "Daily", "on weekdays", "on weekends" and "custom days" — repeats at the set time on those days; the first one fires no earlier than the chosen date.',
   },
   'tasks.todo': {
     title: 'To-do list',

@@ -341,10 +341,14 @@ export const api = {
   deleteCalendarEntry: (id: string) =>
     request<{ status: string }>(`/api/calendar/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  addReminder: (persona: string, task: string, delaySeconds: number) =>
+  // recurrence — повтор; первое срабатывание — ближайшее по расписанию не раньше delay
+  addReminder: (persona: string, task: string, delaySeconds: number, recurrence?: ReminderRecurrenceInput | null) =>
     request<{ items: ReminderEntry[] }>(`/api/personas/${encodeURIComponent(persona)}/reminders`, {
       method: 'POST',
-      body: JSON.stringify({ task, delay_seconds: delaySeconds, chat_id: WEB_CHAT_ID }),
+      body: JSON.stringify({
+        task, delay_seconds: delaySeconds, chat_id: WEB_CHAT_ID,
+        ...(recurrence ? { recurrence } : {}),
+      }),
     }),
 
   cancelReminder: (persona: string, index: number) =>
@@ -360,9 +364,11 @@ export const api = {
       { method: 'DELETE' },
     ),
 
-  // Правка на месте по id: текст, время (unix-секунды) и/или пауза
-  // (active: false — на паузу, true — продолжить); повтор сохраняется
-  updateReminder: (persona: string, id: string, patch: { task?: string; trigger_at?: number; active?: boolean }) =>
+  // Правка на месте по id: текст, время (unix-секунды), пауза (active: false —
+  // на паузу, true — продолжить) и/или повтор (не передан — прежний, null — снять)
+  updateReminder: (persona: string, id: string, patch: {
+    task?: string; trigger_at?: number; active?: boolean; recurrence?: ReminderRecurrenceInput | null;
+  }) =>
     request<{ items: ReminderEntry[] }>(
       `/api/personas/${encodeURIComponent(persona)}/reminders/${encodeURIComponent(id)}`,
       { method: 'PUT', body: JSON.stringify({ ...patch, chat_id: WEB_CHAT_ID }) },
@@ -1074,7 +1080,9 @@ export interface ReminderEntry {
   id: string; // стабильный id напоминания (reminder_manager)
   task: string;
   trigger_at: number | null;
-  recurrence: { type: 'daily' | 'weekly'; hour: number; minute: number; weekday?: number | null } | null;
+  // Повтор: daily — каждый день; weekly — по дням weekdays (0 — пн … 6 — вс;
+  // у старых записей один день — в weekday)
+  recurrence: { type: 'daily' | 'weekly'; hour: number; minute: number; weekday?: number | null; weekdays?: number[] | null } | null;
   user_name: string;
   // false — на паузе: не сработает, пока не продолжат (у старых серверов поля нет)
   active?: boolean;
@@ -1100,6 +1108,14 @@ export interface CalendarEntry {
   source: 'calendar' | 'reminder';
   readonly: boolean;
   recurrence?: ReminderEntry['recurrence'];
+}
+
+// Повтор при создании/правке напоминания (hour/minute — по часам пользователя)
+export interface ReminderRecurrenceInput {
+  type: 'daily' | 'weekly';
+  weekdays?: number[];
+  hour?: number;
+  minute?: number;
 }
 
 export interface InventoryEntry {
