@@ -6,6 +6,7 @@ extract_json, интеграция webchat-токенов в ModelRouter.
 Запуск: python -m scripts.test_web_llm"""
 
 import json
+import logging
 import multiprocessing
 import os
 import sys
@@ -815,6 +816,173 @@ def main():
         _rescue_file.unlink(missing_ok=True)
         wl.clear_quarantine("qwen")
         wl.pop_quarantine_alerts()
+
+    # ── 6k. Rescue ждёт ВСЕ капчи/входы своего процесса: снятие одного
+    #       карантина при оставшихся других rescue не завершает (раньше —
+    #       завершал по первому, пул H уходил в headless посреди второй
+    #       капчи). Лимит/отказ в rescue не пробуются и чистой страницей не
+    #       снимаются; чужой rescue этот процесс не завершает ──
+    _sv_k = (ba._POOL_H_MODE_OVERRIDE, ba._POOL_H_RESCUE_UNTIL,
+             ba._POOL_H_RESCUE_SHARED, ba.detect_antibot)
+    _k_sites = ("deepseek", "qwen", "zai", "kimi", "chatgpt")
+    _k_logs = []
+
+    class _KHandler(logging.Handler):
+        def emit(self, record):
+            _k_logs.append(record.getMessage())
+    _k_handler = _KHandler(level=logging.INFO)
+    _k_level = wl.logger.level
+    wl.logger.addHandler(_k_handler)
+    wl.logger.setLevel(logging.INFO)
+
+    def _own_rescue():
+        # как rescue_pool_h, без перезапуска Chrome
+        ba._POOL_H_MODE_OVERRIDE = "headed"
+        ba._POOL_H_RESCUE_UNTIL = wl.time.time() + 600
+        ba._POOL_H_RESCUE_SHARED = ba._write_shared_rescue(
+            ba._POOL_H_RESCUE_UNTIL)
+
+    def _k_reset(*quars):
+        for s in list(wl.quarantine_status()):
+            wl.clear_quarantine(s)
+        for s, kind, *pool in quars:
+            wl.quarantine_site(s, "тест", ttl=600, kind=kind,
+                               pool=pool[0] if pool else "h")
+        wl.pop_quarantine_alerts()
+        _k_logs.clear()
+
+    def _k_llm(site, sub):
+        inst = wl.WebChatLLM(site, base_dir=tmp / f"k_{sub}")
+        inst._tab_id = 42
+        return inst
+    ba.detect_antibot = lambda *a, **kw: None  # страница чистая
+    try:
+        # Две капчи: первая пройдена — rescue идёт, вторая — завершён
+        _own_rescue()
+        _k_reset(("deepseek", "challenge"), ("qwen", "challenge"))
+        _k_llm("deepseek", "d1")._challenge_check(ba, 42)
+        check("rescue: две капчи, пройдена одна — её карантин снят, rescue "
+              "идёт (ждёт вторую)",
+              not wl.site_quarantined("deepseek")
+              and wl.quarantine_kind("qwen") == "challenge"
+              and ba.pool_h_rescue_active() and _rescue_file.exists())
+        check("rescue: в логе — кого ещё ждём",
+              any("ещё ждём: qwen" in m for m in _k_logs))
+        _k_llm("qwen", "q1")._challenge_check(ba, 42)
+        check("rescue: пройдена и вторая капча — rescue завершён, общий "
+              "файл удалён",
+              not wl.site_quarantined("qwen")
+              and not ba.pool_h_rescue_active() and not _rescue_file.exists())
+
+        # Вход + капча: вход восстановлен — rescue ждёт капчу
+        _own_rescue()
+        _k_reset(("deepseek", "login"), ("qwen", "challenge"))
+        _k_llm("deepseek", "d2")._login_restored(ba)
+        check("rescue: вход восстановлен, капча ещё в карантине — rescue идёт",
+              not wl.site_quarantined("deepseek")
+              and wl.quarantine_kind("qwen") == "challenge"
+              and ba.pool_h_rescue_active())
+        _k_llm("qwen", "q2")._challenge_check(ba, 42)
+        check("rescue: капча после входа пройдена — rescue завершён",
+              not ba.pool_h_rescue_active())
+        # Обратный порядок: капча пройдена — rescue ждёт вход
+        _own_rescue()
+        _k_reset(("deepseek", "login"), ("qwen", "challenge"))
+        _k_llm("qwen", "q3")._challenge_check(ba, 42)
+        check("rescue: капча пройдена, вход ещё не выполнен — rescue идёт, "
+              "чистая страница карантин входа не снимает",
+              ba.pool_h_rescue_active()
+              and wl.quarantine_kind("deepseek") == "login")
+        _k_llm("deepseek", "d3")._login_restored(ba)
+        check("rescue: вход после капчи восстановлен — rescue завершён",
+              not ba.pool_h_rescue_active())
+
+        # Лимит в rescue: мгновенный пропуск, чистой страницей не снимается
+        # и rescue не держит
+        _own_rescue()
+        _k_reset(("zai", "ratelimit"), ("kimi", "refused"),
+                 ("qwen", "challenge"))
+        zai_k = _k_llm("zai", "z1")
+        kimi_k = _k_llm("kimi", "k1")
+        check("rescue: лимит (ratelimit) и отказ (refused) в rescue — "
+              "мгновенный пропуск, как без rescue",
+              zai_k._quarantine_skip() is True
+              and zai_k._quarantine_skip(ba) is True
+              and kimi_k._quarantine_skip() is True)
+        check("rescue: капча в rescue — пропуска нет (пробуем сайт)",
+              _k_llm("qwen", "q4")._quarantine_skip() is False)
+        zai_k._challenge_check(ba, 42)
+        kimi_k._challenge_check(ba, 42)
+        check("rescue: чистая страница лимит/отказ не снимает и rescue не "
+              "завершает",
+              wl.quarantine_kind("zai") == "ratelimit"
+              and wl.quarantine_kind("kimi") == "refused"
+              and ba.pool_h_rescue_active())
+        _k_llm("qwen", "q5")._challenge_check(ba, 42)
+        check("rescue: последняя капча пройдена — rescue завершён, хотя "
+              "лимит ещё в карантине (его rescue не ждёт)",
+              not ba.pool_h_rescue_active()
+              and wl.quarantine_kind("zai") == "ratelimit")
+        # Без rescue лимит тоже пропускается, а чистая страница его не
+        # снимает (гонка: карантин начался, пока шёл вызов)
+        check("лимит без rescue: пропуск мгновенный",
+              zai_k._quarantine_skip() is True)
+        zai_k._challenge_check(ba, 42)
+        check("лимит без rescue: чистая страница не снимает",
+              wl.quarantine_kind("zai") == "ratelimit")
+
+        # Чужой rescue: свой override пуст, срок — только в общем файле.
+        # Свой карантин снимается, rescue соседа — нет
+        _k_reset(("qwen", "challenge"))
+        _rescue_file.write_text(str(wl.time.time() + 600))
+        check("чужой rescue: капча в rescue пробуется (окно видимое у всех)",
+              _k_llm("qwen", "q6")._quarantine_skip() is False)
+        _k_llm("qwen", "q7")._challenge_check(ba, 42)
+        check("чужой rescue: карантин снят, но rescue соседа не завершён",
+              not wl.site_quarantined("qwen")
+              and ba.pool_h_rescue_active() and _rescue_file.exists())
+        _k_reset(("deepseek", "login"))
+        _k_llm("deepseek", "d4")._login_restored(ba)
+        check("чужой rescue: вход восстановлен — rescue соседа не завершён",
+              ba.pool_h_rescue_active() and _rescue_file.exists())
+        _rescue_file.unlink(missing_ok=True)
+
+        # Пул V: его капча rescue пула H не держит, и её снятие rescue пула H
+        # не завершает (капчу проходили не в окне rescue)
+        _own_rescue()
+        _k_reset(("chatgpt", "challenge", "v"), ("qwen", "challenge"))
+        _k_llm("qwen", "q8")._challenge_check(ba, 42)
+        check("rescue: капча сайта пула V rescue пула H не держит",
+              not ba.pool_h_rescue_active()
+              and wl.quarantine_kind("chatgpt") == "challenge")
+        _own_rescue()
+        _k_reset(("chatgpt", "challenge", "v"))
+        _k_llm("chatgpt", "c1")._challenge_check(ba, 42)
+        check("rescue: снятие карантина сайта пула V rescue пула H не "
+              "завершает",
+              not wl.site_quarantined("chatgpt") and ba.pool_h_rescue_active())
+        # Реплика «готово» — то же правило: капча в карантине держит rescue,
+        # снята последняя — завершает; лимит не держит
+        _k_reset(("deepseek", "challenge"), ("qwen", "challenge"))
+        _k_llm("deepseek", "d5")._challenge_check(ba, 42)
+        check("finish_idle_rescue: капча ещё в карантине — не завершает",
+              wl.finish_idle_rescue() is False and ba.pool_h_rescue_active())
+        _k_reset(("zai", "ratelimit"), ("chatgpt", "challenge", "v"))
+        check("finish_idle_rescue: только лимит и капча пула V — завершает",
+              wl.finish_idle_rescue() is True
+              and not ba.pool_h_rescue_active())
+        check("finish_idle_rescue: rescue нет — False",
+              wl.finish_idle_rescue() is False)
+    finally:
+        (ba._POOL_H_MODE_OVERRIDE, ba._POOL_H_RESCUE_UNTIL,
+         ba._POOL_H_RESCUE_SHARED, ba.detect_antibot) = _sv_k
+        _rescue_file.unlink(missing_ok=True)
+        wl.logger.removeHandler(_k_handler)
+        wl.logger.setLevel(_k_level)
+        for s in _k_sites:
+            wl.clear_quarantine(s)
+        wl.pop_quarantine_alerts()
+        wl._LOGIN_PROBE_AT.clear()
 
     # ── 6f. «Реформулировка вместо ответа»: страница чата непрогрета —
     #       baseline=0, хотя в ленте уже лежит СТАРЫЙ завершённый ответ

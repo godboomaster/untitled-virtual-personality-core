@@ -9359,8 +9359,9 @@ _RESCUE_SUFFIX = ".bot-rescue"
 # Rescue общий для процессов бота, как и сам Chrome пула H: срок лежит в
 # файле-соседе профиля. Иначе процесс, не включавший rescue, счёл бы видимый
 # Chrome «не тем режимом» и перезапустил headless — вместе с окном, где
-# пользователь решает капчу. Конец rescue в любом процессе (капча пройдена,
-# вход восстановлен) завершает его для всех.
+# пользователь решает капчу. Завершает rescue процесс, который его включил
+# (web_llm._finish_rescue_if_done: пройдены все его капчи/входы), — и тогда
+# для всех.
 def _pool_h_rescue_path() -> str:
     udd = os.path.abspath(os.path.expanduser(_pool_h_profile()))
     return udd.rstrip("/\\") + _RESCUE_SUFFIX
@@ -9466,9 +9467,10 @@ def rescue_pool_h(duration_min: float = POOL_H_RESCUE_MIN) -> bool:
 
 
 def end_rescue_pool_h():
-    """Капча пройдена (web_llm увидел чистую страницу): пул H возвращается в
-    штатный режим лениво, при следующем обращении (mode-mismatch в
-    _ensure_pool_h_browser перезапустит)."""
+    """Rescue окончен (web_llm._finish_rescue_if_done: пройдены все капчи/
+    входы; завершение пула H): пул H возвращается в штатный режим лениво,
+    при следующем обращении (mode-mismatch в _ensure_pool_h_browser
+    перезапустит)."""
     global _POOL_H_MODE_OVERRIDE, _POOL_H_RESCUE_UNTIL, _POOL_H_RESCUE_SHARED
     _POOL_H_MODE_OVERRIDE = None
     _POOL_H_RESCUE_UNTIL = 0.0

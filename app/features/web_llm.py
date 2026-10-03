@@ -520,17 +520,21 @@ def _end_restart(pool: str) -> None:
 
 
 def quarantine_site(site: str, reason: str, ttl: float = None,
-                    kind: str = "challenge"):
+                    kind: str = "challenge", pool: str = "h"):
     """Карантин сайта. ttl — секунды до снятия (None — QUARANTINE_TTL_SEC);
     kind — природа блокировки: «challenge» (антибот-капча), «ratelimit»
     (исчерпан лимит сообщений, есть время восстановления), «refused»
-    (отклонение отправки/перегрузка)."""
+    (отклонение отправки/перегрузка), «login» (разлогин). pool — пул
+    браузера, где сайт поймал блокировку: rescue пула H ждёт только капчи и
+    входы СВОЕГО пула (_rescue_pending_sites) — капчу сайта пула V он не
+    покажет и не снимет. Дефолт «h»: так открывает страницы и поиск Google
+    (web_search, open_headless_tab)."""
     with _QUARANTINE_LOCK:
         already = site in _SITE_QUARANTINE
         eff_ttl = ttl if ttl and ttl > 0 else QUARANTINE_TTL_SEC
         until = time.time() + eff_ttl
         _SITE_QUARANTINE[site] = {"until": until, "reason": reason,
-                                  "kind": kind}
+                                  "kind": kind, "pool": pool}
         if not already:
             _PENDING_ALERTS.append({"site": site, "reason": reason,
                                     "kind": kind, "until": until,
@@ -586,23 +590,68 @@ def quarantine_status() -> dict:
         return {s: dict(q) for s, q in _SITE_QUARANTINE.items()}
 
 
+# Виды карантина, ради которых нужен видимый пул H (rescue): капчу и вход в
+# аккаунт человек проходит руками в окне. Лимит сообщений (ratelimit) и
+# отказ сайта (refused) руками не снять — у них свой срок (TTL карантина), и
+# rescue их не ждёт и не снимает
+_RESCUE_KINDS = ("challenge", "login")
+
+
+def _rescue_pending_sites() -> List[str]:
+    """Сайты ЭТОГО процесса, ради которых rescue пула H ещё нужен: карантин
+    капчи/разлогина у сайта пула H. Карантин сайта пула V (chatgpt, claude)
+    не в счёт: его страницы в окне rescue нет, и в rescue его не пробуют
+    (_quarantine_skip) — он держал бы видимый пул H до конца срока."""
+    return sorted(s for s, q in quarantine_status().items()
+                  if str(q.get("kind") or "challenge") in _RESCUE_KINDS
+                  and str(q.get("pool") or "h") == "h")
+
+
+def _finish_rescue_if_done(ba, cleared: Optional[str] = None,
+                           pool: str = "h") -> bool:
+    """Единое правило конца rescue пула H: только СВОЙ rescue (включил этот
+    процесс) и только когда в этом процессе не осталось карантинов капчи/
+    входа (_rescue_pending_sites). Зовут его реплика «готово»
+    (finish_idle_rescue) и снятие карантина вызовом к сайту (_challenge_check,
+    _login_restored; cleared — сайт, чей карантин только что снят, для лога;
+    pool — пул этого сайта).
+    Почему не завершать по первому снятому карантину: капчи бывают у
+    нескольких сайтов сразу — rescue, снятый по первой, перезапустил бы пул H
+    headless посреди решения второй, и её карантин дожил бы до TTL.
+    Чужой rescue не завершаем: карантины, ради которых его включили, — в
+    памяти того процесса, отсюда их не видно; завершит он сам (или истечёт
+    срок). Снятие карантина у сайта пула V к rescue пула H отношения не
+    имеет (капчу он проходил не в окне rescue) — тоже не повод завершать.
+    → True — rescue завершён."""
+    if pool != "h":
+        return False
+    if not ba.pool_h_rescue_owned():
+        if cleared and ba.pool_h_rescue_active():
+            logger.info(f"[WebChat] {cleared}: карантин снят; rescue пула H "
+                        "включил другой процесс бота — завершит он")
+        return False
+    pending = _rescue_pending_sites()
+    if pending:
+        if cleared:
+            logger.info(f"[WebChat] {cleared}: карантин снят, rescue пула H "
+                        f"продолжается — ещё ждём: {', '.join(pending)}")
+        return False
+    ba.end_rescue_pool_h()
+    return True
+
+
 def finish_idle_rescue() -> bool:
     """Реплика пользователя после «почини браузер» — это «готово» (так его
     и просит rescue_ok). Rescue этого процесса, которому чинить нечего — ни
     капчи, ни разлогина в карантине, — завершается сразу: по чистой
     странице его снимать было бы не с чего, и пул H оставался бы видимым до
     конца срока, выскакивая окном на каждую новую вкладку. Карантин есть —
-    rescue снимет вызов к сайту (_challenge_check, _login_restored). Чужой
-    rescue (включил другой процесс бота) не трогаем: его карантины — в
-    памяти того процесса. → True — завершён."""
+    rescue снимет вызов к сайту (_challenge_check, _login_restored), когда
+    снят последний. Чужой rescue (включил другой процесс бота) не трогаем:
+    его карантины — в памяти того процесса. Правило — _finish_rescue_if_done.
+    → True — завершён."""
     from app.features import browser_actions as ba
-    if not ba.pool_h_rescue_owned():
-        return False
-    if any(str(q.get("kind") or "challenge") in ("challenge", "login")
-           for q in quarantine_status().values()):
-        return False
-    ba.end_rescue_pool_h()
-    return True
+    return _finish_rescue_if_done(ba)
 
 
 def _drop_pending_alerts(site: str, kind: str):
@@ -1632,7 +1681,7 @@ class WebChatLLM:
         reason = (label if "возраст" in label
                   else f"бот разлогинен ({label})")
         quarantine_site(self.site, reason, ttl=LOGIN_QUARANTINE_TTL_SEC,
-                        kind="login")
+                        kind="login", pool=self.browser_pool)
 
     def _resolve_ab_choice(self, ba, tab_id) -> bool:
         """A/B-панель на странице → выбрать первый ответ. True — кликнули."""
@@ -1651,14 +1700,17 @@ class WebChatLLM:
         # Уведомления уходят со СЛЕДУЮЩИМ ответом бота: не доставленное к
         # этому моменту «выкинул из аккаунта» пришло бы уже после входа
         _drop_pending_alerts(self.site, "login")
-        try:
-            # Вошли в видимом окне rescue — пул H возвращается в штатный режим
-            if ba.pool_h_rescue_active():
-                ba.end_rescue_pool_h()
-        except Exception:
-            pass
         logger.info(f"[WebChat] {self.site}: вход восстановлен — карантин "
                     "разлогина снят")
+        try:
+            # Вошли в видимом окне rescue — пул H возвращается в штатный
+            # режим, но только если это был последний карантин капчи/входа
+            # и rescue свой (_finish_rescue_if_done): иначе окно закрылось
+            # бы посреди капчи соседнего сайта
+            _finish_rescue_if_done(ba, cleared=self.site,
+                                   pool=self.browser_pool)
+        except Exception:
+            pass
 
     def _challenge_check(self, ba, tab_id) -> bool:
         """Страница под антибот-челленджем? Одна автопопытка клика по
@@ -1678,20 +1730,27 @@ class WebChatLLM:
                         "неизвестно, карантин не трогаю")
             return False
         if not label:
-            # Страница чиста. Если сайт был в карантине — челлендж пройден
-            # (пользователь в rescue): снимаем карантин, пул H возвращается
-            # в штатный режим
-            # Карантин разлогина так не снимается: на странице входа капчи
-            # тоже нет — его снимает только проба поля ввода (_login_state)
-            if site_quarantined(self.site) \
-                    and quarantine_kind(self.site) != "login":
+            # Страница чиста. Если сайт был в карантине КАПЧИ — челлендж
+            # пройден (пользователь в rescue): снимаем карантин; rescue
+            # завершается, только если капч/входов больше не ждём
+            # (_finish_rescue_if_done).
+            # Чистая страница снимает только вид challenge. Разлогин так не
+            # снимается: на странице входа капчи тоже нет — его снимает
+            # только проба поля ввода (_login_state). Лимит (ratelimit) и
+            # отказ (refused) — тоже нет: это не капча, и страница с ними
+            # выглядит чистой, а снимаются они только сроком карантина
+            # (сайт сам назвал время восстановления / TTL самолечения).
+            # Сюда такой сайт попадает лишь гонкой (карантин начался, пока
+            # шёл вызов): _quarantine_skip их к сайту не пускает и в rescue
+            if quarantine_kind(self.site) == "challenge":
                 clear_quarantine(self.site)
-                try:
-                    ba.end_rescue_pool_h()
-                except Exception:
-                    pass
                 logger.info(f"[WebChat] {self.site}: челлендж пройден — "
                             "карантин снят")
+                try:
+                    _finish_rescue_if_done(ba, cleared=self.site,
+                                           pool=self.browser_pool)
+                except Exception:
+                    pass
             return False
         logger.info(f"[WebChat] {self.site}: антибот-челлендж ({label}) — "
                     "одна автопопытка")
@@ -1705,7 +1764,7 @@ class WebChatLLM:
         except Exception:
             pass
         if label:
-            quarantine_site(self.site, label)
+            quarantine_site(self.site, label, pool=self.browser_pool)
             return True
         logger.info(f"[WebChat] {self.site}: челлендж пройден автокликом")
         return False
@@ -2068,11 +2127,16 @@ class WebChatLLM:
         """Сайт на карантине и rescue не активен — вызов пропускается
         мгновенно (цепочка идёт дальше без тяжёлых попыток через страницу
         с капчей). Исключение — активный rescue (пул H видимый, пользователь
-        решает капчу): даём сайту шанс, челлендж мог быть уже пройден
-        (снимется в _challenge_check). Зовётся ДО очереди (иначе фон
-        отстаивал бы очередь ради сайта, который сразу же пропустит) и ещё раз
-        под локом (карантин мог начаться, пока ждали)."""
-        if not site_quarantined(self.site):
+        решает капчу) и карантин именно КАПЧИ: даём сайту шанс, челлендж мог
+        быть уже пройден (снимется в _challenge_check). Лимит (ratelimit) и
+        отказ (refused) в rescue пропускаются мгновенно, как и без него:
+        человек их не снимет, а чистая страница сайта с лимитом выглядит как
+        пройденная капча. Разлогин — своя проба (_claim_login_probe). Зовётся
+        ДО очереди (иначе фон отстаивал бы очередь ради сайта, который сразу
+        же пропустит) и ещё раз под локом (карантин мог начаться, пока
+        ждали)."""
+        kind = quarantine_kind(self.site)
+        if kind is None:
             return False
         # ba передан — повторная проверка под локом того же вызова: проба
         # разлогина, заявленная первой проверкой, должна пройти и здесь
@@ -2083,7 +2147,7 @@ class WebChatLLM:
             rescue = self.browser_pool == "h" and ba.pool_h_rescue_active()
         except Exception:
             rescue = False
-        if quarantine_kind(self.site) == "login":
+        if kind == "login":
             if (second and self._login_probe) or _claim_login_probe(
                     self.site, LOGIN_RESCUE_PROBE_SEC if rescue
                     else LOGIN_PROBE_SEC):
@@ -2096,8 +2160,9 @@ class WebChatLLM:
                 return False
             logger.info(f"[WebChat] {self.site}: карантин (разлогин) — пропуск")
             return True
-        if not rescue:
-            logger.info(f"[WebChat] {self.site}: карантин активен — пропуск")
+        if not rescue or kind != "challenge":
+            logger.info(f"[WebChat] {self.site}: карантин ({kind}) активен — "
+                        "пропуск")
             return True
         logger.info(f"[WebChat] {self.site}: rescue активен — проверяем, "
                     "не пройден ли челлендж")
