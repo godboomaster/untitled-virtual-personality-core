@@ -116,8 +116,10 @@ def wire_reminder_for_api(persona: str, bot, sender=None) -> None:
     rm.set_memory(bot.memory)
     # Текст напоминаний генерируется LLM в характере персоны (как в TG)
     rm.set_router_persona(bot.router, bot.persona)
-    # Заморозка персоны: напоминания молчат (флаг читается живьём из bot.features)
-    rm.set_muted_check(lambda: bool((bot.features or {}).get("muted")))
+    # Заморозка персоны: напоминания молчат. bot.is_muted перечитывает флаг из
+    # YAML персоны — видна и заморозка прямой правкой файла, не только из веба
+    rm.set_muted_check(getattr(bot, "is_muted", None)
+                       or (lambda: bool((bot.features or {}).get("muted"))))
     loop = background_loop()
     loop.call_soon_threadsafe(rm.start, loop)
 

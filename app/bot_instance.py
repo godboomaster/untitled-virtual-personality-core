@@ -398,6 +398,8 @@ class BotInstance:
             self.reminder_manager.set_turn_gate(self.turn_gate)
             # на primitive-tier — минимальная вербализация напоминаний
             self.reminder_manager.set_intellect_tier(self.intellect.tier)
+            # Замороженная персона напоминаний не шлёт — в любом канале
+            self.reminder_manager.set_muted_check(self.is_muted)
             logger.info(f"  [{persona_name}] Reminder manager включён")
 
         # Inventory manager (только если inventory)
@@ -682,6 +684,16 @@ class BotInstance:
 
         logger.info(f"  [{persona_name}] BotInstance создан | stm_size={self.stm_size} | features: {list(self.features.keys())}")
 
+    def is_muted(self) -> bool:
+        """Заморожена ли персона (features.muted), с подхватом правки YAML из
+        другого процесса (см. PersonaLayer.is_muted). Свежий флаг переносится
+        и в self.features — его читают остальные проверки."""
+        muted = self.persona.is_muted()
+        features = self.features
+        if isinstance(features, dict) and bool(features.get("muted")) != muted:
+            features["muted"] = muted
+        return muted
+
     def sync_feature_managers(self) -> dict:
         """Приводит менеджеры reminder/todo/inventory в соответствие с self.features
         (живое включение/выключение фич из веб-настроек, без рестарта бота):
@@ -696,6 +708,9 @@ class BotInstance:
                 # getattr: вызывается и на заготовках бота (тесты живого переключения)
                 self.reminder_manager.set_turn_gate(getattr(self, "turn_gate", None))
                 self.reminder_manager.set_intellect_tier(self.intellect.tier)
+                is_muted = getattr(self, "is_muted", None)
+                if callable(is_muted):
+                    self.reminder_manager.set_muted_check(is_muted)
                 logger.info(f"  [{self.persona_name}] Reminder manager включён (live)")
         elif self.reminder_manager is not None:
             self.reminder_manager.stop()
@@ -5373,7 +5388,7 @@ class BotInstance:
             memory=self.memory,
             activity_tracker=self._activity_tracker,
             sender=sender,
-            muted_check=lambda: bool((self.features or {}).get("muted")),
+            muted_check=self.is_muted,
             dossier=self._chat_dossier,
             turn_gate=self._get_turn_gate(),
         )

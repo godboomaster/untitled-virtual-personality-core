@@ -4,6 +4,8 @@ main.py запускает два Telegram Application, каждый со сво
 """
 
 import asyncio
+import os
+import time
 import logging
 import re
 from typing import Optional
@@ -217,13 +219,55 @@ async def _send_split_parts(bot, update: Update, context: ContextTypes.DEFAULT_T
     return sent_ids
 
 
+# Замороженной персоне владелец получает напоминание об этом не чаще раза
+# в час на чат; остальным — тишина
+_MUTED_NOTICE_SEC = 3600
+_muted_noticed: dict = {}
+
+_MUTED_NOTICE = {
+    "ru": "Персона заморожена и молчит. Разморозить — в веб-интерфейсе: Настройки персоны.",
+    "en": "This persona is frozen and stays silent. Unfreeze it in the web interface: persona settings.",
+}
+
+
+def _is_owner(bot: BotInstance, user_id: str) -> bool:
+    owners = {bot.owner, os.getenv("OWNER_USER_ID", "")} - {None, ""}
+    return str(user_id) in {str(o) for o in owners}
+
+
+async def _muted_block(bot: BotInstance, message, user_id: str, text: str) -> bool:
+    """Замороженная персона (features.muted) не отвечает и не пишет реплику в
+    STM — как 409 в вебе. Заморозку из веба видно без рестарта бота
+    (BotInstance.is_muted перечитывает YAML). True — апдейт заблокирован."""
+    is_muted = getattr(bot, "is_muted", None)
+    muted = (await asyncio.to_thread(is_muted) if callable(is_muted)
+             else bool((getattr(bot, "features", None) or {}).get("muted")))
+    if not muted:
+        return False
+    chat_id = str(getattr(message, "chat_id", "") or "")
+    logger.info(f"[{bot.persona_name}] Персона заморожена — апдейт от {user_id} в {chat_id} без ответа")
+    if _is_owner(bot, user_id):
+        key = (bot.persona_name, chat_id)
+        now = time.monotonic()
+        if now - _muted_noticed.get(key, float("-inf")) >= _MUTED_NOTICE_SEC:
+            _muted_noticed[key] = now
+            lang = detect_language(text) or bot.chat_user_language(chat_id)
+            try:
+                await message.reply_text(_MUTED_NOTICE["en" if lang == "en" else "ru"])
+            except Exception as e:
+                logger.warning(f"[{bot.persona_name}] Не удалось сообщить о заморозке: {e}")
+    return True
+
+
 async def _gate_update(bot: BotInstance, message, user_id: str, is_private: bool,
                        text: str) -> bool:
     """Общий pre_check-гейт для ЛЮБОГО входящего апдейта (текст/фото/документ/
-    будущие хендлеры) — blocked_users/allowed_dm_users/punish/rate_limit/
-    moderation. text — то, что реально пишет пользователь (для фото/документа —
-    подпись caption, а не распознанный контент). True — апдейт заблокирован,
-    обработчик должен прекратить работу."""
+    будущие хендлеры) — заморозка персоны, blocked_users/allowed_dm_users/
+    punish/rate_limit/moderation. text — то, что реально пишет пользователь
+    (для фото/документа — подпись caption, а не распознанный контент). True —
+    апдейт заблокирован, обработчик должен прекратить работу."""
+    if await _muted_block(bot, message, user_id, text):
+        return True
     check = await asyncio.to_thread(bot.pre_check, user_id, text, is_private)
     if not check:
         return False
@@ -707,6 +751,10 @@ def create_handlers(bot: BotInstance) -> dict:
         # (reply боту, trigger word, или личный чат)
         is_private = update.effective_chat.type == "private"
         is_addressed_to_bot = is_reply_to_bot or bot.should_respond(text) or is_private
+        # Замороженная персона молчит: ни активности, ни раннего ответа
+        # режима управления, ни записи в STM
+        if is_addressed_to_bot and await _muted_block(bot, update.message, user_id, text):
+            return
         if is_addressed_to_bot:
             # on_user_message = note_presence (нужен разрыв ДО обновления
             # активности) + record_activity, строго в этом порядке: обратный
@@ -865,6 +913,9 @@ def create_handlers(bot: BotInstance) -> dict:
         # уже внутри хода, иначе фоновая инициатива может встать перед репликой
         # и быть засчитана как ответ на неё. Активность — тоже при получении
         # (как у текста), ход держится до конца доставки ответа.
+        # Замороженная персона молчит — и активность не записывается (как у текста)
+        if await _muted_block(bot, update.message, user_id, caption):
+            return
         bot.on_user_message(chat_id)
         async with bot.user_turn_async(chat_id):
             # Тот же гейт, что и у текстовых сообщений: blocked_users/allowlist ЛС/
@@ -964,6 +1015,9 @@ def create_handlers(bot: BotInstance) -> dict:
         # уже внутри хода, иначе фоновая инициатива может встать перед репликой
         # и быть засчитана как ответ на неё. Активность — тоже при получении
         # (как у текста), ход держится до конца доставки ответа.
+        # Замороженная персона молчит — и активность не записывается (как у текста)
+        if await _muted_block(bot, update.message, user_id, caption):
+            return
         bot.on_user_message(chat_id)
         async with bot.user_turn_async(chat_id):
             # Тот же гейт, что и у текстовых сообщений/документов — до скачивания

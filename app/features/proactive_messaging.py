@@ -1553,6 +1553,14 @@ class ProactiveMessaging:
             logger.error(f"[Proactive] Ошибка генерации инициативы: {e}", exc_info=True)
             return None
 
+    def _persona_muted(self) -> bool:
+        # Заморозка персоны (features.muted) — с подхватом правки YAML из
+        # другого процесса (PersonaLayer.is_muted); заглушка персоны — по данным
+        is_muted = getattr(self.persona, "is_muted", None)
+        if callable(is_muted):
+            return bool(is_muted())
+        return bool((self.persona.persona_data.get("features") or {}).get("muted"))
+
     def _in_initiative_hours(self, now: Optional[float] = None) -> bool:
         """Разрешено ли сейчас время самоинициативы. Окно задаёт ПОЛЬЗОВАТЕЛЬ
         (config.initiative_hours) — движок сам момент не выбирает. Переход
@@ -1596,7 +1604,7 @@ class ProactiveMessaging:
             return False
         if not self._in_initiative_hours():
             return False
-        if (self.persona.persona_data.get("features") or {}).get("muted"):
+        if self._persona_muted():
             return False
         if self._get_daily_count(chat_id) >= self.config.max_daily_initiatives:
             return False
@@ -1695,7 +1703,7 @@ class ProactiveMessaging:
             return False
 
         # Замороженная персона (features.muted) не пишет ничего, включая инициативы
-        if (self.persona.persona_data.get("features") or {}).get("muted"):
+        if self._persona_muted():
             return False
 
         # Время самоинициативы задаёт пользователь: вне окна не пишем сами

@@ -1924,6 +1924,11 @@ class LearningManager:
         # Персона заморожена (features.muted в её YAML, применяется на живую).
         if self._persona is None:
             return False
+        # Свежий флаг: PersonaLayer.is_muted подхватывает правку YAML из
+        # другого процесса (заморозка из веба при Telegram-боте)
+        is_muted = getattr(self._persona, "is_muted", None)
+        if callable(is_muted):
+            return bool(is_muted())
         return bool((self._persona.persona_data.get("features") or {}).get("muted"))
 
     def _session_live(self, chat_id: str, session_id: Optional[str]) -> bool:

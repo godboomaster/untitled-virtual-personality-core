@@ -28,9 +28,16 @@ def _ts_prefix(ts) -> str:
     return f"[{formatted}] " if formatted else ""
 
 
+# Как часто заглядывать в YAML за свежей заморозкой (features.muted)
+_MUTED_RECHECK_SEC = 5.0
+
+
 class PersonaLayer:
     def __init__(self, persona_name: str = "connor"):
         self.persona_name = persona_name
+        # mtime YAML на момент чтения и время последней сверки — для is_muted()
+        self._yaml_mtime: Optional[float] = None
+        self._muted_checked_at = float("-inf")
         self.persona_data = self._load_persona(persona_name)
         self.system_prompt = self.persona_data.get("system_prompt", "")
         self.settings = self.persona_data.get("settings", {})
@@ -58,6 +65,10 @@ class PersonaLayer:
                 "settings": {}
             }
         
+        try:
+            self._yaml_mtime = persona_path.stat().st_mtime
+        except OSError:
+            self._yaml_mtime = None
         with open(persona_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
@@ -79,6 +90,44 @@ class PersonaLayer:
             print(f"[PersonaLayer] Glossary не найден: {persona_dir / glossary_file}")
 
         return data
+
+    def is_muted(self) -> bool:
+        """Заморожена ли персона (features.muted) — с подхватом правки YAML на
+        живую. Заморозку из веба пишет API-процесс, а Telegram-боты работают
+        в другом процессе и читали YAML только при старте: без этой сверки
+        замороженная персона отвечала и слала напоминания до рестарта.
+        YAML перечитывается только при смене mtime и не чаще раза в
+        _MUTED_RECHECK_SEC; из него берётся лишь флаг muted."""
+        now = time.monotonic()
+        if now - getattr(self, "_muted_checked_at", float("-inf")) >= _MUTED_RECHECK_SEC:
+            self._muted_checked_at = now
+            self._sync_muted_from_yaml()
+        return bool((self.persona_data.get("features") or {}).get("muted"))
+
+    def _sync_muted_from_yaml(self) -> None:
+        path = find_persona_file(self.persona_name)
+        if path is None:
+            return
+        try:
+            mtime = path.stat().st_mtime
+            if mtime == getattr(self, "_yaml_mtime", None):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+        except Exception:
+            return  # файл переписывают прямо сейчас — сверимся в следующий раз
+        self._yaml_mtime = mtime
+        if not isinstance(data, dict):
+            return
+        muted = bool((data.get("features") or {}).get("muted"))
+        features = self.persona_data.get("features")
+        if not isinstance(features, dict):
+            if not muted:
+                return
+            features = {}
+            self.persona_data["features"] = features
+        if bool(features.get("muted")) != muted:
+            features["muted"] = muted
 
     def available_personas(self) -> List[str]:
         # Персона — YAML с непустым system_prompt: рядом лежат служебные
