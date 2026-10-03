@@ -38,3 +38,13 @@ addons/arrodes/qa_eval/**/qa_parts/
 # Сборка пакетов (pip install -e)
 *.egg-info/
 build/
+
+# Локальные материалы — остаются на диске, в git не попадают: чужие картинки
+# (examples/, example.jpg), книги, главы для QA в корне, скриншоты веба,
+# настройки Claude Code
+examples/
+example.jpg
+*.epub
+/qa_eval/
+web/*.png
+.claude/
