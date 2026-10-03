@@ -58,13 +58,40 @@ class _NoLocalLLM:
     Без подмены ChatDossier (без основного роутера → локальная модель) при
     запущенной Ollama звал НАСТОЯЩУЮ модель из _analyze_chat_impl (экстракция
     фактов + анализ) — грузил её в память, а проверки дедупа зависели от
-    её ответа. Дедуп _facts_seen — фаза 1 до LLM, ответ модели ему не нужен."""
+    её ответа. Дедуп _facts_seen — фаза 1 до LLM; его проверка берёт свой
+    детерминированный side-роутер (_FactsSideRouter)."""
 
     def is_available(self, *a, **kw):
         return False
 
     def get_response(self, *a, **kw):
         return None
+
+
+class _FactsSideRouter:
+    """Детерминированный фейк основного роутера для side-вызовов досье
+    (настоящую модель не зовёт). Экстракция фактов (system «...extract facts
+    about the user...») — пакет сообщений (строки «Message: ...» промпта)
+    пишется в extract_batches, ответ — факты из таблицы по тексту сообщения;
+    LLM-анализ интересов/тем — None (досье уйдёт в подсчёт слов)."""
+
+    active_provider = "fake:main"
+
+    def __init__(self, facts_by_message):
+        self.facts_by_message = facts_by_message
+        self.extract_batches = []
+
+    def get_response(self, messages, exclude_provider=None,
+                     webchat_channel=None, **kw):
+        if "extract facts about the user" not in messages[0]["content"].lower():
+            return None
+        batch = [line[len("Message: "):]
+                 for line in messages[1]["content"].splitlines()
+                 if line.startswith("Message: ")]
+        self.extract_batches.append(batch)
+        facts = [self.facts_by_message[m] for m in batch
+                 if m in self.facts_by_message]
+        return "\n".join(facts) or "NONE"
 
 
 def _stub_local_router(stub):
@@ -531,16 +558,56 @@ def test_bounded_caches():
               isinstance(dossier._profiles, dict)
               and not isinstance(dossier._profiles, BoundedCache))
 
-        # Дедуп фактов работает через BoundedCache
-        msgs = [{"role": "user", "content": "это тестовое сообщение номер один",
-                "sender_id": "u1", "timestamp": time.time()}]
-        dossier._analyze_chat_impl("chatDed", msgs)
-        seen_before = set(dossier._facts_seen.get("chatDed", set()))
-        dossier._analyze_chat_impl("chatDed", msgs)
-        seen_after = set(dossier._facts_seen.get("chatDed", set()))
-        check("chat_dossier: повторное сообщение не задублировалось в _facts_seen "
-              "(BoundedCache ведёт себя как dict)",
-              seen_before == seen_after and len(seen_after) >= 1)
+        # Дедуп фактов работает через BoundedCache. Дедуп _facts_seen не даёт
+        # уже разобранному сообщению уйти в LLM-экстракцию повторно (от точных
+        # дублей в user_facts бережёт ещё и _merge_user_facts) — поэтому
+        # смотрим, ЧТО ушло в side-LLM. Второй анализ обязан дойти до дедупа:
+        # раньше его отсекал 5-минутный кулдаун (и водяной знак), и проверка
+        # проходила без дедупа. Знак = часы досье в фазе 1 — старое сообщение
+        # он режет сам; дедуп — единственная защита, когда метка сообщения
+        # новее знака: часы досье ушли назад (NTP-коррекция) после записи
+        # сообщения в STM. Это и моделируем подменой часов модуля
+        # (chat_dossier зовёт только time.time()), поля экземпляра не трогаем.
+        import app.features.chat_dossier as cd_mod
+        m1 = "меня зовут Алексей, пишу первый раз"
+        m2 = "я живу в городе Энск, это уже новое"
+        side = _FactsSideRouter({m1: "Name: Алексей", m2: "City: Энск"})
+        real_time = cd_mod.time
+        t0 = time.time()
+        clock = [t0]
+        cd_mod.time = SimpleNamespace(time=lambda: clock[0])
+        try:
+            dd = ChatDossier(context="wave2_dedup", router=side)  # _started_at = t0
+            msg1 = {"role": "user", "content": m1, "sender_id": "u1",
+                    "timestamp": t0 + 50}
+            clock[0] = t0 + 40  # часы досье отстали от метки m1
+            dd._analyze_chat_impl("chatDed", [msg1])
+            # Кулдаун вышел, после знака пришло новое сообщение; STM отдаёт
+            # последние N — старое m1 снова в пачке
+            clock[0] = t0 + 40 + ChatDossier._ANALYZE_COOLDOWN + 1
+            msg2 = {"role": "user", "content": m2, "sender_id": "u1",
+                    "timestamp": clock[0] - 5}
+            prof = dd._profiles.get("chatDed")
+            wm = dd._facts_watermark.get("chatDed")
+            check("chat_dossier: предусловие — кулдаун вышел, оба сообщения новее "
+                  "водяного знака (второй анализ дойдёт до дедупа)",
+                  prof is not None and wm is not None
+                  and clock[0] - prof.last_updated >= ChatDossier._ANALYZE_COOLDOWN
+                  and msg1["timestamp"] > wm and msg2["timestamp"] > wm)
+            dd._analyze_chat_impl("chatDed", [msg1, msg2])
+        finally:
+            cd_mod.time = real_time
+        check("chat_dossier: второй анализ дошёл до экстракции (не отсечён "
+              "кулдауном) — 2 вызова, первый с m1",
+              len(side.extract_batches) == 2 and side.extract_batches[0] == [m1])
+        check("chat_dossier: повторное сообщение не ушло в LLM-экстракцию "
+              "повторно (во втором пакете только новое)",
+              side.extract_batches[1:] == [[m2]])
+        check("chat_dossier: _facts_seen (BoundedCache) помнит оба сообщения",
+              {("u1", m1), ("u1", m2)} <= dd._facts_seen.get("chatDed", set()))
+        uf = dd._profiles["chatDed"].user_facts.get("u1")
+        check("chat_dossier: факты обоих сообщений слиты в user_facts по разу",
+              uf is not None and uf.facts == ["Алексей", "Энск"])
     finally:
         os.chdir(orig_cwd)
         shutil.rmtree(tmp, ignore_errors=True)
