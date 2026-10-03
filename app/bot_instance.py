@@ -12,7 +12,7 @@ import yaml
 import logging
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from app.core.persona import PersonaLayer, _format_msg_ts
@@ -36,7 +36,9 @@ from app.features.todo_manager import (
 )
 from app.features.reminder_manager import (
     ReminderManager, parse_reminder, parse_recurring, parse_postpone,
-    extract_postpone_hint, format_schedule,
+    extract_postpone_hint, format_schedule, parse_cancel_reminder,
+    is_list_reminders_request, is_reminder_create_request, is_pending_decline,
+    looks_like_time_attempt,
 )
 from app.features.learning_manager import LearningManager, parse_frequency, classify_continue_answer
 from app.features.learning_intent import extract_subject
@@ -158,6 +160,56 @@ def _fmt_reminder_choices(choices: list) -> str:
             when = when_dt.strftime("%d.%m %H:%M")
         parts.append(f"{i+1}) [{c.get('id') or '?'}] \"{c.get('task') or '?'}\" at {when}")
     return "; ".join(parts)
+
+
+def _fmt_reminder_list(items: list) -> str:
+    """Список напоминаний для LLM-контекста ответа «какие у меня напоминания?»:
+    1) [r3f9a2] "задача" — at 12:30 (by Аня). Повтор — расписанием, пауза —
+    пометкой. id рядом с номером — по нему же работает отмена."""
+    parts = []
+    for i, r in enumerate(items):
+        if r.get("recurrence"):
+            when = format_schedule(r["recurrence"])
+        else:
+            when_dt = timeutil.from_ts(r["trigger_at"])
+            when = when_dt.strftime("%H:%M")
+            if when_dt.date() != timeutil.today():
+                when = when_dt.strftime("%d.%m %H:%M")
+            when = f"at {when}"
+        if r.get("paused"):
+            when += " (paused)"
+        who = f" (by {r['user_name']})" if r.get("user_name") else ""
+        parts.append(f"{i + 1}) [{r.get('id') or '?'}] \"{r.get('task') or '?'}\" — {when}{who}")
+    return "; ".join(parts)
+
+
+def _reminder_declined_context(task: Optional[str]) -> str:
+    task_disp = f" \"{task}\"" if task else ""
+    return (
+        f"The user decided not to set the reminder{task_disp}. Nothing was scheduled. "
+        "Acknowledge briefly in your own style. Do NOT say any reminder was set."
+    )
+
+
+def _reminder_cancel_context(result: dict) -> str:
+    """LLM-контекст после отмены напоминания текстом — честно: отменено ли
+    что-то и что именно."""
+    if result.get("none"):
+        return ("The user asked to cancel a reminder, but there are NO active reminders. "
+                "NOTHING was cancelled. Say so briefly in your own style.")
+    if result.get("cancelled"):
+        names = ", ".join(f"\"{r.get('task') or '?'}\"" for r in result["cancelled"])
+        return (f"The user asked to cancel reminders. Cancelled: {names} — this is ALREADY "
+                "done. Confirm briefly in your own style. Name the reminders exactly as given.")
+    if result.get("ambiguous"):
+        return ("NOTHING was cancelled yet. Several reminders match: "
+                f"{_fmt_reminder_list(result['ambiguous'])}. Your reply MUST ask which one "
+                "to cancel (number or words from the task), showing the numbered list above. "
+                "In your own style, briefly.")
+    listing = _fmt_reminder_list(result.get("active") or [])
+    return ("The user asked to cancel a reminder, but none of the active reminders "
+            f"matches. NOTHING was cancelled. Active reminders: {listing}. Say so and show "
+            "the list — in your own style, briefly.")
 
 
 def _postpone_result_context(result: Optional[dict]) -> str:
@@ -3310,7 +3362,6 @@ class BotInstance:
                 stm_relevant_text = "\n".join(parts)
 
             # Reminder: перехватываем перед todo (напомни через N ...)
-            # Любой текст со словом "напом" — это путь напоминаний, не todo.
             reminder_context = None
             is_reminder_request = False
             # В режиме управления напоминания/дела/инвентарь молчат (ветки
@@ -3319,252 +3370,12 @@ class BotInstance:
             if chat_id and self.control_mode_on(chat_id):
                 reminder_context = self._cc_mode_feature_note(user_input)
 
-            # Pending /remind без времени: пользователь отвечал на «через сколько?»
+            # Напоминания: ответы на висящие вопросы, отмена/список текстом,
+            # новая просьба — см. _reminder_turn
             if self.reminder_manager and chat_id \
                     and not self.control_mode_on(chat_id):
-                pending_task = self.reminder_manager.get_pending_remind(chat_id)
-                logger.info(f"[Reminder] pending_remind для chat={chat_id}: {pending_task!r}")
-
-                # Конфликт ожиданий: одновременно висит вопрос обучения «как часто уроки?».
-                # Ответ о периодичности («раз в день», «каждые 2 часа») принадлежит тому, кто
-                # спросил ПОЗЖЕ — человек отвечает на последний заданный вопрос. Если свежее
-                # setup обучения — уступаем: напоминание НЕ потребляем (остаётся pending,
-                # на него можно ответить следующим сообщением), сообщение разберёт
-                # learning-блок ниже. Без уступки напоминание съело бы такой ответ,
-                # и setup курса завис бы навсегда.
-                _yield_to_learning = False
-                if pending_task and self.learning_manager:
-                    _setup = self.learning_manager.get_setup_state(chat_id, user_id)
-                    # Уступаем, только если обучение правда возьмёт ответ (та же
-                    # проверка, что в learning-блоке ниже) — иначе сообщение не
-                    # досталось бы ни напоминанию, ни курсу
-                    _learn_reply = self.learning_manager.is_reply_to_question(
-                        chat_id, reply_to_bot_message_id)
-                    if _setup and _setup.get("subject") and (
-                        _learn_reply
-                        or (_looks_like_frequency_answer(user_input)
-                            and self.learning_manager.parse_setup_answer(user_input)[1])
-                    ):
-                        _remind_at = self.reminder_manager.get_pending_remind_asked_at(chat_id) or 0
-                        _yield_to_learning = (_setup.get("asked_at") or 0) > _remind_at
-                        if _yield_to_learning:
-                            logger.info(f"[Reminder] chat={chat_id}: ответ уступаю обучению (его вопрос свежее)")
-
-                # Ответ на «какое именно напоминание перенести?» (несколько активных,
-                # подсказки не было — сдвиг уже запомнен в pending)
-                if not _yield_to_learning and self.reminder_manager.get_pending_postpone_choice(chat_id):
-                    is_reminder_request = True
-                    # Единый источник истины — reminder_manager: id кандидатов
-                    # и сдвиг хранятся там же, где заведены (begin_pending_
-                    # postpone_choice), тонкий вызов без своей логики разбора
-                    result = self.reminder_manager.resolve_postpone_choice(chat_id, user_input)
-                    if result and result.get("gone"):
-                        reminder_context = (
-                            "The user was choosing which reminder to move, but there are no "
-                            "active reminders anymore. Say there is nothing to move — "
-                            "in your own style, briefly."
-                        )
-                    elif result:
-                        reminder_context = _postpone_result_context(result)
-                    else:
-                        reminder_context = (
-                            "The user is choosing which reminder to move, but the answer does "
-                            "not match any of them. Ask again: reply with the number or words "
-                            "from the task. In your own style, briefly. "
-                            "Do NOT say anything was moved."
-                        )
-
-                # Ответ на «на когда перенести напоминание?» (перенос без времени).
-                # Без этой ветки ответ ушёл бы в общий LLM, и модель могла бы
-                # «подтвердить» перенос, который нигде не применён.
-                elif not _yield_to_learning and self.reminder_manager.get_pending_postpone(chat_id):
-                    is_reminder_request = True
-                    shift = parse_postpone(f"перенеси напоминание {user_input}")
-                    p_delay = p_abs = None
-                    p_rel = False
-                    if shift and not shift.get("unknown"):
-                        p_delay = shift.get("seconds")
-                        p_abs = shift.get("abs")
-                        p_rel = bool(shift.get("relative_to_trigger"))
-                    if p_delay is None and p_abs is None:
-                        # Ответ вида «через 10 минут» / «в 18:00» / голое «18:30»
-                        parsed_shift = parse_reminder("напомни " + user_input)
-                        if not parsed_shift:
-                            parsed_shift = parse_reminder("напомни в " + user_input)
-                        if parsed_shift:
-                            _, p_delay = parsed_shift
-                        else:
-                            p_delay = parse_frequency(user_input)
-                    if p_delay is not None or p_abs is not None:
-                        self.reminder_manager.clear_pending_remind(chat_id)
-                        # Подсказка задачи — только если пользователь переформулировал
-                        # весь запрос («перенеси напоминание приготовить еду на час»),
-                        # а не просто ответил на вопрос («на 15 минут» — там подсказки нет,
-                        # а extract вытащил бы мусор вроде «через час»).
-                        p_hint = (
-                            extract_postpone_hint(user_input)
-                            if parse_postpone(user_input) else None
-                        )
-                        reminder_context = self._postpone_handled_context(
-                            chat_id,
-                            self.reminder_manager.postpone_reminder(
-                                chat_id, seconds=p_delay, abs_time=p_abs,
-                                relative_to_trigger=p_rel,
-                                task_hint=p_hint,
-                            ),
-                            seconds=p_delay, abs_time=p_abs, relative_to_trigger=p_rel,
-                        )
-                    else:
-                        reminder_context = (
-                            "The user is answering the question about when to move the "
-                            "reminder to, but the time could not be understood. Ask again: "
-                            "to what time should the reminder be moved "
-                            "(for example, \"in 10 minutes\", \"at 18:30\")? "
-                            "In your own style, briefly. "
-                            "Do NOT say the reminder was moved — it was NOT."
-                        )
-
-                elif pending_task and not _yield_to_learning:
-                    # Пытаемся вытащить время из ответа пользователя.
-                    # Сначала — повторяющееся расписание («каждый день в 12»).
-                    rec_pending = parse_recurring("напомни " + user_input)
-                    rem_delay = None
-                    if rec_pending:
-                        rec_task, rec_schedule = rec_pending
-                        self.reminder_manager.clear_pending_remind(chat_id)
-                        rem_task = self._reformulate_task(rec_task or pending_task)
-                        topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
-                        self.reminder_manager.add_reminder(
-                            chat_id, user_name or "User", rem_task, 0, topic_id,
-                            schedule=rec_schedule,
-                            user_id=user_id, username=get_username(user_id),
-                        )
-                        task_display = f" '{rem_task}'" if rem_task else ""
-                        reminder_context = (
-                            f"The user asked to be reminded{task_display} — "
-                            f"{format_schedule(rec_schedule)}. The reminder is scheduled — "
-                            f"confirm this in your own style, briefly."
-                        )
-                        is_reminder_request = True
-                        parsed_pending = None
-                    else:
-                        parsed_pending = parse_reminder("напомни " + user_input)
-                        if not parsed_pending:
-                            # Голый час («8», «18:30») — тот же фолбэк с предлогом,
-                            # что и в ветке переноса напоминания
-                            parsed_pending = parse_reminder("напомни в " + user_input)
-                    if not is_reminder_request and parsed_pending:
-                        _, rem_delay = parsed_pending
-                    if rem_delay is None and not is_reminder_request:
-                        # Пробуем парсер частоты из learning
-                        rem_delay = parse_frequency(user_input)
-                    if rem_delay:
-                        self.reminder_manager.clear_pending_remind(chat_id)
-                        rem_task = self._reformulate_task(pending_task)
-                        topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
-                        delay_text = self.reminder_manager.format_delay(rem_delay)
-                        self.reminder_manager.add_reminder(
-                            chat_id, user_name or "User", rem_task, rem_delay, topic_id,
-                            user_id=user_id, username=get_username(user_id),
-                        )
-                        task_display = f" '{rem_task}'" if rem_task else ""
-                        reminder_context = (
-                            f"The user specified the time for the reminder{task_display} — in {delay_text}. "
-                            f"The reminder is scheduled — confirm this in your own style, briefly."
-                        )
-                        is_reminder_request = True
-                    else:
-                        # Время снова не поняли — переспрашиваем ещё раз
-                        # (только если повторяющееся напоминание не создано выше)
-                        if not is_reminder_request:
-                            reminder_context = (
-                                f"The user is answering the question about the time for the reminder \"{pending_task}\", "
-                                "but the time could not be understood. Ask again: how soon to remind "
-                                "(for example, \"in 2 hours\", \"tomorrow at 12\", \"every day at 9\"). "
-                                "In your own style, briefly. "
-                                "Do NOT confirm that any reminder was scheduled — it was NOT."
-                            )
-                            is_reminder_request = True
-
-                # ВАЖНО: ветка «напом»/«remind» — часть цепочки pending-ответов
-                # ВНУТРИ `if self.reminder_manager and chat_id:` (срабатывает, когда
-                # pending нет). Вынесенная как elif к этому внешнему if, она не
-                # срабатывала бы в обычном случае, и свежие запросы
-                # «напомни мне X через Y» не парсились бы.
-                elif "напом" in user_input.lower() or re.search(r"\bremind", user_input.lower()):
-                    is_reminder_request = True
-                    # Перенос существующего напоминания («перенеси/отложи/сдвинь
-                    # напоминание ...») — строго ДО обычного парсера: иначе весь текст
-                    # уедет в pending-задачу нового напоминания, реального переноса не
-                    # будет, а бот словами его «подтвердит».
-                    postpone = parse_postpone(user_input)
-                    if postpone and postpone.get("unknown"):
-                        self.reminder_manager.begin_pending_postpone(chat_id)
-                        reminder_context = (
-                            "The user asked to move/reschedule a reminder, but did not say "
-                            "to when. Ask: to what time should the reminder be moved "
-                            "(for example, \"in 10 minutes\", \"at 18:30\")? "
-                            "In your own style, briefly. Do NOT say anything was rescheduled yet."
-                        )
-                    elif postpone:
-                        reminder_context = self._postpone_handled_context(
-                            chat_id,
-                            self.reminder_manager.postpone_reminder(
-                                chat_id,
-                                seconds=postpone.get("seconds"),
-                                abs_time=postpone.get("abs"),
-                                relative_to_trigger=postpone.get("relative_to_trigger", False),
-                                task_hint=extract_postpone_hint(user_input),
-                            ),
-                            seconds=postpone.get("seconds"),
-                            abs_time=postpone.get("abs"),
-                            relative_to_trigger=postpone.get("relative_to_trigger", False),
-                        )
-                    # Сначала — повторяющееся расписание («каждый день в 9», «по пятницам в 18:00»)
-                    rec = parse_recurring(user_input) if not postpone else None
-                    if rec:
-                        rem_task, rec_schedule = rec
-                        if rem_task:
-                            rem_task = self._reformulate_task(rem_task)
-                        topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
-                        self.reminder_manager.add_reminder(
-                            chat_id, user_name or "User", rem_task, 0, topic_id,
-                            schedule=rec_schedule,
-                            user_id=user_id, username=get_username(user_id),
-                        )
-                        task_display = f" '{rem_task}'" if rem_task else ""
-                        reminder_context = (
-                            f"The user asked to be reminded{task_display} — {format_schedule(rec_schedule)}. "
-                            f"The reminder is already scheduled — just confirm this in your own style, briefly."
-                        )
-                    elif not postpone:
-                        parsed = parse_reminder(user_input)
-                        logger.info(f"[Reminder] parse_reminder({user_input[:60]!r}) -> {parsed}")
-                        if parsed:
-                            rem_task, rem_delay = parsed
-                            # Переформулирование задачи через LLM
-                            if rem_task:
-                                rem_task = self._reformulate_task(rem_task)
-                            topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
-                            delay_text = self.reminder_manager.format_delay(rem_delay)
-                            self.reminder_manager.add_reminder(
-                                chat_id, user_name or "User", rem_task, rem_delay, topic_id,
-                                user_id=user_id, username=get_username(user_id),
-                            )
-                            task_display = f" '{rem_task}'" if rem_task else ""
-                            reminder_context = (
-                                f"The user asked to be reminded{task_display} in {delay_text}. "
-                                f"The reminder is already scheduled — just confirm this in your own style, briefly."
-                            )
-                        else:
-                            # Время не указано — переспрашиваем и ЗАПОМИНАЕМ задачу (как в /remind),
-                            # иначе следующее сообщение "через 10 минут" не с чем будет связать.
-                            rem_task = self._reformulate_task(user_input)
-                            self.reminder_manager.begin_pending_remind(chat_id, rem_task)
-                            reminder_context = (
-                                f"The user asked to be reminded \"{rem_task}\", but did not specify how soon. "
-                                "Ask when to remind them — in your own style, briefly."
-                            )
+                reminder_context, is_reminder_request = self._reminder_turn(
+                    user_input, chat_id, user_id, user_name, reply_to_bot_message_id)
 
             # Learning-контекст: режим обучения («научи меня X»)
             learning_context = None
@@ -4291,10 +4102,345 @@ class BotInstance:
             logger.debug(f"[Living] Контекст не собран: {e}")
         return "\n\n".join(p for p in parts if p) or None
 
+    def _reminder_turn(self, user_input: str, chat_id, user_id, user_name,
+                       reply_to_bot_message_id=None) -> Tuple[Optional[str], bool]:
+        """Напоминания в обычном сообщении → (контекст для LLM, про напоминания ли
+        оно). Порядок: ответы на висящие вопросы («какое отменить?», «какое
+        перенести?», «на когда перенести?») → отмена и список текстом → ответ на
+        «когда напомнить?» → новая просьба. Отмена и список никогда не создают
+        напоминание. Вопрос «когда?» живёт PENDING_REMIND_TTL_SEC и принадлежит
+        тому, кого спросили; отказ, новая полная просьба или посторонняя реплика
+        его снимают."""
+        rm = self.reminder_manager
+        reminder_context = None
+        is_reminder_request = False
+        pending_task = rm.get_pending_remind(chat_id, user_id)
+        logger.info(f"[Reminder] pending_remind для chat={chat_id}: {pending_task!r}")
+
+        # Конфликт ожиданий: одновременно висит вопрос обучения «как часто уроки?».
+        # Ответ о периодичности («раз в день», «каждые 2 часа») принадлежит тому, кто
+        # спросил ПОЗЖЕ — человек отвечает на последний заданный вопрос. Если свежее
+        # setup обучения — уступаем: напоминание НЕ потребляем (остаётся pending,
+        # на него можно ответить следующим сообщением), сообщение разберёт
+        # learning-блок ниже. Без уступки напоминание съело бы такой ответ,
+        # и setup курса завис бы навсегда.
+        _yield_to_learning = False
+        if pending_task and self.learning_manager:
+            _setup = self.learning_manager.get_setup_state(chat_id, user_id)
+            # Уступаем, только если обучение правда возьмёт ответ (та же
+            # проверка, что в learning-блоке) — иначе сообщение не
+            # досталось бы ни напоминанию, ни курсу
+            _learn_reply = self.learning_manager.is_reply_to_question(
+                chat_id, reply_to_bot_message_id)
+            if _setup and _setup.get("subject") and (
+                _learn_reply
+                or (_looks_like_frequency_answer(user_input)
+                    and self.learning_manager.parse_setup_answer(user_input)[1])
+            ):
+                _remind_at = rm.get_pending_remind_asked_at(chat_id) or 0
+                _yield_to_learning = (_setup.get("asked_at") or 0) > _remind_at
+                if _yield_to_learning:
+                    logger.info(f"[Reminder] chat={chat_id}: ответ уступаю обучению (его вопрос свежее)")
+
+        low = user_input.lower()
+        cancel_req = parse_cancel_reminder(user_input)
+        list_req = cancel_req is None and is_list_reminders_request(user_input)
+        # Новая полная просьба («напомни через 5 минут купить хлеб») во время
+        # «когда напомнить?» — новое напоминание, а не ответ: раньше время
+        # бралось из неё, а текст — старый
+        fresh_full = False
+        if pending_task and ("напом" in low or re.search(r"\bremind", low)):
+            _rec = parse_recurring(user_input)
+            _parsed = parse_reminder(user_input)
+            fresh_full = bool((_rec and _rec[0]) or (_parsed and _parsed[0]))
+
+        # Ответ на «какое именно напоминание отменить?»
+        if not _yield_to_learning and rm.get_pending_cancel_choice(chat_id, user_id):
+            is_reminder_request = True
+            result = rm.resolve_cancel_choice(chat_id, user_input)
+            if result and result.get("gone"):
+                reminder_context = _reminder_cancel_context({"none": True})
+            elif result:
+                reminder_context = _reminder_cancel_context(result)
+            elif is_pending_decline(user_input):
+                rm.clear_pending_remind(chat_id)
+                reminder_context = ("The user decided not to cancel any reminder. Nothing was "
+                                    "cancelled. Acknowledge briefly in your own style.")
+            else:
+                reminder_context = (
+                    "The user is choosing which reminder to cancel, but the answer does not "
+                    "match any of them. Ask again: reply with the number or words from the "
+                    "task. In your own style, briefly. Do NOT say anything was cancelled."
+                )
+
+        # Ответ на «какое именно напоминание перенести?» (несколько активных,
+        # подсказки не было — сдвиг уже запомнен в pending)
+        elif not _yield_to_learning and rm.get_pending_postpone_choice(chat_id, user_id):
+            is_reminder_request = True
+            # Единый источник истины — reminder_manager: id кандидатов
+            # и сдвиг хранятся там же, где заведены (begin_pending_
+            # postpone_choice), тонкий вызов без своей логики разбора
+            result = rm.resolve_postpone_choice(chat_id, user_input)
+            if result and result.get("gone"):
+                reminder_context = (
+                    "The user was choosing which reminder to move, but there are no "
+                    "active reminders anymore. Say there is nothing to move — "
+                    "in your own style, briefly."
+                )
+            elif result:
+                reminder_context = _postpone_result_context(result)
+            else:
+                reminder_context = (
+                    "The user is choosing which reminder to move, but the answer does "
+                    "not match any of them. Ask again: reply with the number or words "
+                    "from the task. In your own style, briefly. "
+                    "Do NOT say anything was moved."
+                )
+
+        # Ответ на «на когда перенести напоминание?» (перенос без времени).
+        # Без этой ветки ответ ушёл бы в общий LLM, и модель могла бы
+        # «подтвердить» перенос, который нигде не применён.
+        elif not _yield_to_learning and rm.get_pending_postpone(chat_id, user_id):
+            is_reminder_request = True
+            shift = parse_postpone(f"перенеси напоминание {user_input}")
+            p_delay = p_abs = None
+            p_rel = False
+            if shift and not shift.get("unknown"):
+                p_delay = shift.get("seconds")
+                p_abs = shift.get("abs")
+                p_rel = bool(shift.get("relative_to_trigger"))
+            if p_delay is None and p_abs is None:
+                # Ответ вида «через 10 минут» / «в 18:00» / голое «18:30»
+                parsed_shift = parse_reminder("напомни " + user_input)
+                if not parsed_shift:
+                    parsed_shift = parse_reminder("напомни в " + user_input)
+                if parsed_shift:
+                    _, p_delay = parsed_shift
+                else:
+                    p_delay = parse_frequency(user_input)
+            if p_delay is not None or p_abs is not None:
+                rm.clear_pending_remind(chat_id)
+                # Подсказка задачи — только если пользователь переформулировал
+                # весь запрос («перенеси напоминание приготовить еду на час»),
+                # а не просто ответил на вопрос («на 15 минут» — там подсказки нет,
+                # а extract вытащил бы мусор вроде «через час»).
+                p_hint = (
+                    extract_postpone_hint(user_input)
+                    if parse_postpone(user_input) else None
+                )
+                reminder_context = self._postpone_handled_context(
+                    chat_id,
+                    rm.postpone_reminder(
+                        chat_id, seconds=p_delay, abs_time=p_abs,
+                        relative_to_trigger=p_rel,
+                        task_hint=p_hint,
+                    ),
+                    seconds=p_delay, abs_time=p_abs, relative_to_trigger=p_rel,
+                    user_id=user_id,
+                )
+            else:
+                reminder_context = (
+                    "The user is answering the question about when to move the "
+                    "reminder to, but the time could not be understood. Ask again: "
+                    "to what time should the reminder be moved "
+                    "(for example, \"in 10 minutes\", \"at 18:30\")? "
+                    "In your own style, briefly. "
+                    "Do NOT say the reminder was moved — it was NOT."
+                )
+
+        # «Отмени напоминание (про X / 2 / все)», «какие у меня напоминания?» —
+        # до создания: раньше любой текст с «напом» заводил новое напоминание
+        elif cancel_req is not None or list_req:
+            is_reminder_request = True
+            if pending_task and cancel_req is not None and not cancel_req["all"] \
+                    and not cancel_req["ref"] and not cancel_req["hint"]:
+                # «отмени напоминание» в ответ на «когда напомнить?» — отказ
+                # от создаваемого, а не отмена существующего
+                rm.clear_pending_remind(chat_id)
+                reminder_context = _reminder_declined_context(pending_task)
+            else:
+                if pending_task:
+                    rm.clear_pending_remind(chat_id)  # тема сменилась — вопрос «когда?» снят
+                if cancel_req is not None:
+                    result = rm.cancel_request(chat_id, cancel_req)
+                    if result.get("ambiguous"):
+                        rm.begin_pending_cancel_choice(
+                            chat_id, [r.get("id") for r in result["ambiguous"]], user_id=user_id)
+                    reminder_context = _reminder_cancel_context(result)
+                else:
+                    active = rm.get_active(chat_id)
+                    reminder_context = (
+                        "The user asked which reminders they have. Active reminders: "
+                        f"{_fmt_reminder_list(active)}. Present this list — numbered, tasks and "
+                        "times exactly as given; you may mention a reminder can be cancelled by "
+                        "its number. In your own style, briefly. Do NOT invent reminders."
+                    ) if active else (
+                        "The user asked which reminders they have. There are NO active "
+                        "reminders. Say so briefly in your own style."
+                    )
+
+        elif pending_task and not _yield_to_learning and not fresh_full:
+            if is_pending_decline(user_input):
+                # «не надо» / «отмена» на «когда напомнить?»
+                rm.clear_pending_remind(chat_id)
+                reminder_context = _reminder_declined_context(pending_task)
+                return reminder_context, True
+            # Пытаемся вытащить время из ответа пользователя.
+            # Сначала — повторяющееся расписание («каждый день в 12»).
+            rec_pending = parse_recurring("напомни " + user_input)
+            rem_delay = None
+            if rec_pending:
+                rec_task, rec_schedule = rec_pending
+                rm.clear_pending_remind(chat_id)
+                rem_task = self._reformulate_task(rec_task or pending_task)
+                topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                rm.add_reminder(
+                    chat_id, user_name or "User", rem_task, 0, topic_id,
+                    schedule=rec_schedule,
+                    user_id=user_id, username=get_username(user_id),
+                )
+                task_display = f" '{rem_task}'" if rem_task else ""
+                reminder_context = (
+                    f"The user asked to be reminded{task_display} — "
+                    f"{format_schedule(rec_schedule)}. The reminder is scheduled — "
+                    f"confirm this in your own style, briefly."
+                )
+                is_reminder_request = True
+                parsed_pending = None
+            else:
+                parsed_pending = parse_reminder("напомни " + user_input)
+                if not parsed_pending:
+                    # Голый час («8», «18:30») — тот же фолбэк с предлогом,
+                    # что и в ветке переноса напоминания
+                    parsed_pending = parse_reminder("напомни в " + user_input)
+            if not is_reminder_request and parsed_pending:
+                _, rem_delay = parsed_pending
+            if rem_delay is None and not is_reminder_request:
+                # Пробуем парсер частоты из learning
+                rem_delay = parse_frequency(user_input)
+            if rem_delay:
+                rm.clear_pending_remind(chat_id)
+                rem_task = self._reformulate_task(pending_task)
+                topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                delay_text = rm.format_delay(rem_delay)
+                rm.add_reminder(
+                    chat_id, user_name or "User", rem_task, rem_delay, topic_id,
+                    user_id=user_id, username=get_username(user_id),
+                )
+                task_display = f" '{rem_task}'" if rem_task else ""
+                reminder_context = (
+                    f"The user specified the time for the reminder{task_display} — in {delay_text}. "
+                    f"The reminder is scheduled — confirm this in your own style, briefly."
+                )
+                is_reminder_request = True
+            elif not is_reminder_request:
+                if looks_like_time_attempt(user_input):
+                    # Похоже на время, но не поняли — переспрашиваем
+                    reminder_context = (
+                        f"The user is answering the question about the time for the reminder \"{pending_task}\", "
+                        "but the time could not be understood. Ask again: how soon to remind "
+                        "(for example, \"in 2 hours\", \"tomorrow at 12\", \"every day at 9\"). "
+                        "In your own style, briefly. "
+                        "Do NOT confirm that any reminder was scheduled — it was NOT."
+                    )
+                    is_reminder_request = True
+                else:
+                    # Посторонняя реплика — не ответ на «когда?»: вопрос снят,
+                    # сообщение идёт обычным разговором
+                    rm.clear_pending_remind(chat_id)
+                    logger.info(f"[Reminder] chat={chat_id}: не ответ на «когда?» — "
+                                f"вопрос про {pending_task!r} снят")
+
+        # Новая просьба: «напомни …», «перенеси напоминание …». Отсюда —
+        # и полная просьба, пришедшая во время вопроса «когда?» (fresh_full)
+        elif "напом" in low or re.search(r"\bremind", low):
+            if fresh_full:
+                rm.clear_pending_remind(chat_id)
+            is_reminder_request = True
+            # Перенос существующего напоминания («перенеси/отложи/сдвинь
+            # напоминание ...») — строго ДО обычного парсера: иначе весь текст
+            # уедет в pending-задачу нового напоминания, реального переноса не
+            # будет, а бот словами его «подтвердит».
+            postpone = parse_postpone(user_input)
+            if postpone and postpone.get("unknown"):
+                rm.begin_pending_postpone(chat_id, user_id=user_id)
+                reminder_context = (
+                    "The user asked to move/reschedule a reminder, but did not say "
+                    "to when. Ask: to what time should the reminder be moved "
+                    "(for example, \"in 10 minutes\", \"at 18:30\")? "
+                    "In your own style, briefly. Do NOT say anything was rescheduled yet."
+                )
+            elif postpone:
+                reminder_context = self._postpone_handled_context(
+                    chat_id,
+                    rm.postpone_reminder(
+                        chat_id,
+                        seconds=postpone.get("seconds"),
+                        abs_time=postpone.get("abs"),
+                        relative_to_trigger=postpone.get("relative_to_trigger", False),
+                        task_hint=extract_postpone_hint(user_input),
+                    ),
+                    seconds=postpone.get("seconds"),
+                    abs_time=postpone.get("abs"),
+                    relative_to_trigger=postpone.get("relative_to_trigger", False),
+                    user_id=user_id,
+                )
+            # Сначала — повторяющееся расписание («каждый день в 9», «по пятницам в 18:00»)
+            rec = parse_recurring(user_input) if not postpone else None
+            if rec:
+                rem_task, rec_schedule = rec
+                if rem_task:
+                    rem_task = self._reformulate_task(rem_task)
+                topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                rm.add_reminder(
+                    chat_id, user_name or "User", rem_task, 0, topic_id,
+                    schedule=rec_schedule,
+                    user_id=user_id, username=get_username(user_id),
+                )
+                task_display = f" '{rem_task}'" if rem_task else ""
+                reminder_context = (
+                    f"The user asked to be reminded{task_display} — {format_schedule(rec_schedule)}. "
+                    f"The reminder is already scheduled — just confirm this in your own style, briefly."
+                )
+            elif not postpone:
+                parsed = parse_reminder(user_input)
+                logger.info(f"[Reminder] parse_reminder({user_input[:60]!r}) -> {parsed}")
+                if parsed:
+                    rem_task, rem_delay = parsed
+                    # Переформулирование задачи через LLM
+                    if rem_task:
+                        rem_task = self._reformulate_task(rem_task)
+                    topic_id = self.get_chat_topic(chat_id) if hasattr(self, "get_chat_topic") else None
+                    delay_text = rm.format_delay(rem_delay)
+                    rm.add_reminder(
+                        chat_id, user_name or "User", rem_task, rem_delay, topic_id,
+                        user_id=user_id, username=get_username(user_id),
+                    )
+                    task_display = f" '{rem_task}'" if rem_task else ""
+                    reminder_context = (
+                        f"The user asked to be reminded{task_display} in {delay_text}. "
+                        f"The reminder is already scheduled — just confirm this in your own style, briefly."
+                    )
+                elif is_reminder_create_request(user_input):
+                    # Время не указано — переспрашиваем и ЗАПОМИНАЕМ задачу (как в /remind),
+                    # иначе следующее сообщение "через 10 минут" не с чем будет связать.
+                    rem_task = self._reformulate_task(user_input)
+                    rm.begin_pending_remind(chat_id, rem_task, user_id=user_id)
+                    reminder_context = (
+                        f"The user asked to be reminded \"{rem_task}\", but did not specify how soon. "
+                        "Ask when to remind them — in your own style, briefly."
+                    )
+                else:
+                    # «напоминание пришло вовремя», «ты мне напомнил?» — разговор
+                    # о напоминаниях, а не просьба: обычный ответ
+                    is_reminder_request = False
+        return reminder_context, is_reminder_request
+
     def _postpone_handled_context(self, chat_id: str, result: Optional[dict],
                                   seconds: Optional[float] = None,
                                   abs_time: Optional[tuple] = None,
-                                  relative_to_trigger: bool = False) -> str:
+                                  relative_to_trigger: bool = False,
+                                  user_id: Optional[str] = None) -> str:
         """LLM-контекст после попытки переноса напоминания.
         ambiguous — запоминаем сдвиг и спрашиваем КАКОЕ напоминание двигать
         (показываем нумерованный список); not_found — такого нет, ничего не
@@ -4307,7 +4453,7 @@ class BotInstance:
             self.reminder_manager.begin_pending_postpone_choice(
                 chat_id, ids=[c.get("id") for c in result["choices"]],
                 seconds=seconds, abs_time=abs_time,
-                relative_to_trigger=relative_to_trigger,
+                relative_to_trigger=relative_to_trigger, user_id=user_id,
             )
             choices = _fmt_reminder_choices(result["choices"])
             return (
@@ -5446,7 +5592,7 @@ class BotInstance:
             else:
                 # Время не указано — переспрашиваем, запоминаем задачу
                 rem_task = self._reformulate_task(args)
-                self.reminder_manager.begin_pending_remind(chat_id, rem_task)
+                self.reminder_manager.begin_pending_remind(chat_id, rem_task, user_id=user_id)
                 note = (
                     f"User {who} used a command to ask to be reminded \"{rem_task}\", but did not specify how soon. "
                     "Ask when to remind them (for example, \"in 2 hours\", \"tomorrow at 12\") — in your own style, briefly. "

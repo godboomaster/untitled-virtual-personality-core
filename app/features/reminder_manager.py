@@ -945,12 +945,158 @@ def parse_reminder_ref(arg: str) -> Optional[tuple]:
     return None
 
 
+# ─── Отмена, список и просьба создать — текстом ──────────────
+# «Отмени напоминание про воду», «какие у меня напоминания?» раньше шли в
+# ветку создания (любой текст с «напом») и заводили НОВОЕ напоминание с
+# вопросом «когда?». Эти формы разбираются до создания и им не становятся.
+
+# Сколько ждём ответа на «когда напомнить?» / «на когда перенести?» /
+# «какое именно?». Дольше — это уже не ответ, а новая реплика: раньше вопрос
+# висел до рестарта и забирал любое следующее сообщение чата
+PENDING_REMIND_TTL_SEC = 600
+
+_CANCEL_REMIND_RE = re.compile(
+    r"^\s*(?:(?:пожалуйста|please)[\s,]+)?"
+    r"(?:отмени(?:те)?|отменить|удали(?:те)?|удалить|убери(?:те)?|убрать|"
+    r"отключи(?:те)?|сними(?:те)?|сотри(?:те)?|cancel|delete|remove|clear|drop)\s+"
+    r"(?P<all>(?:все|всё|all)(?:\s+(?:the|my|мои))?\s+)?"
+    r"(?:(?:мо[её]|мои|это|эти|этот|the|my|this|that|these)\s+)?"
+    r"(?:(?P<ord>перв\w+|втор\w+|трет\w+|последн\w+|first|second|third|last)\s+)?"
+    r"(?:напоминани\w*|reminders?)(?![\wё])\s*(?P<rest>.*?)\s*[.!?…]*\s*$",
+    re.IGNORECASE)
+_CANCEL_HINT_HEAD_RE = re.compile(
+    r"^(?:про|о|об|обо|насч[её]т|на\s+тему|что(?:бы)?|about|for|to|of|on|"
+    r"regarding|that)\s+", re.IGNORECASE)
+
+_LIST_REMIND_RE = re.compile(
+    r"(?:какие|что\s+за)\s+(?:у\s+(?:меня|нас)\s+)?(?:есть\s+)?(?:сейчас\s+)?"
+    r"(?:активные\s+)?напоминани|"
+    r"(?:покажи|выведи|перечисли|назови|скажи)\s+(?:мне\s+)?(?:все\s+|мои\s+)?"
+    r"(?:активные\s+)?напоминани|"
+    r"(?:список|перечень)\s+(?:моих\s+|всех\s+|активных\s+)?напоминаний|"
+    r"^\s*(?:мои|все|активные)\s+напоминания\s*\??\s*$|"
+    r"есть\s+(?:ли\s+)?(?:у\s+(?:меня|нас)\s+)?(?:какие-?(?:то|нибудь)\s+)?напоминани\w*\s*\?|"
+    r"(?:о\s+ч[её]м|что)\s+ты\s+(?:мне\s+)?(?:собираешься\s+)?напомнишь|"
+    r"\b(?:what|which|any)\s+reminders\b|"
+    r"\b(?:list|show)\s+(?:me\s+)?(?:all\s+)?(?:of\s+)?(?:my\s+|the\s+)?(?:active\s+)?reminders\b|"
+    r"^\s*(?:my|active)\s+reminders\s*\??\s*$|"
+    r"\bdo\s+i\s+have\s+(?:any\s+)?reminders\b",
+    re.IGNORECASE)
+
+# Просьба СОЗДАТЬ напоминание (а не любое упоминание «напом…»): без неё
+# «напоминание пришло вовремя» или «ты мне напомнил?» спрашивали «когда
+# напомнить?» и заводили задачу из всей фразы
+_REMIND_CREATE_RE = re.compile(
+    r"(?<![\wё])(?:напомни(?:те)?|напомнить|напоминай(?:те)?|"
+    r"(?:поставь|создай|сделай|добавь|заведи|установи)(?:те)?\s+(?:мне\s+)?напоминани\w*)"
+    r"(?![\wё])|\bremind\s+(?:me|us)\b|"
+    r"\b(?:set|create|add|make)\s+(?:me\s+)?(?:a|an|the)?\s*reminder\b",
+    re.IGNORECASE)
+
+# Голый отказ на вопрос «когда напомнить?»
+_PENDING_DECLINE_RE = re.compile(
+    r"^\s*(?:не\s+надо|не\s+нужно|нет|отмена|отмени|забудь|неважно|не\s+важно|"
+    r"передумал[аи]?|no|nope|cancel|never\s*mind|forget\s+it|don[’']?t)"
+    r"(?:[\s,]+(?:спасибо|thanks|thank\s+you))?\s*[.!…]*\s*$", re.IGNORECASE)
+
+# Похоже ли сообщение на попытку назвать время (тогда «не понял» —
+# переспрос; иначе это новая реплика, и ожидание отпускается)
+_TIME_ATTEMPT_RE = re.compile(
+    r"\d|(?<![\wё])(?:через|в|во|к|на|завтра|послезавтра|сегодня|утр\w*|вечер\w*|"
+    r"ноч\w*|дн[её]м|полдень|полночь|час\w*|минут\w*|секунд\w*|сутки|недел\w*|"
+    r"кажд\w*|ежедневно|понедельник\w*|вторник\w*|сред\w*|четверг\w*|пятниц\w*|"
+    r"суббот\w*|воскресень\w*|полчаса|полтора|"
+    r"in|at|on|tomorrow|today|tonight|morning|evening|noon|midnight|hours?|"
+    r"minutes?|mins?|seconds?|every|daily|week|monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday|half)(?![\wё])", re.IGNORECASE)
+
+
+def parse_cancel_reminder(text: str) -> Optional[dict]:
+    """«отмени напоминание про воду» → {"all": False, "ref": None, "hint": "воду"};
+    «удали напоминание 2» / «… r3f9a2» / «… второе» → ref (как у
+    /cancel_reminder); «отмени все напоминания» → all. None — не отмена."""
+    if not text or len(text) > 120:
+        return None
+    m = _CANCEL_REMIND_RE.match(text)
+    if not m:
+        return None
+    rest = m.group("rest").strip(" ,.;:!?…\"'«»")
+    out = {"all": bool(m.group("all")) or bool(re.fullmatch(r"(?:все|всё|all)", rest, re.IGNORECASE)),
+           "ref": None, "hint": None}
+    ordinal = _CHOICE_ORDINALS.get((m.group("ord") or "").lower())
+    if ordinal is not None and not out["all"]:
+        out["ref"] = ("index", ordinal)
+        return out
+    if out["all"] or not rest:
+        return out
+    bare = re.sub(r"^(?:номер|№|number|no\.?)\s*", "", rest, flags=re.IGNORECASE).strip()
+    ref = parse_reminder_ref(bare)
+    if ref:
+        out["ref"] = ref
+        return out
+    idx = _CHOICE_ORDINALS.get(bare.lower())
+    if idx is not None:
+        out["ref"] = ("index", idx)
+        return out
+    out["hint"] = _CANCEL_HINT_HEAD_RE.sub("", rest).strip() or None
+    return out
+
+
+def is_list_reminders_request(text: str) -> bool:
+    """«какие у меня напоминания?» / «покажи напоминания» / «what reminders
+    do I have» — вопрос-список, а не просьба напомнить."""
+    return bool(text) and len(text) <= 120 and bool(_LIST_REMIND_RE.search(text))
+
+
+def is_reminder_create_request(text: str) -> bool:
+    """Просьба создать напоминание («напомни …», «поставь напоминание»,
+    «remind me …»), а не любое упоминание напоминаний."""
+    return bool(text) and bool(_REMIND_CREATE_RE.search(text))
+
+
+def is_pending_decline(text: str) -> bool:
+    """«не надо» / «отмена» / «never mind» в ответ на «когда напомнить?»."""
+    return bool(text) and bool(_PENDING_DECLINE_RE.match(text))
+
+
+def looks_like_time_attempt(text: str) -> bool:
+    """Сообщение похоже на попытку назвать время («в 8», «завтра утром»,
+    «через час») — непонятое время переспрашиваем, остальное отпускаем."""
+    return bool(text) and bool(_TIME_ATTEMPT_RE.search(text))
+
+
 # ─── Пауза ────────────────────────────────────────────────
 # Напоминание на паузе хранится с "paused": true; флага нет — активно (так
 # читаются и файлы, записанные до появления паузы). Пауза не трогает ни
 # trigger_at, ни расписание: планировщик такие записи просто не берёт.
 # В списке (get_active) напоминание на паузе видно и после своего времени —
 # его всё ещё можно продолжить или отменить.
+
+def _choice_target_id(stored_ids: List[str], active: List[dict], reply: str) -> Optional[str]:
+    """Ответ на «какое именно?» (перенос/отмена) → id выбранного напоминания:
+    номер/id — через parse_reminder_ref, порядковое слово («второе»,
+    «последнее») — по списку id из вопроса, слова задачи — по активным.
+    None — не распознан."""
+    text = reply.strip().lower()
+    pool = stored_ids or [r.get("id") for r in sorted(active, key=lambda r: r["trigger_at"])]
+    ref = parse_reminder_ref(text.rstrip(".)"))
+    if ref:
+        kind, val = ref
+        if kind == "id":
+            return val
+        if kind == "index" and 0 <= val < len(pool):
+            return pool[val]
+    for word, idx in _CHOICE_ORDINALS.items():
+        if re.search(rf"\b{word}\b", text):
+            try:
+                return pool[idx]
+            except IndexError:
+                return None
+    matched = [r for r in active if _task_matches(text, r.get("task"))]
+    if len(matched) == 1:
+        return matched[0].get("id")
+    return None
+
 
 def is_paused(r: dict) -> bool:
     return bool(r.get("paused"))
@@ -1384,46 +1530,64 @@ class ReminderManager:
 
     # ── pending /remind без времени (in-memory) ──
 
-    def begin_pending_remind(self, chat_id: str, task: str):
-        """Запоминает задачу напоминания, ждём от пользователя ответа про время.
-        asked_at нужен, чтобы при одновременно висящем вопросе обучения «как часто?»
-        отдать ответ о периодичности тому, кто спросил ПОЗЖЕ (см. process_message)."""
-        with self._lock:
-            self._pending_remind[str(chat_id)] = {"task": task, "asked_at": time.time()}
-
-    def get_pending_remind(self, chat_id: str) -> Optional[str]:
-        # Текст задачи pending-напоминания (или None).
+    def _pending_entry(self, chat_id: str, user_id: Optional[str] = None) -> Optional[dict]:
+        """Живое ожидание чата: старше PENDING_REMIND_TTL_SEC — снимается (это
+        уже не ответ на вопрос). user_id — кто пишет: в группе на вопрос
+        отвечает тот, кому его задали, чужая реплика ожидание не трогает."""
         with self._lock:
             entry = self._pending_remind.get(str(chat_id))
-            return entry.get("task") if isinstance(entry, dict) else entry
+            if not isinstance(entry, dict):
+                return None
+            if time.time() - float(entry.get("asked_at") or 0) > PENDING_REMIND_TTL_SEC:
+                self._pending_remind.pop(str(chat_id), None)
+                return None
+            owner = entry.get("user_id")
+            if owner and user_id and str(owner) != str(user_id):
+                return None
+            return entry
+
+    def begin_pending_remind(self, chat_id: str, task: str, user_id: Optional[str] = None):
+        """Запоминает задачу напоминания, ждём от пользователя ответа про время.
+        asked_at нужен, чтобы при одновременно висящем вопросе обучения «как часто?»
+        отдать ответ о периодичности тому, кто спросил ПОЗЖЕ (см. process_message),
+        и для срока жизни вопроса; user_id — кто должен ответить."""
+        with self._lock:
+            self._pending_remind[str(chat_id)] = {
+                "task": task, "asked_at": time.time(),
+                "user_id": str(user_id) if user_id else None}
+
+    def get_pending_remind(self, chat_id: str, user_id: Optional[str] = None) -> Optional[str]:
+        # Текст задачи pending-напоминания (или None).
+        entry = self._pending_entry(chat_id, user_id)
+        return entry.get("task") if entry else None
 
     def get_pending_remind_asked_at(self, chat_id: str) -> Optional[float]:
         # Когда был задан вопрос «через сколько напомнить?» (timestamp или None).
-        with self._lock:
-            entry = self._pending_remind.get(str(chat_id))
-            return entry.get("asked_at") if isinstance(entry, dict) else None
+        entry = self._pending_entry(chat_id)
+        return entry.get("asked_at") if entry else None
 
     def clear_pending_remind(self, chat_id: str):
         with self._lock:
             self._pending_remind.pop(str(chat_id), None)
 
-    def begin_pending_postpone(self, chat_id: str):
+    def begin_pending_postpone(self, chat_id: str, user_id: Optional[str] = None):
         # Ждём ответа «на когда перенести?» (перенос без указания времени).
         with self._lock:
             self._pending_remind[str(chat_id)] = {
                 "task": None, "postpone": True, "asked_at": time.time(),
+                "user_id": str(user_id) if user_id else None,
             }
 
-    def get_pending_postpone(self, chat_id: str) -> bool:
+    def get_pending_postpone(self, chat_id: str, user_id: Optional[str] = None) -> bool:
         # Висит ли вопрос «на когда перенести напоминание?».
-        with self._lock:
-            entry = self._pending_remind.get(str(chat_id))
-            return bool(isinstance(entry, dict) and entry.get("postpone"))
+        entry = self._pending_entry(chat_id, user_id)
+        return bool(entry and entry.get("postpone"))
 
     def begin_pending_postpone_choice(self, chat_id: str, ids: Optional[List[str]] = None,
                                       seconds: Optional[float] = None,
                                       abs_time: Optional[tuple] = None,
-                                      relative_to_trigger: bool = False):
+                                      relative_to_trigger: bool = False,
+                                      user_id: Optional[str] = None):
         """Несколько активных напоминаний и подсказки нет — ждём ответа
         «какое именно перенести?». Сдвиг запоминаем, применим к выбранному.
 
@@ -1439,13 +1603,77 @@ class ReminderManager:
                 "ids": list(ids) if ids else [],
                 "seconds": seconds, "abs": abs_time,
                 "rel": relative_to_trigger, "asked_at": time.time(),
+                "user_id": str(user_id) if user_id else None,
             }
 
-    def get_pending_postpone_choice(self, chat_id: str) -> bool:
+    def get_pending_postpone_choice(self, chat_id: str, user_id: Optional[str] = None) -> bool:
         # Висит ли вопрос «какое напоминание перенести?».
+        entry = self._pending_entry(chat_id, user_id)
+        return bool(entry and entry.get("postpone_choice"))
+
+    # ── отмена текстом ──
+
+    def begin_pending_cancel_choice(self, chat_id: str, ids: List[str],
+                                    user_id: Optional[str] = None):
+        """Под отмену подходят несколько напоминаний — ждём «какое именно?».
+        ids — в том порядке, в каком список показан (как у переноса)."""
+        with self._lock:
+            self._pending_remind[str(chat_id)] = {
+                "task": None, "cancel_choice": True, "ids": list(ids),
+                "asked_at": time.time(), "user_id": str(user_id) if user_id else None,
+            }
+
+    def get_pending_cancel_choice(self, chat_id: str, user_id: Optional[str] = None) -> bool:
+        entry = self._pending_entry(chat_id, user_id)
+        return bool(entry and entry.get("cancel_choice"))
+
+    def cancel_request(self, chat_id: str, req: dict) -> dict:
+        """Отмена по разбору parse_cancel_reminder → {"cancelled": [записи]} |
+        {"ambiguous": [записи]} (подходят несколько — спросить, какое) |
+        {"not_found": True, "active": [...]} | {"none": True} (активных нет).
+        Без подсказки и номера — единственное активное отменяется, при
+        нескольких — вопрос."""
+        active = self.get_active(chat_id)
+        if not active:
+            return {"none": True}
+        if req.get("all"):
+            removed = [r for r in (self.cancel_by_ref(chat_id, a.get("id")) for a in active) if r]
+            return {"cancelled": removed}
+        ref = req.get("ref")
+        if ref:
+            kind, val = ref
+            if kind == "index":
+                val = len(active) - 1 if val == -1 else val
+            target = self.cancel_by_ref(chat_id, val)
+            return {"cancelled": [target]} if target else {"not_found": True, "active": active}
+        hint = req.get("hint")
+        matched = [r for r in active if _task_matches(hint, r.get("task"))] if hint else list(active)
+        if not matched:
+            return {"not_found": True, "active": active}
+        if len(matched) == 1:
+            target = self.cancel_by_ref(chat_id, matched[0].get("id"))
+            return {"cancelled": [target]} if target else {"not_found": True, "active": active}
+        return {"ambiguous": matched}
+
+    def resolve_cancel_choice(self, chat_id: str, reply: str) -> Optional[dict]:
+        """Ответ на «какое отменить?» → {"cancelled": [запись]} | {"gone": True}
+        (активных больше нет) | None (не распознан — переспросить)."""
         with self._lock:
             entry = self._pending_remind.get(str(chat_id))
-            return bool(isinstance(entry, dict) and entry.get("postpone_choice"))
+        if not (isinstance(entry, dict) and entry.get("cancel_choice")):
+            return None
+        active = self.get_active(chat_id)
+        if not active:
+            self.clear_pending_remind(chat_id)
+            return {"gone": True}
+        target_id = _choice_target_id(entry.get("ids") or [], active, reply)
+        if target_id is None:
+            return None
+        target = self.cancel_by_ref(chat_id, target_id)
+        if target is None:
+            return None
+        self.clear_pending_remind(chat_id)
+        return {"cancelled": [target]}
 
     def resolve_postpone_choice(self, chat_id: str, reply: str) -> Optional[dict]:
         """Разбирает ответ на «какое именно напоминание перенести?» и
@@ -1476,34 +1704,7 @@ class ReminderManager:
             self.clear_pending_remind(chat_id)
             return {"gone": True}
 
-        stored_ids = entry.get("ids") or []
-        text = reply.strip().lower()
-        target_id = None
-
-        ref = parse_reminder_ref(text.rstrip(".)"))
-        if ref:
-            kind, val = ref
-            if kind == "id":
-                target_id = val
-            elif kind == "index":
-                pool = stored_ids or [r.get("id") for r in
-                                      sorted(active, key=lambda r: r["trigger_at"])]
-                if 0 <= val < len(pool):
-                    target_id = pool[val]
-        if target_id is None:
-            pool = stored_ids or [r.get("id") for r in
-                                  sorted(active, key=lambda r: r["trigger_at"])]
-            for word, idx in _CHOICE_ORDINALS.items():
-                if re.search(rf"\b{word}\b", text):
-                    try:
-                        target_id = pool[idx]
-                    except IndexError:
-                        pass
-                    break
-        if target_id is None:
-            matched = [r for r in active if _task_matches(text, r.get("task"))]
-            if len(matched) == 1:
-                target_id = matched[0].get("id")
+        target_id = _choice_target_id(entry.get("ids") or [], active, reply)
         if target_id is None:
             return None
 
