@@ -78,11 +78,26 @@ class FakeLearningMgr(_FakeMgr):
             self._save()
 
 
+class _NoLocalLLM:
+    """Локальной модели «нет»: is_available → False, get_response → None."""
+
+    def is_available(self, *a, **kw):
+        return False
+
+    def get_response(self, *a, **kw):
+        return None
+
+
 def make_dossier():
     """Настоящий ChatDossier (без роутера — LLM не зовётся): у живого
     менеджера _profiles хранит ChatProfile, а не dict — фейк с dict скрыл бы
     пустой бэкап досье и restore, кладущий dict вместо профиля."""
     d = ChatDossier(context=CTX)
+    # Без основного роутера досье идёт в локальную модель: при запущенной
+    # Ollama analyze_chat после restore звал НАСТОЯЩУЮ модель (грузил её в
+    # память). Проверке нужен только водяной знак/дедуп фазы 1 — модели нет.
+    # Подмена в экземпляре: досье — наше, восстанавливать нечего
+    d._local_router = _NoLocalLLM()
     d.record_event(CK, "утреннее приветствие")
     d.add_personality_note(CK, "любит кофе")
     with d._lock:

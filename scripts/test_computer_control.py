@@ -1840,7 +1840,9 @@ def main():
               and act_sh["value"].endswith("/confirm")
               and act_sh.get("choose", {}).get("path") == "page_fallback")
         del _pages_map["accounts.google.com-2"]
-        # ...но не по чужим сайтам
+        # ...но не по чужим сайтам. claude.ai/login — приватная страница:
+        # широкий LLM-ярус идёт в локальную модель, а её в прогоне «нет»
+        # (_without_local_model) — исход не зависит от запущенной Ollama
         no_sh, err_sh2 = mfb.resolve_click("ivan testov", "claude.ai",
                                            _BoomRouter())
         check("page-fallback: сайт назван — чужие хосты не трогаем",
@@ -8874,5 +8876,53 @@ def _with_temp_browser_locks(fn):
             _ba_locks._pool_user_release(pool)
 
 
+class _NoLocalModel:
+    """Локальная модель «не запущена» (как на машине без Ollama): задачи
+    недоступны, генерация — None. Сети не трогает."""
+
+    model = "no-local-model"
+
+    def for_persona(self, context=None):
+        return self
+
+    def bind_persona(self, *a, **kw):
+        pass
+
+    def _resolve_task(self, task=None, persona=None, advance=False):
+        return "ollama", []
+
+    def is_available(self, task=None):
+        return False
+
+    def get_response(self, *a, **kw):
+        return None
+
+    def classify(self, *a, **kw):
+        return None
+
+
+def _without_local_model(fn):
+    """Локальной модели (Ollama) на время прогона «нет»: LLM тест отдаёт
+    только явными фейк-роутерами (_FakeRouter/_SeqRouter/_BoomRouter…), а на
+    приватной странице (claude.ai/login, …/signin) cc_privacy.PrivateRouter
+    отбрасывает переданный роутер и зовёт get_local_router(). Без подмены при
+    запущенной у разработчика Ollama тест звал НАСТОЯЩУЮ модель (грузил её
+    в память), и её ответ решал проверку: «page-fallback: сайт назван —
+    чужие хосты не трогаем» падала, когда модель тыкала в единственный
+    элемент claude.ai. «Нет», а не детерминированный ответ: так же ведёт
+    себя переданный там _BoomRouter на обычной странице (LLM-ярус молчит,
+    исход решает детерминированный каскад), и итог совпадает с прогоном без
+    Ollama. Разделу, которому нужна отвечающая локальная модель, — свой фейк
+    поверх (как в scripts/test_cc_privacy.py). cc_privacy и роутер берут
+    get_local_router поздним импортом из модуля — подмены атрибута хватает."""
+    import app.core.local_router as _lr
+    saved = _lr.get_local_router
+    _lr.get_local_router = lambda context=None: _NoLocalModel()
+    try:
+        return fn()
+    finally:
+        _lr.get_local_router = saved
+
+
 if __name__ == "__main__":
-    sys.exit(_with_temp_browser_locks(main))
+    sys.exit(_with_temp_browser_locks(lambda: _without_local_model(main)))

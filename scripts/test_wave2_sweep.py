@@ -53,6 +53,43 @@ def section(title):
     print(f"\n── {title} ──")
 
 
+class _NoLocalLLM:
+    """Локальной модели «нет»: is_available → False, get_response → None.
+    Без подмены ChatDossier (без основного роутера → локальная модель) при
+    запущенной Ollama звал НАСТОЯЩУЮ модель из _analyze_chat_impl (экстракция
+    фактов + анализ) — грузил её в память, а проверки дедупа зависели от
+    её ответа. Дедуп _facts_seen — фаза 1 до LLM, ответ модели ему не нужен."""
+
+    def is_available(self, *a, **kw):
+        return False
+
+    def get_response(self, *a, **kw):
+        return None
+
+
+def _stub_local_router(stub):
+    """get_local_router → stub до вызова восстановления. Модули берут ссылку
+    `from app.core.local_router import get_local_router` — подмена только в
+    local_router уже импортированные модули не задела бы, поэтому меняем
+    атрибут в каждом модуле app.*; импортированные позже (тесты импортируют
+    лениво) возьмут подмену из local_router. Возвращает функцию
+    восстановления (вернёт оригинал всем, у кого стоит подмена)."""
+    import app.core.local_router as lr_mod
+    orig = lr_mod.get_local_router
+
+    def fake(context=None):
+        return stub
+
+    def swap(old, new):
+        for name, mod in list(sys.modules.items()):
+            if ((name == "app" or name.startswith("app."))
+                    and getattr(mod, "get_local_router", None) is old):
+                mod.get_local_router = new
+
+    swap(orig, fake)
+    return lambda: swap(fake, orig)
+
+
 # Два пояса с заведомо разным смещением — какой бы ни был у машины, хотя бы
 # один отличается (тот же приём, что в test_timeutil.py)
 TZ_A = "Asia/Tokyo"           # UTC+9, без DST
@@ -510,11 +547,16 @@ def test_bounded_caches():
 
 
 def main():
-    test_reminders_api()
-    test_timeutil_usage()
-    test_chroma_outside_core()
-    test_state_engine_atomic_io()
-    test_bounded_caches()
+    # «без сети»: локальной модели нет на весь прогон (досье, движки)
+    restore_local = _stub_local_router(_NoLocalLLM())
+    try:
+        test_reminders_api()
+        test_timeutil_usage()
+        test_chroma_outside_core()
+        test_state_engine_atomic_io()
+        test_bounded_caches()
+    finally:
+        restore_local()
 
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0

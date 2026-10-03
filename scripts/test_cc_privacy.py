@@ -925,7 +925,14 @@ def main():
                 ensure_ascii=False)
 
     gr = GenRouter()
-    sc, err = sm.build_from_trace("u", "вход в магазин", gr)
+    # Приватная трасса уходит в PrivateRouter, а он — в локальную модель:
+    # без подмены тест звал НАСТОЯЩУЮ Ollama, если она запущена (грузил
+    # модель в память). Локальной модели «нет» — путь rule-based
+    _lr.get_local_router = lambda context=None: _FakeLocal(available=False)
+    try:
+        sc, err = sm.build_from_trace("u", "вход в магазин", gr)
+    finally:
+        _lr.get_local_router = orig_glr
     check("сценарий собран", sc is not None and err is None)
     # Трасса со страницы входа (/login) — приватная: облачному роутеру не
     # уходит вовсе (локальной модели нет — rule-based); путь «LLM вернула

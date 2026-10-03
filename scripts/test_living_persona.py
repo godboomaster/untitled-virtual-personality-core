@@ -17,6 +17,42 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
+class _NoLocalLLM:
+    """Локальной модели «нет»: is_available → False, get_response → None.
+    Без подмены движки при запущенной Ollama звали НАСТОЯЩУЮ модель (грузили
+    её в память рядом с ботом), а проверки зависели от её ответа — вместо
+    заявленного эвристического fallback."""
+
+    def is_available(self, *a, **kw):
+        return False
+
+    def get_response(self, *a, **kw):
+        return None
+
+
+def _stub_local_router(stub):
+    """get_local_router → stub до вызова восстановления. Движки берут ссылку
+    `from app.core.local_router import get_local_router` — подмена только в
+    local_router уже импортированные модули не задела бы, поэтому меняем
+    атрибут в каждом модуле app.*; импортированные позже возьмут подмену из
+    local_router. Возвращает функцию восстановления (вернёт оригинал всем,
+    у кого стоит подмена)."""
+    import app.core.local_router as lr_mod
+    orig = lr_mod.get_local_router
+
+    def fake(context=None):
+        return stub
+
+    def swap(old, new):
+        for name, mod in list(sys.modules.items()):
+            if ((name == "app" or name.startswith("app."))
+                    and getattr(mod, "get_local_router", None) is old):
+                mod.get_local_router = new
+
+    swap(orig, fake)
+    return lambda: swap(fake, orig)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="living_smoke_")
     # Подменяем DATA_DIR до импорта движков
@@ -29,6 +65,17 @@ def main():
     import app.core.living_persona as lp_mod
     importlib.reload(lp_mod)
 
+    # Локальной модели нет на весь прогон — после reload: перезагруженный
+    # living_persona заново взял get_local_router из local_router. Свои
+    # фейки секций (_CapLocal, _UpLocal) ставятся поверх в .local движка
+    restore_local = _stub_local_router(_NoLocalLLM())
+    try:
+        return _smoke(lp_mod)
+    finally:
+        restore_local()
+
+
+def _smoke(lp_mod):
     persona = SimpleNamespace(
         persona_name="connor",
         system_prompt="Ты — Коннор, андроид модели RK800. НЕЛЬЗЯ: говорить «я чувствую».",
@@ -62,11 +109,11 @@ def main():
     check("gate: внешние стимулы запрещены для fictional (даже при enabled)",
           living.external_stimuli_allowed() is False)
 
-    # 2. Тик состояния: локальная LLM при доступности, иначе эвристика
+    # 2. Тик состояния: локальной LLM нет (_NoLocalLLM) — эвристика
     state = living.state_engine.tick("chat1", pc)
     check("тик: состояние создано", 0 <= state["energy"] <= 100)
-    check(f"тик: движок отработал (engine={state.get('engine')})",
-          state.get("engine") in ("gemma", "heuristic"))
+    check(f"тик: эвристический fallback (engine={state.get('engine')})",
+          state.get("engine") == "heuristic")
     state2 = living.state_engine.tick("chat1", pc)
     check("тик: состояние персистентно", isinstance(state2["energy"], int))
 
@@ -74,8 +121,8 @@ def main():
     state_ts, score_ts = living.state_engine.tick_and_score(
         "chat1", pc, silence_hours=5.0, since_initiative_hours=10.0,
         proactive_settings={"initiative_probability": 0.5, "max_daily_initiatives": 3})
-    check("тик+скоринг: объединённый вызов отработал",
-          state_ts.get("engine") in ("gemma", "heuristic")
+    check("тик+скоринг: объединённый вызов отработал (эвристика)",
+          state_ts.get("engine") == "heuristic"
           and 0.0 <= score_ts <= 1.0)
 
     # 3. offline_log
@@ -181,12 +228,26 @@ def main():
         del living.persona_context  # снимаем instance-shadow, метод класса виден снова
         assert living.persona_context is orig_pc_fn or True
 
-    # 10. use_gemma=false: строго эвристический тик, даже если локальная LLM доступна
+    # 10. use_gemma=false: строго эвристический тик, даже если локальная LLM доступна.
+    #     «Доступна» — фейк с валидным ответом тика: при _NoLocalLLM эвристика
+    #     вышла бы и со сломанным use_gemma, проверка ничего бы не значила
+    gemma_calls = []
+
+    class _UpLocal:
+        def is_available(self, task=None):
+            return True
+
+        def get_response(self, messages, **kw):
+            gemma_calls.append(messages)
+            return ('{"energy": 60, "mood": {"valence": 0.2, "arousal": 0.3, '
+                    '"tag": "calm"}, "pastime": "reading", "location": "home"}')
+
     from app.core.state_engine import StateEngine
     se_off = StateEngine("smoke_gemma_off", "tester", use_gemma=False)
+    se_off.local = _UpLocal()
     st_off = se_off.tick("c1", pc)
-    check("use_gemma=false: тик строго эвристический",
-          st_off.get("engine") == "heuristic")
+    check("use_gemma=false: тик строго эвристический (модель не звалась)",
+          st_off.get("engine") == "heuristic" and not gemma_calls)
 
     # 11. Прореживание тиков неактивных чатов: молчание > 72ч → тик реже
     del living.state_engine.tick_and_score  # снимаем мок секции 8 — нужен настоящий тик
