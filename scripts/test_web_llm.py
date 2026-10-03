@@ -773,9 +773,12 @@ def main():
                 ba._RAW_TABS.pop(_t, None)
 
     # ── 6j. Rescue, которому чинить нечего: реплика пользователя («готово»)
-    #       завершает его; карантин капчи/входа или rescue соседа — нет.
-    #       Поиск Google во время rescue окон выдачи не открывает ──
+    #       завершает его — и свой, и соседа; карантин капчи/входа (свой или
+    #       соседа) — нет. Поиск Google во время rescue окон выдачи не
+    #       открывает ──
     _rescue_file = Path(ba._pool_h_rescue_path())  # временный (см. ниже)
+    # Файл ожидания «соседа» — процесса бота с живым pid (родитель теста)
+    _nb_wait = Path(f"{_rescue_file}.wait.{os.getppid()}")
     _sv_r = (ba._pool_h_alive, ba._raw_open, ba._POOL_H_MODE_OVERRIDE,
              ba._POOL_H_RESCUE_UNTIL, ba._POOL_H_RESCUE_SHARED)
     opened = []
@@ -806,22 +809,36 @@ def main():
               and not _rescue_file.exists())
         ba.open_headless_tab("https://www.google.com/search?q=x")
         check("rescue окончен — поиск Google снова через пул H", len(opened) == 1)
-        # Rescue соседа: свой override пуст, срок — только в общем файле
+        # Rescue соседа: свой override пуст, срок — только в общем файле.
+        # Сосед ждёт капчу (его файл ожидания) — реплика rescue не завершает;
+        # капч/входов не ждёт никто — завершает и не включавший процесс
+        # (раньше чужой rescue не трогали: окно висело до конца срока)
         _rescue_file.write_text(str(wl.time.time() + 600))
-        check("rescue соседа — реплика его не завершает",
-              wl.finish_idle_rescue() is False and ba.pool_h_rescue_active())
+        _nb_wait.write_text(json.dumps({"deepseek": wl.time.time() + 600}))
+        check("rescue соседа, сосед ждёт капчу — реплика его не завершает",
+              ba._pid_alive(os.getppid())
+              and wl.finish_idle_rescue() is False
+              and ba.pool_h_rescue_active())
+        _nb_wait.unlink()
+        check("rescue соседа, капч/входов не ждёт никто — реплика завершает "
+              "его и здесь, общий файл удалён",
+              wl.finish_idle_rescue() is True
+              and not ba.pool_h_rescue_active()
+              and not _rescue_file.exists())
     finally:
         (ba._pool_h_alive, ba._raw_open, ba._POOL_H_MODE_OVERRIDE,
          ba._POOL_H_RESCUE_UNTIL, ba._POOL_H_RESCUE_SHARED) = _sv_r
         _rescue_file.unlink(missing_ok=True)
+        _nb_wait.unlink(missing_ok=True)
         wl.clear_quarantine("qwen")
         wl.pop_quarantine_alerts()
 
-    # ── 6k. Rescue ждёт ВСЕ капчи/входы своего процесса: снятие одного
-    #       карантина при оставшихся других rescue не завершает (раньше —
-    #       завершал по первому, пул H уходил в headless посреди второй
-    #       капчи). Лимит/отказ в rescue не пробуются и чистой страницей не
-    #       снимаются; чужой rescue этот процесс не завершает ──
+    # ── 6k. Rescue ждёт ВСЕ капчи/входы: снятие одного карантина при
+    #       оставшихся других rescue не завершает (раньше — завершал по
+    #       первому, пул H уходил в headless посреди второй капчи). Лимит/
+    #       отказ в rescue не пробуются и чистой страницей не снимаются;
+    #       чужой rescue завершает и этот процесс, если капч/входов не ждёт
+    #       никто (межпроцессная часть — 6l) ──
     _sv_k = (ba._POOL_H_MODE_OVERRIDE, ba._POOL_H_RESCUE_UNTIL,
              ba._POOL_H_RESCUE_SHARED, ba.detect_antibot)
     _k_sites = ("deepseek", "qwen", "zai", "kimi", "chatgpt")
@@ -932,19 +949,25 @@ def main():
               wl.quarantine_kind("zai") == "ratelimit")
 
         # Чужой rescue: свой override пуст, срок — только в общем файле.
-        # Свой карантин снимается, rescue соседа — нет
+        # Снят последний карантин во всех процессах (соседи ничего не
+        # ждут) — rescue завершает и не включавший его процесс (раньше
+        # «завершит владелец»: окно висело до его действия или конца срока)
         _k_reset(("qwen", "challenge"))
         _rescue_file.write_text(str(wl.time.time() + 600))
         check("чужой rescue: капча в rescue пробуется (окно видимое у всех)",
               _k_llm("qwen", "q6")._quarantine_skip() is False)
         _k_llm("qwen", "q7")._challenge_check(ba, 42)
-        check("чужой rescue: карантин снят, но rescue соседа не завершён",
+        check("чужой rescue: снят последний карантин во всех процессах — "
+              "rescue завершён и не владельцем, общий файл удалён",
               not wl.site_quarantined("qwen")
-              and ba.pool_h_rescue_active() and _rescue_file.exists())
+              and not ba.pool_h_rescue_active()
+              and not _rescue_file.exists())
+        _rescue_file.write_text(str(wl.time.time() + 600))
         _k_reset(("deepseek", "login"))
         _k_llm("deepseek", "d4")._login_restored(ba)
-        check("чужой rescue: вход восстановлен — rescue соседа не завершён",
-              ba.pool_h_rescue_active() and _rescue_file.exists())
+        check("чужой rescue: вход восстановлен, больше никто не ждёт — "
+              "rescue завершён",
+              not ba.pool_h_rescue_active() and not _rescue_file.exists())
         _rescue_file.unlink(missing_ok=True)
 
         # Пул V: его капча rescue пула H не держит, и её снятие rescue пула H
@@ -983,6 +1006,194 @@ def main():
             wl.clear_quarantine(s)
         wl.pop_quarantine_alerts()
         wl._LOGIN_PROBE_AT.clear()
+
+    # ── 6l. Кого ждёт rescue — общее между процессами бота: каждый процесс
+    #       публикует свои капчи/входы пула H в <rescue>.wait.<pid>; rescue
+    #       завершается, когда не ждёт НИ ОДИН живой процесс, — кем угодно.
+    #       Раньше владелец не видел капчу соседа (завершал rescue посреди
+    #       неё), а сосед, сняв последний карантин, rescue не завершал.
+    #       Второй процесс эмулирован файлом публикации с чужим живым pid
+    #       (родитель теста) и с мёртвым pid (завершившийся подпроцесс) ──
+    import subprocess as _l_sp
+    _l_own = Path(f"{_rescue_file}.wait.{os.getpid()}")
+    _l_peer_pid = os.getppid()
+    _l_peer = Path(f"{_rescue_file}.wait.{_l_peer_pid}")
+    _l_proc = _l_sp.Popen([sys.executable, "-c", "pass"])
+    _l_proc.wait()
+    _l_dead_pid = _l_proc.pid
+    _l_dead = Path(f"{_rescue_file}.wait.{_l_dead_pid}")
+    _l_bad = Path(f"{_rescue_file}.wait.1")         # живой чужой pid, битый JSON
+    _l_tmp = Path(f"{_rescue_file}.wait.{_l_peer_pid}.tmp")  # не файл ожидания
+    _l_files = (_l_own, _l_peer, _l_dead, _l_bad, _l_tmp)
+
+    def _l_read(p):
+        return json.loads(p.read_text()) if p.exists() else None
+
+    def _l_put(p, data):
+        p.write_text(json.dumps(data))
+    _sv_l = (ba._POOL_H_MODE_OVERRIDE, ba._POOL_H_RESCUE_UNTIL,
+             ba._POOL_H_RESCUE_SHARED, ba.detect_antibot,
+             ba.try_challenge_autoclick, wl.atomic_write_json)
+    _l_sites = ("deepseek", "qwen", "zai", "kimi", "chatgpt")
+    wl.logger.addHandler(_k_handler)
+    wl.logger.setLevel(logging.INFO)
+    ba.detect_antibot = lambda *a, **kw: None  # страница чистая
+    try:
+        check("6l: эмуляция соседей — родитель теста жив, подпроцесс "
+              "завершён; файлы — во временном каталоге, не у профиля",
+              ba._pid_alive(_l_peer_pid) and not ba._pid_alive(_l_dead_pid)
+              and "vpc-browser-profile" not in str(_l_own))
+
+        # (г) Публикация обновляется при quarantine/clear/истечении; в ней
+        # только капчи/входы пула H, без ждущих — файла нет
+        _k_reset()
+        check("публикация: ждущих нет — файла нет", not _l_own.exists())
+        t0 = wl.time.time()
+        wl.quarantine_site("qwen", "тест", ttl=600)
+        pub = _l_read(_l_own) or {}
+        check("публикация: капча → файл процесса {сайт: срок карантина}",
+              list(pub) == ["qwen"] and abs(pub["qwen"] - (t0 + 600)) < 5)
+        wl.quarantine_site("zai", "лимит", ttl=600, kind="ratelimit")
+        wl.quarantine_site("kimi", "отказ", ttl=600, kind="refused")
+        wl.quarantine_site("chatgpt", "тест", ttl=600, pool="v")
+        check("публикация: лимит, отказ и капча пула V — не публикуются",
+              list(_l_read(_l_own) or {}) == ["qwen"])
+        wl.quarantine_site("deepseek", "разлогин", ttl=600, kind="login")
+        check("публикация: разлогин добавлен",
+              sorted(_l_read(_l_own) or {}) == ["deepseek", "qwen"])
+        wl.clear_quarantine("qwen")
+        check("публикация: снятие карантина убирает сайт",
+              list(_l_read(_l_own) or {}) == ["deepseek"])
+        with wl._QUARANTINE_LOCK:
+            wl._SITE_QUARANTINE["deepseek"]["until"] = wl.time.time() - 1
+        check("публикация: истечение (site_quarantined) — последний ждущий "
+              "ушёл, файл удалён",
+              wl.site_quarantined("deepseek") is False
+              and not _l_own.exists())
+        wl.quarantine_site("qwen", "тест", ttl=600)
+        with wl._QUARANTINE_LOCK:
+            wl._SITE_QUARANTINE["qwen"]["until"] = wl.time.time() - 1
+        wl.quarantine_status()
+        check("публикация: истечение (quarantine_status) — файл удалён",
+              not _l_own.exists())
+        wl.quarantine_site("qwen", "тест", ttl=600)
+        wl._drop_rescue_wait()  # штатный выход процесса (atexit)
+        check("публикация: выход процесса убирает его файл",
+              not _l_own.exists())
+        wl.quarantine_site("kimi", "капча", ttl=600)
+        check("публикация: после выхода-хука новая капча публикуется снова",
+              sorted(_l_read(_l_own) or {}) == ["kimi", "qwen"])
+
+        # (д) Сбой записи не ломает вызов веб-чата: карантин в памяти есть,
+        # исключения нет; следующее изменение публикует заново
+        _k_reset()
+
+        def _l_fail(*a, **kw):
+            raise OSError(28, "No space left on device")
+        wl.atomic_write_json = _l_fail
+        ba.detect_antibot = lambda *a, **kw: "widget: turnstile"
+        ba.try_challenge_autoclick = lambda *a, **kw: False
+        try:
+            got = _k_llm("qwen", "l0")._challenge_check(ba, 42)
+            raised = None
+        except Exception as e:
+            got, raised = None, e
+        check("сбой записи: капча поймана, карантин есть, вызов не упал",
+              raised is None and got is True
+              and wl.quarantine_kind("qwen") == "challenge"
+              and not _l_own.exists())
+        wl.atomic_write_json = _sv_l[5]
+        ba.detect_antibot = lambda *a, **kw: None
+        wl.quarantine_site("deepseek", "тест", ttl=600)
+        check("сбой записи: следующее изменение публикует всё ждущее",
+              sorted(_l_read(_l_own) or {}) == ["deepseek", "qwen"])
+
+        # (а) Владелец не завершает rescue, пока чужой живой процесс ждёт
+        # капчу: ни снятием своего последнего карантина, ни репликой
+        _own_rescue()
+        _k_reset(("qwen", "challenge"))
+        _l_put(_l_peer, {"deepseek": wl.time.time() + 600})
+        _k_llm("qwen", "l1")._challenge_check(ba, 42)
+        check("владелец: свой последний карантин снят, сосед ждёт капчу — "
+              "rescue идёт",
+              not wl.site_quarantined("qwen")
+              and ba.pool_h_rescue_active() and _rescue_file.exists())
+        check("владелец: в логе — чей сайт ждём",
+              any("ещё ждём: deepseek (другой процесс бота)" in m
+                  for m in _k_logs))
+        check("владелец: реплика «готово» при капче соседа не завершает",
+              wl.finish_idle_rescue() is False and ba.pool_h_rescue_active())
+        _l_peer.unlink()  # сосед снял свою капчу — его файла нет
+        check("владелец: сосед больше не ждёт — реплика завершает rescue",
+              wl.finish_idle_rescue() is True
+              and not ba.pool_h_rescue_active()
+              and not _rescue_file.exists())
+
+        # (б) Не владелец (срок только в общем файле) завершает rescue, когда
+        # снят последний карантин во всех процессах
+        _k_reset(("qwen", "challenge"), ("kimi", "login"))
+        _rescue_file.write_text(str(wl.time.time() + 600))
+        _l_put(_l_peer, {"deepseek": wl.time.time() + 600})
+        _k_llm("qwen", "l2")._challenge_check(ba, 42)
+        check("не владелец: снят свой карантин, ждут свой вход и капча "
+              "соседа — rescue идёт",
+              ba.pool_h_rescue_active()
+              and any("ещё ждём: kimi, deepseek (другой процесс бота)" in m
+                      for m in _k_logs))
+        _l_put(_l_peer, {})  # сосед снял капчу (пустая публикация — тоже)
+        _k_llm("kimi", "l3")._login_restored(ba)
+        check("не владелец: снят последний карантин во всех процессах — "
+              "rescue завершён, общий файл удалён",
+              not ba.pool_h_rescue_active() and not _rescue_file.exists()
+              and not _l_own.exists())
+
+        # (в) Файл мёртвого процесса, просроченные записи живого, битый
+        # файл и чужой tmp не держат rescue; файл мёртвого подчищается
+        _own_rescue()
+        _k_reset()
+        _l_put(_l_dead, {"qwen": wl.time.time() + 600})
+        _l_put(_l_peer, {"zai": wl.time.time() - 5})
+        _l_bad.write_text("{битый")
+        _l_put(_l_tmp, {"kimi": wl.time.time() + 600})
+        check("мёртвый процесс и просроченное: реплика завершает rescue",
+              wl.finish_idle_rescue() is True
+              and not ba.pool_h_rescue_active())
+        check("мёртвый процесс: его файл подчищен, файл живого соседа — нет",
+              not _l_dead.exists() and _l_peer.exists())
+        # Тот же сайт ждут и этот процесс, и сосед — сосед держит rescue,
+        # когда свой карантин уже снят (капчу снимает каждый процесс своим
+        # вызовом к сайту)
+        _own_rescue()
+        _k_reset(("qwen", "challenge"))
+        _l_put(_l_peer, {"qwen": wl.time.time() + 600})
+        _k_llm("qwen", "l4")._challenge_check(ba, 42)
+        check("тот же сайт у соседа: свой снят, сосед ждёт — rescue идёт",
+              ba.pool_h_rescue_active()
+              and any("ещё ждём: qwen (другой процесс бота)" in m
+                      for m in _k_logs))
+        # Снятие карантина сайта пула V rescue пула H не завершает, даже
+        # когда больше никто ничего не ждёт
+        _l_peer.unlink()
+        _k_reset()
+        check("пул V: правило конца rescue пула H не срабатывает",
+              wl._finish_rescue_if_done(ba, cleared="chatgpt", pool="v")
+              is False and ba.pool_h_rescue_active())
+        ba.end_rescue_pool_h()
+        check("rescue нет — правило ничего не делает (False)",
+              wl._finish_rescue_if_done(ba) is False)
+    finally:
+        (ba._POOL_H_MODE_OVERRIDE, ba._POOL_H_RESCUE_UNTIL,
+         ba._POOL_H_RESCUE_SHARED, ba.detect_antibot,
+         ba.try_challenge_autoclick, wl.atomic_write_json) = _sv_l
+        wl.logger.removeHandler(_k_handler)
+        wl.logger.setLevel(_k_level)
+        for s in _l_sites:
+            wl.clear_quarantine(s)
+        wl.pop_quarantine_alerts()
+        wl._LOGIN_PROBE_AT.clear()
+        _rescue_file.unlink(missing_ok=True)
+        for p in _l_files:
+            p.unlink(missing_ok=True)
 
     # ── 6f. «Реформулировка вместо ответа»: страница чата непрогрета —
     #       baseline=0, хотя в ленте уже лежит СТАРЫЙ завершённый ответ

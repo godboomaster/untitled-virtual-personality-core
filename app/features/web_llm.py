@@ -42,8 +42,11 @@ webchat_limits, не устраняется), селекторы
 адаптеров могут сломаться редизайном — smoke-ping ловит это заранее.
 """
 
+import atexit
+import glob
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -528,7 +531,8 @@ def quarantine_site(site: str, reason: str, ttl: float = None,
     браузера, где сайт поймал блокировку: rescue пула H ждёт только капчи и
     входы СВОЕГО пула (_rescue_pending_sites) — капчу сайта пула V он не
     покажет и не снимет. Дефолт «h»: так открывает страницы и поиск Google
-    (web_search, open_headless_tab)."""
+    (web_search, open_headless_tab). Капча/вход пула H публикуются для
+    других процессов бота (_publish_rescue_wait)."""
     with _QUARANTINE_LOCK:
         already = site in _SITE_QUARANTINE
         eff_ttl = ttl if ttl and ttl > 0 else QUARANTINE_TTL_SEC
@@ -539,6 +543,7 @@ def quarantine_site(site: str, reason: str, ttl: float = None,
             _PENDING_ALERTS.append({"site": site, "reason": reason,
                                     "kind": kind, "until": until,
                                     "ts": time.time()})
+    _publish_rescue_wait()
     if not already:
         logger.warning(f"[WebChat] {site}: карантин ({kind}) "
                        f"{int(eff_ttl / 60)} мин — {reason}")
@@ -569,25 +574,36 @@ def site_quarantined(site: str) -> bool:
         q = _SITE_QUARANTINE.get(site)
         if not q:
             return False
-        if time.time() >= float(q.get("until") or 0):
-            _SITE_QUARANTINE.pop(site, None)
-            return False
-        return True
+        if time.time() < float(q.get("until") or 0):
+            return True
+        _SITE_QUARANTINE.pop(site, None)
+    # Истёк (лениво, здесь) — публикация ожидания rescue без него. Публикуем
+    # только по факту выброса: проверка карантина — горячий путь каждого
+    # вызова веб-чата
+    _publish_rescue_wait()
+    return False
 
 
 def clear_quarantine(site: str):
     with _QUARANTINE_LOCK:
         _SITE_QUARANTINE.pop(site, None)
+    # Без изменений файл не переписывается (_publish_rescue_wait сверяет с
+    # опубликованным), а прошлая неудачная запись здесь повторится
+    _publish_rescue_wait()
 
 
 def quarantine_status() -> dict:
     # Активные карантины {site: {until, reason}} — для API/статуса
     with _QUARANTINE_LOCK:
         now = time.time()
-        for s in [s for s, q in _SITE_QUARANTINE.items()
-                  if now >= float(q.get("until") or 0)]:
+        expired = [s for s, q in _SITE_QUARANTINE.items()
+                   if now >= float(q.get("until") or 0)]
+        for s in expired:
             _SITE_QUARANTINE.pop(s, None)
-        return {s: dict(q) for s, q in _SITE_QUARANTINE.items()}
+        out = {s: dict(q) for s, q in _SITE_QUARANTINE.items()}
+    if expired:
+        _publish_rescue_wait()
+    return out
 
 
 # Виды карантина, ради которых нужен видимый пул H (rescue): капчу и вход в
@@ -597,44 +613,211 @@ def quarantine_status() -> dict:
 _RESCUE_KINDS = ("challenge", "login")
 
 
+def _waits_rescue(q: dict) -> bool:
+    # Карантин, ради которого нужен rescue пула H: капча/разлогин у сайта
+    # пула H. Карантин сайта пула V (chatgpt, claude) не в счёт: его страницы
+    # в окне rescue нет, и в rescue его не пробуют (_quarantine_skip) — он
+    # держал бы видимый пул H до конца срока
+    return (str(q.get("kind") or "challenge") in _RESCUE_KINDS
+            and str(q.get("pool") or "h") == "h")
+
+
 def _rescue_pending_sites() -> List[str]:
-    """Сайты ЭТОГО процесса, ради которых rescue пула H ещё нужен: карантин
-    капчи/разлогина у сайта пула H. Карантин сайта пула V (chatgpt, claude)
-    не в счёт: его страницы в окне rescue нет, и в rescue его не пробуют
-    (_quarantine_skip) — он держал бы видимый пул H до конца срока."""
+    """Сайты ЭТОГО процесса, ради которых rescue пула H ещё нужен
+    (_waits_rescue). Сайты соседних процессов — _foreign_rescue_waits."""
     return sorted(s for s, q in quarantine_status().items()
-                  if str(q.get("kind") or "challenge") in _RESCUE_KINDS
-                  and str(q.get("pool") or "h") == "h")
+                  if _waits_rescue(q))
+
+
+# ── Кого ждёт rescue: общее между процессами бота ──
+# Срок rescue общий для процессов (<профиль>.bot-rescue, browser_actions), а
+# карантины — в памяти каждого процесса. Правило конца rescue, видящее только
+# свой процесс, ошибалось в обе стороны: владелец (A) завершал rescue по
+# реплике или по своему последнему карантину, пока капча соседа (B) ещё
+# ждала в окне, — пул H уходил в headless, и карантин B доживал до TTL; а B,
+# сняв последний карантин, rescue не завершал (не владелец) — окно висело до
+# действия A или до конца срока. Поэтому каждый процесс публикует свои
+# ждущие сайты (_waits_rescue) со сроками карантина в СВОЙ файл
+# <профиль>.bot-rescue.wait.<pid> — JSON {site: until}, — а правило конца
+# rescue (_finish_rescue_if_done) читает файлы всех живых процессов.
+# Файл на процесс, а не один общий: каждый файл пишет только его процесс
+# (атомарно, tmp + os.replace) — межпроцессный лок не нужен, а процесс,
+# умерший без уборки (kill -9, падение), отсекается по живости pid: его
+# карантины ушли вместе с памятью. Публикуется всегда, не только в rescue:
+# капча могла случиться до «почини браузер». Ждущих нет — файла нет.
+# Читатели фильтруют по until > now, поэтому ленивое истечение карантина
+# (site_quarantined/quarantine_status) им не страшно.
+_RESCUE_WAIT_INFIX = ".wait."
+_RESCUE_WAIT_LOCK = threading.Lock()
+# Что опубликовано: pid — чьё (после fork у ребёнка это файл родителя, не
+# его), path — файл, data — содержимое: None — ещё неизвестно (в этом
+# процессе не публиковали), {} — файла нет. Без изменений файл не пишется
+_RESCUE_WAIT_PUB: dict = {"pid": None, "path": None, "data": None}
+
+
+def _rescue_wait_prefix(ba=None) -> str:
+    # Путь файлов ожидания без pid — от общего файла rescue (тот же профиль
+    # пула H — те же соседи)
+    if ba is None:
+        from app.features import browser_actions as ba
+    return ba._pool_h_rescue_path() + _RESCUE_WAIT_INFIX
+
+
+def _publish_rescue_wait():
+    """Опубликовать ждущие rescue сайты этого процесса (см. выше). Зовут
+    quarantine_site, clear_quarantine и ленивое истечение карантина. Сбой
+    записи/удаления — только debug: вызов веб-чата из-за файла ожидания не
+    падает, а худшее — сосед не увидит капчу этого процесса (как до общей
+    публикации); следующее изменение карантинов попробует снова.
+    Снимок и запись — под одним локом: иначе поток со старым снимком мог бы
+    записать его поверх более нового."""
+    try:
+        with _RESCUE_WAIT_LOCK:
+            now = time.time()
+            with _QUARANTINE_LOCK:
+                data = {s: round(float(q.get("until") or 0), 3)
+                        for s, q in _SITE_QUARANTINE.items()
+                        if _waits_rescue(q)
+                        and float(q.get("until") or 0) > now}
+            pid = os.getpid()
+            pub = _RESCUE_WAIT_PUB
+            if pub["pid"] != pid:
+                # Первый вызов в процессе или ребёнок после fork:
+                # опубликованное — не наше (файл родителя не трогаем)
+                pub.update(pid=pid, path=None, data=None)
+            if not data and pub["data"] == {}:
+                return  # файла нет и не нужен — ФС не трогаем (горячий путь)
+            path = f"{_rescue_wait_prefix()}{pid}"
+            if data and pub["path"] == path and pub["data"] == data:
+                return
+            if pub["data"] and pub["path"] != path:
+                # Профиль пула H сменился — старый файл больше никто не
+                # обновит, а соседи по старому профилю ждали бы по нему
+                try:
+                    os.unlink(pub["path"])
+                except FileNotFoundError:
+                    pass
+            if data:
+                atomic_write_json(Path(path), data, indent=None)
+            else:
+                # Ждущих нет — файла нет. И на первом вызове: файл с тем же
+                # pid мог остаться от умершего процесса, чей pid достался нам
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
+            pub.update(path=path, data=data)
+    except Exception as e:
+        logger.debug(f"[WebChat] Ожидание rescue не опубликовано ({e}) — "
+                     "другие процессы бота не увидят капч/входов этого")
+
+
+def _drop_rescue_wait():
+    """Штатный выход процесса (atexit): его карантины уходят вместе с
+    памятью — файл ожидания тоже. Без этого его отсекла бы только проверка
+    живости pid, а файлы копились бы рядом с профилем. Хуки выхода бота
+    (shutdown_browser из main/API) живут в browser_actions и про карантины
+    не знают — поэтому свой atexit.
+    Лок — с таймаутом: на выходе демон-поток веб-чата может быть посреди
+    публикации, и бесконечное ожидание повесило бы завершение процесса;
+    не дождались — файл отсечёт проверка живости pid."""
+    if not _RESCUE_WAIT_LOCK.acquire(timeout=2.0):
+        return
+    try:
+        pub = _RESCUE_WAIT_PUB
+        if pub["pid"] == os.getpid() and pub["path"] and pub["data"]:
+            try:
+                os.unlink(pub["path"])
+            except FileNotFoundError:
+                pass
+            pub["data"] = {}
+    except Exception:
+        pass
+    finally:
+        _RESCUE_WAIT_LOCK.release()
+
+
+atexit.register(_drop_rescue_wait)
+
+
+def _foreign_rescue_waits(ba) -> Dict[str, List[int]]:
+    """Ждущие rescue сайты ДРУГИХ живых процессов бота: {site: [pid, ...]}.
+    Свой процесс — не отсюда, а из памяти (_rescue_pending_sites): его файл
+    мог не записаться. Не в счёт: файл мёртвого процесса (умер без уборки —
+    файл подчищается), просроченные записи (истечение у владельца ленивое),
+    нечитаемый файл (только debug) и чужие tmp."""
+    prefix = _rescue_wait_prefix(ba)
+    me, now = os.getpid(), time.time()
+    out: Dict[str, List[int]] = {}
+    for path in glob.glob(glob.escape(prefix) + "*"):
+        tail = path[len(prefix):]
+        if not tail.isdigit():
+            continue
+        pid = int(tail)
+        if pid == me:
+            continue
+        if not ba._pid_alive(pid):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            continue  # сосед только что снял последний карантин
+        except (OSError, ValueError) as e:
+            logger.debug(f"[WebChat] Файл ожидания rescue {path} не "
+                         f"прочитан ({e}) — не в счёт")
+            continue
+        if not isinstance(data, dict):
+            continue
+        for site, until in data.items():
+            try:
+                waiting = float(until) > now
+            except (TypeError, ValueError):
+                continue
+            if waiting:
+                out.setdefault(str(site), []).append(pid)
+    return out
 
 
 def _finish_rescue_if_done(ba, cleared: Optional[str] = None,
                            pool: str = "h") -> bool:
-    """Единое правило конца rescue пула H: только СВОЙ rescue (включил этот
-    процесс) и только когда в этом процессе не осталось карантинов капчи/
-    входа (_rescue_pending_sites). Зовут его реплика «готово»
-    (finish_idle_rescue) и снятие карантина вызовом к сайту (_challenge_check,
-    _login_restored; cleared — сайт, чей карантин только что снят, для лога;
+    """Единое правило конца rescue пула H: rescue идёт, и капч/входов не
+    ждёт НИ ОДИН живой процесс бота — ни этот (_rescue_pending_sites), ни
+    соседи (их файлы ожидания, _foreign_rescue_waits). Тогда rescue
+    завершает КТО УГОДНО, не только включивший его процесс: окно и срок
+    общие (end_rescue_pool_h удаляет общий файл — rescue кончается у всех).
+    Зовут его реплика «готово» (finish_idle_rescue) и снятие карантина
+    вызовом к сайту (_challenge_check, _login_restored; web_search — капча
+    поиска Google; cleared — сайт, чей карантин только что снят, для лога;
     pool — пул этого сайта).
     Почему не завершать по первому снятому карантину: капчи бывают у
-    нескольких сайтов сразу — rescue, снятый по первой, перезапустил бы пул H
-    headless посреди решения второй, и её карантин дожил бы до TTL.
-    Чужой rescue не завершаем: карантины, ради которых его включили, — в
-    памяти того процесса, отсюда их не видно; завершит он сам (или истечёт
-    срок). Снятие карантина у сайта пула V к rescue пула H отношения не
-    имеет (капчу он проходил не в окне rescue) — тоже не повод завершать.
+    нескольких сайтов (и процессов) сразу — rescue, снятый по первой,
+    перезапустил бы пул H headless посреди решения второй, и её карантин
+    дожил бы до TTL. Снятие карантина у сайта пула V к rescue пула H
+    отношения не имеет (капчу он проходил не в окне rescue) — не повод.
+    Сбой чтения соседей — как «соседи не ждут» (только debug): худшее —
+    прежнее поведение, правило по одному своему процессу.
     → True — rescue завершён."""
     if pool != "h":
         return False
-    if not ba.pool_h_rescue_owned():
-        if cleared and ba.pool_h_rescue_active():
-            logger.info(f"[WebChat] {cleared}: карантин снят; rescue пула H "
-                        "включил другой процесс бота — завершит он")
+    if not ba.pool_h_rescue_active():
         return False
     pending = _rescue_pending_sites()
-    if pending:
-        if cleared:
-            logger.info(f"[WebChat] {cleared}: карантин снят, rescue пула H "
-                        f"продолжается — ещё ждём: {', '.join(pending)}")
+    try:
+        foreign = _foreign_rescue_waits(ba)
+    except Exception as e:
+        logger.debug(f"[WebChat] Ожидание rescue соседей не прочитано: {e}")
+        foreign = {}
+    if pending or foreign:
+        waiting = pending + [f"{s} (другой процесс бота)"
+                             for s in sorted(foreign) if s not in pending]
+        head = f"{cleared}: карантин снят, rescue" if cleared else "Rescue"
+        logger.info(f"[WebChat] {head} пула H продолжается — ещё ждём: "
+                    f"{', '.join(waiting)}")
         return False
     ba.end_rescue_pool_h()
     return True
@@ -642,13 +825,13 @@ def _finish_rescue_if_done(ba, cleared: Optional[str] = None,
 
 def finish_idle_rescue() -> bool:
     """Реплика пользователя после «почини браузер» — это «готово» (так его
-    и просит rescue_ok). Rescue этого процесса, которому чинить нечего — ни
-    капчи, ни разлогина в карантине, — завершается сразу: по чистой
-    странице его снимать было бы не с чего, и пул H оставался бы видимым до
-    конца срока, выскакивая окном на каждую новую вкладку. Карантин есть —
-    rescue снимет вызов к сайту (_challenge_check, _login_restored), когда
-    снят последний. Чужой rescue (включил другой процесс бота) не трогаем:
-    его карантины — в памяти того процесса. Правило — _finish_rescue_if_done.
+    и просит rescue_ok). Rescue, которому чинить нечего — ни капчи, ни
+    разлогина в карантине ни у одного процесса бота, — завершается сразу:
+    по чистой странице его снимать было бы не с чего, и пул H оставался бы
+    видимым до конца срока, выскакивая окном на каждую новую вкладку. Чей
+    rescue — неважно: окно общее. Карантин есть (здесь или у соседа) —
+    rescue снимет вызов к сайту (_challenge_check, _login_restored) того
+    процесса, где снят последний. Правило — _finish_rescue_if_done.
     → True — завершён."""
     from app.features import browser_actions as ba
     return _finish_rescue_if_done(ba)
@@ -1705,8 +1888,8 @@ class WebChatLLM:
         try:
             # Вошли в видимом окне rescue — пул H возвращается в штатный
             # режим, но только если это был последний карантин капчи/входа
-            # и rescue свой (_finish_rescue_if_done): иначе окно закрылось
-            # бы посреди капчи соседнего сайта
+            # во всех процессах бота (_finish_rescue_if_done): иначе окно
+            # закрылось бы посреди капчи соседнего сайта или процесса
             _finish_rescue_if_done(ba, cleared=self.site,
                                    pool=self.browser_pool)
         except Exception:
@@ -1732,8 +1915,8 @@ class WebChatLLM:
         if not label:
             # Страница чиста. Если сайт был в карантине КАПЧИ — челлендж
             # пройден (пользователь в rescue): снимаем карантин; rescue
-            # завершается, только если капч/входов больше не ждём
-            # (_finish_rescue_if_done).
+            # завершается, только если капч/входов больше не ждёт ни один
+            # процесс бота (_finish_rescue_if_done).
             # Чистая страница снимает только вид challenge. Разлогин так не
             # снимается: на странице входа капчи тоже нет — его снимает
             # только проба поля ввода (_login_state). Лимит (ratelimit) и

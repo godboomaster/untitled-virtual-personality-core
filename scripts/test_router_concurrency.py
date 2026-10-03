@@ -78,7 +78,12 @@ def main():
              wait_input=lambda *a, **kw: None,
              eval_js=lambda *a, **kw: "",
              pool_h_rescue_active=lambda: False,
-             pool_v_webchat_allowed=lambda: True)
+             pool_v_webchat_allowed=lambda: True,
+             # Карантин капчи публикуется для других процессов бота файлом
+             # рядом с профилем пула H (web_llm._publish_rescue_wait) — во
+             # временный каталог, не к НАСТОЯЩЕМУ профилю живого бота: иначе
+             # его rescue видел бы «процесс теста ждёт капчу»
+             _pool_h_rescue_path=lambda: str(tmp / "h.bot-rescue"))
 
     def stub_router(sites):
         r = rt.ModelRouter.__new__(rt.ModelRouter)  # без __init__

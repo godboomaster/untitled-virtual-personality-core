@@ -96,8 +96,8 @@ _TRAILING_DECOR_RE = re.compile(r'[^0-9A-Za-zА-Яа-яЁё.!?…»"\)\]]+$')
 
 # «почини браузер» / «открой капчу» — rescue пула H (web_extended): пул
 # веб-чатов перезапускается ВИДИМЫМ, пользователь решает капчу руками;
-# возврат в headless — сам, когда пройдены ВСЕ капчи/входы этого процесса
-# (web_llm._finish_rescue_if_done из _challenge_check/_login_restored)
+# возврат в headless — сам, когда капч/входов не ждёт ни один процесс бота
+# (web_llm._finish_rescue_if_done из _challenge_check/_login_restored/поиска)
 _RESCUE_BROWSER_RE = re.compile(
     r"^\s*(?:(?:почини|починить|открой|пройди|реши|решить)\s+"
     r"(?:браузер|веб-?чат\w*|капч\w+|челлендж)\w*|"

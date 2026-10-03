@@ -9359,9 +9359,9 @@ _RESCUE_SUFFIX = ".bot-rescue"
 # Rescue общий для процессов бота, как и сам Chrome пула H: срок лежит в
 # файле-соседе профиля. Иначе процесс, не включавший rescue, счёл бы видимый
 # Chrome «не тем режимом» и перезапустил headless — вместе с окном, где
-# пользователь решает капчу. Завершает rescue процесс, который его включил
-# (web_llm._finish_rescue_if_done: пройдены все его капчи/входы), — и тогда
-# для всех.
+# пользователь решает капчу. Завершает rescue любой процесс, когда капч/
+# входов не ждёт ни один живой процесс бота (web_llm._finish_rescue_if_done),
+# — и тогда для всех.
 def _pool_h_rescue_path() -> str:
     udd = os.path.abspath(os.path.expanduser(_pool_h_profile()))
     return udd.rstrip("/\\") + _RESCUE_SUFFIX
@@ -9431,12 +9431,6 @@ def _pool_h_mode_stale() -> bool:
 
 def pool_h_rescue_active() -> bool:
     return time.time() < _pool_h_rescue_until()
-
-
-def pool_h_rescue_owned() -> bool:
-    # Идущий rescue включил ЭТОТ процесс (карантины, ради которых его
-    # включали, — в памяти именно этого процесса)
-    return bool(_POOL_H_MODE_OVERRIDE) and pool_h_rescue_active()
 
 
 def rescue_pool_h(duration_min: float = POOL_H_RESCUE_MIN) -> bool:

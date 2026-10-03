@@ -466,15 +466,18 @@ def main():
         finally:
             ba._raw_open, ba._pool_h_alive, ba.pool_h_rescue_active = saved_raw
     finally:
+        # Карантин снимаем ДО возврата путей: снятие публикует ожидание
+        # rescue (web_llm._publish_rescue_wait) — по временному пути, а не
+        # рядом с настоящим профилем
+        ws._GOOGLE_PROBE_TAB = None
+        wl.clear_quarantine(G)
+        wl.pop_quarantine_alerts()
         for n, v in saved_ba.items():
             setattr(ba, n, v)
         (ba._pool_h_rescue_path, ba._pool_h_life_path,
          ba._pool_v_life_path) = saved_paths
         wl._finish_rescue_if_done = saved_finish
         ws.internet_available = saved_net
-        ws._GOOGLE_PROBE_TAB = None
-        wl.clear_quarantine(G)
-        wl.pop_quarantine_alerts()
         leftovers = os.listdir(tmp)
         for f in leftovers:
             try:
