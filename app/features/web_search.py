@@ -632,6 +632,214 @@ def _google_unwrap(href: str) -> str:
     return href
 
 
+# ── Проба капчи поиска в rescue пула H ──
+# Капча поиска ставит общий с AI Mode карантин «google» (вид challenge, пул
+# H), и rescue пула H (Chrome бота видимый, человек проходит капчи руками)
+# ждёт его снятия (web_llm._rescue_pending_sites). Снять его было некому:
+# поиск в карантине Google сразу пропускает, open_headless_tab в rescue
+# отказывает (иначе окно выдачи выскакивало бы на каждый фоновый поиск), а
+# веб-чат google, чей _challenge_check снимает карантин по чистой странице,
+# есть не у всех персон. Rescue держался до конца срока (15 мин), каждая
+# новая вкладка веб-чатов всё это время выскакивала окном, а окна с капчей
+# поиска у человека не было вовсе — решить её было негде.
+# Поэтому в rescue поиск сам — проба своей капчи: держит ОДНО окно выдачи
+# (его открытие — тот же единственный запрос к Google, что сделал бы
+# обычный поиск), человек решает в нём капчу, а следующие поиски только
+# смотрят на окно — БЕЗ навигации: она сорвала бы решение посреди капчи и
+# была бы лишним запросом к Google (за частые запросы уже банили). Чисто —
+# карантин снят, окно закрыто, rescue завершается по общему правилу
+# (_finish_rescue_if_done). Вне rescue окно не держим.
+# Лок — только неблокирующий: поиски идут из разных потоков, замер пробы
+# длится до ~12 с, и сосед не должен ни ждать его, ни открыть вторую пробу
+# (он просто уходит в DDG, как и без пробы).
+_GOOGLE_PROBE_LOCK = threading.Lock()
+_GOOGLE_PROBE_TAB: int | None = None  # фоновая вкладка пула H (окно rescue)
+# Хост Google (www./consent./ccTLD) — проба, ушедшая с него, капчу поиска
+# уже не показывает
+_GOOGLE_HOST_RE = re.compile(r"(^|\.)google\.[a-z]{2,3}(\.[a-z]{2})?$")
+# Замер пробы — тот же _GOOGLE_RESULTS_JS плюс адрес страницы, на которой он
+# сделан. Адрес отдельным вызовом (tab_url) мог оказаться уже от другой
+# страницы: свежая проба, прочитанная ещё на about:blank (навигация не
+# дошла), с адресом, снятым мигом позже уже на Google, сошла бы за «чисто»
+_GOOGLE_PROBE_JS = ("(async()=>{const r=JSON.parse(await " + _GOOGLE_RESULTS_JS
+                    + ");r.href=location.href;return JSON.stringify(r);})()")
+
+
+def _drop_google_probe(ba, why: str) -> None:
+    """Закрыть и забыть окно-пробу. Только под _GOOGLE_PROBE_LOCK. Закрытие
+    best effort: вкладки умершего Chrome уже нет в реестре (close — no-op)."""
+    global _GOOGLE_PROBE_TAB
+    tab, _GOOGLE_PROBE_TAB = _GOOGLE_PROBE_TAB, None
+    if tab is None:
+        return
+    try:
+        ba.close_background_tab(tab)
+    except Exception as e:
+        logger.debug(f"[WEB_SEARCH] Google: окно-проба #{tab} не "
+                     f"закрылось: {e}")
+    logger.info(f"[WEB_SEARCH] Google: окно-проба капчи #{tab} "
+                f"отпущено ({why})")
+
+
+def _release_google_probe(ba, why: str) -> None:
+    # Проба больше не нужна (rescue окончен, карантина капчи нет). Лок занят —
+    # пробу прямо сейчас смотрит сосед, и он же её отпустит
+    if _GOOGLE_PROBE_TAB is None or not _GOOGLE_PROBE_LOCK.acquire(
+            blocking=False):
+        return
+    try:
+        _drop_google_probe(ba, why)
+    finally:
+        _GOOGLE_PROBE_LOCK.release()
+
+
+def _check_google_probe(ba, tab: int) -> tuple[str, dict, str]:
+    """Состояние окна-пробы БЕЗ навигации (только чтение DOM: человек может
+    решать в нём капчу прямо сейчас) → (вердикт, выдача, url):
+    dead — вкладки нет (Chrome пула перезапущен: rescue окончен или «почини
+    браузер» ещё раз; окно закрыли) или в ней уже не Google (человек ушёл
+    на другой сайт — капчу поиска там не пройти);
+    challenge — капча на месте;
+    unknown — замер не удался или страница ещё не дошла до адреса. Это не
+    «чисто»: карантин по нему не снимается (как в web_llm._challenge_check —
+    иначе сбой детектора снимал бы карантин вслепую);
+    clear — Google без капчи."""
+    # Вкладка выпала из реестра — её Chrome сброшен. Проверка ДО вызовов:
+    # чужой (не фоновый) tab_id ушёл бы в playwright-воркер пула V
+    if not ba.is_raw_tab(tab):
+        return "dead", {}, ""
+    try:
+        data = json.loads(ba.eval_js(None, tab, _GOOGLE_PROBE_JS,
+                                     timeout_sec=GOOGLE_WAIT_SEC + 4) or "{}")
+        if not isinstance(data, dict):
+            raise ValueError("выдача пробы — не объект")
+        label = ba.detect_antibot(None, tab, strict=True)
+    except Exception as e:
+        # Вызов сам выбросил вкладку из реестра — таргета больше нет
+        # (_raw_eval: закрыта, Chrome умер). Иначе вкладка жива, а не удался
+        # только замер (таймаут, навигация посреди чтения)
+        if not ba.is_raw_tab(tab):
+            return "dead", {}, ""
+        logger.info(f"[WEB_SEARCH] Google: окно-пробу капчи проверить не "
+                    f"удалось ({str(e)[:160]}) — состояние неизвестно, "
+                    "карантин не трогаю")
+        return "unknown", {}, ""
+    url = str(data.get("href") or "")
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return "unknown", data, url  # about:blank — навигация ещё не дошла
+    if not _GOOGLE_HOST_RE.search(host):
+        return "dead", data, url
+    # Метка антибота при ОТРИСОВАННОЙ выдаче (#rso) — ложная: detect_antibot
+    # ловит и заголовок, а у выдачи он — сам запрос («captcha …», «доступ
+    # запрещён 403 …»). Стена Google — это /sorry/ (признак sorry), выдачу
+    # она не показывает; без исключения проба с таким запросом не снялась
+    # бы никогда, и rescue держался бы весь срок
+    if data.get("sorry") or (label and not data.get("rso")):
+        return "challenge", data, url
+    return "clear", data, url
+
+
+def _probe_on_query(url: str, query: str) -> bool:
+    """Проба стоит на выдаче ЭТОГО запроса (после капчи Google возвращает
+    на исходный адрес пробы) — её выдачу можно взять вместо нового запроса."""
+    from urllib.parse import parse_qs
+    p = urlparse(url)
+    qs = parse_qs(p.query)
+    return (p.path == "/search" and (qs.get("udm") or [""])[0] == "14"
+            and (qs.get("q") or [""])[0].strip() == query.strip())
+
+
+def _google_rescue_probe(ba, query: str) -> tuple[bool, dict | None]:
+    """Google в карантине — проба его капчи в rescue пула H → (снят, выдача).
+    снят=False — карантин держится (или rescue нет): поиск отдаёт None, как и
+    раньше. снят=True — капча пройдена, карантин снят; выдача — прочитанная
+    прямо из пробы, если та стоит на этом же запросе (второй запрос к Google
+    не нужен), иначе None — обычный путь поиска (rescue ещё идёт из-за других
+    сайтов — open_headless_tab откажет, будет DDG).
+    Вне rescue ничего не открывает и не читает — только отпускает
+    оставшуюся пробу. Запросов к Google — не больше одного за вызов (открытие
+    пробы, когда её нет), повторов нет."""
+    global _GOOGLE_PROBE_TAB
+    from urllib.parse import quote_plus
+    from app.features.web_llm import (
+        _finish_rescue_if_done, clear_quarantine, quarantine_kind)
+    try:
+        rescue = bool(ba.pool_h_rescue_active())
+    except Exception:
+        rescue = False
+    if not rescue:
+        _release_google_probe(ba, "rescue окончен")
+        return False, None
+    if quarantine_kind(GOOGLE_QUARANTINE_SITE) != "challenge":
+        # Лимит/отказ руками не снять, а чистая выдача их не опровергает
+        # (так же их не пробует в rescue и web_llm._quarantine_skip)
+        _release_google_probe(ba, "карантин не капча")
+        return False, None
+    if not _GOOGLE_PROBE_LOCK.acquire(blocking=False):
+        return False, None  # пробу сейчас смотрит/открывает соседний поиск
+    try:
+        tab = _GOOGLE_PROBE_TAB
+        verdict, data, url = ("dead", {}, "") if tab is None \
+            else _check_google_probe(ba, tab)
+        if verdict == "dead":
+            if tab is not None:
+                _drop_google_probe(ba, "вкладка пробы умерла или ушла "
+                                       "с Google")
+            try:
+                tab = ba.open_headless_tab(
+                    GOOGLE_SEARCH_URL + quote_plus(query), rescue_probe=True)
+            except Exception as e:
+                logger.info(f"[WEB_SEARCH] Google: окно-проба капчи не "
+                            f"открылось ({e})")
+                return False, None
+            _GOOGLE_PROBE_TAB = tab
+            logger.info(f"[WEB_SEARCH] Google в карантине, rescue пула H — "
+                        f"окно-проба капчи #{tab} открыто")
+            verdict, data, url = _check_google_probe(ba, tab)
+            if verdict == "dead":
+                # Свежая проба уже не на Google (или умерла): новую — только
+                # следующим поиском, повторов в одном вызове нет
+                _drop_google_probe(ba, "свежая проба не на Google")
+                return False, None
+        if verdict != "clear":
+            return False, None
+        clear_quarantine(GOOGLE_QUARANTINE_SITE)
+        logger.info("[WEB_SEARCH] Google: капча поиска пройдена — карантин "
+                    "снят")
+        _drop_google_probe(ba, "капча пройдена")
+    finally:
+        _GOOGLE_PROBE_LOCK.release()
+    try:
+        # Rescue завершится, только если капч/входов больше не ждём
+        _finish_rescue_if_done(ba, cleared=GOOGLE_QUARANTINE_SITE)
+    except Exception as e:
+        logger.debug(f"[WEB_SEARCH] Google: проверка конца rescue: {e}")
+    return True, (data if data.get("rso") and _probe_on_query(url, query)
+                  else None)
+
+
+def _google_parse_links(data: dict, max_results: int) -> list[dict]:
+    """Ссылки выдачи (JSON _GOOGLE_RESULTS_JS) → [{"href", "title", "body"}]:
+    без служебных ссылок Google и дублей, не больше max_results."""
+    out, seen = [], set()
+    for title, href, *rest in data.get("links") or []:
+        url = _google_unwrap(str(href or ""))
+        p = urlparse(url)
+        if p.scheme not in ("http", "https") or re.match(
+                r"^(www\.)?google\.", p.hostname or ""):
+            continue  # служебные ссылки самого Google (картинки, «ещё»)
+        key = ((p.hostname or "").lower(), p.path.rstrip("/"), p.query)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"href": url, "title": str(title or ""),
+                    "body": str(rest[0] if rest else "")})
+        if len(out) >= max_results:
+            break
+    return out
+
+
 def google_web_links(query: str, max_results: int = 10) -> list[dict] | None:
     """Органическая выдача веб-Google → [{"href", "title", "body"}] (формат
     DDGS.text; body — сниппет, может быть пустым).
@@ -639,15 +847,25 @@ def google_web_links(query: str, max_results: int = 10) -> list[dict] | None:
     None — Google недоступен и вызывающему нужен другой поисковик: нет
     интернета, пул H не поднят (ради одного поиска браузер не запускаем),
     Google в карантине, капча (→ карантин), разметка не распознана
-    (warning в лог — иначе поломка выглядела бы как «ничего не нашлось»)."""
+    (warning в лог — иначе поломка выглядела бы как «ничего не нашлось»).
+    В rescue пула H карантин капчи проверяет окно-проба
+    (_google_rescue_probe): капча пройдена — карантин снят, поиск идёт
+    дальше."""
     from urllib.parse import quote_plus
     from app.features import browser_actions as ba
     from app.features.web_llm import quarantine_site, site_quarantined
     if not internet_available():
         return None
     if site_quarantined(GOOGLE_QUARANTINE_SITE):
-        logger.info("[WEB_SEARCH] Google в карантине — выдача не читается")
-        return None
+        cleared, probe_data = _google_rescue_probe(ba, query)
+        if not cleared:
+            logger.info("[WEB_SEARCH] Google в карантине — выдача не читается")
+            return None
+        if probe_data is not None:
+            return _google_parse_links(probe_data, max_results)
+    else:
+        # Карантин снят не пробой (веб-чат google, срок) — окно не держим
+        _release_google_probe(ba, "карантина Google нет")
     try:
         tab_id = ba.open_headless_tab(GOOGLE_SEARCH_URL + quote_plus(query))
     except Exception as e:
@@ -669,22 +887,7 @@ def google_web_links(query: str, max_results: int = 10) -> list[dict] | None:
         return None
     finally:
         ba.close_background_tab(tab_id)
-    out, seen = [], set()
-    for title, href, *rest in data.get("links") or []:
-        url = _google_unwrap(str(href or ""))
-        p = urlparse(url)
-        if p.scheme not in ("http", "https") or re.match(
-                r"^(www\.)?google\.", p.hostname or ""):
-            continue  # служебные ссылки самого Google (картинки, «ещё»)
-        key = ((p.hostname or "").lower(), p.path.rstrip("/"), p.query)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"href": url, "title": str(title or ""),
-                    "body": str(rest[0] if rest else "")})
-        if len(out) >= max_results:
-            break
-    return out
+    return _google_parse_links(data, max_results)
 
 
 def _ddg_links(query: str, max_results: int) -> list[dict] | None:

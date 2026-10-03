@@ -9557,13 +9557,17 @@ def _raw_drop(tab_id: int):
     _raw_forget(tab_id)
 
 
-def open_headless_tab(url: str) -> int:
+def open_headless_tab(url: str, rescue_probe: bool = False) -> int:
     """Служебная вкладка строго в УЖЕ поднятом пуле H: Chrome не запускаем
     и в пул V не деградируем (в отличие от open_new_tab(background=True)) —
     для разовых фоновых чтений вроде поисковой выдачи, где видимая вкладка
     или холодный запуск браузера хуже, чем отказ. Пул H не жив —
-    BrowserUnavailable. Закрывать — close_background_tab."""
-    if pool_h_rescue_active():
+    BrowserUnavailable. Закрывать — close_background_tab.
+    rescue_probe=True — окно-проба капчи поиска Google
+    (web_search._google_rescue_probe): в rescue оно нужно именно ВИДИМЫМ —
+    в нём человек решает капчу поиска, — и оно одно на процесс. Остальным
+    вызовам в rescue — отказ, как и раньше."""
+    if pool_h_rescue_active() and not rescue_probe:
         # Пул H сейчас ВИДИМЫЙ, а вкладка пула — отдельное окно (_raw_open):
         # каждый фоновый поиск выскакивал бы на экран окном выдачи. По
         # контракту (видимая вкладка хуже отказа) — отказ
