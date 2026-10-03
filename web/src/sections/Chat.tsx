@@ -166,7 +166,6 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     llmProviders,
     featureFlags,
     generationDefaults,
-    roomConfigs,
   } = useMockData();
 
   // Чат открывается с персоной, выбранной на странице всех чатов (или
@@ -809,7 +808,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         label: roomState.pastime,
         place: roomCache.view?.config?.spots.find((s) => s.key === roomState.spot)?.place || roomState.location || '',
       }
-    : (roomConfigs[persona.id]?.pastimes[0] ?? null);
+    : null;
   // Ближайшее активное напоминание персоны
   const nextReminder = (sideData ? sideData.reminders : (remindersByPersona[persona.id] ?? [])).find((r) => r.active);
   // Последняя самоинициатива персоны: живая история с бэкенда, иначе мок
@@ -1593,7 +1592,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     typing,
     messages,
     mood,
-    pastimeLabel: pastime?.label ?? '',
+    pastimeLabel: pastime?.label ?? '—',
     allPersonas: personas.map((p) => ({
       persona: p,
       statusText: t(`status.${p.status}`),
@@ -2100,9 +2099,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             <span className="dot dot--green" />
             <span>{t(`status.${persona.status}`)}</span>
           </div>
-          {pastime && (
-            <div className="ctx-note">{t('chat.now', { label: pastime.label, place: pastime.place || '—' })}</div>
-          )}
+          <div className="ctx-note">
+            {pastime ? t('chat.now', { label: pastime.label, place: pastime.place || '—' }) : t('chat.nowUnknown')}
+          </div>
 
           {/* Настроение с трендом */}
           <div className="chat-context-title">{t('chat.mood')}</div>

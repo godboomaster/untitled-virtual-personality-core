@@ -51,7 +51,6 @@ export default function Home({ onNavigate }: HomeProps) {
     initiativeStateByPersona,
     diaryByPersona,
     initiativeByPersona,
-    roomConfigs,
   } = useMockData();
 
   // Живые данные главной (GET /api/home); null — бэкенд недоступен или ещё
@@ -287,17 +286,14 @@ export default function Home({ onNavigate }: HomeProps) {
         </div>
         <div className="home-presence-grid">
           {personas.map((p) => {
-            // Занятие: живое состояние персоны (living) или мок комнаты
+            // Занятие — только живое состояние персоны (living); без
+            // бэкенда — прочерк, демо-занятия не подставляем
             const o = ov(p.id);
-            // Мок — только своей персоны: занятия Коннора другим не подставляем
-            const mockPastime = roomConfigs[p.id]?.pastimes[0];
             const activity = live
               ? o?.state
                 ? [o.state.pastime, o.state.location].filter(Boolean).join(' · ')
                 : t('home.noState')
-              : mockPastime
-                ? `${mockPastime.label} · ${mockPastime.place}`
-                : t('home.noState');
+              : '—';
             const mood = live ? o?.state?.mood : undefined;
             const lastReply = live ? ago(o?.last_user_ts) : p.lastReply;
             return (

@@ -5286,6 +5286,15 @@ body.is-row-dragging * {
   font-size: 13px;
 }
 
+/* Событий нет — прочерк и причина (без демо-событий) */
+.room-feed-empty {
+  display: flex;
+  gap: 12px;
+  padding: 9px 4px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
 .room-feed-item:last-child {
   border-bottom: none;
 }

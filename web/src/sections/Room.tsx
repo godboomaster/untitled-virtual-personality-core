@@ -46,7 +46,7 @@ export default function Room() {
   // Вся модель сцены (живое состояние / демо, предметы, аватар, сигналы
   // присутствия, сессия фокуса) — общий хук с PiP-окном
   const room = useRoomScene(persona, { rootRef: sectionRef });
-  const { view, mode, live, cfg, items, setItems, activity, duration, energy, energyPct, mood, feed, lastEvent, cues, focus } = room;
+  const { view, mode, live, cfg, items, setItems, activity, activityKnown, duration, energy, energyPct, mood, feed, feedState, lastEvent, cues, focus } = room;
   const { pose } = room.sceneProps;
   const roomBg = room.art?.roomBg;
   const sprite = room.art?.sprite;
@@ -162,8 +162,9 @@ export default function Room() {
     ? buildRoomPayload({
         persona,
         statusText: t(`status.${persona.status}`),
-        pastimeLabel: activity.label,
-        pastimePlace: activity.place,
+        // Неизвестное занятие — прочерк, а не демо-расписание
+        pastimeLabel: activityKnown ? activity.label : '—',
+        pastimePlace: activityKnown ? activity.place : '',
         duration: duration ?? '',
         x: avatarPoint ? avatarPoint.x * 100 : 50,
         y: avatarPoint && roomBg ? avatarPoint.y * 100 : null,
@@ -186,9 +187,19 @@ export default function Room() {
   // Источник состояния — приглушённо в телеметрии
   const sourceLabel = live && view
     ? view.source.kind === 'telegram' ? t('room.source.telegram') : t('room.source.web')
-    : mode === 'demo' ? t('room.source.demo') : null;
+    : mode === 'demo' ? t('room.source.offline') : null;
 
-  const away = activity.spot === 'away';
+  const away = activityKnown && activity.spot === 'away';
+  // Без бэкенда предметы не сохранить: правка инвентаря и размещения выключена
+  const itemsOfflineTitle = mode === 'demo' ? t('room.feedEmpty.offline') : null;
+
+  // Пустая лента — прочерк и причина
+  const feedEmptyReason =
+    feedState === 'offline' ? t('room.feedEmpty.offline')
+      : feedState === 'loading' ? t('room.feedEmpty.loading')
+        : feedState === 'life-off' ? t('room.feedEmpty.lifeOff')
+          : feedState === 'empty' ? t('room.feedEmpty.empty')
+            : null;
 
   const scene = (
     <RoomScene
@@ -232,6 +243,8 @@ export default function Room() {
               <button
                 type="button"
                 className="btn btn--ghost"
+                disabled={!!itemsOfflineTitle}
+                title={itemsOfflineTitle ?? undefined}
                 onClick={() => setEditorOpen(true)}
               >
                 <Icon name="pin" size={13} /> {t('editor.blockTitle')}
@@ -240,6 +253,8 @@ export default function Room() {
                 type="button"
                 className="btn btn--ghost"
                 aria-expanded={skinInventoryOpen}
+                disabled={!!itemsOfflineTitle}
+                title={itemsOfflineTitle ?? undefined}
                 onClick={() => setSkinInventoryOpen((v) => !v)}
               >
                 {t('room.inventory')} · {items.length}
@@ -308,9 +323,9 @@ export default function Room() {
             screen="room"
             state={skinRoomState}
             onAction={(action, values) => {
-              // Действия из скина комнаты (whitelist). Онлайн предмет
-              // уходит в инвентарь бэкенда, офлайн — в локальный стор
-              if (action === 'add-inventory-item' && values.name?.trim()) {
+              // Действия из скина комнаты (whitelist). Предмет уходит в
+              // инвентарь бэкенда; без бэкенда сохранить его негде — игнор
+              if (action === 'add-inventory-item' && values.name?.trim() && !itemsOfflineTitle) {
                 setItems([
                   ...items,
                   {
@@ -350,7 +365,7 @@ export default function Room() {
                 <div className="corner tl" />
                 <div className="corner tr" />
                 <span className="room-modal-title">
-                  {persona.name} · {away ? t('room.statusAway') : activity.label}
+                  {persona.name} · {away ? t('room.statusAway') : (activityKnown && activity.label) || '—'}
                 </span>
                 <span className="badge">ROOM // LIVE</span>
                 <button
@@ -399,7 +414,7 @@ export default function Room() {
                     <div className="corner tl" />
                     <div className="corner tr" />
                     <span className="room-modal-title">
-                      {persona.name} · {away ? t('room.statusAway') : activity.label}
+                      {persona.name} · {away ? t('room.statusAway') : (activityKnown && activity.label) || '—'}
                     </span>
                     <span className="badge">ROOM // LIVE</span>
                     <button
@@ -428,11 +443,11 @@ export default function Room() {
         <div className="room-side">
           <RoomTelemetry
             energy={energy}
-            energyPct={Number.isFinite(energyPct) ? energyPct : null}
+            energyPct={energyPct != null && Number.isFinite(energyPct) ? energyPct : null}
             mood={mood}
             lastEvent={lastEvent}
-            pastime={away ? t('room.statusAway') : activity.label}
-            place={activity.place}
+            pastime={away ? t('room.statusAway') : activityKnown ? activity.label || '—' : '—'}
+            place={activityKnown ? activity.place || '—' : '—'}
             duration={duration}
             sourceLabel={sourceLabel}
           />
@@ -449,6 +464,7 @@ export default function Room() {
           setItems={setItems}
           roomBgUrl={roomBg?.dataUrl}
           onOpenEditor={() => setEditorOpen(true)}
+          offlineTitle={itemsOfflineTitle}
         />
       )}
 
@@ -480,8 +496,9 @@ export default function Room() {
           setItems={setItems}
           roomBgUrl={roomBg?.dataUrl}
           onOpenEditor={() => setEditorOpen(true)}
+          offlineTitle={itemsOfflineTitle}
         />
-        <RoomFeed feed={feed} highlightId={highlightId} feedRef={feedRef} />
+        <RoomFeed feed={feed} highlightId={highlightId} feedRef={feedRef} emptyReason={feedEmptyReason} />
       </div>
       )}
 
