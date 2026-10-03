@@ -8844,7 +8844,8 @@ console.log(%s);
 
     _cc_bot = SimpleNamespace(owner="OWNER", web_single_user=False,
                               _cc_allowed_users={"ALLOWED"},
-                              is_owner=lambda uid: BotInstance.is_owner(_cc_bot, uid))
+                              is_owner=lambda uid: BotInstance.is_owner(_cc_bot, uid),
+                              _cc_user_allowed=lambda uid: BotInstance._cc_user_allowed(_cc_bot, uid))
     check("_cc_allowed: владелец разрешён",
           BotInstance._cc_allowed(_cc_bot, "OWNER") is True)
     check("_cc_allowed: пользователь из allowed_users разрешён",

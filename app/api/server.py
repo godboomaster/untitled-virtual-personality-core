@@ -208,7 +208,9 @@ def _cc_turn_enter(bot, req):
     занятому агенту, дубль ещё идущей команды — ответ сразу (см.
     BotInstance.cc_turn_enter). → (reply | None, token)."""
     enter = getattr(bot, "cc_turn_enter", None)
-    if not callable(enter) or req.image:
+    # Реплика из скина в режим управления не попадает вовсе (даже «стоп»
+    # и «ещё работаю») — см. ChatRequest.from_skin
+    if not callable(enter) or req.image or req.from_skin:
         return None, None
     try:
         return enter(req.message, req.user_id, req.chat_id)
@@ -653,6 +655,7 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                     # по тому, что реально ввёл пользователь, а не по OCR внутри
                     # llm_input (там текст с картинки — см. _prepare_image_input)
                     raw_user_text=req.message if req.image else None,
+                    from_skin=req.from_skin,
                 )
                 # Провайдер ответа — СРАЗУ после process_message и в этом же
                 # потоке (см. _answer_provider)
@@ -1013,6 +1016,7 @@ async def chat_stream(req: ChatRequest):
                     # См. /api/chat: подтверждение pending-действия — только по
                     # тому, что реально ввёл пользователь, не по OCR картинки
                     raw_user_text=req.message if req.image else None,
+                    from_skin=req.from_skin,
                 )
                 # Провайдер ответа — сразу и в этом же потоке (_answer_provider)
                 provider, model = _answer_provider(bot)

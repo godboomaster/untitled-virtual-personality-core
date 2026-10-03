@@ -858,7 +858,8 @@ export interface PersonaDraft {
 // серверная метка ответа в STM. Промис резолвится финальным событием done
 // с тем же reply (+ extra_messages).
 export async function streamChat(
-  params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string },
+  // fromSkin — реплика из скина: бэкенд не пускает её в режим управления
+  params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string; fromSkin?: boolean },
   onToken: (text: string) => void,
   onPartBreak?: () => void,
   onReplyTs?: (ts: number) => void,
@@ -881,6 +882,7 @@ export async function streamChat(
         user_name: params.userName ?? null,
         reply_context: params.replyContext ?? null,
         image: params.image ?? null,
+        ...(params.fromSkin ? { from_skin: true } : {}),
       }),
     });
   } catch (e) {

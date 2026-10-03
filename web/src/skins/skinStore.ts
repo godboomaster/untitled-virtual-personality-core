@@ -13,8 +13,9 @@
      Запись обёрнута в try/catch: переполнение квоты не роняет применение,
      а показывается в панели скинов. Когда бэкенд появляется, локальная
      библиотека переносится на сервер.
-   Встроенные скины (presets/) поставляются с приложением: не удаляются,
-   правка цветов встроенного создаёт пользовательскую копию.
+   Встроенные скины (presets/, сейчас их нет — PRESETS пуст) поставляются
+   с приложением: не удаляются, правка цветов встроенного создаёт
+   пользовательскую копию.
 
    Старый формат (vpc-skin:<персона> — файлы прямо под персоной, legacy-
    комбинированный файл дублировался на каждый экран) при первой загрузке
@@ -32,7 +33,6 @@ import { detectScreens } from './engine';
 import type { SkinScreen } from './engine';
 import { readSkinMeta } from './meta';
 import { applyColorOverrides } from './recolor';
-import presetSylvanGrove from './presets/sylvan-grove.html?raw';
 
 export const SKIN_SCREENS: SkinScreen[] = ['chat', 'dossier', 'room'];
 
@@ -123,8 +123,12 @@ function builtin(id: string, nameKey: string, name: string, html: string): SkinE
   };
 }
 
-const PRESET_FILES: Record<string, string> = { 'builtin:sylvan-grove': presetSylvanGrove };
-const BUILTINS: SkinEntry[] = [builtin('sylvan-grove', 'skin.presetSylvanGrove', 'Sylvan Grove', presetSylvanGrove)];
+// [id, i18n-ключ имени, имя, HTML] — HTML через import './presets/<id>.html?raw'
+const PRESETS: [string, string, string, string][] = [];
+const PRESET_FILES: Record<string, string> = Object.fromEntries(
+  PRESETS.map(([id, , , html]) => ['builtin:' + id, html]),
+);
+const BUILTINS: SkinEntry[] = PRESETS.map(([id, nameKey, name, html]) => builtin(id, nameKey, name, html));
 
 // ── Состояние ──
 
@@ -1050,7 +1054,10 @@ export interface SkinLibraryState {
 
 export function useSkinLibrary(): SkinLibraryState {
   useSkinStore();
-  return { entries: listSkins(), assignments, hiddenBuiltins: hiddenBuiltins.length, mode, error: lastError };
+  // Скрытые, которых в приложении больше нет (убранный пресет), не в счёт:
+  // восстанавливать нечего
+  const hidden = hiddenBuiltins.filter((id) => findBuiltin(id)).length;
+  return { entries: listSkins(), assignments, hiddenBuiltins: hidden, mode, error: lastError };
 }
 
 // Исходные файлы экранов скина (без перекраски); грузит их при необходимости

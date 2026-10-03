@@ -1139,6 +1139,7 @@ const ru: Record<string, string> = {
   'skin.repeatUnknown': 'Повтор «{v}» не поддерживается. Подходит: {options} или дни недели через запятую ({days}).',
   'skin.actStale': 'Список изменился, пока вы на него смотрели — действие отменено, список обновлён.',
   'skin.actConfigMissing': 'Не удалось загрузить настройки персоны — переключение не выполнено.',
+  'skin.actNoControl': 'Режим управления из скина не переключается — это делается в настройках персоны.',
   'skin.libraryTitle': 'Библиотека скинов',
   'skin.storageServer': 'Скины хранятся на сервере — общие для всех браузеров.',
   'skin.storageLocal':
@@ -1207,7 +1208,6 @@ const ru: Record<string, string> = {
   'skin.groupText': 'Текст',
   'skin.groupLine': 'Линии и рамки',
   'skin.groupAccent': 'Акценты и прочее',
-  'skin.presetSylvanGrove': 'Лесная роща',
   'skin.smokeRunning': 'Проверка скина в песочнице…',
   'skin.smokeOk': 'Проверка в песочнице пройдена ✓',
   'skin.smokeFailed': 'Скин падает при запуске ({n}) — отчёт выше.',

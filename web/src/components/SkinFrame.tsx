@@ -25,7 +25,14 @@
 
    Снапшот уходит не чаще раза за кадр и только если изменился; ready
    принимается один раз на документ. Входящие события скина проходят
-   лимиты частоты и размера: скин — сторонний код. */
+   лимиты частоты и размера: скин — сторонний код.
+
+   Записи от имени пользователя (send, clear, action, set-setting)
+   принимаются только сразу после его жеста в самом скине: клик или клавиша
+   внутри iframe дают активацию и окну приложения (navigator.userActivation),
+   а фокус при этом стоит на iframe. Без этого скрипт скина мог бы сам, на
+   загрузке или по таймеру, писать в чат от имени владельца, стирать память
+   и менять настройки. Отказ send — send-result с reason 'gesture'. */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { SyntheticEvent } from 'react';
@@ -59,6 +66,11 @@ const RATE_PER_SEC = 30;
 const RATE_BURST = 30;
 const KEY_RATE_PER_SEC = 20;
 const KEY_RATE_BURST = 20;
+// Записи (send, clear, action, set-setting) — общий бакет поверх жеста:
+// активация живёт несколько секунд, и за один клик скин не должен успеть
+// стереть десятки фактов или засыпать чат сообщениями
+const WRITE_RATE_PER_SEC = 1;
+const WRITE_BURST = 5;
 const SEND_INTERVAL_MS = 500; // send — не чаще раза в полсекунды (лишние ждут в очереди)
 const SEND_QUEUE_MAX = 5;
 const TEXT_MAX = 4000;
@@ -115,6 +127,13 @@ function makeBucket(perSec: number, burst: number) {
     tokens -= 1;
     return true;
   };
+}
+
+// Жест человека в скине: свежая активация окна (клик/клавиша последних
+// секунд) и фокус на iframe скина — активацию от клика по самому приложению
+// (шапка, сайдбар) скин себе не засчитает. Нет API активации — отказ
+function skinGesture(frame: HTMLIFrameElement | null): boolean {
+  return !!frame && navigator.userActivation?.isActive === true && document.activeElement === frame;
 }
 
 // Метка документа скина: случайная, чтобы чужая страница её не угадала
@@ -250,6 +269,7 @@ export default function SkinFrame({
   useEffect(() => {
     const allow = makeBucket(RATE_PER_SEC, RATE_BURST);
     const allowKey = makeBucket(KEY_RATE_PER_SEC, KEY_RATE_BURST);
+    const allowWrite = makeBucket(WRITE_RATE_PER_SEC, WRITE_BURST);
 
     // Очередь отправок: вторая отправка в пределах SEND_INTERVAL_MS ждёт,
     // а не теряется; результат уходит скину (при отказе bridge вернёт текст
@@ -300,6 +320,18 @@ export default function SkinFrame({
         return;
       }
       const h = handlersRef.current;
+      // Записи — только по жесту человека в скине (см. шапку файла) и в
+      // пределах своего бакета
+      if (d.type === 'send' || d.type === 'clear' || d.type === 'action' || d.type === 'set-setting') {
+        if (!skinGesture(iframeRef.current)) {
+          if (d.type === 'send') sendResult(d.sid, false, 'gesture');
+          return;
+        }
+        if (!allowWrite()) {
+          if (d.type === 'send') sendResult(d.sid, false, 'rate');
+          return;
+        }
+      }
       switch (d.type) {
         case 'send': {
           const text = typeof d.text === 'string' ? d.text.slice(0, TEXT_MAX) : '';

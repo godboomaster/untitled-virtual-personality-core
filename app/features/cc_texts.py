@@ -50,6 +50,14 @@ _T = {
     "stopping": {"ru": "Останавливаю…", "en": "Stopping…"},
     "already_running": {"ru": "Уже выполняю — дождись результата.",
                         "en": "Already on it — wait for the result."},
+    # Реплика из скина веб-интерфейса в режиме управления: скин мог
+    # отправить её сам, поэтому команды из него не исполняются
+    "skin_no_control": {
+        "ru": "Из скина режим управления не работает: команду мог отправить "
+              "сам скин. Нажми «Обычный вид» над скином и повтори команду там.",
+        "en": "Control mode doesn't work from a skin: the skin itself could "
+              "have sent the command. Click \"Standard view\" above the skin "
+              "and repeat the command there."},
     # Секрет в команде, которую regex не разобрал: в облачный LLM-разбор
     # такую фразу не отдаём
     "secret_rephrase": {

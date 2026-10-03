@@ -978,8 +978,10 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   };
 
   // Реплика пользователя — общий путь поля ввода, скина и голосового режима:
-  // пузырь + отправка на бэкенд со стримом ответа
-  const submitMessage = (text: string, image: string | null) => {
+  // пузырь + отправка на бэкенд со стримом ответа. fromSkin — из скина:
+  // бэкенд не пустит такую реплику в режим управления (скин мог отправить
+  // её сам)
+  const submitMessage = (text: string, image: string | null, fromSkin = false) => {
     if (!text && !image) return;
     if (!apiOnline) {
       // Офлайн-режим (моки): картинка остаётся локальным пузырём
@@ -996,7 +998,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     markBotRead(pid); // пользователь ответил — реплики бота прочитаны
 
     pushMessage(text, image, 'sent');
-    startGeneration(pid, personaName, text, quoted?.text, image);
+    startGeneration(pid, personaName, text, quoted?.text, image, fromSkin);
   };
 
   // Полная очистка диалога из скина — с тем же подтверждением, что в досье:
@@ -1013,7 +1015,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
   // Отправка сообщения и стриминг ответа
   const startGeneration = (pid: string, personaName: string, text: string,
-                           replyContext?: string, image?: string | null) => {
+                           replyContext?: string, image?: string | null, fromSkin = false) => {
     localExchange.current[pid] = true; // своя генерация — перечитку истории пропустим
     // Новый обмен закрывает окно поглощения прошлого: его метки теперь
     // прикрывает «in flight», а после конца стрима окно откроется заново
@@ -1065,7 +1067,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       }));
     };
     streamChat(
-      { persona: pid, message: text, replyContext, image: image ?? undefined },
+      { persona: pid, message: text, replyContext, image: image ?? undefined, fromSkin },
       (tok) => {
         bubbleTexts[bubbleTexts.length - 1] += tok;
         upsertBot(bubbleIds[bubbleIds.length - 1], bubbleTexts[bubbleTexts.length - 1]);
@@ -1515,6 +1517,12 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         break;
       case 'toggle-feature': {
         if (!id) break;
+        // Режим управления (браузер и ОС от имени владельца) скин не
+        // включает и не выключает — только настройки персоны в обычном виде
+        if (id === 'computer_control') {
+          reportSkinError(skinFail('skin.actNoControl'));
+          break;
+        }
         if (apiOnline) {
           // Сервер заменяет значение фичи целиком — собираем его поверх
           // текущего конфига. Конфига нет (не загрузился) — сначала дочитываем:
@@ -1782,7 +1790,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           skin={activeSkin}
           screen={activeScreen}
           state={skinChatState}
-          onSend={(text, image) => submitMessage(text.trim(), image ?? null)}
+          onSend={(text, image) => submitMessage(text.trim(), image ?? null, true)}
           onClear={() => { void confirmClearFromSkin(); }}
           onSelectPersona={(id) => {
             pickPersona(id);

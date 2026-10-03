@@ -116,6 +116,13 @@ _DL_ELSEWHERE_RE = re.compile(
 # одно с отменой задачи агента (computer_control.STOP_CMD_RE)
 _CC_STOP_RE = STOP_CMD_RE
 
+# Ход, пришедший из скина (process_message(from_skin=True)): флаг потока
+# хода — его видит _cc_allowed, единая точка авторизации режима управления.
+# Скин — сторонний код в песочнице и мог отправить реплику сам, без человека,
+# поэтому в таком ходе нет ни команд, ни подтверждений «да», ни маркеров LLM.
+# Фоновые потоки (инициатива, прогоны агента) флага не видят
+_SKIN_TURN = threading.local()
+
 # Шаговые команды: повтор — намеренный («громче» ×3, «дальше» ×2), дублем
 # не считается никогда (см. cc_turn_enter)
 _CC_STEP_CMD_RE = re.compile(
@@ -803,7 +810,16 @@ class BotInstance:
         авторизованные сессии владельца, поэтому каждый вход в CC (переключатель
         режима, rescue, fast-path, подтверждение pending, маркеры LLM, сценарии)
         обязан пройти через этот гейт. chat_id пока не используется в решении —
-        зарезервирован под будущие чат-специфичные allowlist'ы/аудит."""
+        зарезервирован под будущие чат-специфичные allowlist'ы/аудит.
+        В ходе из скина (_SKIN_TURN) — всегда False: реплику мог написать
+        не человек, а скрипт скина."""
+        if getattr(_SKIN_TURN, "on", False):
+            return False
+        return self._cc_user_allowed(user_id)
+
+    def _cc_user_allowed(self, user_id: str) -> bool:
+        """Права пользователя на режим управления сами по себе (владелец или
+        allowlist), без учёта того, откуда пришла реплика."""
         return self.is_owner(user_id) or (
             bool(user_id) and str(user_id) in self._cc_allowed_users)
 
@@ -2609,11 +2625,18 @@ class BotInstance:
                         reply_context: str = None,
                         reply_to_bot_message_id: Optional[int] = None,
                         on_token=None,
-                        raw_user_text: Optional[str] = None) -> str:
+                        raw_user_text: Optional[str] = None,
+                        from_skin: bool = False) -> str:
         """Обработка сообщения; парная к START строка END — по её наличию в
         логе видно, дошла ли генерация до конца и сколько заняла (без неё
-        не отличить «ответ сгенерирован, но не доставлен» от «завис»)."""
+        не отличить «ответ сгенерирован, но не доставлен» от «завис»).
+        from_skin — реплика из скина веб-интерфейса: режим управления в этом
+        ходе недоступен (см. _SKIN_TURN)."""
         t0 = time.monotonic()
+        # Вложенный вызов внутри хода из скина (агент задач передаёт реплику
+        # дальше) флаг не снимает: возвращаем прежнее значение, а не False
+        prev_skin = getattr(_SKIN_TURN, "on", False)
+        _SKIN_TURN.on = prev_skin or bool(from_skin)
         try:
             # Ход пользователя открыт ДО записи его реплики в STM и закрыт
             # после записи ответа: фоновая инициатива/ритм в этом окне в STM
@@ -2630,11 +2653,14 @@ class BotInstance:
                     reply_context=reply_context,
                     reply_to_bot_message_id=reply_to_bot_message_id,
                     on_token=on_token, raw_user_text=raw_user_text,
+                    from_skin=_SKIN_TURN.on,
                 )
         except BaseException:
             logger.info(f"[BotInstance] process_message END (исключение): "
                         f"{time.monotonic() - t0:.1f}s | chat_id={chat_id}")
             raise
+        finally:
+            _SKIN_TURN.on = prev_skin
         logger.info(
             f"[BotInstance] process_message END: {time.monotonic() - t0:.1f}s | "
             f"ответ {len(reply) if isinstance(reply, str) else 'нет'} симв. | chat_id={chat_id}"
@@ -2646,7 +2672,8 @@ class BotInstance:
                               reply_context: str = None,
                               reply_to_bot_message_id: Optional[int] = None,
                               on_token=None,
-                              raw_user_text: Optional[str] = None) -> str:
+                              raw_user_text: Optional[str] = None,
+                              from_skin: bool = False) -> str:
         from app.features import side_tasks
 
         # Что пользователь реально НАПИСАЛ (текст сообщения/подпись), в отличие
@@ -2762,6 +2789,24 @@ class BotInstance:
                 self.computer_control.set_turn(cc_mode_key, turn_lang)
             except Exception as e:
                 logger.debug(f"[BotInstance] ход для режима управления: {e}")
+        # Реплика из скина при включённом режиме управления или «перейди в
+        # режим управления»: исполнять её нельзя (_cc_allowed в этом ходе
+        # False), а молча уйти в обычный диалог — значит дать персоне
+        # «открыть» сайт на словах. Владельцу — подсказка, где режим работает
+        if (from_skin and cc_mode_key
+                and getattr(self, "computer_control", None)
+                and self._cc_user_allowed(user_id)
+                and (self.control_mode_on(cc_mode_key)
+                     or parse_control_mode(raw_user_text) is True)):
+            from app.features import cc_texts
+            _skin_reply = cc_texts.t("skin_no_control", turn_lang)
+            logger.info(f"[BotInstance] реплика из скина в режиме управления "
+                        f"не исполняется (chat {cc_mode_key})")
+            self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+            self.memory.add_message("assistant", _skin_reply, user_id, chat_id)
+            if self.proactive:
+                self.proactive.record_user_response(chat_id)
+            return _skin_reply
         if cc_mode_key and self._cc_allowed(user_id, chat_id):
             _mode = parse_control_mode(raw_user_text)
             # Новый ход: «стоп» прошлого хода отработал, флаг снимаем.

@@ -1139,6 +1139,7 @@ const en = {
   'skin.repeatUnknown': 'Repeat "{v}" is not supported. Use: {options}, or days of the week separated by commas ({days}).',
   'skin.actStale': 'The list changed while you were looking at it — the action was cancelled and the list refreshed.',
   'skin.actConfigMissing': 'Could not load the persona settings — the toggle was not applied.',
+  'skin.actNoControl': 'Control mode can\'t be toggled from a skin — use the persona settings.',
   'skin.libraryTitle': 'Skin library',
   'skin.storageServer': 'Skins are stored on the server — shared by all browsers.',
   'skin.storageLocal':
@@ -1207,7 +1208,6 @@ const en = {
   'skin.groupText': 'Text',
   'skin.groupLine': 'Lines & borders',
   'skin.groupAccent': 'Accents & other',
-  'skin.presetSylvanGrove': 'Sylvan Grove',
   'skin.smokeRunning': 'Checking the skin in the sandbox…',
   'skin.smokeOk': 'Sandbox check passed ✓',
   'skin.smokeFailed': 'The skin fails at runtime ({n}) — see the report above.',

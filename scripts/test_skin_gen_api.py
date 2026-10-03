@@ -748,7 +748,9 @@ def run_strip_base(sg):
     section("strip_base: база для модели")
     skins = Path(__file__).parent.parent / "web" / "src" / "skins"
     files = [(skins / f"skin-template.{s}.html", "template") for s in sg.SCREENS]
-    files.append((skins / "presets" / "sylvan-grove.html", "skin"))
+    # Готовый скин (kind "skin"): CSS остаётся, вырезаются только длинные
+    # комментарии — встроенных скинов нет, проверяем на шаблоне чата
+    files.append((skins / "skin-template.chat.html", "skin"))
     comment_re = re.compile(r"<!--.*?-->", re.DOTALL)
     for path, kind in files:
         if not path.exists():
