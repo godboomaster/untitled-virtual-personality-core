@@ -181,6 +181,7 @@ const ru: Record<string, string> = {
   'guide.cmdResetall': 'стереть всю память бота',
   'guide.cmdResetDiary': 'очистить дневник',
   'guide.codeForget': '/forget <что>',
+  'guide.codeFixBrowser': 'почини браузер',
   'guide.codeRemind': '/remind <когда> <что>',
   'guide.codeCancelReminder': '/cancel_reminder <номер>',
   'guide.codeAddTodo': '/add_todo <текст>',

@@ -64,7 +64,7 @@ const TRACKS: Track[] = [
     steps: [
       { id: 'persona', nav: 'personas' },
       { id: 'api', nav: 'settings' },
-      { id: 'web', nav: 'settings', chips: [{ code: 'почини браузер' }] },
+      { id: 'web', nav: 'settings', chips: [{ code: 'guide.codeFixBrowser', i18n: true }] },
       { id: 'ollama', nav: 'settings', chips: [{ code: 'ollama pull gemma3:4b' }, { code: 'http://localhost:11434' }] },
       { id: 'talk', nav: 'chat', warn: 'guide.console.talkWarn' },
       { id: 'start', here: true },

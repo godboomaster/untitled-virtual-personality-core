@@ -7,8 +7,9 @@ import { useI18n } from '../i18n';
    управлять браузером/приложениями через чат. Пять шагов с автоподсветкой,
    живое демо переписки (печатается построчно), обозреватель команд с
    фильтром по режиму исполнения, сценарии и разбор типичных проблем.
-   Литеральные фразы для бота не переводятся ни в одной локали: парсеры
-   русскоязычные, английская фраза просто уйдёт в обычный разговор. */
+   Фразы для бота — по локали: у каждой команды русская и английская форма
+   (обе разбирает код режима управления, см. scripts/test_cc_english.py),
+   демо — реальные шаблоны ответов ядра на языке локали. */
 
 // Как исполняется команда (сверено с needs_confirm в computer_control.py):
 // now — всегда сразу; ask — по галочке «спрашивать подтверждение»
@@ -18,13 +19,14 @@ type CcMode = 'now' | 'ask' | 'always';
 type CcList = 'apps' | 'search' | 'tasks';
 
 interface CcCmd {
-  text: string;
+  text: string; // русская фраза
+  en: string; // английская фраза
   mode: CcMode;
   list?: CcList;
 }
 
-const now = (text: string): CcCmd => ({ text, mode: 'now' });
-const ask = (text: string, list?: CcList): CcCmd => ({ text, mode: 'ask', list });
+const now = (text: string, en: string): CcCmd => ({ text, en, mode: 'now' });
+const ask = (text: string, en: string, list?: CcList): CcCmd => ({ text, en, mode: 'ask', list });
 
 // Шпаргалка команд: группы — через i18n, фразы — как есть. Нейтральные
 // примеры: без конкретных товаров, «…» — место для своего
@@ -32,59 +34,79 @@ const CMD_GROUPS: { labelKey: string; cmds: CcCmd[] }[] = [
   {
     labelKey: 'cc.gPages',
     cmds: [
-      ask('открой сайт …'), ask('включи … на ютубе', 'search'), ask('найди … на <сайте>', 'search'),
-      ask('обнови страницу'), ask('перезагрузи'), ask('вернись назад'), ask('вперёд'),
-      ask('закрой вкладку …'), now('перейди на вкладку …'), now('какие вкладки открыты'),
+      ask('открой сайт …', 'open …'), ask('включи … на ютубе', 'play … on youtube', 'search'),
+      ask('найди … на <сайте>', 'search for … on <site>', 'search'),
+      ask('обнови страницу', 'refresh the page'), ask('перезагрузи', 'reload'),
+      ask('вернись назад', 'go back'), ask('вперёд', 'go forward'),
+      ask('закрой вкладку …', 'close the … tab'), now('перейди на вкладку …', 'switch to the … tab'),
+      now('какие вкладки открыты', 'what tabs are open?'),
     ],
   },
   {
     labelKey: 'cc.gInput',
     cmds: [
-      ask('нажми …'), ask('наведи на …'), ask('введи … в поле …'),
-      { text: 'введи … в поле пароля', mode: 'always' }, ask('отправь'),
-      ask('нажми пробел / энтер / эскейп'), ask('удали N символов'),
-      ask('выстави слайдер … на N'), ask('второй результат'),
+      ask('нажми …', 'click …'), ask('наведи на …', 'hover over …'),
+      ask('введи … в поле …', 'type … into the … field'),
+      { text: 'введи … в поле пароля', en: 'type … into the password field', mode: 'always' },
+      ask('отправь', 'send'), ask('нажми пробел / энтер / эскейп', 'press space / enter / esc'),
+      ask('удали N символов', 'delete N characters'), ask('выстави слайдер … на N', 'set the … slider to N'),
+      ask('второй результат', 'open the second result'),
     ],
   },
   {
     labelKey: 'cc.gRead',
     cmds: [
-      now('что на странице?'), now('пришли скриншот'), now('покажи всю страницу целиком'),
-      now('ещё — следующая партия кадров'), now('что в разделе …?'), now('прочитай страницу'),
+      now('что на странице?', 'what’s on the page?'), now('пришли скриншот', 'send a screenshot'),
+      now('покажи всю страницу целиком', 'show me the whole page'),
+      now('ещё — следующая партия кадров', 'more — the next batch of shots'),
+      now('что в разделе …?', 'what’s in the … section?'), now('прочитай страницу', 'read the page'),
     ],
   },
   {
     labelKey: 'cc.gScroll',
     cmds: [
-      ask('пролистай страницу'), ask('листай вверх'), now('стоп'), now('пролистай до …'),
-      now('найди … на странице'), now('докрути до конца'), now('докрути до начала'),
+      ask('пролистай страницу', 'scroll the page'), ask('листай вверх', 'scroll up'), now('стоп', 'stop'),
+      now('пролистай до …', 'scroll to …'), now('найди … на странице', 'find … on the page'),
+      now('докрути до конца', 'scroll all the way down'), now('докрути до начала', 'scroll all the way up'),
     ],
   },
   {
     labelKey: 'cc.gMedia',
-    cmds: [ask('пауза'), ask('продолжи'), ask('тише'), ask('громче'), ask('без звука')],
+    cmds: [
+      ask('пауза', 'pause'), ask('продолжи', 'resume'), ask('тише', 'quieter'),
+      ask('громче', 'louder'), ask('без звука', 'mute'),
+    ],
   },
   {
     labelKey: 'cc.gZoom',
-    cmds: [now('увеличь масштаб'), now('уменьши масштаб'), now('сбрось масштаб')],
+    cmds: [
+      now('увеличь масштаб', 'zoom in'), now('уменьши масштаб', 'zoom out'),
+      now('сбрось масштаб', 'reset zoom'),
+    ],
   },
   {
     labelKey: 'cc.gCart',
-    cmds: [ask('убери … из корзины'), ask('прибавь …'), ask('убавь …'), ask('измени состав …')],
+    cmds: [
+      ask('убери … из корзины', 'remove … from the cart'), ask('прибавь …', 'add one more …'),
+      ask('убавь …', 'remove one … from the cart'), ask('измени состав …', 'change … in the cart'),
+    ],
   },
   {
     labelKey: 'cc.gMisc',
     cmds: [
-      ask('скачай …'), ask('закрой окно'), ask('запусти приложение …', 'apps'),
-      ask('сделай …', 'tasks'), now('почини браузер'),
+      ask('скачай …', 'download …'), ask('закрой окно', 'close the popup'),
+      ask('запусти приложение …', 'launch …', 'apps'), ask('сделай …', 'run …', 'tasks'),
+      now('почини браузер', 'fix the browser'),
     ],
   },
   {
     labelKey: 'cc.gScenarios',
     cmds: [
-      now('начни записывать сценарий …'), now('сохрани сценарий …'), now('отмени запись'),
-      now('запомни сценарий …'), now('<название сценария>'),
-      now('повтори'), now('дальше'), now('отмена'),
+      now('начни записывать сценарий …', 'start recording a scenario …'),
+      now('сохрани сценарий …', 'save the scenario as …'), now('отмени запись', 'cancel the recording'),
+      now('запомни сценарий …', 'remember this scenario as …'),
+      now('<название сценария>', '<scenario name>'),
+      now('повтори', 'retry'), now('дальше', 'skip'), now('отмена', 'cancel'),
     ],
   },
 ];
@@ -100,28 +122,43 @@ const matchFilter = (c: CcCmd, f: CcFilter): boolean =>
 const MODE_MARK: Record<CcMode, string> = { now: '→', ask: '?', always: '!' };
 
 // Пять шагов пайплайна: фразы «скажите» и варианты глагола — литеральные
-const STEPS: { key: string; say: CcCmd[]; alt?: string[] }[] = [
+const STEPS: { key: string; say: CcCmd[]; alt?: { ru: string[]; en: string[] } }[] = [
   { key: 'step1', say: [] },
   {
     key: 'step2',
-    say: [now('перейди в режим управления')],
-    alt: ['переключись', 'войди', 'зайди', 'включи', 'активируй'],
+    say: [now('перейди в режим управления', 'enter control mode')],
+    alt: {
+      ru: ['переключись', 'войди', 'зайди', 'включи', 'активируй'],
+      en: ['turn on', 'switch to', 'start', 'enable', 'activate'],
+    },
   },
-  { key: 'step3', say: [ask('открой ютуб'), now('что на странице?'), ask('нажми «войти»')] },
+  {
+    key: 'step3',
+    say: [
+      ask('открой ютуб', 'open youtube'), now('что на странице?', 'what’s on the page?'),
+      ask('нажми «войти»', 'click “sign in”'),
+    ],
+  },
   { key: 'step4', say: [] },
-  { key: 'step5', say: [now('выйди из режима управления')], alt: ['выключи', 'отключи', 'покинь'] },
+  {
+    key: 'step5',
+    say: [now('выйди из режима управления', 'exit control mode')],
+    alt: { ru: ['выключи', 'отключи', 'покинь'], en: ['leave', 'turn off', 'disable', 'quit'] },
+  },
 ];
 
-const CONFIRM_YES = ['да', 'ок', 'давай', 'поехали'];
-const CONFIRM_NO = ['нет', 'отмена', 'стоп'];
+// Ответы на «выполнить?» — те, что разбирает classify_confirmation
+const CONFIRM_YES = { ru: ['да', 'ок', 'давай', 'поехали'], en: ['yes', 'ok', 'sure', 'go ahead', 'do it'] };
+const CONFIRM_NO = { ru: ['нет', 'отмена', 'стоп'], en: ['no', 'cancel', 'stop', 'never mind'] };
 
-// Живое демо: реплики бота — шаблоны ядра как есть (русские), служебные
-// строки (sys) — через i18n, shot — вложенный скриншот страницы
+// Живое демо: реплики бота — шаблоны ядра как есть (lines — русские, en —
+// английские из cc_texts), служебные строки (sys) — через i18n, shot —
+// вложенный скриншот страницы
 type DemoLine =
   | { who: 'you' | 'bot' | 'shot'; text: string }
   | { who: 'sys'; key: string };
 
-const DEMOS: { labelKey: string; lines: DemoLine[] }[] = [
+const DEMOS: { labelKey: string; lines: DemoLine[]; en: DemoLine[] }[] = [
   {
     labelKey: 'cc.demo1',
     lines: [
@@ -134,6 +171,17 @@ const DEMOS: { labelKey: string; lines: DemoLine[] }[] = [
       { who: 'you', text: 'что на странице?' },
       { who: 'bot', text: 'Главная youtube.com: строка поиска, лента рекомендаций, слева — «Подписки», «Shorts» и «Библиотека».' },
       { who: 'shot', text: 'Так выглядит страница (youtube.com)' },
+    ],
+    en: [
+      { who: 'you', text: 'enter control mode' },
+      { who: 'bot', text: 'Control mode is on: "open …", "click …", "type …", scenarios — all work. While it\'s on, reminders, the todo list, the inventory and lessons are paused. To finish — "exit control mode".' },
+      { who: 'you', text: 'open youtube' },
+      { who: 'bot', text: 'Open youtube.com?' },
+      { who: 'you', text: 'yes' },
+      { who: 'bot', text: 'Done: opened youtube.com.' },
+      { who: 'you', text: 'what’s on the page?' },
+      { who: 'bot', text: 'youtube.com home: a search bar, the recommendations feed, on the left — “Subscriptions”, “Shorts” and “Library”.' },
+      { who: 'shot', text: 'This is what the page looks like (youtube.com)' },
     ],
   },
   {
@@ -151,6 +199,20 @@ const DEMOS: { labelKey: string; lines: DemoLine[] }[] = [
       { who: 'bot', text: 'Уменьшить громкость на youtube.com?' },
       { who: 'you', text: 'давай' },
       { who: 'bot', text: 'Готово, изменил громкость на youtube.com.' },
+    ],
+    en: [
+      { who: 'you', text: 'play jazz on youtube' },
+      { who: 'bot', text: 'Open youtube.com and go through: jazz?' },
+      { who: 'you', text: 'yes' },
+      { who: 'bot', text: 'Done: opened youtube.com and went through to "jazz".' },
+      { who: 'you', text: 'pause' },
+      { who: 'bot', text: 'Pause/resume on youtube.com?' },
+      { who: 'you', text: 'ok' },
+      { who: 'bot', text: 'Done: paused the video on youtube.com.' },
+      { who: 'you', text: 'quieter' },
+      { who: 'bot', text: 'Turn the volume down on youtube.com?' },
+      { who: 'you', text: 'sure' },
+      { who: 'bot', text: 'Done: turned the volume down on youtube.com.' },
     ],
   },
   {
@@ -173,6 +235,25 @@ const DEMOS: { labelKey: string; lines: DemoLine[] }[] = [
       { who: 'you', text: 'повтори' },
       { who: 'bot', text: 'Нажал «Подписки» на youtube.com.' },
       { who: 'bot', text: 'Сценарий «утро» завершён.' },
+    ],
+    en: [
+      { who: 'you', text: 'start recording a scenario morning' },
+      { who: 'bot', text: 'Recording a scenario. Do things as usual — "open …", "click …", "type …" — it all goes into the recording. To finish: "save the scenario", optionally with a name. To cancel: "cancel the recording".' },
+      { who: 'you', text: 'open youtube' },
+      { who: 'bot', text: 'Open youtube.com?' },
+      { who: 'you', text: 'yes' },
+      { who: 'sys', key: 'cc.demoMore' },
+      { who: 'you', text: 'save the scenario' },
+      { who: 'bot', text: 'Saved the scenario "morning" — 4 steps. Now just say "morning".' },
+      { who: 'sys', key: 'cc.demoLater' },
+      { who: 'you', text: 'morning' },
+      { who: 'bot', text: 'Done: opened youtube.com.' },
+      { who: 'bot', text: 'Stopped: couldn\'t find "Subscriptions" on the page. Say "retry", "skip" or "cancel".' },
+      { who: 'you', text: 'huh?' },
+      { who: 'bot', text: 'I\'m stuck on a failed step. Say "retry", "skip" or "cancel".' },
+      { who: 'you', text: 'retry' },
+      { who: 'bot', text: 'Done: clicked "Subscriptions" on youtube.com.' },
+      { who: 'bot', text: 'The "morning" scenario is finished.' },
     ],
   },
 ];
@@ -213,7 +294,8 @@ function CmdChip({
   delay?: number;
   bare?: boolean; // слово-ответ («да», «повтори») — без меток режима
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
+  const text = lang === 'en' ? cmd.en : cmd.text;
   const title = [
     bare ? '' : t(`cc.mode_${cmd.mode}`),
     cmd.list ? `${t('cc.modeList')}: ${t(`cc.list_${cmd.list}`)}` : '',
@@ -227,9 +309,9 @@ function CmdChip({
       className={`start-control-cmd ${copied ? 'is-copied' : ''}`}
       style={delay !== undefined ? ({ '--d': `${delay}ms` } as CSSProperties) : undefined}
       title={title}
-      onClick={() => onCopy(cmd.text)}
+      onClick={() => onCopy(text)}
     >
-      <span className="start-control-cmd-text">{cmd.text}</span>
+      <span className="start-control-cmd-text">{text}</span>
       {copied ? (
         <span className="start-control-mark is-ok">✓</span>
       ) : bare ? null : (
@@ -243,7 +325,8 @@ function CmdChip({
 }
 
 export default function StartControl({ onNavigate }: { onNavigate: (s: Section) => void }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
+  const en = lang === 'en';
   const [reduced] = useState(prefersReducedMotion);
 
   // Копирование фраз: ✓ вспыхивает только после успешной записи в буфер
@@ -264,7 +347,7 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
   };
   // scope — место чипа на странице: одна фраза встречается в нескольких блоках
   const chip = (c: CcCmd, scope: string, opts: { delay?: number; bare?: boolean } = {}) => {
-    const uid = `${scope}:${c.text}`;
+    const uid = `${scope}:${en ? c.en : c.text}`;
     return (
       <CmdChip
         key={c.text}
@@ -277,7 +360,7 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
     );
   };
   // Слово-ответ боту (подтверждение, управление прогоном сценария)
-  const word = (w: string, scope: string) => chip(now(w), scope, { bare: true });
+  const word = (w: string, scope: string) => chip(now(w, w), scope, { bare: true });
 
   // ── Пайплайн шагов: автоподсветка по окончании таймер-полоски ──
   // (CSS-анимация; пауза — animation-play-state при наведении/фокусе)
@@ -295,7 +378,7 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
   const [demo, setDemo] = useState(0);
   const [shown, setShown] = useState(0); // полностью выведенных строк
   const [typed, setTyped] = useState(0); // символов текущей строки
-  const lines = DEMOS[demo].lines;
+  const lines = en ? DEMOS[demo].en : DEMOS[demo].lines;
 
   useEffect(() => {
     if (reduced || !termInView) return;
@@ -493,11 +576,11 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
                 <div className="start-control-yn">
                   <div>
                     <span className="start-control-yn-label">{t('cc.step4Yes')}</span>
-                    <div className="start-control-chips">{CONFIRM_YES.map((w) => word(w, 'yes'))}</div>
+                    <div className="start-control-chips">{CONFIRM_YES[en ? 'en' : 'ru'].map((w) => word(w, 'yes'))}</div>
                   </div>
                   <div>
                     <span className="start-control-yn-label">{t('cc.step4No')}</span>
-                    <div className="start-control-chips">{CONFIRM_NO.map((w) => word(w, 'no'))}</div>
+                    <div className="start-control-chips">{CONFIRM_NO[en ? 'en' : 'ru'].map((w) => word(w, 'no'))}</div>
                   </div>
                 </div>
               </>
@@ -505,7 +588,7 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
             {step.say.length > 0 && <div className="start-control-chips">{step.say.map((c) => chip(c, step.key))}</div>}
             {step.alt && (
               <div className="start-control-alt">
-                {t('cc.altLabel')} {step.alt.join(' / ')}
+                {t('cc.altLabel')} {step.alt[en ? 'en' : 'ru'].join(' / ')}
               </div>
             )}
             {active === 2 && (
@@ -584,23 +667,23 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
           <div className="start-control-sc-row">
             <span className="start-control-sc-label">{t('cc.scRecord')}</span>
             <div className="start-control-chips">
-              {chip(now('начни записывать сценарий …'), 'sc')}
-              {chip(now('сохрани сценарий …'), 'sc')}
-              {chip(now('отмени запись'), 'sc')}
+              {chip(now('начни записывать сценарий …', 'start recording a scenario …'), 'sc')}
+              {chip(now('сохрани сценарий …', 'save the scenario as …'), 'sc')}
+              {chip(now('отмени запись', 'cancel the recording'), 'sc')}
             </div>
             <p>{t('cc.scRecordBody')}</p>
           </div>
           <div className="start-control-sc-row">
             <span className="start-control-sc-label">{t('cc.scRun')}</span>
-            <div className="start-control-chips">{chip(now('<название сценария>'), 'sc')}</div>
+            <div className="start-control-chips">{chip(now('<название сценария>', '<scenario name>'), 'sc')}</div>
             <p>{t('cc.scRunBody')}</p>
           </div>
           <div className="start-control-sc-row">
             <span className="start-control-sc-label">{t('cc.scStuck')}</span>
             <div className="start-control-chips">
-              {word('повтори', 'sc')}
-              {word('дальше', 'sc')}
-              {word('отмена', 'sc')}
+              {word(en ? 'retry' : 'повтори', 'sc')}
+              {word(en ? 'skip' : 'дальше', 'sc')}
+              {word(en ? 'cancel' : 'отмена', 'sc')}
             </div>
           </div>
           <div className="start-control-sc-row">

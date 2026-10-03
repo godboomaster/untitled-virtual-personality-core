@@ -83,13 +83,11 @@ _T = {
                             "en": "\"{goal}\" ({host})"},
     "scroll_goal_edge_caption": {"ru": "Край страницы ({host})",
                                  "en": "Edge of the page ({host})"},
-    # Команды «покажи всю страницу»/«ещё» разбираются только по-русски —
-    # английская подсказка называет рабочую русскую команду
     "scroll_goal_miss": {
         "ru": "Пролистал страницу — «{goal}» не вижу. Могу показать её "
               "целиком: скажи «покажи всю страницу».",
         "en": "Scrolled the page — I don't see \"{goal}\". I can show the "
-              "whole page: say \"покажи всю страницу\" (show the whole page)."},
+              "whole page: say \"show me the whole page\"."},
     # Отчёт о странице («что на странице?», «покажи всю страницу»)
     "page_view_failed": {"ru": "Не удалось посмотреть страницу.",
                          "en": "Couldn't look at the page."},
@@ -99,11 +97,11 @@ _T = {
     "page_full_more": {
         "ru": "Прислал первые {n} из {total} кадров — скажи «ещё», пришлю "
               "остальные.",
-        "en": "Sent the first {n} of {total} shots — say \"ещё\" (more) and "
+        "en": "Sent the first {n} of {total} shots — say \"more\" and "
               "I'll send the rest."},
     "page_more_next": {"ru": "Держи, следующие {n} кадров — «ещё» пришлёт "
                              "дальше.",
-                       "en": "Here are the next {n} shots — \"ещё\" (more) "
+                       "en": "Here are the next {n} shots — \"more\" "
                              "sends the rest."},
     "page_more_last": {"ru": "Держи, последние {n} кадров.",
                        "en": "Here are the last {n} shots."},
@@ -201,15 +199,13 @@ _T = {
         "en": "Couldn't restart the bot's browser in visible mode — see "
               "the log for details."},
     # ── Сценарии (ScenarioManager): фиксированные реплики без банка ──
-    # Команды сценариев разбираются по-русски («сохрани сценарий», «отмена»),
-    # английский текст называет рабочую русскую команду
     "scenario_saved_asks": {"ru": " По ходу спрошу: {questions}",
                             "en": " Along the way I'll ask: {questions}"},
     "scenario_record_goes_on": {
         "ru": " Запись продолжается — добавь действий и скажи «сохрани "
               "сценарий» ещё раз.",
         "en": " Recording continues — do a few more actions and say "
-              "\"сохрани сценарий\" (save the scenario) again."},
+              "\"save the scenario\" again."},
     "scenario_trace_short_since": {
         "ru": "Пока нечего записывать: с начала записи было всего {n} "
               "действий на страницах. Проведи меня по сюжету — и запишем.",
@@ -254,8 +250,7 @@ _T = {
     "scenario_step_failed": {
         "ru": "Стоп: {err}. Скажи «повтори», «дальше» (пропустить) или "
               "«отмена».",
-        "en": "Stopped: {err}. Say \"retry\", \"skip\" or \"отмена\" "
-              "(cancel)."},
+        "en": "Stopped: {err}. Say \"retry\", \"skip\" or \"cancel\"."},
     # ── Агент задач (TaskAgent): фиксированные реплики без банка ──
     "task_crashed": {"ru": "Задача сорвалась: {err}.",
                      "en": "The task broke down: {err}."},
@@ -650,33 +645,32 @@ _T = {
 # языке персоны (см. phrase)
 _EN_PHRASES = {
     "scenario_record_already": (
-        "Already recording (since {since}). When you're done, say \"сохрани "
-        "сценарий\" (save the scenario); changed your mind — \"отмени "
-        "запись\" (cancel recording)."),
+        "Already recording (since {since}). When you're done, say \"save the "
+        "scenario\"; changed your mind — \"cancel the recording\"."),
     "scenario_record_start": (
         "Recording a scenario. Do things as usual — \"open …\", \"click …\", "
-        "\"type …\" — it all goes into the recording. To finish: \"сохрани "
-        "сценарий\" (save the scenario), optionally with a name. To cancel: "
-        "\"отмени запись\"."),
+        "\"type …\" — it all goes into the recording. To finish: \"save the "
+        "scenario\", optionally with a name. To cancel: \"cancel the "
+        "recording\"."),
     "scenario_record_cancel_none": "Nothing was being recorded — nothing "
                                    "to cancel.",
     "scenario_record_cancel": "Recording cancelled — nothing saved.",
     "scenario_save_ask_name": (
-        "What should I call the scenario? Say it like this: \"сохрани "
-        "сценарий заказ пиццы\" (save the scenario pizza order)."),
+        "What should I call the scenario? Say it like this: \"save the "
+        "scenario as pizza order\"."),
     "scenario_saved": ("Saved the scenario \"{name}\" — {steps} steps. Now "
                        "just say \"{name}\"."),
     "scenario_not_found": "I don't have a scenario called \"{name}\".",
     "scenario_started": ("Here we go — \"{name}\" ({steps} steps). Say "
-                         "\"отмена\" (cancel) if you change your mind."),
+                         "\"cancel\" if you change your mind."),
     "scenario_stuck": ("I'm stuck on a failed step. Say \"retry\", \"skip\" "
-                       "or \"отмена\" (cancel)."),
+                       "or \"cancel\"."),
     "scenario_run_cancel": "The \"{name}\" scenario is cancelled.",
     "scenario_run_cancel_none": "Nothing to cancel — no scenario is running.",
     "scenario_offer": (
         "By the way, that was a whole flow — I can remember it as a scenario "
-        "and do it myself next time. Say \"запомни сценарий …\" (remember "
-        "the scenario) with a name."),
+        "and do it myself next time. Say \"remember this scenario as …\" "
+        "with a name."),
     "task_cancelled": "Okay, dropping the task.",
     "task_started": "On it: {goal}. \"stop\" to cancel.",
     "task_continue_foreign": "Only the person who set this task can "
