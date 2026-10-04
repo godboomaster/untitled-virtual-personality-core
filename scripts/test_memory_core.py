@@ -555,6 +555,9 @@ def test_formatter():
               fn("*a **b** c*") == "<i>a <b>b</b> c</i>")
         check(f"{name}: «2 * 3 * 4» — не курсив",
               fn("2 * 3 * 4") == "2 * 3 * 4")
+        # <mark> Telegram не принимает — весь ответ ушёл бы сырым Markdown
+        check(f"{name}: ==x== → <b>x</b>, без <mark>",
+              fn("это ==важно== тут") == "это <b>важно</b> тут")
     check("markdown_to_rich_html: маркер списка «* » не открывает курсив",
           F.markdown_to_rich_html("* пункт один\n* пункт **два**")
           == "<ul><li>пункт один</li><li>пункт <b>два</b></li></ul>")
@@ -575,6 +578,43 @@ def test_formatter():
         bad = [(s, fn(s)) for s in samples if not _html_nesting_ok(fn(s))]
         check(f"{name}: вложенность тегов верна на {len(samples)} смесях"
               + (f" (первые сбои: {bad[:3]!r})" if bad else ""), not bad)
+
+    # Только теги, которые принимает Telegram: неизвестный (<mark>, <sub>…)
+    # отклоняет всё сообщение. На тех же смесях + по образцу на каждое правило.
+    # markdown_to_rich_html (под Rich Messages) вдобавок строит блоки
+    # (h1-h6, hr, списки) — они в его наборе разрешены, инлайн — тот же
+    rule_samples = [
+        "# Заголовок", "### h3 **b**", "---", "> цитата\n> вторая",
+        "[ссылка](https://ex.com/?a=1&b=2)", "```py\nx < 1\n```",
+        "```\nplain\n```", "`код`", "||спойлер||", "~~зач~~", "==выдел==",
+        "- пункт\n1. пункт\n- [ ] задача\n- [x] готово", "текст[^1] сноска",
+        "> **жирная** ==цитата==\n\n# ==h== ||sp||",
+    ]
+    rich_blocks = {f"h{i}" for i in range(1, 7)} | {"hr", "br", "ul", "ol", "li", "input"}
+    for name, fn, allowed in (
+            ("markdown_to_rich_html", F.markdown_to_rich_html, _TG_HTML_TAGS | rich_blocks),
+            ("to_current_html", F.to_current_html, _TG_HTML_TAGS)):
+        bad = [(s, fn(s)) for s in samples + rule_samples
+               if not _html_tags_ok(fn(s), allowed)]
+        check(f"{name}: только теги Telegram на {len(samples) + len(rule_samples)} смесях"
+              + (f" (первые сбои: {bad[:3]!r})" if bad else ""), not bad)
+
+
+# Теги parse_mode="HTML" Telegram Bot API (span — только class="tg-spoiler")
+_TG_HTML_TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+                 "span", "tg-spoiler", "a", "code", "pre", "blockquote"}
+
+
+def _html_tags_ok(html: str, allowed: set) -> bool:
+    # Все теги (открывающие и закрывающие) — из allowed
+    import re
+    for m in re.finditer(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)([^>]*)>", html):
+        tag = m.group(2).lower()
+        if tag not in allowed:
+            return False
+        if tag == "span" and not m.group(1) and 'class="tg-spoiler"' not in m.group(3):
+            return False
+    return True
 
 
 def _html_nesting_ok(html: str) -> bool:

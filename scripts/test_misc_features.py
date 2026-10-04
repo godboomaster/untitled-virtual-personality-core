@@ -19,11 +19,14 @@ test_state_io.py:
   - веб-слэш /files: список загруженных файлов (как /files в TG), без
     файловой базы — «не активна»;
   - TG /erase: владелец из YAML персоны (bot.owner) тоже может стирать STM.
+  - TG фото/документ: переспрос «Записать «X»…?», созданный по подписи/OCR,
+    досылается после ответа, и его message_id запоминается.
 
 Все проверки — на временных каталогах/моках, без сети и без реального data/.
 Запуск: PYTHONPATH=. python3 scripts/test_misc_features.py
 """
 
+import contextlib
 import json
 import shutil
 import sys
@@ -567,15 +570,14 @@ def test_web_slash_files():
 
 # ════════════ I. TG /erase: владелец из YAML ════════════
 
-def test_tg_erase_yaml_owner():
-    section("I. TG /erase: владелец из YAML персоны")
-    import asyncio
+@contextlib.contextmanager
+def _tg_module():
+    """app.telegram_bot для тестов: python-telegram-bot может не стоять в
+    тестовом интерпретаторе — заглушки только на время теста, потом
+    убираются вместе со свежеимпортированными модулями."""
     import importlib
-    import os
     import types
 
-    # python-telegram-bot может не стоять в тестовом интерпретаторе —
-    # заглушки только на время импорта модуля, потом убираются
     stubbed = []
     try:
         importlib.import_module("telegram")
@@ -598,7 +600,21 @@ def test_tg_erase_yaml_owner():
     fresh = [m for m in ("app.telegram_bot", "app.core.telegram_sender",
                          "app.features.reply_context") if m not in sys.modules]
     try:
-        tg = importlib.import_module("app.telegram_bot")
+        yield importlib.import_module("app.telegram_bot")
+    finally:
+        for m in fresh:
+            sys.modules.pop(m, None)
+        for m in stubbed:
+            sys.modules.pop(m, None)
+
+
+def test_tg_erase_yaml_owner():
+    section("I. TG /erase: владелец из YAML персоны")
+    import asyncio
+    import os
+    import types
+
+    with _tg_module() as tg:
         bot = mock.MagicMock()
         bot.owner = "111"
         bot.stm_pop_last_n.return_value = 2
@@ -633,11 +649,98 @@ def test_tg_erase_yaml_owner():
             _run(333)
             check("/erase от OWNER_USER_ID — по-прежнему стирает",
                   bot.stm_pop_last_n.called)
-    finally:
-        for m in fresh:
-            sys.modules.pop(m, None)
-        for m in stubbed:
-            sys.modules.pop(m, None)
+
+
+# ════════════ J. TG фото/документ: переспрос досылается ════════════
+
+def test_tg_media_list_offer_sent():
+    section("J. TG фото/документ: переспрос «Записать…?» досылается")
+    import asyncio
+    import itertools
+    import types
+
+    question = "Записать «купить молоко» в список дел?"
+
+    def _make_bot():
+        # process_message кладёт переспрос в per-chat бакет — как
+        # _ask_list_offer; досылка забирает его pop-ом
+        pending = {}
+        bot = mock.MagicMock()
+        bot.is_muted = lambda: False
+        bot.pre_check.return_value = None
+        bot.strip_trigger.side_effect = lambda t: t
+        bot.describe_image.return_value = "чек из магазина: молоко"
+        bot.max_file_size = 10 * 1024 * 1024
+        bot.file_db.get_loaded_files.return_value = ["a.txt"]
+        bot.file_db.max_docs = 5
+        bot.pop_pending_photos.return_value = []
+        bot.pop_pending_split_messages.return_value = []
+
+        def _process(text, **kw):
+            pending[kw["chat_id"]] = [question]
+            return "Вижу чек."
+        bot.process_message.side_effect = _process
+        bot.pop_pending_list_messages.side_effect = (
+            lambda cid: pending.pop(str(cid), []))
+
+        @contextlib.asynccontextmanager
+        async def _turn(chat_id):
+            yield
+        bot.user_turn_async = _turn
+        return bot
+
+    def _run(handler, **msg_attrs):
+        sent = []
+        ids = itertools.count(100)
+
+        async def _reply(text, *a, **k):
+            mid = next(ids)
+            sent.append((mid, text))
+            return types.SimpleNamespace(message_id=mid)
+
+        async def _noop(*a, **k):
+            return None
+
+        async def _download():
+            return bytearray(b"data")
+
+        async def _get_file(file_id):
+            return types.SimpleNamespace(download_as_bytearray=_download)
+
+        message = types.SimpleNamespace(
+            caption="", reply_to_message=None, reply_text=_reply,
+            chat=types.SimpleNamespace(send_action=_noop), **msg_attrs)
+        update = types.SimpleNamespace(
+            message=message,
+            effective_user=types.SimpleNamespace(id=7),
+            effective_chat=types.SimpleNamespace(id=7, type="private"))
+        context = types.SimpleNamespace(bot=types.SimpleNamespace(
+            id=1, get_file=_get_file, send_chat_action=_noop))
+        asyncio.run(handler(update, context))
+        return sent
+
+    with _tg_module() as tg:
+        for kind, msg_attrs in (
+                ("фото", {"photo": [types.SimpleNamespace(file_id="p1")]}),
+                ("документ", {"document": types.SimpleNamespace(
+                    file_id="d1", file_unique_id="u1", file_name="a.txt",
+                    file_size=10)})):
+            bot = _make_bot()
+            handler = tg.create_handlers(bot)[
+                "handle_photo" if kind == "фото" else "handle_document"]
+            with mock.patch("app.core.file_reader.extract_text",
+                            return_value="молоко, хлеб"):
+                sent = _run(handler, **msg_attrs)
+            q_ids = [mid for mid, text in sent if question in text]
+            check(f"{kind}: переспрос отправлен после ответа",
+                  len(q_ids) == 1 and any("Вижу чек." in t for _, t in sent)
+                  and sent[-1][0] == q_ids[0])
+            check(f"{kind}: message_id переспроса запомнен (note_list_message)",
+                  bool(q_ids) and bot.note_list_message.call_args
+                  == mock.call("7", question, q_ids))
+            check(f"{kind}: бакет списков забран",
+                  bot.pop_pending_list_messages.called
+                  and bot.pop_pending_list_messages("7") == [])
 
 
 def main():
@@ -651,6 +754,7 @@ def main():
     test_file_sender_untagged_and_leak()
     test_web_slash_files()
     test_tg_erase_yaml_owner()
+    test_tg_media_list_offer_sent()
 
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0

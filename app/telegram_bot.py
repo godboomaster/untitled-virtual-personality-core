@@ -41,11 +41,10 @@ _rich_formatter = RichMessageFormatter()
 def _md_to_html(text: str) -> str:
     """
     Конвертирует Markdown в HTML для Telegram.
-    Использует RichMessageFormatter для поддержки дополнительных тегов:
-    - <tg-spoiler> — спойлеры
-    - <u> — подчеркивание
-    - <sub>, <sup> — индексы
-    - <mark> — выделение
+    Использует RichMessageFormatter.to_current_html — только теги, которые
+    принимает Telegram (b, i, u, s, tg-spoiler, a, code, pre, blockquote):
+    неизвестный тег отклоняет всё сообщение, и ответ уходит сырым Markdown.
+    ==выделение== — жирным.
     """
     return _rich_formatter.to_current_html(text)
 
@@ -216,6 +215,23 @@ async def _send_split_parts(bot, update: Update, context: ContextTypes.DEFAULT_T
             sent_ids.extend(await _reply_ai(update.message, part))
         except Exception as e:
             logger.error(f"Ошибка досылки части расщеплённого ответа: {e}")
+    return sent_ids
+
+
+async def _send_list_messages(bot, update: Update, chat_id: str) -> list:
+    """Досылка списков дел/инвентаря и переспросов бота («Записать «X» в
+    список дел?») — отдельными сообщениями после ответа и хвоста частей.
+    message_id переспроса запоминается (note_list_message): reply на него —
+    ответ ему. Без досылки вопрос остался бы взведён невидимым, и следующее
+    «да» выполнило бы его вслепую. Возвращает list отправленных message_id."""
+    sent_ids = []
+    for msg in bot.pop_pending_list_messages(chat_id):
+        try:
+            ids = await _reply_ai(update.message, msg)
+            bot.note_list_message(chat_id, msg, ids)
+            sent_ids.extend(ids)
+        except Exception as e:
+            logger.error(f"Ошибка досылки списка/переспроса: {e}")
     return sent_ids
 
 
@@ -875,12 +891,8 @@ def create_handlers(bot: BotInstance) -> dict:
                     for mid in sent_ids:
                         bot.learning_manager.register_question_message(chat_id, mid)
 
-                # Отправляем списки дел/инвентарь отдельными сообщениями (per-chat бакет)
-                pending = bot.pop_pending_list_messages(chat_id)
-                for msg in pending:
-                    list_ids = await _reply_ai(update.message, msg)
-                    # Переспрос «Записать «X»…?»: reply именно на него — ответ ему
-                    bot.note_list_message(chat_id, msg, list_ids)
+                # Списки дел/инвентарь и переспросы — отдельными сообщениями
+                await _send_list_messages(bot, update, chat_id)
             except Exception as e:
                 logger.error(f"[{persona_name}] Ошибка: {e}", exc_info=True)
                 try:
@@ -988,6 +1000,8 @@ def create_handlers(bot: BotInstance) -> dict:
                     photos = bot.pop_pending_photos(chat_id)
                     await _reply_with_photos(update.message, response, photos)
                     await _send_split_parts(bot, update, context, chat_id)
+                    # Списки и переспросы — тоже, иначе вопрос взведён невидимым
+                    await _send_list_messages(bot, update, chat_id)
                 except Exception as e:
                     logger.error(f"[{persona_name}] Ошибка файла: {e}", exc_info=True)
                     await update.message.reply_text("Произошла ошибка при обработке файла.")
@@ -1089,6 +1103,8 @@ def create_handlers(bot: BotInstance) -> dict:
                     photos = bot.pop_pending_photos(chat_id)
                     await _reply_with_photos(update.message, response, photos)
                     await _send_split_parts(bot, update, context, chat_id)
+                    # Списки и переспросы — тоже, иначе вопрос взведён невидимым
+                    await _send_list_messages(bot, update, chat_id)
                 except Exception as e:
                     logger.error(f"[{persona_name}] Ошибка обработки изображения: {e}", exc_info=True)
                     await update.message.reply_text("Произошла ошибка при обработке изображения.")

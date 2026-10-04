@@ -9,11 +9,12 @@ Rich Message Formatter — конвертация Markdown в Rich HTML/Markdown
     # Отправка через sendRichMessage (когда будет доступно в PTB)
     await bot.send_rich_message(chat_id, rich_message=InputRichMessage(html=rich_html))
 
-Пока PTB не поддерживает Rich Messages — используем новые HTML-теги через parse_mode="HTML":
+Пока PTB не поддерживает Rich Messages — to_current_html, только теги
+parse_mode="HTML" (b, i, u, s, tg-spoiler, a, code, pre, blockquote):
     - <tg-spoiler> — спойлеры
-    - <u>, <ins> — подчеркивание
-    - <sub>, <sup> — индексы
-    - <mark> — выделение
+    - <u> — подчеркивание
+    - ==выделение== → <b>: <mark> Telegram не принимает (весь ответ ушёл бы
+      сырым Markdown)
     - <blockquote expandable> — раскрываемые цитаты
 """
 
@@ -83,6 +84,8 @@ _EMPHASIS_RE = re.compile('|'.join((
     r'\|\|(?P<sp>.+?)\|\|',
     r'==(?P<m>.+?)==',
 )))
+# Только теги Telegram HTML: выделение ==x== — жирным (<mark> Telegram
+# отклоняет вместе со всем сообщением)
 _EMPHASIS_TAGS = {
     'bi': ('<b><i>', '</i></b>'),
     'iu': ('<i><u>', '</u></i>'),
@@ -92,7 +95,7 @@ _EMPHASIS_TAGS = {
     'i2': ('<i>', '</i>'),
     's': ('<s>', '</s>'),
     'sp': ('<tg-spoiler>', '</tg-spoiler>'),
-    'm': ('<mark>', '</mark>'),
+    'm': ('<b>', '</b>'),
 }
 
 
@@ -135,7 +138,7 @@ class RichMessageFormatter:
 
         # Жирный **x** → <b>, курсив *x*/_x_ → <i>, подчёркнутый __x__ → <u>
         # (Rich HTML), зачёркнутый ~~x~~ → <s>, спойлер ||x|| → <tg-spoiler>,
-        # выделение ==x== → <mark> — одним проходом (см. _emphasis)
+        # выделение ==x== → <b> — одним проходом (см. _emphasis)
         text = _emphasis(text)
 
         # Заголовки: # H1 → <h1>H1</h1>, ## H2 → <h2>H2</h2>, etc.
@@ -208,12 +211,11 @@ class RichMessageFormatter:
         Конвертирует Markdown в HTML, используя только теги,
         поддерживаемые текущим parse_mode="HTML" (до Bot API 10.1).
         
-        Новые теги которые уже работают:
+        Выдаёт только b, i, u, s, tg-spoiler, a, code, pre, blockquote:
         - <tg-spoiler> — спойлер
-        - <u>, <ins> — подчеркивание
-        - <sub>, <sup> — индексы
-        - <mark> — выделение
-        - <blockquote expandable> — раскрываемая цитата
+        - <u> — подчеркивание
+        - ==выделение== → <b> (<mark> Telegram не принимает)
+        - заголовки → <b>, линия --- → символы
         """
         if not text:
             return text
