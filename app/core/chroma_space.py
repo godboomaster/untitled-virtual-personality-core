@@ -222,3 +222,45 @@ def open_collection(client, name: str, embedding_function=None,
         return existing
     return _migrate_space(client, existing, name, tmp_name,
                           embedding_function, space, actual)
+
+
+def release_clients_under(dirs) -> int:
+    """Закрыть и выгрузить из процессного кеша Chroma базы, лежащие внутри dirs.
+
+    Chroma держит одну System на путь базы на весь процесс
+    (SharedSystemClient._identifier_to_system, ключ — путь как передан в
+    PersistentClient). Если папку памяти переименовать (архив, смена id), не
+    выгрузив её System, следующий PersistentClient по тому же пути получит
+    закешированную System, чей sqlite смотрит в перенесённый файл: «новая»
+    база вернёт старые данные, а запись упадёт с readonly database. Вызывать
+    перед переносом папки, после выгрузки бота-владельца; базы вне dirs
+    (другие персоны) не трогаются. Возвращает число выгруженных баз."""
+    from pathlib import Path
+    try:
+        from chromadb.api.shared_system_client import SharedSystemClient
+    except Exception:
+        return 0
+    roots = []
+    for d in dirs:
+        try:
+            roots.append(Path(d).resolve())
+        except (OSError, ValueError):
+            continue
+    released = 0
+    for ident, system in list(SharedSystemClient._identifier_to_system.items()):
+        try:
+            path = Path(ident).resolve()
+        except (OSError, ValueError):
+            continue
+        if not any(path == r or r in path.parents for r in roots):
+            continue
+        SharedSystemClient._identifier_to_system.pop(ident, None)
+        with SharedSystemClient._refcount_lock:
+            SharedSystemClient._identifier_to_refcount.pop(ident, None)
+        try:
+            system.stop()
+        except Exception as e:
+            logger.warning(f"[Chroma] база {ident} не закрылась: {e}")
+        released += 1
+        logger.info(f"[Chroma] база {ident} выгружена перед переносом папки")
+    return released

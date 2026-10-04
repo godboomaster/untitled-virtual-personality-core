@@ -13,7 +13,13 @@
      общие папки данных (skins, tg) — не память персоны;
   C. rename_persona в id с оставшейся памятью — тот же выбор (keep — только
      если своя память не ляжет поверх);
-  D. эндпоинт POST /api/personas: 409 с memory_exists, memory=fresh, 422.
+  D. эндпоинт POST /api/personas: 409 с memory_exists, memory=fresh, 422;
+  E. Chroma: после архива / смены id база по старому пути в том же процессе
+     пуста и пишется (кеш System выгружается), чужие базы не трогаются.
+
+Ещё: Telegram-токен персоны — правка доступа к режиму управления требует
+рестарта (YAML и форма); служебные имена папок данных (tg, skins, …) — не
+id; папка только с банком flavor-фраз — не память.
 
 Всё на временных папках (VPC_DATA_DIR, _PERSONAS_DIR, _data_roots) —
 настоящие data/ и app/personas не трогаются. LLM/браузер не зовутся.
@@ -212,8 +218,42 @@ def test_yaml_live(tmp: Path):
             check("YAML записан как есть",
                   path.read_text(encoding="utf-8")
                   == y5.replace("  life: false\n", "  life: false\n  web_search: true\n"))
+
+            # 8. Telegram-бот персоны — отдельный процесс, YAML читает при
+            # старте: доступ к режиму управления там — после его перезапуска
+            y8 = path.read_text(encoding="utf-8")
+            y8_more = y8.replace('allowed_users: ["111"]', 'allowed_users: ["111", "333"]')
+            with mock.patch.dict(os.environ, {"LC_LIVE_BOT_TOKEN": "123:abc"}):
+                r = save(y8_more)
+                check("Telegram-токен: правка allowed_users через YAML — restart_required",
+                      r["restart_required"] is True)
+                check("…а живой API-бот её уже применил", bot._cc_allowed_users == {"111", "333"})
+                r = save(y8_more.replace("silence_threshold_minutes: 45",
+                                         "silence_threshold_minutes: 50"))
+                check("Telegram-токен: правка proactive — без рестарта, как раньше",
+                      r["restart_required"] is False)
+            r = save(y8)
+            check("без Telegram-токена — правка allowed_users без рестарта",
+                  r["restart_required"] is False and bot._cc_allowed_users == {"111"})
     finally:
         registry._bots.pop("lc_live", None)
+
+    # Тот же признак без живого бота и в пути формы настроек
+    y9 = path.read_text(encoding="utf-8")
+    with mock.patch.dict(os.environ, {"LC_LIVE_BOT_TOKEN": "123:abc"}):
+        r = save(y9.replace('allowed_users: ["111"]', 'allowed_users: ["444"]'))
+        check("Telegram-токен, бот API не загружен: YAML с правкой доступа — restart_required",
+              r["restart_required"] is True)
+        r = sa.update_persona_config("lc_live", None, None, features={
+            "computer_control": {"enabled": False, "allowed_users": ["777"]}})
+        check("Telegram-токен: форма, правка computer_control — restart_required",
+              r["restart_required"] is True)
+        r = sa.update_persona_config("lc_live", None, None, features={"muted": False})
+        check("Telegram-токен: форма, заморозка — без рестарта", r["restart_required"] is False)
+    r = sa.update_persona_config("lc_live", None, None, features={
+        "computer_control": {"enabled": False, "allowed_users": ["888"]}})
+    check("без токена: форма, правка computer_control — без рестарта",
+          r["restart_required"] is False)
 
 
 def _mk(path: Path, marker: str):
@@ -310,11 +350,43 @@ def test_create_over_leftover(roots: list[Path]):
           r["ok"] and r["persona"] == "dup_src_copy2"
           and (r1 / "api_dup_src_copy" / "marker.txt").is_file())
 
-    # Общие папки корня данных — не память персоны
+    # Общие папки корня данных: такие id запрещены, папки не трогаются
     _mk(r1 / "skins", "skins-lib")
     r = sa.create_persona(yaml_for("skins"))
-    check("id = общая папка (skins): не конфликт, папка не тронута",
-          r["ok"] and (r1 / "skins" / "marker.txt").read_text(encoding="utf-8") == "skins-lib")
+    check("id = служебная папка (skins): отказ 400, папка не тронута",
+          r["ok"] is False and r.get("status") == 400 and not (pd / "skins.yaml").exists()
+          and (r1 / "skins" / "marker.txt").read_text(encoding="utf-8") == "skins-lib")
+    r = sa.create_persona(yaml_for("TG"))
+    check("id = служебная папка без учёта регистра (TG): отказ 400",
+          r["ok"] is False and r.get("status") == 400)
+
+    # Папка только с банком flavor-фраз (производный файл) — не память
+    for d in (r1 / "api_flv", r2 / "flv"):
+        d.mkdir()
+        (d / "flavor_bank.json").write_text("{}", encoding="utf-8")
+    r = sa.create_persona(yaml_for("flv"))
+    check("только flavor-банк под id — не конфликт, файлы на месте",
+          r["ok"] and (r1 / "api_flv" / "flavor_bank.json").is_file()
+          and (r2 / "flv" / "flavor_bank.json").is_file())
+
+    # Память + производная папка: «с чистого листа» убирает в архив обе
+    _mk(r1 / "api_mix" / "stm", "old-mix")
+    (r2 / "mix").mkdir()
+    (r2 / "mix" / "flavor_bank.json").write_text("{}", encoding="utf-8")
+    r = sa.create_persona(yaml_for("mix"))
+    check("память + банк фраз — конфликт", r["ok"] is False and r.get("memory_exists") is True)
+    r = sa.create_persona(yaml_for("mix"), memory="fresh")
+    check("fresh: в архив и память, и банк фраз",
+          r["ok"] and len(r["archived"]) == 2
+          and not (r1 / "api_mix").exists() and not (r2 / "mix").exists())
+
+    # Банк фраз при создании — в контекст веб-бота (api_<id>), а не Telegram
+    seen = []
+    with mock.patch("app.features.flavor_text.ensure_flavor_bank",
+                    lambda *a, **k: seen.append(k.get("context"))):
+        r = sa.create_persona("id: cc_new\nname: C\nsystem_prompt: hi\n"
+                              "features:\n  computer_control: true\n")
+    check("банк фраз при создании — контекст api_<id>", r["ok"] and seen == ["api_cc_new"])
 
 
 def test_rename_over_leftover(roots: list[Path]):
@@ -376,6 +448,96 @@ def test_rename_over_leftover(roots: list[Path]):
               and (r1 / "api_ren_y" / "marker.txt").read_text(encoding="utf-8") == "old-y"
               and not _archives(r1, "api_ren_y") and (pd / "ren_x.yaml").is_file())
 
+        # Служебные имена папок данных — не id персоны
+        (pd / "alice.yaml").write_text("id: alice\nname: A\nsystem_prompt: hi\n", encoding="utf-8")
+        _mk(r1 / "alice", "alice-tg")
+        (r1 / "persona_drafts").mkdir()
+        _mk(r1 / "tg", "shared-tg")
+        r = sa.rename_persona("alice", "persona_drafts")
+        check("смена id на служебное имя (persona_drafts): 400, ничего не перенесено",
+              r["ok"] is False and r["status"] == 400
+              and not any((r1 / "persona_drafts").iterdir())
+              and (r1 / "alice" / "marker.txt").is_file() and (pd / "alice.yaml").is_file())
+        r = sa.rename_persona("alice", "tg")
+        check("смена id на tg: 400 (не 500), общая папка цела",
+              r["ok"] is False and r["status"] == 400
+              and (r1 / "tg" / "marker.txt").read_text(encoding="utf-8") == "shared-tg")
+
+        # Под новым id только банк фраз — не память: в архив молча, своя переезжает
+        (pd / "ren_d.yaml").write_text("id: ren_d\nname: D\nsystem_prompt: hi\n", encoding="utf-8")
+        _mk(r1 / "api_ren_d", "own-d")
+        (r1 / "api_ren_e").mkdir()
+        (r1 / "api_ren_e" / "flavor_bank.json").write_text("{}", encoding="utf-8")
+        r = sa.rename_persona("ren_d", "ren_e")
+        arch_e = _archives(r1, "api_ren_e")
+        check("банк фраз на пути переноса — в архив, своя память переехала",
+              r["ok"] and len(arch_e) == 1 and (arch_e[0] / "flavor_bank.json").is_file()
+              and (r1 / "api_ren_e" / "marker.txt").read_text(encoding="utf-8") == "own-d")
+
+        # Страховка: путь переноса занят (проверка памяти его не увидела) — отказ
+        (pd / "ren_g.yaml").write_text("id: ren_g\nname: G\nsystem_prompt: hi\n", encoding="utf-8")
+        _mk(r1 / "api_ren_g", "own-g")
+        _mk(r1 / "api_ren_h", "busy-h")
+        with mock.patch.object(sa, "_leftover_memory", lambda pid: []):
+            r = sa.rename_persona("ren_g", "ren_h")
+        check("путь переноса занят — 409, ничего не перенесено и не в архиве",
+              r["ok"] is False and r["status"] == 409
+              and (r1 / "api_ren_g" / "marker.txt").read_text(encoding="utf-8") == "own-g"
+              and (r1 / "api_ren_h" / "marker.txt").read_text(encoding="utf-8") == "busy-h"
+              and not _archives(r1, "api_ren_h") and (pd / "ren_g.yaml").is_file())
+
+
+def test_chroma_release(roots: list[Path]):
+    section("E. Chroma: архив и смена id в том же процессе — чистая база")
+    import chromadb
+    from app.api import settings_api as sa
+
+    r1, _r2 = roots
+    pd = sa._PERSONAS_DIR
+    calendar = SimpleNamespace(list_entries=lambda: [], update_entry=lambda *a, **k: None)
+
+    def open_col(path: Path):
+        client = chromadb.PersistentClient(path=str(path))
+        return client.get_or_create_collection("stm", embedding_function=None)
+
+    def writes(col, doc_id) -> bool:
+        try:
+            col.add(ids=[doc_id], documents=["новая"], embeddings=[[0.3, 0.2, 0.1]])
+            return col.get(ids=[doc_id])["documents"] == ["новая"]
+        except Exception as e:
+            print(f"    запись упала: {e}")
+            return False
+
+    stm = r1 / "api_chr" / "stm"
+    col = open_col(stm)
+    col.add(ids=["old"], documents=["секрет прежней персоны"], embeddings=[[0.1, 0.2, 0.3]])
+    other = open_col(r1 / "api_chr_other" / "stm")
+    other.add(ids=["o"], documents=["чужая"], embeddings=[[0.2, 0.2, 0.2]])
+
+    r = sa.create_persona("id: chr\nname: C\nsystem_prompt: hi\n", memory="fresh")
+    fresh = open_col(stm)
+    check("fresh: база под тем же путём в том же процессе пуста",
+          r["ok"] and fresh.count() == 0)
+    check("fresh: запись в неё проходит (не readonly)", writes(fresh, "new"))
+    arch = _archives(r1, "api_chr")
+    check("архив: старая база цела и читается",
+          len(arch) == 1 and open_col(arch[0] / "stm").get(ids=["old"])["documents"]
+          == ["секрет прежней персоны"])
+    check("база другой персоны не выгружена (открытый объект работает)", other.count() == 1)
+
+    # Смена id A → B, затем база по старому пути A (новая персона с id A)
+    (pd / "chr_a.yaml").write_text("id: chr_a\nname: A\nsystem_prompt: hi\n", encoding="utf-8")
+    a_stm = r1 / "api_chr_a" / "stm"
+    col_a = open_col(a_stm)
+    col_a.add(ids=["a"], documents=["память A"], embeddings=[[0.1, 0.1, 0.1]])
+    with mock.patch("app.features.calendar_manager.get_calendar", lambda: calendar):
+        r = sa.rename_persona("chr_a", "chr_b")
+    again = open_col(a_stm)
+    check("смена id: база по старому пути — пустая", r["ok"] and again.count() == 0)
+    check("смена id: запись в неё проходит", writes(again, "new_a"))
+    check("смена id: данные — под новым id",
+          open_col(r1 / "api_chr_b" / "stm").get(ids=["a"])["documents"] == ["память A"])
+
 
 def test_endpoint(roots: list[Path]):
     section("D. POST /api/personas — 409 memory_exists и выбор")
@@ -415,6 +577,7 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="persona_lifecycle_"))
     old_env = os.environ.get("VPC_DATA_DIR")
     os.environ["VPC_DATA_DIR"] = str(tmp / "vpc")
+    os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
     from app.api import settings_api as sa
 
     personas_dir = tmp / "personas"
@@ -434,6 +597,7 @@ def main():
         test_yaml_live(tmp)
         test_create_over_leftover(roots)
         test_rename_over_leftover(roots)
+        test_chroma_release(roots)
         test_endpoint(roots)
     finally:
         for p in reversed(patches):

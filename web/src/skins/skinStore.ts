@@ -1026,6 +1026,17 @@ export function renameSkins(oldId: string, newId: string) {
   emit();
 }
 
+// Память id ушла в архив (персона «с чистого листа»): старые ключи скина под
+// id и назначение в кеше (на сервере его уже сняли) — забыть. Офлайн-
+// библиотеку (mode local) не трогаем: персону создают только при бэкенде
+export function forgetPersonaSkins(personaId: string) {
+  dropLegacy(personaId);
+  if (mode === 'local' || !(personaId in assignments)) return;
+  const { [personaId]: _dropped, ...rest } = assignments;
+  assignments = rest;
+  emit();
+}
+
 // ── React-хуки ──
 
 // Подписка на стор + запуск загрузки библиотеки

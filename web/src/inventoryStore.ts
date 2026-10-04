@@ -62,6 +62,15 @@ export function renamePersonaItems(oldId: string, newId: string) {
   listeners.forEach((l) => l());
 }
 
+// Память id ушла в архив (персона «с чистого листа»): правки под этим id забыть
+export function forgetPersonaItems(personaId: string) {
+  if (!(personaId in state)) return;
+  const { [personaId]: _dropped, ...rest } = state;
+  state = rest;
+  persist();
+  listeners.forEach((l) => l());
+}
+
 // Хук-подписка на правки инвентаря конкретной персоны (undefined — правок не было)
 export function usePersonaItems(personaId: string): InventoryItem[] | undefined {
   return useSyncExternalStore(

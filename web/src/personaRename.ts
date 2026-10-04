@@ -9,9 +9,9 @@ import { refetchPersonas } from './apiData';
 import { forgetPersonaArt, renamePersonaArt } from './artStore';
 import { refetchAvatars } from './avatarStore';
 import { choiceDialog } from './dialogStore';
-import { renamePersonaItems } from './inventoryStore';
-import { renameOverlay } from './skins/overlayStore';
-import { renameSkins } from './skins/skinStore';
+import { forgetPersonaItems, renamePersonaItems } from './inventoryStore';
+import { forgetOverlay, renameOverlay } from './skins/overlayStore';
+import { forgetPersonaSkins, renameSkins } from './skins/skinStore';
 
 // Формат id как у бэкенда (app/api/security.PERSONA_ID_RE)
 export const PERSONA_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -34,9 +34,13 @@ export async function askLeftoverMemory(t: TFn, id: string, canKeep = true): Pro
   return choice === 'keep' || choice === 'fresh' ? choice : null;
 }
 
-// Память id ушла в архив: браузерный кеш под этим id (арт) тоже не подмешиваем
+// Память id ушла в архив: всё, что браузер хранит под этим id (арт, правки
+// инвентаря и досье, старые ключи и назначение скина), тоже не подмешиваем
 export function forgetPersonaLocal(id: string) {
   forgetPersonaArt(id);
+  forgetPersonaItems(id);
+  forgetOverlay(id);
+  forgetPersonaSkins(id);
 }
 
 // Промис резолвится, когда новый список персон уже загружен (родитель может

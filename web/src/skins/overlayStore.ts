@@ -85,6 +85,17 @@ function store(personaId: string, overlay: PersonaOverlay): boolean {
   return true;
 }
 
+// Память id ушла в архив (персона «с чистого листа»): локальные правки досье забыть
+export function forgetOverlay(personaId: string) {
+  try {
+    if (localStorage.getItem(PREFIX + personaId) === null) return;
+    localStorage.removeItem(PREFIX + personaId);
+  } catch {
+    return; // хранилище недоступно — забывать нечего
+  }
+  window.dispatchEvent(new Event(CHANGE_EVENT));
+}
+
 // Смена id персоны: локальные правки досье переезжают под новый id
 export function renameOverlay(oldId: string, newId: string) {
   const raw = localStorage.getItem(PREFIX + oldId);
