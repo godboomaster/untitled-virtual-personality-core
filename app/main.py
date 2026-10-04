@@ -54,7 +54,7 @@ _running_loops: list = []
 
 
 def _persona_bot_tokens() -> Dict[str, str]:
-    # Персоны из app/personas (плюс папки аддонов — available_personas()),
+    # Персоны из всех папок персон (available_personas()),
     # для которых в .env задан <ПЕРСОНА>_BOT_TOKEN.
     layer = PersonaLayer()
     tokens = {}
@@ -409,7 +409,14 @@ def main():
 
     logger.info(f"Запуск: {target}")
     _install_windows_browser_logic()
-    start_target(target)
+    from app.core.router import NoProvidersError
+    try:
+        start_target(target)
+    except NoProvidersError as e:
+        # Telegram-боту без источника ответов работать нечем — понятная причина
+        # вместо трейсбека (API-режим без провайдеров запускается: настройка — в вебе)
+        logger.error(str(e))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

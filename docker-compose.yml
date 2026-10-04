@@ -6,9 +6,8 @@
 # Что живёт где:
 #   .env                — файл хоста, смонтирован в контейнер: ключи, сохранённые
 #                         из веба, пишутся в него же;
-#   app/personas, YAML персоны Арродеса — папки хоста (персоны, созданные и
-#                         изменённые из веба, — те же файлы, что при локальном запуске);
-#   память персон       — том vpc_data (отдельно от data/ локального запуска);
+#   свои персоны и память — том vpc_data (data/personas и память; отдельно от
+#                         data/ локального запуска), встроенные персоны — в образе;
 #   модели Hugging Face — том hf_cache.
 # Браузера в контейнере нет: режим управления, веб-чаты LLM и поиск через
 # браузер работают только при локальном запуске.
@@ -37,8 +36,6 @@ x-backend: &backend
       target: /app/.env
       bind:
         create_host_path: false   # нет .env — ошибка, а не пустая папка .env
-    - ./app/personas:/app/app/personas
-    - ./addons/arrodes/arrodes/personas:/app/addons/arrodes/arrodes/personas
     - vpc_data:/app/data
     - hf_cache:/root/.cache/huggingface
 

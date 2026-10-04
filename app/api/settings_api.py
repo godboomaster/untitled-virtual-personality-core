@@ -4,7 +4,8 @@
 без перезаписи чужих переменных) и сразу применяются к живому процессу:
 PROVIDER_CONFIGS перечитывается, роутеры уже созданных ботов обновляются.
 
-Конфиг персоны пишется в её YAML (app/personas/{name}.yaml): settings,
+Конфиг персоны пишется в её YAML в папке пользователя (data/personas/{name}.yaml;
+встроенная персона при первой правке получает там копию): settings,
 stm_size, proactive, computer_control и менеджерные фичи (reminder/todo/
 inventory) применяются к живому BotInstance сразу — менеджеры создаются
 и запускаются на лету (sync_feature_managers), рестарт не нужен. Остальные
@@ -32,9 +33,10 @@ from app.core.config import (
     OLLAMA_MODEL,
     PROVIDER_CONFIGS,
     _collect_api_keys,
+    first_ready_provider,
     get_available_providers,
 )
-from app.core.addons import CORE_PERSONAS_DIR, persona_dirs
+from app.core.addons import CORE_PERSONAS_DIR, persona_dirs, user_personas_dir
 from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
@@ -96,7 +98,7 @@ def list_providers() -> dict:
     active = os.getenv("ACTIVE_PROVIDER")
     available = get_available_providers()
     if active not in available:
-        active = next(iter(available), None)  # первый с ключом — как в ModelRouter
+        active = first_ready_provider(available)  # как в ModelRouter
 
     providers = [
         {
@@ -117,7 +119,9 @@ def list_providers() -> dict:
     local_model = OLLAMA_MODEL
     try:
         from app.core.local_router import get_local_router
-        local_available = get_local_router().is_available()
+        local = get_local_router()
+        local_model = local.model or ""  # живое значение: модель меняют из веба
+        local_available = local.is_available()
     except Exception:
         pass
     providers.append({
@@ -566,7 +570,7 @@ def update_persona_local_tasks(persona: str, task: str | None = None,
             data["llm"] = llm
         else:
             data.pop("llm", None)
-        atomic_write_text(path, _dump_persona_yaml(data))
+        atomic_write_text(_persona_write_path(persona), _dump_persona_yaml(data))
 
     from app.api.runtime import registry
     from app.core.local_router import get_local_router
@@ -860,9 +864,7 @@ def update_persona_proactive(persona: str, patch: dict) -> dict | None:
         proactive.update(cleaned)
         features["proactive"] = proactive
         data["features"] = features
-        atomic_write_text(
-            path, _dump_persona_yaml(data)
-        )
+        atomic_write_text(_persona_write_path(persona), _dump_persona_yaml(data))
 
     # Живой бот: конфиг читается циклом на каждой итерации — применяется сразу;
     # включение активирует цикл без рестарта, выключение — останавливает
@@ -907,29 +909,68 @@ def _dump_persona_yaml(data: dict) -> str:
     )
 
 
-# Сюда пишутся новые персоны (создание, копия)
-_PERSONAS_DIR = CORE_PERSONAS_DIR
+# Сюда пишутся персоны пользователя: новые, копии и правки встроенных
+# (app/personas, аддоны) — встроенные файлы не меняются, в git правки не
+# попадают. None — data/personas/ (addons.user_personas_dir); тесты
+# подменяют своей папкой
+_PERSONAS_DIR: Path | None = None
+
+
+def _write_dir() -> Path:
+    return _PERSONAS_DIR if _PERSONAS_DIR is not None else user_personas_dir()
+
+
+def _read_dirs() -> list[Path]:
+    # Порядок поиска: персоны пользователя, встроенные, аддоны. Подменённый
+    # _PERSONAS_DIR заменяет и папку пользователя, и app/personas
+    if _PERSONAS_DIR is None:
+        return persona_dirs()
+    own = {user_personas_dir(), CORE_PERSONAS_DIR}
+    return [_PERSONAS_DIR] + [d for d in persona_dirs() if d not in own]
 
 
 def _persona_yaml_path(persona: str) -> Path | None:
     """Путь к YAML персоны, если имя прошло проверку и путь не выходит за
     пределы папки персон — иначе None (везде ниже это уже означает «персоны
-    нет», как и отсутствующий файл). Существующий файл ищется в app/personas
-    и в папках персон установленных аддонов; нет нигде — путь в
-    _PERSONAS_DIR (туда его создаст create_persona/duplicate_persona).
+    нет», как и отсутствующий файл). Существующий файл ищется по _read_dirs();
+    нет нигде — путь в папке пользователя (туда его создаст
+    create_persona/duplicate_persona). Путь — для ЧТЕНИЯ: писать правку —
+    в _persona_write_path.
     Общая точка для всех мест этого модуля (get_persona_config/
     update_persona_config/save_persona_yaml/duplicate_persona и т.д.): их
     вызывают эндпоинты БЕЗ предварительного _get_bot()/list_personas(),
     поэтому без этой проверки traversal-имя дошло бы сюда напрямую и
     читало/писало бы произвольный существующий файл."""
-    dirs = [_PERSONAS_DIR] + [d for d in persona_dirs() if d != CORE_PERSONAS_DIR]
-    for personas_dir in dirs:
+    for personas_dir in _read_dirs():
         path = safe_join(personas_dir, persona, ".yaml")
         if path is None:
             return None
         if path.is_file():
             return path
-    return safe_join(_PERSONAS_DIR, persona, ".yaml")
+    return safe_join(_write_dir(), persona, ".yaml")
+
+
+def _builtin_dirs() -> set[Path]:
+    # Папки встроенных персон — app/personas и папки аддонов: их файлы часть
+    # проекта (git, пакет аддона), правки туда не пишутся
+    dirs = {d.resolve() for d in persona_dirs()} | {CORE_PERSONAS_DIR.resolve()}
+    dirs.discard(user_personas_dir())
+    dirs.discard(_write_dir().resolve())
+    return dirs
+
+
+def _is_builtin_path(path: Path | None) -> bool:
+    return path is not None and path.parent.resolve() in _builtin_dirs()
+
+
+def _persona_write_path(persona: str) -> Path | None:
+    """Куда писать правку персоны. Встроенная при первой правке получает свою
+    копию в папке пользователя, которая дальше её перекрывает (_read_dirs ищет
+    папку пользователя первой); любой другой YAML правится на месте."""
+    path = _persona_yaml_path(persona)
+    if _is_builtin_path(path):
+        return safe_join(_write_dir(), persona, ".yaml")
+    return path
 
 
 def get_persona_config(persona: str) -> dict | None:
@@ -1088,9 +1129,7 @@ def update_persona_config(persona: str, settings: dict | None,
             else:
                 data.pop("llm", None)
 
-        atomic_write_text(
-            path, _dump_persona_yaml(data)
-        )
+        atomic_write_text(_persona_write_path(persona), _dump_persona_yaml(data))
 
     # Живой бот: генерация, stm_size, провайдеры и проактивность применяем
     # сразу, остальные features — после рестарта
@@ -1149,7 +1188,7 @@ def save_persona_yaml(persona: str, raw: str) -> dict | None:
         old_file_f = old_file.get("features") if isinstance(old_file, dict) else None
         if not isinstance(old_file_f, dict):
             old_file_f = {}
-        atomic_write_text(path, raw)
+        atomic_write_text(_persona_write_path(persona), raw)
     # Свежая заморозка (как тумблер в форме) — рушим настроение ниже
     mute_ruins_mood = new_f.get("muted") is True and old_file_f.get("muted") is not True
     # Доступ к режиму управления у Telegram-бота — после его перезапуска
@@ -1265,28 +1304,41 @@ def create_persona(raw: str, memory: str | None = None) -> dict:
     return {"ok": True, "persona": persona_id, "archived": [str(d) for _, d in archived]}
 
 
-def delete_persona(persona: str) -> bool:
+def delete_persona(persona: str) -> dict:
     """Удалить YAML персоны и выгрузить бота из реестра (фоновые циклы стоп).
+
+    Удаляется только файл в папке пользователя. Если под тем же id есть
+    встроенная персона (app/personas, аддон), она снова видна — это сброс
+    правок к встроенной версии ("reset": True). Встроенную без своей копии
+    удалить нельзя: её файл — часть проекта (в git, в пакете аддона).
 
     Память персоны (data/api_{persona}/) намеренно остаётся на диске: новая
     персона с тем же id молча её не подхватит — create_persona спросит,
     подхватить или убрать в архив.
+    {"ok": True, "reset": bool} | {"ok": False, "status", "detail"}
     """
     from app.api.runtime import list_personas, registry
     if persona not in list_personas():  # защита и от traversal, и от удаления служебных yaml
-        return False
+        return {"ok": False, "status": 404, "detail": f"Персона '{persona}' не найдена"}
     path = _persona_yaml_path(persona)
     if path is None:  # не должно случиться после проверки выше — доп. рубеж
-        return False
+        return {"ok": False, "status": 404, "detail": f"Персона '{persona}' не найдена"}
+    if _is_builtin_path(path):
+        return {"ok": False, "status": 409, "detail": (
+            f"«{persona}» — встроенная персона, удалить её нельзя. "
+            "Можно заморозить или сделать копию")}
     registry.evict(persona)
     path.unlink()
-    try:
-        from app.api import skins_api
-        skins_api.forget_persona(persona)
-    except Exception:
-        logger.exception("[api] Удаление персоны: назначение скина не снято")
-    logger.info(f"[api] Удалена персона {persona}")
-    return True
+    rest = _persona_yaml_path(persona)
+    reset = rest is not None and rest.is_file()
+    if not reset:
+        try:
+            from app.api import skins_api
+            skins_api.forget_persona(persona)
+        except Exception:
+            logger.exception("[api] Удаление персоны: назначение скина не снято")
+    logger.info(f"[api] {'Сброшена к встроенной' if reset else 'Удалена'} персона {persona}")
+    return {"ok": True, "reset": reset}
 
 
 def _set_top_field(text: str, key: str, line: str, after: str | None = None) -> str:
@@ -1374,7 +1426,7 @@ def set_persona_color(persona: str, color: str | None) -> dict:
         else:
             out = _set_top_field(raw, "color", f"color: '{color.lower()}'", after="description")
         if out != raw:
-            atomic_write_text(path, out)
+            atomic_write_text(_persona_write_path(persona), out)
         data = yaml.safe_load(out) or {}
     logger.info(f"[api] Цвет персоны {persona}: {color or 'по умолчанию'}")
     return {"ok": True, "color": persona_color(persona, data)}
@@ -1395,10 +1447,12 @@ def _data_roots() -> list[Path]:
 
 
 # Общие папки в корне данных, совпадающие по форме с id персоны: это не её
-# память (Telegram-контекст «tg», скины, черновики, служебные роутеры) —
+# память (Telegram-контекст «tg», скины, черновики, персоны пользователя,
+# служебные роутеры) —
 # переносить/архивировать их вместе с персоной нельзя, а персона с таким id
 # делила бы папку Telegram-контекста data/<id> с ними (_reserved_id)
-_SHARED_DATA_NAMES = {"tg", "default", "skins", "skin_gen", "settings_probe", "persona_drafts"}
+_SHARED_DATA_NAMES = {"tg", "default", "skins", "skin_gen", "settings_probe", "persona_drafts",
+                      "personas"}
 
 # Файлы в папке персоны, которые не память: выводятся заново из YAML (банк
 # flavor-фраз пересобирается по хэшу system_prompt). Папка только с ними —
@@ -1523,7 +1577,8 @@ def _forget_previous_persona(persona: str) -> None:
 
 
 def rename_persona(persona: str, new_id: str, memory: str | None = None) -> dict:
-    """Сменить id персоны: YAML-файл (в той же папке персон), поле id:, папки
+    """Сменить id персоны: YAML-файл (новый — в папке пользователя; встроенная
+    персона остаётся под старым id), поле id:, папки
     памяти data/api_<id> и data/<id> (с аватаром), записи календаря, токен
     <ID>_BOT_TOKEN в .env и недоставленные фоновые сообщения.
 
@@ -1559,7 +1614,9 @@ def rename_persona(persona: str, new_id: str, memory: str | None = None) -> dict
     if persona_yaml_path(new_id) is not None:
         return {"ok": False, "status": 409, "detail": f"Персона '{new_id}' уже существует"}
     src_path = persona_yaml_path(persona)
-    dest_path = safe_join(src_path.parent, new_id, ".yaml") if src_path else None
+    # Новый YAML — всегда в папке пользователя. Встроенная персона при этом
+    # остаётся под старым id (с чистой памятью): её файл — часть проекта
+    dest_path = _persona_write_path(new_id) if src_path else None
     if src_path is None or dest_path is None:
         return {"ok": False, "status": 404, "detail": f"Персона '{persona}' не найдена"}
 
@@ -1629,7 +1686,8 @@ def rename_persona(persona: str, new_id: str, memory: str | None = None) -> dict
                 src.rename(dst)
                 done.append((src, dst))
             atomic_write_text(dest_path, out)
-            src_path.unlink()
+            if not _is_builtin_path(src_path):
+                src_path.unlink()
         except Exception as e:
             # Откат: папки назад, затем архив — на освободившееся место;
             # недописанный новый YAML — убрать

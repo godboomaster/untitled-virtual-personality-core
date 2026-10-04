@@ -50,7 +50,7 @@ export default function ApiKeys() {
       .finally(() => setNotifyTesting(false));
   };
   const devMode = useDevMode();
-  const { llmProviders } = useMockData();
+  const { llmProviders, providerModels } = useMockData();
   const apiOnline = useApiOnline();
   const apiProviders = useApiProviders();
 
@@ -515,6 +515,10 @@ export default function ApiKeys() {
                       {hasKey ? t('apikeys.keySet') : t('apikeys.keyNotSet')}
                     </span>
                   )}
+                  {/* Моделей по умолчанию нет: без неё провайдер не используется */}
+                  {!p.local && hasKey && !p.model && (
+                    <span className="badge" title={t('apikeys.noModelHint')}>{t('apikeys.noModel')}</span>
+                  )}
                 </div>
                 {localRow ? (
                   <div className="apikey-form">
@@ -556,12 +560,45 @@ export default function ApiKeys() {
                     </button>
                   </div>
                 )}
+                {/* Модель провайдера — общая для всех персон (у персоны может быть
+                    своя: досье → «Модели провайдеров»). Ollama — тоже здесь */}
+                {apiOnline && (
+                  <div className="apikey-model">
+                    <span className="apikey-model-label">{t('apikeys.model')}</span>
+                    <input
+                      key={`${p.id}:${p.model}`}
+                      className="input pmodel-input"
+                      list={`apikey-models-${p.id}`}
+                      defaultValue={p.model}
+                      placeholder={p.local ? 'gemma4:e2b' : t('dossier.modelPh')}
+                      spellCheck={false}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        if (v && v !== p.model) {
+                          api.setProviderModel(p.id, v).then(refetchProviders).catch(() => {});
+                        } else {
+                          e.target.value = p.model ?? '';
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                      }}
+                    />
+                    <datalist id={`apikey-models-${p.id}`}>
+                      {(providerModels[p.id] ?? []).map((m) => (
+                        <option key={m} value={m} />
+                      ))}
+                    </datalist>
+                  </div>
+                )}
                 {/* Детали неудачной проверки локальной модели: что не так и как исправить */}
                 {localRow && localStatus && !localStatus.available && (
                   <div className="field-hint provider-local-detail">
                     {!localStatus.server
                       ? t('settings.localServerDown', { url: localStatus.url })
-                      : t('settings.localModelMissing', { model: localStatus.model })}
+                      : localStatus.model
+                        ? t('settings.localModelMissing', { model: localStatus.model })
+                        : t('settings.localModelNotSet')}
                   </div>
                 )}
                 {/* Уже сохранённые ключи (маскированы), чтобы было видно, что задано */}

@@ -15,7 +15,7 @@ import yaml
 
 from app.api.security import safe_join
 from app.bot_instance import BotInstance
-from app.core.addons import persona_dirs
+from app.core.addons import persona_dirs, user_personas_dir
 
 # Палитра меток персон (общий календарь): приглушённые тона, различимые
 # и на светлой, и на тёмной теме. Используется, когда в YAML персоны
@@ -36,8 +36,8 @@ def persona_color(name: str, data: dict) -> str:
 
 
 def persona_yaml_path(name: str) -> Path | None:
-    # YAML персоны в первой папке persona_dirs(), где он есть (app/personas,
-    # затем папки персон установленных аддонов). Последний рубеж: чем бы ни
+    # YAML персоны в первой папке persona_dirs(), где он есть (персоны
+    # пользователя, app/personas, папки персон аддонов). Последний рубеж: чем бы ни
     # был name (тело запроса, query, вызов из другого модуля) — невалидное
     # имя (traversal, "/", пусто, не тот алфавит) физически не долетает до
     # Path(...). См. app/api/security.py
@@ -65,7 +65,8 @@ def _load_persona_yaml(name: str) -> dict | None:
 def list_personas() -> list[str]:
     """Имена персон = YAML-файлы с непустым system_prompt.
 
-    Папки — app/personas и папки персон установленных аддонов. Там лежат и
+    Папки — персоны пользователя (data/personas), app/personas и папки
+    персон установленных аддонов. Там лежат и
     служебные файлы (глоссарий, таймлайн и т.п.) — они отфильтровываются по
     отсутствию system_prompt.
     """
@@ -79,11 +80,28 @@ def list_personas() -> list[str]:
     return result
 
 
+def persona_origin(name: str) -> tuple[bool, bool]:
+    # (builtin, customized): есть ли встроенный YAML персоны (app/personas,
+    # аддон) и перекрыт ли он своей копией в папке пользователя
+    user_dir = user_personas_dir()
+    own = builtin = False
+    for personas_dir in persona_dirs():
+        path = safe_join(personas_dir, name, ".yaml")
+        if path is None or not path.is_file():
+            continue
+        if personas_dir == user_dir:
+            own = True
+        else:
+            builtin = True
+    return builtin, builtin and own
+
+
 def get_persona_info(name: str) -> dict | None:
     # Публичная информация о персоне из её YAML. None — если не персона.
     data = _load_persona_yaml(name)
     if not data or not data.get("system_prompt"):
         return None
+    builtin, customized = persona_origin(name)
     return {
         # id = имя файла, а не поле id из YAML: все API-эндпоинты адресуются
         # файлом, а поле id внутри YAML может совпадать у нескольких персон
@@ -93,6 +111,10 @@ def get_persona_info(name: str) -> dict | None:
         "color": persona_color(name, data),
         "features": data.get("features") or {},
         "settings": data.get("settings") or {},
+        # Встроенная (в git/пакете аддона) — удалить нельзя; customized — есть
+        # своя копия: «удалить» сбрасывает к встроенной
+        "builtin": builtin,
+        "customized": customized,
     }
 
 

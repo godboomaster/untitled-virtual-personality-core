@@ -54,7 +54,7 @@ class PersonaLayer:
         }
     
     def _load_persona(self, name: str) -> Dict:
-        # YAML ищется в app/personas и в папках персон установленных аддонов
+        # YAML ищется в папке пользователя, app/personas и папках персон аддонов
         persona_path = find_persona_file(name) or CORE_PERSONAS_DIR / f"{name}.yaml"
         persona_dir = persona_path.parent
 

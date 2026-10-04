@@ -48,3 +48,9 @@ example.jpg
 /qa_eval/
 web/*.png
 .claude/
+
+# Персоны: в git — только встроенная тестовая (connor). Свои персоны и правки
+# встроенных из веба живут в data/personas/; YAML, положенные в app/personas
+# вручную, тоже в git не попадают
+app/personas/*.yaml
+!app/personas/connor.yaml

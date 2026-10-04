@@ -15,11 +15,14 @@ load_env_file(_project_root / ".env.config")
 # перевод/классификация/дистилляция/кореференция (book_search,
 # intent_router). Меняется в одном месте — OLLAMA_MODEL в .env / .env.config
 # или через настройки веба. Reasoning-модели (gemma4) требуют "think": False
-# в запросах — это уже учтено во всех вызывающих сторонах.
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
+# в запросах — это уже учтено во всех вызывающих сторонах. По умолчанию не
+# задана — без неё Ollama считается недоступной.
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "")
 
 # ─── Провайдеры ──────────────────────────────────────────
-# Все используют OpenAI-совместимый API.
+# Все используют OpenAI-совместимый API. Модели по умолчанию нет: её выбирает
+# пользователь («Настройки» в вебе или <ПРОВАЙДЕР>_MODEL в .env); провайдер
+# без модели роутер пропускает.
 # Если API_KEY не задан — провайдер пропускается.
 # Порядок ключей в словаре = fallback-очередь (если ACTIVE_PROVIDER не указан).
 
@@ -55,37 +58,37 @@ PROVIDER_CONFIGS = {
     "zai": {
         "api_keys": _collect_api_keys("ZAI"),
         "base_url": os.getenv("ZAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"),
-        "model": os.getenv("ZAI_MODEL", "glm-5-turbo"),
+        "model": os.getenv("ZAI_MODEL", ""),
         "vision": os.getenv("ZAI_VISION", "auto"),
     },
     "openai": {
         "api_keys": _collect_api_keys("OPENAI"),
         "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "model": os.getenv("OPENAI_MODEL", ""),
         "vision": os.getenv("OPENAI_VISION", "auto"),
     },
     "anthropic": {
         "api_keys": _collect_api_keys("ANTHROPIC"),
         "base_url": os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/"),
-        "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+        "model": os.getenv("ANTHROPIC_MODEL", ""),
         "vision": os.getenv("ANTHROPIC_VISION", "auto"),
     },
     "groq": {
         "api_keys": _collect_api_keys("GROQ"),
         "base_url": os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
-        "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        "model": os.getenv("GROQ_MODEL", ""),
         "vision": os.getenv("GROQ_VISION", "auto"),
     },
     "deepseek": {
         "api_keys": _collect_api_keys("DEEPSEEK"),
         "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        "model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+        "model": os.getenv("DEEPSEEK_MODEL", ""),
         "vision": os.getenv("DEEPSEEK_VISION", "auto"),
     },
     "kimi": {
         "api_keys": _collect_api_keys("KIMI"),
         "base_url": os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1"),
-        "model": os.getenv("KIMI_MODEL", "moonshot-v1-8k"),
+        "model": os.getenv("KIMI_MODEL", ""),
         "vision": os.getenv("KIMI_VISION", "auto"),
         # Провайдер Kimi принимает только temperature=1 и top_p=0.95 — иначе
         # 400 «invalid temperature/top_p: only ... is allowed for this model».
@@ -101,19 +104,19 @@ PROVIDER_CONFIGS = {
     "google": {
         "api_keys": _collect_api_keys("GOOGLE"),
         "base_url": os.getenv("GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
-        "model": os.getenv("GOOGLE_MODEL", "gemini-2.0-flash"),
+        "model": os.getenv("GOOGLE_MODEL", ""),
         "vision": os.getenv("GOOGLE_VISION", "auto"),
     },
     "mimo": {
         "api_keys": _collect_api_keys("MIMO"),
         "base_url": os.getenv("MIMO_BASE_URL", "https://token-plan-sgp.xiaomimimo.com/v1"),
-        "model": os.getenv("MIMO_MODEL", "mimo-v2.5-pro"),
+        "model": os.getenv("MIMO_MODEL", ""),
         "vision": os.getenv("MIMO_VISION", "auto"),
     },
     "hf": {
         "api_keys": _collect_api_keys("HF"),
         "base_url": os.getenv("HF_BASE_URL", "https://router.huggingface.co/v1"),
-        "model": os.getenv("HF_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
+        "model": os.getenv("HF_MODEL", ""),
         "vision": os.getenv("HF_VISION", "auto"),
     },
 }
@@ -126,6 +129,13 @@ PROVIDER_CONFIGS = {
 def get_available_providers() -> dict:
     # Возвращает только провайдеры хотя бы с одним API-ключом.
     return {k: v for k, v in PROVIDER_CONFIGS.items() if v["api_keys"]}
+
+
+def first_ready_provider(available: dict) -> str | None:
+    # Основной по умолчанию (ACTIVE_PROVIDER не задан или без ключа): первый с
+    # ключом и моделью — провайдер без модели не ответит; нет таких — первый с ключом
+    ready = [p for p, cfg in available.items() if cfg.get("model")]
+    return (ready or list(available) or [None])[0]
 
 
 class Config:

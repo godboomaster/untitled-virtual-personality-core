@@ -76,11 +76,12 @@ export default function Personas() {
     await refetchPersonas();
   };
 
-  const remove = async (id: string, name: string) => {
+  // Своя копия встроенной персоны удаляется — остаётся встроенная (сброс)
+  const remove = async (id: string, name: string, reset: boolean) => {
     const ok = await confirmDialog({
-      title: t('personas.deleteTitle', { name }),
-      message: t('personas.deleteConfirm'),
-      confirmLabel: t('common.delete'),
+      title: t(reset ? 'personas.resetTitle' : 'personas.deleteTitle', { name }),
+      message: t(reset ? 'personas.resetConfirm' : 'personas.deleteConfirm'),
+      confirmLabel: reset ? t('personas.reset') : t('common.delete'),
       danger: true,
     });
     if (!ok) return;
@@ -235,14 +236,17 @@ export default function Personas() {
                   >
                     <Icon name="snowflake" size={15} />
                   </button>
-                  <button
-                    className="persona-icon-btn persona-icon-btn--danger"
-                    title={t('common.delete')}
-                    aria-label={t('common.delete')}
-                    onClick={() => remove(p.id, p.name)}
-                  >
-                    <Icon name="trash" size={15} />
-                  </button>
+                  {/* Встроенную персону не удалить; свою копию встроенной — сбросить */}
+                  {(!p.builtin || p.customized) && (
+                    <button
+                      className="persona-icon-btn persona-icon-btn--danger"
+                      title={p.builtin ? t('personas.reset') : t('common.delete')}
+                      aria-label={p.builtin ? t('personas.reset') : t('common.delete')}
+                      onClick={() => remove(p.id, p.name, !!p.builtin)}
+                    >
+                      <Icon name={p.builtin ? 'reset' : 'trash'} size={15} />
+                    </button>
+                  )}
                   <InfoButton helpKey="persona.actions" />
                 </div>
               </div>

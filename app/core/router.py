@@ -4,10 +4,34 @@ import socket
 import threading
 import time
 from openai import OpenAI
-from app.core.config import PROVIDER_CONFIGS, get_available_providers
+from app.core.config import PROVIDER_CONFIGS, first_ready_provider, get_available_providers
 from app.core.thread_local_attr import ThreadLocalAttr
 
 logger = logging.getLogger(__name__)
+
+# Провайдеры, о пропуске которых без модели уже предупредили (раз за процесс)
+_NO_MODEL_WARNED: set = set()
+
+NO_PROVIDERS_TEXT = (
+    "Не настроен ни один источник ответов. Добавьте ключ и модель провайдера в "
+    "«Настройках» веба (или в .env), включите веб-чат или Ollama с моделью")
+
+
+class NoProvidersError(RuntimeError):
+    # Ни ключа провайдера, ни веб-чата, ни Ollama — бот не создаётся. API на
+    # это отвечает 503 с текстом, а не падает: на чистой установке веб должен
+    # открыться, чтобы в нём настроить провайдера
+    pass
+
+
+def _warn_no_model(provider: str) -> None:
+    # Ключ есть, модели нет (моделей по умолчанию нет — их выбирает
+    # пользователь) — провайдер пропускается
+    if provider in _NO_MODEL_WARNED:
+        return
+    _NO_MODEL_WARNED.add(provider)
+    logger.warning(f"{provider.upper()}: не выбрана модель — провайдер пропущен. "
+                   f"Задайте её в «Настройках» или {provider.upper()}_MODEL в .env")
 
 
 # Крошечная тестовая картинка (240x100 PNG, белый фон, цифра «42») для автопробы
@@ -296,19 +320,14 @@ class ModelRouter:
                     f"на локальной модели {local.model}"
                 )
                 return
-            logger.critical(
-                "Нет доступных провайдеров и локальная модель недоступна! "
-                "Задайте API-ключ хотя бы для одного провайдера в .env или .env.config "
-                "(например, ZAI_API_KEY=..., OPENAI_API_KEY=...) "
-                "или запустите Ollama с локальной моделью."
-            )
-            raise RuntimeError("Нет настроенных провайдеров. Заполните API-ключи в конфиге.")
+            logger.error(NO_PROVIDERS_TEXT)
+            raise NoProvidersError(NO_PROVIDERS_TEXT)
 
         if not self.active_provider:
-            self.active_provider = next(iter(self.available))
+            self.active_provider = first_ready_provider(self.available)
             logger.warning(f"ACTIVE_PROVIDER не задан, используется первый доступный: {self.active_provider}")
         elif self.active_provider not in self.available:
-            fallback = next(iter(self.available))
+            fallback = first_ready_provider(self.available)
             logger.warning(
                 f"Провайдер '{self.active_provider}' недоступен (нет API-ключа). "
                 f"Доступные: {list(self.available.keys())}. "
@@ -383,6 +402,9 @@ class ModelRouter:
     def _call_with_keys(self, provider: str, cfg: dict, messages: list,
                         temperature: float, max_tokens: int, top_p: float,
                         timeout: float) -> str | None:
+        if not (self.model_overrides.get(provider) or cfg.get("model")):
+            _warn_no_model(provider)
+            return None
         # Провайдер с лимитом параллельности занят (фон/другой чат) — не ждём
         # и не ловим 403 concurrent: мгновенный фолбэк по цепочке
         sem = self._provider_sem(provider, cfg)
@@ -601,6 +623,9 @@ class ModelRouter:
                     return answer
                 continue
             cfg = self.available[provider]
+            if not self.model_for(provider):
+                _warn_no_model(provider)
+                continue
             answer = self._call_with_keys(
                 provider, cfg, messages, temperature, max_tokens, top_p, timeout
             )
@@ -726,6 +751,9 @@ class ModelRouter:
                     return answer
                 continue
             cfg = self.available[provider]
+            if not self.model_for(provider):
+                _warn_no_model(provider)
+                continue
             answer = self._stream_with_keys(
                 provider, cfg, messages, on_token, temperature, max_tokens, top_p, timeout
             )
@@ -747,6 +775,9 @@ class ModelRouter:
         # Стримит ответ первого ответившего ключа провайдера; None — все ключи упали.
         # Лимит параллельности провайдера (max_concurrent): занят — мгновенный
         # фолбэк, как в _call_with_keys (без 403 concurrent и ожидания)
+        if not (self.model_overrides.get(provider) or cfg.get("model")):
+            _warn_no_model(provider)
+            return None
         sem = self._provider_sem(provider, cfg)
         if sem is not None and not sem.acquire(blocking=False):
             logger.info(f"{provider.upper()}: занят параллельным запросом — "

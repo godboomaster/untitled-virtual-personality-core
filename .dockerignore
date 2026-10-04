@@ -15,3 +15,6 @@
 **/*.egg-info
 **/.DS_Store
 addons/arrodes/qa_eval
+# Персоны: в образе — только встроенная тестовая (свои — в data/personas, том)
+app/personas/*.yaml
+!app/personas/connor.yaml

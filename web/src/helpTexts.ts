@@ -287,7 +287,7 @@ export const helpTextsRu = {
   },
   'persona.actions': {
     title: 'Что можно сделать',
-    body: '«Редактировать» — поменять характер и настройки персоны. «Дублировать» — сделать копию, чтобы экспериментировать, не трогая оригинал. «Удалить» — убрать персону навсегда. Все персоны всегда активны: выбирать ничего не нужно.',
+    body: '«Редактировать» — поменять характер и настройки персоны. «Дублировать» — сделать копию, чтобы экспериментировать, не трогая оригинал. «Удалить» — убрать персону навсегда. Встроенную персону проекта удалить нельзя: её правки сохраняются вашей копией, а «Сбросить к встроенной» удаляет копию. Все персоны всегда активны: выбирать ничего не нужно.',
   },
 
   // ===== Создание персоны (YAML-редактор) =====
@@ -642,7 +642,7 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
   },
   'persona.actions': {
     title: 'What you can do',
-    body: '"Edit" — change the persona\'s personality and settings. "Duplicate" — make a copy to experiment without touching the original. "Delete" — remove the persona forever. All personas are always active: there is nothing to select.',
+    body: '"Edit" — change the persona\'s personality and settings. "Duplicate" — make a copy to experiment without touching the original. "Delete" — remove the persona forever. A built-in project persona cannot be deleted: your edits are kept as your own copy, and "Reset to built-in" deletes that copy. All personas are always active: there is nothing to select.',
   },
 
   // ===== Persona creation (YAML editor) =====

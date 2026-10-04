@@ -10,8 +10,8 @@ export type IconName =
   | 'book' | 'gem' | 'cup' | 'cards' | 'photo' | 'pencil' | 'frame' | 'disc' | 'cable'
   // Действия редактора инвентаря
   | 'trash' | 'pin'
-  // Действия карточки персоны
-  | 'copy' | 'snowflake' | 'camera' | 'close'
+  // Действия карточки персоны (reset — сброс к встроенной версии)
+  | 'copy' | 'snowflake' | 'camera' | 'close' | 'reset'
   // Навигация по местам в комнате
   | 'chevronLeft' | 'chevronRight' | 'chevronDown';
 
@@ -163,6 +163,12 @@ const paths: Record<IconName, ReactNode> = {
     <>
       <polyline points="3 6 5 6 21 6" />
       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </>
+  ),
+  reset: (
+    <>
+      <polyline points="1 4 1 10 7 10" />
+      <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
     </>
   ),
   pin: (

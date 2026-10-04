@@ -194,20 +194,10 @@ def main():
     check("prepare_messages: без параметра ноты нет",
           "CS_NOTE" not in without_note[0]["content"])
 
-    # ── 8. Реальные yaml персон (read-only) ──
-    verso = cs.ConversationStyleConfig(PersonaLayer("verso").persona_data)
-    check("verso.yaml: question_frequency=natural (характер)",
-          verso.frequency == "natural" and not verso.limited)
-    # Исключение для arrodes_master: финальный вопрос — обязательная часть
-    # структуры ответа персоны (принцип взаимности), правило ломало бы её.
-    # arrodes проверяется в тестах аддона
-    for name in ("arrodes_master",):
-        cfg = cs.ConversationStyleConfig(PersonaLayer(name).persona_data)
-        check(f"{name}.yaml: natural (обязательный финальный вопрос)",
-              cfg.frequency == "natural" and not cfg.limited)
-    for name in ("alex", "connor", "assistant"):
-        cfg = cs.ConversationStyleConfig(PersonaLayer(name).persona_data)
-        check(f"{name}.yaml: дефолт rare", cfg.frequency == "rare" and cfg.limited)
+    # ── 8. Встроенная персона (read-only); свои персоны пользователя в git
+    # не лежат, arrodes (natural) проверяется в тестах аддона ──
+    cfg = cs.ConversationStyleConfig(PersonaLayer("connor").persona_data)
+    check("connor.yaml: дефолт rare", cfg.frequency == "rare" and cfg.limited)
 
     print(f"\nИтог: {ok} проверок")
     return 0 if ok > 0 else 1

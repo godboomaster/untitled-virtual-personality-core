@@ -3,7 +3,7 @@
 Проверяет: детект языка сообщения (detect_language), детект по диалогу
 с фолбэком на историю этого же отправителя, ноту [RESPONSE LANGUAGE]
 в prepare_messages (правильный язык, позиция последней в системном
-блоке, отсутствие при неопределённом языке), yaml arrodes_master,
+блоке, отсутствие при неопределённом языке),
 передачу языка в изолированные реплики обучения
 и язык побочных фич: todo-список, напоминания, rhythm, самоинициатива,
 дневник (self_memory, offline_summarizer).
@@ -95,7 +95,7 @@ def main():
     # ── 4. prepare_messages: нота в системном промпте ──
     print("prepare_messages:")
     from app.core.persona import PersonaLayer
-    pl = PersonaLayer("assistant")
+    pl = PersonaLayer("connor")
 
     msgs = pl.prepare_messages("Привет, кто ты?", user_id="u1", user_name="Alice")
     sysc = msgs[0]["content"]
@@ -120,14 +120,6 @@ def main():
         "🚀🚀", history=[{"role": "user", "content": "Привет, кто ты?", "sender_id": "u1"}],
         user_id="u1")[0]["content"]
     check("фолбэк на историю через prepare_messages", "Russian" in sysc_fb)
-
-    # ── 5. arrodes_master без привязки к русскому (arrodes — в тестах аддона) ──
-    print("yaml arrodes_master:")
-    personas = Path(__file__).parent.parent / "app" / "personas"
-    for fname in ("arrodes_master.yaml",):
-        text = (personas / fname).read_text(encoding="utf-8")
-        check(f"{fname}: нет «Язык: русский»", "Язык: русский" not in text)
-        check(f"{fname}: стиль сохранён", "Речь строгая, лаконичная" in text)
 
     # ── 6. Изолированные реплики обучения получают язык пользователя ──
     print("learning_manager:")

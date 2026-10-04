@@ -631,6 +631,10 @@ const ru: Record<string, string> = {
   'personas.deleteTitle': 'Удалить персону «{name}»?',
   'personas.avatarErrorTitle': 'Аватар не загружен',
   'personas.deleteConfirm': 'YAML-файл персоны будет удалён безвозвратно. Память персоны останется на диске — если потом создать персону с тем же id, предложим подхватить её или убрать в архив.',
+  // Своя копия встроенной персоны: удаление возвращает встроенную версию
+  'personas.reset': 'Сбросить к встроенной',
+  'personas.resetTitle': 'Сбросить персону «{name}»?',
+  'personas.resetConfirm': 'Ваши правки персоны будут удалены, вернётся встроенная версия из проекта. Память персоны останется.',
   // Под id осталась память удалённой персоны (создание / смена id)
   'personas.memoryTitle': 'Под id «{id}» осталась память',
   'personas.memoryMessage': 'Раньше с этим id была персона — её переписка, факты, дневник и аватар остались на диске. Подхватить их или начать с чистого листа? Старая память не удаляется — уходит в архивную папку рядом.',
@@ -699,6 +703,9 @@ const ru: Record<string, string> = {
   'apikeys.noKey': 'без ключа',
   'apikeys.keySet': 'ключ задан',
   'apikeys.keyNotSet': 'ключ не задан',
+  'apikeys.model': 'модель',
+  'apikeys.noModel': 'нет модели',
+  'apikeys.noModelHint': 'Без модели провайдер не используется — впиши её в поле «модель»',
   'apikeys.keyPh': 'вставь API-ключ…',
   'apikeys.hide': 'Скрыть',
   'apikeys.show': 'Показать',
@@ -726,6 +733,7 @@ const ru: Record<string, string> = {
   'settings.localUnavailable': 'недоступна',
   'settings.localServerDown': '// сервер Ollama не отвечает ({url}) — запусти: ollama serve',
   'settings.localModelMissing': '// модель {model} не установлена — скачай: ollama pull {model}',
+  'settings.localModelNotSet': '// модель не выбрана — впиши её в поле «модель» (например, gemma4:e2b) и скачай: ollama pull <модель>',
   'settings.makeMain': 'сделать основным',
   'settings.mainGlobalBadge': 'ОСНОВНОЙ · ГЛОБ.',
   'settings.resetToGlobal': 'сбросить на глобального',

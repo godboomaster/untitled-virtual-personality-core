@@ -179,7 +179,7 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
   };
 
   // Создание персоны: YAML уходит на бэкенд (POST /api/personas),
-  // файл app/personas/{id}.yaml подхватывается реестром без рестарта.
+  // файл data/personas/{id}.yaml подхватывается реестром без рестарта.
   // Если вставлен готовый YAML (rawYaml) — уходит он, форма игнорируется.
   // Под id осталась память удалённой персоны (409 memory_exists) — молча её
   // не подхватываем: выбор «подхватить / с чистого листа (в архив) / отмена»

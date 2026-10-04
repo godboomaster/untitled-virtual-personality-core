@@ -19,8 +19,18 @@ from app.core.router import ModelRouter
 from app.core.local_router import get_local_router
 from app.core.language import detect_language, user_language_line
 
-_router = ModelRouter()
+# Общий роутер — при первом вызове, не при импорте: без настроенных
+# провайдеров ModelRouter бросает, а модуль импортируется со стартом процесса
+# (чистая установка, где ключ ещё не задан, должна запускаться)
+_router = None
 _local = get_local_router()
+
+
+def _shared_router() -> ModelRouter:
+    global _router
+    if _router is None:
+        _router = ModelRouter()
+    return _router
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +154,7 @@ def classify_learning_intent(text: str, local_router=None) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_block},
         ]
-        answer = _router.get_response(messages, temperature=0.0, max_tokens=5, top_p=1.0)
+        answer = _shared_router().get_response(messages, temperature=0.0, max_tokens=5, top_p=1.0)
         raw = (answer or "").strip().upper()
         if "LEARN" in raw:
             verdict = "LEARN"

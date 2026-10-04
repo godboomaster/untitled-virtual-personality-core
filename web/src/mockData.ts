@@ -29,6 +29,8 @@ export interface Persona {
   lastReplyFreshness: 'fresh' | 'yesterday' | 'stale';
   status: PersonaStatus;
   muted?: boolean; // заморожена (features.muted): молчит везде, настроение испорчено
+  builtin?: boolean; // встроенная персона проекта: удалить нельзя
+  customized?: boolean; // у встроенной есть своя копия: удаление сбрасывает к встроенной
   temperature: number;
   maxTokens: number;
   topP: number;

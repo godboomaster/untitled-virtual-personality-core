@@ -21,7 +21,7 @@ features:
   inventory: true
   computer_control:
     allow_domains: []
-    confirm: false
+    confirm: true
     click: true
     sites:
       ютуб: youtube.com
@@ -262,52 +262,6 @@ settings:
   temperature: 0.7
   max_tokens: 2000
   top_p: 0.9
-llm:
-  webchat_limits:
-    qwen:
-      enabled: false
-    deepseek:
-      enabled: false
-    zai:
-      enabled: false
-    kimi:
-      enabled: true
-      per_hour: 40
-    chatgpt:
-      enabled: true
-      per_hour: 40
-    claude:
-      enabled: true
-      per_hour: 40
-    google:
-      enabled: false
-  primary: webchat:deepseek
-  fallback:
-  - webchat:qwen
-  - webchat:zai
-  - kimi
-  - local
-  - zai
-  - openai
-  - groq
-  - anthropic
-  - deepseek
-  - google
-  - mimo
-  - hf
-  - webchat:kimi
-  - webchat:google
-  answer_provider: webchat:google
-  cc_provider: webchat:duckai
-  vision_provider: webchat:deepseek
-  exclude:
-  - webchat:chatgpt
-  - webchat:claude
-  local_tasks:
-    bg_site: rotate
-    rotate:
-      duckai: 1
-      google: 1
 room:
   props:
   - rug

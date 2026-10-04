@@ -30,7 +30,7 @@ from pydantic import AfterValidator
 # (settings_api и др.).
 from app.core.atomic_io import atomic_write_text  # noqa: F401
 
-# id персоны = имя YAML-файла в app/personas/ (и черновика в data/persona_drafts/,
+# id персоны = имя YAML-файла в папке персон (и черновика в data/persona_drafts/,
 # формат тот же): латиница, цифры, "_", "-", 1..64 символов. "/" и ".." в
 # алфавит не входят — traversal-строка просто не пройдёт regex.
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")

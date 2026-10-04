@@ -42,6 +42,8 @@ function mapPersona(p: ApiPersona): Persona {
     lastReplyFreshness: 'fresh',
     status: muted ? 'frozen' : 'online',
     muted,
+    builtin: p.builtin ?? false,
+    customized: p.customized ?? false,
     temperature: p.settings.temperature ?? 0.7,
     maxTokens: p.settings.max_tokens ?? 2000,
     topP: p.settings.top_p ?? 0.9,

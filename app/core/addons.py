@@ -13,7 +13,8 @@
       addons: [arrodes_book]
 
 Установленный пакет может объявить и папку со своими персонами (группа
-virtual_persona.personas) — PersonaLayer ищет YAML в app/personas и в них.
+virtual_persona.personas) — PersonaLayer ищет YAML в папке персон пользователя
+(data/personas), в app/personas и в них.
 """
 
 import logging
@@ -139,9 +140,17 @@ def load_addons(features: dict, persona_name: str = "") -> list:
     return addons
 
 
+def user_personas_dir() -> Path:
+    # Персоны пользователя (вне git): созданные, копии и правки встроенных из
+    # веба. Персона с тем же id здесь перекрывает встроенную
+    from app.core.paths import data_dir
+    return (data_dir() / "personas").resolve()
+
+
 def persona_dirs() -> list[Path]:
-    # Папки с YAML персон: app/personas, затем объявленные установленными пакетами
-    dirs = [CORE_PERSONAS_DIR]
+    # Папки с YAML персон по приоритету: персоны пользователя, встроенные
+    # (app/personas), затем объявленные установленными пакетами
+    dirs = [user_personas_dir(), CORE_PERSONAS_DIR]
     for ep in _entry_points(PERSONAS_GROUP):
         try:
             obj = ep.load()

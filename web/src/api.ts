@@ -54,6 +54,8 @@ export interface ApiPersona {
   color?: string | null; // цвет метки персоны (общий календарь)
   features: Record<string, unknown>;
   settings: { temperature?: number; max_tokens?: number; top_p?: number };
+  builtin?: boolean; // встроенная (в git/пакете аддона) — удалить нельзя
+  customized?: boolean; // у встроенной есть своя копия — «удалить» сбрасывает к встроенной
 }
 
 // Местоположение пользователя (для окружения: локальное время и погода в контексте)
@@ -187,8 +189,9 @@ export const api = {
       body: JSON.stringify({ yaml, memory }),
     }),
 
+  // reset — удалена своя копия встроенной персоны, осталась встроенная
   deletePersona: (persona: string) =>
-    request<{ status: string }>(`/api/personas/${encodeURIComponent(persona)}`, { method: 'DELETE' }),
+    request<{ status: string; reset?: boolean }>(`/api/personas/${encodeURIComponent(persona)}`, { method: 'DELETE' }),
 
   // Копия персоны: новый id ({id}_copy) и имя + «(копия)»
   duplicatePersona: (persona: string) =>

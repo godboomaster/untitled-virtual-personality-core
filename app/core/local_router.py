@@ -370,6 +370,9 @@ class LocalLLMRouter:
 
     def _check_available(self) -> bool:
         # Ollama отвечает и нужная модель в ней скачана.
+        if not self.model:
+            # Модели по умолчанию нет — её выбирает пользователь (OLLAMA_MODEL)
+            return False
         try:
             resp = self._client.get(f"{self.base_url}/api/tags", timeout=5.0)
             if resp.status_code != 200:

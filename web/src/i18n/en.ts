@@ -631,6 +631,10 @@ const en = {
   'personas.deleteTitle': 'Delete persona “{name}”?',
   'personas.avatarErrorTitle': 'Avatar not loaded',
   'personas.deleteConfirm': 'The persona YAML file will be permanently deleted. Its memory stays on disk — if you later create a persona with the same id, you will be offered to pick it up or archive it.',
+  // Own copy of a built-in persona: deleting brings back the built-in version
+  'personas.reset': 'Reset to built-in',
+  'personas.resetTitle': 'Reset persona “{name}”?',
+  'personas.resetConfirm': 'Your edits to this persona will be deleted and the built-in version from the project comes back. The persona’s memory stays.',
   // Memory left under an id by a deleted persona (create / change id)
   'personas.memoryTitle': 'Memory left under id “{id}”',
   'personas.memoryMessage': 'A persona with this id existed before — its chat, facts, diary and avatar are still on disk. Pick them up, or start from a clean slate? The old memory is not deleted — it moves to an archive folder next to it.',
@@ -699,6 +703,9 @@ const en = {
   'apikeys.noKey': 'no key',
   'apikeys.keySet': 'key set',
   'apikeys.keyNotSet': 'key not set',
+  'apikeys.model': 'model',
+  'apikeys.noModel': 'no model',
+  'apikeys.noModelHint': 'A provider without a model is not used — enter one in the “model” field',
   'apikeys.keyPh': 'paste API key…',
   'apikeys.hide': 'Hide',
   'apikeys.show': 'Show',
@@ -726,6 +733,7 @@ const en = {
   'settings.localUnavailable': 'unavailable',
   'settings.localServerDown': '// Ollama server is not responding ({url}) — start it: ollama serve',
   'settings.localModelMissing': '// model {model} is not installed — pull it: ollama pull {model}',
+  'settings.localModelNotSet': '// no model selected — enter one in the “model” field (e.g. gemma4:e2b) and pull it: ollama pull <model>',
   'settings.makeMain': 'make main',
   'settings.mainGlobalBadge': 'MAIN · GLOBAL',
   'settings.resetToGlobal': 'reset to global',

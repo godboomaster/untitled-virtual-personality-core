@@ -29,6 +29,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.api import runtime
 from app.api.runtime import chat_lock, get_persona_info, list_personas
+from app.core.router import NoProvidersError
 from app.api.security import (BodySizeLimit, LOOPBACK_HOSTS, LOOPBACK_ORIGIN_RE,
                               LocalOriginGuard, PersonaIdPath, PersonaIdQuery)
 from app.api.schemas import (
@@ -87,6 +88,13 @@ logger = logging.getLogger(__name__)
 _EXTRACT_ERROR_PREFIXES = ("Ошибка", "Формат", "Не удалось", "Библиотека")
 
 app = FastAPI(title="Virtual Persona API", version="1.0")
+
+
+@app.exception_handler(NoProvidersError)
+async def _no_providers(request, exc: NoProvidersError):
+    # Бот персоны не создаётся без единого источника ответов. Чистая установка:
+    # веб открывается, а в чат приходит понятная причина вместо 500
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.on_event("startup")
@@ -416,11 +424,14 @@ async def persona_create(req: PersonaCreateRequest):
 
 @app.delete("/api/personas/{persona}", dependencies=[Depends(require_auth)])
 async def persona_delete(persona: PersonaIdPath):
-    # Удалить персону: YAML-файл + выгрузка из реестра; память остаётся на диске
+    # Удалить персону: YAML-файл + выгрузка из реестра; память остаётся на диске.
+    # Своя копия встроенной персоны удаляется — остаётся встроенная (reset);
+    # встроенную без своей копии удалить нельзя — 409
     from app.api import settings_api
-    if not await asyncio.to_thread(settings_api.delete_persona, persona):
-        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
-    return {"status": "ok"}
+    result = await asyncio.to_thread(settings_api.delete_persona, persona)
+    if not result["ok"]:
+        raise HTTPException(status_code=result.get("status", 404), detail=result["detail"])
+    return {"status": "ok", "reset": result["reset"]}
 
 
 @app.post("/api/personas/{persona}/duplicate", dependencies=[Depends(require_auth)])
