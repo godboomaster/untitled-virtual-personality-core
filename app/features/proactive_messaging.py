@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from app.core import timeutil
+from app.core.dialog_scope import dialog_scope, scoped_by
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.interfaces import MessageSender
 from app.core.language import (
@@ -736,7 +737,9 @@ class ProactiveMessaging:
 
         def _run():
             try:
-                self.dossier.analyze_chat(chat_id, messages)
+                # Поток не наследует контекст: область диалога — явно
+                with dialog_scope(chat_id):
+                    self.dossier.analyze_chat(chat_id, messages)
             except Exception as e:
                 logger.warning(f"[Dossier] Фоновый анализ чата {chat_id} не удался: {e}")
             finally:
@@ -1761,121 +1764,124 @@ class ProactiveMessaging:
             return
 
         for chat_id in list(all_chats):
-            try:
-                should_send = self._should_send_initiative(chat_id)
-                logger.info(f"[Proactive] Чат {chat_id}: should_send={should_send}, last_activity={self.get_last_message_time(chat_id):.0f}, silence={(time.time() - self.get_last_message_time(chat_id))/60:.0f}мин")
-                if not should_send:
-                    continue
-
-                if self.config.multi_turn_enabled:
-                    state = self._multi_turn_snapshot(chat_id)
-                    if state and state.get("waiting"):
-                        # Ждём ответа на предыдущую инициативу не дольше 30 мин
-                        if time.time() - state["timestamp"] < 1800:
-                            logger.info(f"[Proactive] Чат {chat_id}: ждем ответа на multi-turn")
-                            continue
-                        else:
-                            # Таймаут -- сбрасываем и считаем неудачей
-                            logger.info(f"[Proactive] Чат {chat_id}: таймаут multi-turn")
-                            self._update_probability(
-                                chat_id, got_response=False,
-                                initiative_type=state.get("type"))
-                            self._clear_multi_turn_wait(chat_id)
-
-                initiative_type = self._select_initiative_type(chat_id)
-                logger.info(f"[Proactive] Чат {chat_id}: тип инициативы={initiative_type.value}")
-
-                # Извлекаем реальное имя из последних сообщений STM
-                user_name = "user"
+            # Область диалога: свой тред веб-чата у каждого чата
+            with dialog_scope(chat_id):
                 try:
-                    stm_msgs = self.memory.stm.get_last(5, chat_id=chat_id)
-                    for msg in reversed(stm_msgs):
-                        if msg.get("role") == "user":
-                            name = msg.get("user_name", "")
-                            if name and name.lower() not in ("пользователь", "user"):
-                                user_name = name
-                                break
-                except Exception:
-                    pass
+                    should_send = self._should_send_initiative(chat_id)
+                    logger.info(f"[Proactive] Чат {chat_id}: should_send={should_send}, last_activity={self.get_last_message_time(chat_id):.0f}, silence={(time.time() - self.get_last_message_time(chat_id))/60:.0f}мин")
+                    if not should_send:
+                        continue
 
-                # Метка старта генерации: всё, что пользователь напишет после
-                # неё, делает сгенерированное неуместным (см. _commit_and_send)
-                mark = self._generation_mark(chat_id)
+                    if self.config.multi_turn_enabled:
+                        state = self._multi_turn_snapshot(chat_id)
+                        if state and state.get("waiting"):
+                            # Ждём ответа на предыдущую инициативу не дольше 30 мин
+                            if time.time() - state["timestamp"] < 1800:
+                                logger.info(f"[Proactive] Чат {chat_id}: ждем ответа на multi-turn")
+                                continue
+                            else:
+                                # Таймаут -- сбрасываем и считаем неудачей
+                                logger.info(f"[Proactive] Чат {chat_id}: таймаут multi-turn")
+                                self._update_probability(
+                                    chat_id, got_response=False,
+                                    initiative_type=state.get("type"))
+                                self._clear_multi_turn_wait(chat_id)
 
-                # Генерируем через внутренний монолог (синхронные LLM-вызовы — в поток,
-                # иначе блокируем event loop бота на десятки секунд на каждый чат)
-                message = await asyncio.to_thread(
-                    self._generate_initiative, chat_id, chat_id, user_name, initiative_type
-                )
-                logger.info(f"[Proactive] Чат {chat_id}: сообщение сгенерировано={message is not None}")
+                    initiative_type = self._select_initiative_type(chat_id)
+                    logger.info(f"[Proactive] Чат {chat_id}: тип инициативы={initiative_type.value}")
 
-                # Монолог сам перепроверяет молчание, и None может значить,
-                # что пользователь только что написал — рефлексия такой
-                # проверки не делает, поэтому блокируем её здесь явно
-                if not message and self._user_spoke_since(chat_id, mark):
-                    logger.info(f"[Proactive] Чат {chat_id}: пользователь активен — без рефлексии")
-                    continue
+                    # Извлекаем реальное имя из последних сообщений STM
+                    user_name = "user"
+                    try:
+                        stm_msgs = self.memory.stm.get_last(5, chat_id=chat_id)
+                        for msg in reversed(stm_msgs):
+                            if msg.get("role") == "user":
+                                name = msg.get("user_name", "")
+                                if name and name.lower() not in ("пользователь", "user"):
+                                    user_name = name
+                                    break
+                    except Exception:
+                        pass
 
-                # Если нет сообщения -- генерируем рефлексию на основе типа
-                if not message:
-                    reflection = await asyncio.to_thread(
-                        self._generate_reflection_initiative, chat_id, initiative_type
+                    # Метка старта генерации: всё, что пользователь напишет после
+                    # неё, делает сгенерированное неуместным (см. _commit_and_send)
+                    mark = self._generation_mark(chat_id)
+
+                    # Генерируем через внутренний монолог (синхронные LLM-вызовы — в поток,
+                    # иначе блокируем event loop бота на десятки секунд на каждый чат)
+                    message = await asyncio.to_thread(
+                        self._generate_initiative, chat_id, chat_id, user_name, initiative_type
                     )
-                    if reflection:
-                        message = reflection
-                        logger.info(f"[Proactive] Чат {chat_id}: рефлексия по типу {initiative_type.value}")
+                    logger.info(f"[Proactive] Чат {chat_id}: сообщение сгенерировано={message is not None}")
 
-                if not message:
-                    continue
+                    # Монолог сам перепроверяет молчание, и None может значить,
+                    # что пользователь только что написал — рефлексия такой
+                    # проверки не делает, поэтому блокируем её здесь явно
+                    if not message and self._user_spoke_since(chat_id, mark):
+                        logger.info(f"[Proactive] Чат {chat_id}: пользователь активен — без рефлексии")
+                        continue
 
-                # Проверяем на дубликат по содержимому
-                if self._is_similar_to_recent(message, chat_id):
-                    logger.warning(f"[Proactive] Чат {chat_id}: сообщение похоже на недавние, пропускаем")
-                    continue
+                    # Если нет сообщения -- генерируем рефлексию на основе типа
+                    if not message:
+                        reflection = await asyncio.to_thread(
+                            self._generate_reflection_initiative, chat_id, initiative_type
+                        )
+                        if reflection:
+                            message = reflection
+                            logger.info(f"[Proactive] Чат {chat_id}: рефлексия по типу {initiative_type.value}")
 
-                # Вероятностная отправка с учетом feedback
-                effective_prob = self._get_effective_probability(chat_id)
-                if random.random() > effective_prob:
-                    logger.info(f"[Proactive] Монолог сгенерирован, но вероятность {effective_prob} не прошла для {chat_id}")
-                    continue
+                    if not message:
+                        continue
 
-                topic_id = self._get_topic_for_chat(chat_id)
-                if topic_id:
-                    logger.info(f"[Proactive] Используем топик {topic_id} для чата {chat_id}")
+                    # Проверяем на дубликат по содержимому
+                    if self._is_similar_to_recent(message, chat_id):
+                        logger.warning(f"[Proactive] Чат {chat_id}: сообщение похоже на недавние, пропускаем")
+                        continue
 
-                # Отправляем: перепроверка «пользователь не писал с метки» и
-                # запись в STM — атомарно под гейтом, затем доставка
-                message = _strip_markdown(message)
-                logger.info(f"[Proactive] Отправка инициативы в {chat_id}: {message[:60]}...")
-                success, commit_epoch = await self._commit_and_send(
-                    chat_id, message, topic_id, mark)
+                    # Вероятностная отправка с учетом feedback
+                    effective_prob = self._get_effective_probability(chat_id)
+                    if random.random() > effective_prob:
+                        logger.info(f"[Proactive] Монолог сгенерирован, но вероятность {effective_prob} не прошла для {chat_id}")
+                        continue
 
-                if success:
-                    # Метки «инициатива ушла» (время, тип, epoch, multi-turn) —
-                    # одним снимком под локом и СРАЗУ после отправки, до долгих
-                    # шагов ниже (self_memory.tick — это LLM, десятки секунд):
-                    # ответ пользователя, пришедший в это окно, должен видеть
-                    # уже выставленные метки, иначе он не засчитывается, а
-                    # multi-turn потом встаёт в ожидание ответа, который уже был
-                    self._mark_initiative_sent(chat_id, initiative_type,
-                                               multi_turn_message=message,
-                                               epoch=commit_epoch)
+                    topic_id = self._get_topic_for_chat(chat_id)
+                    if topic_id:
+                        logger.info(f"[Proactive] Используем топик {topic_id} для чата {chat_id}")
 
-                    # Сохраняем в историю инициатив (дедупликация + тип)
-                    self._add_to_history(chat_id, message, initiative_type)
+                    # Отправляем: перепроверка «пользователь не писал с метки» и
+                    # запись в STM — атомарно под гейтом, затем доставка
+                    message = _strip_markdown(message)
+                    logger.info(f"[Proactive] Отправка инициативы в {chat_id}: {message[:60]}...")
+                    success, commit_epoch = await self._commit_and_send(
+                        chat_id, message, topic_id, mark)
 
-                    if self.self_memory:
-                        stm_messages = self.memory.stm.get_last(10, chat_id=chat_id)
-                        await asyncio.to_thread(self.self_memory.tick, stm_messages, chat_id, message)
+                    if success:
+                        # Метки «инициатива ушла» (время, тип, epoch, multi-turn) —
+                        # одним снимком под локом и СРАЗУ после отправки, до долгих
+                        # шагов ниже (self_memory.tick — это LLM, десятки секунд):
+                        # ответ пользователя, пришедший в это окно, должен видеть
+                        # уже выставленные метки, иначе он не засчитывается, а
+                        # multi-turn потом встаёт в ожидание ответа, который уже был
+                        self._mark_initiative_sent(chat_id, initiative_type,
+                                                   multi_turn_message=message,
+                                                   epoch=commit_epoch)
 
-                    # Streak обновляется через _update_probability при таймауте/ответе
-                    # Не инкрементим здесь -- иначе дубликаты и быстрые повторы попадут в streak
+                        # Сохраняем в историю инициатив (дедупликация + тип)
+                        self._add_to_history(chat_id, message, initiative_type)
 
-                    self._increment_daily_count(chat_id)
+                        if self.self_memory:
+                            stm_messages = self.memory.stm.get_last(10, chat_id=chat_id)
+                            await asyncio.to_thread(self.self_memory.tick, stm_messages, chat_id, message)
 
-            except Exception as e:
-                logger.error(f"[Proactive] Ошибка в чате {chat_id}: {e}")
+                        # Streak обновляется через _update_probability при таймауте/ответе
+                        # Не инкрементим здесь -- иначе дубликаты и быстрые повторы попадут в streak
 
+                        self._increment_daily_count(chat_id)
+
+                except Exception as e:
+                    logger.error(f"[Proactive] Ошибка в чате {chat_id}: {e}")
+
+    @scoped_by(lambda self, chat_id, *a, **k: chat_id)
     async def state_initiative_signal(self, chat_id: str, score: float, reason: str):
         """Сигнал от движка состояния персоны: скоринг инициативы превысил
         порог — у персоны есть повод написать.

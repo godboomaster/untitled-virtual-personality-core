@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from app.core.atomic_io import atomic_write_json
+from app.core.dialog_scope import dialog_scope
 from app.core.bounded_cache import BoundedCache
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
@@ -504,9 +505,15 @@ class LivingPersona:
         if msgs_n >= HARVEST_MIN_MESSAGES or (msgs_n >= 1 and now - last >= HARVEST_INTERVAL_SEC):
             self._harvest_msgs[cid] = 0
             self._harvest_at[cid] = now
-            threading.Thread(target=self._harvest_dialogue, args=(cid, messages),
+            threading.Thread(target=self._harvest_in_dialog, args=(cid, messages),
                              daemon=True,
                              name=f"living-harvest-{self.context}").start()
+
+    def _harvest_in_dialog(self, chat_id: str, messages: List[dict]):
+        # Поток не наследует контекст: область диалога — явно (свой тред
+        # веб-чата у этого чата)
+        with dialog_scope(chat_id):
+            self._harvest_dialogue(chat_id, messages)
 
     def _harvest_dialogue(self, chat_id: str, messages: List[dict]):
         """Один локальный вызов по свежему диалогу → раздача трём движкам:

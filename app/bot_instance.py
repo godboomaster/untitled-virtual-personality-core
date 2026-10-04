@@ -3,6 +3,7 @@ BotInstance — один бот с конкретной персоной и на
 Содержит VirtualPersonality, FileVectorDB и читает features из YAML.
 """
 
+import contextvars
 import re
 import os
 import json
@@ -17,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 
 from app.core.persona import PersonaLayer, _format_msg_ts
 from app.core.addons import TurnInfo, load_addons
+from app.core.dialog_scope import dialog_scope
 from app.core.language import detect_language, detect_dialogue_language, user_language_line
 from app.core.memory import MemoryManager
 from app.core.router import ModelRouter
@@ -3125,12 +3127,15 @@ class BotInstance:
             # после записи ответа: фоновая инициатива/ритм в этом окне в STM
             # не пишут (см. user_turn) — порядок user → ответ не рвётся.
             # Контекст браузера режима управления (вкладка, листание) — этого
-            # чата на весь ход: ключ тот же, что у режима (chat_id или user_id)
+            # чата на весь ход: ключ тот же, что у режима (chat_id или user_id).
+            # Область диалога — свой тред веб-чата у этого чата (иначе сайт
+            # показал бы модели промпты других чатов персоны)
             _cc = getattr(self, "computer_control", None)
             with self.user_turn(self.stm_key(chat_id, user_id)), (
                     _cc.chat_scope(chat_id or user_id)
                     if _cc is not None and hasattr(_cc, "chat_scope")
-                    else nullcontext()):
+                    else nullcontext()), \
+                    dialog_scope(self.stm_key(chat_id, user_id)):
                 reply = self._process_message_impl(
                     user_input, user_id=user_id, chat_id=chat_id, user_name=user_name,
                     reply_context=reply_context,
@@ -3816,12 +3821,17 @@ class BotInstance:
                            side_tasks.search_enhance_enabled(self), None,
                            history_for_search, persona_context,
                            side_tasks.translate_verify_enabled(self))
+            # Пул контекст не копирует: область диалога (свой тред веб-чата
+            # для улучшения запроса с историей чата) переносим явно
+            _ctx = contextvars.copy_context()
             if self._web_race_enabled():
                 # Гонка AI Mode + DDG-сниппеты (web_search_race): ~5 с
                 # вместо 16-23 с у обычного поиска с загрузкой страниц
-                web_future = self._web_pool.submit(self._race_search, search_args)
+                web_future = self._web_pool.submit(_ctx.run, self._race_search,
+                                                   search_args)
             else:
-                web_future = self._web_pool.submit(self._search_web, *search_args)
+                web_future = self._web_pool.submit(_ctx.run, self._search_web,
+                                                   *search_args)
 
         # Путь маркеров LLM (режим управления): реплика ложится в STM раньше,
         # чем process_markers поставит pending ввода — секреты из неё
@@ -6364,6 +6374,14 @@ class BotInstance:
         return answer
 
     def _dispatch_command(
+        self, kind: str, args: str, chat_id: str, user_id: str, user_name: str,
+    ) -> str:
+        # Область диалога — как у process_message: свой тред веб-чата
+        with dialog_scope(self.stm_key(chat_id, user_id)):
+            return self._dispatch_command_impl(kind, args, chat_id, user_id,
+                                               user_name)
+
+    def _dispatch_command_impl(
         self, kind: str, args: str, chat_id: str, user_id: str, user_name: str,
     ) -> str:
         """

@@ -31,10 +31,14 @@ main/vision в очереди не стоят.
 
 Непрерывный чат — осознанное решение: веб-чат копит контекст беседы (это
 второй, неконтролируемый слой памяти рядом с STM/LTM бота), зато не
-плодятся сотни чатов-однодневок и модель видит недавние реплики. Сброс —
-удалить chat_url из web_llm_state.json (или сам чат на сайте); при полной
-очистке истории персоны (/api/chat/clear) адреса сбрасываются автоматически
-(в снапшот корзины кладутся — undo их возвращает).
+плодятся сотни чатов-однодневок и модель видит недавние реплики. Тред —
+свой у каждого диалога (app/core/dialog_scope: Telegram-чат, веб-чат):
+сайт помнит прошлые ходы треда, и общий тред персоны показывал модели
+промпты ДРУГИХ чатов. Вызовы вне области диалога (дневник, мир, служебные)
+идут в общий тред канала. Сброс — удалить chat_url/chat_urls из
+web_llm_state.json (или сам чат на сайте); при полной очистке истории
+персоны (/api/chat/clear) адреса сбрасываются автоматически (в снапшот
+корзины кладутся — undo их возвращает).
 
 Ограничения честно: ToS веб-чатов автоматизацию не приветствует (риск
 флага аккаунта — на пользователе; смягчается опциональной квотой
@@ -57,6 +61,7 @@ from urllib.parse import urlsplit
 
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, file_lock, load_json_safe
+from app.core.dialog_scope import current_dialog
 from app.core.language import detect_language, user_language_line
 from app.core.paths import data_dir
 from app.core.thread_local_attr import ThreadLocalAttr
@@ -1337,17 +1342,31 @@ def _update_state(path: Path, mutate) -> dict:
             return new
 
 
+# Ключ треда диалога в снапшоте адресов: «<сайт#канал>@@<диалог>»
+_DIALOG_KEY_SEP = "@@"
+
+
 def collect_chat_urls(context: str) -> Dict[str, str]:
     """Адреса постоянных чатов всех сайтов/каналов контекста
-    ({state_key: url}) — для снапшота корзины очистки диалога. Чистое
+    ({state_key: url}, треды диалогов — {state_key@@диалог: url}) — для
+    снапшота корзины очистки диалога. Чистое
     чтение (без лока — atomic_write_json/os.replace не даёт читателю
     увидеть частично записанный файл)."""
     st = load_json_safe(_state_file(context), default={}, label="WebChat")
     if not isinstance(st, dict):
         return {}
-    sites = st.get("sites", {})
-    return {k: str(v["chat_url"]) for k, v in sites.items()
-            if isinstance(v, dict) and str(v.get("chat_url") or "").strip()}
+    out: Dict[str, str] = {}
+    for k, v in (st.get("sites") or {}).items():
+        if not isinstance(v, dict):
+            continue
+        if str(v.get("chat_url") or "").strip():
+            out[k] = str(v["chat_url"])
+        urls = v.get("chat_urls")
+        if isinstance(urls, dict):
+            for dialog, url in urls.items():
+                if str(url or "").strip():
+                    out[f"{k}{_DIALOG_KEY_SEP}{dialog}"] = str(url)
+    return out
 
 
 def clear_chat_urls(context: str) -> int:
@@ -1363,9 +1382,15 @@ def clear_chat_urls(context: str) -> int:
         if not isinstance(sites, dict):
             return st
         for _key, val in sites.items():
-            if isinstance(val, dict) and str(val.get("chat_url") or "").strip():
+            if not isinstance(val, dict):
+                continue
+            if str(val.get("chat_url") or "").strip():
                 val["chat_url"] = ""
                 n += 1
+            urls = val.get("chat_urls")
+            if isinstance(urls, dict) and urls:
+                n += sum(1 for u in urls.values() if str(u or "").strip())
+                val["chat_urls"] = {}
         return st
 
     _update_state(_state_file(context), _clear)
@@ -1384,10 +1409,18 @@ def restore_chat_urls(context: str, urls: Dict[str, str]) -> int:
     def _restore(st: dict) -> dict:
         sites = st.setdefault("sites", {})
         for key, url in urls.items():
+            key, sep, dialog = str(key).partition(_DIALOG_KEY_SEP)
             cur = sites.get(key)
             if not isinstance(cur, dict):
                 cur = {}
-            cur["chat_url"] = str(url)
+            if sep:
+                per = cur.get("chat_urls")
+                if not isinstance(per, dict):
+                    per = {}
+                per[dialog] = str(url)
+                cur["chat_urls"] = per
+            else:
+                cur["chat_url"] = str(url)
             sites[key] = cur
         return st
 
@@ -1964,6 +1997,10 @@ class WebChatLLM:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._state_path = self.base_dir / "web_llm_state.json"
         self._tab_id: Optional[int] = None  # наша служебная вкладка (реестр CDP)
+        # Чей тред открыт во вкладке (ключ диалога; None — общий тред канала).
+        # Смена диалога — навигация, даже если адрес совпал (home: новый чат
+        # другого диалога, сайт ещё не присвоил ему адрес)
+        self._tab_dialog: Optional[str] = None
         # Вкладки веб-чатов — служебные: они не попапы кликов и не «крайняя
         # страница» для команд (browser_actions исключает _SERVICE_HOSTS).
         # У сайтов с service_host=False (google — рабочая цель команд
@@ -2092,9 +2129,40 @@ class WebChatLLM:
 
     # ── постоянный чат (URL запоминается после первого сообщения) ──
 
+    def _dialog(self) -> Optional[str]:
+        # Диалог вызова (область app/core/dialog_scope): у каждого свой тред
+        # на сайте. Стейтless-каналу треды не нужны — чат и так свежий
+        return None if self.stateless else current_dialog()
+
     def _chat_url(self) -> Optional[str]:
-        url = str(self._load_state().get("chat_url") or "").strip()
+        st = self._load_state()
+        dialog = self._dialog()
+        if dialog is None:
+            url = st.get("chat_url")
+        else:
+            urls = st.get("chat_urls")
+            url = urls.get(dialog) if isinstance(urls, dict) else None
+        url = str(url or "").strip()
         return url or None
+
+    def _set_chat_url(self, url: str):
+        # Запомнить (url) или сбросить ("") адрес треда диалога вызова
+        dialog = self._dialog()
+        if dialog is None:
+            self._save_state({"chat_url": url})
+            return
+
+        def _put(st: dict) -> dict:
+            urls = st.get("chat_urls")
+            if not isinstance(urls, dict):
+                urls = {}
+            if url:
+                urls[dialog] = url
+            else:
+                urls.pop(dialog, None)
+            st["chat_urls"] = urls
+            return st
+        self._mutate_state(_put)
 
     def _remember_chat_url(self, url: str) -> bool:
         """Запомнить постоянный адрес чата: после первого сообщения сайт
@@ -2108,8 +2176,10 @@ class WebChatLLM:
         if last in ("new", "new-chat", "new_chat"):
             return False  # страница «нового чата», не постоянный адрес
         if url != self._chat_url():
-            self._save_state({"chat_url": url})
-            logger.info(f"[WebChat] {self.site}: постоянный чат {url[:70]}")
+            self._set_chat_url(url)
+            dialog = self._dialog()
+            logger.info(f"[WebChat] {self.site}#{self.channel}: постоянный чат "
+                        f"{url[:70]}" + (f" (диалог {dialog})" if dialog else ""))
         return True
 
     def _capture_chat_url(self, host: str, tab_id: int):
@@ -2379,6 +2449,7 @@ class WebChatLLM:
         если вкладка ещё не там, без лишних перезагрузок страницы.
         None — не удалось (браузер недоступен/сайт в карантине). → tab_id|None"""
         from app.features import browser_actions as ba
+        dialog = self._dialog()
         target = self.adapter["home"] if fresh \
             else (self._chat_url() or self.adapter["home"])
         try:
@@ -2393,10 +2464,14 @@ class WebChatLLM:
                     # tab_url — заодно проверка, что вкладка жива (исключение
                     # → замена вкладки ниже), поэтому зовём его и при fresh
                     cur_url = ba.tab_url(tab_id=self._tab_id)
-                    if fresh or not self._same_chat(cur_url, target):
+                    # Вкладка на треде другого диалога — навигация, даже
+                    # если адрес совпал (оба на home: чужой новый чат)
+                    if fresh or dialog != self._tab_dialog \
+                            or not self._same_chat(cur_url, target):
                         ba.navigate_tab(target, tab_id=self._tab_id)
                         time.sleep(FRESH_CHAT_SETTLE_SEC)
                         self._after_nav(ba)
+                    self._tab_dialog = dialog
                     if self._challenge_check(ba, self._tab_id):
                         return None
                     return self._tab_id
@@ -2407,6 +2482,7 @@ class WebChatLLM:
                     self._drop_tab(ba, f"замена вкладки: {str(e)[:60]}")
             self._tab_id = ba.open_new_tab(target, background=True,
                                            pool=self.browser_pool)
+            self._tab_dialog = dialog
             self._remember_tab_snap(ba, self._tab_id)
             time.sleep(FRESH_CHAT_SETTLE_SEC)
             self._after_nav(ba)
@@ -3189,7 +3265,7 @@ class WebChatLLM:
                     # Сохранённый чат сломался (удалён/разлогинен) — свежий
                     logger.info(f"[WebChat] {self.site}: сохранённый чат не "
                                 f"принял ввод ({e}) — уходим на новый")
-                    self._save_state({"chat_url": ""})
+                    self._set_chat_url("")
                     continue
                 logger.warning(f"[WebChat] {self.site}: отправка не удалась: {e}")
                 # Поле не приняло ввод, потому что его нет — страница входа
@@ -3283,7 +3359,7 @@ class WebChatLLM:
                     # Сохранённый чат сломан НА САЙТЕ (удалён/битый parent_id)
                     # — сбрасываем адрес и уходим на свежий чат
                     logger.info(f"[WebChat] {self.site}: {e} — уходим на новый чат")
-                    self._save_state({"chat_url": ""})
+                    self._set_chat_url("")
                     continue
                 logger.warning(f"[WebChat] {self.site}: {e}")
                 return None

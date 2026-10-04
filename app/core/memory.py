@@ -19,6 +19,8 @@ from app.core.memory_config import (
 )
 from app.core.users import get_user_tag
 from app.core.language import detect_dialogue_language, detect_language, user_language_line
+import contextvars
+import functools
 import time
 import json
 import threading
@@ -732,6 +734,10 @@ class LongTermMemory:
         False — пул не принял задачу сразу (on_cancel уже вызван).
         """
         key = str(user_id)
+        # Контекст вызывающего (область диалога — свой тред веб-чата) едет
+        # с задачей: executor его не копирует, а задача может стартовать
+        # позже, из потока предыдущей (_serial_next)
+        fn = functools.partial(contextvars.copy_context().run, fn)
         with self._serial_lock:
             queue = self._serial.get(key)
             if queue is not None:

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.core import timeutil
+from app.core.dialog_scope import dialog_scope, scoped_by
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import (detect_dialogue_language, language_name,
                                 persona_language, user_language_line)
@@ -529,6 +530,7 @@ class RhythmManager:
         except RuntimeError:
             pass
 
+    @scoped_by(lambda self, chat_id, *a, **k: chat_id)
     async def _do_morning(self, chat_id: str, now: datetime, last_seen: float):
         key = (str(chat_id), "morning")
         if key in self._busy:
@@ -564,6 +566,7 @@ class RhythmManager:
         finally:
             self._busy.discard(key)
 
+    @scoped_by(lambda self, chat_id, *a, **k: chat_id)
     async def _do_night(self, chat_id: str, now: datetime, last_seen: float):
         key = (str(chat_id), "night")
         if key in self._busy:
@@ -672,7 +675,8 @@ class RhythmManager:
             lang = self._lang(chat_id)
             text = None
             try:
-                text = await asyncio.to_thread(self._generate_text, kind, facts, lang)
+                with dialog_scope(chat_id):
+                    text = await asyncio.to_thread(self._generate_text, kind, facts, lang)
             except Exception as e:
                 logger.warning(f"[Rhythm] LLM генерация погоды ({kind}) не удалась: {e}")
             text = text or _FALLBACK[(kind, lang)]

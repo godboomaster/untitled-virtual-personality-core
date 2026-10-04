@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 from app.core import timeutil
+from app.core.dialog_scope import scoped_by
 from app.core.paths import data_dir
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import (detect_language, detect_dialogue_language, language_name,
@@ -1928,6 +1929,7 @@ class ReminderManager:
 
     # ── фоновый цикл ──
 
+    @scoped_by(lambda self, reminder, *a, **k: reminder.get("chat_id"))
     async def _fire(self, reminder: dict):
         # Отправляет напоминание в чат. Текст генерируется через LLM в характере персоны.
         if not self._sender:

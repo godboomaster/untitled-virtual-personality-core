@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from app.core.atomic_io import atomic_write_json, load_json_safe
+from app.core.dialog_scope import scoped_by
 from app.core.language import (detect_dialogue_language, detect_language,
                                persona_language, user_language_line)
 from app.core.paths import data_dir
@@ -2051,6 +2052,7 @@ class LearningManager:
             logger.error(f"[Learning] Ошибка отправки файла в {chat_id}: {e}")
             return False
 
+    @scoped_by(lambda self, session, *a, **k: session.get("chat_id"))
     async def _send_lesson(self, session: dict):
         # Генерирует и отправляет очередной урок/тест, обновляет состояние сессии.
         chat_id = session["chat_id"]
@@ -2121,6 +2123,7 @@ class LearningManager:
 
         await self._send_regular_lesson(session)
 
+    @scoped_by(lambda self, session, *a, **k: session.get("chat_id"))
     async def _send_regular_lesson(self, session: dict):
         """Генерирует урок, отправляет как md-файл + сообщение с темой и контрольными вопросами.
         Сохраняет тему в covered_topics (через LLM-извлечение), обновляет состояние."""
@@ -2271,6 +2274,7 @@ class LearningManager:
             next_lesson_at=time.time() + _DEFER_RETRY_SECONDS,
         )
 
+    @scoped_by(lambda self, session, *a, **k: session.get("chat_id"))
     async def _send_continue_question(self, session: dict):
         chat_id = session["chat_id"]
         topic_id = session.get("topic_id")
@@ -2385,6 +2389,7 @@ class LearningManager:
 
             await asyncio.sleep(30)
 
+    @scoped_by(lambda self, session, *a, **k: session.get("chat_id"))
     async def _stop_by_silence(self, session: dict):
         """«Продолжаем?» осталось без ответа — курс останавливается, и ученик
         об этом узнаёт (раньше курс гас молча, только запись в лог). Уведомление
