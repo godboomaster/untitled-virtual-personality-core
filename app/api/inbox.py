@@ -51,6 +51,14 @@ def inbox_rename(old: str, new: str):
             _inbox.setdefault((new, key[1]), deque(maxlen=_MAX_QUEUED)).extend(q)
 
 
+def inbox_drop(persona: str):
+    # Память id ушла в архив (новая персона «с чистого листа»): недоставленные
+    # фоновые сообщения прежней персоны с тем же id новой не показываем
+    with _inbox_lock:
+        for key in [k for k in _inbox if k[0] == persona]:
+            _inbox.pop(key, None)
+
+
 class WebInboxSender:
     # MessageSender-совместимый транспорт: кладёт сообщения в inbox веб-чата.
 

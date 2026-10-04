@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
-import { api, ApiError } from '../api';
+import { api, ApiError, isMemoryConflict } from '../api';
 import { refetchPersonas } from '../apiData';
 import { alertDialog, confirmDialog } from '../dialogStore';
-import { renamePersonaId } from '../personaRename';
+import { askLeftoverMemory, renamePersonaId } from '../personaRename';
 import FormModal from './FormModal';
 import PersonaFormFields from './PersonaFormFields';
 import { defaultForm, formFromYaml, prettifyYaml, yamlWithForm } from './personaYamlSync';
@@ -142,7 +142,8 @@ export default function PersonaYamlModal({
       .finally(() => setSaving(false));
   };
 
-  // Смена id: подтверждение → бэкенд + браузерные хранилища → родитель на новый id
+  // Смена id: подтверждение → бэкенд + браузерные хранилища → родитель на новый id.
+  // Под newId осталась память удалённой персоны — отдельный выбор (архив/подхватить)
   const renameId = async (newId: string): Promise<string | null> => {
     const ok = await confirmDialog({
       title: t('pc.idRenameConfirmTitle', { from: personaId, to: newId }),
@@ -151,7 +152,16 @@ export default function PersonaYamlModal({
     });
     if (!ok) return '';
     try {
-      const { restartRequired } = await renamePersonaId(personaId, newId);
+      let result: { restartRequired: boolean };
+      try {
+        result = await renamePersonaId(personaId, newId);
+      } catch (e) {
+        if (!isMemoryConflict(e)) throw e;
+        const memory = await askLeftoverMemory(t, newId, e.data?.can_keep !== false);
+        if (!memory) return '';
+        result = await renamePersonaId(personaId, newId, memory);
+      }
+      const { restartRequired } = result;
       onRenamed?.(newId);
       if (restartRequired) {
         void alertDialog({ title: t('pc.idRenamedTitle'), message: t('pc.idRenamedRestart', { id: newId.toUpperCase() }) });

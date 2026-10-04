@@ -111,8 +111,19 @@ class PersonaYamlUpdate(BaseModel):
     yaml: str  # новое содержимое YAML-файла персоны целиком
 
 
+# Под id осталась память (удалённой персоны): keep — подхватить, fresh — убрать
+# старую в архив data/api_<id>.archived-<время>; не задано — 409 с memory_exists
+MemoryChoice = Literal["keep", "fresh"]
+
+
+class PersonaCreateRequest(BaseModel):
+    yaml: str  # YAML новой персоны целиком (имя файла = поле id)
+    memory: Optional[MemoryChoice] = None
+
+
 class PersonaRenameRequest(BaseModel):
     new_id: str  # новый id персоны = имя YAML-файла и папки памяти data/api_<id>
+    memory: Optional[MemoryChoice] = None
 
 
 class PersonaColorUpdate(BaseModel):

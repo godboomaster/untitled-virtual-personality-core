@@ -123,10 +123,20 @@ export type ClearPart = (typeof CLEAR_PARTS)[number];
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, detail: string) {
+  data?: Record<string, unknown>; // тело ответа с ошибкой (доп. флаги, например memory_exists)
+  constructor(status: number, detail: string, data?: Record<string, unknown>) {
     super(detail);
     this.status = status;
+    this.data = data;
   }
+}
+
+// Под id осталась память удалённой персоны (409 при создании/смене id):
+// keep — подхватить, fresh — старую в архив
+export type MemoryChoice = 'keep' | 'fresh';
+
+export function isMemoryConflict(e: unknown): e is ApiError {
+  return e instanceof ApiError && e.status === 409 && e.data?.memory_exists === true;
 }
 
 /** Стрим ответа оборвался без финального события (перезагрузка/сон ноутбука,
@@ -151,13 +161,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     noteAuthFailure(res);
     let detail = `HTTP ${res.status}`;
+    let data: Record<string, unknown> | undefined;
     try {
       const body = await res.json();
       if (typeof body?.detail === 'string') detail = body.detail;
+      if (body && typeof body === 'object') data = body as Record<string, unknown>;
     } catch {
       /* тело не JSON — оставляем HTTP-код */
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, data);
   }
   return res.json() as Promise<T>;
 }
@@ -168,10 +180,11 @@ export const api = {
   getPersonas: () => request<ApiPersona[]>('/api/personas'),
 
   // Создать персону из YAML (имя файла = поле id; 409 — такая уже есть)
-  createPersona: (yaml: string) =>
+  // memory — выбор при оставшейся под id памяти (без него — 409, isMemoryConflict)
+  createPersona: (yaml: string, memory?: MemoryChoice) =>
     request<{ ok: boolean; persona: string }>('/api/personas', {
       method: 'POST',
-      body: JSON.stringify({ yaml }),
+      body: JSON.stringify({ yaml, memory }),
     }),
 
   deletePersona: (persona: string) =>
@@ -658,10 +671,10 @@ export const api = {
     }),
 
   // Смена id персоны: файл YAML, папка памяти data/api_<id>, аватар и ссылки на id
-  renamePersona: (persona: string, newId: string) =>
+  renamePersona: (persona: string, newId: string, memory?: MemoryChoice) =>
     request<{ ok: boolean; persona: string; restart_required: boolean }>(`/api/personas/${encodeURIComponent(persona)}/rename`, {
       method: 'POST',
-      body: JSON.stringify({ new_id: newId }),
+      body: JSON.stringify({ new_id: newId, memory }),
     }),
 
   getPersonaYaml: (persona: string) =>

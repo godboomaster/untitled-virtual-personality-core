@@ -24,7 +24,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.api import runtime
@@ -48,6 +48,7 @@ from app.api.schemas import (
     TimezoneRequest,
     MemoryStats,
     PersonaConfigUpdate,
+    PersonaCreateRequest,
     PersonaDraftSave,
     PersonaInfo,
     PersonaAvatarUpdate,
@@ -390,14 +391,26 @@ async def personas():
     return [get_persona_info(name) for name in list_personas()]
 
 
+def _memory_conflict(result: dict) -> JSONResponse:
+    # 409 «под id осталась память»: detail строкой (как у HTTPException) +
+    # флаги для выбора в вебе — подхватить / в архив / отмена
+    return JSONResponse(status_code=409, content={
+        "detail": result["detail"], "memory_exists": True,
+        "persona": result.get("persona"), "can_keep": result.get("can_keep", True),
+    })
+
+
 @app.post("/api/personas", dependencies=[Depends(require_auth)])
-async def persona_create(req: PersonaYamlUpdate):
-    # Создать новую персону из YAML (имя файла = поле id из YAML)
+async def persona_create(req: PersonaCreateRequest):
+    # Создать новую персону из YAML (имя файла = поле id из YAML). Под id
+    # осталась память — 409 с memory_exists, пока не выбрано memory: keep/fresh
     from app.api import settings_api
-    result = await asyncio.to_thread(settings_api.create_persona, req.yaml)
+    result = await asyncio.to_thread(settings_api.create_persona, req.yaml, req.memory)
     if not result["ok"]:
-        raise HTTPException(status_code=409 if result.get("conflict") else 400,
-                            detail=result["detail"])
+        if result.get("memory_exists"):
+            return _memory_conflict(result)
+        status = result.get("status") or (409 if result.get("conflict") else 400)
+        raise HTTPException(status_code=status, detail=result["detail"])
     return result
 
 
@@ -426,8 +439,10 @@ async def persona_rename(persona: PersonaIdPath, req: PersonaRenameRequest):
     if any(key.startswith(f"{persona}:") for key in _generating):
         raise HTTPException(status_code=409, detail="Персона сейчас отвечает — дождитесь конца ответа")
     from app.api import settings_api
-    result = await asyncio.to_thread(settings_api.rename_persona, persona, req.new_id)
+    result = await asyncio.to_thread(settings_api.rename_persona, persona, req.new_id, req.memory)
     if not result["ok"]:
+        if result.get("memory_exists"):
+            return _memory_conflict(result)
         raise HTTPException(status_code=result.get("status", 400), detail=result["detail"])
     return result
 

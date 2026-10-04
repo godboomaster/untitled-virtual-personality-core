@@ -630,7 +630,13 @@ const en = {
   'personas.unmute': 'Unmute',
   'personas.deleteTitle': 'Delete persona “{name}”?',
   'personas.avatarErrorTitle': 'Avatar not loaded',
-  'personas.deleteConfirm': 'The persona YAML file will be permanently deleted. Its memory stays on disk.',
+  'personas.deleteConfirm': 'The persona YAML file will be permanently deleted. Its memory stays on disk — if you later create a persona with the same id, you will be offered to pick it up or archive it.',
+  // Memory left under an id by a deleted persona (create / change id)
+  'personas.memoryTitle': 'Memory left under id “{id}”',
+  'personas.memoryMessage': 'A persona with this id existed before — its chat, facts, diary and avatar are still on disk. Pick them up, or start from a clean slate? The old memory is not deleted — it moves to an archive folder next to it.',
+  'personas.memoryMessageNoKeep': 'A persona with this id existed before — its memory is still on disk. This persona has its own memory and the two cannot be merged: the old one can be moved to an archive folder next to it (nothing is deleted).',
+  'personas.memoryKeep': 'Pick up the old memory',
+  'personas.memoryFresh': 'Clean slate (archive the old)',
   'personas.justNow': 'just now',
   'personas.noDescription': 'Persona without a description.',
 

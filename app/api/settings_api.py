@@ -45,6 +45,10 @@ _LIVE_FEATURE_KEYS = {
     "reminder", "todo", "inventory", "rhythm", "life",
 }
 
+# Ключи верхнего уровня YAML, которые BotInstance читает только при создании
+# (правка через YAML-редактор действует после перезапуска)
+_RESTART_TOP_KEYS = {"intellect", "conversation_style", "max_docs", "max_file_size_mb"}
+
 _ENV_PATH = Path(__file__).parent.parent.parent / ".env"
 
 
@@ -1119,25 +1123,53 @@ def save_persona_yaml(persona: str, raw: str) -> dict | None:
     if not isinstance(data, dict) or not data.get("system_prompt"):
         return {"ok": False, "detail": "YAML должен быть объектом с непустым system_prompt"}
 
+    new_f = data.get("features") or {}
+    if not isinstance(new_f, dict):
+        new_f = {}
     with yaml_write_lock:
+        try:
+            old_file = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            old_file = {}
+        old_file_f = old_file.get("features") if isinstance(old_file, dict) else None
+        was_muted = isinstance(old_file_f, dict) and old_file_f.get("muted") is True
         atomic_write_text(path, raw)
+    # Свежая заморозка (как тумблер в форме) — рушим настроение ниже
+    mute_ruins_mood = new_f.get("muted") is True and not was_muted
 
-    # Живой бот: применяем то же, что и update_persona_config
+    # Живой бот: то же, что применяет форма настроек (update_persona_config),
+    # по каждой изменённой секции features. Без этого выключенный в YAML
+    # computer_control или убранный из allowed_users человек сохраняли бы
+    # доступ к режиму управления до перезапуска, а restart_required молчал бы.
     from app.api.runtime import registry
     bot = registry._bots.get(persona)
     restart_required = False
     if bot is not None:
+        old_data = getattr(bot.persona, "persona_data", None) or {}
         old_f = bot.features or {}
-        new_f = data.get("features") or {}
         changed_keys = {k for k in set(old_f) | set(new_f) if old_f.get(k) != new_f.get(k)}
-        restart_required = bool(changed_keys - _LIVE_FEATURE_KEYS)
+        changed_top = {k for k in _RESTART_TOP_KEYS if old_data.get(k) != data.get(k)}
+        restart_required = bool(changed_keys - _LIVE_FEATURE_KEYS) or bool(changed_top)
         bot.persona.persona_data = data
+        bot.persona.system_prompt = data.get("system_prompt", "")
         bot.persona.settings = data.get("settings") or {}
         if data.get("stm_size") is not None:
             bot.stm_size = data["stm_size"]
         bot.features = new_f
         _apply_feature_managers_live(persona, bot)
+        if "proactive" in changed_keys:
+            _apply_proactive_live(persona, bot, new_f.get("proactive"))
+        if "rhythm" in changed_keys:
+            _apply_rhythm_live(persona, bot, new_f.get("rhythm"))
+        if "life" in changed_keys:
+            _apply_life_live(persona, bot, new_f.get("life"))
+        if "computer_control" in changed_keys:
+            _apply_computer_control_live(bot, new_f.get("computer_control"))
         _apply_llm_to_bot(persona, data.get("llm") or {})
+
+    # Свежая заморозка рушит настроение — как при заморозке из формы
+    if mute_ruins_mood:
+        _ruin_persona_mood(persona)
     return {"ok": True, "restart_required": restart_required}
 
 
@@ -1148,12 +1180,18 @@ def save_persona_yaml(persona: str, raw: str) -> dict | None:
 # см. app/api/security.PERSONA_ID_RE.
 
 
-def create_persona(raw: str) -> dict:
+def create_persona(raw: str, memory: str | None = None) -> dict:
     """Создать новую персону из сырого YAML (модалка создания в вебе).
 
     Имя файла = поле id из YAML. Файл подхватывается реестром автоматически
     (list_personas читает диск), рестарт не нужен.
-    {"ok": True, "persona": id} | {"ok": False, "detail", "conflict": bool}
+
+    Под этим id на диске могла остаться память (удалённая персона её не
+    стирает) — молча её не подхватываем: без memory ответ — конфликт с
+    memory_exists. memory="keep" — подхватить как есть, "fresh" — убрать
+    старую память в архив (_archive_persona_memory) и начать с чистого листа.
+    {"ok": True, "persona": id, "archived": [...]} |
+    {"ok": False, "detail", "conflict": bool, "memory_exists"?: True, "status"?: int}
     """
     try:
         data = yaml.safe_load(raw)
@@ -1167,10 +1205,28 @@ def create_persona(raw: str) -> dict:
     path = _persona_yaml_path(persona_id)
     if path is None:
         return {"ok": False, "detail": "Поле id обязательно: латиница, цифры, _ и - (до 64 символов)"}
+    archived: list[tuple[Path, Path]] = []
     with yaml_write_lock:
         if path.exists():
             return {"ok": False, "conflict": True, "detail": f"Персона '{persona_id}' уже существует"}
+        leftovers = _leftover_memory(persona_id)
+        if leftovers and memory not in ("keep", "fresh"):
+            return {"ok": False, "conflict": True, "memory_exists": True, "persona": persona_id,
+                    "detail": (f"Под id '{persona_id}' осталась память прежней персоны "
+                               f"({', '.join(str(p) for p in leftovers)}). Подхватить её "
+                               "(memory: keep) или начать с чистого листа — старая "
+                               "уйдёт в архив (memory: fresh)?")}
+        if leftovers and memory == "fresh":
+            _forget_live_state(persona_id)
+            try:
+                archived = _archive_persona_memory(persona_id)
+            except Exception as e:
+                logger.exception(f"[api] Память '{persona_id}' не убрана в архив")
+                return {"ok": False, "status": 500,
+                        "detail": f"Не удалось убрать старую память в архив: {e}"}
         atomic_write_text(path, raw)
+    if leftovers and memory == "keep":
+        logger.info(f"[api] Персона {persona_id} подхватила оставшуюся память")
     logger.info(f"[api] Создана персона {persona_id}")
     # Банк flavor-реплик для CC-команд: фоновая генерация
     # сразу при создании персоны, если у неё включён computer_control
@@ -1182,13 +1238,15 @@ def create_persona(raw: str) -> dict:
                 context=persona_id, system_prompt=str(data["system_prompt"]))
     except Exception as _fe:
         logger.debug(f"[api] flavor-банк для {persona_id} не запущен: {_fe}")
-    return {"ok": True, "persona": persona_id}
+    return {"ok": True, "persona": persona_id, "archived": [str(d) for _, d in archived]}
 
 
 def delete_persona(persona: str) -> bool:
     """Удалить YAML персоны и выгрузить бота из реестра (фоновые циклы стоп).
 
-    Память персоны (data/api_{persona}/) намеренно остаётся на диске.
+    Память персоны (data/api_{persona}/) намеренно остаётся на диске: новая
+    персона с тем же id молча её не подхватит — create_persona спросит,
+    подхватить или убрать в архив.
     """
     from app.api.runtime import list_personas, registry
     if persona not in list_personas():  # защита и от traversal, и от удаления служебных yaml
@@ -1241,7 +1299,9 @@ def duplicate_persona(persona: str) -> dict | None:
                 # new_id вышел за формат id (например, persona у самого предела
                 # длины) — короче не станет, дальше пробовать бессмысленно
                 return {"ok": False, "detail": "Не удалось подобрать id для копии"}
-            if not candidate.exists():
+            # Копия — новая персона: id, под которым осталась чужая память
+            # (удалённая прежняя копия), пропускаем — иначе подхватила бы её
+            if not candidate.exists() and not _leftover_memory(new_id):
                 dest = candidate
                 break
             n += 1
@@ -1302,18 +1362,81 @@ def _data_roots() -> list[Path]:
     return roots
 
 
+# Общие папки в корне данных, совпадающие по форме с id персоны: это не её
+# память (Telegram-контекст «tg», скины, черновики, служебные роутеры) —
+# переносить/архивировать их вместе с персоной нельзя
+_SHARED_DATA_NAMES = {"tg", "default", "skins", "skin_gen", "settings_probe", "persona_drafts"}
+
+
 def _persona_data_dirs(persona: str) -> list[Path]:
-    """Кандидаты папок памяти персоны: api_<id> (веб/API) и <id> (Telegram)."""
+    """Кандидаты папок памяти персоны: api_<id> (веб/API) и <id> (Telegram).
+
+    Под папкой — всё, что ключено контекстом персоны: STM/LTM (Chroma), living,
+    self_memory, файлы, дела, напоминания, обучение, досье, проактивность,
+    ритм, инвентарь, комната, аватар, режим управления (в т.ч. адреса
+    веб-чатов), flavor-банк, корзина очистки. Вне этих папок по id ключены
+    только записи календаря (метка persona), назначение скина, токен
+    <ID>_BOT_TOKEN в .env, метка прогрева api_last_seen.json и очередь
+    фоновых сообщений в памяти процесса."""
     out = []
     for root in _data_roots():
         for prefix in ("api_", ""):
+            if not prefix and persona in _SHARED_DATA_NAMES:
+                continue
             path = safe_join(root, persona, prefix=prefix)
             if path is not None:
                 out.append(path)
     return out
 
 
-def rename_persona(persona: str, new_id: str) -> dict:
+def _leftover_memory(persona: str) -> list[Path]:
+    """Оставшаяся на диске память id (например, от удалённой персоны)."""
+    return [p for p in _persona_data_dirs(persona) if p.exists()]
+
+
+def _archive_persona_memory(persona: str) -> list[tuple[Path, Path]]:
+    """Убрать оставшуюся память id в архивные папки рядом:
+    <папка>.archived-ГГГГММДД-ЧЧММСС. Ничего не удаляется. Точка в имени —
+    вне формата id, архив не станет памятью будущей персоны.
+    Возвращает [(было, стало)]; сбой — откат уже перенесённого и исключение."""
+    from app.core import timeutil
+    stamp = timeutil.now().strftime("%Y%m%d-%H%M%S")
+    done: list[tuple[Path, Path]] = []
+    try:
+        for src in _leftover_memory(persona):
+            dst = src.with_name(f"{src.name}.archived-{stamp}")
+            n = 2
+            while dst.exists():
+                dst = src.with_name(f"{src.name}.archived-{stamp}-{n}")
+                n += 1
+            src.rename(dst)
+            done.append((src, dst))
+    except Exception:
+        for src, dst in reversed(done):
+            try:
+                dst.rename(src)
+            except OSError:
+                logger.exception(f"[api] Откат архива памяти: не удалось вернуть {dst} → {src}")
+        raise
+    if done:
+        logger.info(f"[api] Память '{persona}' убрана в архив: "
+                    f"{', '.join(str(d) for _, d in done)}")
+    return done
+
+
+def _forget_live_state(persona: str) -> None:
+    """Перед архивом памяти id: выгрузить бота (его фоновые циклы пишут в
+    папку памяти) и снять недоставленные фоновые сообщения прежней персоны."""
+    from app.api.runtime import registry
+    registry.evict(persona)
+    try:
+        from app.api.inbox import inbox_drop
+        inbox_drop(persona)
+    except Exception:
+        logger.exception("[api] Очередь фоновых сообщений не очищена")
+
+
+def rename_persona(persona: str, new_id: str, memory: str | None = None) -> dict:
     """Сменить id персоны: YAML-файл (в той же папке персон), поле id:, папки
     памяти data/api_<id> и data/<id> (с аватаром), записи календаря, токен
     <ID>_BOT_TOKEN в .env и недоставленные фоновые сообщения.
@@ -1322,8 +1445,14 @@ def rename_persona(persona: str, new_id: str) -> dict:
     базы нет — переименования папки достаточно. Бот персоны выгружается из
     реестра и пересоздаётся под новым id при первом обращении.
 
-    {"ok": True, "persona", "restart_required"} |
-    {"ok": False, "detail", "status"} (404 — нет персоны, 409 — id занят).
+    Под новым id осталась память (удалённой персоны) — как в create_persona:
+    без memory — 409 с memory_exists; "fresh" — старая память уходит в архив,
+    "keep" — подхватить её (только если своя память персоны с ней не
+    пересекается по папкам — can_keep в ответе 409).
+
+    {"ok": True, "persona", "restart_required", "archived"} |
+    {"ok": False, "detail", "status", "memory_exists"?, "can_keep"?}
+    (404 — нет персоны, 409 — id занят).
     """
     from app.api.runtime import list_personas, persona_color, persona_yaml_path, registry
 
@@ -1341,12 +1470,6 @@ def rename_persona(persona: str, new_id: str) -> dict:
         return {"ok": False, "status": 400, "detail": "id отличается только регистром букв — выберите другой"}
     if persona_yaml_path(new_id) is not None:
         return {"ok": False, "status": 409, "detail": f"Персона '{new_id}' уже существует"}
-    busy = [str(p) for p in _persona_data_dirs(new_id) if p.exists()]
-    if busy:
-        # Чужая (например, от удалённой персоны) память подмешалась бы к этой
-        return {"ok": False, "status": 409,
-                "detail": f"Папка данных для '{new_id}' уже существует: {', '.join(busy)}"}
-
     src_path = persona_yaml_path(persona)
     dest_path = safe_join(src_path.parent, new_id, ".yaml") if src_path else None
     if src_path is None or dest_path is None:
@@ -1354,6 +1477,26 @@ def rename_persona(persona: str, new_id: str) -> dict:
 
     moves = [(src, safe_join(src.parent, new_id, prefix=src.name[:-len(persona)]))
              for src in _persona_data_dirs(persona) if src.is_dir()]
+
+    leftovers = _leftover_memory(new_id)
+    if leftovers:
+        # Чужая (например, от удалённой персоны) память молча подмешалась бы
+        # к этой — только по явному выбору. Подхватить можно, лишь если
+        # своя память персоны ляжет в другие папки, не поверх оставшейся
+        can_keep = not any(dst is None or dst.exists() for _, dst in moves)
+        busy = ", ".join(str(p) for p in leftovers)
+        if memory == "keep" and not can_keep:
+            return {"ok": False, "status": 409, "memory_exists": True, "can_keep": False,
+                    "persona": new_id,
+                    "detail": (f"Под id '{new_id}' осталась память прежней персоны ({busy}), "
+                               "а у этой персоны своя — совместить нельзя. Старую можно "
+                               "убрать в архив (memory: fresh)")}
+        if memory not in ("keep", "fresh"):
+            return {"ok": False, "status": 409, "memory_exists": True, "can_keep": can_keep,
+                    "persona": new_id,
+                    "detail": (f"Под id '{new_id}' осталась память прежней персоны ({busy}). "
+                               "Убрать её в архив (memory: fresh)"
+                               + (" или подхватить (memory: keep)?" if can_keep else "?"))}
 
     with yaml_write_lock:
         raw = src_path.read_text(encoding="utf-8")
@@ -1366,6 +1509,15 @@ def rename_persona(persona: str, new_id: str) -> dict:
 
         # Выгрузить бота до переноса: его фоновые циклы пишут в папку памяти
         registry.evict(persona)
+        archived: list[tuple[Path, Path]] = []
+        if leftovers and memory == "fresh":
+            _forget_live_state(new_id)
+            try:
+                archived = _archive_persona_memory(new_id)
+            except Exception as e:
+                logger.exception(f"[api] Смена id: память '{new_id}' не убрана в архив")
+                return {"ok": False, "status": 500,
+                        "detail": f"Не удалось убрать старую память в архив: {e}"}
         done: list[tuple[Path, Path]] = []
         try:
             for src, dst in moves:
@@ -1374,8 +1526,9 @@ def rename_persona(persona: str, new_id: str) -> dict:
             atomic_write_text(dest_path, out)
             src_path.unlink()
         except Exception as e:
-            # Откат: папки назад, недописанный новый YAML — убрать
-            for src, dst in reversed(done):
+            # Откат: папки назад, затем архив — на освободившееся место;
+            # недописанный новый YAML — убрать
+            for src, dst in [*reversed(done), *reversed(archived)]:
                 try:
                     dst.rename(src)
                 except OSError:
@@ -1421,4 +1574,5 @@ def rename_persona(persona: str, new_id: str) -> dict:
         logger.exception("[api] Смена id: назначение скина не перенесено")
 
     logger.info(f"[api] id персоны {persona} → {new_id} (папки: {[str(d) for _, d in moves]})")
-    return {"ok": True, "persona": new_id, "restart_required": restart_required}
+    return {"ok": True, "persona": new_id, "restart_required": restart_required,
+            "archived": [str(d) for _, d in archived]}

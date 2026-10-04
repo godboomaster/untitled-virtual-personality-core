@@ -270,6 +270,23 @@ export function renamePersonaArt(oldId: string, newId: string) {
   fetchedPersonas.delete(newId);
 }
 
+// Память id ушла в архив (персона «с чистого листа»): забыть кеш арта под этим
+// id — иначе синхронизация залила бы старый арт на сервер новой персоне
+export function forgetPersonaArt(personaId: string) {
+  clearTimeout(artPutTimers[personaId]);
+  delete artPutTimers[personaId];
+  delete pendingArtPatch[personaId];
+  clearTimeout(stylePutTimers[personaId]);
+  delete stylePutTimers[personaId];
+  delete pendingStylePatch[personaId];
+  fetchedPersonas.delete(personaId);
+  if (!(personaId in state)) return;
+  const { [personaId]: _dropped, ...rest } = state;
+  state = rest;
+  persist();
+  listeners.forEach((l) => l());
+}
+
 // Хук-подписка на арт конкретной персоны; при наличии бэкенда — подтягивает
 // art.json/style.json один раз на персону и досылает накопленные офлайн-правки
 export function usePersonaArt(personaId: string): PersonaArt | undefined {

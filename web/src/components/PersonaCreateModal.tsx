@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
-import { api, ApiError } from '../api';
+import { api, ApiError, isMemoryConflict } from '../api';
 import type { PersonaDraft } from '../api';
+import { refetchAvatars } from '../avatarStore';
+import { askLeftoverMemory, forgetPersonaLocal } from '../personaRename';
 import FormModal from './FormModal';
 import Select from './Select';
 import PersonaFormFields from './PersonaFormFields';
@@ -179,21 +181,35 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
   // Создание персоны: YAML уходит на бэкенд (POST /api/personas),
   // файл app/personas/{id}.yaml подхватывается реестром без рестарта.
   // Если вставлен готовый YAML (rawYaml) — уходит он, форма игнорируется.
+  // Под id осталась память удалённой персоны (409 memory_exists) — молча её
+  // не подхватываем: выбор «подхватить / с чистого листа (в архив) / отмена»
   const effectiveYaml = rawYaml ?? yaml;
-  const submit = () => {
+  const submit = async () => {
     if (creating) return;
     if (rawYaml === null && !form.name.trim()) return;
     if (rawYaml !== null && !rawYaml.trim()) return;
     setCreating(true);
     setCreateError('');
-    api.createPersona(effectiveYaml)
-      .then(() => {
-        // Черновик, из которого создали персону, больше не нужен
-        if (draftId) api.deletePersonaDraft(draftId).catch(() => {});
-        onCreate();
-      })
-      .catch((e) => setCreateError(e instanceof ApiError ? e.message : String(e)))
-      .finally(() => setCreating(false));
+    try {
+      try {
+        await api.createPersona(effectiveYaml);
+      } catch (e) {
+        if (!isMemoryConflict(e)) throw e;
+        const id = typeof e.data?.persona === 'string' ? e.data.persona : form.id.trim();
+        const memory = await askLeftoverMemory(t, id);
+        if (!memory) return; // отмена — модалка остаётся открытой
+        await api.createPersona(effectiveYaml, memory);
+        if (memory === 'fresh') forgetPersonaLocal(id);
+        refetchAvatars(); // аватар подхваченной памяти (или его отсутствие после архива)
+      }
+      // Черновик, из которого создали персону, больше не нужен
+      if (draftId) api.deletePersonaDraft(draftId).catch(() => {});
+      onCreate();
+    } catch (e) {
+      setCreateError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
   };
 
   // Вставка готового YAML: из буфера (кнопка) или Ctrl+V по панели превью

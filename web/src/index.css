@@ -6613,6 +6613,13 @@ textarea.pcreate-yaml--edit:focus {
   border-top: 1px solid var(--border-soft);
 }
 
+/* Выбор из вариантов (choiceDialog): кнопки столбиком на всю ширину */
+.dialog-actions--choice {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
 /* Арт-мастерская внутри комнаты: конструктор + панель арта */
 .room-art {
   margin-bottom: 16px;
