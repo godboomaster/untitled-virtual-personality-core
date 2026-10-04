@@ -271,6 +271,7 @@ def main():
                                 split_on["v"] if k == "split_messages" else d})(),
         prepare_messages=lambda **kw: [{"role": "user", "content": kw["user_message"]}],
         get_settings=lambda: {},
+        is_muted=lambda: False,
     )
 
     # «LLM» и видимость хода изнутри рабочего потока
@@ -283,7 +284,7 @@ def main():
 
     def fake_impl(user_input, user_id="default", chat_id=None, user_name=None,
                   reply_context=None, reply_to_bot_message_id=None,
-                  on_token=None, raw_user_text=None):
+                  on_token=None, raw_user_text=None, from_skin=False):
         note("impl", str(chat_id))
         llm.setdefault("inputs", []).append(
             {"input": user_input, "raw": raw_user_text, "reply_ctx": reply_context,
