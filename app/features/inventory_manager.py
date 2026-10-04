@@ -152,8 +152,12 @@ class InventoryManager:
         with self._lock:
             return [item for item in self._items if item.is_expired()]
 
-    def get_context_block(self) -> Optional[str]:
+    def get_context_block(self) -> str:
         """Возвращает форматированный блок для system prompt.
+
+        Пустой инвентарь — тоже блок («пуст»): вместе с ним в промпт идёт
+        инструкция маркеров, иначе модель не знает [INVENTORY_ADD] и
+        «держи ключ» в пустой инвентарь не попадает никогда.
 
         Снимок self._items берётся под локом: иначе сборка системного
         промпта (частый читатель) и add_item/remove_item из другого потока
@@ -162,7 +166,7 @@ class InventoryManager:
         with self._lock:
             items = list(self._items)
         if not items:
-            return None
+            return "Your inventory is empty — you have no items yet."
         lines = ["Your inventory:"]
         for item in items:
             desc = f" — {item.description}" if item.description else ""
@@ -277,3 +281,40 @@ def extract_inventory_remove(text: str) -> Optional[str]:
         if cleaned:
             return cleaned
     return None
+
+
+# Явная просьба про предмет — только она даёт переспрос «Добавить «X» в
+# инвентарь?» / «Убрать «X» из инвентаря?», когда локальной модели нет.
+# Глаголы-триггеры широки: «держи меня в курсе», «возьми паузу», «подбери
+# мне фильм», «передаю привет», «убери его». Кроме прямого «в инвентарь»/
+# «из кармана» нужен короткий предмет без местоимения, предлога или слова
+# идиомы в начале, и реплика — не вопрос
+_INVENTORY_EXPLICIT_RE = re.compile(
+    r"\b(?:в|из)\s+(?:инвентар\w*|карман\w*)", re.IGNORECASE)
+_ITEM_STOP_HEAD = frozenset({
+    "меня", "мне", "мной", "себя", "себе", "собой", "тебя", "тебе", "нас",
+    "нам", "вас", "вам", "его", "её", "ее", "их", "им", "это", "этот", "эту",
+    "эти", "то", "так", "вот", "свои", "свой", "своё", "свою", "своего",
+    "в", "во", "на", "за", "с", "со", "под", "по", "от", "из", "к", "о",
+    "и", "а", "но", "что", "как",
+    "паузу", "трубку", "слово", "слова", "ответ", "привет", "должное", "курс",
+})
+_ITEM_MAX_WORDS = 4
+
+
+def explicit_inventory_item(text: str, item: Optional[str]) -> Optional[str]:
+    """Предмет для переспроса или None — реплика не похожа на просьбу про
+    предмет. Хвост после первого знака («ключ, он пригодится») отрезается."""
+    if not text or not item:
+        return None
+    head = re.split(r"[,.;:!?…]", item, maxsplit=1)[0].strip()
+    if not head:
+        return None
+    if _INVENTORY_EXPLICIT_RE.search(text):
+        return head
+    if "?" in text:
+        return None
+    words = re.findall(r"[\w-]+", head.lower())
+    if not words or len(words) > _ITEM_MAX_WORDS or words[0] in _ITEM_STOP_HEAD:
+        return None
+    return head

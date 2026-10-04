@@ -206,6 +206,14 @@ _T = {
               "подробности в логе.",
         "en": "Couldn't restart the bot's browser in visible mode — see "
               "the log for details."},
+    # «Запомни сценарий …» вне режима управления (тому, кто к режиму
+    # допущен): сценарии записываются только в режиме
+    "scenario_outside_mode": {
+        "ru": "Сценарии записываются в режиме управления: скажи «перейди в "
+              "режим управления», проделай шаги и там же — «запомни сценарий …».",
+        "en": "Scenarios are recorded in control mode: say \"enter control "
+              "mode\", go through the steps and then say \"save the "
+              "scenario …\" there."},
     # ── Сценарии (ScenarioManager): фиксированные реплики без банка ──
     "scenario_saved_asks": {"ru": " По ходу спрошу: {questions}",
                             "en": " Along the way I'll ask: {questions}"},

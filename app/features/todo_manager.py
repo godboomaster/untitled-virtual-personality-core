@@ -226,9 +226,13 @@ _TODO_TRIGGERS = [
     "запиши", "добавь", "список дел", "to-do", "todo",
 ]
 
+# «в список (дел)» / «в дела» после глагола — адрес, а не текст задачи
+# («добавь в список дел купить хлеб» → «купить хлеб», а не «дел купить хлеб»)
+_TODO_TARGET = r"(?:в\s+(?:спис\w*(?:\s+дел)?|дела)\b[\s,:\-]*)?"
+
 _TODO_EXTRACT_PATTERNS = [
-    re.compile(r"запиши[\s,]*(?:что)?\s*(?:мне|нам|ему|ей|им)?\s*(?:надо|нужно)?\s*[\s,:\-]*(.+)", re.IGNORECASE),
-    re.compile(r"добавь(?:\s+в\s+список)?\s*[\s,:\-]*(.+)", re.IGNORECASE),
+    re.compile(r"запиши[\s,]*" + _TODO_TARGET + r"(?:что)?\s*(?:мне|нам|ему|ей|им)?\s*(?:надо|нужно)?\s*[\s,:\-]*(.+)", re.IGNORECASE),
+    re.compile(r"добавь[\s,]*" + _TODO_TARGET + r"[\s,:\-]*(.+)", re.IGNORECASE),
     re.compile(r"(?:надо|нужно)\s+(?:мне|нам|ему|ей|им)?\s*[\s,:\-]*(.+)", re.IGNORECASE),
 ]
 
@@ -244,6 +248,24 @@ _TODO_TRIGGER_RE = re.compile(
 def is_todo_request(text: str) -> bool:
     # Определяет, является ли запрос просьбой записать дело.
     return bool(_TODO_TRIGGER_RE.search(text))
+
+
+# Явная просьба записать: «запиши …», «добавь/внеси … в список (дел)/в
+# дела/todo», «todo: …». Только она даёт переспрос «Записать «X» в список
+# дел?», когда локальной модели нет. Широкий is_todo_request ловит и «как
+# сделать торт?», «добавь деталей» — там решает основная модель (у неё
+# инструкция маркера), а переспрос на каждую такую реплику — шум
+_TODO_EXPLICIT_RE = re.compile(
+    r"\b(?:запиши|запишите|записывай)\b"
+    r"|\b(?:добавь|добавьте|внеси|занеси|впиши|add|put)\b.{0,60}?"
+    r"(?:\bв\s+(?:спис\w*|дела)\b|\bto-?do\b)"
+    r"|\b(?:to-?do|спис\w*\s+дел)\s*:",
+    re.IGNORECASE,
+)
+
+
+def is_explicit_todo_request(text: str) -> bool:
+    return bool(text) and bool(_TODO_EXPLICIT_RE.search(text))
 
 
 # Просьба ПОКАЗАТЬ список: текст заканчивается на «список/списка/списке дел»
@@ -279,6 +301,20 @@ _TODO_DONE_TRIGGER_RE = re.compile(
 def is_todo_done_request(text: str) -> bool:
     # Определяет, просит ли пользователь убрать дело (сделано/вычеркни/убери).
     return bool(_TODO_DONE_TRIGGER_RE.search(text))
+
+
+# Явная просьба вычеркнуть пункт (для переспроса без локальной модели):
+# глагол-команда или номер пункта. «Готово, прочитал 3 главы» — нет:
+# число там из рассказа, а не номер в списке
+_TODO_DONE_EXPLICIT_RE = re.compile(
+    r"\b(?:вычеркни|вычеркнуть|зачеркни|убери|убрать|удали|удалить|отметь)\b"
+    r"|(?:\bпункт\w*|№|\bномер\w*)\s*\d",
+    re.IGNORECASE,
+)
+
+
+def is_explicit_todo_done_request(text: str) -> bool:
+    return bool(text) and bool(_TODO_DONE_EXPLICIT_RE.search(text))
 
 
 _TODO_DONE_TRIGGERS = [

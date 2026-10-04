@@ -33,6 +33,7 @@ from app.core.users import get_username
 from app.features.todo_manager import (
     TodoManager, is_todo_request, extract_task,
     is_todo_done_request, extract_todo_done_index, is_todo_list_request,
+    is_explicit_todo_request, is_explicit_todo_done_request,
 )
 from app.features.reminder_manager import (
     ReminderManager, parse_reminder, parse_recurring, parse_postpone,
@@ -48,7 +49,10 @@ from app.features.inventory_manager import (
     is_inventory_remove_request,
     extract_inventory_item,
     extract_inventory_remove,
+    explicit_inventory_item,
 )
+from app.features import list_offers
+from app.features.list_offers import ListOffers
 from app.features.computer_control import (
     ComputerControlManager, classify_confirmation, config_enabled as cc_config_enabled,
     MARKER_RE, PAGE_REF, parse_cart_request, parse_click_request, parse_close_request,
@@ -353,6 +357,11 @@ class BotInstance:
         # «что на странице?»): {"data": jpeg-bytes, "caption": str}.
         # Per-chat — та же защита от гонок, что у списков выше.
         self._pending_photos: Dict[str, List[dict]] = {}
+
+        # Переспрос «Записать «X» в список дел?» / «Добавить «X» в инвентарь?»
+        # (без локальной модели): отложенный вопрос чата ждёт «да»/«нет»
+        # того, кого спросили (см. _list_offer_turn)
+        self.list_offers = ListOffers()
 
         # Остаток полностраничного альбома («покажи всю страницу» режется
         # на партии по 10 — лимит media group Telegram): «ещё» досылает
@@ -794,6 +803,20 @@ class BotInstance:
             if lower.startswith(trigger):
                 return text.strip()[len(trigger):].strip().lstrip(",.!?:; ")
         return text
+
+    def _is_scenario_save_command(self, text: Optional[str]) -> bool:
+        """«Запомни/сохрани сценарий X», «save the scenario X» — тем же
+        разбором, что в режиме управления; обращение по имени в начале
+        («Коннор, запомни сценарий …») не мешает."""
+        if not text:
+            return False
+        variants = [text]
+        try:
+            variants.append(self.strip_trigger(text))
+        except Exception:
+            pass  # бот без trigger_words (тестовые заготовки)
+        return any(ScenarioManager.parse_save_request(v) is not None
+                   for v in variants)
 
     def is_owner(self, user_id: str) -> bool:
         """Владелец ли пользователь: id из YAML персоны или OWNER_USER_ID.
@@ -3206,6 +3229,36 @@ class BotInstance:
                             "show it right now.")
             # не резолвится — обычный путь через LLM
 
+        # Ответ на переспрос «Записать «X» в список дел?» / «Добавить «X» в
+        # инвентарь?»: «да» — делаем без LLM, «нет» — снимаем; другая
+        # реплика снимает вопрос молча и идёт обычным путём
+        offer_reply = self._list_offer_turn(raw_user_text, user_id, chat_id,
+                                            cc_mode_key, turn_lang)
+        if offer_reply is not None:
+            self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+            self.memory.add_message("assistant", offer_reply, user_id, chat_id)
+            if self.proactive and chat_id:
+                self.proactive.record_user_response(chat_id)
+            return offer_reply
+
+        # «Запомни сценарий …» вне режима управления: сценарии живут только
+        # в режиме, правилом навсегда (исправление → Rule ниже) это стать не
+        # должно. Допущенному к режиму — подсказка, где они записываются;
+        # для остальных режима «не существует» — обычный ответ без правила
+        scenario_outside_mode = (
+            self._is_scenario_save_command(raw_user_text)
+            and not (cc_mode_key and self.control_mode_on(cc_mode_key)))
+        if (scenario_outside_mode and getattr(self, "computer_control", None)
+                and getattr(self, "scenario_manager", None)
+                and self._cc_allowed(user_id, chat_id)):
+            from app.features import cc_texts
+            sc_hint = cc_texts.t("scenario_outside_mode", turn_lang)
+            self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+            self.memory.add_message("assistant", sc_hint, user_id, chat_id)
+            if self.proactive and chat_id:
+                self.proactive.record_user_response(chat_id)
+            return sc_hint
+
         # Берём историю до добавления нового сообщения — для контекста rewriter'а
         history_for_rewrite = self.memory.stm.get_last(_REWRITE_HISTORY, chat_id=chat_id)
         logger.info(f"[BotInstance] history_for_rewrite: {len(history_for_rewrite)} messages")
@@ -3353,8 +3406,9 @@ class BotInstance:
                     context_parts_out.append(chat_facts_block)
 
             # Исправления → правила: пользователь поправляет бота — формулируем
-            # правило локальной LLM и сохраняем; оно запинится в промпт ниже
-            if _CORRECTION_HINT_RE.search(user_input):
+            # правило локальной LLM и сохраняем; оно запинится в промпт ниже.
+            # «Запомни сценарий …» вне режима управления — не правило (см. выше)
+            if _CORRECTION_HINT_RE.search(user_input) and not scenario_outside_mode:
                 rule = self._extract_rule_from_correction(user_input)
                 if rule:
                     self.memory.ltm.save_facts(
@@ -3972,7 +4026,7 @@ class BotInstance:
                     answer, chat_id, user_name or "User",
                     fallback_task=extracted_task,
                     fallback_done_index=extracted_done_index,
-                    user_text=user_input,
+                    user_text=user_input, user_id=user_id, lang=turn_lang,
                 )
 
             # Обработка inventory-маркеров (добавление/удаление/использование через маркеры)
@@ -3980,7 +4034,10 @@ class BotInstance:
             # там LLM не должен добавлять в инвентарь; обычный разговор при активном
             # курсе сюда проходит — инвентарь во время курса работает как обычно)
             if not is_reminder_request and not is_learning_request and self.inventory_manager:
-                answer = self._process_inventory_markers(answer, extracted_inventory_item, extracted_inventory_remove, user_name or "user", user_text=user_input, chat_id=chat_id)
+                answer = self._process_inventory_markers(
+                    answer, extracted_inventory_item, extracted_inventory_remove,
+                    user_name or "user", user_text=user_input, chat_id=chat_id,
+                    user_id=user_id, lang=turn_lang)
 
             # Маркеры управления компьютером (open_url/open_app/run_task): срезка +
             # pending на подтверждение (или немедленное исполнение при confirm: false).
@@ -4918,6 +4975,32 @@ class BotInstance:
             text = text.replace(f'\x00CB{i}\x00', block)
         return text.strip()
 
+    # Маркеры фич в ответе LLM. Разбираются ВСЕ вхождения (модель может
+    # вычеркнуть два пункта и записать третий одним ответом), каждое
+    # вырезается из видимого текста вместе с пробелами перед ним
+    _PUNISH_FACT_MARK_RE = re.compile(r"[ \t]*\[PUNISH:FACT:(.+?)\]")
+    _TODO_DONE_MARK_RE = re.compile(r"[ \t]*\[TODO_DONE:([^\]]*)\]")
+    _TODO_ADD_MARK_RE = re.compile(r"[ \t]*\[TODO_ADD:([^\]]+)\]")
+    _INV_USE_MARK_RE = re.compile(r"[ \t]*\[INVENTORY_USE:([^\]]+)\]")
+    _INV_ADD_MARK_RE = re.compile(r"[ \t]*\[INVENTORY_ADD:([^\]]+)\]")
+    _INV_REMOVE_MARK_RE = re.compile(r"[ \t]*\[INVENTORY_REMOVE:([^\]]+)\]")
+
+    @staticmethod
+    def _cut_markers(pattern, text: str) -> Tuple[str, List[str]]:
+        # Все вхождения маркера: (текст без них, содержимое каждого)
+        found = []
+
+        def _cut(m):
+            found.append(m.group(1).strip())
+            return ""
+        return pattern.sub(_cut, text), found
+
+    @staticmethod
+    def _tidy_cut(text: str) -> str:
+        # Хвостовые пробелы и лишние пустые строки на месте вырезанных маркеров
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
     def _parse_punishment(self, response: str, user_id: str) -> str:
         # Парсит маркеры наказания, выполняет действия.
         if "[PUNISH:BLOCK]" in response:
@@ -4925,105 +5008,202 @@ class BotInstance:
             self._block_user(user_id)
             logger.info(f"Пользователь {user_id} заблокирован (PUNISH:BLOCK)")
 
-        fact_match = re.search(r'\[PUNISH:FACT:(.+?)\]', response)
-        if fact_match:
-            fact_text = fact_match.group(1).strip()
-            response = response[:fact_match.start()] + response[fact_match.end():]
-            response = response.strip()
+        response, facts = self._cut_markers(self._PUNISH_FACT_MARK_RE, response)
+        for fact_text in facts:
             self.inject_fact(fact_text, user_id)
             logger.info(f"Пользователь {user_id} — подставной факт: {fact_text}")
 
-        return response
+        return self._tidy_cut(response) if facts else response
+
+    def _ask_list_offer(self, chat_id, user_id, user_name: str, kind: str,
+                        value, lang: Optional[str] = None) -> None:
+        """Переспрос «Записать «X» в список дел?» (локальной модели нет):
+        вопрос — отдельным сообщением вслед за ответом, ответ на него ловит
+        _list_offer_turn. Один вопрос на ход: «да» сразу на два неоднозначно."""
+        offers = getattr(self, "list_offers", None)
+        if offers is None:
+            return
+        bucket = self._pending_lists(chat_id)
+        cur = offers.peek(chat_id)
+        if cur and cur.get("question") in bucket:
+            # Бакет списков живёт один ход: вопрос в нём — задан в этом ходе
+            return
+        question = list_offers.text(f"ask_{kind}", lang, v=value)
+        offers.begin(chat_id, kind, value, user_id=user_id,
+                     user_name=user_name, question=question)
+        bucket.append(question)
+
+    def _list_offer_turn(self, text: str, user_id, chat_id, mode_key,
+                         lang: Optional[str]) -> Optional[str]:
+        """Реплика при висящем переспросе (_ask_list_offer) → готовый ответ
+        или None (обычный путь). Вопрос принадлежит тому, кого спросили:
+        реплика другого участника его не трогает; истёкший снимается.
+        «да» → действие, «нет» → короткий отказ; другое — вопрос снят молча."""
+        offers = getattr(self, "list_offers", None)
+        if offers is None or offers.peek(chat_id) is None:
+            return None
+        if mode_key and self.control_mode_on(mode_key):
+            # В режиме управления дела и инвентарь молчат — вопрос снимаем
+            offers.clear(chat_id)
+            return None
+        offer = offers.take(chat_id, user_id)
+        if offer is None:
+            return None
+        verdict = list_offers.classify_reply(offer.get("kind"), text,
+                                             self._address_names())
+        logger.info(f"[ListOffer] chat={chat_id} {offer.get('kind')} → "
+                    f"{verdict or 'не ответ, вопрос снят'}")
+        if verdict == "NO":
+            return list_offers.text("declined", lang)
+        if verdict != "YES":
+            return None
+        return self._apply_list_offer(offer, chat_id, lang)
+
+    def _apply_list_offer(self, offer: dict, chat_id,
+                          lang: Optional[str]) -> Optional[str]:
+        # «да» на переспрос: то же действие, что по маркеру LLM, + короткое
+        # подтверждение; список — отдельным сообщением, как у маркеров
+        kind, v = offer.get("kind"), offer.get("value")
+        who = offer.get("user_name") or ""
+        if kind == "todo_add" and self.todo_manager:
+            self._pending_lists(chat_id).append(
+                self.todo_manager.add_item(chat_id, who or "User", str(v), lang=lang))
+            return list_offers.text("done_todo_add", lang, v=v)
+        if kind == "todo_done" and self.todo_manager:
+            result = self.todo_manager.remove_item(chat_id, int(v), lang=lang)
+            if not result:
+                return list_offers.text("gone_todo_done", lang, v=v)
+            self._pending_lists(chat_id).append(result)
+            return list_offers.text("done_todo_done", lang, v=v)
+        inv = self.inventory_manager
+        if kind == "inventory_add" and inv:
+            if inv.has_item(v):
+                return list_offers.text("dup_inventory_add", lang, v=v)
+            desc, expires = self._enrich_inventory_item(v, lang=lang)
+            inv.add_item(v, desc, source=who or "user", expires=expires)
+            if not inv.has_item(v):
+                return list_offers.text("full_inventory_add", lang, v=v)
+            self._pending_lists(chat_id).append(inv.get_list_text())
+            return list_offers.text("done_inventory_add", lang, v=v)
+        if kind == "inventory_remove" and inv:
+            name = self._find_inventory_item_by_substring(v)
+            if not name:
+                return list_offers.text("gone_inventory_remove", lang, v=v)
+            inv.remove_item(name)
+            self._pending_lists(chat_id).append(inv.get_list_text())
+            return list_offers.text("done_inventory_remove", lang, v=name)
+        # Фичу выключили, пока висел вопрос, — обычный путь
+        return None
 
     def _process_todo_marker(
         self, response: str, chat_id: str, user_name: str,
         fallback_task: Optional[str] = None,
         fallback_done_index: Optional[int] = None,
-        user_text: str = "",
+        user_text: str = "", user_id=None, lang: Optional[str] = None,
     ) -> str:
-        """Парсит маркеры [TODO_ADD:...] и [TODO_DONE:N], обновляет список дел.
-        Список дел отправляется отдельным сообщением через _pending_list_messages.
-        Эвристический fallback подтверждается локальной LLM (_confirm_intent)."""
+        """Парсит маркеры [TODO_ADD:...] и [TODO_DONE:N] (все вхождения),
+        обновляет список дел. Список дел отправляется отдельным сообщением
+        через _pending_list_messages. Эвристический fallback подтверждается
+        локальной LLM (_confirm_intent); без неё — переспрос, и только на
+        явную просьбу (_ask_list_offer)."""
         if not self.todo_manager:
             return response
 
-        # Удаление: [TODO_DONE:N]
-        done_match = re.search(r'\[TODO_DONE:(\d+)\]', response)
-        if done_match:
-            index = int(done_match.group(1))
-            response = response[:done_match.start()] + response[done_match.end():]
-            result = self.todo_manager.remove_item(chat_id, index, lang=detect_language(user_text))
+        list_lang = detect_language(user_text)
+        response, done_raw = self._cut_markers(self._TODO_DONE_MARK_RE, response)
+        response, add_raw = self._cut_markers(self._TODO_ADD_MARK_RE, response)
+        rendered = None
+        ask = None
+
+        # Удаление: [TODO_DONE:N]. Номера — по списку, который видела модель:
+        # удаляем по убыванию, иначе после первого удаления остальные съезжают
+        indices = {int(n) for raw in done_raw for n in re.findall(r"\d+", raw)}
+        for index in sorted(indices, reverse=True):
+            result = self.todo_manager.remove_item(chat_id, index, lang=list_lang)
             if result:
-                self._pending_lists(chat_id).append(result)
-            return response.strip()
+                rendered = result
 
         # Fallback удаление через эвристику — подтверждаем через LLM, иначе
         # «готово, прочитал 3 главы» молча удалило бы пункт №3
-        if fallback_done_index is not None:
+        if not done_raw and fallback_done_index is not None:
             verdict = self._confirm_intent(user_text, f"item #{fallback_done_index}", "todo_remove")
             if verdict == "ADD":
-                result = self.todo_manager.remove_item(chat_id, fallback_done_index, lang=detect_language(user_text))
+                result = self.todo_manager.remove_item(chat_id, fallback_done_index, lang=list_lang)
                 if result:
-                    self._pending_lists(chat_id).append(result)
-            elif verdict == "ASK":
-                self._pending_lists(chat_id).append(f"Отметить пункт №{fallback_done_index} как выполненный?")
-            return response.strip()
+                    rendered = result
+            elif verdict == "ASK" and is_explicit_todo_done_request(user_text):
+                ask = ("todo_done", fallback_done_index)
 
         # Добавление: [TODO_ADD:...]
-        match = re.search(r'\[TODO_ADD:([^\]]+)\]', response)
-        task = None
-        if match:
-            task = match.group(1).strip()
-            response = response[:match.start()] + response[match.end():]
-        elif fallback_task:
-            # Эвристический fallback — подтверждаем через LLM
+        tasks = [t for t in add_raw if t]
+        if not add_raw and fallback_task:
+            # Эвристический fallback — подтверждаем через LLM; SKIP — игнорируем
             verdict = self._confirm_intent(user_text, fallback_task, "todo_add")
             if verdict == "ADD":
-                task = fallback_task
-            elif verdict == "ASK":
-                self._pending_lists(chat_id).append(f"Записать «{fallback_task}» в список дел?")
-            # SKIP — игнорируем
+                tasks = [fallback_task]
+            elif verdict == "ASK" and is_explicit_todo_request(user_text):
+                ask = ask or ("todo_add", fallback_task)
+        for task in tasks:
+            rendered = self.todo_manager.add_item(chat_id, user_name, task, lang=list_lang)
 
-        if task:
-            todo_list = self.todo_manager.add_item(chat_id, user_name, task, lang=detect_language(user_text))
-            self._pending_lists(chat_id).append(todo_list)
+        # Итоговый список — один раз, после всех правок
+        if rendered:
+            self._pending_lists(chat_id).append(rendered)
+        if ask:
+            self._ask_list_offer(chat_id, user_id, user_name, *ask,
+                                 lang=lang or list_lang)
+        return self._tidy_cut(response) if (done_raw or add_raw) else response.strip()
 
-        return response.strip()
+    @staticmethod
+    def _parse_inventory_add(raw: str) -> Tuple[str, str, Optional[str]]:
+        # «Название:описание:YYYY-MM-DD» — описание и срок необязательны;
+        # двоеточие внутри описания разбор не ломает
+        parts = raw.split(":")
+        name = parts[0].strip()
+        expires = None
+        if len(parts) > 1 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[-1].strip()):
+            expires = parts.pop().strip()
+        return name, ":".join(parts[1:]).strip(), expires
 
-    def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None, fallback_remove: Optional[str] = None, giver_name: str = "", user_text: str = "", chat_id=None) -> str:
-        """Парсит маркеры [INVENTORY_ADD:...], [INVENTORY_REMOVE:...], [INVENTORY_USE:...], обновляет инвентарь.
+    def _process_inventory_markers(self, response: str, fallback_add: Optional[str] = None,
+                                   fallback_remove: Optional[str] = None, giver_name: str = "",
+                                   user_text: str = "", chat_id=None, user_id=None,
+                                   lang: Optional[str] = None) -> str:
+        """Парсит маркеры [INVENTORY_ADD:...], [INVENTORY_REMOVE:...], [INVENTORY_USE:...]
+        (все вхождения), обновляет инвентарь.
         Инвентарь отправляется отдельным сообщением через _pending_list_messages (per-chat бакет
         по chat_id — иначе при параллельных чатах список уедет не в тот чат).
         Эвристический fallback подтверждается локальной LLM (_confirm_intent), чтобы не добавлять
-        предметы из обычных реплик («получил жабку» не должно добавлять «л жабку»)."""
+        предметы из обычных реплик («получил жабку» не должно добавлять «л жабку»); без неё —
+        переспрос, и только на явную передачу предмета (_ask_list_offer)."""
         if not self.inventory_manager:
             return response
 
         inventory_changed = False
+        ask = None
+        response, use_raw = self._cut_markers(self._INV_USE_MARK_RE, response)
+        response, add_raw = self._cut_markers(self._INV_ADD_MARK_RE, response)
+        response, remove_raw = self._cut_markers(self._INV_REMOVE_MARK_RE, response)
 
         # INVENTORY_USE — бот использует предмет (удаляется)
-        use_match = re.search(r'\[INVENTORY_USE:([^\]]+)\]', response)
-        if use_match:
-            name = use_match.group(1).strip()
-            response = response[:use_match.start()] + response[use_match.end():]
-            self.inventory_manager.use_item(name)
-            inventory_changed = True
+        for name in use_raw:
+            if name:
+                self.inventory_manager.use_item(name)
+                inventory_changed = True
 
         # INVENTORY_ADD — приоритет: маркер от LLM
         # Формат из промпта: [INVENTORY_ADD:Название:описание:YYYY-MM-DD] (дата опциональна)
-        add_match = re.search(r'\[INVENTORY_ADD:([^:\]]+?)(?::([^:\]]*))?(?::(\d{4}-\d{2}-\d{2}))?\]', response)
-        if add_match:
-            name = add_match.group(1).strip()
-            desc = (add_match.group(2) or "").strip()
-            expires = add_match.group(3)
-            response = response[:add_match.start()] + response[add_match.end():]
+        for raw in add_raw:
+            name, desc, expires = self._parse_inventory_add(raw)
+            if not name:
+                continue
             # Дополняем описание/срок через локальную модель, если LLM их не указала
             desc, expires = self._enrich_inventory_item(
                 name, desc, expires, lang=detect_language(user_text))
             self.inventory_manager.add_item(name, desc, source=giver_name, expires=expires)
             inventory_changed = True
         # Fallback: эвристика нашла предмет, но маркера нет — подтверждаем через LLM
-        elif fallback_add:
+        if not add_raw and fallback_add:
             verdict = self._confirm_intent(user_text, fallback_add, "inventory_add")
             if verdict == "ADD":
                 f_desc, f_expires = self._enrich_inventory_item(
@@ -5031,24 +5211,29 @@ class BotInstance:
                 self.inventory_manager.add_item(fallback_add, f_desc, source=giver_name, expires=f_expires)
                 inventory_changed = True
             elif verdict == "ASK":
-                # Локальная LLM недоступна — переспрашиваем вместо слепого добавления
-                self._pending_lists(chat_id).append(f"Добавить «{fallback_add}» в инвентарь?")
+                # Локальная LLM недоступна — переспрашиваем вместо слепого
+                # добавления, но только на явную передачу предмета
+                item = explicit_inventory_item(user_text, fallback_add)
+                if item and not self.inventory_manager.has_item(item):
+                    ask = ("inventory_add", item)
             # SKIP — игнорируем, предмет не создаётся
 
         # INVENTORY_REMOVE — приоритет: маркер от LLM (пользователь забирает или отменяет)
-        remove_match = re.search(r'\[INVENTORY_REMOVE:([^\]]+)\]', response)
-        if remove_match:
-            name = remove_match.group(1).strip()
-            response = response[:remove_match.start()] + response[remove_match.end():]
-            self.inventory_manager.remove_item(name)
-            inventory_changed = True
-        elif fallback_remove:
+        for name in remove_raw:
+            if name:
+                self.inventory_manager.remove_item(name)
+                inventory_changed = True
+        if not remove_raw and fallback_remove:
             verdict = self._confirm_intent(user_text, fallback_remove, "inventory_remove")
             if verdict == "ADD":
                 self.inventory_manager.remove_item(fallback_remove)
                 inventory_changed = True
             elif verdict == "ASK":
-                self._pending_lists(chat_id).append(f"Убрать «{fallback_remove}» из инвентаря?")
+                # Переспрос — только про предмет, который правда есть в инвентаре
+                item = explicit_inventory_item(user_text, fallback_remove)
+                found = self._find_inventory_item_by_substring(item) if item else None
+                if found:
+                    ask = ask or ("inventory_remove", found)
 
         # Проверяем просроченные предметы
         expired = self.inventory_manager.remove_expired_items()
@@ -5057,7 +5242,12 @@ class BotInstance:
 
         if inventory_changed:
             self._pending_lists(chat_id).append(self.inventory_manager.get_list_text())
+        if ask:
+            self._ask_list_offer(chat_id, user_id, giver_name, *ask,
+                                 lang=lang or detect_language(user_text))
 
+        if use_raw or add_raw or remove_raw:
+            return self._tidy_cut(response)
         return response.strip()
 
     # File helpers
