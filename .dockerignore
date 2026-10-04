@@ -1,18 +1,17 @@
-# Секреты (.env.config оставляем — он в git и нужен приложению)
-.env
+# В образ — только то, что нужно запуску (список разрешённого): всё прочее
+# (data/, .env, desktop/, web/ — у веба свой образ, книги, дампы, .git)
+# в контекст сборки не уходит
+*
+!app/
+!addons/
+!pyproject.toml
+!requirements.txt
+!.env.config
+!LICENSE
 
-# Данные и дампы памяти
-data/
-dumps/
-memory_export/
-volumes/
-
-# VCS и служебное
-.git/
-.zcode/
-.DS_Store
-
-# Python
-__pycache__/
-*.pyc
-.venv/
+# Внутри разрешённого
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+**/.DS_Store
+addons/arrodes/qa_eval

@@ -349,12 +349,51 @@ def test_api_origin():
           m.get("/", headers={"Host": "vpc.local:8000"}).status_code == 200)
 
 
+def test_env_bind_mount(tmp: Path):
+    section("5. .env, смонтированный отдельным файлом (Docker): os.replace → EBUSY")
+    import errno
+    from unittest import mock
+    from app.api import security
+    env = tmp / ".env"
+    env.write_text("A=1\nB=2\n", encoding="utf-8")
+    inode = env.stat().st_ino
+    real_replace = os.replace
+
+    def busy_replace(src, dst, *a, **k):
+        if Path(dst) == env:
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        return real_replace(src, dst, *a, **k)
+
+    with mock.patch("os.replace", busy_replace):
+        security.persist_env(env, "C", "x y")
+        security.persist_env(env, "A", "9")
+        security.remove_env(env, "B")
+    text = env.read_text(encoding="utf-8")
+    check("запись и удаление дошли до файла", "C='x y'" in text and "A='9'" in text
+          and "B=" not in text)
+    check("файл тот же (не подменён переименованием)", env.stat().st_ino == inode)
+    check("временных файлов рядом не осталось",
+          sorted(f.name for f in tmp.iterdir() if f.name.startswith(".tmp")) == [])
+
+    def other_error(src, dst, *a, **k):
+        raise OSError(errno.EACCES, "Permission denied")
+
+    with mock.patch("os.replace", other_error):
+        try:
+            security.persist_env(env, "D", "1")
+            raised = False
+        except OSError:
+            raised = True
+    check("другая ошибка replace — не глушится", raised and "D=" not in env.read_text())
+
+
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="sec_gates_"))
     os.environ["VPC_DATA_DIR"] = str(tmp)
     test_export_server(tmp)
     test_telegram(tmp)
     test_api_origin()
+    test_env_bind_mount(tmp)
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0
 

@@ -12,8 +12,11 @@ data/.
 Плюс безопасная запись .env (см. persist_env/remove_env).
 """
 
+import errno
 import json
 import re
+import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Annotated
@@ -105,6 +108,24 @@ def validate_env_value(value: str) -> None:
         raise ValueError("значение не может содержать переносы строк или NUL-байт")
 
 
+def _edit_env(path: Path, edit) -> None:
+    # edit(путь) — set_key/unset_key. .env, смонтированный в контейнер
+    # отдельным файлом (docker-compose.yml: ./.env → /app/.env), подменить
+    # переименованием нельзя — os.replace даёт EBUSY. Тогда правим копию и
+    # пишем её поверх файла: без атомарности, зато правка доходит до .env
+    # хоста и переживает пересоздание контейнера
+    try:
+        edit(str(path))
+    except OSError as e:
+        if e.errno != errno.EBUSY:
+            raise
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            copy = Path(tmp_dir) / path.name
+            shutil.copyfile(path, copy)
+            edit(str(copy))
+            path.write_bytes(copy.read_bytes())
+
+
 def persist_env(path: Path, var: str, value: str) -> None:
     # Записать/обновить переменную в .env атомарно и под локом.
     if not ENV_VAR_RE.match(var):
@@ -112,7 +133,7 @@ def persist_env(path: Path, var: str, value: str) -> None:
     validate_env_value(value)
     from dotenv import set_key
     with _env_lock:
-        set_key(str(path), var, value, quote_mode="always")
+        _edit_env(path, lambda p: set_key(p, var, value, quote_mode="always"))
 
 
 def remove_env(path: Path, var: str) -> None:
@@ -122,7 +143,7 @@ def remove_env(path: Path, var: str) -> None:
     from dotenv import unset_key
     with _env_lock:
         if path.exists():
-            unset_key(str(path), var)
+            _edit_env(path, lambda p: unset_key(p, var))
 
 
 # ── Общий лок для read-modify-write YAML персон ────────────────────────

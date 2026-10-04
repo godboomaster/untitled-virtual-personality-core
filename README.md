@@ -185,8 +185,11 @@ pip install -r requirements.txt
 ### Установка через Docker
 
 ```bash
-docker-compose up --build
+cp .env.example .env        # заполните ключи провайдера и токены
+docker compose up -d --build
 ```
+
+Подробности — в разделе [Docker](#docker).
 
 ---
 
@@ -385,72 +388,35 @@ cd web && npm run dev   # http://localhost:5173
 
 ## Docker
 
-### Dockerfile
+В `docker-compose.yml` три сервиса:
 
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir -r requirements.txt
-
-# Предзагрузка SentenceTransformer модели в образ
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
-
-COPY . .
-
-CMD ["python", "-m", "app.main"]
-```
-
-Особенности образа:
-- Используется `python:3.11-slim` для минимального размера
-- PyTorch устанавливается в CPU-версии (`--index-url https://download.pytorch.org/whl/cpu`)
-- Модель `paraphrase-multilingual-MiniLM-L12-v2` предзагружается на этапе сборки, ускоряя старт контейнера
-
-### docker-compose.yml
-
-```yaml
-services:
-  # connor:
-  #   build: .
-  #   container_name: virtual-persona-connor
-  #   restart: unless-stopped
-  #   command: ["python", "-m", "app.main", "connor"]
-  #   env_file: .env
-  #   environment:
-  #     - BOT_TARGET=connor
-  #   volumes:
-  #     - persona_data:/app/data
-
-volumes:
-  persona_data:
-```
-
-Команды:
+| Сервис | Что запускает | Адрес |
+|---|---|---|
+| `api` | бэкенд `python -m app.main api` | http://127.0.0.1:8000 |
+| `web` | собранный веб-интерфейс (nginx) | http://127.0.0.1:5173 |
+| `bots` | Telegram-боты всех персон с `<ПЕРСОНА>_BOT_TOKEN` в `.env` (профиль `telegram`) | — |
 
 ```bash
-# Запуск Telegram-бота (раскомментируйте в docker-compose.yml)
-docker-compose up -d connor
-
-# Запуск с интерактивным меню (через docker run)
-docker run -it --rm --name vp-menu --env-file .env -v persona_data:/app/data virtual-persona
-
-# Запуск всех сервисов
-docker-compose up -d
+cp .env.example .env                              # ключи провайдера, токены
+docker compose up -d --build                      # API + веб
+docker compose --profile telegram up -d --build   # API + веб + Telegram-боты
+docker compose logs -f api                        # лог бэкенда
+docker compose down                               # остановить (данные остаются)
 ```
 
-**Интерактивное меню через `docker run`:**
+Порты открыты только на `127.0.0.1` хоста. Другие порты задаются в `.env`: `API_PORT` и `WEB_PORT`; адрес API вшивается в веб при сборке, поэтому после смены `API_PORT` нужна пересборка (`--build`).
 
-Команда `docker run -it --rm ... virtual-persona` запускает контейнер с TTY и интерактивным вводом, позволяя выбрать режим работы (Connor, Arrodes или все боты). Флаги:
-- `-i` — интерактивный режим (stdin открыт)
-- `-t` — pseudo-TTY (терминал)
-- `--rm` — удалить контейнер после остановки
-- `--env-file .env` — загрузка переменных окружения
-- `-v persona_data:/app/data` — сохранение данных между запусками
+Где хранятся данные:
+- **`.env`** — файл хоста, смонтирован в контейнер. Ключи и настройки, сохранённые из веба, пишутся в него же. Без `.env` контейнер не запустится.
+- **Персоны** — `app/personas/` и `addons/arrodes/arrodes/personas/` смонтированы с хоста. Созданные и изменённые из веба персоны — те же YAML, что при локальном запуске.
+- **Память персон** — том `vpc_data`, отдельно от `data/` локального запуска. Чтобы переиспользовать локальную память, замените в `docker-compose.yml` `vpc_data:/app/data` на `./data:/app/data`. Не запускайте при этом бота локально и в Docker одновременно.
+- **Модели Hugging Face** — том `hf_cache`. Модель памяти уже в образе; модели книжного поиска Арродеса скачиваются при первом обращении.
 
-Общий volume `persona_data` обеспечивает персистентность ChromaDB между перезапусками.
+Особенности:
+- **Ollama** берётся с хоста: `http://host.docker.internal:11434`. Другой адрес задаётся `DOCKER_OLLAMA_URL` в `.env`. `OLLAMA_URL` из `.env` в контейнере не используется: `localhost` там — сам контейнер.
+- **Часовой пояс** в контейнере — UTC. Задайте `TIMEZONE` в `.env` (например, `Europe/Moscow`), иначе напоминания и границы суток сдвинутся.
+- **Браузера в контейнере нет.** Режим управления компьютером, веб-чаты LLM и поиск через браузер работают только при локальном запуске.
+- API в контейнере слушает `0.0.0.0` (иначе до него не дойдёт проброс порта) и проверяет имя хоста (`API_ALLOWED_HOSTS`, по умолчанию `localhost`). Поэтому при старте в логе есть предупреждение о привязке не к loopback: снаружи API по-прежнему доступен только с `127.0.0.1` хоста.
 
 ---
 
