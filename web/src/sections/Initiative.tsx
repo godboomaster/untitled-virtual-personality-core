@@ -4,7 +4,7 @@ import type { InitiativeEvent, InitiativeState } from '../mockData';
 import { api } from '../api';
 import type { InitiativeData } from '../api';
 import { useApiOnline } from '../apiData';
-import { formatSilence, INIT_TYPE_MAP } from '../initiativeTypes';
+import { formatSilence, INIT_TYPE_MAP, silenceProgress } from '../initiativeTypes';
 import InfoButton from '../components/InfoButton';
 
 interface InitiativeProps {
@@ -194,24 +194,8 @@ export default function Initiative({ personaId: fixedId, embedded }: InitiativeP
     ? null
     : t(apiData.adaptive_threshold ? 'init.freqHintAdaptive' : 'init.freqHint', { n: formatSilence(effSilence, t, lang) });
 
-  // Молчание пользователя против действующего порога: минуты с последней
-  // реплики и доля шкалы. Нет реплики или порога — прочерк и пустая шкала
-  const silenceMin = effSilence != null && lastUserTs
-    ? Math.max(0, Math.floor((nowMs / 1000 - lastUserTs) / 60))
-    : null;
-  const silencePct = silenceMin != null && effSilence
-    ? Math.min(100, Math.round((silenceMin / effSilence) * 100))
-    : 0;
-  const silenceHint = effSilence == null
-    ? '—'
-    : t('init.silenceProgressLive', {
-        n: silenceMin == null
-          ? '—'
-          : silenceMin < 1
-            ? t('room.dur.minShort', { n: 0 })
-            : formatSilence(silenceMin, t, lang),
-        max: formatSilence(effSilence, t, lang),
-      });
+  // Молчание пользователя против действующего порога (шкала и подпись)
+  const silenceBar = silenceProgress(lastUserTs, effSilence, nowMs, t, lang);
 
   return (
     <div className={embedded ? undefined : 'section'}>
@@ -495,9 +479,9 @@ export default function Initiative({ personaId: fixedId, embedded }: InitiativeP
               <InfoButton helpKey="init.silenceProgress" />
             </label>
             <div className="progress-bar">
-              <div className="progress-fill" style={{ width: `${silencePct}%` }} />
+              <div className="progress-fill" style={{ width: `${silenceBar.pct}%` }} />
             </div>
-            <div className="field-hint">{silenceHint}</div>
+            <div className="field-hint">{silenceBar.text}</div>
           </div>
         </div>
       </div>

@@ -14,7 +14,7 @@ import { consumeChatPersonaRequest, useChatOverviewRequest, useChatPersonaReques
 import { captureRects, playFlip } from '../flip';
 import type { FlipRects } from '../flip';
 import ChatOverview from './ChatOverview';
-import { formatSilence, INIT_TYPE_MAP } from '../initiativeTypes';
+import { formatSilence, INIT_TYPE_MAP, silenceProgress } from '../initiativeTypes';
 import { agoLabel } from '../timeAgo';
 import { usePersonaAvatars } from '../avatarStore';
 import PersonaDossier from '../components/PersonaDossier';
@@ -1694,10 +1694,12 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           bayesianFeedback: overlay.init.bayes ?? initBase.bayesianFeedback,
         },
     initStages: t('init.stages').split('|'),
-    initSilenceText: t('init.silenceProgress', {
-      n: 99,
-      max: apiOnline ? initBase.silenceThresholdMin : (overlay.init.silence ?? initBase.silenceThresholdMin),
-    }),
+    // Молчание — по истории чата и действующему порогу бэкенда; без
+    // бэкенда (моки) данных нет — прочерк
+    initSilenceText: apiOnline && initApi
+      ? silenceProgress(lastUserTs, initApi.effective_silence_minutes ?? initApi.silence_threshold_minutes,
+                        Date.now(), t, lang).text
+      : '—',
     files: skinFiles,
     providers:
       apiOnline && apiProviders
