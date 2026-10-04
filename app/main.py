@@ -365,6 +365,19 @@ def show_menu():
     sys.exit(1)
 
 
+def _install_windows_browser_logic():
+    # Windows: окна Chrome бота — своя логика (app/features/browser_win.py,
+    # monkey-patch browser_actions). На macOS/Linux модуль даже не
+    # импортируется — поведение прежнее. VPC_WIN_WINDOWS=0 — выключить.
+    if sys.platform != "win32":
+        return
+    try:
+        from app.features import browser_win
+        browser_win.install()
+    except Exception as e:  # окна — удобство, не повод не запустить бота
+        logger.warning(f"[WinMain] Windows-логика окон не подключена: {e}")
+
+
 def main():
     # 1. Аргумент командной строки
     # 2. Env-переменная BOT_TARGET
@@ -395,6 +408,7 @@ def main():
         sys.exit(1)
 
     logger.info(f"Запуск: {target}")
+    _install_windows_browser_logic()
     start_target(target)
 
 
