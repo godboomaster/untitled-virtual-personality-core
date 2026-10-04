@@ -236,7 +236,8 @@ def run_api(tmp: Path):
 
     section("6. Веб-API: PUT active, GET active, /reminders, календарь")
     rm = ReminderManager(context="api_pauseapi")
-    bot = SimpleNamespace(reminder_manager=rm)
+    # chat_user_language — язык служебных текстов (/reminders); у заглушки — русский
+    bot = SimpleNamespace(reminder_manager=rm, chat_user_language=lambda chat_id: None)
 
     async def fake_get_bot(persona):
         return bot

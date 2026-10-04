@@ -371,7 +371,7 @@ def create_handlers(bot: BotInstance) -> dict:
                 "⏰ Напоминания",
                 "/remind <что> [через N …] — напомнить",
                 "/reminders — активные напоминания",
-                "/cancel_reminder <id> — отменить (id из /reminders; можно номер)",
+                "/cancel_reminder <номер> — отменить (номер из /reminders)",
                 "Или просто: «напомни через час …».",
             ]
         if bot.inventory_manager:
@@ -582,52 +582,56 @@ def create_handlers(bot: BotInstance) -> dict:
             await update.message.reply_text("Напоминания не активны для этой персоны.")
             return
         chat_id = str(update.effective_chat.id)
+        en = bot.chat_user_language(chat_id) == "en"
         active = bot.reminder_manager.get_active(chat_id)
         if not active:
-            await update.message.reply_text("Активных напоминаний нет.")
+            await update.message.reply_text("No active reminders." if en else "Активных напоминаний нет.")
             return
         from app.features.reminder_manager import format_reminder_when
-        lines = ["Активные напоминания:"]
+        # Автор — только в группе (в личке это всегда собеседник) и без
+        # telegram-id: в группе имя хранится тегом «Имя (ID)» для модели
+        group = update.effective_chat.type != "private"
+        lines = ["Active reminders:" if en else "Активные напоминания:"]
         for i, r in enumerate(active):
-            task = r.get("task") or "(без описания)"
-            author = r.get("user_name") or ""
-            author_text = f" (от {author})" if author else ""
-            when = format_reminder_when(r)
-            # id рядом с номером: номер живёт только до следующего изменения
-            # списка, id — вместе с напоминанием (см. parse_reminder_ref)
-            lines.append(f"{i + 1}. [{r.get('id') or '—'}] {task}{author_text} — {when}")
+            task = r.get("task") or ("(no description)" if en else "(без описания)")
+            author = re.sub(r"\s*\(\d+\)\s*$", "", r.get("user_name") or "") if group else ""
+            author_text = (f" (from {author})" if en else f" (от {author})") if author else ""
+            when = format_reminder_when(r, "en" if en else "ru")
+            lines.append(f"{i + 1}. {task}{author_text} — {when}")
+        # Номер в /cancel_reminder — строка именно этого списка (note_listed),
+        # поэтому служебный id показывать не нужно
+        bot.reminder_manager.note_listed(chat_id, active)
         lines.append("")
-        lines.append("Чтобы отменить: /cancel_reminder <id> (например "
-                     f"/cancel_reminder {active[0].get('id') or 'r1a2b3'}) "
-                     "или номер из списка")
+        lines.append("To cancel: /cancel_reminder <number>" if en
+                     else "Чтобы отменить: /cancel_reminder <номер>")
         await update.message.reply_text("\n".join(lines))
 
     async def cancel_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.reminder_manager:
             return
         chat_id = str(update.effective_chat.id)
+        en = bot.chat_user_language(chat_id) == "en"
         from app.features.reminder_manager import parse_reminder_ref
         if not context.args:
             await update.message.reply_text(
-                "Использование: /cancel_reminder <id> (id из /reminders, "
-                "например r1a2b3) или номер строки списка")
+                "Usage: /cancel_reminder <number> (from /reminders)" if en
+                else "Использование: /cancel_reminder <номер> (номер из /reminders)")
             return
         ref = parse_reminder_ref(context.args[0])
         if ref is None:
             await update.message.reply_text(
-                "Не понял, что отменить: нужен id из /reminders (например "
-                "r1a2b3) или номер строки.")
+                "Didn’t get what to cancel: I need a number from /reminders." if en
+                else "Не понял, что отменить: нужен номер из /reminders.")
             return
         removed = bot.reminder_manager.cancel_by_ref(chat_id, ref[1])
         if removed:
-            # Называем задачу и id: если номер указывал не на то (список
-            # успел измениться), это сразу видно
-            task = removed.get("task") or "без описания"
-            await update.message.reply_text(
-                f"Отменено: «{task}» [{removed.get('id') or '—'}].")
+            # Называем задачу: если номер указывал не на то, это сразу видно
+            task = removed.get("task") or ("no description" if en else "без описания")
+            await update.message.reply_text(f"Cancelled: “{task}”." if en else f"Отменено: «{task}».")
         else:
             await update.message.reply_text(
-                "Такого напоминания нет — посмотри /reminders.")
+                "There is no such reminder anymore — see /reminders." if en
+                else "Такого напоминания уже нет — посмотри /reminders.")
 
     async def inventory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.inventory_manager:

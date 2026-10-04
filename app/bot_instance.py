@@ -158,11 +158,10 @@ _CHAIN_PLAY_RE = re.compile(
 
 
 def _fmt_reminder_choices(choices: list) -> str:
-    """Нумерованный список напоминаний для LLM-контекста: 1) [r3f9a2] "задача"
-    at 12:30. id в списке — не только для человека: ответ пользователя
-    (reminder_manager.resolve_postpone_choice) разбирает номер/id через тот же
-    parse_reminder_ref, что и cancel_by_ref, и переносит по id, поэтому id
-    показан рядом с номером."""
+    """Нумерованный список напоминаний для LLM-контекста: 1) "задача" at
+    12:30. Без служебного id: модель переписывала «[r3f9a2]» в ответ
+    пользователю. Ответ номером (resolve_postpone_choice) сверяется со
+    списком id, запомненным на момент вопроса, — порядок тот же."""
     parts = []
     for i, c in enumerate(choices):
         # Время пользователя (TIMEZONE), а не системный пояс процесса
@@ -170,14 +169,15 @@ def _fmt_reminder_choices(choices: list) -> str:
         when = when_dt.strftime("%H:%M")
         if when_dt.date() != timeutil.today():
             when = when_dt.strftime("%d.%m %H:%M")
-        parts.append(f"{i+1}) [{c.get('id') or '?'}] \"{c.get('task') or '?'}\" at {when}")
+        parts.append(f"{i+1}) \"{c.get('task') or '?'}\" at {when}")
     return "; ".join(parts)
 
 
 def _fmt_reminder_list(items: list) -> str:
     """Список напоминаний для LLM-контекста ответа «какие у меня напоминания?»:
-    1) [r3f9a2] "задача" — at 12:30 (by Аня). Повтор — расписанием, пауза —
-    пометкой. id рядом с номером — по нему же работает отмена."""
+    1) "задача" — at 12:30 (by Аня). Повтор — расписанием, пауза — пометкой.
+    Без служебного id (модель переписывала его в ответ): «отмени напоминание
+    2» — строка показанного списка (ReminderManager.note_listed)."""
     parts = []
     for i, r in enumerate(items):
         if r.get("recurrence"):
@@ -190,8 +190,10 @@ def _fmt_reminder_list(items: list) -> str:
             when = f"at {when}"
         if r.get("paused"):
             when += " (paused)"
-        who = f" (by {r['user_name']})" if r.get("user_name") else ""
-        parts.append(f"{i + 1}) [{r.get('id') or '?'}] \"{r.get('task') or '?'}\" — {when}{who}")
+        # В группе имя хранится тегом «Имя (ID)» — id модели не нужен
+        who_name = re.sub(r"\s*\(\d+\)\s*$", "", r.get("user_name") or "")
+        who = f" (by {who_name})" if who_name else ""
+        parts.append(f"{i + 1}) \"{r.get('task') or '?'}\" — {when}{who}")
     return "; ".join(parts)
 
 
@@ -4874,12 +4876,17 @@ class BotInstance:
                     rm.clear_pending_remind(chat_id)  # тема сменилась — вопрос «когда?» снят
                 if cancel_req is not None:
                     result = rm.cancel_request(chat_id, cancel_req)
+                    if result.get("not_found"):
+                        # Модель покажет список — номер дальше по нему
+                        rm.note_listed(chat_id, result.get("active") or [])
                     if result.get("ambiguous"):
                         rm.begin_pending_cancel_choice(
                             chat_id, [r.get("id") for r in result["ambiguous"]], user_id=user_id)
                     reminder_context = _reminder_cancel_context(result)
                 else:
                     active = rm.get_active(chat_id)
+                    # Номер в «отмени напоминание 2» — строка этого списка
+                    rm.note_listed(chat_id, active)
                     reminder_context = (
                         "The user asked which reminders they have. Active reminders: "
                         f"{_fmt_reminder_list(active)}. Present this list — numbered, tasks and "
@@ -6396,7 +6403,7 @@ class BotInstance:
                     user_id=user_id, username=get_username(user_id),
                 )
                 task_display = f" «{rem_task}»" if rem_task else ""
-                return f"Хорошо, буду напоминать{task_display} — {format_schedule(rec_schedule)}."
+                return f"Хорошо, буду напоминать{task_display} — {format_schedule(rec_schedule, 'ru')}."
             parsed = parse_reminder("напомни " + args)
             if parsed:
                 rem_task, rem_delay = parsed

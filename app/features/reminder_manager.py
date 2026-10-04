@@ -305,10 +305,13 @@ _DAYPART_RES = [
 
 # Час + родительный падеж части суток: «в 8 вечера», «8 утра», «в 8:30 вечера».
 # У часовой формы — lookbehind: «8:30 вечера» не должно матчиться как «30 вечера».
+# Предлог («в», «к», «до», «около») входит в совпадение — его спан вырезается
+# из задачи вместе со временем, иначе оставалось «в выпить таблетку»
+_DAYPART_PREP = r"(?:\b(?:в|к|до|около)\s+)?"
 _HOUR_MIN_DAYPART_RE = re.compile(
-    r"\b(\d{1,2})[:.](\d{2})\s*(утра|дня|вечера|ночи)\b", re.IGNORECASE)
+    _DAYPART_PREP + r"\b(\d{1,2})[:.](\d{2})\s*(утра|дня|вечера|ночи)\b", re.IGNORECASE)
 _HOUR_DAYPART_RE = re.compile(
-    r"(?<![:.\d])\b(\d{1,2})\s*(утра|дня|вечера|ночи)\b", re.IGNORECASE)
+    _DAYPART_PREP + r"(?<![:.\d])\b(\d{1,2})\s*(утра|дня|вечера|ночи)\b", re.IGNORECASE)
 
 _DAYPART_DEFAULT_HOUR = {"am": 9, "day": 15, "evening": 19, "night": 23}
 _HOUR_GEN_TO_KIND = {"утра": "am", "дня": "day", "вечера": "evening", "ночи": "night"}
@@ -857,10 +860,36 @@ def parse_recurring(text: str, trigger_words: Optional[List[str]] = None) -> Opt
     if schedule is None:
         return None
 
-    abs_time = _parse_absolute_time(text)
-    if not abs_time:
-        return None  # время не указано — уточним через pending
-    abs_hour, abs_minute, time_match = abs_time
+    # Часть суток при часе: «в 10 вечера» — 22:00, а не 10:00 (раньше
+    # повтор вставал на утро, а «вечера» оставалось в тексте задачи)
+    time_spans = []
+    hg = _HOUR_MIN_DAYPART_RE.search(lower)
+    if hg:
+        abs_hour = _adjust_hour_by_daypart(float(hg.group(1)), _HOUR_GEN_TO_KIND[hg.group(3)])
+        abs_minute = int(hg.group(2))
+        time_spans.append(hg.span())
+    else:
+        hg = _HOUR_DAYPART_RE.search(lower)
+        if hg:
+            abs_hour = _adjust_hour_by_daypart(float(hg.group(1)), _HOUR_GEN_TO_KIND[hg.group(2)])
+            abs_minute = 0
+            time_spans.append(hg.span())
+    if not hg:
+        abs_time = _parse_absolute_time(text)
+        if not abs_time:
+            return None  # время не указано — уточним через pending
+        abs_hour, abs_minute, time_match = abs_time
+        time_spans.append(time_match.span())
+        # «at 7 in the evening», «в 7 вечером» — часть суток сразу после
+        # времени. Только вплотную: «night» в тексте задачи часы не трогает
+        tail = lower[time_match.end():]
+        for pattern, kind in _DAYPART_RES:
+            m = pattern.match(tail.lstrip())
+            if m:
+                abs_hour = _adjust_hour_by_daypart(abs_hour, kind)
+                start = time_match.end() + (len(tail) - len(tail.lstrip()))
+                time_spans.append((start + m.start(), start + m.end()))
+                break
     # 24:00 и 0:00 — один и тот же момент, поэтому час нормализуем, а не
     # отбрасываем запрос («каждый день в 24:00», «к полуночи»).
     schedule["hour"] = _normalize_hour(abs_hour)
@@ -869,7 +898,7 @@ def parse_recurring(text: str, trigger_words: Optional[List[str]] = None) -> Opt
     # Задача — текст без маркеров повторения, времени и «напомни».
     # Спаны удаляем с КОНЦА строки, чтобы офсеты не съезжали.
     task = text
-    for s, e in sorted([recur_match.span(), time_match.span()], reverse=True):
+    for s, e in sorted([recur_match.span(), *time_spans], reverse=True):
         task = task[:s] + " " + task[e:]
     task = re.sub(r"\b(?:напомни|напоминай|напомнить|напоминание|напомните|напомню|напоминал)\b", " ", task, flags=re.IGNORECASE)
     task = re.sub(r"\bremind\w*(?:\s+(?:me|us))?\b", " ", task, flags=re.IGNORECASE)
@@ -956,11 +985,30 @@ def _join_names(names: List[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def format_schedule(schedule: dict) -> str:
+# «По понедельникам и пятницам» — для русского описания расписания
+_WEEKDAY_NAMES_RU_DAT = [
+    "понедельникам", "вторникам", "средам", "четвергам", "пятницам", "субботам", "воскресеньям",
+]
+
+
+def format_schedule(schedule: dict, lang: Optional[str] = "en") -> str:
     # Человекочитаемое описание расписания: «every day at 12:30»,
     # «every weekday (Mon–Fri) at 9:00», «every Monday and Friday at 18:00».
+    # lang="ru" — для текстов пользователю: «каждый день в 12:30», «по
+    # будням в 9:00», «по понедельникам и пятницам в 18:00». В контекст
+    # модели — английский (промпты на английском)
     hh = f"{schedule['hour']:02d}:{schedule['minute']:02d}"
     days = schedule_days(schedule)
+    if lang == "ru":
+        if days is None:
+            return f"каждый день в {hh}"
+        if days == [0, 1, 2, 3, 4]:
+            return f"по будням в {hh}"
+        if days == [5, 6]:
+            return f"по выходным в {hh}"
+        names = [_WEEKDAY_NAMES_RU_DAT[d] for d in days]
+        joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " и " + names[-1]
+        return f"по {joined} в {hh}"
     if days is None:
         return f"every day at {hh}"
     if days == [0, 1, 2, 3, 4]:
@@ -1181,21 +1229,39 @@ def _is_armed(r: dict, now: float) -> bool:
     return not r.get("fired") and not is_paused(r) and r["trigger_at"] > now
 
 
-def format_reminder_when(r: dict) -> str:
+def format_reminder_when(r: dict, lang: Optional[str] = None) -> str:
     """«Когда» для текстового списка напоминаний (/reminders в Telegram и
-    веб-чате): расписание повтора или остаток до срабатывания, у стоящего
-    на паузе — пометка; время разового, прошедшее на паузе, остатком не
-    показываем (отрицательных минут не бывает)."""
+    веб-чате): расписание повтора или когда сработает, у стоящего на паузе —
+    пометка; время разового, прошедшее на паузе, остатком не показываем
+    (отрицательных минут не бывает). Ближе часа — остатком («через 9 мин»),
+    дальше — временем («в 18:30», «завтра в 10:00»): «через 1380 мин» не
+    читается. lang="en" — по-английски, иначе по-русски."""
+    en = lang == "en"
     if r.get("recurrence"):
-        when = format_schedule(r["recurrence"])
+        when = format_schedule(r["recurrence"], "en" if en else "ru")
     else:
         remain = r["trigger_at"] - time.time()
         mins = int(remain / 60)
         if remain <= 0:
-            when = "время прошло"
+            when = "time has passed" if en else "время прошло"
+        elif mins < 1:
+            when = f"in {int(remain)} sec" if en else f"через {int(remain)} сек"
+        elif mins < 60:
+            when = f"in {mins} min" if en else f"через {mins} мин"
         else:
-            when = f"через {mins} мин" if mins > 0 else f"через {int(remain)} сек"
-    return f"{when} (на паузе)" if is_paused(r) else when
+            dt = timeutil.from_ts(r["trigger_at"])
+            hm = dt.strftime("%H:%M")
+            days = (dt.date() - timeutil.today()).days
+            if days == 0:
+                when = f"at {hm}" if en else f"в {hm}"
+            elif days == 1:
+                when = f"tomorrow at {hm}" if en else f"завтра в {hm}"
+            else:
+                d = dt.strftime("%d.%m")
+                when = f"{d} at {hm}" if en else f"{d} в {hm}"
+    if is_paused(r):
+        when += " (paused)" if en else " (на паузе)"
+    return when
 
 
 # ─── Менеджер ─────────────────────────────────────────────
@@ -1228,6 +1294,14 @@ class ReminderManager:
 
         self._reminders: List[dict] = []
         self._load()
+
+        # Последний показанный список чата: chat_id -> [id по порядку]. Номер
+        # («/cancel_reminder 2», «отмени напоминание 2») — строка ЭТОГО
+        # списка: между показом и отменой одно могло сработать или
+        # добавиться новое, и номер в свежем get_active указал бы на другое.
+        # Поэтому id в списке пользователю не показываем. В памяти:
+        # после рестарта номер — по текущему порядку, как раньше
+        self._listed: Dict[str, List[str]] = {}
 
         # In-memory состояние /remind без времени: chat_id -> {task, asked_at}
         # (пережидает до ответа пользователя, теряется на рестарте — это ок)
@@ -1362,6 +1436,11 @@ class ReminderManager:
         путь — :meth:`cancel_by_ref` с id (см. parse_reminder_ref)."""
         return self.cancel_by_ref(chat_id, int(index)) is not None
 
+    def note_listed(self, chat_id: str, items: List[dict]):
+        """Запомнить порядок списка, который увидел пользователь (см. _listed)."""
+        with self._lock:
+            self._listed[str(chat_id)] = [str(r.get("id") or "") for r in items]
+
     def cancel_by_ref(self, chat_id: str, ref) -> Optional[dict]:
         """Удаляет напоминание по ссылке: id («r3f9a2», регистр и «#» не
         важны) или 0-based индексу в get_active (для совместимости с вводом
@@ -1375,7 +1454,15 @@ class ReminderManager:
         active = self.get_active(chat_id)
         target = None
         if isinstance(ref, int) and not isinstance(ref, bool):
-            if 0 <= ref < len(active):
+            with self._lock:
+                listed = self._listed.get(str(chat_id))
+            if listed is not None:
+                # Строка показанного списка; её напоминания уже нет — None,
+                # а не соседнее, съехавшее на этот номер
+                rid = listed[ref].lower() if 0 <= ref < len(listed) else ""
+                target = next((r for r in active
+                               if rid and str(r.get("id") or "").lower() == rid), None)
+            elif 0 <= ref < len(active):
                 target = active[ref]
         else:
             rid = str(ref or "").strip().lstrip("#").lower()
@@ -1744,8 +1831,11 @@ class ReminderManager:
         ref = req.get("ref")
         if ref:
             kind, val = ref
-            if kind == "index":
-                val = len(active) - 1 if val == -1 else val
+            if kind == "index" and val == -1:
+                # «Последнее» — последнее в показанном списке, если он был
+                with self._lock:
+                    listed = self._listed.get(str(chat_id))
+                val = len(listed if listed is not None else active) - 1
             target = self.cancel_by_ref(chat_id, val)
             return {"cancelled": [target]} if target else {"not_found": True, "active": active}
         hint = req.get("hint")

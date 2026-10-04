@@ -185,17 +185,19 @@ def test_reminders_api():
 
         mgr2 = ReminderManager(context="wave2_rem2")
         r = mgr2.add_reminder("chat2", "User", "полить цветы", 3600)
-        bot2 = SimpleNamespace(reminder_manager=mgr2)
+        bot2 = SimpleNamespace(reminder_manager=mgr2, chat_user_language=lambda chat_id: None)
         req_list = ChatRequest(persona="connor", message="/reminders", chat_id="chat2")
         reply, is_llm = server_mod._try_slash_command(bot2, req_list)
-        check("/reminders (текст): в ответе виден id напоминания",
-              f"[id {r['id']}]" in reply)
+        # Служебный id пользователю не показываем: номер — строка показанного
+        # списка (note_listed), id по-прежнему принимается в /cancel_reminder
+        check("/reminders (текст): номер строки есть, служебного id нет",
+              "1. полить цветы" in reply and r["id"] not in reply)
 
         req_cancel = ChatRequest(persona="connor", message=f"/cancel_reminder {r['id']}",
                                  chat_id="chat2")
         reply2, _ = server_mod._try_slash_command(bot2, req_cancel)
         check("/cancel_reminder <id>: отменяет по id (не только по номеру)",
-              "полить цветы" in reply2 and r["id"] in reply2)
+              "полить цветы" in reply2 and "отменено" in reply2.lower())
         check("/cancel_reminder <id>: напоминание реально удалено",
               len(mgr2.get_active("chat2")) == 0)
 
@@ -203,8 +205,8 @@ def test_reminders_api():
         req_bad = ChatRequest(persona="connor", message="/cancel_reminder r00000",
                               chat_id="chat2")
         reply3, _ = server_mod._try_slash_command(bot2, req_bad)
-        check("/cancel_reminder <unknown id>: не падает, честный ответ 'не найдено'",
-              "найдено" in reply3.lower())
+        check("/cancel_reminder <unknown id>: не падает, честный ответ «уже нет»",
+              "уже нет" in reply3.lower())
 
         # ── _reminder_calendar_items: id из r['id'], дата/время через timeutil ──
         from app.core.config import Config

@@ -919,30 +919,36 @@ def _try_slash_command(bot, req: ChatRequest) -> tuple[str, bool] | None:
     if cmd == "reminders":
         if not bot.reminder_manager:
             return "Напоминания не активны для этой персоны.", False
+        en = bot.chat_user_language(chat_id) == "en"
         active = bot.reminder_manager.get_active(chat_id)
         if not active:
-            return "Активных напоминаний нет.", False
+            return ("No active reminders." if en else "Активных напоминаний нет."), False
         from app.features.reminder_manager import format_reminder_when
-        lines = ["Активные напоминания:"]
+        lines = ["Active reminders:" if en else "Активные напоминания:"]
         for i, r in enumerate(active):
-            task = r.get("task") or "(без описания)"
-            when = format_reminder_when(r)
-            lines.append(f"{i + 1}. {task} — {when} [id {r.get('id')}]")
-        lines += ["", "Чтобы отменить: /cancel_reminder N (или id)"]
+            task = r.get("task") or ("(no description)" if en else "(без описания)")
+            when = format_reminder_when(r, "en" if en else "ru")
+            lines.append(f"{i + 1}. {task} — {when}")
+        # Номер в /cancel_reminder — строка этого списка (note_listed)
+        bot.reminder_manager.note_listed(chat_id, active)
+        lines += ["", "To cancel: /cancel_reminder N" if en else "Чтобы отменить: /cancel_reminder N"]
         return "\n".join(lines), False
 
     if cmd == "cancel_reminder":
         if not bot.reminder_manager:
             return "Напоминания не активны для этой персоны.", False
         from app.features.reminder_manager import parse_reminder_ref
+        en = bot.chat_user_language(chat_id) == "en"
         ref = parse_reminder_ref(args)
         if ref is None:
-            return "Нужен номер или id напоминания из /reminders.", False
+            return ("I need a reminder number from /reminders." if en
+                    else "Нужен номер напоминания из /reminders."), False
         removed = bot.reminder_manager.cancel_by_ref(chat_id, ref[1])
         if removed is None:
-            return "Напоминание с таким номером/id не найдено.", False
-        task = removed.get("task") or "(без описания)"
-        return f"Напоминание «{task}» (id {removed.get('id')}) отменено.", False
+            return ("There is no such reminder anymore — see /reminders." if en
+                    else "Такого напоминания уже нет — посмотри /reminders."), False
+        task = removed.get("task") or ("(no description)" if en else "(без описания)")
+        return (f"Reminder “{task}” cancelled." if en else f"Напоминание «{task}» отменено."), False
 
     if cmd == "inventory":
         if args:
