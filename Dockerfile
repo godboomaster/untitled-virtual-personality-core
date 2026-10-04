@@ -19,9 +19,9 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 
 COPY . .
 
-# Ядро и аддон Арродеса — пакетами: персоны и аддоны аддона находятся через
-# entry points, без установки персоны arrodes нет
-RUN pip install -e . && pip install -e addons/arrodes
+# Ядро — пакетом: аддоны (например, Арродес — отдельный репозиторий) находятся
+# через entry points, их доустанавливают в образ отдельно
+RUN pip install -e .
 
 # В контейнере API слушает все интерфейсы контейнера; наружу его выпускает
 # только проброс порта (в docker-compose.yml — на 127.0.0.1 хоста).

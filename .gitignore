@@ -26,26 +26,16 @@ chroma_db/
 *.log
 logs/
 
-# QA-eval: сгенерированные артефакты прогонов (чанки, промпты, выдача, ответы, оценки)
-# Скрипты, отчёты (*.md) и QA-наборы (*.json) при этом отслеживаются.
-addons/arrodes/qa_eval/**/chunks/
-addons/arrodes/qa_eval/**/prompts/
-addons/arrodes/qa_eval/**/retrieval/
-addons/arrodes/qa_eval/**/answers/
-addons/arrodes/qa_eval/**/eval/
-addons/arrodes/qa_eval/**/qa_parts/
-
 # Сборка пакетов (pip install -e)
 *.egg-info/
 build/
 
 # Локальные материалы — остаются на диске, в git не попадают: чужие картинки
-# (examples/, example.jpg), книги, главы для QA в корне, скриншоты веба,
+# (examples/, example.jpg), книги, скриншоты веба,
 # настройки Claude Code
 examples/
 example.jpg
 *.epub
-/qa_eval/
 web/*.png
 .claude/
 

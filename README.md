@@ -49,7 +49,7 @@ cd virtual-persona-core
 python3 -m venv .venv
 source .venv/bin/activate                    # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-pip install -e . && pip install -e addons/arrodes    # аддон Арродеса, по желанию
+pip install -e .
 
 cp .env.example .env                         # пустой шаблон личных настроек
 python -m app.main api                       # бэкенд: http://127.0.0.1:8000
@@ -178,8 +178,8 @@ BOT_TARGET=all python -m app.main
 
 В проекте одна встроенная персона — тестовый **Коннор** (`app/personas/connor.yaml`): андроид
 RK800, ассистент студентов, уровень `bot`, с режимом управления. Без своих провайдеров и
-моделей — отвечает тем, что выбрано в «Настройках». Аддон Арродеса добавляет персону
-`arrodes`.
+моделей — отвечает тем, что выбрано в «Настройках». Аддон Арродеса (отдельный репозиторий)
+добавляет персону `arrodes`.
 
 Ваши персоны живут в `data/personas/` и в git не попадают. Персона там с тем же id, что у
 встроенной, перекрывает встроенную.
@@ -600,19 +600,17 @@ docker compose down                               # остановить (дан
 (`build_context`) и чинит или чистит ответ (`repair`, `postprocess`). Сломанный или
 неустановленный аддон пропускается с предупреждением в логе.
 
-**Арродес** (`addons/arrodes`) — персона-знаток «Lord of Mysteries»:
-
-- гибридный поиск по тексту книги: векторы, BM25, переранжирование;
-- глоссарий в промпте — только то, что относится к вопросу;
-- ссылки на фрагменты `[ФN]` в ответе с проверкой, что такой фрагмент есть.
+**Арродес** — персона-знаток «Lord of Mysteries», отдельный репозиторий: поиск по тексту
+книги (векторы, BM25, переранжирование), глоссарий в промпте, ссылки на фрагменты `[ФN]`.
+Ставится в тот же Python, что и ядро, после него:
 
 ```bash
-pip install -e . && pip install -e addons/arrodes
-python addons/arrodes/scripts/load_book.py      # epub из volumes/english/ → data/arrodes/book
+pip install -e .                          # ядро — первым
+pip install -e <папка Арродеса>
 ```
 
-`load_book.py` ждёт файлы с «Vol. 1»…«Vol. 8» или «Side Stories» в имени. Без загруженной
-книги Арродес отвечает как обычная персона. Тексты книги в репозиторий не входят.
+Книжная база лежит в папке Арродеса, память персоны — в данных ядра. Сборка базы и
+проверки — в README Арродеса.
 
 ## Устройство
 
@@ -626,7 +624,6 @@ python addons/arrodes/scripts/load_book.py      # epub из volumes/english/ →
 | `app/api/` | FastAPI: сервер, настройки, защита, скины, комната |
 | `app/personas/` | встроенная тестовая персона (Коннор) |
 | `data/personas/` | ваши персоны (вне git) |
-| `addons/arrodes/` | аддон Арродеса |
 | `web/` | веб-интерфейс (React, Vite) |
 | `desktop/` | панель в трее (Tauri) |
 | `scripts/` | тесты, замеры, служебные утилиты |
@@ -637,8 +634,8 @@ python addons/arrodes/scripts/load_book.py      # epub из volumes/english/ →
 
 ## Тесты
 
-Тесты — скрипты `scripts/test_*.py` (82) и `addons/arrodes/scripts/test_*.py` (6), без
-pytest. Запуск из корня проекта:
+Тесты — скрипты `scripts/test_*.py` (85), без pytest; тесты Арродеса — в его
+репозитории. Запуск из корня проекта:
 
 ```bash
 OLLAMA_URL=http://127.0.0.1:9 python -m scripts.test_computer_control
@@ -668,5 +665,5 @@ OLLAMA_URL=http://127.0.0.1:9 python -m scripts.test_computer_control
 - Тот, кто распространяет изменённые файлы проекта, обязан открыть их исходный код под той же
   MPL-2.0. Собственный код, который только использует проект, можно держать закрытым.
 
-Лицензия не распространяется на чужие материалы в репозитории: персонажей и выдержки из
-«Lord of Mysteries» в `addons/arrodes`. Права на них принадлежат их владельцам.
+Лицензия не распространяется на чужие материалы в репозитории: персонажей «Lord of Mysteries»
+в демо-данных веба (`web/src/mockData.ts`). Права на них принадлежат их владельцам.
