@@ -37,6 +37,30 @@ export default function Initiative({ personaId: fixedId, embedded }: InitiativeP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiOnline, persona.id]);
 
+  // Время последней реплики пользователя в веб-чате — тот же источник, что у
+  // «последний ответ: …» на главной (GET /api/home → last_user_ts); раз в
+  // минуту, как главная. nowMs — момент замера, от него считается молчание
+  const [lastUserTs, setLastUserTs] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    setLastUserTs(null);
+    if (!apiOnline) return;
+    let alive = true;
+    const load = () => {
+      setNowMs(Date.now());
+      api
+        .getHome()
+        .then((o) => alive && setLastUserTs(o.personas[persona.id]?.last_user_ts ?? null))
+        .catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [apiOnline, persona.id]);
+
   // Эмоциональная ступень из ignore streak (пороги ядра: 3/5/7/10)
   const stageForStreak = (streak: number) =>
     emotionalStages[streak < 3 ? 0 : streak < 5 ? 1 : streak < 7 ? 2 : streak < 10 ? 3 : 4];
@@ -169,6 +193,25 @@ export default function Initiative({ personaId: fixedId, embedded }: InitiativeP
   const freqHint = effSilence == null || !apiData
     ? null
     : t(apiData.adaptive_threshold ? 'init.freqHintAdaptive' : 'init.freqHint', { n: formatSilence(effSilence, t, lang) });
+
+  // Молчание пользователя против действующего порога: минуты с последней
+  // реплики и доля шкалы. Нет реплики или порога — прочерк и пустая шкала
+  const silenceMin = effSilence != null && lastUserTs
+    ? Math.max(0, Math.floor((nowMs / 1000 - lastUserTs) / 60))
+    : null;
+  const silencePct = silenceMin != null && effSilence
+    ? Math.min(100, Math.round((silenceMin / effSilence) * 100))
+    : 0;
+  const silenceHint = effSilence == null
+    ? '—'
+    : t('init.silenceProgressLive', {
+        n: silenceMin == null
+          ? '—'
+          : silenceMin < 1
+            ? t('room.dur.minShort', { n: 0 })
+            : formatSilence(silenceMin, t, lang),
+        max: formatSilence(effSilence, t, lang),
+      });
 
   return (
     <div className={embedded ? undefined : 'section'}>
@@ -452,9 +495,9 @@ export default function Initiative({ personaId: fixedId, embedded }: InitiativeP
               <InfoButton helpKey="init.silenceProgress" />
             </label>
             <div className="progress-bar">
-              <div className="progress-fill" style={{ width: '55%' }} />
+              <div className="progress-fill" style={{ width: `${silencePct}%` }} />
             </div>
-            <div className="field-hint">{t('init.silenceProgress', { n: 99, max: s.silenceThresholdMin })}</div>
+            <div className="field-hint">{silenceHint}</div>
           </div>
         </div>
       </div>

@@ -409,10 +409,9 @@ def create_handlers(bot: BotInstance) -> dict:
         await update.message.reply_text(text)
 
     async def erase_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Удалить последние N сообщений из STM (deque + ChromaDB).
-        import os
-        owner_id = os.getenv("OWNER_USER_ID", "")
-        if str(update.effective_user.id) != owner_id:
+        # Удалить последние N сообщений из STM (deque + ChromaDB). Владелец —
+        # как в /help: owner из YAML персоны или OWNER_USER_ID
+        if not _is_owner(bot, str(update.effective_user.id)):
             return
 
         chat_id = str(update.effective_chat.id)

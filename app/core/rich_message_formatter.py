@@ -90,15 +90,18 @@ class RichMessageFormatter:
         # Жирный: **text** → <b>text</b>
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
 
-        # Курсив: *text* или _text_ → <i>text</i>
+        # Подчеркнутый: __text__ → <u>text</u> (Rich HTML). Раньше одиночного
+        # «_»: иначе __x__ становился <i>_x_</i>. Порядок как в вебе
+        # (MessageText.tsx): ** раньше *, __ раньше _
+        text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
+
+        # Курсив: *text* или _text_ → <i>text</i>; «_» внутри слова
+        # (snake_case) — не разметка
         text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
         text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
 
         # Зачеркнутый: ~~text~~ → <s>text</s>
         text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
-
-        # Подчеркнутый: __text__ → <u>text</u> (Rich HTML)
-        text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
 
         # Спойлер: ||text|| → <tg-spoiler>text</tg-spoiler>
         text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text)
@@ -192,10 +195,11 @@ class RichMessageFormatter:
         text = _escape_html(text)
 
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        # __ раньше одиночного _ (см. markdown_to_rich_html)
+        text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
         text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
         text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
         text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
-        text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
         text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text)
         text = re.sub(r'==(.+?)==', r'<mark>\1</mark>', text)
 

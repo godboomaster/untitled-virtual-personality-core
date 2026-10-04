@@ -969,7 +969,7 @@ class ScenarioManager:
             run["confirm"] = None
             run["unhandled"] = 0
             if time.time() - float(pend.get("ts") or 0) > PENDING_TTL_SEC:
-                # «да» спустя минуту — не про эту страницу: шаг резолвится
+                # «да» спустя 5 минут — не про эту страницу: шаг резолвится
                 # заново и при риске спросит ещё раз
                 pre.append(self._t("scenario_confirm_expired"))
             else:

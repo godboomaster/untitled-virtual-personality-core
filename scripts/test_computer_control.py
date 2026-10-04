@@ -3550,8 +3550,16 @@ def main():
     m.set_pending("c7", {"kind": "url", "value": "https://youtube.com"})
     m.clear_pending("c7")
     check("pending сбрасывается", m.get_pending("c7") is None)
-    # «Берусь за задачу?» живёт дольше минуты, обычный pending — минуту
+    # «Берусь за задачу?» живёт дольше, обычный pending — PENDING_TTL_SEC
     from app.features import computer_control as _ccm
+    m.set_pending("c7", {"kind": "url", "value": "https://youtube.com"})
+    left = m._pending["c7"]["expires_at"] - time.time()
+    check("обычный pending: срок — PENDING_TTL_SEC (5 минут)",
+          _ccm.PENDING_TTL_SEC == 300
+          and _ccm.PENDING_TTL_SEC - 5 < left <= _ccm.PENDING_TTL_SEC)
+    m._pending["c7"]["expires_at"] = time.time() + _ccm.PENDING_TTL_SEC - 120
+    check("«да» через 2 минуты — pending ещё жив",
+          m.get_pending("c7") is not None)
     m.set_pending("c7", {"kind": "task", "goal": "закажи пиццу"})
     left = m._pending["c7"]["expires_at"] - time.time()
     check("запуск задачи: срок подтверждения — TASK_START_TTL_SEC",

@@ -836,7 +836,7 @@ def _rewrite_image_stm(bot, chat_key: str, user_id: str, display_text: str, repl
 # Слэш-команды веб-чата (зеркало TG): /learn, /remind, /add_todo,
 # /add_inventory — через общий ядровой _dispatch_command (создаёт сущность
 # и отвечает в образе персоны, пишет пару в STM); /web, /todo, /reminders,
-# /cancel_reminder, /inventory, /help — утилитарные, без LLM.
+# /cancel_reminder, /inventory, /files, /help — утилитарные, без LLM.
 _SLASH_DISPATCH = {
     "learn": "learn",
     "stop_learning": "stop_learning",
@@ -854,6 +854,7 @@ _SLASH_HELP = (
     "/todo — список дел · /add_todo <задача>\n"
     "/reminders — активные напоминания · /cancel_reminder N\n"
     "/inventory — инвентарь · /add_inventory <предмет>[: описание]\n"
+    "/files — загруженные файлы\n"
     "/help — этот список"
 )
 
@@ -925,6 +926,16 @@ def _try_slash_command(bot, req: ChatRequest) -> tuple[str, bool] | None:
         if not bot.inventory_manager:
             return "Инвентарь не активен для этой персоны.", False
         return bot.inventory_manager.get_list_text(), False
+
+    if cmd == "files":
+        # Как /files в TG: файлы собеседника (в вебе — req.user_id, тот же
+        # ключ, что у загрузки через /api/personas/{p}/files)
+        if not getattr(bot, "file_db", None):
+            return "Загрузка файлов не активна для этой персоны.", False
+        files = sorted(bot.file_db.get_loaded_files(req.user_id))
+        if not files:
+            return "Нет загруженных файлов.", False
+        return "Загруженные файлы:\n" + "\n".join(f"- {f}" for f in files), False
 
     kind = _SLASH_DISPATCH.get(cmd)
     if kind:

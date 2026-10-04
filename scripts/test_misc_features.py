@@ -15,7 +15,10 @@ test_state_io.py:
     инициализация (double-checked locking, ровно один экземпляр под гонкой);
   - file_sender: код-блок без языкового тега распознаётся и получает
     вменяемое расширение; частично записанные tmp-файлы подчищаются при
-    сбое записи посреди prepare_response().
+    сбое записи посреди prepare_response();
+  - веб-слэш /files: список загруженных файлов (как /files в TG), без
+    файловой базы — «не активна»;
+  - TG /erase: владелец из YAML персоны (bot.owner) тоже может стирать STM.
 
 Все проверки — на временных каталогах/моках, без сети и без реального data/.
 Запуск: PYTHONPATH=. python3 scripts/test_misc_features.py
@@ -528,6 +531,115 @@ def test_file_sender_untagged_and_leak():
           not Path(written_paths[0]).parent.exists())
 
 
+# ════════════ H. Веб-слэш /files ════════════
+
+def test_web_slash_files():
+    section("H. веб-слэш /files: файлы собеседника, как в TG")
+    from types import SimpleNamespace
+    from app.api import server as server_mod
+    from app.api.schemas import ChatRequest
+
+    seen = {}
+
+    class FakeFileDB:
+        def get_loaded_files(self, user_id):
+            seen["user_id"] = user_id
+            return ["б.txt", "а.pdf"] if user_id == "web_user" else []
+
+    req = ChatRequest(persona="connor", message="/files")
+    reply, llm = server_mod._try_slash_command(
+        SimpleNamespace(file_db=FakeFileDB()), req)
+    check("/files: список файлов, без LLM",
+          not llm and reply.startswith("Загруженные файлы:")
+          and "- а.pdf" in reply and "- б.txt" in reply)
+    check("/files: файлы ищутся по user_id запроса (ключ загрузки)",
+          seen.get("user_id") == "web_user")
+    reply, _ = server_mod._try_slash_command(
+        SimpleNamespace(file_db=FakeFileDB()),
+        ChatRequest(persona="connor", message="/files", user_id="другой"))
+    check("/files: пусто — «Нет загруженных файлов.»",
+          reply == "Нет загруженных файлов.")
+    reply, _ = server_mod._try_slash_command(SimpleNamespace(file_db=None), req)
+    check("/files без файловой базы — «не активна», не «Неизвестная команда»",
+          "не активна" in reply and "Неизвестная" not in reply)
+    check("/files есть в /help веба", "/files" in server_mod._SLASH_HELP)
+
+
+# ════════════ I. TG /erase: владелец из YAML ════════════
+
+def test_tg_erase_yaml_owner():
+    section("I. TG /erase: владелец из YAML персоны")
+    import asyncio
+    import importlib
+    import os
+    import types
+
+    # python-telegram-bot может не стоять в тестовом интерпретаторе —
+    # заглушки только на время импорта модуля, потом убираются
+    stubbed = []
+    try:
+        importlib.import_module("telegram")
+    except ImportError:
+        class _Exc(Exception):
+            pass
+
+        def _stub(name, **attrs):
+            mod = types.ModuleType(name)
+            mod.__getattr__ = lambda attr: mock.MagicMock(name=attr)
+            for k, v in attrs.items():
+                setattr(mod, k, v)
+            sys.modules[name] = mod
+            stubbed.append(name)
+
+        _stub("telegram")
+        _stub("telegram.ext", ApplicationHandlerStop=_Exc)
+        _stub("telegram.constants")
+        _stub("telegram.error", TelegramError=_Exc, Forbidden=_Exc)
+    fresh = [m for m in ("app.telegram_bot", "app.core.telegram_sender",
+                         "app.features.reply_context") if m not in sys.modules]
+    try:
+        tg = importlib.import_module("app.telegram_bot")
+        bot = mock.MagicMock()
+        bot.owner = "111"
+        bot.stm_pop_last_n.return_value = 2
+        handlers = tg.create_handlers(bot)
+
+        def _run(user_id):
+            replies = []
+
+            async def _reply(text, *a, **k):
+                replies.append(text)
+
+            update = types.SimpleNamespace(
+                effective_user=types.SimpleNamespace(id=user_id),
+                effective_chat=types.SimpleNamespace(id=-5),
+                message=types.SimpleNamespace(reply_text=_reply))
+            context = types.SimpleNamespace(args=["2"])
+            asyncio.run(handlers["erase"](update, context))
+            return replies
+
+        with mock.patch.dict(os.environ, {"OWNER_USER_ID": ""}):
+            bot.stm_pop_last_n.reset_mock()
+            replies = _run(111)
+            check("/erase от владельца из YAML (OWNER_USER_ID пуст) — стирает",
+                  bot.stm_pop_last_n.call_args == mock.call(2, "-5")
+                  and replies == ["Удалено 2 сообщений из STM."])
+            bot.stm_pop_last_n.reset_mock()
+            replies = _run(222)
+            check("/erase от постороннего — молча ничего",
+                  not bot.stm_pop_last_n.called and not replies)
+        with mock.patch.dict(os.environ, {"OWNER_USER_ID": "333"}):
+            bot.stm_pop_last_n.reset_mock()
+            _run(333)
+            check("/erase от OWNER_USER_ID — по-прежнему стирает",
+                  bot.stm_pop_last_n.called)
+    finally:
+        for m in fresh:
+            sys.modules.pop(m, None)
+        for m in stubbed:
+            sys.modules.pop(m, None)
+
+
 def main():
     test_clear_backup_chat_isolation()
     test_memory_wipe_learning_setup_multiuser()
@@ -537,6 +649,8 @@ def main():
     test_query_rewriter_punctuation()
     test_local_router_singleton_lock()
     test_file_sender_untagged_and_leak()
+    test_web_slash_files()
+    test_tg_erase_yaml_owner()
 
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0

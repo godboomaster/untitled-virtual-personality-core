@@ -520,6 +520,23 @@ def test_formatter():
         check(f"{name}: обёртки кода на месте",
               "<pre><code class=\"language-python\">" in out and "<code>" in out)
 
+    # __x__ — подчёркнутый, как в вебе (MessageText.tsx), а не <i>_x_</i>;
+    # одиночный _x_ — курсив; snake_case — не разметка
+    for name, fn in (("markdown_to_rich_html", F.markdown_to_rich_html),
+                     ("to_current_html", F.to_current_html)):
+        out = fn("это __важно__ и _тихо_")
+        check(f"{name}: __x__ → <u>x</u>, не курсив",
+              "<u>важно</u>" in out and "<i>_важно_</i>" not in out
+              and "__" not in out)
+        check(f"{name}: одиночный _x_ → <i>x</i>", "<i>тихо</i>" in out)
+        out = fn("переменная snake_case_name и file_name рядом")
+        check(f"{name}: snake_case не трогается",
+              out == "переменная snake_case_name и file_name рядом")
+        out = fn("**жирный**, *курсив*, __подчёркнутый__")
+        check(f"{name}: **/*/__ вместе",
+              "<b>жирный</b>" in out and "<i>курсив</i>" in out
+              and "<u>подчёркнутый</u>" in out)
+
 
 # ─── 8. restore_memory: цели из каталога дампов ──────────
 

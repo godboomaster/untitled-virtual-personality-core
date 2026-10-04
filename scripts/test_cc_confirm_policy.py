@@ -141,7 +141,10 @@ def main():
         _ws.find_site_url, _bh.find_in_history = _orig_find, _orig_hist
 
     # ── 3. Pending ──
-    check("TTL pending — минута", ccm.PENDING_TTL_SEC == 60)
+    # Гайд и README обещают вопросу 5 минут; список вариантов — не меньше
+    check("TTL pending — 5 минут", ccm.PENDING_TTL_SEC == 300)
+    check("TTL списка сайтов — не меньше pending",
+          ccm.CHOICE_TTL_SEC >= ccm.PENDING_TTL_SEC)
     m = make()
     m.set_pending("g1", {"kind": "url", "value": "https://youtube.com"},
                   user_id="A")
