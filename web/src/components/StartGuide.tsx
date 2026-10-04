@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
 import type { Section } from '../App';
 import { useI18n } from '../i18n';
+import OllamaModels from './OllamaModels';
 
 /* Обучение на странице «Старт»: маршруты (консоль, спецфункции, Telegram) —
    вертикальная лента шагов с отметками «пройдено», копированием команд и
@@ -37,6 +38,7 @@ interface Step {
   here?: boolean; // шаг про текущий раздел — вместо кнопки метка «вы здесь»
   warn?: string; // ключ i18n предупреждения под описанием шага
   anchor?: string; // id блока на этой же странице — кнопка прокрутки к нему
+  models?: boolean; // сравнение локальных моделей Ollama (шаг «Провайдеры: Ollama»)
 }
 
 // Реплика демо-диалога: op — оператор, bot — персона, sys — служебная
@@ -65,7 +67,13 @@ const TRACKS: Track[] = [
       { id: 'persona', nav: 'personas' },
       { id: 'api', nav: 'settings' },
       { id: 'web', nav: 'settings', chips: [{ code: 'guide.codeFixBrowser', i18n: true }] },
-      { id: 'ollama', nav: 'settings', chips: [{ code: 'ollama pull gemma3:4b' }, { code: 'http://localhost:11434' }] },
+      {
+        id: 'ollama',
+        nav: 'settings',
+        warn: 'guide.console.ollamaWarn',
+        chips: [{ code: 'curl -fsSL https://ollama.com/install.sh | sh', hint: 'guide.hOllamaLinux' }],
+        models: true,
+      },
       { id: 'talk', nav: 'chat', warn: 'guide.console.talkWarn' },
       { id: 'start', here: true },
       { id: 'home', nav: 'home' },
@@ -148,7 +156,6 @@ const TRACKS: Track[] = [
           { code: 'не говори так', hint: 'guide.hRule' },
           { code: 'не называй меня …', hint: 'guide.hRule' },
           { code: 'зови меня Саша', hint: 'guide.hAlias' },
-          { code: 'guide.codeForget', i18n: true, hint: 'guide.cmdForget' },
         ],
       },
       { id: 'search', chips: [{ code: '/web', hint: 'guide.cmdWeb' }] },
@@ -157,7 +164,7 @@ const TRACKS: Track[] = [
       { id: 'rhythm', nav: 'settings' },
       { id: 'control', anchor: 'start-control' },
     ],
-    window: 'telegram — @persona_bot',
+    window: 'console — chat — persona',
     dialog: [
       { who: 'op', text: 'guide.dlgFeatAsk', i18n: true },
       { who: 'bot', text: 'guide.dlgFeatOk', i18n: true },
@@ -493,6 +500,10 @@ export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKe
                           );
                         })}
                       </div>
+                    )}
+
+                    {s.models && (
+                      <OllamaModels uid={uid} copied={copied} onCopy={(id, text) => void copy(id, text)} />
                     )}
 
                     {nav && (
