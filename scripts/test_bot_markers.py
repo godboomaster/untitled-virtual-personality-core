@@ -7,6 +7,9 @@
     только чистым списком/диапазоном; цифры в тексте пункта — не номера),
     TODO_DONE не мешает TODO_ADD в том же ответе, нераспознанный TODO_DONE
     не отключает запасной путь, маркеры вырезаются, прочий текст не трогается;
+  - номера [TODO_DONE:N] и запасного «вычеркни N» — по снимку списка при
+    сборке промпта (seen_tasks): пункт удалили/добавили за время генерации —
+    не тот пункт не удаляется; seen_tasks=None — как раньше;
   - при пустом инвентаре инструкция маркеров инвентаря есть в промпте, в
     учебных ходах её нет (там маркеры не разбираются);
   - переспрос без локальной модели: «да» тем же пользователем на следующем
@@ -394,6 +397,140 @@ def test_markers():
     ans = bot._parse_punishment("Ха.  [PUNISH:FACT:Привычка: [секрет] грызёт ногти]", "u1")
     check("PUNISH:FACT со скобками внутри — факт целиком, хвоста в тексте нет",
           bot.facts == ["Привычка: [секрет] грызёт ногти"] and ans == "Ха.")
+
+
+# ════════════ 1b. Номера — по списку, который видела модель ════════════
+
+def _seen_bot(items=("A", "B", "C")):
+    # Бот со списком дел; снимок — как при сборке промпта (todo_seen)
+    bot = _bot()
+    for t in items:
+        bot.todo_manager.add_item("c1", "Аня", t)
+    bot._pending_list_messages["c1"] = []
+    return bot, bot.todo_manager.get_tasks("c1")
+
+
+def test_todo_seen_snapshot():
+    section("1b. [TODO_DONE:N] и «вычеркни N» — по снимку списка, который видела модель")
+
+    # Список не менялся — как раньше
+    bot, seen = _seen_bot()
+    ans = bot._process_todo_marker("Готово [TODO_DONE:2]", "c1", "Аня",
+                                   user_text="вычеркни 2", user_id="u1", seen_tasks=seen)
+    check("список не менялся: [TODO_DONE:2] удаляет B",
+          _todo_items(bot, "c1") == ["A", "C"] and ans == "Готово")
+    check("…и итоговый список досылается",
+          len(bot._pending_list_messages["c1"]) == 1
+          and "B" not in bot._pending_list_messages["c1"][0])
+
+    # Пока шла генерация, A удалили (панель дел в вебе): под №2 теперь C
+    bot, seen = _seen_bot()
+    bot.todo_manager.remove_item("c1", 1)
+    ans = bot._process_todo_marker("Готово [TODO_DONE:2]", "c1", "Аня",
+                                   user_text="вычеркни 2", user_id="u1", seen_tasks=seen)
+    check("A удалили за время генерации: [TODO_DONE:2] ничего не удаляет (C цел)",
+          _todo_items(bot, "c1") == ["B", "C"])
+    check("…маркер вырезан, список не досылается",
+          ans == "Готово" and bot._pending_list_messages["c1"] == [])
+
+    # Несколько номеров: совпавший удаляется, съехавший — нет
+    bot, seen = _seen_bot(("A", "B", "C", "D"))
+    bot.todo_manager.remove_item("c1", 2)  # B удалили → [A, C, D]
+    bot._process_todo_marker("Ок [TODO_DONE:1] [TODO_DONE:3]", "c1", "Аня",
+                             user_text="вычеркни 1 и 3", user_id="u1", seen_tasks=seen)
+    check("[TODO_DONE:1][TODO_DONE:3] после удаления B: A удалён, D (теперь №3) цел",
+          _todo_items(bot, "c1") == ["C", "D"])
+
+    # Номер вне снимка: пункт, добавленный за время генерации, модель не видела
+    bot, seen = _seen_bot(("A", "B"))
+    bot.todo_manager.add_item("c1", "Аня", "C")
+    bot._process_todo_marker("Ок [TODO_DONE:3]", "c1", "Аня",
+                             user_text="вычеркни 3", user_id="u1", seen_tasks=seen)
+    check("модель видела [A, B], [TODO_DONE:3] — новый C не удалён",
+          _todo_items(bot, "c1") == ["A", "B", "C"])
+    bot, seen = _seen_bot(())
+    bot.todo_manager.add_item("c1", "Аня", "C")
+    bot._process_todo_marker("Ок [TODO_DONE:1]", "c1", "Аня",
+                             user_text="вычеркни 1", user_id="u1", seen_tasks=seen)
+    check("модель видела пустой список, [TODO_DONE:1] — новый C не удалён",
+          seen == [] and _todo_items(bot, "c1") == ["C"])
+
+    # Старый вызов (seen_tasks=None) — номера по списку на момент разбора
+    bot, _seen = _seen_bot()
+    bot.todo_manager.remove_item("c1", 1)
+    bot._process_todo_marker("Ок [TODO_DONE:2]", "c1", "Аня",
+                             user_text="вычеркни 2", user_id="u1")
+    check("seen_tasks=None: [TODO_DONE:2] — по текущему списку (как раньше, удалён C)",
+          _todo_items(bot, "c1") == ["B"])
+    bot, _seen = _seen_bot()
+    bot._process_todo_marker("Ок [TODO_DONE:2]", "c1", "Аня",
+                             user_text="вычеркни 2", user_id="u1", seen_tasks=None)
+    check("seen_tasks=None, список не менялся: удалён B", _todo_items(bot, "c1") == ["A", "C"])
+
+    # Запасной путь «вычеркни 2», локальная модель подтвердила (ADD)
+    def _confirmed(bot):
+        bot._confirm_intent = lambda text, cand, intent: (
+            "ADD" if intent == "todo_remove" else "SKIP")
+        return bot
+
+    bot, seen = _seen_bot()
+    _confirmed(bot)
+    bot._process_todo_marker("Ок", "c1", "Аня", fallback_done_index=2,
+                             user_text="вычеркни 2", user_id="u1", lang="ru",
+                             seen_tasks=seen)
+    check("«вычеркни 2» с подтверждением, список не менялся: удалён B",
+          _todo_items(bot, "c1") == ["A", "C"] and len(bot._pending_list_messages["c1"]) == 1)
+
+    bot, seen = _seen_bot()
+    _confirmed(bot)
+    bot.todo_manager.remove_item("c1", 1)
+    bot._process_todo_marker("Ок", "c1", "Аня", fallback_done_index=2,
+                             user_text="вычеркни 2", user_id="u1", lang="ru",
+                             seen_tasks=seen)
+    check("«вычеркни 2» с подтверждением, A удалили: ничего не удалено (C цел)",
+          _todo_items(bot, "c1") == ["B", "C"] and bot._pending_list_messages["c1"] == [])
+
+    bot, seen = _seen_bot(("A", "B"))
+    _confirmed(bot)
+    bot.todo_manager.add_item("c1", "Аня", "C")
+    bot._process_todo_marker("Ок", "c1", "Аня", fallback_done_index=3,
+                             user_text="вычеркни 3", user_id="u1", lang="ru",
+                             seen_tasks=seen)
+    check("«вычеркни 3» с подтверждением, видели [A, B]: новый C не удалён",
+          _todo_items(bot, "c1") == ["A", "B", "C"])
+
+    bot, _seen = _seen_bot()
+    _confirmed(bot)
+    bot.todo_manager.remove_item("c1", 1)
+    bot._process_todo_marker("Ок", "c1", "Аня", fallback_done_index=2,
+                             user_text="вычеркни 2", user_id="u1", lang="ru")
+    check("«вычеркни 2» с подтверждением, seen_tasks=None — как раньше (удалён C)",
+          _todo_items(bot, "c1") == ["B"])
+
+    # Без локальной модели — переспрос: вопрос называет текст пункта, который
+    # сейчас под номером, сам по себе ничего не удаляет
+    bot, seen = _seen_bot()
+    bot.todo_manager.remove_item("c1", 1)
+    bot._process_todo_marker("Ок", "c1", "Аня", fallback_done_index=2,
+                             user_text="вычеркни 2", user_id="u1", lang="ru",
+                             seen_tasks=seen)
+    check("переспрос при сдвиге: вопрос с текстом пункта, ничего не удалено",
+          bot._pending_list_messages["c1"] == ["Отметить пункт №2 «C» как выполненный?"]
+          and _todo_items(bot, "c1") == ["B", "C"])
+
+    # Ход: снимок снимается вместе с контекстом списка и уходит в разбор ответа
+    src = (Path(__file__).parent.parent / "app" / "bot_instance.py").read_text(encoding="utf-8")
+    start = src.index('if "todo_remove" in _fired_intents:')
+    block = src[start:src.index("# Inventory-контекст", start)]
+    branches = block.split("elif ")
+    check("снимок todo_seen — в каждой ветке, где модель видит список (удалить/показать/добавить)",
+          len(branches) == 3 and all(
+              "todo_seen = self.todo_manager.get_tasks(chat_id)" in b and "todo_context =" in b
+              for b in branches))
+    call = src[src.index("answer = self._process_todo_marker("):]
+    call = call[:call.index(")\n")]
+    check("снимок передаётся в разбор ответа (seen_tasks=todo_seen)",
+          "seen_tasks=todo_seen" in call)
 
 
 # ════════════ 2. Пустой инвентарь: инструкция маркеров в промпте ════════════
@@ -866,6 +1003,7 @@ def test_scenario_outside_mode():
 
 def main():
     test_markers()
+    test_todo_seen_snapshot()
     test_empty_inventory_prompt()
     test_offer_todo()
     test_offer_not_ours()

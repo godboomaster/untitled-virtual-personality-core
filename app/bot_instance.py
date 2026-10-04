@@ -3777,6 +3777,10 @@ class BotInstance:
             # Todo-контекст: определяем, является ли запрос todo-запросом
             # Может работать параллельно с напоминанием (напр. "напомни через час X и добавь в список дел")
             todo_context = None
+            # Список дел, который увидит модель: номера [TODO_DONE:N] и «вычеркни
+            # 2» сверяются с ним, а не со списком на момент разбора ответа
+            # (панель дел в вебе могла удалить пункт, пока шла генерация)
+            todo_seen = None
             extracted_task = None
             extracted_done_index = None
 
@@ -3814,16 +3818,19 @@ class BotInstance:
                 if "todo_remove" in _fired_intents:
                     # Запрос на удаление/завершение дела
                     extracted_done_index = extract_todo_done_index(user_input)
+                    todo_seen = self.todo_manager.get_tasks(chat_id)
                     current_todo = self.todo_manager.get_list(chat_id)
                     todo_context = current_todo or "The todo list is empty."
                 elif "todo_show" in _fired_intents:
                     # Просьба показать список: только контекст со списком, без
                     # extracted_task — добавление не срабатывает, LLM показывает список
+                    todo_seen = self.todo_manager.get_tasks(chat_id)
                     todo_context = self.todo_manager.get_list(chat_id) or "The todo list is empty."
                 elif "todo_add" in _fired_intents:
                     extracted_task = extract_task(user_input)
                     if extracted_task:
                         extracted_task = self._reformulate_task(extracted_task)
+                    todo_seen = self.todo_manager.get_tasks(chat_id)
                     current_todo = self.todo_manager.get_list(chat_id)
                     todo_context = current_todo or "The todo list is empty."
 
@@ -4072,6 +4079,7 @@ class BotInstance:
                     fallback_task=extracted_task,
                     fallback_done_index=extracted_done_index,
                     user_text=user_input, user_id=user_id, lang=turn_lang,
+                    seen_tasks=todo_seen,
                 )
 
             # Обработка inventory-маркеров (добавление/удаление/использование через маркеры)
@@ -5199,6 +5207,7 @@ class BotInstance:
         fallback_task: Optional[str] = None,
         fallback_done_index: Optional[int] = None,
         user_text: str = "", user_id=None, lang: Optional[str] = None,
+        seen_tasks: Optional[List[str]] = None,
     ) -> str:
         """Парсит маркеры [TODO_ADD:...] и [TODO_DONE:N] (все вхождения),
         обновляет список дел. Список дел отправляется отдельным сообщением
@@ -5215,9 +5224,11 @@ class BotInstance:
         ask = None
 
         # Удаление: [TODO_DONE:N]. Номера — по списку, который видела модель
-        # (снимок до правок): удаляем по убыванию со сверкой текста, иначе
-        # после первого удаления остальные съезжают
-        tasks = self.todo_manager.get_tasks(chat_id) if done_raw else []
+        # (seen_tasks — снимок при сборке промпта): удаляем по убыванию со
+        # сверкой текста, иначе после первого удаления остальные съезжают, а
+        # пункт, удалённый за время генерации, сдвинул бы номера
+        tasks = (seen_tasks if seen_tasks is not None
+                 else self.todo_manager.get_tasks(chat_id)) if done_raw else []
         indices = set()
         for raw in done_raw:
             found = resolve_done_marker(raw, tasks)
@@ -5225,8 +5236,12 @@ class BotInstance:
                 logger.info(f"[Todo] [TODO_DONE:{raw[:40]}] не распознан — пропущен")
             indices.update(found)
         for index in sorted(indices, reverse=True):
-            expect = tasks[index - 1] if 1 <= index <= len(tasks) else None
-            result = self.todo_manager.remove_item(chat_id, index, lang=list_lang, expect=expect)
+            # Номера вне списка, который видела модель, нет: без сверки текста
+            # удалился бы пункт, добавленный за время генерации
+            if not 1 <= index <= len(tasks):
+                continue
+            result = self.todo_manager.remove_item(chat_id, index, lang=list_lang,
+                                                   expect=tasks[index - 1])
             if result:
                 rendered = result
 
@@ -5236,9 +5251,15 @@ class BotInstance:
         if not indices and fallback_done_index is not None:
             verdict = self._confirm_intent(user_text, f"item #{fallback_done_index}", "todo_remove")
             if verdict == "ADD":
-                result = self.todo_manager.remove_item(chat_id, fallback_done_index, lang=list_lang)
-                if result:
-                    rendered = result
+                # Пункт — тот, что человек видел под этим номером (если снимок
+                # есть); номера вне снимка нет — новый пункт не трогаем
+                seen = (seen_tasks[fallback_done_index - 1]
+                        if seen_tasks and 1 <= fallback_done_index <= len(seen_tasks) else None)
+                if seen_tasks is None or seen is not None:
+                    result = self.todo_manager.remove_item(chat_id, fallback_done_index,
+                                                           lang=list_lang, expect=seen)
+                    if result:
+                        rendered = result
             elif verdict == "ASK" and is_explicit_todo_done_request(user_text):
                 current = self.todo_manager.get_tasks(chat_id)
                 if 1 <= fallback_done_index <= len(current):

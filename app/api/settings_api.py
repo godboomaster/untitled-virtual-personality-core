@@ -1310,6 +1310,12 @@ def duplicate_persona(persona: str) -> dict | None:
     src = _persona_yaml_path(persona)
     if src is None or not src.is_file():
         return None
+    # Персона со старым id api_… (до запрета): id копии api_…_copyN служебный
+    # при любом номере — подбирать бессмысленно, объясняем причину
+    if _reserved_id(f"{persona}_copy"):
+        return {"ok": False, "detail": (
+            f"Копия получила бы id '{persona}_copy' с префиксом api_ — он занят "
+            "служебной папкой данных. Сначала смените id персоны")}
 
     with yaml_write_lock:
         raw = src.read_text(encoding="utf-8")
@@ -1401,14 +1407,17 @@ _DERIVED_FILES = {"flavor_bank.json"}
 
 
 def _reserved_id(persona: str) -> bool:
-    """id совпадает со служебной папкой данных (без учёта регистра: на
-    macOS/Windows TG и tg — одна папка)."""
-    return persona.lower() in _SHARED_DATA_NAMES
+    """id совпадает со служебной папкой данных или начинается с api_ (без
+    учёта регистра: на macOS/Windows TG и tg — одна папка). Telegram-папка
+    персоны api_X — это data/api_X, веб-память персоны X: персоны смешали бы
+    память, а архив «с чистого листа» унёс бы чужую."""
+    p = persona.lower()
+    return p in _SHARED_DATA_NAMES or p.startswith("api_")
 
 
 def _reserved_id_detail(persona: str) -> str:
-    return (f"id '{persona}' совпадает со служебной папкой данных "
-            f"({', '.join(sorted(_SHARED_DATA_NAMES))}) — выберите другой")
+    return (f"id '{persona}' занят служебной папкой данных "
+            f"({', '.join(sorted(_SHARED_DATA_NAMES))} или префикс api_) — выберите другой")
 
 
 def _persona_data_dirs(persona: str) -> list[Path]:

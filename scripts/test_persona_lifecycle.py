@@ -17,6 +17,11 @@
   E. Chroma: после архива / смены id база по старому пути в том же процессе
      пуста и пишется (кеш System выгружается), чужие базы не трогаются.
 
+  F. id с префиксом api_ (без учёта регистра) — служебный: Telegram-папка
+     api_X — это data/api_X, веб-память персоны X; создание, смена id и копия
+     в такой id — отказ, ничего не переносится и не архивируется; apix,
+     my_api_bot — обычные id.
+
 Ещё: Telegram-токен персоны — правка доступа к режиму управления требует
 рестарта (YAML и форма); служебные имена папок данных (tg, skins, …) — не
 id; папка только с банком flavor-фраз — не память.
@@ -487,6 +492,102 @@ def test_rename_over_leftover(roots: list[Path]):
               and not _archives(r1, "api_ren_h") and (pd / "ren_g.yaml").is_file())
 
 
+def _all_archives(roots: list[Path]) -> set[Path]:
+    return {p for r in roots for p in r.iterdir() if ".archived-" in p.name}
+
+
+def test_api_prefix(roots: list[Path]):
+    section("F. id с префиксом api_ — служебный (Telegram-папка api_X = веб-память X)")
+    from app.api import settings_api as sa
+
+    r1, r2 = roots
+    pd = sa._PERSONAS_DIR
+    calendar = SimpleNamespace(list_entries=lambda: [], update_entry=lambda *a, **k: None)
+
+    def yaml_for(pid):
+        return f"id: {pid}\nname: {pid}\nsystem_prompt: hi\n"
+
+    # Живая персона connor: её веб-память — data/api_connor, Telegram — data/connor
+    (pd / "connor.yaml").write_text(yaml_for("connor"), encoding="utf-8")
+    _mk(r1 / "api_connor" / "stm", "web-connor")
+    _mk(r2 / "connor", "tg-connor")
+
+    def connor_intact() -> bool:
+        return ((r1 / "api_connor" / "stm" / "marker.txt").read_text(encoding="utf-8")
+                == "web-connor"
+                and (r2 / "connor" / "marker.txt").read_text(encoding="utf-8") == "tg-connor"
+                and (pd / "connor.yaml").is_file())
+
+    check("_reserved_id: api_connor, API_Connor, Api_x — служебные",
+          sa._reserved_id("api_connor") and sa._reserved_id("API_Connor")
+          and sa._reserved_id("Api_x"))
+    check("_reserved_id: apix, my_api_bot, api, api-x — обычные",
+          not any(sa._reserved_id(p) for p in ("apix", "my_api_bot", "api", "api-x")))
+
+    before = _all_archives(roots)
+    yamls_before = sorted(p.name for p in pd.iterdir())
+
+    # Создание
+    for pid in ("api_connor", "API_Connor"):
+        for memory in (None, "keep", "fresh"):
+            r = sa.create_persona(yaml_for(pid), memory=memory)
+            check(f"создание id={pid} memory={memory}: отказ 400 без memory_exists",
+                  r["ok"] is False and r.get("status") == 400
+                  and not r.get("memory_exists"))
+    check("текст отказа понятный: id и префикс api_",
+          "'API_Connor'" in r["detail"] and "api_" in r["detail"]
+          and "выберите другой" in r["detail"])
+    check("создание: YAML не появился, веб-память connor цела",
+          sorted(p.name for p in pd.iterdir()) == yamls_before and connor_intact())
+
+    # Смена id: у персоны своя память — она тоже не должна никуда уехать
+    (pd / "ren_api.yaml").write_text(yaml_for("ren_api"), encoding="utf-8")
+    _mk(r1 / "api_ren_api", "own-ren")
+    _mk(r2 / "ren_api", "own-ren-tg")
+    yamls_before = sorted(p.name for p in pd.iterdir())
+    with mock.patch("app.features.calendar_manager.get_calendar", lambda: calendar):
+        for new_id in ("api_connor", "API_Connor"):
+            for memory in (None, "keep", "fresh"):
+                r = sa.rename_persona("ren_api", new_id, memory=memory)
+                check(f"смена id на {new_id} memory={memory}: отказ 400",
+                      r["ok"] is False and r.get("status") == 400
+                      and not r.get("memory_exists") and "api_" in r["detail"])
+    check("смена id: ничего не перенесено (YAML и обе папки памяти на местах)",
+          sorted(p.name for p in pd.iterdir()) == yamls_before
+          and (r1 / "api_ren_api" / "marker.txt").read_text(encoding="utf-8") == "own-ren"
+          and (r2 / "ren_api" / "marker.txt").read_text(encoding="utf-8") == "own-ren-tg"
+          and not (r1 / "api_api_connor").exists() and connor_intact())
+
+    # Копия: персона со старым id api_… (создана до запрета) — любой id копии
+    # api_…_copyN тоже служебный
+    (pd / "api_legacy.yaml").write_text(yaml_for("api_legacy"), encoding="utf-8")
+    _mk(r1 / "api_legacy_copy", "web-legacy-copy")  # веб-память персоны legacy_copy
+    yamls_before = sorted(p.name for p in pd.iterdir())
+    r = sa.duplicate_persona("api_legacy")
+    check("копия в id api_…: отказ с понятным текстом (префикс api_)",
+          r is not None and r["ok"] is False and "api_" in r["detail"]
+          and "api_legacy_copy" in r["detail"])
+    check("копия: YAML не появился, чужая веб-память цела",
+          sorted(p.name for p in pd.iterdir()) == yamls_before
+          and (r1 / "api_legacy_copy" / "marker.txt").read_text(encoding="utf-8")
+          == "web-legacy-copy")
+
+    check("F: ни одной папки не ушло в архив", _all_archives(roots) == before)
+
+    # Обычные id — по-прежнему разрешены
+    for pid in ("apix", "my_api_bot"):
+        r = sa.create_persona(yaml_for(pid))
+        check(f"создание id={pid}: можно", r["ok"] and (pd / f"{pid}.yaml").is_file())
+    with mock.patch("app.features.calendar_manager.get_calendar", lambda: calendar):
+        r = sa.rename_persona("ren_api", "my_api_bot2")
+    check("смена id на my_api_bot2: можно, память переехала",
+          r["ok"] and (pd / "my_api_bot2.yaml").is_file()
+          and (r1 / "api_my_api_bot2" / "marker.txt").read_text(encoding="utf-8") == "own-ren")
+    r = sa.duplicate_persona("connor")
+    check("копия обычной персоны (connor_copy): можно",
+          r is not None and r["ok"] and r["persona"] == "connor_copy" and connor_intact())
+
+
 def test_chroma_release(roots: list[Path]):
     section("E. Chroma: архив и смена id в том же процессе — чистая база")
     import chromadb
@@ -597,6 +698,7 @@ def main():
         test_yaml_live(tmp)
         test_create_over_leftover(roots)
         test_rename_over_leftover(roots)
+        test_api_prefix(roots)
         test_chroma_release(roots)
         test_endpoint(roots)
     finally:
