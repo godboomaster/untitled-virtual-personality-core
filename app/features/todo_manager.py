@@ -178,10 +178,25 @@ class TodoManager:
             lines.append(f"{i}. {name}: {task}")
         return "\n".join(lines)
 
-    def remove_item(self, chat_id: str, index: int, lang: str = None) -> Optional[str]:
+    def get_tasks(self, chat_id: str) -> List[str]:
+        # Тексты пунктов по порядку (без авторов); нет файла — пусто
+        with self._lock:
+            path = self._todo_path(chat_id)
+            if not path.exists():
+                return []
+            try:
+                return [t for _, t in self._parse_items(path.read_text(encoding="utf-8"))]
+            except Exception as e:
+                logger.warning(f"[Todo] Не удалось прочитать {path}: {e}")
+                return []
+
+    def remove_item(self, chat_id: str, index: int, lang: str = None,
+                    expect: Optional[str] = None) -> Optional[str]:
         """
         Удаляет пункт по номеру (1-based).
         Возвращает отформатированный список или None если индекс невалиден.
+        expect — текст, который должен стоять под этим номером (сверка под
+        тем же локом): список успел измениться — ничего не удаляется, None.
         """
         with self._lock:
             path = self._todo_path(chat_id)
@@ -194,6 +209,9 @@ class TodoManager:
                 return None
 
             if index < 1 or index > len(items):
+                return None
+            if expect is not None and items[index - 1][1] != expect:
+                logger.info(f"[Todo] Пункт {index} уже не «{expect[:40]}» — не удаляю")
                 return None
 
             removed = items.pop(index - 1)
@@ -334,6 +352,54 @@ def extract_todo_done_index(text: str) -> Optional[int]:
     if match:
         return int(match.group(1))
     return None
+
+
+# Содержимое маркера [TODO_DONE:…]. Номера — только чистым списком: «2»,
+# «#2», «1, 3», «1-3» (диапазон раскрывается). Иначе это текст пункта
+# («2. купить 3 яблока», «купить хлеб») — цифры в нём не номера: «3» из
+# «3 яблока» не должно вычеркнуть третий пункт
+_DONE_NUM_ITEM = r"(?:(?:№|#)\s*)?\d+(?:\s*[-–—]\s*\d+)?"
+_DONE_NUMS_RE = re.compile(
+    rf"^\s*{_DONE_NUM_ITEM}(?:\s*[,;]\s*{_DONE_NUM_ITEM})*\s*[.!]*\s*$")
+_DONE_PART_RE = re.compile(r"(\d+)(?:\s*[-–—]\s*(\d+))?")
+_DONE_LEAD_NUM_RE = re.compile(r"^\s*(?:№|#)?\s*(\d+)\s*[.):\-–—]?\s+(.+)$", re.DOTALL)
+_DONE_RANGE_MAX = 50
+
+
+def _norm_task(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip().strip(".!").lower()
+
+
+def resolve_done_marker(raw: str, tasks: List[str]) -> List[int]:
+    """Номера пунктов (1-based) по содержимому [TODO_DONE:…] и текущему
+    списку tasks. Текст пункта ищется однозначно: точное совпадение, потом
+    вхождение; не нашёлся или подходят несколько — пусто (вызывающий пишет
+    в лог и ничего не вычёркивает)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    if _DONE_NUMS_RE.match(raw):
+        out = set()
+        for lo, hi in _DONE_PART_RE.findall(raw):
+            lo, hi = int(lo), int(hi or lo)
+            lo, hi = min(lo, hi), max(lo, hi)
+            if hi - lo < _DONE_RANGE_MAX:
+                out.update(range(lo, hi + 1))
+        return sorted(out)
+    lead = _DONE_LEAD_NUM_RE.match(raw)
+    num, text = (int(lead.group(1)), lead.group(2)) if lead else (None, raw)
+    want = _norm_task(text)
+    norm = [_norm_task(t) for t in tasks]
+    if num and 1 <= num <= len(norm) and norm[num - 1] == want:
+        return [num]
+    exact = [i for i, t in enumerate(norm, 1) if t == want]
+    if len(exact) == 1:
+        return exact
+    if len(want) < 3:
+        return []
+    part = [i for i, t in enumerate(norm, 1)
+            if want in t or (len(t) >= 3 and t in want)]
+    return part if len(part) == 1 else []
 
 
 def extract_task(text: str, trigger_words: Optional[List[str]] = None) -> Optional[str]:

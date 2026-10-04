@@ -878,7 +878,9 @@ def create_handlers(bot: BotInstance) -> dict:
                 # Отправляем списки дел/инвентарь отдельными сообщениями (per-chat бакет)
                 pending = bot.pop_pending_list_messages(chat_id)
                 for msg in pending:
-                    await _reply_ai(update.message, msg)
+                    list_ids = await _reply_ai(update.message, msg)
+                    # Переспрос «Записать «X»…?»: reply именно на него — ответ ему
+                    bot.note_list_message(chat_id, msg, list_ids)
             except Exception as e:
                 logger.error(f"[{persona_name}] Ошибка: {e}", exc_info=True)
                 try:

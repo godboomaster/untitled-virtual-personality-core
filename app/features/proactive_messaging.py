@@ -653,6 +653,11 @@ class ProactiveMessaging:
             if state:
                 state["waiting"] = False
 
+    def last_initiative_at(self, chat_id: str) -> float:
+        # Когда ушла последняя инициатива, на которую ещё не ответили (0 — нет)
+        with self._lock:
+            return float(self._last_initiative_time.get(str(chat_id)) or 0)
+
     def record_user_response(self, chat_id: str, turn_epoch: Optional[int] = None):
         """Вызывается при входящем сообщении пользователя (в конце его хода).
 

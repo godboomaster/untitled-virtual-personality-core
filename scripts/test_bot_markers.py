@@ -3,18 +3,25 @@
 
   - маркеры ответа LLM: разбираются ВСЕ вхождения каждого типа (TODO_ADD,
     TODO_DONE, INVENTORY_ADD/REMOVE/USE, PUNISH:FACT), несколько TODO_DONE
-    удаляют нужные пункты (номера — по списку, который видела модель),
-    TODO_DONE не мешает TODO_ADD в том же ответе, в видимом тексте маркеров
-    не остаётся;
-  - при пустом инвентаре инструкция маркеров инвентаря есть в промпте;
-  - переспрос без локальной модели: «да» тем же пользователем — действие и
-    короткое подтверждение без LLM, «нет»/«не надо» — отказ, посторонняя
-    реплика — вопрос снят молча, чужой пользователь вопрос не трогает,
-    истёкший вопрос не исполняется; ru и en; вопрос задаётся только на
-    явную просьбу («как сделать торт?», «держи меня в курсе» — нет);
+    удаляют нужные пункты (номера — по списку, который видела модель,
+    только чистым списком/диапазоном; цифры в тексте пункта — не номера),
+    TODO_DONE не мешает TODO_ADD в том же ответе, нераспознанный TODO_DONE
+    не отключает запасной путь, маркеры вырезаются, прочий текст не трогается;
+  - при пустом инвентаре инструкция маркеров инвентаря есть в промпте, в
+    учебных ходах её нет (там маркеры не разбираются);
+  - переспрос без локальной модели: «да» тем же пользователем на следующем
+    ходу — действие и короткое подтверждение без LLM, «нет»/«не надо» —
+    отказ, посторонняя реплика и отказ с хвостом — вопрос снят молча, чужой
+    пользователь вопрос не трогает, истёкший не исполняется, ход с ранним
+    возвратом (переключатель режима) вопрос снимает, reply на другое
+    сообщение бота и вопрос обучения/инициатива после него — не ответ;
+    «Отметить пункт №N?» сверяет текст пункта; ru и en; вопрос задаётся
+    только на явную просьбу («как сделать торт?», «держи меня в курсе» — нет);
   - «запомни сценарий …» вне режима управления: правило не извлекается,
-    допущенному к режиму — подсказка, недопущенному и ходу из скина —
-    обычный путь; в режиме управления — как раньше (сценарии).
+    допущенному к режиму — подсказка, недопущенному (в том числе в чате с
+    включённым режимом) и ходу из скина — обычный путь; «запиши сценарий
+    ролика», «remember the scenario where…» — обычные просьбы; в режиме
+    управления — как раньше (сценарии).
 
 LLM, Ollama и сеть не вызываются: бот — BotInstance.__new__ с заглушками,
 локальной модели нет (_local_router = None), data/ — временный каталог.
@@ -142,6 +149,31 @@ class _SM:
         return f"Сценарий «{name}» сохранён."
 
 
+class _Learning:
+    """Заглушка обучения: сессии с вопросом «продолжаем?»/тестом."""
+
+    def __init__(self, sessions=(), setup=None):
+        self.sessions = list(sessions)
+        self.setup = setup
+
+    def get_sessions(self, chat_id):
+        return self.sessions
+
+    def get_setup_state(self, chat_id, user_id=None):
+        return self.setup
+
+
+class _Proactive:
+    def __init__(self, last=0.0):
+        self.last = last
+
+    def last_initiative_at(self, chat_id):
+        return self.last
+
+    def record_user_response(self, chat_id):
+        pass
+
+
 _ctx_n = 0
 
 
@@ -186,6 +218,7 @@ def _bot(todo=True, inventory=True, control_on=False, single_user=True):
     bot.control_mode_on = lambda key: control_on
     bot._cc_mode_touch = lambda key: None
     bot._cc_hist_hook_cc = lambda: None
+    bot._cc_hist_note_user_text = lambda *a, **kw: None
     bot.facts = []
     bot.inject_fact = lambda text, user_id="default": bot.facts.append(text)
     bot.rule_calls = []
@@ -199,21 +232,26 @@ def _bot(todo=True, inventory=True, control_on=False, single_user=True):
 
 
 def _todo_items(bot, chat):
-    path = bot.todo_manager._todo_path(chat)
-    if not path.exists():
-        return []
-    return [t for _, t in bot.todo_manager._parse_items(path.read_text(encoding="utf-8"))]
+    return bot.todo_manager.get_tasks(chat)
 
 
 def _inv_names(bot):
     return [i.name for i in bot.inventory_manager.get_items()]
 
 
-def _turn(bot, text, user_id="u1", chat_id="c1"):
-    # Ход целиком: ответ на переспрос не должен звать LLM (router падает)
+def _turn(bot, text, user_id="u1", chat_id="c1", reply_to=None):
+    # Ход целиком: ответ на переспрос не должен звать LLM (router падает),
+    # обычный путь обрывается после правил — «STOP»
     bot._pending_list_messages[str(chat_id)] = []
     return bot._process_message_impl(text, user_id=user_id, chat_id=chat_id,
-                                     user_name="Аня")
+                                     user_name="Аня",
+                                     reply_to_bot_message_id=reply_to)
+
+
+def _answer(bot, text, user_id="u1", lang="ru"):
+    # Решение по переспросу так же, как в ходе: забрать в начале, решить
+    return bot._list_offer_turn(bot._take_list_offer("c1", user_id), text,
+                                "c1", "c1", lang)
 
 
 # ════════════ 1. Маркеры: все вхождения ════════════
@@ -233,8 +271,7 @@ def test_markers():
     check("TODO_ADD ×2: оба записаны",
           _todo_items(bot, "c1") == ["второе", "четвёртое", "купить хлеб", "позвонить маме"])
     check("в тексте ни одного маркера", "[TODO_" not in ans)
-    check("текст ответа цел", ans.startswith("Готово!") and "и — всё." in ans
-          and "  " not in ans)
+    check("текст ответа цел", ans == "Готово!\nЕщё записала и — всё.")
     lists = bot._pending_list_messages.get("c1", [])
     check("список досылается один раз, итоговый",
           len(lists) == 1 and "позвонить маме" in lists[0] and "первое" not in lists[0])
@@ -246,6 +283,42 @@ def test_markers():
                                    user_text="вычеркни 2", user_id="u1")
     check("одинаковый TODO_DONE дважды — один пункт", _todo_items(bot, "c1") == ["а", "в"])
     check("маркеры вырезаны", ans == "Ок")
+
+    # Цифры в тексте пункта — не номера
+    bot = _bot()
+    for t in ("позвонить маме", "купить 3 яблока", "сдать отчёт", "погулять"):
+        bot.todo_manager.add_item("c1", "Аня", t)
+    ans = bot._process_todo_marker("Вычеркнула! [TODO_DONE:2. купить 3 яблока]", "c1", "Аня",
+                                   user_text="вычеркни яблоки", user_id="u1", lang="ru")
+    check("[TODO_DONE:2. купить 3 яблока] — только пункт 2, третий цел",
+          _todo_items(bot, "c1") == ["позвонить маме", "сдать отчёт", "погулять"]
+          and ans == "Вычеркнула!")
+    bot = _bot()
+    for t in ("позвонить маме", "купить хлеб", "сдать отчёт"):
+        bot.todo_manager.add_item("c1", "Аня", t)
+    bot._process_todo_marker("Ок [TODO_DONE:сдать отчёт]", "c1", "Аня",
+                             user_text="отчёт сдал", user_id="u1")
+    check("[TODO_DONE:текст] — пункт найден по тексту",
+          _todo_items(bot, "c1") == ["позвонить маме", "купить хлеб"])
+    bot = _bot()
+    for t in "abcde":
+        bot.todo_manager.add_item("c1", "Аня", t)
+    bot._process_todo_marker("Ок [TODO_DONE:1-3]", "c1", "Аня",
+                             user_text="вычеркни с 1 по 3", user_id="u1")
+    check("[TODO_DONE:1-3] — диапазон раскрыт", _todo_items(bot, "c1") == ["d", "e"])
+    bot = _bot()
+    for t in "abcde":
+        bot.todo_manager.add_item("c1", "Аня", t)
+    bot._process_todo_marker("Ок [TODO_DONE:#2, #4]", "c1", "Аня",
+                             user_text="вычеркни 2 и 4", user_id="u1")
+    check("[TODO_DONE:#2, #4] — список номеров", _todo_items(bot, "c1") == ["a", "c", "e"])
+    bot = _bot()
+    for t in ("а", "б"):
+        bot.todo_manager.add_item("c1", "Аня", t)
+    ans = bot._process_todo_marker("Ок [TODO_DONE:что-то про 1 и 2]", "c1", "Аня",
+                                   user_text="ну ок", user_id="u1")
+    check("нераспознанный TODO_DONE — ничего не удалено, маркер вырезан",
+          _todo_items(bot, "c1") == ["а", "б"] and ans == "Ок")
 
     # TODO_DONE больше не делает ранний return: TODO_ADD того же ответа
     # обрабатывается, а не остаётся видимым текстом
@@ -267,6 +340,28 @@ def test_markers():
     check("fallback удаления + маркер TODO_ADD: маркер обработан и вырезан",
           ans == "Записала" and "в" in _todo_items(bot, "c1"))
 
+    # Нераспознанный TODO_DONE запасной путь не отключает
+    bot = _bot()
+    for t in ("а", "б", "в"):
+        bot.todo_manager.add_item("c1", "Аня", t)
+    bot._pending_list_messages["c1"] = []
+    ans = bot._process_todo_marker("Готово [TODO_DONE:молоко]", "c1", "Аня",
+                                   fallback_done_index=2, user_text="вычеркни 2",
+                                   user_id="u1", lang="ru")
+    check("нечисловой TODO_DONE + «вычеркни 2» → переспрос про пункт 2",
+          bot._pending_list_messages["c1"] == ["Отметить пункт №2 «б» как выполненный?"]
+          and _todo_items(bot, "c1") == ["а", "б", "в"] and ans == "Готово")
+
+    # Прочий текст ответа не трогается: пробелы, пустые строки
+    bot = _bot()
+    txt = "Стих:  \nстрока один  \nстрока два\n\n\n\nконец [TODO_ADD:y]"
+    ans = bot._process_todo_marker(txt, "c1", "Аня", user_text="запиши y", user_id="u1")
+    check("текст вокруг маркера не переформатирован",
+          ans == "Стих:  \nстрока один  \nстрока два\n\n\n\nконец")
+    ans = bot._process_todo_marker("Ок.\n[TODO_ADD:x]\nЕщё строка", "c1", "Аня",
+                                   user_text="запиши x", user_id="u1")
+    check("маркер на своей строке — вместе со строкой", ans == "Ок.\nЕщё строка")
+
     bot = _bot()
     bot.inventory_manager.add_item("Старый ключ", "ржавый")
     bot.inventory_manager.add_item("Монета", "медная")
@@ -286,7 +381,7 @@ def test_markers():
           "Старый ключ" not in names and "Монета" not in names)
     check("INVENTORY_USE: использован", "Хлеб" not in names)
     check("в тексте ни одного маркера", "[INVENTORY_" not in ans)
-    check("текст ответа цел", ans.startswith("Спасибо!") and ans.endswith("Ням."))
+    check("текст ответа цел", ans == "Спасибо!\nНям.")
     check("инвентарь досылается один раз",
           len(bot._pending_list_messages.get("c1", [])) == 1)
 
@@ -295,12 +390,16 @@ def test_markers():
     ans = bot._parse_punishment("Ладно. [PUNISH:FACT:любит лук] [PUNISH:FACT:боится мышей]", "u1")
     check("PUNISH:FACT ×2: оба факта", bot.facts == ["любит лук", "боится мышей"])
     check("PUNISH:FACT ×2: вырезаны", ans == "Ладно.")
+    bot.facts.clear()
+    ans = bot._parse_punishment("Ха.  [PUNISH:FACT:Привычка: [секрет] грызёт ногти]", "u1")
+    check("PUNISH:FACT со скобками внутри — факт целиком, хвоста в тексте нет",
+          bot.facts == ["Привычка: [секрет] грызёт ногти"] and ans == "Ха.")
 
 
 # ════════════ 2. Пустой инвентарь: инструкция маркеров в промпте ════════════
 
 def test_empty_inventory_prompt():
-    section("2. Пустой инвентарь: инструкция маркеров есть")
+    section("2. Пустой инвентарь: инструкция маркеров есть, в учебных ходах — нет")
     from app.core.persona import PersonaLayer
     from app.features.inventory_manager import InventoryManager
     inv = InventoryManager(context="empty_inv")
@@ -318,6 +417,14 @@ def test_empty_inventory_prompt():
     check("непустой — список предметов, как раньше",
           "Your inventory:" in inv.get_context_block()
           and "Ключ" in inv.get_context_block())
+
+    # Блок инвентаря (с инструкцией маркеров) — при тех же условиях, что и
+    # разбор маркеров: в учебно-административном ходе маркеры не разбираются
+    src = (Path(__file__).parent.parent / "app" / "bot_instance.py").read_text(encoding="utf-8")
+    check("контекст инвентаря и разбор маркеров — одно условие (не напоминание, не учёба)",
+          "inventory_markers_on = not is_reminder_request and not is_learning_request" in src
+          and src.count("if inv_block and inventory_markers_on:") == 2
+          and "if inventory_markers_on and self.inventory_manager:" in src)
 
 
 # ════════════ 3. Переспрос без локальной модели ════════════
@@ -359,8 +466,13 @@ def test_offer_todo():
     _ask_todo(bot)
     check("«да, запиши» — тоже согласие",
           _turn(bot, "Да, запиши!") == "Готово — «купить молоко» в списке дел.")
+    for yes in ("нет проблем", "no problem"):
+        bot = _bot()
+        _ask_todo(bot)
+        check(f"«{yes}» — согласие", _answer(bot, yes) is not None
+              and _todo_items(bot, "c1") == ["купить молоко"])
 
-    for no in ("нет", "не надо", "не записывай", "нет, спасибо"):
+    for no in ("нет", "не надо", "не записывай", "нет, спасибо", "ну нет"):
         bot = _bot()
         _ask_todo(bot)
         reply = _turn(bot, no)
@@ -368,39 +480,60 @@ def test_offer_todo():
               reply == "Хорошо, не буду." and _todo_items(bot, "c1") == []
               and bot.list_offers.peek("c1") is None)
 
-    bot = _bot()
-    _ask_todo(bot)
-    reply = bot._list_offer_turn("а какая завтра погода?", "u1", "c1", "c1", "ru")
-    check("посторонняя реплика → None (обычный путь), вопрос снят молча",
-          reply is None and bot.list_offers.peek("c1") is None
-          and _todo_items(bot, "c1") == [])
+    # Отказ с содержательным хвостом и «да ладно» — другая реплика: вопрос
+    # снят, реплика уходит обычным путём (хвост не теряется)
+    for other in ("нет, расскажи анекдот", "нет, а зачем?", "да ладно", "не знаю",
+                  "а какая завтра погода?"):
+        bot = _bot()
+        _ask_todo(bot)
+        reply = _turn(bot, other)
+        check(f"«{other}» → обычный путь, вопрос снят молча",
+              reply == "STOP" and _todo_items(bot, "c1") == []
+              and bot.list_offers.peek("c1") is None)
     check("после неё «да» уже ничего не делает",
-          bot._list_offer_turn("да", "u1", "c1", "c1", "ru") is None
-          and _todo_items(bot, "c1") == [])
+          _turn(bot, "да") == "STOP" and _todo_items(bot, "c1") == [])
 
     bot = _bot()
     _ask_todo(bot, user_id="u1")
-    check("«да» другого участника → не ответ",
-          bot._list_offer_turn("да", "u2", "c1", "c1", "ru") is None)
+    check("«да» другого участника → не ответ (обычный путь)",
+          _turn(bot, "да", user_id="u2") == "STOP")
     check("вопрос спросившего жив", bot.list_offers.peek("c1") is not None)
     check("ничего не записано чужим «да»", _todo_items(bot, "c1") == [])
     check("а «да» спросившего — записывает",
-          bot._list_offer_turn("да", "u1", "c1", "c1", "ru") is not None
+          _turn(bot, "да") == "Готово — «купить молоко» в списке дел."
           and _todo_items(bot, "c1") == ["купить молоко"])
 
     bot = _bot()
     _ask_todo(bot)
     bot.list_offers._offers["c1"]["asked_at"] = time.time() - list_offers.LIST_OFFER_TTL_SEC - 1
-    check("истёкший вопрос: «да» → None, ничего не записано",
-          bot._list_offer_turn("да", "u1", "c1", "c1", "ru") is None
-          and _todo_items(bot, "c1") == [])
+    check("истёкший вопрос: «да» → обычный путь, ничего не записано",
+          _turn(bot, "да") == "STOP" and _todo_items(bot, "c1") == [])
     check("истёкший вопрос снят", bot.list_offers.peek("c1") is None)
 
     bot = _bot(control_on=True)
     _ask_todo(bot)
     check("в режиме управления вопрос снимается без действия",
-          bot._list_offer_turn("да", "u1", "c1", "c1", "ru") is None
-          and bot.list_offers.peek("c1") is None and _todo_items(bot, "c1") == [])
+          _answer(bot, "да") is None and bot.list_offers.peek("c1") is None
+          and _todo_items(bot, "c1") == [])
+
+    # Ход с ранним возвратом (переключатель режима) — тоже ход: вопрос снят
+    bot = _bot()
+    bot.computer_control = _CC()
+    bot._cc_pop_idle_notice = lambda key, lang=None: None
+    state = {"on": False}
+    bot.control_mode_on = lambda key: state["on"]
+
+    def _switch(key, mode, lang=None):
+        state["on"] = bool(mode)
+        return "режим переключён"
+    bot._control_mode_switch = _switch
+    _ask_todo(bot)
+    _turn(bot, "перейди в режим управления")
+    _turn(bot, "выйди из режима управления")
+    check("переключатель режима (ранний возврат) снимает вопрос",
+          bot.list_offers.peek("c1") is None)
+    check("«ок» потом — обычный путь, старое не записано",
+          _turn(bot, "ок") == "STOP" and _todo_items(bot, "c1") == [])
 
     # English
     bot = _bot()
@@ -417,20 +550,81 @@ def test_offer_todo():
     bot = _bot()
     _ask_todo(bot, lang="en", task="buy milk", text="add buy milk to my todo list")
     check("«don't add it» → отказ (en)", _turn(bot, "don't add it") == "Okay, I won't.")
+    bot = _bot()
+    _ask_todo(bot, lang="en", task="buy milk", text="add buy milk to my todo list")
+    check("«no, tell me a joke» → обычный путь (en)",
+          _turn(bot, "no, tell me a joke") == "STOP" and _todo_items(bot, "c1") == [])
+
+
+def test_offer_not_ours():
+    section("3b. «Да» не нам: reply на другое сообщение, вопрос обучения, инициатива")
+    bot = _bot()
+    q = _ask_todo(bot)
+    bot.note_list_message("c1", "Список дел:\n1. x", [500])  # не вопрос — не запоминается
+    bot.note_list_message("c1", q[0], [501])
+    check("message_id вопроса запомнен", bot.list_offers.peek("c1")["message_ids"] == [501])
+    check("reply на сам вопрос — ответ",
+          _turn(bot, "да", reply_to=501) == "Готово — «купить молоко» в списке дел.")
+
+    bot = _bot()
+    q = _ask_todo(bot)
+    bot.note_list_message("c1", q[0], [501])
+    check("reply на другое сообщение бота (вопрос обучения) — не ответ",
+          _turn(bot, "да", reply_to=777) == "STOP" and _todo_items(bot, "c1") == [])
+
+    bot = _bot()
+    _ask_todo(bot)
+    bot.learning_manager = _Learning(sessions=[{"continue_asked_at": time.time() + 1}])
+    check("после вопроса обучение спросило «продолжаем?» — «да» не нам",
+          _turn(bot, "да") == "STOP" and _todo_items(bot, "c1") == [])
+    bot = _bot()
+    _ask_todo(bot)
+    bot.learning_manager = _Learning(sessions=[{"quiz_set_at": time.time() + 1}])
+    check("после вопроса пришёл тест — «да» не нам",
+          _turn(bot, "да") == "STOP" and _todo_items(bot, "c1") == [])
+    bot = _bot()
+    _ask_todo(bot)
+    bot.learning_manager = _Learning(sessions=[{"continue_asked_at": time.time() - 60}])
+    check("вопрос обучения ДО переспроса — «да» наше",
+          _turn(bot, "да") == "Готово — «купить молоко» в списке дел.")
+    bot = _bot()
+    _ask_todo(bot)
+    bot.proactive = _Proactive(last=time.time() + 1)
+    check("после вопроса ушла инициатива — «да» не нам",
+          _turn(bot, "да") == "STOP" and _todo_items(bot, "c1") == [])
 
 
 def test_offer_inventory():
-    section("3b. «Добавить «X» в инвентарь?»: да / нет / другое / чужой / срок")
+    section("3c. «Добавить «X» в инвентарь?»: да / нет / другое / чужой / срок")
     from app.features import list_offers
 
     bot = _bot()
     q = _ask_inv(bot)
     check("вопрос задан (ru)", q == ["Добавить «ключ» в инвентарь?"])
     reply = _turn(bot, "давай")
-    check("«давай» → подтверждение без LLM", reply == "Готово — «ключ» в инвентаре.")
-    check("предмет добавлен", _inv_names(bot) == ["ключ"])
+    check("«давай» → подтверждение без LLM", reply == "Готово — кладу «ключ» в инвентарь.")
+    check("предмет добавлен с заглавной", _inv_names(bot) == ["Ключ"])
     check("инвентарь досылается",
-          any("ключ" in m for m in bot._pending_list_messages.get("c1", [])))
+          any("Ключ" in m for m in bot._pending_list_messages.get("c1", [])))
+
+    bot = _bot()
+    q = _ask_inv(bot, item="шоколадку", text="на, держи шоколадку")
+    check("«на, держи шоколадку» → вопрос в винительном",
+          q == ["Добавить «шоколадку» в инвентарь?"])
+    check("«да» → «кладу «шоколадку» в инвентарь», имя с заглавной",
+          _turn(bot, "да") == "Готово — кладу «шоколадку» в инвентарь."
+          and _inv_names(bot) == ["Шоколадку"])
+
+    bot = _bot()
+    bot.inventory_manager.add_item("Шоколадка", "молочная")
+    check("предмет уже есть («Шоколадка» ~ «шоколадку») — вопроса нет",
+          _ask_inv(bot, item="шоколадку", text="держи шоколадку") == [])
+    bot = _bot()
+    _ask_inv(bot, item="шоколадку", text="держи шоколадку")
+    bot.inventory_manager.add_item("Шоколадка", "от маркера")
+    check("появился, пока висел вопрос → честно говорим, дубля нет",
+          _turn(bot, "да") == "«Шоколадка» уже есть в инвентаре."
+          and _inv_names(bot) == ["Шоколадка"])
 
     bot = _bot()
     _ask_inv(bot)
@@ -439,51 +633,58 @@ def test_offer_inventory():
 
     bot = _bot()
     _ask_inv(bot)
-    check("посторонняя реплика → None, вопрос снят",
-          bot._list_offer_turn("расскажи сказку", "u1", "c1", "c1", "ru") is None
+    check("посторонняя реплика → обычный путь, вопрос снят",
+          _turn(bot, "расскажи сказку") == "STOP"
           and bot.list_offers.peek("c1") is None and _inv_names(bot) == [])
 
     bot = _bot()
     _ask_inv(bot, user_id="u1")
     check("«да» другого участника → не ответ, вопрос жив",
-          bot._list_offer_turn("да", "u2", "c1", "c1", "ru") is None
+          _turn(bot, "да", user_id="u2") == "STOP"
           and bot.list_offers.peek("c1") is not None and _inv_names(bot) == [])
 
     bot = _bot()
     _ask_inv(bot)
     bot.list_offers._offers["c1"]["asked_at"] = time.time() - list_offers.LIST_OFFER_TTL_SEC - 1
-    check("истёкший вопрос: «да» → None, не добавлено",
-          bot._list_offer_turn("да", "u1", "c1", "c1", "ru") is None and _inv_names(bot) == [])
-
-    bot = _bot()
-    _ask_inv(bot)
-    bot.inventory_manager.add_item("ключ", "уже был")
-    check("предмет уже есть → честно говорим",
-          _turn(bot, "да") == "«ключ» уже есть в инвентаре.")
+    check("истёкший вопрос: «да» → обычный путь, не добавлено",
+          _turn(bot, "да") == "STOP" and _inv_names(bot) == [])
 
     # English
     bot = _bot()
     q = _ask_inv(bot, lang="en")
     check("вопрос задан (en)", q == ['Add "ключ" to the inventory?'])
     check("«yes» → подтверждение (en)",
-          _turn(bot, "yes") == 'Done — "ключ" is in the inventory.' and _inv_names(bot) == ["ключ"])
+          _turn(bot, "yes") == 'Done — putting "ключ" in the inventory.'
+          and _inv_names(bot) == ["Ключ"])
     bot = _bot()
     _ask_inv(bot, lang="en")
     check("«nope» → отказ (en)", _turn(bot, "nope") == "Okay, I won't." and _inv_names(bot) == [])
 
 
 def test_offer_remove_kinds():
-    section("3c. Переспрос вычеркнуть пункт / убрать предмет")
+    section("3d. Переспрос вычеркнуть пункт / убрать предмет")
     bot = _bot()
     for t in ("а", "б", "в"):
         bot.todo_manager.add_item("c1", "Аня", t)
     bot._pending_list_messages["c1"] = []
     bot._process_todo_marker("Ок", "c1", "Аня", fallback_done_index=2,
                              user_text="вычеркни 2", user_id="u1", lang="ru")
-    check("вопрос «Отметить пункт №2…?»",
-          bot._pending_list_messages["c1"] == ["Отметить пункт №2 как выполненный?"])
+    check("вопрос «Отметить пункт №2 «б»…?» — с текстом пункта",
+          bot._pending_list_messages["c1"] == ["Отметить пункт №2 «б» как выполненный?"])
     check("«да» → пункт 2 вычеркнут",
           _turn(bot, "да") == "Готово — пункт №2 вычеркнут." and _todo_items(bot, "c1") == ["а", "в"])
+
+    # Список изменился, пока висел вопрос: под №2 уже другое — не трогаем
+    bot = _bot()
+    for t in ("а", "б", "в"):
+        bot.todo_manager.add_item("c1", "Аня", t)
+    bot._pending_list_messages["c1"] = []
+    bot._process_todo_marker("Ок", "c1", "Аня", fallback_done_index=2,
+                             user_text="вычеркни 2", user_id="u1", lang="ru")
+    bot.todo_manager.remove_item("c1", 1)  # другой участник/веб удалил пункт 1
+    check("номер съехал → честный ответ, ничего не вычеркнуто",
+          _turn(bot, "да") == "Пункта №2 «б» в списке уже нет — ничего не вычёркиваю."
+          and _todo_items(bot, "c1") == ["б", "в"])
 
     bot = _bot()
     bot.todo_manager.add_item("c1", "Аня", "а")
@@ -491,6 +692,10 @@ def test_offer_remove_kinds():
     bot._process_todo_marker("Молодец", "c1", "Аня", fallback_done_index=3,
                              user_text="готово, прочитал 3 главы", user_id="u1")
     check("«готово, прочитал 3 главы» — без вопроса (число из рассказа)",
+          bot._pending_list_messages["c1"] == [] and bot.list_offers.peek("c1") is None)
+    bot._process_todo_marker("Ок", "c1", "Аня", fallback_done_index=5,
+                             user_text="вычеркни 5", user_id="u1")
+    check("«вычеркни 5» при одном пункте — без вопроса (такого номера нет)",
           bot._pending_list_messages["c1"] == [] and bot.list_offers.peek("c1") is None)
 
     bot = _bot()
@@ -516,7 +721,7 @@ def test_offer_remove_kinds():
 
 
 def test_offer_only_explicit():
-    section("3d. Вопрос — только на явную просьбу")
+    section("3e. Вопрос — только на явную просьбу")
     from app.features.todo_manager import extract_task, is_todo_request
     from app.features.inventory_manager import extract_inventory_item
 
@@ -537,7 +742,9 @@ def test_offer_only_explicit():
           extract_task("добавь в список дел купить хлеб") == "купить хлеб")
 
     for text in ("держи меня в курсе", "возьми паузу", "подбери мне фильм",
-                 "передаю привет маме", "забери свои слова назад", "держи ключ?"):
+                 "передаю привет маме", "забери свои слова назад", "держи ключ?",
+                 "держи пять", "держи кулачки", "держи ухо востро",
+                 "возьми ответственность", "возьми с собой зонт"):
         bot = _bot()
         q = _ask_inv(bot, item=extract_inventory_item(text), text=text)
         check(f"передачи предмета нет — вопроса нет: «{text}»", q == [])
@@ -560,16 +767,15 @@ def test_offer_only_explicit():
           bot._pending_list_messages["c1"] == ["Записать «яблоко» в список дел?"]
           and bot.list_offers.peek("c1")["kind"] == "todo_add")
 
-    bot = _bot()
-    _ask_todo(bot, task="купить молоко", text="запиши купить молоко")
-    bot.list_offers.peek("c1")
-    q2 = _ask_inv(bot)  # следующий ход: бакет новый — вопрос задаётся
-    check("в следующем ходе новый вопрос заменяет старый",
-          q2 == ["Добавить «ключ» в инвентарь?"]
-          and bot.list_offers.peek("c1")["kind"] == "inventory_add")
-
 
 # ════════════ 4. «Запомни сценарий» вне режима управления ════════════
+
+def _sc_bot(**kw):
+    bot = _bot(**kw)
+    bot.computer_control = _CC()
+    bot.scenario_manager = _SM()
+    return bot
+
 
 def test_scenario_outside_mode():
     section("4. «Запомни сценарий …» вне режима управления")
@@ -578,9 +784,10 @@ def test_scenario_outside_mode():
 
     bot = _bot()
     for text in ("запомни сценарий заказ пиццы", "Коннор, запомни сценарий заказ пиццы",
-                 "сохрани сценарий как утро", "save the scenario pizza order",
-                 "remember this scenario"):
-        check(f"команда сценария: «{text}»", bot._is_scenario_save_command(text))
+                 "Запомни, пожалуйста, сценарий заказа пиццы",
+                 "запомни сценарий:\nшаг 1\nшаг 2", "сохрани сценарий как утро",
+                 "save the scenario pizza order"):
+        check(f"команда сценария: {text!r}", bot._is_scenario_save_command(text))
     for text in ("запомни, я не люблю кофе", "запомни мой день рождения",
                  "какой сценарий у фильма?"):
         check(f"не команда сценария: «{text}»", not bot._is_scenario_save_command(text))
@@ -591,34 +798,45 @@ def test_scenario_outside_mode():
           and "режим управления" in hint_ru and "control mode" in hint_en)
 
     # Допущен (владелец), у персоны есть режим управления и сценарии
-    bot = _bot()
-    bot.computer_control = _CC()
-    bot.scenario_manager = _SM()
-    reply = _turn(bot, "запомни сценарий заказ пиццы")
-    check("допущенному — подсказка (ru)", reply == hint_ru)
-    check("правило не извлекалось", bot.rule_calls == [] and bot.memory.ltm.saved == [])
-    check("сценарий не записан", bot.scenario_manager.saved == [])
-    check("реплика и подсказка в истории",
-          bot.memory.added == [("user", "запомни сценарий заказ пиццы"), ("assistant", hint_ru)])
-    bot = _bot()
-    bot.computer_control = _CC()
-    bot.scenario_manager = _SM()
-    check("допущенному — подсказка (en)",
-          _turn(bot, "save the scenario pizza order") == hint_en and bot.rule_calls == [])
+    for text in ("запомни сценарий заказ пиццы", "Запомни, пожалуйста, сценарий заказа пиццы",
+                 "запомни сценарий:\nоткрой додо\nвыбери пиццу"):
+        bot = _sc_bot()
+        reply = _turn(bot, text)
+        check(f"допущенному — подсказка: {text!r}", reply == hint_ru)
+        check(f"правило не извлекалось: {text!r}",
+              bot.rule_calls == [] and bot.memory.ltm.saved == [])
+    check("сценарий не записан, в истории реплика и подсказка",
+          bot.scenario_manager.saved == []
+          and bot.memory.added[-1] == ("assistant", hint_ru))
+
+    # Обычные просьбы со словом «сценарий» — не перехватываются (раньше
+    # правилом не становились: в эвристике исправлений только «запомни»)
+    for text in ("запиши сценарий ролика про котов для тиктока",
+                 "сохрани сценарий нашей игры",
+                 "remember the scenario where you are a pirate",
+                 "save the scenario pizza order"):
+        bot = _sc_bot()
+        check(f"обычный ответ, без подсказки: «{text}»", _turn(bot, text) == "STOP")
 
     # Не допущен: режима «не существует» — обычный путь, но без правила
-    bot = _bot(single_user=False)
-    bot.computer_control = _CC()
-    bot.scenario_manager = _SM()
+    bot = _sc_bot(single_user=False)
     reply = _turn(bot, "запомни сценарий заказ пиццы", user_id="guest")
     check("недопущенному — без подсказки (обычный путь)", reply == "STOP")
     check("недопущенному — правило не извлекалось", bot.rule_calls == []
           and bot.memory.ltm.saved == [])
+    bot = _sc_bot(single_user=False)
+    _turn(bot, "Запомни, пожалуйста, сценарий заказа пиццы", user_id="guest")
+    check("недопущенному, «пожалуйста» — правило не извлекалось", bot.rule_calls == [])
+
+    # Недопущенный в чате с включённым режимом блок режима не проходит —
+    # правило создаваться всё равно не должно
+    bot = _sc_bot(single_user=False, control_on=True)
+    reply = _turn(bot, "запомни сценарий заказ пиццы", user_id="guest")
+    check("недопущенный в чате с режимом — без правила, без записи сценария",
+          reply == "STOP" and bot.rule_calls == [] and bot.scenario_manager.saved == [])
 
     # Ход из скина: _cc_allowed — False, подсказки нет, правила тоже
-    bot = _bot()
-    bot.computer_control = _CC()
-    bot.scenario_manager = _SM()
+    bot = _sc_bot()
     reply = bot.process_message("запомни сценарий заказ пиццы", user_id="u1",
                                 chat_id="c1", from_skin=True)
     check("из скина — без подсказки и без правила",
@@ -639,9 +857,7 @@ def test_scenario_outside_mode():
           and bot.memory.ltm.saved == ["Rule: Remember the scenario"])
 
     # В режиме управления — как раньше: команду забирают сценарии
-    bot = _bot(control_on=True)
-    bot.computer_control = _CC()
-    bot.scenario_manager = _SM()
+    bot = _sc_bot(control_on=True)
     reply = _turn(bot, "запомни сценарий заказ пиццы")
     check("в режиме управления — запись сценария, как раньше",
           reply == "Сценарий «заказ пиццы» сохранён."
@@ -652,6 +868,7 @@ def main():
     test_markers()
     test_empty_inventory_prompt()
     test_offer_todo()
+    test_offer_not_ours()
     test_offer_inventory()
     test_offer_remove_kinds()
     test_offer_only_explicit()

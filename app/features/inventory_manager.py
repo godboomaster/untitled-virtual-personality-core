@@ -16,6 +16,19 @@ from app.core.paths import data_dir
 logger = logging.getLogger(__name__)
 
 
+# Грубое русское окончание для сверки названий («шоколадку» ~ «шоколадка»,
+# «красную розу» ~ «красная роза»): без локальной модели предмет из реплики
+# сохраняется как сказан, в косвенном падеже
+_NAME_ENDING_RE = re.compile(
+    r"(?:ую|юю|ая|яя|ой|ей|ое|ее|ые|ие|ый|ий|ым|им|ом|ем|у|ю|а|я|о|е|ы|и|й|ь)$")
+
+
+def _name_key(name: str) -> str:
+    words = re.findall(r"\w+", (name or "").lower().replace("ё", "е"))
+    return " ".join(_NAME_ENDING_RE.sub("", w) if len(w) > 3 else w
+                    for w in words)
+
+
 class InventoryItem:
     def __init__(self, name: str, description: str = "", acquired: str = "",
                  source: str = "", tags: Optional[List[str]] = None,
@@ -193,6 +206,19 @@ class InventoryManager:
         with self._lock:
             return any(item.name.lower() == name for item in self._items)
 
+    def find_same(self, name: str) -> Optional[str]:
+        """Имя предмета, который уже есть под этим названием — без учёта
+        регистра и падежного окончания: «шоколадку» из реплики и
+        «Шоколадка» из маркера — один предмет. None — такого нет."""
+        key = _name_key(name)
+        if not key:
+            return None
+        with self._lock:
+            for item in self._items:
+                if _name_key(item.name) == key:
+                    return item.name
+        return None
+
 
 # Эвристика для определения запросов на добавление/удаление предмета
 _INVENTORY_ADD_TRIGGERS = [
@@ -298,6 +324,7 @@ _ITEM_STOP_HEAD = frozenset({
     "в", "во", "на", "за", "с", "со", "под", "по", "от", "из", "к", "о",
     "и", "а", "но", "что", "как",
     "паузу", "трубку", "слово", "слова", "ответ", "привет", "должное", "курс",
+    "пять", "кулачки", "кулаки", "ухо", "краба", "ответственность", "заметку",
 })
 _ITEM_MAX_WORDS = 4
 

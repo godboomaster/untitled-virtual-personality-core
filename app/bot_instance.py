@@ -33,7 +33,7 @@ from app.core.users import get_username
 from app.features.todo_manager import (
     TodoManager, is_todo_request, extract_task,
     is_todo_done_request, extract_todo_done_index, is_todo_list_request,
-    is_explicit_todo_request, is_explicit_todo_done_request,
+    is_explicit_todo_request, is_explicit_todo_done_request, resolve_done_marker,
 )
 from app.features.reminder_manager import (
     ReminderManager, parse_reminder, parse_recurring, parse_postpone,
@@ -286,6 +286,33 @@ _CORRECTION_HINT_RE = re.compile(
     r"не\s+надо\s+так|не\s+говори\s+так|поправ\w*|исправь|ты\s+опять|ты\s+снова)\b",
     re.IGNORECASE,
 )
+
+
+# Маркеры фич в ответе LLM (вырезает BotInstance._cut_markers)
+def _marker_re(tag: str, body: str = r"[^\]]+") -> "re.Pattern":
+    return re.compile(rf"\[{tag}:({body})\]")
+
+
+# Факт может содержать скобки одного уровня: «Привычка: [секрет] грызёт ногти»
+_PUNISH_FACT_MARK_RE = _marker_re("PUNISH:FACT", r"(?:[^\[\]\n]|\[[^\[\]\n]*\])+")
+_TODO_DONE_MARK_RE = _marker_re("TODO_DONE", r"[^\]]*")
+_TODO_ADD_MARK_RE = _marker_re("TODO_ADD")
+_INV_USE_MARK_RE = _marker_re("INVENTORY_USE")
+_INV_ADD_MARK_RE = _marker_re("INVENTORY_ADD")
+_INV_REMOVE_MARK_RE = _marker_re("INVENTORY_REMOVE")
+
+
+def _cap_first(text: str) -> str:
+    # Название предмета с заглавной: «шоколадку» → «Шоколадку»
+    return text[:1].upper() + text[1:] if text else text
+
+
+# «Запомни, пожалуйста, сценарий …» → «запомни сценарий …» (для разбора
+# команды сценария вне режима управления, см. _is_scenario_save_command)
+_POLITE_LEAD_RE = re.compile(r"^(?:(?:пожалуйста|плиз|please|pls)[\s,]+)+", re.IGNORECASE)
+_POLITE_AFTER_VERB_RE = re.compile(
+    r"^((?:запомни|запиши|сохрани|save|remember|record))[\s,]+"
+    r"(?:(?:пожалуйста|плиз|please|pls)[\s,]+)+", re.IGNORECASE)
 
 
 # «Зови меня X» — предпочитаемое имя пользователя
@@ -806,17 +833,18 @@ class BotInstance:
 
     def _is_scenario_save_command(self, text: Optional[str]) -> bool:
         """«Запомни/сохрани сценарий X», «save the scenario X» — тем же
-        разбором, что в режиме управления; обращение по имени в начале
-        («Коннор, запомни сценарий …») не мешает."""
+        разбором, что в режиме управления. Не мешают обращение по имени в
+        начале («Коннор, запомни сценарий …»), «пожалуйста» после глагола
+        и шаги с новой строки («запомни сценарий:\\nшаг 1»)."""
         if not text:
             return False
-        variants = [text]
+        flat = re.sub(r"\s+", " ", text).strip()
         try:
-            variants.append(self.strip_trigger(text))
+            flat = self.strip_trigger(flat)
         except Exception:
             pass  # бот без trigger_words (тестовые заготовки)
-        return any(ScenarioManager.parse_save_request(v) is not None
-                   for v in variants)
+        flat = _POLITE_AFTER_VERB_RE.sub(r"\1 ", _POLITE_LEAD_RE.sub("", flat))
+        return ScenarioManager.parse_save_request(flat) is not None
 
     def is_owner(self, user_id: str) -> bool:
         """Владелец ли пользователь: id из YAML персоны или OWNER_USER_ID.
@@ -2730,6 +2758,12 @@ class BotInstance:
         # Нужно telegram-слою, чтобы зарегистрировать отправленное сообщение как «вопрос бота»
         # для reply-to-логики обучения (пользователь может ответить reply-ом на этот вопрос).
         self._pending_question_kind[str(chat_id)] = None
+        # Переспрос «Записать «X» в список дел?» отвечается только СЛЕДУЮЩИМ
+        # ходом спросившего: забираем его сразу, до ранних возвратов
+        # (переключатель режима, «почини браузер», режим управления), а решаем
+        # по нему ниже (_list_offer_turn) — иначе «ок» через несколько ходов
+        # записало бы старое
+        list_offer = self._take_list_offer(chat_id, user_id)
         # Уведомления о карантине веб-чатов: доносим до пользователя коротким
         # служебным сообщением вслед за ответом — сайт в карантине молча
         # пропускается, иначе деградация не видна. Текст зависит от природы
@@ -3232,8 +3266,9 @@ class BotInstance:
         # Ответ на переспрос «Записать «X» в список дел?» / «Добавить «X» в
         # инвентарь?»: «да» — делаем без LLM, «нет» — снимаем; другая
         # реплика снимает вопрос молча и идёт обычным путём
-        offer_reply = self._list_offer_turn(raw_user_text, user_id, chat_id,
-                                            cc_mode_key, turn_lang)
+        offer_reply = self._list_offer_turn(
+            list_offer, raw_user_text, chat_id, cc_mode_key, turn_lang,
+            reply_to_bot_message_id)
         if offer_reply is not None:
             self.memory.add_message("user", user_input, user_id, chat_id, user_name)
             self.memory.add_message("assistant", offer_reply, user_id, chat_id)
@@ -3243,11 +3278,17 @@ class BotInstance:
 
         # «Запомни сценарий …» вне режима управления: сценарии живут только
         # в режиме, правилом навсегда (исправление → Rule ниже) это стать не
-        # должно. Допущенному к режиму — подсказка, где они записываются;
-        # для остальных режима «не существует» — обычный ответ без правила
-        scenario_outside_mode = (
-            self._is_scenario_save_command(raw_user_text)
-            and not (cc_mode_key and self.control_mode_on(cc_mode_key)))
+        # должно. Только для фраз, которые и правда ушли бы в извлечение
+        # правила: «запиши сценарий ролика», «remember the scenario where…» —
+        # обычные просьбы. Допущенному к режиму — подсказка, где сценарии
+        # записываются; для остальных режима «не существует» — обычный ответ
+        # без правила. «В режиме» — для того, кого режим обслуживает:
+        # недопущенный в чате с включённым режимом его блок не проходит
+        scenario_outside_mode = bool(
+            _CORRECTION_HINT_RE.search(user_input)
+            and self._is_scenario_save_command(raw_user_text)
+            and not (cc_mode_key and self.control_mode_on(cc_mode_key)
+                     and self._cc_allowed(user_id, chat_id)))
         if (scenario_outside_mode and getattr(self, "computer_control", None)
                 and getattr(self, "scenario_manager", None)
                 and self._cc_allowed(user_id, chat_id)):
@@ -3792,10 +3833,14 @@ class BotInstance:
             extracted_inventory_item = None
             extracted_inventory_remove = None
             inventory_events = []  # События для LLM-реакции (использование, просрочка)
+            # Блок инвентаря несёт инструкцию маркеров — только там, где маркеры
+            # разбираются (ниже: не напоминание и не учебно-административный
+            # ход), иначе сырой [INVENTORY_ADD] утёк бы в ответ
+            inventory_markers_on = not is_reminder_request and not is_learning_request
             if (not is_reminder_request and self.inventory_manager
                     and not (chat_id and self.control_mode_on(chat_id))):
                 inv_block = self.inventory_manager.get_context_block()
-                if inv_block:
+                if inv_block and inventory_markers_on:
                     inventory_context = inv_block
                 # Проверяем запрос на добавление/удаление
                 if "inventory_add" in _fired_intents:
@@ -3827,7 +3872,7 @@ class BotInstance:
 
                 # Обновляем контекст инвентаря после всех изменений
                 inv_block = self.inventory_manager.get_context_block()
-                if inv_block:
+                if inv_block and inventory_markers_on:
                     inventory_context = inv_block
 
             # Ранний возврат: готовый ответ, минующий LLM (фидбек теста, не генерируем новый контент)
@@ -4033,7 +4078,7 @@ class BotInstance:
             # (пропускаем если это напоминание или учебно-административное сообщение —
             # там LLM не должен добавлять в инвентарь; обычный разговор при активном
             # курсе сюда проходит — инвентарь во время курса работает как обычно)
-            if not is_reminder_request and not is_learning_request and self.inventory_manager:
+            if inventory_markers_on and self.inventory_manager:
                 answer = self._process_inventory_markers(
                     answer, extracted_inventory_item, extracted_inventory_remove,
                     user_name or "user", user_text=user_input, chat_id=chat_id,
@@ -4977,29 +5022,37 @@ class BotInstance:
 
     # Маркеры фич в ответе LLM. Разбираются ВСЕ вхождения (модель может
     # вычеркнуть два пункта и записать третий одним ответом), каждое
-    # вырезается из видимого текста вместе с пробелами перед ним
-    _PUNISH_FACT_MARK_RE = re.compile(r"[ \t]*\[PUNISH:FACT:(.+?)\]")
-    _TODO_DONE_MARK_RE = re.compile(r"[ \t]*\[TODO_DONE:([^\]]*)\]")
-    _TODO_ADD_MARK_RE = re.compile(r"[ \t]*\[TODO_ADD:([^\]]+)\]")
-    _INV_USE_MARK_RE = re.compile(r"[ \t]*\[INVENTORY_USE:([^\]]+)\]")
-    _INV_ADD_MARK_RE = re.compile(r"[ \t]*\[INVENTORY_ADD:([^\]]+)\]")
-    _INV_REMOVE_MARK_RE = re.compile(r"[ \t]*\[INVENTORY_REMOVE:([^\]]+)\]")
-
+    # вырезается из видимого текста (регэкспы — _marker_re). Пробелы правятся
+    # только на месте разреза: маркер на своей строке уходит вместе со
+    # строкой, в начале/конце строки — без пробелов вокруг, внутри фразы —
+    # один пробел между словами. Остальной текст не трогаем
     @staticmethod
     def _cut_markers(pattern, text: str) -> Tuple[str, List[str]]:
         # Все вхождения маркера: (текст без них, содержимое каждого)
-        found = []
-
-        def _cut(m):
+        found, pieces, pos = [], [], 0
+        for m in pattern.finditer(text):
             found.append(m.group(1).strip())
-            return ""
-        return pattern.sub(_cut, text), found
-
-    @staticmethod
-    def _tidy_cut(text: str) -> str:
-        # Хвостовые пробелы и лишние пустые строки на месте вырезанных маркеров
-        text = re.sub(r"[ \t]+\n", "\n", text)
-        return re.sub(r"\n{3,}", "\n\n", text).strip()
+            pieces.append(text[pos:m.start()])
+            pos = m.end()
+        if not found:
+            return text, found
+        pieces.append(text[pos:])
+        acc = pieces[0]
+        for i, right in enumerate(pieces[1:], 1):
+            if i < len(pieces) - 1 and not right.strip(" \t"):
+                continue  # между маркерами одни пробелы — один разрез
+            core_l, core_r = acc.rstrip(" \t"), right.lstrip(" \t")
+            line_start = not core_l or core_l.endswith("\n")
+            line_end = not core_r or core_r.startswith("\n")
+            if line_start and line_end:
+                acc = core_l + (core_r[1:] if core_r.startswith("\n") else core_r)
+            elif line_start or line_end:
+                acc = core_l + core_r
+            else:
+                glued = acc == core_l and right == core_r
+                sep = "" if glued or core_r[0] in ",.;:!?)»…" else " "
+                acc = core_l + sep + core_r
+        return acc, found
 
     def _parse_punishment(self, response: str, user_id: str) -> str:
         # Парсит маркеры наказания, выполняет действия.
@@ -5008,15 +5061,54 @@ class BotInstance:
             self._block_user(user_id)
             logger.info(f"Пользователь {user_id} заблокирован (PUNISH:BLOCK)")
 
-        response, facts = self._cut_markers(self._PUNISH_FACT_MARK_RE, response)
+        response, facts = self._cut_markers(_PUNISH_FACT_MARK_RE, response)
         for fact_text in facts:
             self.inject_fact(fact_text, user_id)
             logger.info(f"Пользователь {user_id} — подставной факт: {fact_text}")
 
-        return self._tidy_cut(response) if facts else response
+        return response.strip() if facts else response
+
+    # ── переспрос про дела/инвентарь (без локальной модели) ──
+
+    def _take_list_offer(self, chat_id, user_id) -> Optional[dict]:
+        # Висящий переспрос этого чата для user_id — забирается (см. list_offers)
+        offers = getattr(self, "list_offers", None)
+        return offers.take(chat_id, user_id) if offers is not None else None
+
+    def note_list_message(self, chat_id, text: str, message_ids) -> None:
+        """Платформа отправила досылаемое сообщение (список/вопрос): если
+        это переспрос — запоминаем его message_id, reply на него — ответ."""
+        offers = getattr(self, "list_offers", None)
+        if offers is not None and message_ids:
+            offers.note_message(chat_id, text, message_ids)
+
+    def _bot_asked_since(self, chat_id, ts: float) -> bool:
+        """После ts бот задал в чате другой вопрос: обучение («продолжаем?»,
+        тест, «как часто?») или инициатива. «Да» тогда — скорее ответ на
+        него, а не на переспрос про дела."""
+        lm = getattr(self, "learning_manager", None)
+        if lm is not None:
+            try:
+                for s in lm.get_sessions(chat_id):
+                    if max(s.get("continue_asked_at") or 0, s.get("quiz_set_at") or 0) > ts:
+                        return True
+                setup = lm.get_setup_state(chat_id)
+                if setup and (setup.get("asked_at") or 0) > ts:
+                    return True
+            except Exception as e:
+                logger.debug(f"[ListOffer] вопросы обучения не прочитаны: {e}")
+        pm = getattr(self, "proactive", None)
+        if pm is not None and hasattr(pm, "last_initiative_at"):
+            try:
+                if pm.last_initiative_at(chat_id) > ts:
+                    return True
+            except Exception as e:
+                logger.debug(f"[ListOffer] инициатива не прочитана: {e}")
+        return False
 
     def _ask_list_offer(self, chat_id, user_id, user_name: str, kind: str,
-                        value, lang: Optional[str] = None) -> None:
+                        value, lang: Optional[str] = None,
+                        task: Optional[str] = None) -> None:
         """Переспрос «Записать «X» в список дел?» (локальной модели нет):
         вопрос — отдельным сообщением вслед за ответом, ответ на него ловит
         _list_offer_turn. Один вопрос на ход: «да» сразу на два неоднозначно."""
@@ -5028,26 +5120,29 @@ class BotInstance:
         if cur and cur.get("question") in bucket:
             # Бакет списков живёт один ход: вопрос в нём — задан в этом ходе
             return
-        question = list_offers.text(f"ask_{kind}", lang, v=value)
+        question = list_offers.text(f"ask_{kind}", lang, v=value, t=task)
         offers.begin(chat_id, kind, value, user_id=user_id,
-                     user_name=user_name, question=question)
+                     user_name=user_name, question=question, task=task)
         bucket.append(question)
 
-    def _list_offer_turn(self, text: str, user_id, chat_id, mode_key,
-                         lang: Optional[str]) -> Optional[str]:
-        """Реплика при висящем переспросе (_ask_list_offer) → готовый ответ
-        или None (обычный путь). Вопрос принадлежит тому, кого спросили:
-        реплика другого участника его не трогает; истёкший снимается.
-        «да» → действие, «нет» → короткий отказ; другое — вопрос снят молча."""
-        offers = getattr(self, "list_offers", None)
-        if offers is None or offers.peek(chat_id) is None:
+    def _list_offer_turn(self, offer: Optional[dict], text: str, chat_id,
+                         mode_key, lang: Optional[str],
+                         reply_to_bot_message_id=None) -> Optional[str]:
+        """Решение по переспросу, забранному в начале хода (_take_list_offer)
+        → готовый ответ или None (обычный путь). «да» → действие, «нет» →
+        короткий отказ; другое — вопрос снят молча. «Да» не наше, если это
+        reply на другое сообщение бота или после вопроса бот спросил другое
+        (обучение, инициатива)."""
+        if offer is None:
             return None
         if mode_key and self.control_mode_on(mode_key):
-            # В режиме управления дела и инвентарь молчат — вопрос снимаем
-            offers.clear(chat_id)
+            return None  # в режиме управления дела и инвентарь молчат
+        if reply_to_bot_message_id and \
+                reply_to_bot_message_id not in (offer.get("message_ids") or ()):
+            logger.info(f"[ListOffer] chat={chat_id}: reply на другое сообщение бота — не ответ")
             return None
-        offer = offers.take(chat_id, user_id)
-        if offer is None:
+        if self._bot_asked_since(chat_id, float(offer.get("asked_at") or 0)):
+            logger.info(f"[ListOffer] chat={chat_id}: после вопроса бот спросил другое — не ответ")
             return None
         verdict = list_offers.classify_reply(offer.get("kind"), text,
                                              self._address_names())
@@ -5070,18 +5165,22 @@ class BotInstance:
                 self.todo_manager.add_item(chat_id, who or "User", str(v), lang=lang))
             return list_offers.text("done_todo_add", lang, v=v)
         if kind == "todo_done" and self.todo_manager:
-            result = self.todo_manager.remove_item(chat_id, int(v), lang=lang)
+            # Номер сверяем с текстом пункта на момент вопроса: список мог
+            # измениться (другой участник, веб) — тогда ничего не вычёркиваем
+            task = offer.get("task")
+            result = self.todo_manager.remove_item(chat_id, int(v), lang=lang, expect=task)
             if not result:
-                return list_offers.text("gone_todo_done", lang, v=v)
+                return list_offers.text("gone_todo_done", lang, v=v, t=task)
             self._pending_lists(chat_id).append(result)
             return list_offers.text("done_todo_done", lang, v=v)
         inv = self.inventory_manager
         if kind == "inventory_add" and inv:
-            if inv.has_item(v):
-                return list_offers.text("dup_inventory_add", lang, v=v)
+            same = inv.find_same(v)
+            if same:
+                return list_offers.text("dup_inventory_add", lang, v=same)
             desc, expires = self._enrich_inventory_item(v, lang=lang)
-            inv.add_item(v, desc, source=who or "user", expires=expires)
-            if not inv.has_item(v):
+            inv.add_item(_cap_first(v), desc, source=who or "user", expires=expires)
+            if not inv.has_item(_cap_first(v)):
                 return list_offers.text("full_inventory_add", lang, v=v)
             self._pending_lists(chat_id).append(inv.get_list_text())
             return list_offers.text("done_inventory_add", lang, v=v)
@@ -5110,49 +5209,60 @@ class BotInstance:
             return response
 
         list_lang = detect_language(user_text)
-        response, done_raw = self._cut_markers(self._TODO_DONE_MARK_RE, response)
-        response, add_raw = self._cut_markers(self._TODO_ADD_MARK_RE, response)
+        response, done_raw = self._cut_markers(_TODO_DONE_MARK_RE, response)
+        response, add_raw = self._cut_markers(_TODO_ADD_MARK_RE, response)
         rendered = None
         ask = None
 
-        # Удаление: [TODO_DONE:N]. Номера — по списку, который видела модель:
-        # удаляем по убыванию, иначе после первого удаления остальные съезжают
-        indices = {int(n) for raw in done_raw for n in re.findall(r"\d+", raw)}
+        # Удаление: [TODO_DONE:N]. Номера — по списку, который видела модель
+        # (снимок до правок): удаляем по убыванию со сверкой текста, иначе
+        # после первого удаления остальные съезжают
+        tasks = self.todo_manager.get_tasks(chat_id) if done_raw else []
+        indices = set()
+        for raw in done_raw:
+            found = resolve_done_marker(raw, tasks)
+            if not found:
+                logger.info(f"[Todo] [TODO_DONE:{raw[:40]}] не распознан — пропущен")
+            indices.update(found)
         for index in sorted(indices, reverse=True):
-            result = self.todo_manager.remove_item(chat_id, index, lang=list_lang)
+            expect = tasks[index - 1] if 1 <= index <= len(tasks) else None
+            result = self.todo_manager.remove_item(chat_id, index, lang=list_lang, expect=expect)
             if result:
                 rendered = result
 
         # Fallback удаление через эвристику — подтверждаем через LLM, иначе
-        # «готово, прочитал 3 главы» молча удалило бы пункт №3
-        if not done_raw and fallback_done_index is not None:
+        # «готово, прочитал 3 главы» молча удалило бы пункт №3. Маркер,
+        # которого не удалось разобрать, fallback не отключает
+        if not indices and fallback_done_index is not None:
             verdict = self._confirm_intent(user_text, f"item #{fallback_done_index}", "todo_remove")
             if verdict == "ADD":
                 result = self.todo_manager.remove_item(chat_id, fallback_done_index, lang=list_lang)
                 if result:
                     rendered = result
             elif verdict == "ASK" and is_explicit_todo_done_request(user_text):
-                ask = ("todo_done", fallback_done_index)
+                current = self.todo_manager.get_tasks(chat_id)
+                if 1 <= fallback_done_index <= len(current):
+                    ask = ("todo_done", fallback_done_index, current[fallback_done_index - 1])
 
         # Добавление: [TODO_ADD:...]
-        tasks = [t for t in add_raw if t]
+        tasks_add = [t for t in add_raw if t]
         if not add_raw and fallback_task:
             # Эвристический fallback — подтверждаем через LLM; SKIP — игнорируем
             verdict = self._confirm_intent(user_text, fallback_task, "todo_add")
             if verdict == "ADD":
-                tasks = [fallback_task]
+                tasks_add = [fallback_task]
             elif verdict == "ASK" and is_explicit_todo_request(user_text):
-                ask = ask or ("todo_add", fallback_task)
-        for task in tasks:
+                ask = ask or ("todo_add", fallback_task, None)
+        for task in tasks_add:
             rendered = self.todo_manager.add_item(chat_id, user_name, task, lang=list_lang)
 
         # Итоговый список — один раз, после всех правок
         if rendered:
             self._pending_lists(chat_id).append(rendered)
         if ask:
-            self._ask_list_offer(chat_id, user_id, user_name, *ask,
-                                 lang=lang or list_lang)
-        return self._tidy_cut(response) if (done_raw or add_raw) else response.strip()
+            self._ask_list_offer(chat_id, user_id, user_name, ask[0], ask[1],
+                                 lang=lang or list_lang, task=ask[2])
+        return response.strip()
 
     @staticmethod
     def _parse_inventory_add(raw: str) -> Tuple[str, str, Optional[str]]:
@@ -5181,9 +5291,9 @@ class BotInstance:
 
         inventory_changed = False
         ask = None
-        response, use_raw = self._cut_markers(self._INV_USE_MARK_RE, response)
-        response, add_raw = self._cut_markers(self._INV_ADD_MARK_RE, response)
-        response, remove_raw = self._cut_markers(self._INV_REMOVE_MARK_RE, response)
+        response, use_raw = self._cut_markers(_INV_USE_MARK_RE, response)
+        response, add_raw = self._cut_markers(_INV_ADD_MARK_RE, response)
+        response, remove_raw = self._cut_markers(_INV_REMOVE_MARK_RE, response)
 
         # INVENTORY_USE — бот использует предмет (удаляется)
         for name in use_raw:
@@ -5212,9 +5322,10 @@ class BotInstance:
                 inventory_changed = True
             elif verdict == "ASK":
                 # Локальная LLM недоступна — переспрашиваем вместо слепого
-                # добавления, но только на явную передачу предмета
+                # добавления, но только на явную передачу предмета и не про
+                # то, что уже лежит в инвентаре («шоколадку» ~ «Шоколадка»)
                 item = explicit_inventory_item(user_text, fallback_add)
-                if item and not self.inventory_manager.has_item(item):
+                if item and not self.inventory_manager.find_same(item):
                     ask = ("inventory_add", item)
             # SKIP — игнорируем, предмет не создаётся
 
@@ -5246,8 +5357,6 @@ class BotInstance:
             self._ask_list_offer(chat_id, user_id, giver_name, *ask,
                                  lang=lang or detect_language(user_text))
 
-        if use_raw or add_raw or remove_raw:
-            return self._tidy_cut(response)
         return response.strip()
 
     # File helpers
@@ -5805,6 +5914,8 @@ class BotInstance:
         # «как часто присылать уроки?»), и telegram-слой по флагу регистрирует
         # message_id ответа.
         self._pending_question_kind[str(chat_id)] = None
+        # Команда — тоже следующий ход: висящий переспрос «Записать «X»…?» снят
+        self._take_list_offer(chat_id, user_id)
 
         if kind == "remind":
             if not self.reminder_manager:
