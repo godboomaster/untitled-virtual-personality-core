@@ -8,9 +8,10 @@
   shared_moments: list[str] — внутренние шутки, запомнившиеся эпизоды
 Стадия близости — вычисляемая (дни знакомства × сообщений), не хранится.
 
-Наполнение: раз в MOMENT_EXTRACT_EVERY пользовательских сообщений локальная
-LLM извлекает из последних реплик новые общие моменты/темы, с дедупом
-против уже известных.
+Наполнение: общий урожай диалога (LivingPersona._harvest_dialogue — один
+фоновый вызов локального движка на NPC + mood + моменты) отдаёт сюда новые
+моменты/темы/позиции через add_extracted, с дедупом против уже известных
+(known_lists). Своего LLM-вызова у модуля нет.
 
 Подача: компактный блок в контекст ответа (get_context_block) — стадия,
 общие темы, последние моменты; с предупреждением не перечислять их
@@ -25,37 +26,17 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from app.core.config import get_db_paths
-from app.core.local_router import get_local_router
-from app.core.persona_context import _extract_json
-from app.core.language import detect_dialogue_language, user_language_line
 from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 
 logger = logging.getLogger(__name__)
 
-MOMENT_EXTRACT_EVERY = 20   # разбор диалога — раз в столько сообщений пользователя
+MOMENT_EXTRACT_EVERY = 20   # флаг record_message (совместимость); сам разбор — урожай диалога
 MAX_MOMENTS = 15            # внутренние шутки/моменты не копятся бесконечно
 MAX_TOPICS = 15
 MAX_STANCES = 10            # позиции персоны по темам (эволюция мнений)
-
-_MOMENTS_PROMPT = """Analyze the dialogue fragment between the character ({persona_name}) and the user. Pick out NEW shared moments of their relationship: inside jokes, memorable shared episodes, shared topics of interest. Only what is not in the already known lists.
-
-Separately note whether the character expressed their opinion on some topic or RECONSIDERED it during the discussion (an argument, persuasion, a change of position).
-
-Return STRICTLY JSON:
-{{"moments": ["<brief, up to 10 words>", ...], "topics": ["<topic>", ...],
-  "stance_changes": [{{"topic": "<topic>", "position": "<the character's current position, brief>"}}]}}
-Nothing new — empty lists (this is normal).
-
-Already known moments: {known_moments}
-Already known topics: {known_topics}
-The character's current positions: {known_stances}
-
-Dialogue:
-{dialog}
-{language_line}"""
 
 _STAGES = [
     "acquaintance — you are still getting to know each other",
@@ -86,7 +67,6 @@ class RelationshipMemory:
     def __init__(self, context: str, primitive: bool = False):
         self.context = context
         self.primitive = primitive
-        self.local = get_local_router(context)
         self._lock = threading.RLock()
         # Дозор: не чаще раза в RETENTION_TICK_HOURS перезапускать
         # прореживание из add_extracted (см. _maybe_prune_stale)
@@ -189,13 +169,13 @@ class RelationshipMemory:
                           for s in rec["stances"][-6:]) or "(none)",
             )
 
-    # ── Извлечение общих моментов/тем (локальный движок) ──
+    # ── Общие моменты/темы из урожая диалога ──
 
     def add_extracted(self, chat_id: str, moments=None, topics=None,
                       stance_changes=None) -> int:
         """Применить извлечённые из диалога моменты/темы/позиции (дедуп,
-        лимиты). Вызывается и из extract_moments, и из общего урожая
-        диалога (LivingPersona._harvest_dialogue). primitive — мимо."""
+        лимиты). Источник — общий урожай диалога
+        (LivingPersona._harvest_dialogue). primitive — мимо."""
         # Дозор ретенции — здесь, а не в record_message: этот путь идёт раз
         # в несколько сообщений/по таймеру, а не на каждое (см. _maybe_prune_stale)
         self._maybe_prune_stale()
@@ -239,53 +219,6 @@ class RelationshipMemory:
                 self._save()
                 logger.info(f"[Relationship] Чат {chat_id}: +{added} общих моментов/тем")
         return added
-
-    def extract_moments(self, chat_id: str, messages: List[dict],
-                        persona_name: str = "",
-                        user_language: Optional[str] = None) -> int:
-        """Разбор последних реплик → новые общие моменты/темы.
-        Возвращает число добавленных записей. Синхронный LLM-вызов —
-        звать из фонового потока. user_language — язык пользователя;
-        не задан — по его репликам."""
-        if self.primitive or not self.local.is_available(task="relationship"):
-            return 0
-        lines = []
-        for m in (messages or [])[-8:]:
-            role = "User" if m.get("role") == "user" else (persona_name or "Assistant")
-            content = str(m.get("content", ""))[:200].strip()
-            if content:
-                lines.append(f"{role}: {content}")
-        if len(lines) < 4:
-            return 0
-
-        known_moments, known_topics, known_stances = self.known_lists(chat_id)
-        if user_language is None:
-            user_language = detect_dialogue_language("", messages)
-
-        try:
-            response = self.local.get_response(
-                messages=[
-                    {"role": "system", "content": "You return only valid JSON without explanations."},
-                    {"role": "user", "content": _MOMENTS_PROMPT.format(
-                        persona_name=persona_name or "the character",
-                        known_moments=known_moments,
-                        known_topics=known_topics,
-                        known_stances=known_stances,
-                        dialog="\n".join(lines),
-                        language_line=user_language_line(user_language))},
-                ],
-                temperature=0.2,
-                max_tokens=250,
-                task="relationship",
-            )
-            data = _extract_json(response or "")
-        except Exception as e:
-            logger.debug(f"[Relationship] Извлечение не удалось: {e}")
-            return 0
-        if not isinstance(data, dict):
-            return 0
-        return self.add_extracted(chat_id, data.get("moments"),
-                                  data.get("topics"), data.get("stance_changes"))
 
     @staticmethod
     def _merge_stance(rec: dict, topic: str, position: str) -> bool:

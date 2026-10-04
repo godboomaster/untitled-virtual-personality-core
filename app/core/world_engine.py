@@ -10,7 +10,8 @@
 
 Заполнение базы:
   - при создании персоны: основная LLM разбирает system_prompt (npc_seed_on_create)
-  - из диалога: LLM-классификатор «упомянут ли новый NPC/место?»
+  - из диалога: общий урожай диалога (LivingPersona._harvest_dialogue)
+    отдаёт новых NPC/места в add_detected
   - из мира: внешние стимулы через интернет — ТОЛЬКО для real_world-персон
     (жёсткий gate external_stimuli_allowed, см. persona_context.py).
 
@@ -37,7 +38,7 @@ from app.core import timeutil
 from app.core.config import get_db_paths
 from app.core.local_router import get_local_router
 from app.core.persona_context import _extract_json
-from app.core.language import detect_dialogue_language, user_language_line
+from app.core.language import user_language_line
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,6 @@ MAX_STORYLINES = 15
 MAX_STIMULI = 20
 MAX_PLANS = 8                # открытые планы персоны (ожидания)
 MAX_RESOLVED_PLANS = 5       # завершённые планы храним кратко — для «как прошло»
-DETECT_THROTTLE_SEC = 60  # детекция NPC/мест из диалога — не чаще раза в минуту
 MAX_RESOLVED_STORYLINES = 10  # завершённые линии: храним последние, старые чистим
 
 
@@ -175,19 +175,6 @@ Known places: {place_list}
 Items in the inventory: {inventory_list}
 {language_line}"""
 
-_DIALOGUE_DETECT_PROMPT = """Analyze the dialogue fragment. Determine whether NEW characters (NPCs) or places that are not in the known list are mentioned. This is about the world around the interlocutors (friends, colleagues, cafes, cities...) — NOT about the interlocutors themselves (the user and the assistant).
-
-Return JSON:
-{{"new_npcs": [{{"name": "...", "role": "...", "context": "how they were mentioned"}}], "new_places": [{{"name": "...", "type": "...", "context": "..."}}]}}
-If there is nothing new — both lists are empty.
-
-Known NPCs: {npc_list}
-Known places: {place_list}
-
-Dialogue:
-{dialog}
-{language_line}"""
-
 _STIMULUS_FILTER_PROMPT = """Evaluate an external fact from the internet: is it suitable as a background for the character's life?
 
 Character: {personality_summary}
@@ -241,11 +228,6 @@ class WorldEngine:
         # Расписание per-chat: когда генерировать следующее офлайн-событие
         self._next_event_at: Dict[str, float] = data.get("next_event_at", {})
         self._next_fetch_at: float = data.get("next_fetch_at", 0.0)
-        # Троттлинг детекции из диалога: LLM-разбор на КАЖДОЕ сообщение
-        # при активной переписке выстраивает очередь в локальную модель;
-        # детекция смотрит последние 6 реплик, так что пропущенное
-        # подхватится следующим сообщением
-        self._last_detect_at: float = 0.0
         # Счётчики для наблюдаемости (in-memory, снапшот — get_state_for_ui)
         self.stats = {"events_generated": 0, "stimuli_fetched": 0,
                       "stimuli_filtered": 0, "stimuli_fetch_failed": 0,
@@ -559,8 +541,11 @@ class WorldEngine:
 
     def add_detected(self, new_npcs, new_places) -> int:
         """Применить найденные в диалоге сущности к базе мира (дедуп по имени,
-        лимиты MAX_NPCS/MAX_PLACES). Вызывается и из detect_from_dialogue,
-        и из общего урожая диалога (LivingPersona._harvest_dialogue)."""
+        лимиты MAX_NPCS/MAX_PLACES). Источник — общий урожай диалога
+        (LivingPersona._harvest_dialogue). primitive — мимо: у существа без
+        социального мира карточки NPC/мест из диалога не заводятся."""
+        if self.primitive:
+            return 0
         added = 0
         now_iso = datetime.now().isoformat(timespec="seconds")
         with self._lock:
@@ -599,58 +584,6 @@ class WorldEngine:
             logger.info(f"[WorldEngine] Из диалога добавлено сущностей: {added}")
             self.stats["dialogue_entities_added"] += added
         return added
-
-    # ── Детекция NPC/мест из диалога ────────────────────────
-
-    def detect_from_dialogue(self, messages: List[dict],
-                             user_language: Optional[str] = None) -> int:
-        """LLM-классификатор на последние реплики. Возвращает число новых карт.
-        primitive: детекции нет — у существа без социального мира карточки
-        NPC/мест не заводятся. Не чаще раза в DETECT_THROTTLE_SEC.
-        user_language — язык пользователя; не задан — по самим репликам."""
-        if self.primitive:
-            return 0
-        if not messages or not self.local.is_available(task="world_engine"):
-            return 0
-        with self._lock:
-            if time.time() - self._last_detect_at < DETECT_THROTTLE_SEC:
-                return 0
-            self._last_detect_at = time.time()
-
-        dialog_lines = []
-        for m in messages[-6:]:
-            role = "User" if m.get("role") == "user" else (self.persona_name or "Assistant")
-            content = str(m.get("content", ""))[:200]
-            dialog_lines.append(f"{role}: {content}")
-        if not dialog_lines:
-            return 0
-
-        with self._lock:
-            npc_names = ", ".join(n["name"] for n in self._world["npcs"][:15]) or _NONE
-            place_names = ", ".join(p["name"] for p in self._world["places"][:15]) or _NONE
-        if user_language is None:
-            user_language = detect_dialogue_language("", messages)
-
-        try:
-            response = self.local.get_response(
-                messages=[
-                    {"role": "system", "content": "You return only valid JSON."},
-                    {"role": "user", "content": _DIALOGUE_DETECT_PROMPT.format(
-                        npc_list=npc_names, place_list=place_names,
-                        dialog="\n".join(dialog_lines),
-                        language_line=user_language_line(user_language))},
-                ],
-                temperature=0.1,
-                max_tokens=250,
-                task="world_engine",
-            )
-            data = _extract_json(response or "")
-            if not data:
-                return 0
-            return self.add_detected(data.get("new_npcs"), data.get("new_places"))
-        except Exception as e:
-            logger.debug(f"[WorldEngine] Детекция из диалога не удалась: {e}")
-            return 0
 
     def touch_npc(self, name: str):
         # Обновляет last_mentioned_at у NPC по имени (после события).

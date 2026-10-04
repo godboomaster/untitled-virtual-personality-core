@@ -228,9 +228,9 @@ NAME RULE (CRITICAL):
   "Антон сказал что будет" → [NO_FACTS], NOT Name: Антон
 - When in doubt about a name → do NOT extract it
 
-"WRONG output (never do this):\n"
-"  Name: Ivan, Pets: No_pets, Music: not mentioned, Goals: unknown\n"
-"  Hobby: guitar, reading, yoga\n\n"
+WRONG output (never do this):
+  Name: Ivan, Pets: No_pets, Music: not mentioned, Goals: unknown
+  Hobby: guitar, reading, yoga
 
 CORRECT output for same input (only real facts, specific subcategories):
   Name: Ivan, Hobby_music: guitar, Hobby_reading: reading, Hobby_fitness: yoga

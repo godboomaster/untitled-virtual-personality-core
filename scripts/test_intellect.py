@@ -189,9 +189,13 @@ def main():
     check("world: primitive — засев пропущен, без LLM",
           we_prim.seed_from_system_prompt("Ты — кот", NeverRouter()) is False
           and we_prim.get_world_snapshot()["npcs"] == [])
-    check("world: primitive — детекция из диалога выключена",
-          we_prim.detect_from_dialogue(
-              [{"role": "user", "content": "мой друг Ваня зашёл"}]) == 0)
+    # Сущности из диалога приходят только из урожая (add_detected) —
+    # у primitive карточки NPC/мест не заводятся
+    added = we_prim.add_detected([{"name": "Ваня", "role": "друг"}],
+                                 [{"name": "Кафе у дома", "type": "кафе"}])
+    snap = we_prim.get_world_snapshot()
+    check("world: primitive — сущности из урожая диалога не заводятся",
+          added == 0 and snap["npcs"] == [] and snap["places"] == [])
 
     pc_prim = {"personality_summary": "Домашний кот, любит тепло и блестящее.",
                "behavioral_rules": [], "interests": [],
