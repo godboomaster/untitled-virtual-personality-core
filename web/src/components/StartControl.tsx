@@ -88,7 +88,7 @@ const CMD_GROUPS: { labelKey: string; cmds: CcCmd[] }[] = [
     labelKey: 'cc.gCart',
     cmds: [
       ask('убери … из корзины', 'remove … from the cart'), ask('прибавь …', 'add one more …'),
-      ask('убавь …', 'remove one … from the cart'), ask('измени состав …', 'change … in the cart'),
+      ask('убавь …', 'remove one … from the cart'),
     ],
   },
   {
@@ -111,12 +111,73 @@ const CMD_GROUPS: { labelKey: string; cmds: CcCmd[] }[] = [
   },
 ];
 
-type CcFilter = 'all' | 'now' | 'ask' | 'list';
+// Что делает фраза — строка под ней в обозревателе (ключ — русская фраза).
+// Сверено с разбором команд в computer_control.py
+const CMD_DESC: Record<string, { ru: string; en: string }> = {
+  'открой сайт …': { ru: 'Открыть сайт в новой вкладке — по имени из списка «Сайты», истории браузера или поиску', en: 'Open a site in a new tab — by a name from the Sites list, browser history or a web search' },
+  'включи … на ютубе': { ru: 'Найти на сайте и сразу открыть первый результат', en: 'Search the site and open the first result right away' },
+  'найди … на <сайте>': { ru: 'Открыть страницу поиска на сайте с вашим запросом', en: 'Open the site’s search page for your query' },
+  'обнови страницу': { ru: 'Перезагрузить открытую вкладку', en: 'Reload the open tab' },
+  'перезагрузи': { ru: 'То же — перезагрузить вкладку', en: 'Same — reload the tab' },
+  'вернись назад': { ru: 'Шаг назад по истории вкладки', en: 'One step back in the tab’s history' },
+  'вперёд': { ru: 'Шаг вперёд по истории вкладки', en: 'One step forward in the tab’s history' },
+  'закрой вкладку …': { ru: 'Закрыть вкладку — названную или текущую', en: 'Close a tab — the named one or the current one' },
+  'перейди на вкладку …': { ru: 'Переключиться на уже открытую вкладку', en: 'Switch to an already open tab' },
+  'какие вкладки открыты': { ru: 'Список вкладок в браузере бота', en: 'List the tabs in the bot’s browser' },
+  'нажми …': { ru: 'Нажать кнопку или ссылку по её подписи', en: 'Click a button or link by its label' },
+  'наведи на …': { ru: 'Навести курсор — например, чтобы раскрыть меню', en: 'Hover — for example, to open a menu' },
+  'введи … в поле …': { ru: 'Ввести текст в поле по его подписи', en: 'Type text into a field by its label' },
+  'введи … в поле пароля': { ru: 'Пароль, код, почта или телефон — подтверждение нужно всегда', en: 'A password, code, email or phone — always needs confirmation' },
+  'отправь': { ru: 'Нажать Enter в активном поле — отправить сообщение или форму', en: 'Press Enter in the active field — send the message or form' },
+  'нажми пробел / энтер / эскейп': { ru: 'Нажать клавишу на странице: пауза, закрыть окно, игра', en: 'Press a key on the page: pause, close a popup, a game' },
+  'удали N символов': { ru: 'Стереть последние N символов в поле', en: 'Erase the last N characters in the field' },
+  'выстави слайдер … на N': { ru: 'Передвинуть ползунок на значение', en: 'Move a slider to a value' },
+  'второй результат': { ru: 'Открыть N-й результат поиска или видео в списке', en: 'Open the Nth search result or video in a list' },
+  'что на странице?': { ru: 'Пересказ открытой страницы и скриншот', en: 'A summary of the open page plus a screenshot' },
+  'пришли скриншот': { ru: 'Скриншот видимой части страницы', en: 'A screenshot of the visible part of the page' },
+  'покажи всю страницу целиком': { ru: 'Вся страница серией скриншотов с оглавлением', en: 'The whole page as a series of screenshots with a table of contents' },
+  'ещё — следующая партия кадров': { ru: 'Прислать остальные скриншоты из «всей страницы»', en: 'Send the rest of the “whole page” screenshots' },
+  'что в разделе …?': { ru: 'Что лежит в названном разделе страницы', en: 'What is in the named section of the page' },
+  'прочитай страницу': { ru: 'Текст страницы — в чат', en: 'The page text — into the chat' },
+  'пролистай страницу': { ru: 'Листать вниз, пока не скажете «стоп»', en: 'Keep scrolling down until you say “stop”' },
+  'листай вверх': { ru: 'Листать вверх, пока не скажете «стоп»', en: 'Keep scrolling up until you say “stop”' },
+  'стоп': { ru: 'Остановить листание', en: 'Stop scrolling' },
+  'пролистай до …': { ru: 'Долистать до нужного места и остановиться', en: 'Scroll to the place you name and stop' },
+  'найди … на странице': { ru: 'Найти текст на открытой странице и прокрутить к нему', en: 'Find text on the open page and scroll to it' },
+  'докрути до конца': { ru: 'В самый низ страницы', en: 'All the way to the bottom' },
+  'докрути до начала': { ru: 'В самый верх страницы', en: 'All the way to the top' },
+  'пауза': { ru: 'Поставить видео или музыку на паузу', en: 'Pause the video or music' },
+  'продолжи': { ru: 'Продолжить воспроизведение', en: 'Resume playback' },
+  'тише': { ru: 'Сделать звук тише', en: 'Turn the volume down' },
+  'громче': { ru: 'Сделать звук громче', en: 'Turn the volume up' },
+  'без звука': { ru: 'Выключить звук', en: 'Mute the sound' },
+  'увеличь масштаб': { ru: 'Крупнее — как Ctrl или Cmd и плюс', en: 'Bigger — like Ctrl or Cmd and plus' },
+  'уменьши масштаб': { ru: 'Мельче', en: 'Smaller' },
+  'сбрось масштаб': { ru: 'Вернуть 100%', en: 'Back to 100%' },
+  'убери … из корзины': { ru: 'Удалить товар из корзины', en: 'Remove an item from the cart' },
+  'прибавь …': { ru: 'Ещё одну штуку товара в корзину', en: 'One more of an item in the cart' },
+  'убавь …': { ru: 'На одну штуку товара меньше', en: 'One fewer of an item in the cart' },
+  'скачай …': { ru: 'Скачать файл по ссылке с этой подписью', en: 'Download the file behind a link with that label' },
+  'закрой окно': { ru: 'Закрыть всплывающее окно или выпадающий список', en: 'Close a popup or a dropdown' },
+  'запусти приложение …': { ru: 'Запустить программу из списка «Приложения»', en: 'Launch a program from the Apps list' },
+  'сделай …': { ru: 'Выполнить задачу из списка «Задачи»', en: 'Run a task from the Tasks list' },
+  'почини браузер': { ru: 'Показать окно браузера бота — войти на сайт или пройти капчу', en: 'Show the bot’s browser window — to log in or solve a captcha' },
+  'начни записывать сценарий …': { ru: 'Начать запись — дальше действуйте как обычно', en: 'Start recording — then act as usual' },
+  'сохрани сценарий …': { ru: 'Закончить запись и сохранить под названием', en: 'Stop recording and save it under a name' },
+  'отмени запись': { ru: 'Остановить запись без сохранения', en: 'Stop recording without saving' },
+  'запомни сценарий …': { ru: 'Собрать сценарий из действий за последние 30 минут', en: 'Build a scenario from the last 30 minutes of actions' },
+  '<название сценария>': { ru: 'Запустить сохранённый сценарий', en: 'Run a saved scenario' },
+  'повтори': { ru: 'Шаг не вышел — попробовать ещё раз', en: 'A step failed — try again' },
+  'дальше': { ru: 'Шаг не вышел — пропустить его', en: 'A step failed — skip it' },
+  'отмена': { ru: 'Остановить сценарий', en: 'Stop the scenario' },
+};
 
-const FILTERS: CcFilter[] = ['all', 'now', 'ask', 'list'];
+// Режим фразы с учётом галочки «спрашивать подтверждение»: выключена —
+// «ask» исполняется сразу, «always» спрашивает всё равно
+const effectiveMode = (c: CcCmd, confirmOn: boolean): CcMode =>
+  !confirmOn && c.mode === 'ask' ? 'now' : c.mode;
 
-const matchFilter = (c: CcCmd, f: CcFilter): boolean =>
-  f === 'all' ? true : f === 'now' ? c.mode === 'now' : f === 'ask' ? c.mode !== 'now' : !!c.list;
+const MODES: CcMode[] = ['now', 'ask', 'always'];
 
 // Метки режима у фразы: → сразу, ? спросит, ! спросит всегда, ≡ нужен список
 const MODE_MARK: Record<CcMode, string> = { now: '→', ask: '?', always: '!' };
@@ -258,7 +319,7 @@ const DEMOS: { labelKey: string; lines: DemoLine[]; en: DemoLine[] }[] = [
   },
 ];
 
-const FAQ_COUNT = 7;
+const FAQ_COUNT = 6;
 
 // Длина «печатаемой» части строки: служебные и скриншот появляются целиком
 const lineLen = (l: DemoLine): number => (l.who === 'you' || l.who === 'bot' ? l.text.length : 0);
@@ -431,14 +492,12 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
   const visible = reduced ? lines.length : shown;
   const current = !reduced && shown < lines.length ? lines[shown] : undefined;
 
-  // ── Обозреватель команд ──
-  const [filter, setFilter] = useState<CcFilter>('all');
-  const groups = CMD_GROUPS.map((g) => ({ ...g, cmds: g.cmds.filter((c) => matchFilter(c, filter)) })).filter(
-    (g) => g.cmds.length > 0,
-  );
-  const total = groups.reduce((n, g) => n + g.cmds.length, 0);
-  // Сквозной индекс фразы — для лесенки задержек появления
-  let order = 0;
+  // ── Обозреватель команд: раздел слева, его фразы справа; переключатель
+  // показывает режим фраз при включённом и выключенном подтверждении ──
+  const [group, setGroup] = useState(0);
+  const [confirmOn, setConfirmOn] = useState(true);
+  const total = CMD_GROUPS.reduce((n, g) => n + g.cmds.length, 0);
+  const cur = CMD_GROUPS[group];
 
   // ── Разбор проблем: открыт один пункт ──
   const [faqOpen, setFaqOpen] = useState<number | null>(null);
@@ -544,6 +603,7 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
             </div>
             <h3>{t(`cc.${step.key}Title`)}</h3>
             <p>{t(`cc.${step.key}Body`)}</p>
+            {active === 3 && <p className="start-control-off-note">{t('cc.step4Off')}</p>}
             {active === 0 && (
               <div className="start-control-path">
                 {t('cc.step1Path')
@@ -572,13 +632,21 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
             {active === 3 && (
               <>
                 <div className="start-control-q">Нажать «Войти» на example.com?</div>
+                {/* Две ветки ответа: «выполнить» — сплошная рамка и закрашенный ✓,
+                    «отменить» — пунктир и контурный ✕ (палитра монохромная) */}
                 <div className="start-control-yn">
-                  <div>
-                    <span className="start-control-yn-label">{t('cc.step4Yes')}</span>
+                  <div className="start-control-yn-opt start-control-yn-opt--yes">
+                    <div className="start-control-yn-head">
+                      <span className="start-control-yn-icon" aria-hidden="true">✓</span>
+                      <span className="start-control-yn-label">{t('cc.step4Yes')}</span>
+                    </div>
                     <div className="start-control-chips">{CONFIRM_YES[en ? 'en' : 'ru'].map((w) => word(w, 'yes'))}</div>
                   </div>
-                  <div>
-                    <span className="start-control-yn-label">{t('cc.step4No')}</span>
+                  <div className="start-control-yn-opt start-control-yn-opt--no">
+                    <div className="start-control-yn-head">
+                      <span className="start-control-yn-icon" aria-hidden="true">✕</span>
+                      <span className="start-control-yn-label">{t('cc.step4No')}</span>
+                    </div>
                     <div className="start-control-chips">{CONFIRM_NO[en ? 'en' : 'ru'].map((w) => word(w, 'no'))}</div>
                   </div>
                 </div>
@@ -659,78 +727,169 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
               ) : null)}
           </div>
         </div>
-
-        {/* Сценарии: запись, запуск, сбой */}
-        <div className="start-control-card">
-          <div className="start-control-card-title">{t('cc.scTitle')}</div>
-          <div className="start-control-sc-row">
-            <span className="start-control-sc-label">{t('cc.scRecord')}</span>
-            <div className="start-control-chips">
-              {chip(now('начни записывать сценарий …', 'start recording a scenario …'), 'sc')}
-              {chip(now('сохрани сценарий …', 'save the scenario as …'), 'sc')}
-              {chip(now('отмени запись', 'cancel the recording'), 'sc')}
-            </div>
-            <p>{t('cc.scRecordBody')}</p>
-          </div>
-          <div className="start-control-sc-row">
-            <span className="start-control-sc-label">{t('cc.scRun')}</span>
-            <div className="start-control-chips">{chip(now('<название сценария>', '<scenario name>'), 'sc')}</div>
-            <p>{t('cc.scRunBody')}</p>
-          </div>
-          <div className="start-control-sc-row">
-            <span className="start-control-sc-label">{t('cc.scStuck')}</span>
-            <div className="start-control-chips">
-              {word(en ? 'retry' : 'повтори', 'sc')}
-              {word(en ? 'skip' : 'дальше', 'sc')}
-              {word(en ? 'cancel' : 'отмена', 'sc')}
-            </div>
-          </div>
-          <div className="start-control-sc-row">
-            <span className="start-control-sc-label">{t('cc.scAuto')}</span>
-            <p>{t('cc.scAutoBody')}</p>
-          </div>
-          <div className="start-control-note">{t('cc.scNote')}</div>
-        </div>
       </div>
 
-      {/* Обозреватель команд: фильтр по режиму исполнения + группы */}
+      {/* Сценарии: что это, как записать (два способа), как запустить, что
+          делать при сбое шага. Пример — «заказ пиццы» на всех шагах */}
+      <div className="start-control-card start-control-sc">
+        <div className="start-control-card-title">{t('cc.scTitle')}</div>
+        <p className="start-control-sc-lead">{t('cc.scLead')}</p>
+
+        <div className="start-control-sc-grid">
+          <section className="start-control-sc-block">
+            <div className="start-control-sc-head">
+              <span className="start-control-sc-num">01</span>
+              <span className="start-control-sc-label">{t('cc.scRecTitle')}</span>
+            </div>
+            <div className="start-control-sc-way">
+              <div className="start-control-sc-way-label">{t('cc.scWay1')}</div>
+              <div className="start-control-chips">
+                {chip(now('запомни сценарий заказ пиццы', 'remember this scenario as order pizza'), 'sc')}
+              </div>
+              <p>{t('cc.scWay1Body')}</p>
+            </div>
+            <div className="start-control-sc-way">
+              <div className="start-control-sc-way-label">{t('cc.scWay2')}</div>
+              <ol className="start-control-sc-flow">
+                <li>{chip(now('начни записывать сценарий', 'start recording a scenario'), 'sc')}</li>
+                <li className="is-do">{t('cc.scWay2Do')}</li>
+                <li>{chip(now('сохрани сценарий заказ пиццы', 'save the scenario as order pizza'), 'sc')}</li>
+              </ol>
+              <div className="start-control-sc-inline">
+                <span>{t('cc.scWay2Cancel')}</span>
+                {chip(now('отмени запись', 'cancel the recording'), 'sc')}
+              </div>
+            </div>
+            <p className="start-control-sc-tip">{t('cc.scAuto')}</p>
+          </section>
+
+          <section className="start-control-sc-block">
+            <div className="start-control-sc-head">
+              <span className="start-control-sc-num">02</span>
+              <span className="start-control-sc-label">{t('cc.scRunTitle')}</span>
+            </div>
+            <div className="start-control-chips">{chip(now('заказ пиццы', 'order pizza'), 'sc')}</div>
+            <p>{t('cc.scRunBody')}</p>
+            <ul className="start-control-sc-facts">
+              <li><b>→</b>{t('cc.scRunSteps')}</li>
+              <li><b>?</b>{t('cc.scRunAsk')}</li>
+              <li><b>*</b>{t('cc.scRunSecret')}</li>
+              <li><b>!</b>{t('cc.scRunPay')}</li>
+            </ul>
+          </section>
+
+          <section className="start-control-sc-block">
+            <div className="start-control-sc-head">
+              <span className="start-control-sc-num">03</span>
+              <span className="start-control-sc-label">{t('cc.scFailTitle')}</span>
+            </div>
+            <p>{t('cc.scFailBody')}</p>
+            <div className="start-control-sc-fail">
+              <div>{word(en ? 'retry' : 'повтори', 'sc')}<span>{t('cc.scRetry')}</span></div>
+              <div>{word(en ? 'skip' : 'дальше', 'sc')}<span>{t('cc.scSkip')}</span></div>
+              <div>{word(en ? 'cancel' : 'отмена', 'sc')}<span>{t('cc.scCancel')}</span></div>
+            </div>
+          </section>
+        </div>
+
+        <div className="start-control-note">{t('cc.scNote')}</div>
+      </div>
+
+      {/* Обозреватель команд: разделы слева, фразы раздела — таблицей справа.
+          Режим — словами; переключатель «Подтверждение» показывает, что
+          останется с вопросом, если галочку снять */}
       <div ref={cmdRef} className="start-control-explorer">
         <div className="start-control-filter-row">
           <span className="start-control-sub">{t('cc.cmdTitle')}</span>
-          <div className="start-control-filters" role="group">
-            {FILTERS.map((f) => (
-              <button
-                key={f}
-                type="button"
-                aria-pressed={filter === f}
-                className={`start-control-filter ${filter === f ? 'is-active' : ''}`}
-                onClick={() => setFilter(f)}
-              >
-                {t(`cc.filter_${f}`)}
-              </button>
-            ))}
+          <div className="start-control-ex-confirm">
+            <span>{t('cc.confirmLabel')}</span>
+            <div className="start-control-filters" role="group" aria-label={t('cc.confirmLabel')}>
+              {[true, false].map((v) => (
+                <button
+                  key={String(v)}
+                  type="button"
+                  aria-pressed={confirmOn === v}
+                  className={`start-control-filter ${confirmOn === v ? 'is-active' : ''}`}
+                  onClick={() => setConfirmOn(v)}
+                >
+                  {t(v ? 'cc.confirmOn' : 'cc.confirmOff')}
+                </button>
+              ))}
+            </div>
           </div>
           <span className="start-control-count">{t('cc.cmdCount', { n: total })}</span>
         </div>
-        <div className="start-control-legend">
-          <span><b data-mode="now">→</b> {t('cc.mode_now')}</span>
-          <span><b data-mode="ask">?</b> {t('cc.mode_ask')}</span>
-          <span><b data-mode="always">!</b> {t('cc.mode_always')}</span>
-          <span><b data-mode="list">≡</b> {t('cc.modeList')}</span>
-          <span className="start-control-legend-hint">{t('cc.cmdNote')}</span>
-        </div>
-        {/* key={filter}: смена фильтра перемонтирует сетку — лесенка появления заново */}
-        <div key={filter} className="start-control-grid">
-          {groups.map((g) => (
-            <div key={g.labelKey} className="start-control-group">
-              <div className="start-control-group-title">
+        <p className={`start-control-ex-hint ${confirmOn ? '' : 'is-off'}`}>
+          {t(confirmOn ? 'cc.cmdHintOn' : 'cc.cmdHintOff')}
+        </p>
+
+        <div className="start-control-ex">
+          <nav className="start-control-ex-nav" aria-label={t('cc.cmdTitle')}>
+            {CMD_GROUPS.map((g, i) => (
+              <button
+                key={g.labelKey}
+                type="button"
+                aria-pressed={i === group}
+                className={`start-control-ex-tab ${i === group ? 'is-active' : ''}`}
+                onClick={() => setGroup(i)}
+              >
                 <span>{t(g.labelKey)}</span>
-                <span className="start-control-group-n">{String(g.cmds.length).padStart(2, '0')}</span>
-              </div>
-              <div className="start-control-chips">{g.cmds.map((c) => chip(c, g.labelKey, { delay: Math.min(order++, 40) * 16 }))}</div>
+                <span className="start-control-ex-n">{String(g.cmds.length).padStart(2, '0')}</span>
+              </button>
+            ))}
+          </nav>
+
+          {/* key={group}: смена раздела перемонтирует панель — строки появляются заново */}
+          <div key={group} className="start-control-ex-panel">
+            <div className="start-control-ex-head">
+              <h4>{t(cur.labelKey)}</h4>
+              <p>{t(`${cur.labelKey}Desc`)}</p>
             </div>
-          ))}
+            {/* Фразы — группами по режиму: «сразу», «требует подтверждения», «всегда требует».
+                Выключенное подтверждение переносит «требует» в «сразу» */}
+            <div className="start-control-ex-blocks">
+              {MODES.map((m) => ({ mode: m, cmds: cur.cmds.filter((c) => effectiveMode(c, confirmOn) === m) }))
+                .filter((b) => b.cmds.length > 0)
+                .map((b) => (
+                  <section key={b.mode} className="start-control-ex-block">
+                    <header className="start-control-ex-block-head">
+                      <span className="start-control-ex-mode" data-mode={b.mode}>{t(`cc.exMode_${b.mode}`)}</span>
+                      <span className="start-control-ex-block-desc">{t(`cc.exModeDesc_${b.mode}`)}</span>
+                    </header>
+                    <ul className="start-control-ex-phrases">
+                      {b.cmds.map((c, i) => {
+                        const text = en ? c.en : c.text;
+                        const uid = `ex:${text}`;
+                        const changed = b.mode !== c.mode;
+                        return (
+                          <li key={c.text} style={{ '--d': `${i * 25}ms` } as CSSProperties}>
+                            <button
+                              type="button"
+                              className={`start-control-ex-phrase ${copied === uid ? 'is-copied' : ''} ${changed ? 'is-changed' : ''}`}
+                              title={c.list ? t('cc.exList', { list: t(`cc.list_${c.list}`) }) : t('cc.copyHint')}
+                              onClick={() => copy(uid, text)}
+                            >
+                              <span className="start-control-ex-line">
+                                <span className="start-control-ex-text">{text}</span>
+                                {c.list && <span className="start-control-ex-tag">{t(`cc.list_${c.list}`)}</span>}
+                                <span className="start-control-ex-copy" aria-hidden="true">
+                                  {copied === uid ? `✓ ${t('cc.copied')}` : t('cc.copy')}
+                                </span>
+                              </span>
+                              {CMD_DESC[c.text] && (
+                                <span className="start-control-ex-desc">{CMD_DESC[c.text][en ? 'en' : 'ru']}</span>
+                              )}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </section>
+                ))}
+            </div>
+          </div>
         </div>
+        <p className="start-control-ex-foot">{t('cc.cmdNote')}</p>
       </div>
 
       {/* Если что-то не так: аккордеон с раскрытием через grid-rows */}

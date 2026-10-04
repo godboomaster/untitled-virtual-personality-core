@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Persona } from '../mockData';
 import { useI18n, useMockData } from '../i18n';
 import { api, CLEAR_PARTS } from '../api';
@@ -34,15 +34,16 @@ interface PersonaDossierProps {
   onClearDialog?: (parts?: ClearPart[]) => void | Promise<void>;
   onStmChange?: () => void; // STM изменился (удаление реплик) — чату перечитать историю
   stmEpoch?: number; // счётчик завершённых обменов — перечитать STM (бот мог отвечать, пока досье открыто)
+  initialTab?: string; // открыть на вкладке (переход со «Старта»); нет — «Память»
 }
 
-export default function PersonaDossier({ persona, onClose, onClearDialog, onStmChange, stmEpoch }: PersonaDossierProps) {
+export default function PersonaDossier({ persona, onClose, onClearDialog, onStmChange, stmEpoch, initialTab }: PersonaDossierProps) {
   const { t, lang } = useI18n();
   const { llmProviders, providerModels } = useMockData();
   const avatars = usePersonaAvatars();
   const apiOnline = useApiOnline();
   const apiProviders = useApiProviders();
-  const [tab, setTab] = useState<DossierTab>('memory');
+  const [tab, setTab] = useState<DossierTab>((initialTab as DossierTab | undefined) ?? 'memory');
   // Двухшаговое подтверждение очистки диалога
   const [confirmClear, setConfirmClear] = useState(false);
   // Очистка по частям: какая часть ждёт подтверждения и какая только что стёрта
@@ -138,9 +139,13 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
     { id: 'settings' as DossierTab, label: t('dossier.settings') },
   ];
 
-  // При смене персоны сбрасываем вкладку (активная могла скрыться) и подтверждение
+  // При смене персоны сбрасываем вкладку (активная могла скрыться) и подтверждение.
+  // Первый запуск эффекта (открытие досье) вкладку не трогает — там может быть
+  // запрошенная «Стартом»
+  const shownPersona = useRef(persona.id);
   useEffect(() => {
-    setTab('memory');
+    if (shownPersona.current !== persona.id) setTab('memory');
+    shownPersona.current = persona.id;
     setConfirmClear(false);
     setConfirmPart(null);
     setModels({ ...(modelChoices[persona.id] ?? {}) });

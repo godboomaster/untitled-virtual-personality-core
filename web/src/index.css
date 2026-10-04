@@ -9046,6 +9046,102 @@ img.art-thumb {
   margin-bottom: 10px;
 }
 
+/* Примеры речью: строка — фраза целиком, команда подсвечена, клик копирует
+   только команду. Тот же язык, что у обозревателя команд режима управления */
+.start-guide-ex {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: 2px 16px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.start-guide-ex li {
+  min-width: 0;
+}
+
+.start-guide-ex-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  cursor: copy;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.start-guide-ex-row:hover,
+.start-guide-ex-row:focus-visible {
+  background: var(--bg-hover);
+  border-left-color: var(--accent);
+}
+
+.start-guide-ex-row.is-copied {
+  background: var(--accent-soft);
+  border-left-color: var(--text);
+}
+
+.start-guide-ex-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.start-guide-ex-prompt {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.start-guide-ex-text {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.start-guide-ex-key {
+  padding: 1px 4px;
+  background: var(--accent-soft);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.start-guide-ex-copy {
+  margin-left: auto;
+  padding-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.start-guide-ex-row:hover .start-guide-ex-copy,
+.start-guide-ex-row:focus-visible .start-guide-ex-copy,
+.start-guide-ex-row.is-copied .start-guide-ex-copy {
+  opacity: 1;
+}
+
+.start-guide-ex-hint {
+  padding-left: 18px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+
 .start-guide-cmds {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -9983,16 +10079,62 @@ img.art-thumb {
   color: var(--term-bright);
 }
 
+/* Ответ на вопрос бота: две ветки — выполнить / отменить */
 .start-control-yn {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
   width: 100%;
 }
 
-.start-control-yn-label {
-  display: block;
-  margin-bottom: 6px;
+.start-control-yn-opt {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px 13px 13px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+}
+
+.start-control-yn-opt--yes {
+  border-color: var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.start-control-yn-opt--no {
+  border-style: dashed;
+}
+
+.start-control-yn-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.start-control-yn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.start-control-yn-opt--yes .start-control-yn-icon {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.start-control-yn-opt--no .start-control-yn-icon {
+  border: 1px solid var(--text-dim);
+  color: var(--text-dim);
+}
+
+.start-control-yn-opt--yes .start-control-yn-label {
+  color: var(--text);
 }
 
 .start-control-alt {
@@ -10039,8 +10181,7 @@ img.art-thumb {
   background: var(--accent-soft);
 }
 
-.start-control-mark,
-.start-control-legend b {
+.start-control-mark {
   display: inline-block;
   min-width: 12px;
   font-family: var(--font-mono);
@@ -10051,20 +10192,17 @@ img.art-thumb {
   color: var(--text-dim);
 }
 
-.start-control-mark[data-mode='ask'],
-.start-control-legend b[data-mode='ask'] {
+.start-control-mark[data-mode='ask'] {
   color: var(--accent);
   border: 1px solid var(--accent);
 }
 
-.start-control-mark[data-mode='always'],
-.start-control-legend b[data-mode='always'] {
+.start-control-mark[data-mode='always'] {
   background: var(--text);
   color: var(--bg);
 }
 
-.start-control-mark[data-mode='list'],
-.start-control-legend b[data-mode='list'] {
+.start-control-mark[data-mode='list'] {
   color: var(--accent-dim);
   border: 1px dashed var(--accent-dim);
 }
@@ -10086,17 +10224,11 @@ img.art-thumb {
 }
 
 /* Демо + сценарии: две колонки */
+/* Живое демо — на всю ширину; сценарии — отдельной карточкой ниже */
 .start-control-split {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
-  align-items: stretch;
-}
-
-@media (max-width: 900px) {
-  .start-control-split {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* Живое демо: терминал .home-term с окном переписки фиксированной высоты */
@@ -10107,7 +10239,7 @@ img.art-thumb {
 }
 
 /* Заголовок окна .home-term-titlebar (общий компонент) не обрезает свою
-   среднюю подпись — с длинным «vpc-chat — control — tg/web» на узких
+   среднюю подпись — с длинной «vpc-chat — control — web» на узких
    экранах текст переносится на вторую строку и наезжает на LIVE-метку.
    Здесь, локально для терминала StartControl, ужимаем подпись многоточием. */
 .start-control-term .home-term-titlebar {
@@ -10298,16 +10430,214 @@ img.art-thumb {
   color: var(--accent-dark);
 }
 
-.start-control-sc-row {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
+/* Сценарии: что это и три раздела — записать, запустить, если шаг не вышел */
+.start-control-sc {
+  gap: 16px;
 }
 
-.start-control-sc-row p {
+.start-control-sc p {
   margin: 0;
   font-size: 12.5px;
   line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.start-control-sc .start-control-sc-lead {
+  color: var(--text);
+}
+
+.start-control-sc-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+/* Три раздела — колонками с пунктиром между ними, на узком экране — стопкой */
+.start-control-sc-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.start-control-sc-grid .start-control-sc-block {
+  padding: 0 20px;
+}
+
+.start-control-sc-grid .start-control-sc-block:first-child {
+  padding-left: 0;
+}
+
+.start-control-sc-grid .start-control-sc-block:last-child {
+  padding-right: 0;
+}
+
+.start-control-sc-block + .start-control-sc-block {
+  border-left: 1px dashed var(--border-soft);
+}
+
+@media (max-width: 1100px) {
+  .start-control-sc-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .start-control-sc-grid .start-control-sc-block {
+    padding: 0;
+  }
+
+  .start-control-sc-block + .start-control-sc-block {
+    padding-top: 14px;
+    border-left: none;
+    border-top: 1px dashed var(--border-soft);
+  }
+}
+
+.start-control-sc-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.start-control-sc-num {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* Способ записи — отдельная подложка */
+.start-control-sc-way {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  align-self: stretch;
+  padding: 10px 12px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-soft);
+}
+
+.start-control-sc-way-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Запись с начала — лента: ромб — команда, пустой ромб — ваши действия */
+.start-control-sc-flow {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0 0 0 16px;
+  list-style: none;
+}
+
+.start-control-sc-flow::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 12px;
+  bottom: 12px;
+  border-left: 1px dashed var(--border);
+}
+
+.start-control-sc-flow li {
+  position: relative;
+}
+
+.start-control-sc-flow li::before {
+  content: '';
+  position: absolute;
+  left: -15px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin-top: -4px;
+  background: var(--accent);
+  transform: rotate(45deg);
+}
+
+.start-control-sc-flow li.is-do {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.start-control-sc-flow li.is-do::before {
+  background: var(--bg-panel);
+  border: 1px solid var(--text-dim);
+}
+
+.start-control-sc-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.start-control-sc .start-control-sc-tip {
+  padding-left: 10px;
+  border-left: 2px solid var(--accent);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* Правила запуска: метка в квадрате — суть строки */
+.start-control-sc-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.start-control-sc-facts li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.start-control-sc-facts b {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  transform: translateY(2px);
+}
+
+.start-control-sc-facts li:last-child b {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Если шаг не вышел: слово — что сделает; пояснения в одну колонку */
+.start-control-sc-fail {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.start-control-sc-fail > div {
+  display: contents;
+}
+
+.start-control-sc-fail span {
+  font-size: 12px;
   color: var(--text-dim);
 }
 
@@ -10318,7 +10648,7 @@ img.art-thumb {
   color: var(--text-dim);
 }
 
-/* Обозреватель команд: сегментный фильтр, легенда, сетка групп */
+/* Обозреватель команд: заголовок с переключателем подтверждения */
 .start-control-filter-row {
   display: flex;
   flex-wrap: wrap;
@@ -10378,66 +10708,334 @@ img.art-thumb {
   color: var(--accent);
 }
 
-.start-control-legend {
+/* Обозреватель: переключатель подтверждения и подсказка под заголовком */
+.start-control-ex-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.start-control-ex-hint {
+  margin: 0 0 14px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.start-control-ex-hint.is-off {
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+
+/* Разделы слева, таблица фраз раздела справа */
+.start-control-ex {
+  display: grid;
+  grid-template-columns: 256px minmax(0, 1fr);
+  min-height: 430px;
+  background: var(--bg-panel-2);
+  clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 22px 100%, 0 calc(100% - 22px));
+}
+
+.start-control-ex-nav {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 0;
+  border-right: 1px solid var(--border-soft);
+}
+
+.start-control-ex-tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 16px 9px 18px;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  font-family: var(--font-disp);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.start-control-ex-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.start-control-ex-tab.is-active {
+  background: var(--bg-panel);
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+
+.start-control-ex-n {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.start-control-ex-panel {
+  min-width: 0;
+  padding: 18px 24px 22px;
+  animation: start-control-in 0.3s ease both;
+}
+
+.start-control-ex-head h4 {
+  margin: 0;
+  font-family: var(--font-disp);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.start-control-ex-head p {
+  margin: 4px 0 14px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+/* Группы фраз по режиму: заголовок группы — режим, ниже — лёгкие строки */
+.start-control-ex-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.start-control-ex-block-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 16px;
-  margin-bottom: 14px;
+  align-items: center;
+  gap: 6px 10px;
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+
+.start-control-ex-block-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.start-control-ex-phrases {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 2px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.start-control-ex-phrases li {
+  min-width: 0;
+  animation: start-control-in 0.3s ease both;
+  animation-delay: var(--d, 0ms);
+}
+
+/* Фраза: без рамки; наведение — полоса акцента и подсказка «скопировать» */
+.start-control-ex-phrase {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--text);
+  cursor: copy;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.start-control-ex-phrase:hover,
+.start-control-ex-phrase:focus-visible {
+  background: var(--bg-hover);
+  border-left-color: var(--accent);
+}
+
+/* Первая строка: фраза, метка списка, «скопировать»; вторая — что делает */
+.start-control-ex-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.start-control-ex-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.start-control-ex-desc {
+  font-family: var(--font);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.start-control-ex-tag {
+  flex: none;
+  padding: 0 6px;
+  border: 1px dashed var(--border);
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.start-control-ex-copy {
+  margin-left: auto;
+  padding-left: 6px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.start-control-ex-phrase:hover .start-control-ex-copy,
+.start-control-ex-phrase:focus-visible .start-control-ex-copy,
+.start-control-ex-phrase.is-copied .start-control-ex-copy {
+  opacity: 1;
+}
+
+.start-control-ex-phrase.is-copied {
+  border-left-color: var(--text);
+  background: var(--accent-soft);
+}
+
+.start-control-ex-phrase.is-copied .start-control-ex-copy {
+  color: var(--text);
+}
+
+/* Переехала из «спросит» переключателем подтверждения — короткая подсветка */
+.start-control-ex-phrase.is-changed {
+  animation: start-control-ex-moved 0.9s ease both;
+}
+
+@keyframes start-control-ex-moved {
+  0% { background: var(--accent-soft); border-left-color: var(--accent); }
+  100% { background: transparent; border-left-color: transparent; }
+}
+
+/* Режим словами: «сразу» — тихо, «спросит» — в рамке, «всегда» — закрашено */
+.start-control-ex-mode {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.start-control-ex-mode::before {
+  font-weight: 700;
+}
+
+.start-control-ex-mode[data-mode='now']::before {
+  content: '→';
+}
+
+.start-control-ex-mode[data-mode='ask'] {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.start-control-ex-mode[data-mode='ask']::before {
+  content: '?';
+}
+
+.start-control-ex-mode[data-mode='always'] {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--bg);
+}
+
+.start-control-ex-mode[data-mode='always']::before {
+  content: '!';
+}
+
+
+.start-control-ex-foot {
+  margin: 10px 0 0;
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--text-dim);
 }
 
-.start-control-legend b {
-  margin-right: 4px;
-}
-
-.start-control-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  align-items: start;
+/* Заметка шага «Подтвердить»: подтверждение можно выключить */
+.start-control-off-note {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  border-left: 2px solid var(--accent);
+  background: var(--bg-panel);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
 }
 
 @media (max-width: 900px) {
-  .start-control-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .start-control-ex {
+    grid-template-columns: minmax(0, 1fr);
   }
-}
 
-.start-control-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px 18px;
-  background: var(--bg-panel-2);
-  clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 22px 100%, 0 calc(100% - 22px));
-  animation: start-control-in 0.35s ease both;
-}
+  /* Разделы — горизонтальной лентой сверху */
+  .start-control-ex-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 6px 12px 0;
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+  }
 
-.start-control-group-title {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  font-family: var(--font-disp);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--accent-dark);
-}
+  .start-control-ex-tab {
+    flex: none;
+    border-left: none;
+    border-bottom: 2px solid transparent;
+    padding: 9px 12px;
+  }
 
-.start-control-group-n {
-  font-family: var(--font-mono);
-  font-weight: 400;
-  font-size: 10px;
-  color: var(--text-dim);
-}
+  .start-control-ex-tab.is-active {
+    border-bottom-color: var(--accent);
+  }
 
-/* Лесенка появления фраз после смены фильтра (--d — задержка чипа) */
-.start-control-grid .start-control-cmd {
-  animation: start-control-pop 0.3s ease both;
-  animation-delay: var(--d, 0ms);
+  .start-control-ex-panel {
+    padding: 16px 16px 20px;
+  }
+
+  .start-control-ex-phrases {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* Разбор проблем: аккордеон, раскрытие через grid-template-rows */
@@ -10608,10 +11206,6 @@ img.art-thumb {
     grid-template-columns: 1fr;
   }
 
-  .start-control-grid {
-    grid-template-columns: 1fr;
-  }
-
   .start-control-count {
     margin-left: 0;
   }
@@ -10654,9 +11248,10 @@ img.art-thumb {
   .start-control-rec,
   .start-control-typing i,
   .start-control-stage,
-  .start-control-group,
+  .start-control-ex-panel,
+  .start-control-ex-phrases li,
+  .start-control-ex-phrase,
   .start-control-line,
-  .start-control-grid .start-control-cmd,
   .start-control-mark.is-ok {
     animation: none !important;
   }

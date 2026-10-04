@@ -3,6 +3,7 @@ import type { CSSProperties, KeyboardEvent } from 'react';
 import type { Section } from '../App';
 import { useI18n } from '../i18n';
 import OllamaModels from './OllamaModels';
+import { requestDossierTab } from '../chatNavStore';
 
 /* Обучение на странице «Старт»: маршруты (консоль, спецфункции, Telegram) —
    вертикальная лента шагов с отметками «пройдено», копированием команд и
@@ -38,6 +39,7 @@ interface Step {
   here?: boolean; // шаг про текущий раздел — вместо кнопки метка «вы здесь»
   warn?: string; // ключ i18n предупреждения под описанием шага
   anchor?: string; // id блока на этой же странице — кнопка прокрутки к нему
+  dossier?: 'initiative' | 'settings'; // кнопка «Досье → вкладка» (чат последней активной персоны)
   models?: boolean; // сравнение локальных моделей Ollama (шаг «Провайдеры: Ollama»)
 }
 
@@ -116,26 +118,26 @@ const TRACKS: Track[] = [
       {
         id: 'todo',
         chips: [
-          { code: 'запиши купить хлеб', hint: 'guide.hAdd' },
-          { code: 'добавь в список сходить в аптеку', hint: 'guide.hAdd' },
-          { code: 'надо купить билеты', hint: 'guide.hAdd' },
+          { code: '[запиши] купить хлеб', hint: 'guide.hAdd' },
+          { code: '[добавь в список] сходить в аптеку', hint: 'guide.hAdd' },
+          { code: '[надо] купить билеты', hint: 'guide.hAdd' },
           { code: 'что у меня в списке дел?', hint: 'guide.hShow' },
-          { code: 'покажи список дел на завтра', hint: 'guide.hShowDay' },
-          { code: 'вычеркни пункт 2', hint: 'guide.hByNum' },
-          { code: 'убери из списка …', hint: 'guide.hRemove' },
+          { code: '[покажи список дел] на завтра', hint: 'guide.hShowDay' },
+          { code: '[вычеркни пункт] 2', hint: 'guide.hByNum' },
+          { code: '[убери из списка] …', hint: 'guide.hRemove' },
           { code: 'сделано', hint: 'guide.hDone' },
         ],
       },
       {
         id: 'inventory',
         chips: [
-          { code: 'вот тебе яблоко', hint: 'guide.hGive' },
-          { code: 'возьми зонт', hint: 'guide.hGive' },
-          { code: 'добавь в инвентарь нож', hint: 'guide.hGive' },
-          { code: 'надень шлем', hint: 'guide.hEquip' },
-          { code: 'сними доспехи', hint: 'guide.hUnequip' },
-          { code: 'выбрось меч', hint: 'guide.hRemove' },
-          { code: 'удали из инвентаря нож', hint: 'guide.hRemove' },
+          { code: '[держи] яблоко', hint: 'guide.hGive' },
+          { code: '[возьми] зонт', hint: 'guide.hGive' },
+          { code: '[добавь в инвентарь] нож', hint: 'guide.hGive' },
+          { code: '[надень] шлем', hint: 'guide.hEquip' },
+          { code: '[сними] доспехи', hint: 'guide.hUnequip' },
+          { code: '[выбрось] меч', hint: 'guide.hRemove' },
+          { code: '[удали из инвентаря] нож', hint: 'guide.hRemove' },
         ],
       },
       {
@@ -151,17 +153,17 @@ const TRACKS: Track[] = [
       {
         id: 'rules',
         chips: [
-          { code: 'запомни: я не пью кофе', hint: 'guide.hRule' },
-          { code: 'неправильно, я имел в виду …', hint: 'guide.hRule' },
-          { code: 'не говори так', hint: 'guide.hRule' },
-          { code: 'не называй меня …', hint: 'guide.hRule' },
-          { code: 'зови меня Саша', hint: 'guide.hAlias' },
+          { code: '[запомни:] я не пью кофе', hint: 'guide.hRule' },
+          { code: '[неправильно], я имел в виду …', hint: 'guide.hRule' },
+          { code: '[не говори так] — обращайся ко мне на «вы»', hint: 'guide.hRule' },
+          { code: '[не называй меня] …', hint: 'guide.hRule' },
+          { code: '[зови меня] <untitled>', hint: 'guide.hAlias' },
         ],
       },
       { id: 'search', chips: [{ code: '/web', hint: 'guide.cmdWeb' }] },
       { id: 'files', chips: [{ code: '/files', hint: 'guide.cmdFiles' }] },
-      { id: 'initiative', nav: 'chat' },
-      { id: 'rhythm', nav: 'settings' },
+      { id: 'initiative', dossier: 'initiative' },
+      { id: 'rhythm', dossier: 'settings' },
       { id: 'control', anchor: 'start-control' },
     ],
     window: 'console — chat — persona',
@@ -235,6 +237,17 @@ const TRACKS: Track[] = [
     ],
   },
 ];
+
+// Пример речью: «[напомни] через 2 часа позвонить» — копируется только
+// команда в квадратных скобках, остальное — поясняющий текст примера.
+// Без скобок фраза копируется целиком (команды, короткие ответы)
+const splitExample = (text: string): { text: string; key: boolean }[] =>
+  text
+    .split(/(\[[^\]]+\])/)
+    .filter(Boolean)
+    .map((part) =>
+      part.startsWith('[') && part.endsWith(']') ? { text: part.slice(1, -1), key: true } : { text: part, key: false },
+    );
 
 const ALL_STEP_IDS = TRACKS.flatMap((tr) => tr.steps.map((s) => `${tr.id}.${s.id}`));
 
@@ -429,6 +442,8 @@ export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKe
               const isDone = done.has(uid);
               const num = String(i + 1).padStart(2, '0');
               const listChips = s.chips?.some((c) => c.hint);
+              // Шаг из примеров речью — список строк, а не россыпь чипов
+              const examples = s.chips?.some((c) => (c.i18n ? t(c.code) : c.code).includes('['));
               const nav = s.nav;
               return (
                 <li
@@ -473,7 +488,54 @@ export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKe
                       </p>
                     )}
 
-                    {s.chips && (
+                    {/* Примеры речью: строка — фраза целиком, команда в ней подсвечена;
+                        клик копирует только команду (без скобок — фразу целиком) */}
+                    {s.chips && examples && (
+                      <ul className="start-guide-ex">
+                        {s.chips.map((c, ci) => {
+                          const chipUid = `${uid}#${ci}`;
+                          const parts = splitExample(c.i18n ? t(c.code) : c.code);
+                          const hasKey = parts.some((pt) => pt.key);
+                          const key = hasKey
+                            ? parts.filter((pt) => pt.key).map((pt) => pt.text).join(' ')
+                            : parts.map((pt) => pt.text).join('');
+                          const isCopied = copied === chipUid;
+                          return (
+                            <li key={chipUid}>
+                              <button
+                                type="button"
+                                className={`start-guide-ex-row${isCopied ? ' is-copied' : ''}`}
+                                title={t('guide.copyKey', { k: key })}
+                                onClick={() => void copy(chipUid, key)}
+                              >
+                                <span className="start-guide-ex-line">
+                                  <span className="start-guide-ex-prompt" aria-hidden="true">›</span>
+                                  <span className="start-guide-ex-text">
+                                    {hasKey ? (
+                                      parts.map((pt, pi) =>
+                                        pt.key ? (
+                                          <span key={pi} className="start-guide-ex-key">{pt.text}</span>
+                                        ) : (
+                                          <span key={pi}>{pt.text}</span>
+                                        ),
+                                      )
+                                    ) : (
+                                      <span className="start-guide-ex-key">{key}</span>
+                                    )}
+                                  </span>
+                                  <span className="start-guide-ex-copy" aria-hidden="true">
+                                    {isCopied ? `✓ ${t('guide.copiedShort')}` : t('guide.copyShort')}
+                                  </span>
+                                </span>
+                                {c.hint && <span className="start-guide-ex-hint">{t(c.hint)}</span>}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+
+                    {s.chips && !examples && (
                       <div className={listChips ? 'start-guide-cmds' : 'start-guide-chips'}>
                         {s.chips.map((c, ci) => {
                           const chipUid = `${uid}#${ci}`;
@@ -509,6 +571,18 @@ export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKe
                     {nav && (
                       <button type="button" className="btn btn--ghost start-guide-go" onClick={() => onNavigate(nav)}>
                         {t('guide.open', { s: t(`nav.${nav}`) })} →
+                      </button>
+                    )}
+                    {s.dossier && (
+                      <button
+                        type="button"
+                        className="btn btn--ghost start-guide-go"
+                        onClick={() => {
+                          requestDossierTab(s.dossier!);
+                          onNavigate('chat');
+                        }}
+                      >
+                        {t('guide.openDossier', { tab: t(`dossier.${s.dossier}`) })} →
                       </button>
                     )}
                     {s.anchor && (

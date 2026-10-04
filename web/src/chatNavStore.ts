@@ -50,3 +50,27 @@ export function useChatPersonaRequest(): string | null {
     () => pending,
   );
 }
+
+// Открыть досье на вкладке (шаги «Старта»: «Инициатива», «Ритм дня»): Chat
+// открывает чат последней активной персоны и её досье на этой вкладке
+let dossierTab: string | null = null;
+
+export function requestDossierTab(tab: string) {
+  dossierTab = tab;
+  emit();
+}
+
+export function consumeDossierTabRequest() {
+  dossierTab = null;
+  emit();
+}
+
+export function useDossierTabRequest(): string | null {
+  return useSyncExternalStore(
+    (cb) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    () => dossierTab,
+  );
+}

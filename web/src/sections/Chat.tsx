@@ -10,7 +10,13 @@ import {
 } from '../inboxStore';
 import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
-import { consumeChatPersonaRequest, useChatOverviewRequest, useChatPersonaRequest } from '../chatNavStore';
+import {
+  consumeChatPersonaRequest,
+  consumeDossierTabRequest,
+  useChatOverviewRequest,
+  useChatPersonaRequest,
+  useDossierTabRequest,
+} from '../chatNavStore';
 import { captureRects, playFlip } from '../flip';
 import type { FlipRects } from '../flip';
 import ChatOverview from './ChatOverview';
@@ -125,6 +131,15 @@ export default function Chat() {
     consumeChatPersonaRequest();
   }, [request, openId, personas]);
 
+  // Запрос «досье на вкладке» («Старт»): чат последней активной персоны —
+  // само досье откроет ChatRoom
+  const dossierRequest = useDossierTabRequest();
+  useEffect(() => {
+    if (!dossierRequest || openId !== null || personas.length === 0) return;
+    setFlipFrom(null);
+    setOpenId(latestActivePersona(personas.map((p) => p.id)) ?? personas[0].id);
+  }, [dossierRequest, openId, personas]);
+
   const overviewRequest = useChatOverviewRequest();
   const seenOverviewRequest = useRef(overviewRequest);
   useEffect(() => {
@@ -196,6 +211,15 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [dossierOpen, setDossierOpen] = useState(false);
+  // Вкладка, на которой открыть досье по запросу «Старта» (иначе — «Память»)
+  const [dossierTab, setDossierTab] = useState<string | undefined>(undefined);
+  const dossierRequest = useDossierTabRequest();
+  useEffect(() => {
+    if (!dossierRequest) return;
+    setDossierTab(dossierRequest);
+    setDossierOpen(true);
+    consumeDossierTabRequest();
+  }, [dossierRequest]);
   // Просмотр/редактирование YAML текущей персоны (кнопка в шапке чата)
   const [yamlOpen, setYamlOpen] = useState(false);
   // Режим чата: классический (переписка) или голосовой (аватарка персоны)
@@ -1815,7 +1839,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   if (chatSkin && dossierOpen) {
     return (
       <div className="chat-layout">
-        <PersonaDossier persona={persona} onClose={() => setDossierOpen(false)} onClearDialog={clearStm} onStmChange={() => { reloadHistory(persona.id, true); setSideEpoch((e) => e + 1); }} stmEpoch={stmEpoch} />
+        <PersonaDossier persona={persona} initialTab={dossierTab} onClose={() => { setDossierOpen(false); setDossierTab(undefined); }} onClearDialog={clearStm} onStmChange={() => { reloadHistory(persona.id, true); setSideEpoch((e) => e + 1); }} stmEpoch={stmEpoch} />
       </div>
     );
   }
@@ -1883,7 +1907,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
       {/* Окно чата либо встроенное досье персоны (одно заменяет другое) */}
       {dossierOpen ? (
-        <PersonaDossier persona={persona} onClose={() => setDossierOpen(false)} onClearDialog={clearStm} onStmChange={() => { reloadHistory(persona.id, true); setSideEpoch((e) => e + 1); }} stmEpoch={stmEpoch} />
+        <PersonaDossier persona={persona} initialTab={dossierTab} onClose={() => { setDossierOpen(false); setDossierTab(undefined); }} onClearDialog={clearStm} onStmChange={() => { reloadHistory(persona.id, true); setSideEpoch((e) => e + 1); }} stmEpoch={stmEpoch} />
       ) : chatMode === 'voice' ? (
         <VoiceChat
           persona={persona}
