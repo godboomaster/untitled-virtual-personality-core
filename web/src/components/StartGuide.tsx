@@ -35,6 +35,7 @@ interface Chip {
 interface Step {
   id: string;
   chips?: Chip[];
+  chipsEn?: Chip[]; // свои примеры для английской локали (фразы бота другие)
   nav?: Section;
   here?: boolean; // шаг про текущий раздел — вместо кнопки метка «вы здесь»
   warn?: string; // ключ i18n предупреждения под описанием шага
@@ -58,9 +59,13 @@ interface Track {
   dialog: DialogLine[];
 }
 
-// Маршруты обучения. Команды Telegram и русскоязычные фразы (парсеры списка
-// дел, инвентаря и правил понимают только русский) — литералы; через i18n —
-// плейсхолдеры аргументов и фразы, у которых есть английский вариант
+// Маршруты обучения. Команды Telegram и русские фразы — литералы; через
+// i18n — плейсхолдеры аргументов и фразы, у которых английский вариант
+// дословный. Список дел и инвентарь по-английски устроены иначе — у них
+// chipsEn: дела — со словом «todo» (по нему модель получает список и
+// инструкцию маркеров), инвентарь — фразы, которые основная модель
+// разбирает сама (русские триггеры его не ловят). Правила и имя — свои
+// английские формы (_CORRECTION_HINT_EN_RE, _extract_alias в bot_instance)
 const TRACKS: Track[] = [
   {
     id: 'console',
@@ -120,12 +125,17 @@ const TRACKS: Track[] = [
         chips: [
           { code: '[запиши] купить хлеб', hint: 'guide.hAdd' },
           { code: '[добавь в список] сходить в аптеку', hint: 'guide.hAdd' },
-          { code: '[надо] купить билеты', hint: 'guide.hAdd' },
           { code: 'что у меня в списке дел?', hint: 'guide.hShow' },
           { code: '[покажи список дел] на завтра', hint: 'guide.hShowDay' },
           { code: '[вычеркни пункт] 2', hint: 'guide.hByNum' },
           { code: '[убери из списка] …', hint: 'guide.hRemove' },
           { code: 'сделано', hint: 'guide.hDone' },
+        ],
+        chipsEn: [
+          { code: '[add to my todo list:] buy bread', hint: 'guide.hAdd' },
+          { code: '[todo:] book tickets', hint: 'guide.hAdd' },
+          { code: 'what’s on my todo list?', hint: 'guide.hShow' },
+          { code: 'cross off item 2 on my todo list', hint: 'guide.hByNum' },
         ],
       },
       {
@@ -138,6 +148,13 @@ const TRACKS: Track[] = [
           { code: '[сними] доспехи', hint: 'guide.hUnequip' },
           { code: '[выбрось] меч', hint: 'guide.hRemove' },
           { code: '[удали из инвентаря] нож', hint: 'guide.hRemove' },
+        ],
+        chipsEn: [
+          { code: '[here’s] an apple', hint: 'guide.hGive' },
+          { code: '[take] this umbrella', hint: 'guide.hGive' },
+          { code: '[put on] the helmet', hint: 'guide.hEquip' },
+          { code: '[take off] the armor', hint: 'guide.hUnequip' },
+          { code: '[throw away] the sword', hint: 'guide.hRemove' },
         ],
       },
       {
@@ -158,6 +175,13 @@ const TRACKS: Track[] = [
           { code: '[не говори так] — обращайся ко мне на «вы»', hint: 'guide.hRule' },
           { code: '[не называй меня] …', hint: 'guide.hRule' },
           { code: '[зови меня] <untitled>', hint: 'guide.hAlias' },
+        ],
+        chipsEn: [
+          { code: '[remember:] I don’t drink coffee', hint: 'guide.hRule' },
+          { code: '[that’s wrong, I meant] …', hint: 'guide.hRule' },
+          { code: '[don’t say it like that] — talk to me formally', hint: 'guide.hRule' },
+          { code: '[don’t call me] …', hint: 'guide.hRule' },
+          { code: '[call me] <untitled>', hint: 'guide.hAlias' },
         ],
       },
       { id: 'search', chips: [{ code: '/web', hint: 'guide.cmdWeb' }] },
@@ -288,7 +312,7 @@ function useReducedMotion(): boolean {
 }
 
 export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKey, allDoneKey, id }: StartGuideProps) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const reduced = useReducedMotion();
   const uidBase = useId();
   const tracks = TRACKS.filter((tr) => trackIds.includes(tr.id));
@@ -441,9 +465,10 @@ export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKe
               const uid = `${track.id}.${s.id}`;
               const isDone = done.has(uid);
               const num = String(i + 1).padStart(2, '0');
-              const listChips = s.chips?.some((c) => c.hint);
+              const chips = lang === 'en' && s.chipsEn ? s.chipsEn : s.chips;
+              const listChips = chips?.some((c) => c.hint);
               // Шаг из примеров речью — список строк, а не россыпь чипов
-              const examples = s.chips?.some((c) => (c.i18n ? t(c.code) : c.code).includes('['));
+              const examples = chips?.some((c) => (c.i18n ? t(c.code) : c.code).includes('['));
               const nav = s.nav;
               return (
                 <li
@@ -490,9 +515,9 @@ export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKe
 
                     {/* Примеры речью: строка — фраза целиком, команда в ней подсвечена;
                         клик копирует только команду (без скобок — фразу целиком) */}
-                    {s.chips && examples && (
+                    {chips && examples && (
                       <ul className="start-guide-ex">
-                        {s.chips.map((c, ci) => {
+                        {chips.map((c, ci) => {
                           const chipUid = `${uid}#${ci}`;
                           const parts = splitExample(c.i18n ? t(c.code) : c.code);
                           const hasKey = parts.some((pt) => pt.key);
@@ -535,9 +560,9 @@ export default function StartGuide({ onNavigate, trackIds, titleKey, num, leadKe
                       </ul>
                     )}
 
-                    {s.chips && !examples && (
+                    {chips && !examples && (
                       <div className={listChips ? 'start-guide-cmds' : 'start-guide-chips'}>
-                        {s.chips.map((c, ci) => {
+                        {chips.map((c, ci) => {
                           const chipUid = `${uid}#${ci}`;
                           const text = c.i18n ? t(c.code) : c.code;
                           const isCopied = copied === chipUid;

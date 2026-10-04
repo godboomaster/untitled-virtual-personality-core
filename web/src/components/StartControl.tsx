@@ -631,7 +631,9 @@ export default function StartControl({ onNavigate }: { onNavigate: (s: Section) 
             )}
             {active === 3 && (
               <>
-                <div className="start-control-q">Нажать «Войти» на example.com?</div>
+                <div className="start-control-q">
+                  {en ? 'Click "Sign in" on example.com?' : 'Нажать «Войти» на example.com?'}
+                </div>
                 {/* Две ветки ответа: «выполнить» — сплошная рамка и закрашенный ✓,
                     «отменить» — пунктир и контурный ✕ (палитра монохромная) */}
                 <div className="start-control-yn">
