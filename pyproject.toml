@@ -1,7 +1,9 @@
 # Ядро как устанавливаемый пакет: аддоны (например, arrodes) зависят от него
 # и ставят его ссылкой на папку: pip install -e ../virtual-persona-core.
-# requirements.txt остаётся: там --extra-index-url для CPU-сборки torch,
-# в pyproject его не указать
+# Здесь — диапазоны версий: снизу то, на чём проект проверен, сверху — до
+# следующей мажорной. Точные версии — в requirements.txt (lock-файл, его
+# собирает uv из этого списка; там же --extra-index-url для CPU-сборки torch,
+# в pyproject его не указать)
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
@@ -15,35 +17,35 @@ requires-python = ">=3.11"
 license = "MPL-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-    "python-dotenv",
-    "pyyaml",
-    "openai",
-    "chromadb",
-    "sentence-transformers",
-    "httpx",
-    "python-telegram-bot",
-    "python-docx",
-    "pypdf",
-    "pdfplumber",
-    "python-pptx",
-    "openpyxl",
-    "ddgs",
-    "duckduckgo-search",
-    "deep-translator",
-    "markitdown",
-    "fastapi",
-    "uvicorn[standard]",
-    "python-multipart",
-    "playwright",
-    "psutil",
-    "beautifulsoup4",
-    "pydantic",
-    "pillow",
-    "huggingface_hub",
-    "numpy",
-    "rank-bm25",
-    "requests",
-    "websocket-client",
+    "python-dotenv>=1.2,<2",  # запись .env из веба (set_key/unset_key)
+    "pyyaml>=6.0,<7",
+    "openai>=2.31,<3",
+    "chromadb>=1.5.5,<2",
+    # 6.x не проверялась: смена эмбеддингов разошлась бы с уже сохранённой памятью
+    "sentence-transformers>=5.3,<6",
+    "httpx>=0.28,<1",
+    "python-telegram-bot>=22.5,<23",
+    "ddgs>=9.14,<10",
+    "deep-translator>=1.11,<2",
+    # Все загружаемые файлы читаются через markitdown; без extras
+    # docx (mammoth) и xlsx/xls (pandas, xlrd) падают с MissingDependencyException
+    "markitdown[docx,pdf,pptx,xlsx,xls]>=0.1.5,<0.2",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.34,<1",
+    "python-multipart>=0.0.22,<0.1",
+    # Режим управления: браузерные рецепты через CDP (без "playwright install" —
+    # цепляемся к Chrome пользователя)
+    "playwright>=1.62,<2",
+    # Метрики памяти: /api/system/memory, деградация rerank в book_search
+    "psutil>=7.1,<8",
+    "beautifulsoup4>=4.14,<5",
+    "pydantic>=2.12,<3",
+    "pillow>=10.4,<13",
+    "huggingface_hub>=1.7,<2",
+    "numpy>=1.26,<3",
+    "rank-bm25>=0.2.2,<0.3",  # BM25 в локальном поиске
+    "requests>=2.32.4,<3",
+    "websocket-client>=1.9,<2",  # CDP в browser_actions
 ]
 
 # Имя пакета app слишком общее; переименовать при публикации

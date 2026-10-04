@@ -39,6 +39,8 @@
 
 Нужны Python 3.11+, для веба — Node.js 20.19+ или 22.12+. Для веб-чатов и режима управления —
 браузер на Chromium (Chrome, Edge, Brave, Opera, Яндекс, Vivaldi). Ollama — по желанию.
+`requirements.txt` ставит точные проверенные версии пакетов на Linux, Windows и macOS 14+
+с Apple Silicon. На Intel-маках и macOS 13 у этих версий torch и onnxruntime нет сборок.
 
 ```bash
 git clone <repo-url> virtual-persona-core
@@ -57,7 +59,7 @@ python -m app.main api                       # бэкенд: http://127.0.0.1:80
 
 ```bash
 cd web
-npm install
+npm ci
 npm run dev                                  # http://localhost:5173
 ```
 
@@ -646,6 +648,17 @@ OLLAMA_URL=http://127.0.0.1:9 python -m scripts.test_computer_control
 печатает `[OK]` или `[FAIL]`, в конце — итог. Часть скриптов завершается с кодом 0 и при
 провалах, поэтому смотрите на `[FAIL]` в выводе, а не на код возврата. Для Telegram-тестов
 нужен `python-telegram-bot`, для части тестов браузера — Node.js и Playwright с Chromium.
+
+## Зависимости
+
+**Python.** В `pyproject.toml` — диапазоны версий: снизу то, на чём проект проверен, сверху —
+до следующей мажорной. `requirements.txt` — lock-файл с точными версиями для всех платформ,
+его собирает [uv](https://docs.astral.sh/uv/) из `pyproject.toml`. Чтобы обновить пакеты,
+поправьте диапазоны, пересоберите lock командой из шапки `requirements.txt` (с `--upgrade` —
+до новейших версий в диапазонах) и прогоните тесты.
+
+**Веб и панель.** Точные версии — в `web/package-lock.json` и `desktop/package-lock.json`.
+`npm ci` ставит ровно их, `npm install` может обновить lock.
 
 ## Лицензия
 

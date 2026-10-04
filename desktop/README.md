@@ -44,7 +44,7 @@ Tauri 2: Rust (`src-tauri/`) + React (`src/`). Окно — системный W
 ищется сам: `.venv`/`venv` проекта → `PATH` login-shell → обычные места установки. Берётся
 первый, где импортируются `fastapi`, `uvicorn` и `dotenv`, и найденный путь запоминается.
 Node.js нужен для веб-интерфейса, его в `web/` запускают напрямую
-(`node web/node_modules/vite/bin/vite.js`) — сначала выполните `npm install` в `web/`.
+(`node web/node_modules/vite/bin/vite.js`) — сначала выполните `npm ci` в `web/`.
 
 ## Сборка
 
@@ -52,7 +52,7 @@ Node.js нужен для веб-интерфейса, его в `web/` запу
 
 ```bash
 cd desktop
-npm install
+npm ci
 npm run build                       # tsc + vite
 (cd src-tauri && cargo test)        # в т.ч. жизненный цикл на поддельном бэкенде
 ```
@@ -79,7 +79,7 @@ npm run tauri build -- --bundles app,dmg
 
 ```powershell
 cd desktop
-npm install
+npm ci
 npm run tauri build -- --bundles nsis
 ```
 

@@ -7,9 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# requirements.txt — lock-файл с точными версиями; torch из него — CPU-сборка
+# (+cpu) с download.pytorch.org, без CUDA-пакетов
 COPY requirements.txt .
-RUN pip install torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip install -r requirements.txt
+RUN pip install -r requirements.txt
 
 # Модель эмбеддингов памяти — в образ (иначе её скачивает первый запуск).
 # Модели книжного поиска Арродеса качаются при первом обращении — в кэш
