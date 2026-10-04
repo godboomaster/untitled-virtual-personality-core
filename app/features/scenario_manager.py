@@ -945,8 +945,10 @@ class ScenarioManager:
         elif run.get("confirm"):
             # Шаг ждёт «да» (оформление/отправка/удаление, непроверенная
             # подпись): только от того, кто запустил сценарий, и PENDING_TTL
+            # (клавиша — «отправь» в то, что в фокусе, — KEY_CONFIRM_TTL)
             from app.features.computer_control import (
-                PENDING_TTL_SEC, classify_confirmation)
+                KEY_CONFIRM_TTL_SEC, PENDING_TTL_SEC, classify_confirmation,
+                is_key_action)
             pend = run["confirm"]
             who = self._requester(chat_id)
             if pend.get("user_id") and who and who != pend["user_id"]:
@@ -968,8 +970,10 @@ class ScenarioManager:
                 return self._t("scenario_confirm_wait")
             run["confirm"] = None
             run["unhandled"] = 0
-            if time.time() - float(pend.get("ts") or 0) > PENDING_TTL_SEC:
-                # «да» спустя 5 минут — не про эту страницу: шаг резолвится
+            ttl = (KEY_CONFIRM_TTL_SEC if is_key_action(pend.get("act"))
+                   else PENDING_TTL_SEC)
+            if time.time() - float(pend.get("ts") or 0) > ttl:
+                # «да» спустя срок — не про эту страницу: шаг резолвится
                 # заново и при риске спросит ещё раз
                 pre.append(self._t("scenario_confirm_expired"))
             else:

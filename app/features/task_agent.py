@@ -83,9 +83,6 @@ CONTINUE_TTL_SEC = RESUME_SEC
 # Дольше можно, потому что перед исполнением элемент сверяется со свежим
 # снимком (_confirmed_fresh), а клик — с подписью в момент нажатия
 CONFIRM_TTL_SEC = RESUME_SEC
-# Клавиша (Enter/Tab/Space — в то, что сейчас в фокусе) свежим снимком не
-# сверяется: ей прежняя минута, а не общий срок подтверждения команд
-KEY_CONFIRM_TTL_SEC = 60
 # Бюджет промпта: элементов в списке, длина подписи, шагов истории, текст страницы
 ELEMENTS_MAX = 80
 LABEL_MAX = 80
@@ -174,8 +171,8 @@ _TASK_RE = re.compile(
 # правила промпта «спроси перед необратимым шагом»). Правило одно с
 # needs_confirm режима управления — определено в computer_control
 from app.features.computer_control import (  # noqa: E402
-    _COMMIT_RE, SOFT_STOP_RE, STOP_CMD_RE,
-    ComputerControlManager)
+    _COMMIT_RE, KEY_CONFIRM_TTL_SEC, SOFT_STOP_RE, STOP_CMD_RE,
+    ComputerControlManager, is_key_action)
 # Отмена задачи — то же правило, что «стоп» бота до лока хода
 _CANCEL_RE = STOP_CMD_RE
 from app.features.cc_privacy import (  # noqa: E402
@@ -2205,9 +2202,9 @@ class TaskAgent:
             verdict = _confirm_verdict(msg, names)
             # Элемент перед исполнением сверяется со свежим снимком, адрес и
             # приложение от времени не зависят; клавиша (Enter в то, что
-            # сейчас в фокусе) — нет: ей прежняя минута
-            ttl = (KEY_CONFIRM_TTL_SEC if (aw.get("act") or {}).get("kind")
-                   in ("key", "press", "send") else CONFIRM_TTL_SEC)
+            # сейчас в фокусе) — нет: ей минута, как во всём режиме управления
+            ttl = (KEY_CONFIRM_TTL_SEC if is_key_action(aw.get("act"))
+                   else CONFIRM_TTL_SEC)
             expired = time.time() - float(aw.get("ts") or 0) > ttl
             if expired:
                 # «да» спустя CONFIRM_TTL_SEC — уже не про эту страницу: шаг

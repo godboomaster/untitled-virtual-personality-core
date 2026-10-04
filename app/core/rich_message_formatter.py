@@ -61,6 +61,52 @@ def _stash_code(text: str) -> Tuple[str, List[str], List[str]]:
     return text, code_blocks, inline_codes
 
 
+# Инлайн-выделение — один проход, как в вебе (MessageText.tsx, INLINE_RE):
+# в каждой позиции берётся первая подошедшая альтернатива, её содержимое
+# размечается рекурсивно, поэтому теги всегда вложены правильно. Цепочка
+# re.sub по одному маркеру давала <u><i>x</u></i> на «___x___» — Telegram
+# такой HTML отклоняет, и ответ уходил сырым Markdown. Порядок: *** и ___
+# раньше ** и __, ** раньше *, __ раньше _; «_» внутри слова (snake_case) —
+# не разметка. Ссылка [текст](адрес) — целиком: адрес не размечается (её
+# превращает в <a> отдельное правило дальше)
+_EMPHASIS_RE = re.compile('|'.join((
+    r'\[(?P<ltext>[^\]\n]+?)\]\((?P<lurl>[^)\s]+?)\)',
+    r'\*\*\*(?P<bi>.+?)\*\*\*',
+    r'___(?P<iu>.+?)___',
+    r'\*\*(?P<b>.+?)\*\*',
+    # Одиночная «*» не открывает курсив перед пробелом (маркер списка
+    # «* пункт **два**», «2 * 3») и не закрывает его половинкой «**»
+    r'\*(?!\s)(?P<i>.+?)(?<![\s*])\*(?!\*)',
+    r'__(?P<u>.+?)__',
+    r'(?<!\w)_(?P<i2>.+?)_(?!\w)',
+    r'~~(?P<s>.+?)~~',
+    r'\|\|(?P<sp>.+?)\|\|',
+    r'==(?P<m>.+?)==',
+)))
+_EMPHASIS_TAGS = {
+    'bi': ('<b><i>', '</i></b>'),
+    'iu': ('<i><u>', '</u></i>'),
+    'b': ('<b>', '</b>'),
+    'i': ('<i>', '</i>'),
+    'u': ('<u>', '</u>'),
+    'i2': ('<i>', '</i>'),
+    's': ('<s>', '</s>'),
+    'sp': ('<tg-spoiler>', '</tg-spoiler>'),
+    'm': ('<mark>', '</mark>'),
+}
+
+
+def _emphasis(text: str) -> str:
+    # **, *, __, _, ~~, ||, == → теги Telegram HTML (текст уже экранирован)
+    def _wrap(m):
+        if m.group('lurl') is not None:
+            return f"[{_emphasis(m.group('ltext'))}]({m.group('lurl')})"
+        name = m.lastgroup
+        open_tag, close_tag = _EMPHASIS_TAGS[name]
+        return open_tag + _emphasis(m.group(name)) + close_tag
+    return _EMPHASIS_RE.sub(_wrap, text)
+
+
 def _restore_code(text: str, code_blocks: List[str], inline_codes: List[str]) -> str:
     # Вернуть на место плейсхолдеры кода (после всей остальной разметки).
     for i, code in enumerate(inline_codes):
@@ -87,27 +133,10 @@ class RichMessageFormatter:
         # Экранируем HTML-сущности в оставшемся тексте
         text = _escape_html(text)
 
-        # Жирный: **text** → <b>text</b>
-        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-
-        # Подчеркнутый: __text__ → <u>text</u> (Rich HTML). Раньше одиночного
-        # «_»: иначе __x__ становился <i>_x_</i>. Порядок как в вебе
-        # (MessageText.tsx): ** раньше *, __ раньше _
-        text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
-
-        # Курсив: *text* или _text_ → <i>text</i>; «_» внутри слова
-        # (snake_case) — не разметка
-        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-        text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
-
-        # Зачеркнутый: ~~text~~ → <s>text</s>
-        text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
-
-        # Спойлер: ||text|| → <tg-spoiler>text</tg-spoiler>
-        text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text)
-
-        # Выделенный: ==text== → <mark>text</mark>
-        text = re.sub(r'==(.+?)==', r'<mark>\1</mark>', text)
+        # Жирный **x** → <b>, курсив *x*/_x_ → <i>, подчёркнутый __x__ → <u>
+        # (Rich HTML), зачёркнутый ~~x~~ → <s>, спойлер ||x|| → <tg-spoiler>,
+        # выделение ==x== → <mark> — одним проходом (см. _emphasis)
+        text = _emphasis(text)
 
         # Заголовки: # H1 → <h1>H1</h1>, ## H2 → <h2>H2</h2>, etc.
         for i in range(6, 0, -1):
@@ -194,14 +223,8 @@ class RichMessageFormatter:
 
         text = _escape_html(text)
 
-        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-        # __ раньше одиночного _ (см. markdown_to_rich_html)
-        text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
-        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-        text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
-        text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
-        text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text)
-        text = re.sub(r'==(.+?)==', r'<mark>\1</mark>', text)
+        # Инлайн-выделение — тот же общий проход (вложенность всегда верная)
+        text = _emphasis(text)
 
         # Заголовки → просто жирный текст (текущий HTML не поддерживает h1-h6)
         text = re.sub(r'^#{1,6}\s+(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)

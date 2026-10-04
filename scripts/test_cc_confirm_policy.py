@@ -145,6 +145,30 @@ def main():
     check("TTL pending — 5 минут", ccm.PENDING_TTL_SEC == 300)
     check("TTL списка сайтов — не меньше pending",
           ccm.CHOICE_TTL_SEC >= ccm.PENDING_TTL_SEC)
+    # Клавиша (Enter/Tab, Escape, «отправь») уходит в то, что в фокусе, и
+    # свежим снимком не сверяется — её «да» живёт минуту; одна константа
+    # на режим управления, сценарии и агента задач
+    from app.features import task_agent as _ta
+    check("TTL клавиши — минута, общий с агентом задач",
+          ccm.KEY_CONFIRM_TTL_SEC == 60
+          and _ta.KEY_CONFIRM_TTL_SEC is ccm.KEY_CONFIRM_TTL_SEC)
+    m = make()
+    for act, ttl in (({"kind": "key", "key": "Enter"}, ccm.KEY_CONFIRM_TTL_SEC),
+                     ({"kind": "press", "element": "Escape"},
+                      ccm.KEY_CONFIRM_TTL_SEC),
+                     ({"kind": "send"}, ccm.KEY_CONFIRM_TTL_SEC),
+                     ({"kind": "multi", "items": [
+                         {"kind": "url", "value": "https://a.ru"},
+                         {"kind": "key", "key": "Enter"}]},
+                      ccm.KEY_CONFIRM_TTL_SEC),
+                     ({"kind": "click", "element": "Войти"},
+                      ccm.PENDING_TTL_SEC),
+                     ({"kind": "type", "element": "Поиск", "text": "x",
+                       "submit": True}, ccm.PENDING_TTL_SEC)):
+        m.set_pending("gk", act, user_id="A")
+        left = m._pending["gk"]["expires_at"] - time.time()
+        check(f"срок pending {act['kind']}: {ttl} с", ttl - 5 < left <= ttl)
+    m.clear_pending("gk")
     m = make()
     m.set_pending("g1", {"kind": "url", "value": "https://youtube.com"},
                   user_id="A")

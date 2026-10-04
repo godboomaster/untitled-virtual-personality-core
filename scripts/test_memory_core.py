@@ -536,6 +536,64 @@ def test_formatter():
         check(f"{name}: **/*/__ вместе",
               "<b>жирный</b>" in out and "<i>курсив</i>" in out
               and "<u>подчёркнутый</u>" in out)
+        # Тройные маркеры и пересекающиеся пары — теги вложены правильно
+        # (Telegram отклоняет <u><i>x</u></i>, и ответ уходил сырым Markdown)
+        check(f"{name}: ___x___ → <i><u>x</u></i>",
+              fn("___x___") == "<i><u>x</u></i>")
+        check(f"{name}: ***x*** → <b><i>x</i></b>",
+              fn("***x***") == "<b><i>x</i></b>")
+        for src_ in ("x ___ y ___ z", "*a __b* c__", "_x __y_ z__",
+                     "~~a *b~~ c*", "__x_ y__"):
+            out = fn(src_)
+            check(f"{name}: {src_!r} — вложенность верна ({out!r})",
+                  _html_nesting_ok(out))
+        out = fn("[ссылка](https://ex.com/a__b__c_d_) и __тут__")
+        check(f"{name}: адрес ссылки не размечается",
+              'href="https://ex.com/a__b__c_d_"' in out
+              and "<u>тут</u>" in out and _html_nesting_ok(out))
+        check(f"{name}: *a **b** c* — жирный внутри курсива",
+              fn("*a **b** c*") == "<i>a <b>b</b> c</i>")
+        check(f"{name}: «2 * 3 * 4» — не курсив",
+              fn("2 * 3 * 4") == "2 * 3 * 4")
+    check("markdown_to_rich_html: маркер списка «* » не открывает курсив",
+          F.markdown_to_rich_html("* пункт один\n* пункт **два**")
+          == "<ul><li>пункт один</li><li>пункт <b>два</b></li></ul>")
+
+    # Общая проверка на смесях *, **, ***, _, __, ___ (все сочетания до 4
+    # токенов + случайные длиннее): теги сбалансированы и вложены правильно
+    import itertools
+    import random
+    tokens = ["*", "**", "***", "_", "__", "___", "x", " ", "a_b"]
+    samples = ["".join(p) for n in range(1, 5)
+               for p in itertools.product(tokens, repeat=n)]
+    rnd = random.Random(20261004)
+    samples += ["".join(rnd.choice(tokens + ["~~", "||", "=="])
+                        for _ in range(rnd.randint(5, 10)))
+                for _ in range(2000)]
+    for name, fn in (("markdown_to_rich_html", F.markdown_to_rich_html),
+                     ("to_current_html", F.to_current_html)):
+        bad = [(s, fn(s)) for s in samples if not _html_nesting_ok(fn(s))]
+        check(f"{name}: вложенность тегов верна на {len(samples)} смесях"
+              + (f" (первые сбои: {bad[:3]!r})" if bad else ""), not bad)
+
+
+def _html_nesting_ok(html: str) -> bool:
+    # Каждый открытый тег закрыт в обратном порядке; внутри тега (атрибута)
+    # нет другого тега. Пустые теги (<br>, <hr/>, <input>) — без пары
+    import re
+    if re.search(r"<[^>]*<", html):
+        return False
+    stack = []
+    for m in re.finditer(r"<(/?)([a-z][a-z0-9-]*)[^>]*?(/?)>", html):
+        closing, tag, empty = m.groups()
+        if empty or tag in ("br", "hr", "input"):
+            continue
+        if closing:
+            if not stack or stack.pop() != tag:
+                return False
+        else:
+            stack.append(tag)
+    return not stack
 
 
 # ─── 8. restore_memory: цели из каталога дампов ──────────

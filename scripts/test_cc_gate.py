@@ -616,6 +616,32 @@ def main():
     check("антизалипание на вопросе шага",
           r5 == cc_texts.t("scenario_confirm_wait") and r6 is None
           and not sm.active("s2") and len(cc.calls) == 2)
+    # Срок «да»: шаг-клик — PENDING_TTL_SEC (5 минут), клавишный шаг
+    # («отправь» — Enter в то, что в фокусе) — KEY_CONFIRM_TTL_SEC (минута)
+    cc, sm = scen(PIZZA)
+    cc.note_requester("s5", "A")
+    sm.start("пицца", "s5", None)
+    sm._runs["s5"]["confirm"]["ts"] = time.time() - 120
+    sm.feed("s5", "да", None)
+    check("«да» на клик шага через 2 минуты — исполнено",
+          len(cc.calls) == 3
+          and cc.calls[2].get("element") == "Оформить заказ")
+    cc, sm = scen([{"op": "open", "url": "https://dodopizza.ru"},
+                   {"op": "send", "host": "dodopizza.ru"}])
+    cc.note_requester("s6", "A")
+    sm.start("пицца", "s6", None)
+    pend = sm._runs["s6"]["confirm"]
+    check("шаг «отправь» ждёт «да»",
+          bool(pend) and pend["act"]["kind"] == "send")
+    pend["ts"] = time.time() - 120
+    r8 = sm.feed("s6", "да", None)
+    check("«да» на «отправь» через 2 минуты — истекло, не нажато",
+          "истекло" in (r8 or "")
+          and not any(c.get("kind") == "send" for c in cc.calls))
+    sm._runs["s6"]["confirm"]["ts"] = time.time() - 30
+    sm.feed("s6", "да", None)
+    check("«да» на «отправь» через 30 с — нажато",
+          any(c.get("kind") == "send" for c in cc.calls))
     # Оплата на живой странице — передача человеку
     cc = make(cls=SCC)
     cc.labels = {"Далее": "Оплатить 1 290 ₽"}

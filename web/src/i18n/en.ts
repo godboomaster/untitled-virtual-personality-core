@@ -318,7 +318,7 @@ const en = {
   'cc.step3Body': 'Short phrases, one task per message. Not sure where to click — ask “what’s on the page?”: the bot sums it up and sends a screenshot.',
   'cc.step3Jump': 'All commands ↓',
   'cc.step4Title': 'Confirm',
-  'cc.step4Body': 'Actions that change the page are described first, then the bot waits for your answer. The question lives 5 minutes; a later “yes” no longer works — the bot says the confirmation has expired. An unclear reply goes into ordinary conversation. Typing into password, email and phone fields always asks — even with the checkbox off.',
+  'cc.step4Body': 'Actions that change the page are described first, then the bot waits for your answer. The question lives 5 minutes, or one minute for a key press or “send”: the key goes to whatever has focus. A later “yes” no longer works — the bot says the confirmation has expired. An unclear reply goes into ordinary conversation. Typing into password, email and phone fields always asks — even with the checkbox off.',
   'cc.step4Reply': 'The bot asks — reply',
   'cc.step4Yes': 'run',
   'cc.step4No': 'cancel',

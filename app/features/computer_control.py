@@ -90,6 +90,12 @@ TASK_START_TTL_SEC = 600
 # Список вариантов сайта читается дольше, чем «Открыть X?» — не меньше
 # обычного срока (гайд обещает вопросу 5 минут)
 CHOICE_TTL_SEC = PENDING_TTL_SEC
+# Клавиша без выбора элемента (Enter/Tab/пробел, Escape, «отправь») уходит в
+# то, что в фокусе в момент нажатия, и со свежим снимком страницы не
+# сверяется — её «да» живёт минуту. Общее правило режима управления,
+# сценариев и агента задач (is_key_action)
+KEY_CONFIRM_TTL_SEC = 60
+KEY_ACTION_KINDS = ("key", "press", "send")
 # Сколько вариантов показывать в списке «какой сайт открыть?»
 SITE_CHOICES_MAX = 5
 # Сколько помним, что pending протух по TTL: голое «да» вдогонку получает
@@ -4394,6 +4400,16 @@ def split_compound_command(text: str) -> List[str]:
     return parts or [s]
 
 
+def is_key_action(action: Optional[dict]) -> bool:
+    """Клавишное действие (KEY_ACTION_KINDS, в том числе внутри multi):
+    срок «да» на него — KEY_CONFIRM_TTL_SEC, а не общий."""
+    if not isinstance(action, dict):
+        return False
+    if action.get("kind") == "multi":
+        return any(is_key_action(a) for a in action.get("items") or ())
+    return action.get("kind") in KEY_ACTION_KINDS
+
+
 def is_goal_task(action: Optional[dict]) -> bool:
     """Многошаговая цель для агента ({"kind": "task", "goal"} от LLM-яруса),
     а не task-рецепт конфига ({"kind": "task", "key", "value"} — ярлык/
@@ -5790,6 +5806,7 @@ class ComputerControlManager:
                 user_id = self.__dict__.get("_requesters", {}).get(str(chat_id))
             ttl = (TASK_START_TTL_SEC if is_goal_task(action)
                    else CHOICE_TTL_SEC if action.get("choices")
+                   else KEY_CONFIRM_TTL_SEC if is_key_action(action)
                    else PENDING_TTL_SEC)
             self._pending[str(chat_id)] = {
                 "action": action,
