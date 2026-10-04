@@ -1,0 +1,25 @@
+[package]
+name = "vpc-panel"
+version = "0.1.0"
+description = "Панель Virtual Persona: запуск бота и его состояние"
+edition = "2021"
+license = "MPL-2.0"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["json"] }
+sysinfo = { version = "0.35", default-features = false, features = ["system"] }
+sys-locale = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
