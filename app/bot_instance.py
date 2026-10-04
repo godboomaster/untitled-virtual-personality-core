@@ -287,6 +287,137 @@ _CORRECTION_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# То же по-английски — отдельно, русский шаблон выше не трогаем. Каждое
+# срабатывание — вызов локальной модели, ложное правило пинится навсегда,
+# поэтому только явные формы: «remember» многозначно («do you remember…»,
+# «remember when…», «remember to buy milk» — вопрос/воспоминание/напоминалка),
+# ловим лишь повелительное в начале фразы; «wrong»/«again» сами по себе —
+# обычные слова рассказа, без «that's»/«you» не ловим.
+# Начало фразы: начало текста, после знака препинания или «please/and/but…»
+_EN_LEAD = (r"(?:^|(?<=[.!?;:,\n(—–-])|\b(?:please|pls|plz|just|and|also|so|now|ok|"
+            r"okay|hey|no|nope|oh|but|then)\b)\s*")
+# До конца фразы нет «?» — вопрос («remember my name?»), а не просьба.
+# Окно ограничено: без него длинная фраза с сотнями «that's wrong» без точки
+# проверялась бы квадратично
+_EN_NOQ = r"(?![^.!\n]{0,500}\?)"
+_EN_DONT = r"(?:do(?:n['’]?t|\s+not)|never)"
+_CORRECTION_HINT_EN_RE = re.compile("|".join([
+    # «please remember …», «remember, please …». «Please remember the scenario …» —
+    # команда сценария, не правило: ни вне режима управления, ни в нём (там
+    # вежливая форма до сценариев не доходит и раньше правилом не становилась)
+    r"\b(?:please|pls|plz)\s*(?:,\s*)?remember\b"
+    r"(?!\s+(?:to\b(?!\s+(?:always|never|not)\b)|when\b|(?:this\s+|the\s+)?scenario\b))",
+    r"\bremember\s*(?:,\s*)?(?:please|pls|plz)\b(?![\s,]+(?:this\s+|the\s+)?scenario\b)",
+    # «remember: …», «remember, I'm vegan», «remember this!», «remember that I …»,
+    # «remember I don't eat meat», «remember my name is …», «remember to never …»
+    _EN_LEAD + r"remember(?:"
+    r"\s*[:—–]|\s+-\s"
+    r"|\s*,\s*(?!(?:when|how|what|where|who|why|the\s+time|that\s+time|back|last|"
+    r"yesterday|this|that)\b)"
+    r"|\s+(?:this|that)\s*(?:[:!.—–]|$)"
+    r"|\s+that\s+(?:i|i['’]?m|im|i['’]?ve|i['’]?d|my|me|we|we['’]?re|our|you|you['’]?re|"
+    r"your|it['’]?s|there|nobody|no\s+one|everyone)\b"
+    r"|\s+(?:i['’]?m|im|i\s+am|i\s+(?:do\s+not|don['’]?t|can['’]?t|cannot|never|always|"
+    r"hate|love|like|prefer|dislike|want|need)|my\s+[\w'’]+(?:\s+[\w'’]+)?\s+(?:is|are))\b"
+    r"|\s+(?:to\s+(?:always|never|not)|not\s+to)\b"
+    r")" + _EN_NOQ,
+    # «keep in mind», «bear that in mind», «don't forget that …», «for future reference»
+    _EN_LEAD + r"(?:keep|bear)\s+(?:(?:this|that|it)\s+)?in\s+mind\b",
+    _EN_LEAD + r"do(?:n['’]?t|\s+not)\s+forget\s*"
+    r"(?:that\b|this\b|:|to\s+(?:always|never|not)\b)",
+    r"\bfor\s+future\s+reference\b",
+    # «from now on, don't …/always …/answer …» (но не «from now on I'm going to the
+    # gym»; «from now on call me X» — имя, его забирает «зови меня», как в русском)
+    _EN_LEAD + r"(?:from\s+now\s+on|going\s+forward)\s*(?:,\s*)?(?:please\s+)?"
+    r"(?:don['’]?t|do\s+not|never|always|use|answer|reply|respond|speak|talk|write|"
+    r"say|stop|be|only|just|keep|remember|avoid|i\s+want\s+you|"
+    r"i['’]?d\s+like\s+you|you\s+(?:will|should|must|are\s+to))\b",
+    # «that's wrong», «that's not right», «that's not what I meant», «you're wrong»
+    # (но не «that's wrong of me», «it's wrong to steal», «is that wrong?»)
+    r"\b(?:that|this)(?:['’]?s|\s+is|\s+was)\s+(?:wrong|incorrect|not\s+(?:right|correct|"
+    r"true|it|what\s+i\s+(?:meant|asked|said|wanted|mean)))\b"
+    r"(?!\s+(?:to|of|for|with|about|because|when|if|now|anymore)\b)" + _EN_NOQ,
+    _EN_LEAD + r"not\s+what\s+i\s+(?:meant|asked|said|wanted)\b",
+    r"\byou(?:['’]?re|re|\s+are|\s+were)\s+wrong\b" + _EN_NOQ,
+    r"\byou(?:['’]?ve|\s+have)?\s+(?:got|gotten)\s+(?:it|that|this|me|my\s+[\w'’]+)\s+"
+    r"(?:all\s+)?wrong\b",
+    r"\byou\s+(?:misunderstood|misheard|misread|mixed\s+(?:(?:it|that|them|things)\s+)?up)\b",
+    # «not like that» в начале фразы (не «it's not like that between us»)
+    _EN_LEAD + r"not\s+(?:like\s+(?:that|this)|that\s+way|this\s+way)\b",
+    # «I meant …», «what I meant» (но не «I meant to call you», «I meant it»; «I mean» —
+    # слово-паразит, не ловим; «I meant to ask / tell you, …», «I meant what I said»,
+    # «I meant no offense» — начало разговора и идиомы, не поправка)
+    r"\bi\s+meant\b(?!\s+(?:to\b(?!\s+(?:say|write|type)\b)|it\b|well\b|"
+    r"every\s+word\b|what\s+i\s+said\b|no\s+(?:harm|offen[cs]e|disrespect)\b))",
+    # «don't call me …», «don't say it like that», «don't do that», «never use …»
+    # (но не «don't call me tomorrow», «don't worry», «don't mention it»)
+    _EN_LEAD + _EN_DONT + r"\s+(?:ever\s+)?(?:"
+    # За «call me» — слово (обращение): «don't call me, I'll call you» — про звонок
+    r"call\s+me\b(?=\s+[\"'“‘«]?[^\W\d_])"
+    r"(?!\s+(?:tomorrow|tonight|today|later|now|again|back|anymore|after|"
+    r"before|at|on|in|until|till|during|while|when|if|unless|early|late|every|next|this|"
+    r"here|there|from|up|out|so|too)\b)"
+    r"|address\s+me\b|refer\s+to\s+me\b"
+    r"|(?:say|write|answer|reply|respond|talk|speak)\s+(?:it\s+|that\s+|to\s+me\s+)?"
+    r"(?:like\s+(?:that|this)|that\s+way|this\s+way)\b"
+    r"|say\s+(?:that|this|it)\b|do\s+(?:that|this)\b"
+    r"|use\b|swear\b|curse\b|apologi[sz]e\b|repeat\s+(?:yourself|that|this|it|the\s+same)\b"
+    r"|end\s+(?:with|every|each|your)\b"
+    r"|ask\s+me\s+(?:about|that|this|again|so\s+many|questions|if|whether)\b"
+    r")",
+    # «stop calling me …», «stop using emoji» (но не «I need to stop using my phone»)
+    _EN_LEAD + r"stop\s+(?:calling\s+me|saying|using|asking|apologi[sz]ing|repeating|"
+    r"doing\s+(?:that|this)|talking\s+(?:like|to\s+me\s+like)|being\s+so|adding|ending)\b",
+    # «you did it again», «you keep forgetting», «again you …» (≈ «ты опять/снова»;
+    # но не «see you again», «thanks again»)
+    r"\byou(?:['’]?(?:re|ve)|\s+(?:are|have))?\s+(?:did|done|doing|said|saying|used|using|"
+    r"forgot|forgotten|called\s+me|calling\s+me|asked|asking|messed\s+up)\b"
+    r"[^.!?\n]{0,30}?\bagain\b",
+    r"\byou\s+keep\s+(?:doing|saying|calling\s+me|using|asking|forgetting|repeating|"
+    r"ignoring|adding|ending|getting\s+(?:it|that|this|my\s+[\w'’]+)\s+wrong|"
+    r"making\s+the\s+same)\b",
+    _EN_LEAD + r"(?:once\s+)?again(?:\s*,)?\s+you\b(?!\s+(?:too|as\s+well)\b)",
+    # «correct yourself», «fix that.» (но не «how do I fix it?», «fix this bug»)
+    r"\bcorrect\s+yourself\b",
+    _EN_LEAD + r"(?:correct|fix)\s+(?:that|this|it)\s*(?:(?:,\s*)?(?:please|pls|plz)\s*)?"
+    r"(?:[.!,;\n]|$)",
+    # «how many times do I have to tell you», «I told you not to …»
+    r"\bhow\s+many\s+times\s+(?:do\s+i\s+(?:have|need)\s+to|have\s+i|did\s+i|must\s+i)\s+"
+    r"(?:tell|told|say|said|ask|asked|repeat|remind)",
+    r"\bi\s+(?:already\s+|just\s+)?(?:told|asked)\s+you\s+"
+    r"(?:not\s+to(?!\s+worry\b)|to\s+(?:stop|never|always|not))\b",
+    r"\bi\s+said\s+(?:not\s+to|don['’]?t|do\s+not|never)\b",
+]), re.IGNORECASE)
+_WS_RUN_RE = re.compile(r"\s{2,}")
+
+
+def _looks_like_correction(text: Optional[str], typed: Optional[str] = None) -> bool:
+    """Похоже ли на поправку бота или просьбу запомнить правило (запускает
+    извлечение правила). RU — по всему вводу, как раньше; EN — только по
+    тому, что человек написал сам (typed: подпись к фото/файлу): «remember
+    that…», «don't use…» в английском тексте документа или OCR — обычное
+    дело, а правило из чужого текста запинилось бы навсегда."""
+    if _CORRECTION_HINT_RE.search(text or ""):
+        return True
+    # Пробельные серии — в один символ (перевод строки сохраняем: он граница
+    # фразы): на сотнях пустых строк «\s*» начала фразы перебирался квадратично
+    en = _WS_RUN_RE.sub(lambda m: "\n" if "\n" in m.group() else " ",
+                        (text if typed is None else typed) or "")
+    return bool(_CORRECTION_HINT_EN_RE.search(en))
+
+
+# Обращение к персоне в начале фразы (BotInstance._strip_address): «hey
+# Connor …», «эй Коннор, …»
+_ADDRESS_LEAD = r"\s*(?:(?:hey|hi|ok|okay|so|эй)\b\s*,?\s*)?"
+# Имя-модальный глагол без знака после — часть фразы, а не обращение:
+# «Will remember that!» у персоны Will — «(я) запомню», а не «Уилл, запомни»
+_ADDRESS_MODAL_NAMES = frozenset(
+    "will may can shall must might would could should do does did".split())
+# «…сценарий утро, пожалуйста» / «save the scenario as X please» — вежливый
+# хвост не часть имени сценария
+_POLITE_TAIL_RE = re.compile(
+    r"(?<=\S)[\s,]+(?:пожалуйста|плиз|please|pls)\s*[.!…]*\s*$", re.IGNORECASE)
+
 
 # Маркеры фич в ответе LLM (вырезает BotInstance._cut_markers)
 def _marker_re(tag: str, body: str = r"[^\]]+") -> "re.Pattern":
@@ -315,8 +446,282 @@ _POLITE_AFTER_VERB_RE = re.compile(
     r"(?:(?:пожалуйста|плиз|please|pls)[\s,]+)+", re.IGNORECASE)
 
 
-# «Зови меня X» — предпочитаемое имя пользователя
-_ALIAS_RE = re.compile(r"(?:зови|называй)\s+меня\s+([А-Яа-яЁёA-Za-z\-]{2,30})", re.IGNORECASE)
+# «Зови меня X» — предпочитаемое имя пользователя. Глагол — целым словом:
+# «позови / обзови меня …» — не просьба об имени; «назови меня» и вежливые
+# «зовите / называйте» — просьба. Мягкие слова перед
+# именем пропускаем, как «just» в английском: «просто Саша», «лучше Сашей»,
+# «своим котиком»
+_ALIAS_RE = re.compile(
+    r"(?<![^\W\d_])(?:зови|называй|назови)(?:те)?\s+меня\s+"
+    r"(?:(?:просто(?:-напросто)?|лучше|теперь|отныне|впредь|всегда|только|уже|уж|тогда|"
+    r"пожалуйста|плиз|плз|пж|пжл|пжлст|своей|своим)\s+)*"
+    r"([А-Яа-яЁёA-Za-z\-]{2,30})", re.IGNORECASE)
+# «Не зови / не называй меня X» — запрет (его формулирует правило), а не имя
+_ALIAS_NEG_RU_RE = re.compile(r"(?<![^\W\d_])не\s*$", re.IGNORECASE)
+# Первое слово после «зови меня», которое именем не бывает: «зови меня так /
+# завтра / когда будет готово», «называй меня как хочешь / на ты / кем угодно».
+# Имена, похожие на служебные слова (Ник, Люба, Ли, Ян, Мир), сюда не входят
+_ALIAS_RU_STOP = frozenset("""
+так как этак иначе никак всяко когда тогда если раз пока чтобы чтоб будто словно хотя чуть
+где куда откуда почему зачем сколько
+завтра сегодня вчера послезавтра потом позже попозже позднее раньше пораньше сейчас сразу
+сначала сперва теперь отныне впредь всегда никогда иногда часто редко опять снова вновь
+обратно уже уж ещё еще лучше хуже просто только тоже также даже лишь вот ведь же ну да нет
+не ни бы утром днём днем вечером ночью срочно скорее быстрее немедленно обязательно вместе
+сюда туда здесь там тут домой назад вперёд вперед наверх вниз везде всюду
+пожалуйста плиз плз пж пжл пжлст ладно хорошо ок окей давай
+нормально правильно неправильно ласково нежно вежливо официально уважительно вслух тише
+громче полностью
+я ты он она оно мы вы они меня тебя его её ее их нас вас мне тебе ему ей им нам вам мной
+мною тобой тобою ним ней нею ними нами вами себя собой себе
+мой моя моё мое мои моим моей моими твой твоя твоё твое твои твоим твоей свой своя своё
+свое свои своим своей наш наша наше наши нашим нашей ваш ваша ваше ваши вашим вашей
+это этим этой этот эта эти этими то тем той тот та те теми такой таким такая такое такие
+такими какой каким какая какое какие какими сам сама само сами самим самой
+кто кем что чем чего кого ком чём никем ничем ничего никого никто ничто
+весь вся всё все всем всеми всей любым любая другим другой другая иным иной кое
+в во на к ко по с со за из от до у о об обо при про для без под над перед через между
+вместо около после кроме ради сквозь вроде насчёт насчет
+и а но или либо зато однако ибо нежели
+имя именем имени никнейм никнеймом прозвище прозвищем кличка кличкой
+полным настоящим нормальным новым старым прежним коротким сокращённым сокращенным
+уменьшительным официальным
+зови называй
+""".split())
+# Инфинитив — приглашение, а не имя: «зови меня гулять / обедать / кататься».
+# «-сть» не берём: «Радость», «Прелесть» — прозвища
+_ALIAS_RU_INF_RE = re.compile(r"(?:[аеёиоуыэюя]ть|ться|тись|чь|чься)$")
+# Уже именительный, хотя кончается как творительный: «Алексей», «Артём»,
+# «Ефрем», прозвища «Герой», «Ковбой»; «дорогой / родной» — и муж.
+# именительный, и жен. творительный: оставляем как написано
+_ALIAS_RU_NOM_KEEP = frozenset("""
+алексей андрей сергей матвей тимофей елисей гордей евсей корней моисей фаддей авдей ерофей
+макей мокей аггей агей еремей пантелей дорофей варфоломей елизей аникей фалалей
+соловей воробей муравей злодей чародей лицедей кощей бармалей
+артём артем ефрем рустем вилем салем бахром акром ахром икром
+толстой герой супергерой ковбой плейбой изгой малой большой крутой седой молодой дорогой
+родной святой простой золотой чужой лихой плохой немой слепой глухой
+""".split())
+# Беглая гласная и средний род — не по правилу: «Павлом» → «Павел»
+_ALIAS_RU_INSTR_SPECIAL = {
+    "павлом": "павел", "львом": "лев", "орлом": "орёл", "псом": "пёс", "чудом": "чудо",
+    "солнцем": "солнце", "сердцем": "сердце", "товарищем": "товарищ",
+}
+# Ласковые прилагательные: «любимой» → «любимая», «любимым» → «любимый»;
+# ударные: «родным» → «родной» (их «-ой» — см. _ALIAS_RU_NOM_KEEP)
+_ALIAS_RU_ADJ = frozenset("""
+любим единственн красив нежн сладк маленьк хорошеньк хорош лучш умн славн добр ласков
+прекрасн послушн ненаглядн драгоценн бесценн желанн
+""".split())
+_ALIAS_RU_ADJ_STRESSED = frozenset(
+    "родн дорог золот молод крут свят прост больш сед лих плох мал зл".split())
+_RU_VOWELS = "аеёиоуыэюя"
+# Англ.: «call me X», «address me as X», «refer to me as X», «I go by X».
+# Одно слово, как в русском; «Dr. Smith» — с титулом, иначе в имя попадёт «Dr»
+_ALIAS_EN_RE = re.compile(
+    r"\b(?:call\s+me(?:\s+as)?|address\s+me\s+as|refer\s+to\s+me\s+as)\s+"
+    r"(?:just\s+|simply\s+)?[\"'“‘]?"
+    r"((?:(?:mr|mrs|ms|mx|dr|prof)\.?\s+)?([^\W\d_]+(?:['’\-][^\W\d_]+)*))"
+    r"(?!\w|['’\-][^\W\d_])",
+    re.IGNORECASE)
+_ALIAS_GO_BY_EN_RE = re.compile(
+    r"\bi(?:\s+(?:usually|mostly|just|actually|now|prefer\s+to)|(?:['’]d|\s+would)\s+rather)?"
+    r"\s+go\s+by\s+(?:the\s+name\s+(?:of\s+)?)?[\"'“‘]?"
+    r"(([^\W\d_]+(?:['’\-][^\W\d_]+)*))(?!\w|['’\-][^\W\d_])",
+    re.IGNORECASE)
+# Имя заменяется везде, поэтому «call me» — только просьба в начале своей
+# части фразы: «please / you can / I'd like you to call me X». Так «don't
+# call me X», «why do you call me X», «my friends call me X» имени не задают
+_ALIAS_EN_CLAUSE_SPLIT_RE = re.compile(
+    r"[.!?;,:…()\[\]\"«»“”\n—–]|\s-+\s|\b(?:but|and|so|then|or)\b", re.IGNORECASE)
+_ALIAS_EN_SOFT = (r"(?:please|pls|plz|kindly|just|simply|also|now|always|only|instead|"
+                  r"maybe|perhaps|rather|from\s+now\s+on|henceforth|going\s+forward)")
+_ALIAS_EN_LEAD_RE = re.compile(
+    r"\s*(?:(?:ok(?:ay)?|well|hey|hi|hello|oh|yes|yeah|yep|sure|alright|anyway|btw|"
+    r"actually|honestly|" + _ALIAS_EN_SOFT + r")\s+)*"
+    r"(?:(?:(?:you|u|ya)(?:\s+(?:can|could|may|should|will|must|shall)|['’]ll)"
+    r"|(?:can|could|will)\s+(?:you|u|ya)"
+    # «would you call me smart?» — вопрос о мнении; просьба — только с please
+    r"|would\s+(?:you|u|ya)\s+(?:please|kindly)"
+    r"|i(?:['’]d|\s+would)?\s+(?:really\s+|much\s+)?(?:like|love|prefer|want|wish)\s+"
+    r"(?:(?:it\s+)?(?:if|that)\s+)?(?:you|u|ya)(?:\s+(?:to|would|could|can|will)|['’]d)?"
+    r"|i(?:['’]d|\s+would)\s+rather\s+(?:you|u|ya)(?:\s+would|['’]d)?"
+    r"|(?:feel\s+free|remember|be\s+sure|make\s+sure)\s+to"
+    r"|how\s+about\s+(?:you|u|ya)|why\s+not"
+    r")\s+(?:" + _ALIAS_EN_SOFT + r"\s+)*)?",
+    re.IGNORECASE)
+# Слова после «call me», которые именем не бывают: звонок («call me back /
+# tomorrow / at 5 / a taxi»), местоимения («call me that»), идиомы «call me crazy»,
+# транспорт («I go by Uber.», «call me taxi»)
+_ALIAS_EN_STOP = frozenset("""
+back up out over down off home in on at by to for from with via about after before around
+between during until till til through using like as if when whenever once unless while
+because cause cuz than so too also ever even very more less most instead
+tomorrow tmrw tmr today tonight tonite later soon now asap again sometime sometimes someday
+anytime early late first next last yesterday morning evening afternoon noon midnight weekend
+daily weekly monthly nightly maybe perhaps please pls plz ok okay right straight immediately
+urgently directly personally privately quickly quick fast real really
+monday tuesday wednesday thursday friday saturday sunday
+a an the that this these those it its some any no not never every each all both either neither
+one someone somebody anyone anybody everyone everybody nobody something anything nothing
+everything whatever whichever whoever what which who whom whose how why where there here
+me myself you yourself him her them us my your his our their mine yours i he she they we such
+names name two three four five six seven eight nine ten eleven twelve twenty thirty half
+couple few mr mrs ms mx dr prof
+crazy stupid paranoid biased lazy naive naïve silly weird picky sentimental cautious
+traditional mad insane nuts dumb selfish childish foolish romantic nostalgic petty ignorant
+boring cheesy corny nerdy geeky obsessed spoiled spoilt difficult demanding impatient strange
+odd slow dense dramatic extra basic emotional soft pedantic fussy stubborn uncultured simple
+greedy lame judgmental judgemental shallow bonkers mental old old-fashioned oldfashioned
+old-school oldschool square uptight prude prudish skeptic sceptic cynic pessimistic optimistic
+idealistic unrealistic neurotic sarcastic arrogant entitled insensitive rude mean harsh cruel
+cold kooky wacky quirky eccentric peculiar lucky unlucky blessed cursed weak fragile choosy
+snobby snobbish posh fancy vain proud stingy frugal thrifty jaded sheltered close-minded
+closed-minded narrow-minded self-centered self-centred
+uber lyft taxi cab bus train metro subway tube tram car bike ambulance
+""".split())
+# Прилагательные по суффиксу («call me superstitious / careful / clueless /
+# sensitive»). «-ish», «-ic» и короткие «-ive/-able» не берём: Manish, Eric,
+# Clive, Mable — имена
+_ALIAS_EN_ADJ_RE = re.compile(r"^(?:.*(?:ous|ful|less|ical|minded)|.{3,}(?:ive|able|ible|ist))$")
+# «call me crazy, but …» — идиома, а не имя
+_ALIAS_EN_IDIOM_TAIL_RE = re.compile(
+    r"\s*(?:[,—–-]\s*)?but\b(?!\s+(?:not|never|no|don['’]?t|do\s+not|please)\b)", re.IGNORECASE)
+# «I go by X» — имя в конце фразы; «I go by Walmart every day» — не имя
+_ALIAS_GO_BY_TAIL_RE = re.compile(
+    r"\s*(?:$|[^\w\s]|(?:now|these\s+days|nowadays|though|tho|actually|instead|here|online|"
+    r"usually|mostly|for\s+short|btw)\b)", re.IGNORECASE)
+
+
+def _alias_en_name(text: str, m: "re.Match", go_by: bool) -> Optional[str]:
+    # Начало части фразы ищем в окне перед «call me», а не во всём тексте:
+    # иначе тысячи «call me …» в длинном тексте разбирались бы квадратично.
+    # Вводная часть длиннее окна просьбой не бывает
+    ws = max(0, m.start() - 300)
+    cut = None
+    for cut in _ALIAS_EN_CLAUSE_SPLIT_RE.finditer(text, ws, m.start()):
+        pass
+    if cut is None and ws:
+        return None
+    clause = text[cut.end() if cut else 0:m.start()]
+    if not _ALIAS_EN_LEAD_RE.fullmatch(clause):
+        return None
+    word = m.group(2)
+    low = word.lower()
+    if (len(word) < 2 or low in _ALIAS_EN_STOP or low.endswith(("'s", "’s"))
+            or _ALIAS_EN_ADJ_RE.match(low)):
+        return None
+    if go_by:
+        # Имя — с заглавной: «I go by feel / by the rules» — не имя
+        if not word[0].isupper() or not _ALIAS_GO_BY_TAIL_RE.match(text, m.end()):
+            return None
+    elif _ALIAS_EN_IDIOM_TAIL_RE.match(text, m.end()):
+        return None
+    alias = " ".join(m.group(1).split())
+    return alias if len(alias) <= 30 else None
+
+
+def _alias_ru_nom_low(low: str) -> str:
+    # Творительный → именительный по окончанию (слово в нижнем регистре)
+    special = _ALIAS_RU_INSTR_SPECIAL.get(low)
+    if special:
+        return special
+    end, stem = low[-2:], low[:-2]
+    if end in ("ой", "ей", "ым", "им"):
+        if stem in _ALIAS_RU_ADJ:
+            return stem + {"ым": "ый", "им": "ий"}.get(end, "ая")
+        if stem in _ALIAS_RU_ADJ_STRESSED and end in ("ым", "им"):
+            return stem + "ой"
+    # Без гласной в основе — уже именительный: «Ной», «Том», «Джей», «Грей»
+    if len(stem) < 2 or not any(c in _RU_VOWELS for c in stem):
+        return low
+    last = stem[-1]
+    if end in ("ей", "ёй"):
+        # Сашей → Саша, Серёжей → Серёжа; Олей → Оля, Марией → Мария, Ильёй → Илья
+        return stem + ("а" if last in "жшчщц" else "я")
+    if end == "ой":
+        return stem + "а"                          # Мариной → Марина
+    if end == "ью":
+        return stem + "ь"                          # Любовью → Любовь
+    if end == "ым":
+        return stem + "ый"                         # милым → милый
+    if end not in ("ом", "ем", "ём"):
+        return low
+    # Беглая гласная: котёнком → котёнок, Сашком → Сашок, Саньком → Санёк,
+    # отцом → отец, красавцем → красавец (но «Принцем» → «Принц»)
+    if stem.endswith(("ёнк", "онк")):
+        return stem[:-1] + "ок"
+    if stem.endswith(("ышк", "ишк", "ечк")):
+        return stem + "о"                          # солнышком → солнышко
+    if stem.endswith("ьк"):
+        return stem[:-2] + "ёк"
+    if last == "к" and stem[-2] in "жшч":
+        return stem[:-1] + "ок"
+    if last == "ц" and len(stem) >= 3 and stem[-2] in "тйвдм":
+        return stem[:-2] + ("е" if stem[-2] == "й" else stem[-2] + "е") + "ц"
+    if end == "ом":
+        return stem                                # Александром → Александр
+    if last == "ь":
+        # счастьем → счастье, соловьём → соловей
+        return stem + "е" if end == "ем" else stem[:-1] + "ей"
+    if last in _RU_VOWELS:
+        return stem + "й"                          # Алексеем → Алексей, Юрием → Юрий
+    if stem.endswith("ищ"):
+        return stem + "е"                          # дружищем → дружище
+    if last in "жшчщц":
+        return stem                                # Тёмычем → Тёмыч, Ильичём → Ильич
+    return stem + "ь"                              # Игорем → Игорь, Королём → Король
+
+
+def _alias_ru_nominative(word: str) -> str:
+    """«Сашей» → «Саша», «Александром» → «Александр» без морфологической
+    библиотеки (имя подставляется во все промпты — творительный там режет
+    слух); именительный («Саша», «Алексей») и латиница — как есть, регистр —
+    как написал человек."""
+    if "-" in word:
+        # «Анной-Марией» → «Анна-Мария»: части склоняются порознь
+        return "-".join(_alias_ru_nominative(p) if len(p) >= 2 else p
+                        for p in word.split("-"))
+    low = word.lower()
+    if low in _ALIAS_RU_NOM_KEEP or not "а" <= low[-1] <= "я":
+        return word
+    new = _alias_ru_nom_low(low)
+    if new == low:
+        return word
+    p = 0
+    while p < min(len(low), len(new)) and low[p] == new[p]:
+        p += 1
+    return word[:p] + (new[p:].upper() if word.isupper() else new[p:])
+
+
+def _alias_ru_name(word: str) -> Optional[str]:
+    # Имя из «зови меня X»; None — после «меня» не имя («так», «завтра», «гулять»)
+    low = word.lower()
+    if (low in _ALIAS_RU_STOP or low.split("-")[0] in _ALIAS_RU_STOP
+            or _ALIAS_RU_INF_RE.search(low)):
+        return None
+    return _alias_ru_nominative(word)
+
+
+def _extract_alias(text: str, typed: Optional[str] = None) -> Optional[str]:
+    """Имя из «зови меня X» / «call me X»; None — просьбы нет. RU — по всему
+    вводу, как раньше; EN — только по тому, что человек написал сам (typed:
+    подпись к фото/файлу), как в _looks_like_correction: «you can call me
+    Dave» в английском письме или на скриншоте имя пользователя не меняет."""
+    for m in _ALIAS_RE.finditer(text or ""):
+        # Окно перед «зови»: «не» стоит вплотную, весь текст не перебираем
+        if _ALIAS_NEG_RU_RE.search(text, max(0, m.start() - 100), m.start()):
+            continue
+        alias = _alias_ru_name(m.group(1))
+        if alias:
+            return alias
+    en = (text if typed is None else typed) or ""
+    for regex, go_by in ((_ALIAS_EN_RE, False), (_ALIAS_GO_BY_EN_RE, True)):
+        for m in regex.finditer(en):
+            alias = _alias_en_name(en, m, go_by)
+            if alias:
+                return alias
+    return None
 
 
 def _looks_like_frequency_answer(text: str) -> bool:
@@ -831,6 +1236,35 @@ class BotInstance:
                 return text.strip()[len(trigger):].strip().lstrip(",.!?:; ")
         return text
 
+    def _strip_address(self, text: Optional[str]) -> Optional[str]:
+        """Без обращения к персоне в начале: «connor call me max», «hey
+        Connor, don't …», «эй Коннор запомни …». В Telegram имя срезано до
+        бота, в веб-чате и скине — нет, а английским эвристикам (правило,
+        «call me X») и командам сценария нужна просьба в начале фразы. Имя —
+        целым словом: «Connors …» и «Don't …» у персоны Don не режутся."""
+        if not text:
+            return text
+        names = sorted({str(n).strip() for n in self._address_names()
+                        if n and len(str(n).strip()) >= 2}, key=len, reverse=True)
+        if not names:
+            return text
+        m = re.match(_ADDRESS_LEAD + "(" + "|".join(map(re.escape, names))
+                     + r")(?![\w'’-])(\s*[,:;!?.…—–-]+)?\s*", text, re.IGNORECASE)
+        if not m or (not m.group(2) and m.group(1).lower() in _ADDRESS_MODAL_NAMES):
+            return text
+        rest = text[m.end():]
+        return rest if rest.strip() else text
+
+    def _scenario_command_text(self, text: Optional[str]) -> str:
+        """Команда сценария без обращения и «пожалуйста» (в начале, после
+        глагола, в конце): «Коннор, запомни, пожалуйста, сценарий утро» →
+        «запомни сценарий утро». Один разбор и в режиме управления, и для
+        подсказки вне его — иначе подсказка отправляла бы в режим, где та
+        же фраза сценарием не считалась (и становилась правилом)."""
+        s = (self._strip_address((text or "").strip()) or "").strip()
+        s = _POLITE_AFTER_VERB_RE.sub(r"\1 ", _POLITE_LEAD_RE.sub("", s))
+        return _POLITE_TAIL_RE.sub("", s)
+
     def _is_scenario_save_command(self, text: Optional[str]) -> bool:
         """«Запомни/сохрани сценарий X», «save the scenario X» — тем же
         разбором, что в режиме управления. Не мешают обращение по имени в
@@ -839,12 +1273,8 @@ class BotInstance:
         if not text:
             return False
         flat = re.sub(r"\s+", " ", text).strip()
-        try:
-            flat = self.strip_trigger(flat)
-        except Exception:
-            pass  # бот без trigger_words (тестовые заготовки)
-        flat = _POLITE_AFTER_VERB_RE.sub(r"\1 ", _POLITE_LEAD_RE.sub("", flat))
-        return ScenarioManager.parse_save_request(flat) is not None
+        return ScenarioManager.parse_save_request(
+            self._scenario_command_text(flat)) is not None
 
     def is_owner(self, user_id: str) -> bool:
         """Владелец ли пользователь: id из YAML персоны или OWNER_USER_ID.
@@ -2976,16 +3406,20 @@ class BotInstance:
                     else:
                         # «начни записывать сценарий (X)» — явные скобки
                         # записи; «сохрани сценарий» внутри неё берёт трассу
-                        # с момента старта (обрабатывает record_reply)
+                        # с момента старта (обрабатывает record_reply).
+                        # Без обращения и «пожалуйста», как в подсказке вне
+                        # режима: «Коннор, запомни сценарий утро» иначе
+                        # не разбиралась и уходила в правило
+                        sc_cmd = self._scenario_command_text(sc_text)
                         sc_start = self.scenario_manager.parse_start_record(
-                            sc_text)
+                            sc_cmd)
                         if sc_start is not None:
                             sc_reply = self.scenario_manager.record_start(
                                 chat_id, sc_start)
-                        elif self.scenario_manager.parse_stop_record(sc_text):
+                        elif self.scenario_manager.parse_stop_record(sc_cmd):
                             sc_reply = self.scenario_manager.record_stop(chat_id)
                         else:
-                            sc_save = self.scenario_manager.parse_save_request(sc_text)
+                            sc_save = self.scenario_manager.parse_save_request(sc_cmd)
                             if sc_save is not None:
                                 sc_reply = self.scenario_manager.record_reply(
                                     chat_id, sc_save, self.router)
@@ -3276,6 +3710,11 @@ class BotInstance:
                 self.proactive.record_user_response(chat_id)
             return offer_reply
 
+        # Английским эвристикам (правило, «call me X») — написанное без
+        # обращения в начале: в веб-чате имя не срезано («connor call me
+        # max»). Русские идут по всему вводу, как раньше
+        typed_h = self._strip_address(raw_user_text)
+
         # «Запомни сценарий …» вне режима управления: сценарии живут только
         # в режиме, правилом навсегда (исправление → Rule ниже) это стать не
         # должно. Только для фраз, которые и правда ушли бы в извлечение
@@ -3285,7 +3724,7 @@ class BotInstance:
         # без правила. «В режиме» — для того, кого режим обслуживает:
         # недопущенный в чате с включённым режимом его блок не проходит
         scenario_outside_mode = bool(
-            _CORRECTION_HINT_RE.search(user_input)
+            _looks_like_correction(user_input, typed_h)
             and self._is_scenario_save_command(raw_user_text)
             and not (cc_mode_key and self.control_mode_on(cc_mode_key)
                      and self._cc_allowed(user_id, chat_id)))
@@ -3449,7 +3888,7 @@ class BotInstance:
             # Исправления → правила: пользователь поправляет бота — формулируем
             # правило локальной LLM и сохраняем; оно запинится в промпт ниже.
             # «Запомни сценарий …» вне режима управления — не правило (см. выше)
-            if _CORRECTION_HINT_RE.search(user_input) and not scenario_outside_mode:
+            if _looks_like_correction(user_input, typed_h) and not scenario_outside_mode:
                 rule = self._extract_rule_from_correction(user_input)
                 if rule:
                     self.memory.ltm.save_facts(
@@ -3457,10 +3896,11 @@ class BotInstance:
                     )
                     logger.info(f"[Rules] Новое правило для {user_id}: {rule}")
 
-            # «Зови меня X» — сохраняем как факт Name (UPDATE-категория заменяет старый)
-            alias_match = _ALIAS_RE.search(user_input)
-            if alias_match:
-                alias = alias_match.group(1).strip()
+            # «Зови меня X» / «call me X» — сохраняем как факт Name (UPDATE-категория
+            # заменяет старый); «не зови меня X» — правило выше, имя не трогаем.
+            # Английское — только из написанного (подписи), не из файла/OCR
+            alias = _extract_alias(user_input, typed_h)
+            if alias:
                 self.memory.ltm.save_facts(
                     f"Name: {alias}", user_id, origin_chat=chat_id, user_name=user_name
                 )
