@@ -5,7 +5,8 @@
     основной веб-чат (основной не веб-чат — следующий веб-чат цепочки);
   - bg_site: primary — основной первым; имя сайта — он первым;
   - явный выбор задачи (ollama / webchat + сайт) перекрывает дефолт; OCR
-    всегда Ollama; мусор в YAML отбрасывается;
+    всегда Ollama; мусор в YAML отбрасывается; старый ключ снятой задачи
+    (relationship) молча игнорируется — и при привязке, и при сохранении;
   - без привязки персоны — LOCAL_LLM_BACKEND (ollama);
   - get_response перебирает сайты по порядку, затем откат на Ollama;
     вид роутера персоны передаёт её context;
@@ -131,7 +132,7 @@ def test_resolution():
         "self_memory": {"backend": "webchat"},
         "ocr": {"backend": "webchat"},
         "world_engine": {"backend": "gpt"},
-        "relationship": "webchat",
+        "dossier": "webchat",
         "help_detect": {"backend": "webchat", "site": "nosuchsite"},
     }})
     check("задача на пути ответа → webchat kimi, запасной — основной",
@@ -143,9 +144,25 @@ def test_resolution():
     check("неизвестный движок отброшен → дефолт (веб-чат)",
           r._resolve_task("world_engine", "p") == ("webchat", ["qwen", "deepseek"]))
     check("запись не dict отброшена → дефолт",
-          r._resolve_task("relationship", "p") == ("webchat", ["qwen", "deepseek"]))
+          r._resolve_task("dossier", "p") == ("webchat", ["qwen", "deepseek"]))
     check("неизвестный сайт отброшен → веб-чат фоновых задач",
           r._resolve_task("help_detect", "p") == ("webchat", ["qwen", "deepseek"]))
+
+    # Снятая задача relationship (моменты отношений пишет dialogue_harvest):
+    # старый ключ в YAML персоны молча игнорируется
+    check("снятой задачи relationship нет в LOCAL_TASKS/BACKGROUND_TASKS",
+          "relationship" not in lrm.LOCAL_TASKS
+          and "relationship" not in lrm.BACKGROUND_TASKS)
+    r.bind_persona("p", deepseek_main, {"tasks": {
+        "relationship": {"backend": "ollama"},
+        "state_engine": {"backend": "ollama"},
+    }})
+    stale_ids = {t["id"] for t in r.task_snapshot("p")["tasks"]}
+    check("старый ключ relationship в YAML: привязка не падает, соседний выбор "
+          "действует, в снимке для UI его нет",
+          r._resolve_task("state_engine", "p") == ("ollama", [])
+          and "relationship" not in stale_ids
+          and stale_ids == set(lrm.LOCAL_TASKS))
 
     section("Без привязки персоны")
     with mock.patch.dict(os.environ, {"LOCAL_LLM_BACKEND": ""}):
@@ -338,6 +355,24 @@ def test_settings_api():
         snap = sa.get_persona_local_tasks("p")
         check("get_persona_local_tasks — снимок персоны",
               snap["primary_site"] == "deepseek" and snap["fallback_site"] == "qwen")
+
+        # YAML со снятой задачей relationship: сохранение другой задачи
+        # проходит, старый ключ не трогается и в снимок не попадает
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data["llm"]["local_tasks"] = {"tasks": {"relationship": {"backend": "webchat"}}}
+        path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+        res = sa.update_persona_local_tasks("p", task="state_engine", backend="ollama")
+        saved = yaml.safe_load(path.read_text(encoding="utf-8"))["llm"]["local_tasks"]["tasks"]
+        check("старый ключ relationship: сохранение соседней задачи проходит",
+              res["ok"] and saved.get("state_engine") == {"backend": "ollama"}
+              and saved.get("relationship") == {"backend": "webchat"})
+        check("старый ключ relationship: в снимке для веба его нет",
+              all(t["id"] != "relationship" for t in res["tasks"])
+              and all(t["id"] != "relationship"
+                      for t in sa.get_persona_local_tasks("p")["tasks"]))
+        check("выбрать снятую задачу relationship нельзя — отказ",
+              sa.update_persona_local_tasks("p", task="relationship",
+                                            backend="ollama")["ok"] is False)
 
 
 def main():

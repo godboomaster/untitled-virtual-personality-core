@@ -41,7 +41,7 @@ LOCAL_TASKS: dict[str, bool] = {
     "query_rewrite": False,        # рерайтер/улучшатель поисковых запросов
     "self_memory": False,          # заметки в личный дневник
     "state_engine": False,         # тики состояния + оценка инициативы
-    "world_engine": False,         # мир: NPC из диалога, события, стимулы
+    "world_engine": False,         # мир: офлайн-события, фильтр стимулов (NPC из диалога — dialogue_harvest)
     "offline_summary": False,      # сжатие офлайн-дневника
     "proactive_prefilter": False,  # префильтр проактивных инициатив
     "intent_router": False,        # арбитр намерений (TODO/инвентарь)
@@ -53,7 +53,6 @@ LOCAL_TASKS: dict[str, bool] = {
     "learning_lesson": False,      # плановый урок в фоне: тема и словарь
     "help_detect": False,          # детект просьб о помощи
     "dossier": False,              # анализ досье (fallback без основного роутера)
-    "relationship": False,         # разбор диалога → общие моменты/темы отношений
     "dialogue_harvest": False,     # общий урожай диалога: NPC + mood + моменты/позиции
     "room_placement": False,       # комната в вебе: где стоит новый предмет инвентаря
     "ocr": True,                   # текст с картинок — только Ollama (vision)
@@ -67,7 +66,7 @@ LOCAL_TASKS: dict[str, bool] = {
 # по выбору: лишние секунды раз в полдня дешевле, чем держать Gemma.
 BACKGROUND_TASKS: set[str] = {
     "self_memory", "state_engine", "world_engine", "offline_summary",
-    "proactive_prefilter", "dossier", "relationship", "dialogue_harvest",
+    "proactive_prefilter", "dossier", "dialogue_harvest",
     "room_placement",
     "learning_lesson",
 }
@@ -102,7 +101,10 @@ ROTATE_MAX = 20  # вопросов подряд одному сайту — н�
 
 def normalize_local_tasks_cfg(cfg) -> tuple[dict, str]:
     """llm.local_tasks из YAML → ({задача: {"backend", "site"?}}, bg_site).
-    Мусорные записи отбрасываются: неизвестный движок, сайт вне ADAPTERS."""
+    Мусорные записи отбрасываются: неизвестный движок, сайт вне ADAPTERS.
+    Задача не из LOCAL_TASKS (снятая, как relationship, или аддон ещё не
+    зарегистрирован) остаётся в записи, но не читается: резолв и снимок
+    идут по LOCAL_TASKS."""
     from app.features.web_llm import ADAPTERS
     cfg = cfg if isinstance(cfg, dict) else {}
     bg = str(cfg.get("bg_site") or DEFAULT_BG_SITE).strip().lower()
