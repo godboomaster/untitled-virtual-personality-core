@@ -968,6 +968,29 @@ def site_choices(name: str) -> list[tuple[str, str]]:
     return list(cands) if time.time() - ts <= SITE_CHOICES_TTL_SEC else []
 
 
+# Служебные слова «какую страницу» — в заголовке и адресе нужной страницы их
+# обычно нет («личную страницу кутузовой нгту» → НГТУ - КУТУЗОВА И. А. -
+# Общая информация): для сверки выдачи с запросом они не обязательны
+_SITE_FILLER_WORDS = frozenset({
+    "личная", "личную", "личной", "страница", "страницу", "страницы",
+    "странице", "сайт", "сайта", "сайте", "официальный", "официальная",
+    "официальную", "официального", "официальном", "главная", "главную",
+    "домашняя", "домашнюю", "профиль", "профиля",
+    "page", "site", "website", "official", "homepage", "home", "personal",
+    "profile",
+})
+
+
+def _significant_words(text: str) -> list[str]:
+    """Слова запроса для сверки выдачи (от 3 букв) без служебных «личная
+    страница», «сайт», «official page»; остались одни служебные («открой
+    сайт») — берём все."""
+    words = [w for w in re.findall(r"[a-z0-9а-яё]+", str(text or "").lower())
+             if len(w) >= 3]
+    kept = [w for w in words if w not in _SITE_FILLER_WORDS]
+    return kept or words
+
+
 def find_site_url(name: str, max_results: int = 10,
                   engine: str = "google") -> str | None:
     """Лёгкий резолв «название сайта» → корневой URL сайта по выдаче поисковика.
@@ -1018,8 +1041,8 @@ def find_site_url(name: str, max_results: int = 10,
     # Поэтому дополнительно матчим по словам: каждое значимое слово запроса должно
     # найтись в домене/заголовке — само или через перевод (пары слово↔перевод
     # строятся при совпадении числа слов, иначе — только слова запроса).
-    q_words = [w for w in re.findall(r"[a-z0-9а-яё]+", name.lower()) if len(w) >= 3]
-    t_words = [w for w in re.findall(r"[a-z0-9а-яё]+", (translated or "").lower()) if len(w) >= 3]
+    q_words = _significant_words(name)
+    t_words = _significant_words(translated or "")
     pairs = (list(zip(q_words, t_words)) if len(q_words) == len(t_words)
              else [(w, w) for w in q_words])
 

@@ -4683,6 +4683,8 @@ _NON_CLICK_ONOMATOPOEIA_RE = re.compile(r"^([^\W\d_]{2,5})(?:[-\s]\1){1,3}$",
 # ход бота) на время вызова, снимается токеном — в потоке пула не залипает
 _CC_CHAT: contextvars.ContextVar = contextvars.ContextVar("vpc_cc_chat",
                                                           default=None)
+# Адрес в вопросе «Открыть …?» длиннее — сокращается в середине с «…»
+URL_SHOWN_MAX = 90
 # Сколько чатов держит last_tab.json (свежие по ts)
 LAST_TAB_MAX_CHATS = 50
 
@@ -5367,6 +5369,13 @@ class ComputerControlManager:
             logger.info(f"[CompControl] Ожидаю подтверждения: "
                         f"{self._describe_log(accepted)}")
             q = self.confirm_question(accepted, lang=lang)
+            if any(a.get("kind") == "url" and urlparse(str(a.get("value") or ""))
+                   .path.strip("/") for a in passed):
+                # Глубокую ссылку из маркера составила модель — ни поиск, ни
+                # история, ни алиас её не видели (корень сайта она называет
+                # верно, а путь к странице выдумывает): человек должен знать
+                # это до «да»
+                q += "\n" + cc_texts.t("marker_url_unverified", lang)
             clean = f"{clean}\n\n{q}" if clean else q
         return clean, notices
 
@@ -6178,13 +6187,31 @@ class ComputerControlManager:
 
     @staticmethod
     def _host(action: dict) -> str:
-        p = urlparse(action["value"])
-        host = (p.hostname or action["value"]).lower().removeprefix("www.")
-        # Значимый сегмент пути показываем: «Открыть example.com/maps?»,
-        # а не «Открыть example.com?» (последний: путь может начинаться
-        # со служебных /intl/ru/…)
-        seg = next((s for s in reversed(p.path.split("/")) if s), "")
-        return f"{host}/{seg}" if seg else host
+        """Адрес действия человеку (вопрос «Открыть …?», «открыл …»): хост
+        без www и путь КАК ЕСТЬ — без схемы, query и fragment (параметры
+        показывает _url_params_note, секреты пути маскирует scrub_url).
+        Длинный путь сокращается в середине с «…»: показанное не должно
+        выглядеть рабочим адресом, которого нет. Раньше показывался хост +
+        последний сегмент — 05.10 «ciu.nstu.ru/kutuzova_irina_aleksandrovna»
+        вместо …/kaf/pii/a/ic/view/kutuzova_…: человек подтвердил один
+        адрес, открылся другой, а скопированный из вопроса — не существовал."""
+        from urllib.parse import unquote
+        from app.features.cc_privacy import scrub_url
+        raw = str(action["value"])
+        try:
+            p = urlparse(scrub_url(raw) or raw)
+        except Exception:
+            p = urlparse(raw)
+        host = (p.hostname or raw).lower().removeprefix("www.")
+        segs = [unquote(s) for s in (p.path or "").split("/") if s]
+        if not segs:
+            return host
+        shown = host + "/" + "/".join(segs)
+        if len(shown) <= URL_SHOWN_MAX:
+            return shown
+        last = segs[-1] if len(segs[-1]) <= 60 else segs[-1][:59] + "…"
+        mid = f"/{segs[0]}/…/" if len(segs) > 2 else "/…/"
+        return host + (mid if len(segs) > 1 else "/") + last
 
     @staticmethod
     def _url_params_note(action: dict, lang: Optional[str] = None) -> str:
@@ -6724,8 +6751,18 @@ class ComputerControlManager:
                         if act.get("field") else str(act["text"]))
                 return self.resolve_type(body, site, router, chat_id=chat_id)
             if kind == "open":
-                return self.resolve_many([str(act["target"])],
-                                         web_search=True), None
+                target = str(act["target"])
+                found = self.resolve_many([target], web_search=True)
+                if found is None:
+                    # Команда распознана, а сайта нет (поиск пуст/закрыт,
+                    # выдача не сошлась с названием): честный отказ. Раньше
+                    # (None, None) отдавал фразу в обычный разговор, и модель
+                    # сама вписывала маркер с выдуманным адресом (05.10:
+                    # «личная страница Кутузовой НГТУ» → …/kaf/pii/a/ic/view/…)
+                    from app.features import cc_texts
+                    return None, cc_texts.t("open_not_found", self.turn_lang(),
+                                            target=cc_texts.clip(target, 80))
+                return found, None
             if kind == "search":
                 return self.resolve_search(str(act["query"]),
                                            str(act["site"])), None
