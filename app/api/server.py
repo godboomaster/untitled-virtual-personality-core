@@ -719,6 +719,7 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
         # Скриншоты страницы из режима управления («что на странице?»)
         images=_pending_images(bot, req.chat_id),
         answer_options=bot.cc_answer_options(req.chat_id or req.user_id, req.user_id),
+        task=bot.cc_task_card(req.chat_id or req.user_id, req.user_id),
     )
 
 
@@ -1162,6 +1163,8 @@ async def chat_stream(req: ChatRequest):
             # «да»/«нет») — фронт шлёт выбранное обычной репликой
             "answer_options": bot.cc_answer_options(req.chat_id or req.user_id,
                                                     req.user_id),
+            # Карточка задачи агента — итог хода (дальше её обновляет inbox)
+            "task": bot.cc_task_card(req.chat_id or req.user_id, req.user_id),
         }
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -2232,7 +2235,7 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
         pools = {}
     if bot is None:
         return {"messages": [], "generating": generating, "last_ts": last_ts,
-                "control_mode": False, "answer_options": None,
+                "control_mode": False, "answer_options": None, "task": None,
                 "webchat_quarantine": quarantine, "browser_pools": pools}
     # Поллинг инбокса = пользователь открыл веб: сигнал присутствия для rhythm
     # (дёшев, с внутренним троттлингом — триггер утреннего приветствия)
@@ -2248,9 +2251,12 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     # живёт в боте, а не в ленте; пока идёт генерация — без кнопок
     answer_options = (None if generating or not control_mode
                       else bot.cc_answer_options(chat_id, chat_id))
+    # Карточка задачи агента: опрос во время хода (быстрый поллинг фронта)
+    # обновляет её на месте — шаги, статус, план
+    task = bot.cc_task_card(chat_id, chat_id)
     return {"messages": inbox_pop(persona, chat_id), "generating": generating,
             "last_ts": last_ts, "control_mode": control_mode,
-            "answer_options": answer_options,
+            "answer_options": answer_options, "task": task,
             "webchat_quarantine": quarantine, "browser_pools": pools}
 
 

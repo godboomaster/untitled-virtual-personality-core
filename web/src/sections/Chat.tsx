@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, useMockData } from '../i18n';
 import type { ChatMessage, DiaryEntry, InitiativeEvent, InventoryItem, LearningSession, LtmFact, PersonaFile, Reminder, TodoItem } from '../mockData';
 import { api, streamChat, StreamInterruptedError } from '../api';
@@ -6,7 +6,7 @@ import type { AnswerOption, ApiHistoryMessage, ClearPart, InitiativeData, Person
 import { refetchPersonaLlm, useApiOnline, useApiPersonaLlm, useApiProviders, usePersonaLivingState } from '../apiData';
 import { alertDialog, confirmDialog } from '../dialogStore';
 import {
-  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setAnswerOptions, setControlMode, setFastPoll, setGenerating, touchActivity, useInbox,
+  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setAnswerOptions, setControlMode, setFastPoll, setGenerating, setTaskCard, touchActivity, useInbox,
 } from '../inboxStore';
 import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
@@ -26,6 +26,7 @@ import { usePersonaAvatars } from '../avatarStore';
 import PersonaDossier from '../components/PersonaDossier';
 import PersonaYamlModal from '../components/PersonaYamlModal';
 import MessageText from '../components/MessageText';
+import TaskCard from '../components/TaskCard';
 import VoiceChat from '../components/VoiceChat';
 import Icon from '../components/icons';
 import type { IconName } from '../components/icons';
@@ -413,7 +414,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
   // Фоновые сообщения (напоминания, инициативы) прилетают в глобальный
   // inbox-стор (поллер в App); здесь только гасим непрочитанные открытой персоны
-  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode, answerOptions } = useInbox();
+  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode, answerOptions, taskCards } = useInbox();
   useEffect(() => {
     markRead(persona.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -577,6 +578,14 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // приходили пачкой раз в 15 с
   const ccOn = controlMode[persona.id] === true;
   const curAnswer = answerOptions[persona.id] ?? null;
+  // Карточка задачи агента: встаёт в ленту по времени старта задачи; строки
+  // хода, которые в ней есть, из пузырей прячутся (они уже в карточке)
+  const taskCard = taskCards[persona.id] ?? null;
+  const taskLines = taskCard ? new Set(taskCard.log.map((x) => x.text)) : null;
+  const withoutTaskLines = (m: ChatMessage): string => {
+    if (!taskCard || !taskLines || m.role !== 'bot' || (m.ts ?? 0) < taskCard.started - 2) return m.text;
+    return m.text.split('\n').filter((ln) => !taskLines.has(ln.trim())).join('\n').trim();
+  };
   const answerSend = (o: AnswerOption) =>
     o.send ?? (o.role ? (lang === 'en' ? ROLE_SEND_EN : ROLE_SEND_RU)[o.role] : '');
   const answerLabel = (o: AnswerOption) =>
@@ -782,6 +791,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     stickBottom.current = true;
   }, [persona.id]);
   const visibleMessages = messages.length > visibleCount ? messages.slice(-visibleCount) : messages;
+  // Место карточки задачи: перед первым видимым сообщением после её старта
+  // (-1 — после всех: задача началась позже последнего сообщения)
+  const taskCardAt = taskCard ? visibleMessages.findIndex((m) => (m.ts ?? 0) > taskCard.started) : -1;
   const hiddenCount = messages.length - visibleMessages.length;
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -1165,6 +1177,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         if (typeof res.control_mode === 'boolean') setControlMode(pid, res.control_mode);
         // Вопрос режима управления с вариантами — кнопки под ответом
         setAnswerOptions(pid, res.answer_options ?? null);
+        // Карточка задачи агента — итог хода (дальше её обновляет inbox)
+        if ('task' in res) setTaskCard(pid, res.task ?? null);
         // Ответ догенерировался, а вкладка уже не в фокусе — уведомляем (как в мессенджерах)
         notifyBotMessage(pid, personaName, res.reply);
       })
@@ -2057,22 +2071,28 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           {visibleMessages.map((m, i) => {
             // Цитируемое сообщение (если это ответ)
             const quoted = m.replyTo != null ? messages.find((q) => q.id === m.replyTo) : undefined;
+            // Карточка задачи — перед первым сообщением после её старта
+            const cardHere = taskCard && i === taskCardAt ? <TaskCard card={taskCard} /> : null;
+            // Пузырь только из строк хода (они в карточке) — не показываем
+            const ownText = withoutTaskLines(m);
+            if (!ownText && m.text && !m.image && !m.images?.length) return <Fragment key={m.id}>{cardHere}</Fragment>;
             // Кнопки ответа — под последним сообщением бота, пока режим
             // управления ждёт ответа и бот не занят
             const answer = ccOn && !waiting && m.role === 'bot' && i === visibleMessages.length - 1
               ? curAnswer
               : null;
             const shownText = answer?.kind === 'options'
-              ? stripOptionLines(m.text, answer.options.filter((o) => o.label).length)
-              : m.text;
+              ? stripOptionLines(ownText, answer.options.filter((o) => o.label).length)
+              : ownText;
             // «2» в ответ на список — с подписью выбранного варианта
             const prev = i > 0 ? visibleMessages[i - 1] : undefined;
             const echo = m.role === 'user' && /^\d{1,2}$/.test(m.text.trim()) && prev?.role === 'bot'
               ? optionLines(prev.text)[Number(m.text.trim()) - 1]
               : undefined;
             return (
+              <Fragment key={m.id}>
+              {cardHere}
               <div
-                key={m.id}
                 className={`message message--${m.role}${answer ? ' message--answers' : ''}`}
                 style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
               >
@@ -2141,8 +2161,10 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                   </div>
                 )}
               </div>
+              </Fragment>
             );
           })}
+          {taskCard && taskCardAt === -1 && <TaskCard card={taskCard} />}
         </div>
 
         <div className="chat-status-bar">

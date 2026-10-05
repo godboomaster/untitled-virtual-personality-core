@@ -115,6 +115,22 @@ export interface ApiChatResponse {
   images?: string[]; // скриншоты страницы (dataURL) из режима управления
   reply_ts?: number | null; // метка ответа в STM (серверные секунды) — место пузыря в ленте
   answer_options?: AnswerOptions | null; // кнопки ответа на вопрос режима управления
+  task?: TaskCard | null; // карточка задачи агента (итог хода; дальше — inbox)
+}
+
+// Карточка задачи агента (TaskAgent.task_card): статус, план заказа с
+// отметками и журнал хода — те же строки, что ушли в чат (фронт прячет
+// их из пузырей, пока карточка видна)
+export type TaskStatus = 'working' | 'ask' | 'confirm' | 'paused' | 'done' | 'payment' | 'cancelled' | 'stopped';
+export interface TaskCard {
+  id: string;
+  goal: string;
+  status: TaskStatus;
+  steps: number;
+  started: number; // unix-секунды сервера — место карточки в ленте
+  updated: number;
+  plan: { text: string; state: 'done' | 'current' | 'todo' }[];
+  log: { text: string; ok: boolean }[];
 }
 
 // Кнопки ответа на вопрос режима управления (BotInstance.cc_answer_options):
@@ -513,7 +529,7 @@ export const api = {
     ),
 
   getInbox: (persona: string, focused?: boolean) =>
-    request<{ messages: InboxMessage[]; generating?: boolean; last_ts?: number; control_mode?: boolean; answer_options?: AnswerOptions | null }>(
+    request<{ messages: InboxMessage[]; generating?: boolean; last_ts?: number; control_mode?: boolean; answer_options?: AnswerOptions | null; task?: TaskCard | null }>(
       `/api/personas/${encodeURIComponent(persona)}/inbox?chat_id=${WEB_CHAT_ID}${focused ? '&focused=1' : ''}`,
     ),
 

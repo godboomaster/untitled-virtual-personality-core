@@ -43,6 +43,9 @@ class ChatResponse(BaseModel):
     # Кнопки ответа на вопрос режима управления, которого ждёт чат
     # (BotInstance.cc_answer_options): {kind, options: [{label, send} | {role}]}
     answer_options: Optional[dict] = None
+    # Карточка задачи агента (BotInstance.cc_task_card): цель, статус,
+    # план заказа с отметками и журнал хода
+    task: Optional[dict] = None
 
 
 class PresenceRequest(BaseModel):

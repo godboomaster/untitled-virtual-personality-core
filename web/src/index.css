@@ -11565,6 +11565,11 @@ img.art-thumb {
   width: 6px;
   height: 6px;
 }
+.chat-cc-btn,
+.chat-cc-badge {
+  white-space: nowrap;
+  flex: none;
+}
 .chat-cc-btn:disabled {
   opacity: 0.45;
   cursor: default;
@@ -11639,4 +11644,149 @@ img.art-thumb {
   font-size: 11px;
   opacity: 0.6;
   margin-right: 8px;
+}
+
+/* Карточка задачи агента в ленте чата: план заказа с отметками и журнал
+   хода, обновляется на месте поллингом inbox (components/TaskCard.tsx) */
+.task-card {
+  align-self: flex-start;
+  width: min(560px, 80%);
+  margin: 4px 0;
+  padding: 14px 16px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  animation: rise-in 0.25s ease both;
+}
+.task-card--done,
+.task-card--cancelled,
+.task-card--stopped {
+  border-left-color: var(--border);
+}
+.task-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.task-card-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.task-card-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.task-card-chip .status-led {
+  width: 6px;
+  height: 6px;
+}
+.task-card-chip--working,
+.task-card-chip--ask,
+.task-card-chip--confirm,
+.task-card-chip--payment {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+.task-card-sec {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 10px 0 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.task-card-steps {
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: none;
+}
+.task-card-more {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  letter-spacing: 0.08em;
+  text-transform: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.task-card-more:hover {
+  color: var(--text);
+}
+.task-card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.task-row,
+.task-card-line {
+  display: flex;
+  gap: 12px;
+  padding: 2px 0;
+}
+.task-tag {
+  flex: none;
+  white-space: pre;
+  font-weight: 700;
+}
+.task-text {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.task-row--done .task-tag,
+.task-row--ok .task-tag {
+  color: var(--text);
+}
+.task-row--ok .task-text {
+  color: var(--text-dim);
+}
+.task-row--current .task-tag,
+.task-row--current .task-text {
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+.task-row--todo .task-tag,
+.task-row--todo .task-text {
+  color: var(--text-muted);
+}
+.task-row--fail .task-tag {
+  color: var(--danger);
+}
+.task-card-line {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--text-dim);
+}
+.task-card-line .task-text {
+  color: var(--text-dim);
+}
+.task-card-line--working .task-tag,
+.task-card-line--ask .task-tag,
+.task-card-line--confirm .task-tag,
+.task-card-line--payment .task-tag {
+  color: var(--accent-dark);
 }

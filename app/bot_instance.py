@@ -1993,6 +1993,19 @@ class BotInstance:
             logger.debug(f"[BotInstance] варианты ответа не собрались: {e}")
             return None
 
+    def cc_task_card(self, chat_id, user_id=None) -> Optional[dict]:
+        """Карточка задачи агента для веба (TaskAgent.task_card): цель,
+        статус, план заказа и журнал хода. Только чтение."""
+        key = str(chat_id or user_id or "")
+        ta = getattr(self, "task_agent", None)
+        if not key or ta is None:
+            return None
+        try:
+            return ta.task_card(key)
+        except Exception as e:
+            logger.debug(f"[BotInstance] карточка задачи не собралась: {e}")
+            return None
+
     def cc_turn_enter(self, text: str, user_id, chat_id):
         """Вызывается платформой ДО ожидания лока чата (Telegram/веб).
         → (reply, token): reply не None — ответить им сразу и сообщение
