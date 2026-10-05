@@ -2260,6 +2260,70 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
             "webchat_quarantine": quarantine, "browser_pools": pools}
 
 
+# ── Режим управления: трансляция вкладки агента ──────────────────────
+
+def _offer_latest(q: "asyncio.Queue", item: dict) -> None:
+    # В очереди зрителя — только свежее: медленный клиент получает последний
+    # кадр, а не догоняет очередь старых (вызывается в потоке event loop'а)
+    while q.full():
+        q.get_nowait()
+    q.put_nowait(item)
+
+
+@app.get("/api/personas/{persona}/control/view", dependencies=[Depends(require_auth)])
+async def control_view(persona: PersonaIdPath, chat_id: str = "web_user"):
+    """SSE: живые кадры вкладки, на которой работает агент чата (JPEG base64
+    + адрес/заголовок/признак приватной страницы), и смена состояния
+    браузера. Только в режиме управления; режим погас — {"status": "off"} и
+    конец потока. Отдельное CDP-подключение (app/features/browser_stream.py):
+    исполнитель агента не занимается кадрами."""
+    from app.api.runtime import registry
+    from app.features import browser_actions as _ba
+    from app.features import browser_stream as _bs
+    if get_persona_info(persona) is None:
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    bot = registry._bots.get(persona)
+    if bot is None or not bot.control_mode_on(chat_id):
+        raise HTTPException(status_code=409, detail="Режим управления выключен")
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+    stream = _bs.ControlViewStream(
+        _ba.pool_v_cdp_url(),
+        tracked=lambda: bot.cc_tracked_page(chat_id),
+        describe=bot.cc_view_describe,
+        emit=lambda item: loop.call_soon_threadsafe(_offer_latest, queue, item))
+
+    async def _gen():
+        stream.start()
+        last_sent = last_mode = time.monotonic()
+        try:
+            yield ": open\n\n"
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    item = None
+                now = time.monotonic()
+                if now - last_mode >= 2.0:
+                    last_mode = now
+                    if not bot.control_mode_on(chat_id):
+                        yield f"data: {json.dumps({'status': 'off'})}\n\n"
+                        return
+                if item is not None:
+                    last_sent = now
+                    yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+                elif now - last_sent >= 10:
+                    last_sent = now
+                    yield ": ping\n\n"
+        finally:
+            # Зритель ушёл (вкладка закрыта/скрыта, режим погас) — скринкаст
+            # останавливается вместе с потоком
+            stream.stop()
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache"})
+
+
 # ── Инициатива (proactive) ────────────────────────────────────────────
 
 def _read_ignore_streak(persona: str, chat_id: str) -> int:

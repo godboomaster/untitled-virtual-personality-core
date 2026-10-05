@@ -904,6 +904,52 @@ export interface PersonaDraft {
 // следующие токены относятся к новому сообщению; reply_ts (до токенов) —
 // серверная метка ответа в STM. Промис резолвится финальным событием done
 // с тем же reply (+ extra_messages).
+// Живые кадры вкладки агента (режим управления): SSE
+// /api/personas/{p}/control/view — JPEG base64 + адрес/заголовок/приватность
+// или смена состояния браузера. Режим погас — {status: 'off'} и конец потока
+export interface ControlViewEvent {
+  frame?: string;
+  url?: string;
+  title?: string;
+  private?: boolean;
+  status?: 'no_browser' | 'no_tab' | 'off';
+}
+
+export async function streamControlView(
+  persona: string,
+  onEvent: (e: ControlViewEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const res = await fetch(
+    `${BASE_URL}/api/personas/${encodeURIComponent(persona)}/control/view?chat_id=${WEB_CHAT_ID}`,
+    { headers: { ...authHeader() }, signal },
+  );
+  if (!res.ok || !res.body) {
+    noteAuthFailure(res);
+    throw new ApiError(res.status, `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buf += decoder.decode(value, { stream: true });
+    const frames = buf.split('\n\n');
+    buf = frames.pop() ?? '';
+    for (const fr of frames) {
+      for (const line of fr.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          onEvent(JSON.parse(line.slice(6)) as ControlViewEvent);
+        } catch {
+          /* битый кадр — пропускаем */
+        }
+      }
+    }
+  }
+}
+
 export async function streamChat(
   // fromSkin — реплика из скина: бэкенд не пускает её в режим управления
   params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string; fromSkin?: boolean },

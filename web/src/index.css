@@ -1363,8 +1363,11 @@ html[data-vpc-shell] .detroit-bg {
 .chat-header-actions {
   margin-left: auto;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .chat-messages {
@@ -11789,4 +11792,173 @@ img.art-thumb {
 .task-card-line--confirm .task-tag,
 .task-card-line--payment .task-tag {
   color: var(--accent-dark);
+}
+
+/* Окно браузера агента рядом с чатом (components/BrowserPanel.tsx):
+   живые кадры вкладки, адрес, заголовок — только просмотр */
+.chat-cc-btn--on {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+.chat-browser {
+  flex: 0 0 min(46%, 780px);
+  min-width: 360px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg-panel);
+  animation: rise-in 0.25s ease both;
+}
+.bw-top {
+  display: flex;
+  align-items: flex-end;
+  gap: 7px;
+  height: 40px;
+  padding: 0 10px 0 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-soft);
+}
+.bw-top > i {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--text-muted);
+  align-self: center;
+}
+.bw-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 60%;
+  height: 30px;
+  margin-left: 10px;
+  padding: 0 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-soft);
+  border-bottom: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.bw-tab-icon {
+  flex: none;
+}
+.bw-tab-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bw-close {
+  margin-left: auto;
+  align-self: center;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+.bw-close:hover {
+  color: var(--text);
+}
+.bw-addr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.bw-nav {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: none;
+}
+.bw-url {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bw-private,
+.bw-agent {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 5px 8px;
+  border: 1px solid var(--accent);
+  color: var(--accent-dark);
+  white-space: nowrap;
+}
+.bw-private {
+  border-style: dashed;
+  border-color: var(--text-dim);
+  color: var(--text-dim);
+}
+.bw-agent .status-led {
+  width: 6px;
+  height: 6px;
+}
+.bw-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start; /* страница — сразу под адресной строкой, как в браузере */
+  justify-content: center;
+  overflow: hidden;
+  background: var(--term-bg);
+}
+.bw-view img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.bw-view--empty img {
+  visibility: hidden;
+}
+.bw-view--stale img {
+  opacity: 0.35;
+}
+.bw-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--term-dim);
+}
+.bw-view--stale .bw-overlay {
+  background: rgba(0, 0, 0, 0.6);
+  color: #d0d0d0;
+}
+.bw-view--stale .bw-overlay-logo {
+  color: #d0d0d0;
+}
+.bw-overlay-logo {
+  font-size: 30px;
+  letter-spacing: 0;
+  color: var(--term-dim);
 }

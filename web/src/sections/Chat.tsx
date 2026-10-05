@@ -27,6 +27,7 @@ import PersonaDossier from '../components/PersonaDossier';
 import PersonaYamlModal from '../components/PersonaYamlModal';
 import MessageText from '../components/MessageText';
 import TaskCard from '../components/TaskCard';
+import BrowserPanel from '../components/BrowserPanel';
 import VoiceChat from '../components/VoiceChat';
 import Icon from '../components/icons';
 import type { IconName } from '../components/icons';
@@ -577,6 +578,28 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // inbox, пока наш запрос ещё в пути, — тоже быстрый опрос, иначе они
   // приходили пачкой раз в 15 с
   const ccOn = controlMode[persona.id] === true;
+  // Окно браузера агента рядом с чатом — в режиме управления, в обычном
+  // чате (не досье/голос); выбор «показывать» помнится в этом браузере
+  const [browserOpen, setBrowserOpenState] = useState(() => {
+    try {
+      return localStorage.getItem('vpc-cc-browser') !== 'off';
+    } catch {
+      return true;
+    }
+  });
+  const setBrowserOpen = (v: boolean) => {
+    setBrowserOpenState(v);
+    try {
+      localStorage.setItem('vpc-cc-browser', v ? 'on' : 'off');
+    } catch {
+      /* хранилище недоступно — выбор живёт до перезагрузки */
+    }
+  };
+  const showBrowser = ccOn && apiOnline && browserOpen && !dossierOpen && chatMode === 'classic';
+  // Появилось окно браузера — правую панель сворачиваем, чтобы чату хватило места
+  useEffect(() => {
+    if (showBrowser) setPanelOpen(false);
+  }, [showBrowser]);
   const curAnswer = answerOptions[persona.id] ?? null;
   // Карточка задачи агента: встаёт в ленту по времени старта задачи; строки
   // хода, которые в ней есть, из пузырей прячутся (они уже в карточке)
@@ -1996,6 +2019,15 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                     ■ {t('cc.stop')}
                   </button>
                 )}
+                <button
+                  type="button"
+                  className={`btn btn--chip chat-cc-btn${browserOpen ? ' chat-cc-btn--on' : ''}`}
+                  title={t('cc.browserTitle')}
+                  aria-pressed={browserOpen}
+                  onClick={() => setBrowserOpen(!browserOpen)}
+                >
+                  {t('cc.browser')}
+                </button>
                 <button type="button" className="btn btn--chip chat-cc-btn" title={t('cc.exitTitle')} disabled={waiting} onClick={() => submitMessage(t('cc.exitPhrase'), null)}>
                   {t('cc.exit')}
                 </button>
@@ -2240,6 +2272,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         </div>
       </div>
       )}
+
+      {/* Окно браузера агента: живые кадры вкладки, на которой он работает */}
+      {showBrowser && <BrowserPanel personaId={persona.id} personaName={persona.name} onClose={() => setBrowserOpen(false)} />}
 
       {/* Контекстная панель: статус персоны */}
       <aside className={`chat-context ${panelOpen ? '' : 'chat-context--collapsed'}`}>

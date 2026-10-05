@@ -6328,6 +6328,26 @@ class ComputerControlManager:
         lines = [f"{i}. {s}" for i, s in enumerate(cls._choice_labels(action), 1)]
         return cc_texts.t("site_choices", lang, items="\n".join(lines))
 
+    def tracked_page(self, chat_id) -> Optional[dict]:
+        """Отслеживаемая вкладка чата {url, host, tab_id} — какую вкладку
+        показывать в трансляции веба. Только чтение: в отличие от _st(),
+        состояние нового чата не заводится."""
+        st = self._chat_states().get(_chat_key(chat_id))
+        if st is None or not (st.last_url or st.last_host):
+            return None
+        return {"url": st.last_url, "host": st.last_host, "tab_id": st.last_tab_id}
+
+    def view_describe(self, url: str) -> dict:
+        """Адрес вкладки для показа в вебе: без токенов/кодов (scrub_url) и
+        признак приватной страницы. Кадры приватной страницы человек видит
+        так же, как её скриншоты, — в модели и историю они не попадают."""
+        from app.features.cc_privacy import scrub_url
+        try:
+            private = bool(url) and self.is_private_page(url)
+        except Exception:
+            private = True  # проверить не вышло — консервативно
+        return {"url": scrub_url(url or ""), "private": private}
+
     def pending_answer_options(self, chat_id: str, user_id=None) -> Optional[dict]:
         """Варианты ответа на подтверждение, которого ждёт чат, — для кнопок
         веба. Только чтение: в отличие от get_pending, протухший pending не

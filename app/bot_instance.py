@@ -1993,6 +1993,24 @@ class BotInstance:
             logger.debug(f"[BotInstance] варианты ответа не собрались: {e}")
             return None
 
+    def cc_tracked_page(self, chat_id) -> Optional[dict]:
+        # Отслеживаемая вкладка чата — для трансляции в веб (только чтение)
+        cc = getattr(self, "computer_control", None)
+        if cc is None:
+            return None
+        try:
+            return cc.tracked_page(chat_id)
+        except Exception:
+            return None
+
+    def cc_view_describe(self, url: str) -> dict:
+        # Адрес для трансляции: без токенов и с признаком приватной страницы;
+        # без менеджера — пустой адрес и «приватная» (консервативно)
+        cc = getattr(self, "computer_control", None)
+        if cc is None:
+            return {"url": "", "private": True}
+        return cc.view_describe(url)
+
     def cc_task_card(self, chat_id, user_id=None) -> Optional[dict]:
         """Карточка задачи агента для веба (TaskAgent.task_card): цель,
         статус, план заказа и журнал хода. Только чтение."""
