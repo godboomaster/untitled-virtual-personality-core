@@ -1971,6 +1971,28 @@ class BotInstance:
 
     # ── Ход до лока чата: «стоп», дубли, занятый агент ──────────
 
+    def cc_answer_options(self, chat_id, user_id=None) -> Optional[dict]:
+        """Кнопки ответа для веба: варианты вопроса, которого сейчас ждёт
+        режим управления в чате (см. TaskAgent.answer_options и
+        ComputerControlManager.pending_answer_options). Порядок — как в
+        process_message: живой прогон агента важнее подтверждения команды;
+        прогон без вариантов (свободный ответ) кнопок не даёт. Кнопка шлёт
+        обычную реплику, поэтому здесь ничего не меняется — только чтение."""
+        key = str(chat_id or user_id or "")
+        cc = getattr(self, "computer_control", None)
+        if not key or cc is None:
+            return None
+        try:
+            if not self.control_mode_on(key):
+                return None
+            ta = self.task_agent
+            if ta is not None and ta.has_run(key):
+                return ta.answer_options(key)
+            return cc.pending_answer_options(key, user_id)
+        except Exception as e:
+            logger.debug(f"[BotInstance] варианты ответа не собрались: {e}")
+            return None
+
     def cc_turn_enter(self, text: str, user_id, chat_id):
         """Вызывается платформой ДО ожидания лока чата (Telegram/веб).
         → (reply, token): reply не None — ответить им сразу и сообщение

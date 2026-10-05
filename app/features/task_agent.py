@@ -1774,6 +1774,46 @@ class TaskAgent:
         # Команда, ради которой прогон брошен «да» на ask_switch, — один раз
         return self.__dict__.get("_switch_to", {}).pop(str(chat_id), None)
 
+    def has_run(self, chat_id) -> bool:
+        # Есть ли у чата прогон (без побочных эффектов active(): протухший
+        # по TTL не снимается и в память задач не пишется)
+        with self._lock:
+            return str(chat_id) in self._runs
+
+    def answer_options(self, chat_id) -> Optional[dict]:
+        """Варианты ответа на то, чего ждёт прогон чата, — для кнопок веба:
+        {"kind": ..., "options": [{"label", "send"} | {"role"}]}. Кнопка
+        шлёт send обычной репликой (номер варианта, «да»/«нет»/«отмена» по
+        role), поэтому feed разбирает её как набранную — с теми же
+        проверками владельца и сроков. None — ответ свободный (вопрос без
+        вариантов, несколько вопросов одним сообщением) или прогон занят.
+        Только чтение: протухший по RUN_TTL_SEC прогон не снимается."""
+        with self._lock:
+            run = self._runs.get(str(chat_id))
+            if (run is None or run["busy"]
+                    or time.time() - run["touched"] > RUN_TTL_SEC):
+                return None
+            aw = dict(run.get("awaiting") or {})
+        kind = aw.get("kind")
+        if kind in ("confirm", "switch"):
+            return {"kind": "yesno", "options": [{"role": "yes"}, {"role": "no"}]}
+        if kind == "continue":
+            return {"kind": "continue",
+                    "options": [{"role": "yes"}, {"role": "cancel"}]}
+        if kind != "ask":
+            return None
+        q = str(aw.get("question") or "")
+        opts = _option_texts(q)
+        # Вопросы о товаре идут одним сообщением, у каждого свои варианты:
+        # кнопка ответила бы на один из них — такие только текстом
+        heads = [ln for ln in q.splitlines()
+                 if "?" in ln and not _OPTION_LINE_RE.match(ln)]
+        if not 2 <= len(opts) <= 10 or len(heads) > 1:
+            return None
+        return {"kind": "options",
+                "options": [{"label": o, "send": str(i)}
+                            for i, o in enumerate(opts, 1)]}
+
     def awaiting_kind(self, chat_id) -> Optional[str]:
         # Чего ждёт прогон чата (ask/confirm/continue/switch) — бот до лока
         # хода отличает «не надо» на вопрос от отмены задачи

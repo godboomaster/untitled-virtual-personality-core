@@ -718,6 +718,7 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
         control_mode=bot.control_mode_on(req.chat_id or req.user_id),
         # Скриншоты страницы из режима управления («что на странице?»)
         images=_pending_images(bot, req.chat_id),
+        answer_options=bot.cc_answer_options(req.chat_id or req.user_id, req.user_id),
     )
 
 
@@ -1157,6 +1158,10 @@ async def chat_stream(req: ChatRequest):
             # Скриншоты страницы из режима управления («что на странице?»)
             "images": images,
             "reply_ts": reply_ts,
+            # Кнопки ответа на вопрос режима управления (номер варианта,
+            # «да»/«нет») — фронт шлёт выбранное обычной репликой
+            "answer_options": bot.cc_answer_options(req.chat_id or req.user_id,
+                                                    req.user_id),
         }
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -2227,8 +2232,8 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
         pools = {}
     if bot is None:
         return {"messages": [], "generating": generating, "last_ts": last_ts,
-                "control_mode": False, "webchat_quarantine": quarantine,
-                "browser_pools": pools}
+                "control_mode": False, "answer_options": None,
+                "webchat_quarantine": quarantine, "browser_pools": pools}
     # Поллинг инбокса = пользователь открыл веб: сигнал присутствия для rhythm
     # (дёшев, с внутренним троттлингом — триггер утреннего приветствия)
     try:
@@ -2239,8 +2244,13 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
         control_mode = bot.control_mode_on(chat_id)
     except Exception:
         control_mode = False
+    # Кнопки ответа переживают перезагрузку страницы: состояние ожидания
+    # живёт в боте, а не в ленте; пока идёт генерация — без кнопок
+    answer_options = (None if generating or not control_mode
+                      else bot.cc_answer_options(chat_id, chat_id))
     return {"messages": inbox_pop(persona, chat_id), "generating": generating,
             "last_ts": last_ts, "control_mode": control_mode,
+            "answer_options": answer_options,
             "webchat_quarantine": quarantine, "browser_pools": pools}
 
 

@@ -6305,20 +6305,47 @@ class ComputerControlManager:
         return f"Выполнить задачу «{action.get('key') or action['kind']}»?"
 
     @staticmethod
-    def _choices_question(action: dict, lang: Optional[str] = None) -> str:
-        """«Какой сайт открыть?» — нумерованные варианты: заголовок из
-        выдачи и адрес (без схемы и секретных параметров, scrub_url)."""
+    def _choice_labels(action: dict) -> List[str]:
+        """Подписи вариантов «какой сайт открыть?»: заголовок из выдачи и
+        адрес (без схемы и секретных параметров, scrub_url) — те же строки,
+        что в вопросе и на кнопках веба."""
         from app.features import cc_texts
         from urllib.parse import unquote
         from app.features.cc_privacy import scrub_url
-        lines = []
-        for i, c in enumerate(action.get("choices") or (), 1):
+        out = []
+        for c in action.get("choices") or ():
             addr = re.sub(r"^https?://(www\.)?", "",
                           unquote(scrub_url(c.get("url"))))
             addr = cc_texts.clip(addr.rstrip("/"), 90)
             title = cc_texts.clip(" ".join(str(c.get("title") or "").split()), 70)
-            lines.append(f"{i}. {title} — {addr}" if title else f"{i}. {addr}")
+            out.append(f"{title} — {addr}" if title else addr)
+        return out
+
+    @classmethod
+    def _choices_question(cls, action: dict, lang: Optional[str] = None) -> str:
+        """«Какой сайт открыть?» — нумерованные варианты."""
+        from app.features import cc_texts
+        lines = [f"{i}. {s}" for i, s in enumerate(cls._choice_labels(action), 1)]
         return cc_texts.t("site_choices", lang, items="\n".join(lines))
+
+    def pending_answer_options(self, chat_id: str, user_id=None) -> Optional[dict]:
+        """Варианты ответа на подтверждение, которого ждёт чат, — для кнопок
+        веба. Только чтение: в отличие от get_pending, протухший pending не
+        снимается и флаг «подтверждение истекло» не ставится (поллинг веба
+        не должен менять, что услышит человек на запоздалое «да»). Кнопка
+        шлёт текст обычной репликой — номер или «да»/«нет», — так что
+        разбор, владелец и TTL те же, что у набранного ответа."""
+        with self._lock:
+            entry = self._pending.get(str(chat_id))
+            if (not entry or time.time() > entry["expires_at"]
+                    or not self._pending_owner_ok(entry, user_id)):
+                return None
+            action = dict(entry["action"])
+        if action.get("choices"):
+            opts = [{"label": s, "send": str(i)}
+                    for i, s in enumerate(self._choice_labels(action), 1)]
+            return {"kind": "options", "options": opts + [{"role": "no"}]}
+        return {"kind": "yesno", "options": [{"role": "yes"}, {"role": "no"}]}
 
     @classmethod
     def describe_done(cls, action: dict, lang: Optional[str] = None) -> str:

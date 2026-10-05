@@ -2,11 +2,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, useMockData } from '../i18n';
 import type { ChatMessage, DiaryEntry, InitiativeEvent, InventoryItem, LearningSession, LtmFact, PersonaFile, Reminder, TodoItem } from '../mockData';
 import { api, streamChat, StreamInterruptedError } from '../api';
-import type { ApiHistoryMessage, ClearPart, InitiativeData, PersonaConfig, ReminderEntry } from '../api';
+import type { AnswerOption, ApiHistoryMessage, ClearPart, InitiativeData, PersonaConfig, ReminderEntry } from '../api';
 import { refetchPersonaLlm, useApiOnline, useApiPersonaLlm, useApiProviders, usePersonaLivingState } from '../apiData';
 import { alertDialog, confirmDialog } from '../dialogStore';
 import {
-  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setControlMode, setFastPoll, setGenerating, touchActivity, useInbox,
+  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setAnswerOptions, setControlMode, setFastPoll, setGenerating, touchActivity, useInbox,
 } from '../inboxStore';
 import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
@@ -103,6 +103,21 @@ function featureEnabledFromConfig(features: Record<string, unknown> | undefined,
 // над списком или повторный клик по «Чат» в сайдбаре (так же и в скине).
 // Переход из других секций (карточки главной, уведомление) открывает чат
 // сразу, минуя страницу всех чатов
+// Строка-вариант в вопросе бота: «- Пепперони — 549 ₽», «1. Кинопоиск — kinopoisk.ru»
+// (тот же разбор, что _OPTION_LINE_RE в app/features/task_agent.py)
+const OPTION_LINE_RE = /^\s*(?:[-•*]|\d{1,2}[.)])\s+(.+?)\s*$/;
+const optionLines = (text: string) =>
+  text.split('\n').map((ln) => OPTION_LINE_RE.exec(ln)?.[1]).filter((x): x is string => !!x);
+// Текст вопроса без строк-вариантов, когда они стали кнопками; число не
+// совпало с кнопками — текст как есть (лучше дубль, чем потерянный вариант)
+function stripOptionLines(text: string, n: number): string {
+  if (!n || optionLines(text).length !== n) return text;
+  return text.split('\n').filter((ln) => !OPTION_LINE_RE.test(ln)).join('\n').replace(/\n{3,}/g, '\n\n');
+}
+// Слова кнопок «да/нет/бросить» — бэкенд понимает оба языка
+const ROLE_SEND_RU = { yes: 'да', no: 'нет', cancel: 'отмена' } as const;
+const ROLE_SEND_EN = { yes: 'yes', no: 'no', cancel: 'cancel' } as const;
+
 export default function Chat() {
   const { personas } = useMockData();
   const request = useChatPersonaRequest();
@@ -398,7 +413,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
   // Фоновые сообщения (напоминания, инициативы) прилетают в глобальный
   // inbox-стор (поллер в App); здесь только гасим непрочитанные открытой персоны
-  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode } = useInbox();
+  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode, answerOptions } = useInbox();
   useEffect(() => {
     markRead(persona.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -561,6 +576,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // inbox, пока наш запрос ещё в пути, — тоже быстрый опрос, иначе они
   // приходили пачкой раз в 15 с
   const ccOn = controlMode[persona.id] === true;
+  const curAnswer = answerOptions[persona.id] ?? null;
+  const answerSend = (o: AnswerOption) =>
+    o.send ?? (o.role ? (lang === 'en' ? ROLE_SEND_EN : ROLE_SEND_RU)[o.role] : '');
+  const answerLabel = (o: AnswerOption) =>
+    o.role === 'yes' ? t('cc.answerYes') : o.role === 'no' ? t('cc.answerNo') : o.role === 'cancel' ? t('cc.answerCancel') : (o.label ?? '');
   useEffect(() => {
     setFastPoll((remoteGenerating && !inFlight) || (inFlight && ccOn) ? persona.id : null);
   }, [remoteGenerating, inFlight, ccOn, persona.id]);
@@ -1007,6 +1027,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // её сам)
   const submitMessage = (text: string, image: string | null, fromSkin = false) => {
     if (!text && !image) return;
+    // Человек ответил (кнопкой или текстом) — прежние кнопки ответа снимаем;
+    // новые, если бот снова спросит, придут с ответом
+    setAnswerOptions(persona.id, null);
     if (!apiOnline) {
       // Офлайн-режим (моки): картинка остаётся локальным пузырём
       pushMessage(text, image);
@@ -1140,6 +1163,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         // Режим управления мог переключиться самим этим сообщением —
         // обновляем сразу, не дожидаясь поллера inbox
         if (typeof res.control_mode === 'boolean') setControlMode(pid, res.control_mode);
+        // Вопрос режима управления с вариантами — кнопки под ответом
+        setAnswerOptions(pid, res.answer_options ?? null);
         // Ответ догенерировался, а вкладка уже не в фокусе — уведомляем (как в мессенджерах)
         notifyBotMessage(pid, personaName, res.reply);
       })
@@ -1946,6 +1971,22 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             </div>
           </div>
           <div className="chat-header-actions">
+            {ccOn && apiOnline && (
+              <div className="chat-cc-controls">
+                <span className="chat-cc-badge" title={t('cc.badgeTitle')}>
+                  <span className="status-led" />
+                  {t('cc.badge')}
+                </span>
+                {waiting && (
+                  <button type="button" className="btn btn--chip chat-cc-btn" title={t('cc.stopTitle')} onClick={() => submitMessage(t('cc.stopPhrase'), null)}>
+                    ■ {t('cc.stop')}
+                  </button>
+                )}
+                <button type="button" className="btn btn--chip chat-cc-btn" title={t('cc.exitTitle')} disabled={waiting} onClick={() => submitMessage(t('cc.exitPhrase'), null)}>
+                  {t('cc.exit')}
+                </button>
+              </div>
+            )}
             <button className="btn btn--chip" title={t('chat.modeVoiceTitle')} onClick={() => setChatMode('voice')}>
               <Icon name="voice" size={13} />
               {t('chat.modeVoice')}
@@ -2016,10 +2057,23 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           {visibleMessages.map((m, i) => {
             // Цитируемое сообщение (если это ответ)
             const quoted = m.replyTo != null ? messages.find((q) => q.id === m.replyTo) : undefined;
+            // Кнопки ответа — под последним сообщением бота, пока режим
+            // управления ждёт ответа и бот не занят
+            const answer = ccOn && !waiting && m.role === 'bot' && i === visibleMessages.length - 1
+              ? curAnswer
+              : null;
+            const shownText = answer?.kind === 'options'
+              ? stripOptionLines(m.text, answer.options.filter((o) => o.label).length)
+              : m.text;
+            // «2» в ответ на список — с подписью выбранного варианта
+            const prev = i > 0 ? visibleMessages[i - 1] : undefined;
+            const echo = m.role === 'user' && /^\d{1,2}$/.test(m.text.trim()) && prev?.role === 'bot'
+              ? optionLines(prev.text)[Number(m.text.trim()) - 1]
+              : undefined;
             return (
               <div
                 key={m.id}
-                className={`message message--${m.role}`}
+                className={`message message--${m.role}${answer ? ' message--answers' : ''}`}
                 style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
               >
                 <div className="message-bubble">
@@ -2040,7 +2094,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                   <div className="message-text">
                     {/* Ответы бота — с markdown-разметкой; у стримящегося
                         пузыря висячие маркеры достраиваются на лету */}
-                    {m.role === 'bot' ? <MessageText text={m.text} streaming={m.id === streamMsgId} /> : m.text}
+                    {m.role === 'bot'
+                      ? <MessageText text={shownText} streaming={m.id === streamMsgId} />
+                      : echo
+                        ? <><span className="answer-echo-num">{m.text.trim()}</span>{echo}</>
+                        : m.text}
                   </div>
                   {m.image && <img className="message-image" src={m.image} alt={t('chat.attachment')} />}
                   {m.images && m.images.length > 0 && (
@@ -2068,6 +2126,20 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                     )}
                   </div>
                 </div>
+                {answer && (
+                  <div className={`answer-options answer-options--${answer.kind}`} role="group" aria-label={t('cc.answerGroup')}>
+                    {answer.options.map((o, k) => (
+                      <button
+                        key={k}
+                        type="button"
+                        className={`answer-btn${o.role ? ` answer-btn--${o.role}` : ''}`}
+                        onClick={() => submitMessage(answerSend(o), null)}
+                      >
+                        {o.label ? <><span className="answer-btn-num">{o.send}</span>{o.label}</> : answerLabel(o)}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}

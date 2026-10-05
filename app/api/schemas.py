@@ -40,6 +40,9 @@ class ChatResponse(BaseModel):
     control_mode: bool = False
     # Скриншоты страницы из режима управления («что на странице?») — dataURL
     images: list[str] = Field(default_factory=list)
+    # Кнопки ответа на вопрос режима управления, которого ждёт чат
+    # (BotInstance.cc_answer_options): {kind, options: [{label, send} | {role}]}
+    answer_options: Optional[dict] = None
 
 
 class PresenceRequest(BaseModel):

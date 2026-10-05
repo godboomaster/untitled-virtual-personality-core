@@ -114,6 +114,21 @@ export interface ApiChatResponse {
   control_mode?: boolean; // режим управления после этого сообщения — дебаунс отправки гасится
   images?: string[]; // скриншоты страницы (dataURL) из режима управления
   reply_ts?: number | null; // метка ответа в STM (серверные секунды) — место пузыря в ленте
+  answer_options?: AnswerOptions | null; // кнопки ответа на вопрос режима управления
+}
+
+// Кнопки ответа на вопрос режима управления (BotInstance.cc_answer_options):
+// вариант с подписью шлёт send (номер), вариант с role — «да»/«нет»/«отмена»
+// на языке интерфейса. Выбор уходит обычной репликой — бэкенд разбирает её
+// как набранную, с теми же проверками подтверждений
+export interface AnswerOption {
+  label?: string;
+  send?: string;
+  role?: 'yes' | 'no' | 'cancel';
+}
+export interface AnswerOptions {
+  kind: 'options' | 'yesno' | 'continue';
+  options: AnswerOption[];
 }
 
 // Части «Очистить диалог» (app/api/schemas.py: ClearPart) — в порядке кнопок досье
@@ -498,7 +513,7 @@ export const api = {
     ),
 
   getInbox: (persona: string, focused?: boolean) =>
-    request<{ messages: InboxMessage[]; generating?: boolean; last_ts?: number; control_mode?: boolean }>(
+    request<{ messages: InboxMessage[]; generating?: boolean; last_ts?: number; control_mode?: boolean; answer_options?: AnswerOptions | null }>(
       `/api/personas/${encodeURIComponent(persona)}/inbox?chat_id=${WEB_CHAT_ID}${focused ? '&focused=1' : ''}`,
     ),
 

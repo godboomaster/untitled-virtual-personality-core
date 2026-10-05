@@ -11537,3 +11537,106 @@ img.art-thumb {
   font-size: 11px;
   color: var(--text-dim);
 }
+
+/* Режим управления в чате: значок, «Стоп»/«Выйти» в шапке и кнопки ответа
+   под вопросом бота (варианты, да/нет) — выбор уходит обычной репликой */
+.chat-cc-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 6px;
+  padding-right: 10px;
+  border-right: 1px solid var(--border-soft);
+}
+.chat-cc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  border: 1px solid var(--accent);
+  color: var(--accent-dark);
+}
+.chat-cc-badge .status-led {
+  width: 6px;
+  height: 6px;
+}
+.chat-cc-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* Пузырь с кнопками: кнопки — под ним, а не в строку рядом */
+.message--answers {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.answer-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 65%;
+  margin-top: 8px;
+}
+.answer-options--options {
+  flex-direction: column;
+  align-items: stretch;
+  width: fit-content;
+  min-width: 260px;
+}
+.answer-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.answer-btn:hover,
+.answer-btn:focus-visible {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+.answer-btn-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 14px;
+}
+.answer-btn:hover .answer-btn-num,
+.answer-btn:focus-visible .answer-btn-num {
+  color: inherit;
+}
+.answer-btn--yes,
+.answer-btn--no,
+.answer-btn--cancel {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  min-width: 72px;
+  justify-content: center;
+}
+.answer-btn--no,
+.answer-btn--cancel {
+  border-style: dashed;
+}
+.answer-echo-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.6;
+  margin-right: 8px;
+}
