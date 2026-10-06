@@ -442,6 +442,9 @@ _T = {
     "url_params_note": {
         "ru": "В адресе есть параметры: {url}",
         "en": "The address has parameters: {url}"},
+    "marker_url_unverified": {
+        "ru": "Адрес предложила модель — я его не проверял.",
+        "en": "The model suggested this address — I haven't checked it."},
     "marker_url_params": {
         "ru": "Ссылку с параметрами, которую предложила модель, сам не "
               "открываю — если нужно, скажи «открой …» и адрес.",
@@ -651,6 +654,14 @@ _T = {
                            "en": "Couldn't read the page."},
     "ladder_zoom_failed": {"ru": "Не удалось изменить масштаб.",
                            "en": "Couldn't change the zoom."},
+    # «открой X»: команда распознана моделью, а сайт не нашёлся — вместо
+    # адреса, придуманного моделью в обычном ответе
+    "open_not_found": {
+        "ru": "Не нашёл, что открыть по «{target}». Назови сайт или адрес точнее "
+              "(например, «открой nstu.ru») — гадать ссылку не буду.",
+        "en": "I couldn't find what to open for \"{target}\". Name the site or "
+              "address more precisely (for example, \"open nstu.ru\") — I won't "
+              "guess a link."},
     "ladder_not_found": {"ru": "Не нашёл это на странице.",
                          "en": "Couldn't find that on the page."},
 }

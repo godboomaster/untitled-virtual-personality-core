@@ -37,6 +37,7 @@ from app.core.language import (
     detect_dialogue_language, detect_language, initiative_language_note, language_name,
     user_language_line)
 from app.core.paths import data_dir
+from app.core.persona import addressee_note
 from app.core.presence import web_presence
 from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 from app.features.chat_dossier import ChatDossier
@@ -873,7 +874,8 @@ class ProactiveMessaging:
             if not context_parts:
                 return None
 
-            persona_prompt = self.persona.system_prompt.strip()
+            persona_prompt = (self.persona.system_prompt.strip()
+                              + addressee_note(self.persona, chat_id))
 
             # Язык рефлексии: явный детект по репликам пользователя из STM
             # (в контексте могут быть блоки на другом языке — не даём им
@@ -1360,7 +1362,8 @@ class ProactiveMessaging:
             type_desc = INITIATIVE_TYPE_DESCRIPTIONS.get(initiative_type, "")
             type_instruction = f"\nType of this initiative: {initiative_type.value}. {type_desc}\n"
 
-        persona_prompt = self.persona.system_prompt.strip()
+        persona_prompt = (self.persona.system_prompt.strip()
+                          + addressee_note(self.persona, chat_id))
 
         # Язык инициативы: явный детект по репликам пользователя — надёжнее,
         # чем просить модель угадать его по контексту (в контексте могут быть

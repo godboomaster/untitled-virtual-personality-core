@@ -308,6 +308,15 @@ def create_handlers(bot: BotInstance) -> dict:
         display_name = get_user_display(user_id)
         logger.info(f"[{persona_name}] /start от {user_id} ({display_name})")
 
+        # /start в личке — новый разговор. «Очистить историю» в клиенте
+        # Telegram бот не видит (Bot API о ней не сообщает), но после неё
+        # клиент показывает кнопку START: переписку чата и тред веб-чата
+        # LLM начинаем заново, иначе бот продолжал бы стёртый разговор
+        if update.effective_chat.type == "private":
+            chat_id = str(update.effective_chat.id)
+            async with bot.user_turn_async(chat_id), _chat_lock(chat_id):
+                await asyncio.to_thread(bot.clear_chat_history, chat_id)
+
         start_greeting = bot.persona.persona_data.get("start_greeting")
         if persona_name == "connor":
             greeting = f"Привет, {display_name}. Я — Коннор, андроид модели RK800.\nОбратись ко мне по имени — и я помогу."
@@ -348,6 +357,7 @@ def create_handlers(bot: BotInstance) -> dict:
             "",
             "🧠 Память",
             "/stats — статистика памяти",
+            "/clear — очистить историю этого чата (разговор с чистого листа)",
             "/reset — сбросить мои факты о тебе",
             "/forget <что> — забыть конкретный факт",
             "/ltm_privacy [smart|strict] — приватность памяти: smart — публичный профиль доступен везде, strict — в каждом чате с нуля",
@@ -443,8 +453,34 @@ def create_handlers(bot: BotInstance) -> dict:
             return
         n = max(1, min(n, 500))
 
-        deleted = bot.stm_pop_last_n(n, chat_id)
+        # Под локом чата: идущий ответ не запомнит тред, сброшенный следом
+        async with bot.user_turn_async(chat_id), _chat_lock(chat_id):
+            deleted = await asyncio.to_thread(bot.stm_pop_last_n, n, chat_id)
         await update.message.reply_text(f"Удалено {deleted} сообщений из STM.")
+
+    async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Очистить историю этого чата: переписка + новый тред веб-чата LLM.
+        # В личке — сам собеседник, в группе — владелец бота или админ чата
+        user_id = str(update.effective_user.id)
+        chat = update.effective_chat
+        chat_id = str(chat.id)
+        if chat.type != "private" and not _is_owner(bot, user_id):
+            try:
+                member = await context.bot.get_chat_member(chat.id, int(user_id))
+                is_admin = member.status in ("creator", "administrator")
+            except Exception as e:
+                logger.debug(f"[{persona_name}] /clear: права в {chat_id} не проверены: {e}")
+                is_admin = False
+            if not is_admin:
+                await update.message.reply_text(
+                    "Очистить историю группы могут только её админы.")
+                return
+        async with bot.user_turn_async(chat_id), _chat_lock(chat_id):
+            n = await asyncio.to_thread(bot.clear_chat_history, chat_id)
+        logger.info(f"[{persona_name}] /clear от {user_id} в {chat_id}")
+        await update.message.reply_text(
+            f"История чата очищена ({n} сообщ.) — разговор начнётся заново.\n"
+            "Факты о тебе остались — их сбрасывает /reset.")
 
     async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Показать последние n сообщений из STM (первое предложение).
@@ -1194,6 +1230,7 @@ def create_handlers(bot: BotInstance) -> dict:
         "help": help_cmd,
         "stats": stats_cmd,
         "erase": erase_cmd,
+        "clear": clear_cmd,
         "last": last_cmd,
         "reset": reset_cmd,
         "forget": forget_cmd,
@@ -1269,7 +1306,7 @@ def register_handlers(app: Application, bot: BotInstance):
             await handler(update, context)
         return run
 
-    for name in ("start", "help", "stats", "erase", "last", "reset", "forget",
+    for name in ("start", "help", "stats", "erase", "clear", "last", "reset", "forget",
                  "context", "relations", "resetall", "ltm_privacy", "ltm_export",
                  "reset_diary", "files", "reset_files", "ratelimits", "web",
                  "todo", "reminders", "cancel_reminder", "inventory", "remind",

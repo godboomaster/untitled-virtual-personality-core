@@ -1221,8 +1221,15 @@ async def chat_clear(req: ClearChatRequest):
         initiatives = await asyncio.to_thread(_pop_initiative_history, bot, req.persona, chat_key)
         daily_stats = await asyncio.to_thread(_pop_daily_stats, bot, req.persona, chat_key)
         last_activity = await asyncio.to_thread(_pop_last_activity, bot, req.persona, chat_key)
-    chat_urls = (await asyncio.to_thread(_wl.collect_chat_urls, f"api_{req.persona}")
-                 if "webchat" in parts else {})
+    # Одна переписка (без части webchat) — сбрасываются только треды этого
+    # диалога: сайт помнит стёртые ходы, без сброса бот продолжал бы разговор
+    dialog_only = "stm" in parts and "webchat" not in parts
+    chat_urls = {}
+    if "webchat" in parts:
+        chat_urls = await asyncio.to_thread(_wl.collect_chat_urls, f"api_{req.persona}")
+    elif dialog_only:
+        chat_urls = await asyncio.to_thread(_wl.collect_chat_urls, f"api_{req.persona}",
+                                            chat_key)
     stores = await asyncio.to_thread(memory_wipe.collect_stores, bot, req.persona,
                                      chat_key, None if full else parts)
     await asyncio.to_thread(
@@ -1246,6 +1253,8 @@ async def chat_clear(req: ClearChatRequest):
     # сохранены в снапшоте выше)
     if "webchat" in parts:
         await asyncio.to_thread(_wl.clear_chat_urls, f"api_{req.persona}")
+    elif dialog_only:
+        await asyncio.to_thread(_wl.clear_dialog_chat_urls, f"api_{req.persona}", chat_key)
     # Остальное: todo/напоминания/досье/обучение/инициативы/ритм/living/управление
     await asyncio.to_thread(memory_wipe.wipe_stores, bot, req.persona, chat_key,
                             None if full else parts)

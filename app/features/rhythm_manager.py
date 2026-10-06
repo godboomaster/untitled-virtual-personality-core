@@ -34,6 +34,7 @@ from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import (detect_dialogue_language, language_name,
                                 persona_language, user_language_line)
 from app.core.paths import data_dir
+from app.core.persona import addressee_note
 from app.features.env_context import _WMO_DESC, fetch_forecast, is_precip_code, load_location
 
 logger = logging.getLogger(__name__)
@@ -418,11 +419,13 @@ class RhythmManager:
                 return name
         return "Russian"
 
-    def _generate_text(self, kind: str, facts: str, lang: str) -> Optional[str]:
+    def _generate_text(self, kind: str, facts: str, lang: str,
+                       chat_id: Optional[str] = None) -> Optional[str]:
         # Текст в характере персоны через LLM (синхронный вызов).
         if not (self._router and self._persona):
             return None
-        persona_prompt = self._persona.system_prompt.strip()
+        persona_prompt = (self._persona.system_prompt.strip()
+                          + addressee_note(self._persona, chat_id))
         if kind == "morning":
             user_content = f"Current time: {facts}. Greet the user."
         elif kind == "night":
@@ -554,7 +557,8 @@ class RhythmManager:
             text = None
             try:
                 text = await asyncio.to_thread(
-                    self._generate_text, "morning", f"{now:%A}, {now:%d.%m.%Y, %H:%M}", lang)
+                    self._generate_text, "morning", f"{now:%A}, {now:%d.%m.%Y, %H:%M}", lang,
+                    chat_id)
             except Exception as e:
                 logger.warning(f"[Rhythm] LLM генерация утра не удалась: {e}")
             text = text or _FALLBACK[("morning", lang)]
@@ -584,7 +588,8 @@ class RhythmManager:
             text = None
             try:
                 text = await asyncio.to_thread(
-                    self._generate_text, "night", f"{now:%A}, {now:%d.%m.%Y, %H:%M}", lang)
+                    self._generate_text, "night", f"{now:%A}, {now:%d.%m.%Y, %H:%M}", lang,
+                    chat_id)
             except Exception as e:
                 logger.warning(f"[Rhythm] LLM генерация ночи не удалась: {e}")
             text = text or _FALLBACK[("night", lang)]
@@ -676,7 +681,8 @@ class RhythmManager:
             text = None
             try:
                 with dialog_scope(chat_id):
-                    text = await asyncio.to_thread(self._generate_text, kind, facts, lang)
+                    text = await asyncio.to_thread(self._generate_text, kind, facts, lang,
+                                                   chat_id)
             except Exception as e:
                 logger.warning(f"[Rhythm] LLM генерация погоды ({kind}) не удалась: {e}")
             text = text or _FALLBACK[(kind, lang)]

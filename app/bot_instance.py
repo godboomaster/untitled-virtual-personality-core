@@ -6032,7 +6032,39 @@ class BotInstance:
         return self.memory.stm.get_last_display(n, chat_id)
 
     def stm_pop_last_n(self, n: int, chat_id: str) -> int:
-        return self.memory.stm.pop_last_n(n, chat_id)
+        removed = self.memory.stm.pop_last_n(n, chat_id)
+        # Сайт веб-чата помнит стёртые ходы — тред диалога открываем заново
+        # (новый получит оставшуюся историю полным промптом)
+        if removed:
+            self.reset_webchat_threads(chat_id)
+        return removed
+
+    def reset_webchat_threads(self, dialog: Optional[str] = None) -> int:
+        """Новые треды веб-чатов LLM: dialog — только этого диалога (ключ
+        stm_key, во всех сайтах и каналах), None — все треды персоны вместе
+        с общими. Сайт хранит прошлые ходы треда: без сброса модель после
+        очистки истории продолжала бы стёртый разговор. → сколько сброшено."""
+        from app.features import web_llm as _wl
+        try:
+            if dialog is None:
+                return _wl.clear_chat_urls(self.context)
+            return _wl.clear_dialog_chat_urls(self.context, str(dialog))
+        except Exception as e:
+            logger.warning(f"[{self.persona_name}] Треды веб-чатов не сброшены: {e}")
+            return 0
+
+    def clear_chat_history(self, chat_id: str) -> int:
+        """«Очистить историю» чата (Telegram: /clear, /start в личке):
+        переписка (STM — буфер и векторный индекс) и треды веб-чатов этого
+        диалога. Факты (LTM), дневник, дела и напоминания остаются.
+        → сколько сообщений было в истории."""
+        key = str(chat_id)
+        n = len(self.memory.stm.get_messages(None, key))
+        self.memory.clear_stm(key)
+        self.reset_webchat_threads(key)
+        logger.info(f"[{self.persona_name}] История чата {key} очищена "
+                    f"({n} сообщ.), тред веб-чата — новый")
+        return n
 
     def clear_memory(self, user_id: str = "default", chat_id: str = None):
         self.memory.clear_stm(chat_id)
@@ -6133,6 +6165,8 @@ class BotInstance:
             self.memory.ltm.clear_all()
         except Exception as e:
             logger.warning(f"[{self.persona_name}] Очистка LTM не удалась: {e}")
+        # Треды веб-чатов — тоже память разговоров (все диалоги и общие)
+        self.reset_webchat_threads()
 
     def toggle_web_search(self, chat_id: str) -> bool:
         # Переключает web_search для чата. Возвращает новое состояние (True=включён).
