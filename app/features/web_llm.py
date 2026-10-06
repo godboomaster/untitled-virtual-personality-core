@@ -25,8 +25,13 @@ main/vision в очереди не стоят.
 Быстрый ввод fill() (посимвольный набор для системного промпта занял бы
 минуты), Enter, опрос DOM до конца стриминга (ждём НОВЫЙ блок ответа
 после своего сообщения + текст стабилен или сайт показал маркер
-завершения). Лимитов по умолчанию нет: пейсинга нет, оконная квота выключена
-(при желании включается на персону через llm.webchat_limits).
+завершения). Темп (см. «Темп отправок» ниже): автоматика (цикл агента
+задач, фон) отправляет на сайт не чаще раза в WEBCHAT_AUTO_GAP_SEC (+ разброс)
+и не больше WEBCHAT_AUTO_PER_HOUR в час — общий счёт по сайту на все
+персоны и процессы (аккаунт у них один); ответы человеку не ждут. Оконная
+квота на сайт+канал персоны — отдельно, через llm.webchat_limits.
+Повторяемые блоки промпта (app/core/sticky_scope: правила агента задач,
+неизменившаяся страница) тред, уже видевший их, получает короткой ссылкой.
 Любая неудача — None: роутер идёт по фолбэк-цепочке дальше (local/API).
 
 Непрерывный чат — осознанное решение: веб-чат копит контекст беседы (это
@@ -49,9 +54,11 @@ webchat_limits, не устраняется), селекторы
 
 import atexit
 import glob
+import hashlib
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -64,7 +71,9 @@ from app.core import timeutil
 from app.core.atomic_io import atomic_write_json, file_lock, load_json_safe
 from app.core.dialog_scope import current_dialog
 from app.core.language import detect_language, user_language_line
+from app.core.pace_scope import is_automated
 from app.core.paths import data_dir
+from app.core.sticky_scope import current_sticky, sticky_blocks
 from app.core.thread_local_attr import ThreadLocalAttr
 
 logger = logging.getLogger(__name__)
@@ -331,6 +340,99 @@ def _bg_site_queue(site: str) -> threading.Lock:
             q = threading.Lock()
             _BG_SITE_QUEUES[site] = q
         return q
+
+
+# ── Темп отправок ──
+# Аккаунт сайта один на все персоны и процессы бота, а автоматика — цикл
+# агента задач (область app/core/pace_scope) и фоновые каналы
+# (_PACE_AUTO_CHANNELS) — шлёт подряд без человека: шаг агента ушёл, ответ
+# через 8 с, отказ кода («NOT performed») — и через секунду следующий. Люди
+# так не пишут, а сайты за это банят. Поэтому автоматическая отправка ждёт,
+# пока с ПРОШЛОЙ отправки на этот сайт (любого канала, любой персоны, любого
+# процесса) пройдёт WEBCHAT_AUTO_GAP_SEC плюс случайный разброс до
+# WEBCHAT_AUTO_JITTER_SEC, и не идёт дальше WEBCHAT_AUTO_PER_HOUR отправок за
+# час (сверх — None: роутер идёт к следующему провайдеру).
+# Вызовы в ответ на реплику человека (ответ персоны, разбор его команды
+# режима управления, поиск, описание фото) не ждут и в потолок не упираются
+# — их темп задаёт сам человек, — но отметку отправки ставят: автоматика
+# отсчитывает паузу и от них.
+# Счёт — в data/webchat_pacing.json под межпроцессным локом. Слот
+# резервируется под локом, а ждём уже без него: соседние вызовы получают
+# следующие слоты, а не стоят в очереди за спящим.
+AUTO_GAP_SEC = 20.0
+AUTO_JITTER_SEC = 10.0
+AUTO_PER_HOUR = 60
+_PACE_AUTO_CHANNELS = frozenset({"side", "proactive", "cc_gen"})
+
+
+def _pace_setting(name: str, default, cast):
+    # Значение из окружения (.env/.env.config) на момент вызова — .env
+    # читается при старте приложения, позже импорта модуля
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return cast(str(raw).strip())
+    except ValueError:
+        logger.warning(f"[WebChat] {name}={raw!r} — не число, беру {default}")
+        return default
+
+
+def _pace_path() -> Path:
+    return data_dir() / "webchat_pacing.json"
+
+
+def pace_reserve(site: str, channel: str) -> Optional[float]:
+    """Слот отправки на сайт → сколько секунд подождать перед ней (0 —
+    сразу) или None — часовой потолок автоматики на сайте исчерпан.
+    Сбой файла темпа отправку не блокирует (0)."""
+    auto = channel in _PACE_AUTO_CHANNELS or is_automated()
+    gap = max(0.0, _pace_setting("WEBCHAT_AUTO_GAP_SEC", AUTO_GAP_SEC, float))
+    jitter = max(0.0, _pace_setting("WEBCHAT_AUTO_JITTER_SEC",
+                                    AUTO_JITTER_SEC, float))
+    cap = _pace_setting("WEBCHAT_AUTO_PER_HOUR", AUTO_PER_HOUR, int)
+    path = _pace_path()
+    now = time.time()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with file_lock(path):
+            st = load_json_safe(path, default={}, label="WebChat")
+            if not isinstance(st, dict):
+                st = {}
+            rec = st.get(site)
+            rec = dict(rec) if isinstance(rec, dict) else {}
+            last = float(rec.get("last") or 0)
+            hour = [float(t) for t in rec.get("auto") or []
+                    if isinstance(t, (int, float)) and now - float(t) < 3600]
+            if auto and cap > 0 and len(hour) >= cap:
+                left = int((min(hour) + 3600 - now) / 60) + 1
+                logger.warning(f"[WebChat] {site}#{channel}: {len(hour)} "
+                               f"автоматических отправок за час (потолок "
+                               f"{cap}) — пропуск, место через ~{left} мин")
+                return None
+            slot = now
+            if auto and last > 0:
+                slot = max(now, last + gap + random.uniform(0, jitter))
+            rec["last"] = max(last, slot)
+            if auto:
+                hour.append(slot)
+            rec["auto"] = hour
+            st[site] = rec
+            atomic_write_json(path, st)
+    except Exception as e:
+        logger.debug(f"[WebChat] {site}: темп отправок не записан: {e}")
+        return 0.0
+    return max(0.0, slot - now)
+
+
+# ── Повторяемые блоки промпта (app/core/sticky_scope) ──
+# Блок «свежий» в треде не дольше этого: дальше он уходит целиком снова,
+# даже если сообщений после него было мало (человек вернулся через час)
+STICKY_MAX_AGE_SEC = 1200.0
+# Заранее отправленный блок (не влез в жёсткий лимит поля вместе с шагом)
+_STICKY_PRIMER = ("Standing instructions for the requests I will send next "
+                  "in this chat. Do not act on them now — reply with just: "
+                  "OK\n\n{text}")
 
 
 # ── Идущие вызовы по пулам: координация перезапуска Chrome ──
@@ -2070,6 +2172,12 @@ class WebChatLLM:
         # Инстанс выбыл из кэша роутера (retire): вкладка закрывается по
         # завершении идущего/любого следующего вызова
         self._retired = False
+        # Повторяемые блоки промпта (sticky_scope): сколько сообщений ушло в
+        # тред вкладки с последней навигации и когда какой блок ушёл в него
+        # целиком ({sha1 текста: (номер сообщения, ts)}). Навигация, новая
+        # вкладка, перезагрузка — тред мог смениться, счёт с нуля
+        self._thread_sends = 0
+        self._sticky_seen: Dict[str, Tuple[int, float]] = {}
 
     # ── состояние: квота, адрес постоянного чата ──
     # Файл общий для всех сайтов контекста: {"sites": {site: {...}}}
@@ -2468,6 +2576,72 @@ class WebChatLLM:
         logger.info(f"[WebChat] {self.site}: челлендж пройден автокликом")
         return False
 
+    # ── повторяемые блоки промпта (app/core/sticky_scope) ──
+
+    def _new_thread(self):
+        # Вкладка уходит на другую страницу (навигация, новая вкладка,
+        # перезагрузка): тред мог смениться — блоки снова уходят целиком
+        self._thread_sends = 0
+        self._sticky_seen.clear()
+
+    @staticmethod
+    def _block_key(block) -> str:
+        return hashlib.sha1(block.text.encode("utf-8")).hexdigest()
+
+    def _block_fresh(self, block) -> bool:
+        # Тред этой вкладки получил блок целиком не дальше window сообщений
+        # назад и не дольше STICKY_MAX_AGE_SEC
+        rec = self._sticky_seen.get(self._block_key(block))
+        if not rec:
+            return False
+        sent_at, ts = rec
+        return (0 < self._thread_sends - sent_at <= block.window
+                and time.time() - ts < STICKY_MAX_AGE_SEC)
+
+    def _sticky_text(self, prompt: str, blocks) -> Tuple[str, list]:
+        """Промпт для ЭТОГО треда: свежие блоки — ссылкой → (текст, блоки,
+        которые уходят целиком)."""
+        text, full = prompt, []
+        for b in blocks:
+            if b.text not in text:
+                continue
+            if self._block_fresh(b):
+                text = text.replace(b.text, b.ref, 1)
+            else:
+                full.append(b)
+        return text, full
+
+    def _sticky_sent(self, full_blocks):
+        # Сообщение ушло в тред: номер следующего и отметка блоков, ушедших
+        # целиком
+        idx = self._thread_sends
+        self._thread_sends += 1
+        now = time.time()
+        for b in full_blocks:
+            self._sticky_seen[self._block_key(b)] = (idx, now)
+
+    def _sticky_prime(self, blocks, temperature: float, max_tokens: int,
+                      top_p: float, timeout: float) -> bool:
+        """Длинные блоки отдельным сообщением перед шагом — когда шаг вместе
+        с ними не влезает в жёсткий лимит поля сайта. Ответ («OK») не
+        нужен; True — блоки в треде."""
+        text = "\n\n".join(b.text for b in blocks)
+        with sticky_blocks():
+            ok = self._get_response_locked(
+                [{"role": "user",
+                  "content": _STICKY_PRIMER.format(text=text)}],
+                temperature, max_tokens, top_p, timeout)
+        if not ok:
+            return False
+        # Праймер — последнее сообщение треда (номер _thread_sends - 1)
+        now = time.time()
+        for b in blocks:
+            self._sticky_seen[self._block_key(b)] = (self._thread_sends - 1,
+                                                     now)
+        logger.info(f"[WebChat] {self.site}#{self.channel}: правила ушли "
+                    f"отдельным сообщением ({len(text)} симв.)")
+        return True
+
     def _drop_tab(self, ba, why: str):
         """Отпустить служебную вкладку: ЗАКРЫТЬ её в браузере и забыть — иначе
         страница SPA-чата осталась бы жить в Chrome пула H, и такие сироты
@@ -2506,6 +2680,7 @@ class WebChatLLM:
                     # если адрес совпал (оба на home: чужой новый чат)
                     if fresh or dialog != self._tab_dialog \
                             or not self._same_chat(cur_url, target):
+                        self._new_thread()
                         ba.navigate_tab(target, tab_id=self._tab_id)
                         time.sleep(FRESH_CHAT_SETTLE_SEC)
                         self._after_nav(ba)
@@ -2518,6 +2693,7 @@ class WebChatLLM:
                     # открываем новую (брошенная страница иначе осталась бы
                     # жить в браузере пула)
                     self._drop_tab(ba, f"замена вкладки: {str(e)[:60]}")
+            self._new_thread()
             self._tab_id = ba.open_new_tab(target, background=True,
                                            pool=self.browser_pool)
             self._tab_dialog = dialog
@@ -2692,6 +2868,7 @@ class WebChatLLM:
         if self._tab_id is not None and \
                 now - self._last_tab_reload_ts > self._TAB_RELOAD_COOLDOWN_SEC:
             self._last_tab_reload_ts = now
+            self._new_thread()
             try:
                 ba.reload_tab(self._tab_id)
                 logger.info(f"[WebChat] {self.site}: вкладка перезагружена "
@@ -3043,6 +3220,12 @@ class WebChatLLM:
             if site_quarantined(self.site):
                 logger.info(f"[WebChat] {self.site}: карантин активен — пропуск")
                 return None
+            # Темп сайта: поиск по реплике человека не ждёт, только отмечается
+            wait = pace_reserve(self.site, self.channel)
+            if wait is None:
+                return None
+            if wait > 0:
+                time.sleep(wait)
             from app.features import browser_actions as ba
             host = self.adapter["host"]
             url = tpl.format(q=quote_plus(q))
@@ -3186,14 +3369,22 @@ class WebChatLLM:
         prompt = self._join_messages(messages)
         if not prompt:
             return None
+        # Повторяемые блоки (правила агента, неизменившаяся страница): тред,
+        # уже видевший блок, получает его ссылкой. Свежий тред у поисковика
+        # (stateless) прошлого не помнит — ему всё целиком
+        blocks = () if self.stateless else current_sticky()
         cap = self.adapter.get("max_input")
-        if cap and len(prompt) > cap and self.adapter.get("max_input_strict"):
+        strict = bool(cap and self.adapter.get("max_input_strict"))
+        shortest = prompt
+        for b in blocks:
+            shortest = shortest.replace(b.text, b.ref, 1)
+        if strict and len(shortest) > cap:
             # Сайт длиннее не берёт — сразу следующему провайдеру, без
             # вкладки и квоты
             logger.info(f"[WebChat] {self.site}#{self.channel}: промпт "
-                        f"{len(prompt)} симв. длиннее {cap} — пропуск")
+                        f"{len(shortest)} симв. длиннее {cap} — пропуск")
             return None
-        if cap and len(prompt) > cap:
+        if cap and not strict and len(prompt) > cap:
             logger.warning(f"[WebChat] {self.site}: промпт {len(prompt)} симв. "
                            f"длиннее лимита поля ({cap}) — сайт может не "
                            "ответить (замер google 17.09: >~9-10 тыс. → "
@@ -3241,6 +3432,27 @@ class WebChatLLM:
                     return None
                 if state == "ok":
                     self._login_restored(ba)
+            # Текст для ЭТОГО треда (вкладка могла смениться в _ensure_chat)
+            text, full = self._sticky_text(prompt, blocks)
+            if strict and len(text) > cap:
+                prim = [b for b in full if b.primable]
+                if prim and self._sticky_prime(prim, temperature, max_tokens,
+                                               top_p, timeout):
+                    tab_id = self._tab_id
+                    text, full = self._sticky_text(prompt, blocks)
+                if tab_id is None or len(text) > cap:
+                    logger.info(f"[WebChat] {self.site}#{self.channel}: "
+                                f"промпт {len(text)} симв. длиннее {cap} — "
+                                "пропуск")
+                    return None
+            # Темп: автоматический канал ждёт своего слота на сайте
+            wait = pace_reserve(self.site, self.channel)
+            if wait is None:
+                return None
+            if wait > 0:
+                logger.info(f"[WebChat] {self.site}#{self.channel}: пауза "
+                            f"{wait:.0f} с перед отправкой (темп сайта)")
+                time.sleep(wait)
             # Вкладка из реестра фоновых (raw-CDP)? Тогда её исчезновение
             # посреди вызова детектируется мгновенно (_tab_vanished)
             tab_token = self._snap_for(ba, tab_id)
@@ -3284,8 +3496,13 @@ class WebChatLLM:
                         else:
                             ba.chat_wait_uploaded(host, tab_id,
                                                   self.adapter["input"])
-                marker = self._send_verified(ba, host, tab_id, prompt,
+                marker = self._send_verified(ba, host, tab_id, text,
                                              wait_upload=bool(image_bytes))
+                self._sticky_sent(full)
+                if len(text) < len(prompt):
+                    logger.info(f"[WebChat] {self.site}#{self.channel}: "
+                                f"отправлено {len(text)} симв. из "
+                                f"{len(prompt)} (повторы — ссылкой)")
                 self._send_fail_streak = 0
                 if quarantine_kind(self.site) == "login":
                     # Сообщение ушло — значит, вход есть (проба «неизвестно»)
