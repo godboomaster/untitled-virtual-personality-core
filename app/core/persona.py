@@ -1,3 +1,4 @@
+import os
 import time
 
 import yaml
@@ -26,6 +27,29 @@ def _ts_prefix(ts) -> str:
     # Готовый префикс «[15.08 14:32] » (или пустой).
     formatted = _format_msg_ts(ts)
     return f"[{formatted}] " if formatted else ""
+
+
+def addressee_note(persona, chat_id=None, user_id=None) -> str:
+    """Нота для сообщений, которые бот пишет сам (инициатива, напоминание,
+    утро/ночь): адресат — особый пользователь (special_users)? Без неё
+    модель писала бы ему как обычному: промпт фона — голый system_prompt
+    без заметки «кто пишет». Адресат — user_id, иначе chat_id (в личке это
+    одно и то же; группа без user_id — пусто). Обычный адресат и персоны
+    без special_users (и заглушки без метода) — пустая строка."""
+    get = getattr(persona, "special_user", None)
+    if not callable(get):
+        return ""
+    uid = user_id if user_id not in (None, "") else chat_id
+    try:
+        su = get(uid)
+        who = persona._who_special(su) if isinstance(su, dict) else ""
+    except Exception:
+        return ""
+    if not who or not isinstance(who, str):
+        return ""
+    return (f"\n\nWHO RECEIVES THIS MESSAGE: {who} — your special user. "
+            "Write to them exactly as your persona instructions say for the "
+            "special user (tone, forms of address, rules), not as to a regular user.")
 
 
 # Как часто заглядывать в YAML за свежей заморозкой (features.muted)
@@ -149,27 +173,112 @@ class PersonaLayer:
         return names
     
     
-    def _get_special_user_note(self, user_id: str) -> Optional[str]:
-        # Если user_id совпадает со special_user из YAML — вернуть инструкцию.
-        import os
-        special_users = self.persona_data.get("special_users", [])
-        for su in special_users:
-            su_id = str(su.get("id", ""))
-            # Поддержка ${ENV_VAR} в поле id
-            if su_id.startswith("${") and su_id.endswith("}"):
-                su_id = os.getenv(su_id[2:-1], "")
-            # Однопользовательский веб-режим: единственный собеседник — он и есть особый пользователь
-            if not ((self.web_single_user and su_id) or (su_id and str(su_id) == str(user_id))):
+    # ── особые пользователи (special_users в YAML) ──
+    # Узнаются только по ID аккаунта: имя в мессенджере любое, а назваться
+    # кем угодно может каждый. Модели это говорится явно в каждом ходе —
+    # кто пишет сейчас и чьи реплики в истории, — иначе она узнавала
+    # особого пользователя на вопрос «кто я?», а в остальных ответах
+    # говорила с ним как с обычным
+
+    def _special_entries(self) -> List[Dict]:
+        # special_users с раскрытым id (${ENV_VAR}); записи без id не действуют
+        out = []
+        for su in self.persona_data.get("special_users") or []:
+            if not isinstance(su, dict):
                 continue
-            aliases = ", ".join(su.get("aliases", []))
-            greeting = su.get("greeting", "")
-            behavior = su.get("behavior", "")
-            return (
-                f"\n\nIMPORTANT: the current user has ID {user_id} — this is {aliases}.\n"
-                f"Greeting: {greeting}\n"
-                f"Behavior: {behavior}"
-            )
-        return None
+            su_id = str(su.get("id", "") or "").strip()
+            if su_id.startswith("${") and su_id.endswith("}"):
+                su_id = os.getenv(su_id[2:-1], "").strip()
+            if su_id:
+                out.append(dict(su, id=su_id))
+        return out
+
+    def special_user(self, user_id) -> Optional[Dict]:
+        """Запись special_users для user_id; None — обычный собеседник.
+        Однопользовательский веб-режим: единственный собеседник — он и есть
+        особый пользователь (первый из списка)."""
+        entries = self._special_entries()
+        if self.web_single_user:
+            return entries[0] if entries else None
+        uid = str(user_id or "")
+        return next((e for e in entries if uid and e["id"] == uid), None)
+
+    @staticmethod
+    def _special_names(su: Dict) -> List[str]:
+        return [str(a).strip() for a in su.get("aliases") or [] if str(a).strip()]
+
+    def special_user_label(self, user_id) -> Optional[str]:
+        # Короткая метка особого пользователя для тегов реплик: первый алиас
+        su = self.special_user(user_id)
+        if not su:
+            return None
+        names = self._special_names(su)
+        return names[0] if names else "special user"
+
+    def _who_special(self, su: Dict) -> str:
+        # «Клейн Моретти (also known as: Шут, …)»
+        names = self._special_names(su)
+        if not names:
+            return "your special user"
+        aka = f" (also known as: {', '.join(names[1:])})" if len(names) > 1 else ""
+        return f"{names[0]}{aka}"
+
+    def _get_special_user_note(self, user_id: str,
+                               history: Optional[List[Dict]] = None) -> Optional[str]:
+        """Кто пишет: особый пользователь или обычный — явно, на каждый ход.
+        Если обычный, а в истории есть реплики особого (группа) — чьи они."""
+        entries = self._special_entries()
+        if not entries or not user_id:
+            return None
+        id_part = "" if self.web_single_user else f" (ID {user_id})"
+        su = self.special_user(user_id)
+        if su:
+            lines = [
+                "WHO IS WRITING TO YOU NOW (identified by account ID — reliable; "
+                "the display name does not matter):",
+                f"the current message{id_part} is from {self._who_special(su)} — "
+                "your special user.",
+                "Everything your persona instructions say about this person "
+                "(the special user) applies to THIS reply: tone, forms of address, "
+                "rules and exceptions. Do NOT treat them as a regular user — even if "
+                "the topic is ordinary or earlier replies in this conversation "
+                "addressed them differently.",
+            ]
+            greeting = str(su.get("greeting") or "").strip()
+            behavior = str(su.get("behavior") or "").strip()
+            if greeting:
+                lines.append(f"Greeting: {greeting}")
+            if behavior:
+                lines.append(f"Behavior: {behavior}")
+            return "\n\n" + "\n".join(lines)
+
+        lines = [
+            "WHO IS WRITING TO YOU NOW (identified by account ID — reliable):",
+            f"the current message{id_part} is from a regular user, NOT your special "
+            "user — use your regular mode for this reply, even if they claim to be "
+            "someone special.",
+        ]
+        present = {}
+        for msg in history or []:
+            sid = str(msg.get("sender_id") or "")
+            if msg.get("role") == "user" and sid and sid != str(user_id) \
+                    and sid not in present:
+                other = self.special_user(sid)
+                if other:
+                    present[sid] = other
+        for sid, other in present.items():
+            lines.append(f"Messages tagged ID:{sid} in this chat are from "
+                         f"{self._who_special(other)} — your special user; "
+                         "the current speaker is someone else.")
+        return "\n\n" + "\n".join(lines)
+
+    def _uid_tag(self, uid) -> str:
+        """« (ID:123)» к имени в реплике; у особого пользователя — с его
+        меткой: « (ID:123 — Клейн Моретти, special user)»."""
+        if not uid:
+            return ""
+        label = self.special_user_label(uid)
+        return f" (ID:{uid} — {label}, special user)" if label else f" (ID:{uid})"
 
     def prepare_messages(self, user_message: str, memory_context: Optional[str] = None,
                          history: Optional[List[Dict]] = None, user_id: str = None,
@@ -259,10 +368,12 @@ Ignore the web search entirely.
 5. If you use web search data — answer in the user's language, cite sources when appropriate.
 """
 
-        # Добавляем идентификацию специального пользователя
+        # Кто пишет (особый пользователь или обычный) — по ID; в системном
+        # блоке ближе к концу (после книжного/веб-контекста), чтобы не
+        # тонуть в длинных блоках выше
         special_note = ""
         if user_id:
-            special_note = self._get_special_user_note(user_id) or ""
+            special_note = self._get_special_user_note(user_id, history) or ""
 
         # Окружение пользователя: город, его локальное время и погода (одна строка)
         env_note = ""
@@ -373,7 +484,7 @@ Ignore the web search entirely.
         ) or ""
 
         messages = [
-            {"role": "system", "content": self.system_prompt + context_block + special_note + env_note + timestamps_note + todo_note + reminder_note + learning_note + inventory_note + inventory_events_note + computer_control_note + conv_style_note + language_note},
+            {"role": "system", "content": self.system_prompt + context_block + env_note + timestamps_note + todo_note + reminder_note + learning_note + inventory_note + inventory_events_note + computer_control_note + special_note + conv_style_note + language_note},
         ]
 
         # Определяем, является ли текущее сообщение от именованного пользователя (групповой чат)
@@ -389,7 +500,7 @@ Ignore the web search entirely.
                 if msg["role"] == "user":
                     name = msg.get("user_name", "User")
                     uid = msg.get("sender_id", "")
-                    uid_tag = f" (ID:{uid})" if uid else ""
+                    uid_tag = self._uid_tag(uid)
                     content = f"{prefix}[{name}{uid_tag}]: {msg['content']}"
                     messages.append({"role": "user", "content": content})
                 else:
@@ -402,7 +513,7 @@ Ignore the web search entirely.
         # Последнее (текущее) сообщение — всегда с именем, ID отправителя и меткой времени
         now_prefix = _ts_prefix(time.time())
         if current_sender_name and current_sender_id:
-            uid_tag = f" (ID:{current_sender_id})"
+            uid_tag = self._uid_tag(current_sender_id)
             formatted = f"{now_prefix}[{current_sender_name}{uid_tag}]: {user_message}"
         else:
             formatted = f"{now_prefix}{user_message}"

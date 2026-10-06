@@ -36,9 +36,10 @@ main/vision в очереди не стоят.
 сайт помнит прошлые ходы треда, и общий тред персоны показывал модели
 промпты ДРУГИХ чатов. Вызовы вне области диалога (дневник, мир, служебные)
 идут в общий тред канала. Сброс — удалить chat_url/chat_urls из
-web_llm_state.json (или сам чат на сайте); при полной очистке истории
-персоны (/api/chat/clear) адреса сбрасываются автоматически (в снапшот
-корзины кладутся — undo их возвращает).
+web_llm_state.json (или сам чат на сайте); при очистке истории адреса
+сбрасываются автоматически: /api/chat/clear (в снапшот корзины кладутся —
+undo их возвращает), в Telegram — /clear, /start в личке, /erase (треды
+этого диалога) и /resetall (все треды персоны).
 
 Ограничения честно: ToS веб-чатов автоматизацию не приветствует (риск
 флага аккаунта — на пользователе; смягчается опциональной квотой
@@ -1346,10 +1347,11 @@ def _update_state(path: Path, mutate) -> dict:
 _DIALOG_KEY_SEP = "@@"
 
 
-def collect_chat_urls(context: str) -> Dict[str, str]:
+def collect_chat_urls(context: str, dialog: Optional[str] = None) -> Dict[str, str]:
     """Адреса постоянных чатов всех сайтов/каналов контекста
     ({state_key: url}, треды диалогов — {state_key@@диалог: url}) — для
-    снапшота корзины очистки диалога. Чистое
+    снапшота корзины очистки диалога. dialog — только треды этого диалога
+    (общие треды каналов не входят). Чистое
     чтение (без лока — atomic_write_json/os.replace не даёт читателю
     увидеть частично записанный файл)."""
     st = load_json_safe(_state_file(context), default={}, label="WebChat")
@@ -1359,13 +1361,15 @@ def collect_chat_urls(context: str) -> Dict[str, str]:
     for k, v in (st.get("sites") or {}).items():
         if not isinstance(v, dict):
             continue
-        if str(v.get("chat_url") or "").strip():
+        if dialog is None and str(v.get("chat_url") or "").strip():
             out[k] = str(v["chat_url"])
         urls = v.get("chat_urls")
         if isinstance(urls, dict):
-            for dialog, url in urls.items():
+            for d, url in urls.items():
+                if dialog is not None and str(d) != str(dialog):
+                    continue
                 if str(url or "").strip():
-                    out[f"{k}{_DIALOG_KEY_SEP}{dialog}"] = str(url)
+                    out[f"{k}{_DIALOG_KEY_SEP}{d}"] = str(url)
     return out
 
 
@@ -1398,6 +1402,40 @@ def clear_chat_urls(context: str) -> int:
         return 0
     logger.info(f"[WebChat] {context}: постоянные чаты сброшены ({n}) — "
                 "следующий вызов откроет новые")
+    return n
+
+
+def clear_dialog_chat_urls(context: str, dialog: str) -> int:
+    """Сбросить треды ОДНОГО диалога (все сайты и каналы контекста) — после
+    очистки истории чата: сайт помнит прошлые ходы треда, и без сброса
+    модель продолжала бы стёртый разговор. Следующий вызов в этом диалоге
+    откроет новый чат и получит полный промпт (STM, что осталась) заново.
+    Общие треды каналов и треды других диалогов не трогаются. Живая
+    вкладка уйдёт с треда лениво (_ensure_chat: адреса больше нет → home).
+    Возвращает число сброшенных адресов."""
+    dialog = str(dialog or "")
+    if not dialog:
+        return 0
+    n = 0
+
+    def _clear(st: dict) -> dict:
+        nonlocal n
+        sites = st.get("sites")
+        if not isinstance(sites, dict):
+            return st
+        for val in sites.values():
+            if not isinstance(val, dict):
+                continue
+            urls = val.get("chat_urls")
+            if isinstance(urls, dict) and dialog in urls:
+                if str(urls.pop(dialog) or "").strip():
+                    n += 1
+        return st
+
+    _update_state(_state_file(context), _clear)
+    if n:
+        logger.info(f"[WebChat] {context}: треды диалога {dialog} сброшены "
+                    f"({n}) — следующий вызов откроет новый чат")
     return n
 
 

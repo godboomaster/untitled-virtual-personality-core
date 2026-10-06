@@ -25,6 +25,7 @@ from typing import Optional, List, Dict
 from app.core import timeutil
 from app.core.dialog_scope import scoped_by
 from app.core.paths import data_dir
+from app.core.persona import addressee_note
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import (detect_language, detect_dialogue_language, language_name,
                                persona_language, user_language_line)
@@ -1957,7 +1958,8 @@ class ReminderManager:
         if self._router and self._persona and not self._primitive:
             try:
                 text = await asyncio.to_thread(
-                    self._generate_reminder_text, user_name, task, lang, chat_id)
+                    self._generate_reminder_text, user_name, task, lang, chat_id,
+                    reminder.get("user_id"))
             except Exception as e:
                 logger.warning(f"[Reminder] LLM генерация не удалась: {e}")
 
@@ -2055,10 +2057,12 @@ class ReminderManager:
         return language_name(lang) or "Russian"
 
     def _generate_reminder_text(self, user_name: str, task: Optional[str],
-                                lang: str = "English", chat_id: str = None) -> Optional[str]:
+                                lang: str = "English", chat_id: str = None,
+                                user_id: str = None) -> Optional[str]:
         # Генерирует текст напоминания через LLM в характере персоны. Синхронный вызов.
         assert self._router and self._persona  # проверяется в _fire перед вызовом
-        persona_prompt = self._persona.system_prompt.strip()
+        persona_prompt = (self._persona.system_prompt.strip()
+                          + addressee_note(self._persona, chat_id, user_id))
         # Текущее mood/energy персоны: лёгкий фоновый контекст, не директива
         living_block = ""
         if self._living and chat_id:
