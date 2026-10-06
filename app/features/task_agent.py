@@ -73,6 +73,10 @@ RESUME_SEC = 600
 MAX_SAME_ACTION = 3
 # Прогон, ждущий ответа дольше этого, снимается (человек ушёл)
 RUN_TTL_SEC = 1800
+# Карточка задачи в вебе: законченная задача видна ещё столько секунд,
+# журнал хода — не длиннее CARD_LOG_MAX строк
+CARD_TTL_SEC = 1800
+CARD_LOG_MAX = 60
 # Срок «продолжать?» (бюджет хода, передача человеку): «да» на него ничего
 # заготовленного не исполняет — следующий шаг решается по свежей странице,
 # рискованный спрашивает своё «да». Минута тут была мала: человек отвечал
@@ -355,6 +359,10 @@ _DATA_QUESTION_RE = re.compile(
     r"credenziali|utente|"
     r"c[oó]digo|codice"
     r")(?![^\W\d_])", re.IGNORECASE)
+# Строка хода, которая сообщает о неудаче (карточка задачи метит её FAIL)
+_FAIL_LINE_RE = re.compile(r"^\s*(?:не\s+удалось|не\s+получилось|задача\s+сорвалась|"
+                           r"couldn[’']?t|it\s+didn[’']?t\s+work|the\s+task\s+broke)",
+                           re.IGNORECASE)
 # Вариант списка в вопросе агента: «- Пепперони — 599 ₽», «1) …», «• …»
 _OPTION_LINE_RE = re.compile(r"^\s*(?:[-•*]|\d{1,2}[.)])\s+(.+?)\s*$",
                              re.MULTILINE)
@@ -1774,6 +1782,152 @@ class TaskAgent:
         # Команда, ради которой прогон брошен «да» на ask_switch, — один раз
         return self.__dict__.get("_switch_to", {}).pop(str(chat_id), None)
 
+    # ── Карточка задачи (веб) ─────────────────────────────
+
+    def task_card(self, chat_id) -> Optional[dict]:
+        """Карточка задачи чата для веба: цель, статус, план заказа с
+        отметками и журнал хода. Живой прогон — его состояние; законченный
+        — итог ещё CARD_TTL_SEC. None — показывать нечего. Только чтение:
+        протухший прогон не снимается (это делает active())."""
+        key = str(chat_id)
+        with self._lock:
+            run = self._runs.get(key)
+            live = run is not None and time.time() - run["touched"] <= RUN_TTL_SEC
+            kept = self.__dict__.get("_cards", {}).get(key)
+        if live:
+            # Вне лока: _secrets зовёт хук бота (хранилище секретов чата)
+            return self._card(run, chat_id)
+        if kept and time.time() - kept["ts"] <= CARD_TTL_SEC:
+            return dict(kept["card"])
+        return None
+
+    def _keep_card(self, chat_id, run: dict, status: str) -> None:
+        # Итог прогона — карточкой ещё CARD_TTL_SEC (очистка диалога — нет)
+        if run.get("forget"):
+            return
+        try:
+            card = self._card(run, chat_id, status)
+        except Exception as e:
+            logger.debug(f"[TaskAgent] карточка задачи не собралась: {e}")
+            return
+        with self._lock:
+            self.__dict__.setdefault("_cards", {})[str(chat_id)] = {
+                "card": card, "ts": time.time()}
+
+    def _ui_note(self, run: dict, text: str) -> None:
+        # Строки хода — в журнал карточки (те же, что уходят в чат: фронт
+        # по ним прячет дубли из пузырей)
+        log = run.setdefault("ui_log", [])
+        for ln in str(text or "").splitlines():
+            ln = ln.strip()
+            if ln:
+                log.append({"text": ln[:300], "ok": not _FAIL_LINE_RE.match(ln)})
+        del log[:-CARD_LOG_MAX]
+
+    def _card(self, run: dict, chat_id, status: Optional[str] = None) -> dict:
+        if status is None:
+            kind = (run.get("awaiting") or {}).get("kind")
+            status = ("working" if run.get("busy") or not kind else
+                      "paused" if kind == "continue" else
+                      "ask" if kind == "ask" else "confirm")
+        # Цель цитируется человеку — без паролей/токенов/контактов, как в
+        # вопросе «бросить задачу?»
+        from app.features.computer_control import command_secret_values
+        goal = " ".join(str(run.get("goal") or "").split())
+        goal = redact_inline(mask_values(goal, command_secret_values(goal)
+                                         + self._secrets(run, chat_id)))[:120]
+        return {"id": run.get("id"), "goal": goal, "status": status,
+                "steps": int(run.get("steps") or 0),
+                "started": run.get("started") or run.get("touched"),
+                "updated": run.get("touched"),
+                "plan": self._plan_view(run, status),
+                "log": [dict(x) for x in run.get("ui_log") or ()]}
+
+    def _plan_view(self, run: dict, status: str) -> List[dict]:
+        """План заказа человеку (что _plan_lines даёт модели, но словами для
+        чата): магазин → позиции в корзину → «что-нибудь ещё?» → проверка
+        корзины → оформление. Не заказ — пусто. Бриф — облачный вид: слоты
+        с приватной страницы заглушкой."""
+        if not _ORDER_GOAL_RE.search(run.get("goal") or ""):
+            return []
+        en = str(run.get("lang") or "").startswith("en")
+        brief = _brief_view(run.get("brief")) or {}
+        adds = run.get("cart_adds") or []
+        items = brief.get("items") or []
+        steps: List[Tuple[bool, str]] = []
+        site = (run.get("cart_host") or run.get("site_ok")
+                or next(iter(run.get("site_pick") or ()), None)
+                or ((brief.get("site") or {}).get("value")))
+        steps.append((bool(site), (f"shop: {site}" if en else f"магазин: {site}")
+                      if site else ("choose the shop" if en else "выбрать магазин")))
+        if not items and not adds and not run.get("kinds"):
+            steps.append((False, "choose what to order" if en
+                          else "выбрать, что заказать"))
+        for k in run.get("kinds") or ():
+            steps.append((False, f"choose “{k}”" if en else f"выбрать «{k}»"))
+        for b in items:
+            n = sum(1 for x in adds if _same_item(b["name"], x["key"]))
+            txt = self._item_text(b)
+            steps.append((n >= (b.get("qty") or 1),
+                          f"put “{txt}” in the cart" if en
+                          else f"положить «{txt}» в корзину"))
+        for key in dict.fromkeys(x["key"] for x in adds if not any(
+                _same_item(b["name"], x["key"]) for b in items)):
+            steps.append((True, f"“{key}” is in the cart" if en
+                          else f"«{key}» в корзине"))
+        steps.append((bool(run.get("more_no")), "ask “anything else?”" if en
+                      else "спросить «что-нибудь ещё?»"))
+        steps.append((bool(run.get("cart_checked")), "check the cart" if en
+                      else "проверить корзину"))
+        steps.append((status == "done", "check out — with your confirmation" if en
+                      else "оформить заказ — с твоим подтверждением"))
+        if status == "done":
+            steps = [(True, t) for _d, t in steps]
+        cur = (next((i for i, (d, _t) in enumerate(steps) if not d), None)
+               if status not in ("cancelled", "stopped") else None)
+        return [{"text": t, "state": "done" if d else "current" if i == cur
+                 else "todo"} for i, (d, t) in enumerate(steps)]
+
+    def has_run(self, chat_id) -> bool:
+        # Есть ли у чата прогон (без побочных эффектов active(): протухший
+        # по TTL не снимается и в память задач не пишется)
+        with self._lock:
+            return str(chat_id) in self._runs
+
+    def answer_options(self, chat_id) -> Optional[dict]:
+        """Варианты ответа на то, чего ждёт прогон чата, — для кнопок веба:
+        {"kind": ..., "options": [{"label", "send"} | {"role"}]}. Кнопка
+        шлёт send обычной репликой (номер варианта, «да»/«нет»/«отмена» по
+        role), поэтому feed разбирает её как набранную — с теми же
+        проверками владельца и сроков. None — ответ свободный (вопрос без
+        вариантов, несколько вопросов одним сообщением) или прогон занят.
+        Только чтение: протухший по RUN_TTL_SEC прогон не снимается."""
+        with self._lock:
+            run = self._runs.get(str(chat_id))
+            if (run is None or run["busy"]
+                    or time.time() - run["touched"] > RUN_TTL_SEC):
+                return None
+            aw = dict(run.get("awaiting") or {})
+        kind = aw.get("kind")
+        if kind in ("confirm", "switch"):
+            return {"kind": "yesno", "options": [{"role": "yes"}, {"role": "no"}]}
+        if kind == "continue":
+            return {"kind": "continue",
+                    "options": [{"role": "yes"}, {"role": "cancel"}]}
+        if kind != "ask":
+            return None
+        q = str(aw.get("question") or "")
+        opts = _option_texts(q)
+        # Вопросы о товаре идут одним сообщением, у каждого свои варианты:
+        # кнопка ответила бы на один из них — такие только текстом
+        heads = [ln for ln in q.splitlines()
+                 if "?" in ln and not _OPTION_LINE_RE.match(ln)]
+        if not 2 <= len(opts) <= 10 or len(heads) > 1:
+            return None
+        return {"kind": "options",
+                "options": [{"label": o, "send": str(i)}
+                            for i, o in enumerate(opts, 1)]}
+
     def awaiting_kind(self, chat_id) -> Optional[str]:
         # Чего ждёт прогон чата (ask/confirm/continue/switch) — бот до лока
         # хода отличает «не надо» на вопрос от отмены задачи
@@ -1809,6 +1963,7 @@ class TaskAgent:
         logger.info(f"[TaskAgent] прогон «{run['goal'][:40]}» отменён")
         if not busy:
             self._remember(chat_id, run, "cancelled by the user")
+            self._keep_card(chat_id, run, "cancelled")
         return self._phrase("task_cancelled", "Хорошо, бросаю задачу.")
 
     def forget_chat(self, chat_id) -> List[dict]:
@@ -1828,6 +1983,7 @@ class TaskAgent:
             fin = self.__dict__.get("_finished", {}).pop(key, None)
             if fin and isinstance(fin.get("run"), dict):
                 fin["run"]["forget"] = True
+            self.__dict__.get("_cards", {}).pop(key, None)
         with self._memory_lock:
             data = self._load_memory(for_write=True)
             removed = data.pop(key, None) if data is not None else None
@@ -1916,6 +2072,8 @@ class TaskAgent:
                "qa": [], "history": [], "steps": 0, "awaiting": None,
                "obs_extra": None, "busy": True, "cancel": False,
                "touched": time.time(), "sites": [],
+               # Карточка задачи в вебе: начало и журнал хода
+               "started": time.time(), "ui_log": [],
                # Автор текущего хода: им подписывается подтверждение
                "turn_user": str(user_id) if user_id is not None else None,
                "past": self._past_tasks(chat_id, goal),
@@ -2324,6 +2482,8 @@ class TaskAgent:
         carry = run.pop("carry", None)
         announce = run.pop("announce", None)
         lines: List[str] = [x for x in (announce, carry) if x]
+        for x in lines:
+            self._ui_note(run, x)
         pending: List[str] = list(lines)
         last_flush = time.time()
         t0 = time.time()
@@ -2361,6 +2521,7 @@ class TaskAgent:
                 kind, text = outcome
                 if kind == "progress":
                     if text:
+                        self._ui_note(run, text)
                         lines.append(text)
                         pending.append(text)
                         if notify and time.time() - last_flush >= NOTIFY_EVERY_SEC:
@@ -2394,6 +2555,9 @@ class TaskAgent:
                         "run": run, "ts": time.time(), "text": text}
             self._remember(chat_id, run, "cancelled by the user"
                            if run["cancel"] else text)
+            self._keep_card(chat_id, run, "cancelled" if run["cancel"] else {
+                "done": "done", "done_unverified": "done",
+                "payment": "payment"}.get(run.get("outcome"), "stopped"))
         if notify:
             # Последняя пачка — в самом ответе: так она гарантированно стоит
             # ПЕРЕД итоговой репликой, а не догоняет её отдельным сообщением

@@ -1971,6 +1971,59 @@ class BotInstance:
 
     # ── Ход до лока чата: «стоп», дубли, занятый агент ──────────
 
+    def cc_answer_options(self, chat_id, user_id=None) -> Optional[dict]:
+        """Кнопки ответа для веба: варианты вопроса, которого сейчас ждёт
+        режим управления в чате (см. TaskAgent.answer_options и
+        ComputerControlManager.pending_answer_options). Порядок — как в
+        process_message: живой прогон агента важнее подтверждения команды;
+        прогон без вариантов (свободный ответ) кнопок не даёт. Кнопка шлёт
+        обычную реплику, поэтому здесь ничего не меняется — только чтение."""
+        key = str(chat_id or user_id or "")
+        cc = getattr(self, "computer_control", None)
+        if not key or cc is None:
+            return None
+        try:
+            if not self.control_mode_on(key):
+                return None
+            ta = self.task_agent
+            if ta is not None and ta.has_run(key):
+                return ta.answer_options(key)
+            return cc.pending_answer_options(key, user_id)
+        except Exception as e:
+            logger.debug(f"[BotInstance] варианты ответа не собрались: {e}")
+            return None
+
+    def cc_tracked_page(self, chat_id) -> Optional[dict]:
+        # Отслеживаемая вкладка чата — для трансляции в веб (только чтение)
+        cc = getattr(self, "computer_control", None)
+        if cc is None:
+            return None
+        try:
+            return cc.tracked_page(chat_id)
+        except Exception:
+            return None
+
+    def cc_view_describe(self, url: str) -> dict:
+        # Адрес для трансляции: без токенов и с признаком приватной страницы;
+        # без менеджера — пустой адрес и «приватная» (консервативно)
+        cc = getattr(self, "computer_control", None)
+        if cc is None:
+            return {"url": "", "private": True}
+        return cc.view_describe(url)
+
+    def cc_task_card(self, chat_id, user_id=None) -> Optional[dict]:
+        """Карточка задачи агента для веба (TaskAgent.task_card): цель,
+        статус, план заказа и журнал хода. Только чтение."""
+        key = str(chat_id or user_id or "")
+        ta = getattr(self, "task_agent", None)
+        if not key or ta is None:
+            return None
+        try:
+            return ta.task_card(key)
+        except Exception as e:
+            logger.debug(f"[BotInstance] карточка задачи не собралась: {e}")
+            return None
+
     def cc_turn_enter(self, text: str, user_id, chat_id):
         """Вызывается платформой ДО ожидания лока чата (Telegram/веб).
         → (reply, token): reply не None — ответить им сразу и сообщение

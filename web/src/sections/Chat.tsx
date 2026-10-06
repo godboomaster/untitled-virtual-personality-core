@@ -1,12 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, useMockData } from '../i18n';
 import type { ChatMessage, DiaryEntry, InitiativeEvent, InventoryItem, LearningSession, LtmFact, PersonaFile, Reminder, TodoItem } from '../mockData';
 import { api, streamChat, StreamInterruptedError } from '../api';
-import type { ApiHistoryMessage, ClearPart, InitiativeData, PersonaConfig, ReminderEntry } from '../api';
+import type { AnswerOption, ApiHistoryMessage, ClearPart, InitiativeData, PersonaConfig, ReminderEntry } from '../api';
 import { refetchPersonaLlm, useApiOnline, useApiPersonaLlm, useApiProviders, usePersonaLivingState } from '../apiData';
 import { alertDialog, confirmDialog } from '../dialogStore';
 import {
-  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setControlMode, setFastPoll, setGenerating, touchActivity, useInbox,
+  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setAnswerOptions, setControlMode, setFastPoll, setGenerating, setTaskCard, touchActivity, useInbox,
 } from '../inboxStore';
 import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
@@ -26,6 +26,8 @@ import { usePersonaAvatars } from '../avatarStore';
 import PersonaDossier from '../components/PersonaDossier';
 import PersonaYamlModal from '../components/PersonaYamlModal';
 import MessageText from '../components/MessageText';
+import TaskCard from '../components/TaskCard';
+import BrowserPanel from '../components/BrowserPanel';
 import VoiceChat from '../components/VoiceChat';
 import Icon from '../components/icons';
 import type { IconName } from '../components/icons';
@@ -103,6 +105,21 @@ function featureEnabledFromConfig(features: Record<string, unknown> | undefined,
 // над списком или повторный клик по «Чат» в сайдбаре (так же и в скине).
 // Переход из других секций (карточки главной, уведомление) открывает чат
 // сразу, минуя страницу всех чатов
+// Строка-вариант в вопросе бота: «- Пепперони — 549 ₽», «1. Кинопоиск — kinopoisk.ru»
+// (тот же разбор, что _OPTION_LINE_RE в app/features/task_agent.py)
+const OPTION_LINE_RE = /^\s*(?:[-•*]|\d{1,2}[.)])\s+(.+?)\s*$/;
+const optionLines = (text: string) =>
+  text.split('\n').map((ln) => OPTION_LINE_RE.exec(ln)?.[1]).filter((x): x is string => !!x);
+// Текст вопроса без строк-вариантов, когда они стали кнопками; число не
+// совпало с кнопками — текст как есть (лучше дубль, чем потерянный вариант)
+function stripOptionLines(text: string, n: number): string {
+  if (!n || optionLines(text).length !== n) return text;
+  return text.split('\n').filter((ln) => !OPTION_LINE_RE.test(ln)).join('\n').replace(/\n{3,}/g, '\n\n');
+}
+// Слова кнопок «да/нет/бросить» — бэкенд понимает оба языка
+const ROLE_SEND_RU = { yes: 'да', no: 'нет', cancel: 'отмена' } as const;
+const ROLE_SEND_EN = { yes: 'yes', no: 'no', cancel: 'cancel' } as const;
+
 export default function Chat() {
   const { personas } = useMockData();
   const request = useChatPersonaRequest();
@@ -398,7 +415,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
   // Фоновые сообщения (напоминания, инициативы) прилетают в глобальный
   // inbox-стор (поллер в App); здесь только гасим непрочитанные открытой персоны
-  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode } = useInbox();
+  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode, answerOptions, taskCards } = useInbox();
   useEffect(() => {
     markRead(persona.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -561,6 +578,41 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // inbox, пока наш запрос ещё в пути, — тоже быстрый опрос, иначе они
   // приходили пачкой раз в 15 с
   const ccOn = controlMode[persona.id] === true;
+  // Окно браузера агента рядом с чатом — в режиме управления, в обычном
+  // чате (не досье/голос); выбор «показывать» помнится в этом браузере
+  const [browserOpen, setBrowserOpenState] = useState(() => {
+    try {
+      return localStorage.getItem('vpc-cc-browser') !== 'off';
+    } catch {
+      return true;
+    }
+  });
+  const setBrowserOpen = (v: boolean) => {
+    setBrowserOpenState(v);
+    try {
+      localStorage.setItem('vpc-cc-browser', v ? 'on' : 'off');
+    } catch {
+      /* хранилище недоступно — выбор живёт до перезагрузки */
+    }
+  };
+  const showBrowser = ccOn && apiOnline && browserOpen && !dossierOpen && chatMode === 'classic';
+  // Появилось окно браузера — правую панель сворачиваем, чтобы чату хватило места
+  useEffect(() => {
+    if (showBrowser) setPanelOpen(false);
+  }, [showBrowser]);
+  const curAnswer = answerOptions[persona.id] ?? null;
+  // Карточка задачи агента: встаёт в ленту по времени старта задачи; строки
+  // хода, которые в ней есть, из пузырей прячутся (они уже в карточке)
+  const taskCard = taskCards[persona.id] ?? null;
+  const taskLines = taskCard ? new Set(taskCard.log.map((x) => x.text)) : null;
+  const withoutTaskLines = (m: ChatMessage): string => {
+    if (!taskCard || !taskLines || m.role !== 'bot' || (m.ts ?? 0) < taskCard.started - 2) return m.text;
+    return m.text.split('\n').filter((ln) => !taskLines.has(ln.trim())).join('\n').trim();
+  };
+  const answerSend = (o: AnswerOption) =>
+    o.send ?? (o.role ? (lang === 'en' ? ROLE_SEND_EN : ROLE_SEND_RU)[o.role] : '');
+  const answerLabel = (o: AnswerOption) =>
+    o.role === 'yes' ? t('cc.answerYes') : o.role === 'no' ? t('cc.answerNo') : o.role === 'cancel' ? t('cc.answerCancel') : (o.label ?? '');
   useEffect(() => {
     setFastPoll((remoteGenerating && !inFlight) || (inFlight && ccOn) ? persona.id : null);
   }, [remoteGenerating, inFlight, ccOn, persona.id]);
@@ -762,6 +814,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     stickBottom.current = true;
   }, [persona.id]);
   const visibleMessages = messages.length > visibleCount ? messages.slice(-visibleCount) : messages;
+  // Место карточки задачи: перед первым видимым сообщением после её старта
+  // (-1 — после всех: задача началась позже последнего сообщения)
+  const taskCardAt = taskCard ? visibleMessages.findIndex((m) => (m.ts ?? 0) > taskCard.started) : -1;
   const hiddenCount = messages.length - visibleMessages.length;
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -1007,6 +1062,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // её сам)
   const submitMessage = (text: string, image: string | null, fromSkin = false) => {
     if (!text && !image) return;
+    // Человек ответил (кнопкой или текстом) — прежние кнопки ответа снимаем;
+    // новые, если бот снова спросит, придут с ответом
+    setAnswerOptions(persona.id, null);
     if (!apiOnline) {
       // Офлайн-режим (моки): картинка остаётся локальным пузырём
       pushMessage(text, image);
@@ -1140,6 +1198,10 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         // Режим управления мог переключиться самим этим сообщением —
         // обновляем сразу, не дожидаясь поллера inbox
         if (typeof res.control_mode === 'boolean') setControlMode(pid, res.control_mode);
+        // Вопрос режима управления с вариантами — кнопки под ответом
+        setAnswerOptions(pid, res.answer_options ?? null);
+        // Карточка задачи агента — итог хода (дальше её обновляет inbox)
+        if ('task' in res) setTaskCard(pid, res.task ?? null);
         // Ответ догенерировался, а вкладка уже не в фокусе — уведомляем (как в мессенджерах)
         notifyBotMessage(pid, personaName, res.reply);
       })
@@ -1946,6 +2008,31 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             </div>
           </div>
           <div className="chat-header-actions">
+            {ccOn && apiOnline && (
+              <div className="chat-cc-controls">
+                <span className="chat-cc-badge" title={t('cc.badgeTitle')}>
+                  <span className="status-led" />
+                  {t('cc.badge')}
+                </span>
+                {waiting && (
+                  <button type="button" className="btn btn--chip chat-cc-btn" title={t('cc.stopTitle')} onClick={() => submitMessage(t('cc.stopPhrase'), null)}>
+                    ■ {t('cc.stop')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`btn btn--chip chat-cc-btn${browserOpen ? ' chat-cc-btn--on' : ''}`}
+                  title={t('cc.browserTitle')}
+                  aria-pressed={browserOpen}
+                  onClick={() => setBrowserOpen(!browserOpen)}
+                >
+                  {t('cc.browser')}
+                </button>
+                <button type="button" className="btn btn--chip chat-cc-btn" title={t('cc.exitTitle')} disabled={waiting} onClick={() => submitMessage(t('cc.exitPhrase'), null)}>
+                  {t('cc.exit')}
+                </button>
+              </div>
+            )}
             <button className="btn btn--chip" title={t('chat.modeVoiceTitle')} onClick={() => setChatMode('voice')}>
               <Icon name="voice" size={13} />
               {t('chat.modeVoice')}
@@ -2016,10 +2103,29 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           {visibleMessages.map((m, i) => {
             // Цитируемое сообщение (если это ответ)
             const quoted = m.replyTo != null ? messages.find((q) => q.id === m.replyTo) : undefined;
+            // Карточка задачи — перед первым сообщением после её старта
+            const cardHere = taskCard && i === taskCardAt ? <TaskCard card={taskCard} /> : null;
+            // Пузырь только из строк хода (они в карточке) — не показываем
+            const ownText = withoutTaskLines(m);
+            if (!ownText && m.text && !m.image && !m.images?.length) return <Fragment key={m.id}>{cardHere}</Fragment>;
+            // Кнопки ответа — под последним сообщением бота, пока режим
+            // управления ждёт ответа и бот не занят
+            const answer = ccOn && !waiting && m.role === 'bot' && i === visibleMessages.length - 1
+              ? curAnswer
+              : null;
+            const shownText = answer?.kind === 'options'
+              ? stripOptionLines(ownText, answer.options.filter((o) => o.label).length)
+              : ownText;
+            // «2» в ответ на список — с подписью выбранного варианта
+            const prev = i > 0 ? visibleMessages[i - 1] : undefined;
+            const echo = m.role === 'user' && /^\d{1,2}$/.test(m.text.trim()) && prev?.role === 'bot'
+              ? optionLines(prev.text)[Number(m.text.trim()) - 1]
+              : undefined;
             return (
+              <Fragment key={m.id}>
+              {cardHere}
               <div
-                key={m.id}
-                className={`message message--${m.role}`}
+                className={`message message--${m.role}${answer ? ' message--answers' : ''}`}
                 style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
               >
                 <div className="message-bubble">
@@ -2040,7 +2146,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                   <div className="message-text">
                     {/* Ответы бота — с markdown-разметкой; у стримящегося
                         пузыря висячие маркеры достраиваются на лету */}
-                    {m.role === 'bot' ? <MessageText text={m.text} streaming={m.id === streamMsgId} /> : m.text}
+                    {m.role === 'bot'
+                      ? <MessageText text={shownText} streaming={m.id === streamMsgId} />
+                      : echo
+                        ? <><span className="answer-echo-num">{m.text.trim()}</span>{echo}</>
+                        : m.text}
                   </div>
                   {m.image && <img className="message-image" src={m.image} alt={t('chat.attachment')} />}
                   {m.images && m.images.length > 0 && (
@@ -2068,9 +2178,25 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                     )}
                   </div>
                 </div>
+                {answer && (
+                  <div className={`answer-options answer-options--${answer.kind}`} role="group" aria-label={t('cc.answerGroup')}>
+                    {answer.options.map((o, k) => (
+                      <button
+                        key={k}
+                        type="button"
+                        className={`answer-btn${o.role ? ` answer-btn--${o.role}` : ''}`}
+                        onClick={() => submitMessage(answerSend(o), null)}
+                      >
+                        {o.label ? <><span className="answer-btn-num">{o.send}</span>{o.label}</> : answerLabel(o)}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
+              </Fragment>
             );
           })}
+          {taskCard && taskCardAt === -1 && <TaskCard card={taskCard} />}
         </div>
 
         <div className="chat-status-bar">
@@ -2146,6 +2272,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         </div>
       </div>
       )}
+
+      {/* Окно браузера агента: живые кадры вкладки, на которой он работает */}
+      {showBrowser && <BrowserPanel personaId={persona.id} personaName={persona.name} onClose={() => setBrowserOpen(false)} />}
 
       {/* Контекстная панель: статус персоны */}
       <aside className={`chat-context ${panelOpen ? '' : 'chat-context--collapsed'}`}>

@@ -1,5 +1,6 @@
 import { useEffect, useReducer } from 'react';
 import { api } from './api';
+import type { AnswerOptions, TaskCard } from './api';
 import { notifyBotMessage } from './notifications';
 import { getFocusedPersona, tabActive } from './presence';
 import type { Persona } from './mockData';
@@ -21,6 +22,10 @@ let unread: Record<string, number> = {}; // persona id → сколько неп
 let generating: Record<string, boolean> = {}; // persona id → сейчас генерирует ответ
 let lastTs: Record<string, number> = {}; // persona id → ts последнего сообщения в чате
 let controlMode: Record<string, boolean> = {}; // persona id → режим управления (computer control)
+// persona id → кнопки ответа на вопрос режима управления, которого ждёт чат
+let answerOptions: Record<string, AnswerOptions | null> = {};
+// persona id → карточка задачи агента (живая или недавний итог)
+let taskCards: Record<string, TaskCard | null> = {};
 // persona id → last_ts СЕРВЕРА как есть (без локальных touchActivity): метка
 // последнего сообщения STM, тот же float, что timestamp реплики в истории.
 // lastTs выше для сортировки смешивает её с часами браузера — сравнивать
@@ -38,7 +43,7 @@ export function useInbox() {
       listeners.delete(force);
     };
   }, []);
-  return { messages, unread, generating, lastTs, serverLastTs, controlMode };
+  return { messages, unread, generating, lastTs, serverLastTs, controlMode, answerOptions, taskCards };
 }
 
 // Обновить флаг режима управления (из ответа /api/chat или поллинга inbox):
@@ -46,6 +51,21 @@ export function useInbox() {
 export function setControlMode(persona: string, value: boolean) {
   if ((controlMode[persona] ?? false) === value) return;
   controlMode = { ...controlMode, [persona]: value };
+  emit();
+}
+
+// Кнопки ответа на вопрос режима управления (ответ /api/chat, поллинг inbox;
+// null — снять: человек ответил или вопроса больше нет)
+export function setAnswerOptions(persona: string, value: AnswerOptions | null) {
+  if (JSON.stringify(answerOptions[persona] ?? null) === JSON.stringify(value)) return;
+  answerOptions = { ...answerOptions, [persona]: value };
+  emit();
+}
+
+// Карточка задачи агента (ответ /api/chat, поллинг inbox; null — нет)
+export function setTaskCard(persona: string, value: TaskCard | null) {
+  if (JSON.stringify(taskCards[persona] ?? null) === JSON.stringify(value)) return;
+  taskCards = { ...taskCards, [persona]: value };
   emit();
 }
 
@@ -154,6 +174,11 @@ export function useInboxPolling(apiOnline: boolean, personas: Persona[]) {
           }
           // Режим управления — гасит дебаунс-паузу отправки в чате
           if (typeof r.control_mode === 'boolean') setControlMode(id, r.control_mode);
+          // Кнопки ответа — состояние ожидания живёт в боте и переживает
+          // перезагрузку страницы
+          if ('answer_options' in r) setAnswerOptions(id, r.answer_options ?? null);
+          // Карточка задачи — обновляется на месте, пока агент работает
+          if ('task' in r) setTaskCard(id, r.task ?? null);
           // Серверная метка последнего сообщения — по ней чат догружает
           // историю, если STM дописан позже, чем её прочитали (поздний ответ)
           const srv = typeof r.last_ts === 'number' ? r.last_ts : 0;
