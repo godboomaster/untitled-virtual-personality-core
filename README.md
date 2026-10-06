@@ -1,48 +1,56 @@
 # Virtual Persona Core
 
-Платформа для «живых» персонажей: ботов, которые помнят собеседника, живут своей жизнью
-между сообщениями и сами пишут первыми. Персона — это YAML-файл с характером, памятью и
-набором модулей. Одна и та же персона работает в Telegram и в веб-интерфейсе, умеет
-напоминать, вести дела и учить, а по просьбе владельца — управлять его браузером.
+**English** · [Русский](README.ru.md)
 
-Отвечает любая OpenAI-совместимая модель по API-ключу, веб-чат LLM в браузере бота
-(DeepSeek, Qwen, Claude, ChatGPT и др.) или локальная модель в Ollama — то есть бот может
-обойтись вообще без ключей.
+A platform for "living" characters: bots that remember the person they talk to, live their
+own lives between messages and message you first. A persona is a YAML file with a
+character, memory and a set of modules. The same persona works in Telegram and in the web
+interface, can remind you of things, keep your to-do list and teach you, and — at the
+owner's request — drive their browser.
 
-Бэкенд — Python (FastAPI, ChromaDB, python-telegram-bot), веб — React (`web/`), панель в
-трее — Tauri (`desktop/`). Основная платформа — macOS; Windows поддерживается, но проверен
-меньше.
+Replies come from any OpenAI-compatible model with an API key, from an LLM web chat in the
+bot's browser (DeepSeek, Qwen, Claude, ChatGPT and more) or from a local model in Ollama —
+so the bot can run without any API keys at all.
 
-https://github.com/user-attachments/assets/e2401df3-80c9-4da9-bee0-fa266462962a
+Backend — Python (FastAPI, ChromaDB, python-telegram-bot), web — React (`web/`), tray
+panel — Tauri (`desktop/`). The main platform is macOS; Windows is supported but less
+tested.
 
-## Что умеет
+https://github.com/user-attachments/assets/aa87b619-6564-4703-81d8-762ad478f123
 
-- **Telegram и веб.** В Telegram — личные сообщения и группы (по слову-триггеру или ответу
-  на сообщение бота), команды, длинный код уходит файлами. В вебе — чаты со всеми
-  персонами, досье, комната персоны, настройки, редактор персон, голосовой режим.
-- **Память.** Последние сообщения чата, факты о собеседнике (модель извлекает их сама,
-  сливает дубликаты и разбирает противоречия), досье чата, дневник самой персоны, файлы
-  с поиском по содержимому.
-- **Жизнь между сообщениями.** У персоны есть настроение, энергия, занятие и место, свой мир
-  с людьми и сюжетами, события, пока вы молчите. Вернувшись, вы услышите, чем она жила.
-- **Инициатива и ритм суток.** Персона пишет первой, когда есть повод, и учится, на что вы
-  отвечаете. Утром здоровается, ночью гонит спать, предупреждает о дожде.
-- **Уровень интеллекта.** Человек отвечает на бытовой вопрос по-человечески, а не простынёй
-  ассистента; лесной дух — жестом. Это задаётся уровнем: `primitive`, `normal`, `bot`.
-- **Хозяйство.** Напоминания («завтра в 12», «по пятницам в 18:00»), список дел, инвентарь,
-  курсы обучения с тестами, веб-поиск.
-- **Режим управления.** По команде владельца бот открывает сайты и приложения, ищет на
-  сайтах, нажимает кнопки, вводит текст, читает страницы, выполняет многошаговые задачи
-  («закажи пиццу») и повторяет записанные сценарии. Действия — с подтверждением.
-- **Без ключей.** Веб-чаты LLM в браузере бота или локальная модель в Ollama.
-- **Аддоны.** Пример — Арродес: персона-знаток книги с гибридным поиском по её тексту.
+## What it can do
 
-## Быстрый старт
+- **Telegram and web.** In Telegram — private chats and groups (by a trigger word or a reply
+  to the bot's message), commands, long code is sent as files. On the web — chats with all
+  personas, dossier, the persona's room, settings, a persona editor, voice mode.
+- **Memory.** Recent chat messages, facts about the person (the model extracts them by
+  itself, merges duplicates and resolves contradictions), a chat dossier, the persona's own
+  diary, files with full-text search.
+- **Life between messages.** A persona has a mood, energy, an activity and a place, its own
+  world with people and storylines, and events while you are silent. When you come back,
+  you'll hear what it has been up to.
+- **Initiative and daily rhythm.** The persona writes first when there is a reason, and
+  learns what you reply to. It says good morning, sends you to bed at night, warns you about
+  rain.
+- **Intelligence tier.** A human answers an everyday question like a human, not with an
+  assistant's wall of text; a forest spirit answers with a gesture. This is set by the tier:
+  `primitive`, `normal`, `bot`.
+- **Household.** Reminders ("tomorrow at 12", "every Friday at 6 pm"), a to-do list,
+  inventory, courses with quizzes, web search.
+- **Control mode.** On the owner's command the bot opens sites and apps, searches on sites,
+  clicks buttons, types text, reads pages, carries out multi-step tasks ("order a pizza")
+  and replays recorded scenarios. Actions are confirmed.
+- **No keys needed.** LLM web chats in the bot's browser or a local model in Ollama.
+- **Add-ons.** Example — Arrodes: a persona that knows a book, with hybrid search over its
+  text.
 
-Нужны Python 3.11+, для веба — Node.js 20.19+ или 22.12+. Для веб-чатов и режима управления —
-браузер на Chromium (Chrome, Edge, Brave, Opera, Яндекс, Vivaldi). Ollama — по желанию.
-`requirements.txt` ставит точные проверенные версии пакетов на Linux, Windows и macOS 14+
-с Apple Silicon. На Intel-маках и macOS 13 у этих версий torch и onnxruntime нет сборок.
+## Quick start
+
+You need Python 3.11+ and, for the web, Node.js 20.19+ or 22.12+. Web chats and control mode
+need a Chromium-based browser (Chrome, Edge, Brave, Opera, Yandex Browser, Vivaldi). Ollama
+is optional. `requirements.txt` installs exact tested package versions on Linux, Windows
+and macOS 14+ on Apple Silicon. Intel Macs and macOS 13 have no builds of these torch and
+onnxruntime versions.
 
 ```bash
 git clone <repo-url> virtual-persona-core
@@ -53,11 +61,11 @@ source .venv/bin/activate                    # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 pip install -e .
 
-cp .env.example .env                         # пустой шаблон личных настроек
-python -m app.main api                       # бэкенд: http://127.0.0.1:8000
+cp .env.example .env                         # empty template of personal settings
+python -m app.main api                       # backend: http://127.0.0.1:8000
 ```
 
-Во втором терминале — веб-интерфейс:
+The web interface — in a second terminal:
 
 ```bash
 cd web
@@ -65,160 +73,165 @@ npm ci
 npm run dev                                  # http://localhost:5173
 ```
 
-На чистой установке ничего не выбрано за вас: нет ни ключей, ни основного провайдера, ни
-моделей, а из персон есть только тестовый Коннор. Откройте в вебе «Настройки», добавьте
-ключ провайдера и впишите модель — без модели провайдер не используется. То же можно
-задать в `.env`: `<ПРОВАЙДЕР>_API_KEY` и `<ПРОВАЙДЕР>_MODEL`.
+A fresh install chooses nothing for you: no keys, no primary provider, no models, and the
+only persona is the test persona Connor. Open "Settings" in the web, add a provider key and
+enter a model — a provider without a model is not used. The same can be set in `.env`:
+`<PROVIDER>_API_KEY` and `<PROVIDER>_MODEL`.
 
-**Telegram.** Создайте бота у [@BotFather](https://t.me/BotFather), впишите токен в `.env`
-как `<ПЕРСОНА>_BOT_TOKEN` (например, `CONNOR_BOT_TOKEN`) и запустите
-`python -m app.main connor` или `python -m app.main all`.
+**Telegram.** Create a bot with [@BotFather](https://t.me/BotFather), put the token into
+`.env` as `<PERSONA>_BOT_TOKEN` (for example, `CONNOR_BOT_TOKEN`) and run
+`python -m app.main connor` or `python -m app.main all`.
 
-**Панель в трее** (macOS и Windows) запускает, перезапускает и останавливает бэкенд и веб,
-показывает их состояние и живой лог. Сборка — в [desktop/README.md](desktop/README.md).
+**The tray panel** (macOS and Windows) starts, restarts and stops the backend and the web,
+shows their status and a live log. Build instructions — in
+[desktop/README.md](desktop/README.md).
 
-**Docker** — `docker compose up -d --build`, подробности в разделе [Docker](#docker).
+**Docker** — `docker compose up -d --build`, details in the [Docker](#docker) section.
 
-## Настройки
+## Configuration
 
-Секреты и личные настройки — в `.env` (не в git). Несекретные значения по умолчанию —
-в `.env.config` (в git). Значение из `.env` важнее, переменная окружения процесса — ещё
-важнее. Многое меняется из веба: в «Настройках» — ключи провайдеров, часовой пояс,
-местоположение; в досье персоны — её модули.
+Secrets and personal settings live in `.env` (not in git). Non-secret defaults live in
+`.env.config` (in git). A value from `.env` wins over `.env.config`, and a process
+environment variable wins over both. Much can be changed from the web: "Settings" holds
+provider keys, time zone and location; a persona's dossier holds its modules.
 
-Для ответов нужен хотя бы один источник: провайдер с ключом и моделью, веб-чат или Ollama
-с выбранной и скачанной моделью. Моделей по умолчанию нет — их выбирает человек.
+Replies need at least one source: a provider with a key and a model, a web chat, or Ollama
+with a chosen and downloaded model. There are no default models — a human picks them.
 
-| Переменная | Что задаёт |
+| Variable | What it sets |
 |---|---|
-| `<ПРОВАЙДЕР>_API_KEY` | ключ провайдера: `ZAI`, `OPENAI`, `ANTHROPIC`, `GROQ`, `DEEPSEEK`, `KIMI`, `GOOGLE`, `MIMO`, `HF`. Запасные ключи — `_API_KEY_1`, `_API_KEY_2`… |
-| `<ПРОВАЙДЕР>_MODEL` | модель провайдера; без неё провайдер не используется |
-| `ACTIVE_PROVIDER` | основной провайдер; пусто или без ключа — первый провайдер с ключом и моделью |
-| `<ПЕРСОНА>_BOT_TOKEN` | токен Telegram-бота персоны (имя YAML-файла заглавными) |
-| `OWNER_USER_ID` | Telegram ID владельца: команды владельца и режим управления |
-| `TIMEZONE` | часовой пояс пользователя (IANA, например `Europe/Moscow`); пусто — системный |
-| `WEBCHAT_SITES` | веб-чаты по порядку, например `deepseek,qwen` |
-| `OLLAMA_URL`, `OLLAMA_MODEL` | локальная модель: адрес (`http://localhost:11434`) и модель, например `gemma4:e2b` |
-| `LOCAL_LLM_BACKEND` | кто делает служебную работу (классификации, извлечение): `ollama` или `webchat` |
-| `LTM_MODEL_PROVIDER` | отдельный провайдер для извлечения фактов; пусто — цепочка персоны |
-| `API_HOST`, `API_PORT` | адрес бэкенда: `127.0.0.1:8000` |
-| `API_TOKEN` | пароль к API; веб спросит его при входе. Пусто — без пароля |
-| `API_CORS_ORIGINS`, `API_ALLOWED_HOSTS` | чьим страницам и по каким именам хоста можно в API — см. [API](#api) |
-| `VPC_DATA_DIR` | папка данных и ваших персон, по умолчанию `data/` |
-| `RATE_LIMIT_DEFAULT`, `RATE_WINDOW` | лимит сообщений в Telegram (6 за 3600 с) для персон с `rate_limit` |
+| `<PROVIDER>_API_KEY` | provider key: `ZAI`, `OPENAI`, `ANTHROPIC`, `GROQ`, `DEEPSEEK`, `KIMI`, `GOOGLE`, `MIMO`, `HF`. Spare keys — `_API_KEY_1`, `_API_KEY_2`… |
+| `<PROVIDER>_MODEL` | the provider's model; without it the provider is not used |
+| `ACTIVE_PROVIDER` | primary provider; empty or without a key — the first provider with a key and a model |
+| `<PERSONA>_BOT_TOKEN` | the persona's Telegram bot token (YAML file name in upper case) |
+| `OWNER_USER_ID` | the owner's Telegram ID: owner commands and control mode |
+| `TIMEZONE` | the user's time zone (IANA, e.g. `Europe/Berlin`); empty — the system one |
+| `WEBCHAT_SITES` | web chats in order, e.g. `deepseek,qwen` |
+| `OLLAMA_URL`, `OLLAMA_MODEL` | local model: address (`http://localhost:11434`) and model, e.g. `gemma4:e2b` |
+| `LOCAL_LLM_BACKEND` | who does the internal work (classification, extraction): `ollama` or `webchat` |
+| `LTM_MODEL_PROVIDER` | a separate provider for fact extraction; empty — the persona's chain |
+| `API_HOST`, `API_PORT` | backend address: `127.0.0.1:8000` |
+| `API_TOKEN` | API password; the web asks for it on sign-in. Empty — no password |
+| `API_CORS_ORIGINS`, `API_ALLOWED_HOSTS` | whose pages and which host names may reach the API — see [API](#api) |
+| `VPC_DATA_DIR` | folder for data and your personas, `data/` by default |
+| `RATE_LIMIT_DEFAULT`, `RATE_WINDOW` | Telegram message limit (6 per 3600 s) for personas with `rate_limit` |
 
-Остальное — с комментариями в `.env.example`.
+Everything else is in `.env.example`, with comments.
 
-### Где лежат данные
+### Where the data lives
 
-Ваши персоны — в `data/personas/`. Память персоны в Telegram — в `data/<персона>/`, в вебе —
-в `data/api_<персона>/`: это разные собеседники и разная память. Там же — состояние жизни
-персоны, дневник, напоминания, дела, журнал режима управления
-(`computer_control/audit.jsonl`). Папка `data/` в git не попадает.
+Your personas — in `data/personas/`. A persona's memory in Telegram — in `data/<persona>/`,
+on the web — in `data/api_<persona>/`: these are different conversations and different
+memories. The same folders hold the persona's life state, diary, reminders, to-dos and the
+control mode log (`computer_control/audit.jsonl`). The `data/` folder never goes into git.
 
-Бэкенд пишет лог в терминал; в вебе его видно в режиме разработчика. Если бота запускает
-панель, лог ещё и сохраняется в `logs/` на 14 дней.
+The backend logs to the terminal; on the web the log is visible in developer mode. When the
+panel starts the bot, the log is also kept in `logs/` for 14 days.
 
-## Запуск
+## Running
 
 ```bash
-python -m app.main             # меню: персоны с токенами, все боты, API
-python -m app.main api         # бэкенд для веба и панели — токены Telegram не нужны
-python -m app.main connor      # Telegram-бот одной персоны
-python -m app.main all         # Telegram-боты всех персон, у которых есть токен
+python -m app.main             # menu: personas with tokens, all bots, API
+python -m app.main api         # backend for the web and the panel — no Telegram tokens needed
+python -m app.main connor      # Telegram bot of one persona
+python -m app.main all         # Telegram bots of all personas that have a token
 BOT_TARGET=all python -m app.main
 ```
 
-Веб и Telegram — разные процессы: можно запускать любой отдельно или оба сразу.
+The web and Telegram are separate processes: run either one on its own or both at once.
 
-На Windows та же команда сама подключает логику окон браузера бота: окна агента видны
-только в режиме управления, остальные стоят за экраном. Выключить — `VPC_WIN_WINDOWS=0`.
+On Windows the same command also manages the bot's browser windows: agent windows are
+visible only in control mode, the rest stay off-screen. To turn this off — `VPC_WIN_WINDOWS=0`.
 
 ### Telegram
 
-В личке бот отвечает на всё. В группе — на ответ на своё сообщение и на сообщение, которое
-начинается со слова из `trigger_words` (по умолчанию — id персоны). Сообщения, пришедшие,
-пока бот был выключен, пропускаются.
+In a private chat the bot answers everything. In a group — replies to its own messages and
+messages that start with a word from `trigger_words` (the persona id by default). Messages
+that arrived while the bot was off are skipped.
 
-| Команда | Что делает |
+| Command | What it does |
 |---|---|
-| `/start`, `/help` | приветствие и список возможностей; `/start` в личке начинает разговор заново, как `/clear` |
-| `/clear` | очистить историю этого чата: переписку и тред веб-чата LLM (в группе — админы) |
-| `/stats`, `/last N` | счётчики памяти; последние N сообщений чата |
-| `/reset`, `/forget <текст>` | забыть все свои факты; забыть один факт |
-| `/relations` | кто с кем в чате |
-| `/ratelimits` | состояние лимитов |
-| `/ltm_privacy [smart\|strict]`, `/ltm_export` | что запоминать о вас; ваши факты файлом в личку |
-| `/web` | веб-поиск в этом чате вкл/выкл (`web_search`) |
-| `/todo`, `/add_todo` | список дел (`todo`) |
-| `/remind`, `/reminders`, `/cancel_reminder` | напоминания (`reminder`) |
-| `/inventory`, `/add_inventory` | инвентарь (`inventory`) |
-| `/learn <тема>`, `/stop_learning` | курс обучения (`learning`) |
-| `/files`, `/reset_files` | загруженные файлы (`file_upload`) |
-| `/erase N`, `/context`, `/resetall`, `/reset_diary` | только владельцу: стереть последние N сообщений, контекст промпта файлом, вся память, дневник |
+| `/start`, `/help` | greeting and a list of features; `/start` in a private chat starts the conversation over, like `/clear` |
+| `/clear` | clear this chat's history: the messages and the LLM web chat thread (in a group — admins) |
+| `/stats`, `/last N` | memory counters; the last N messages of the chat |
+| `/reset`, `/forget <text>` | forget all your facts; forget one fact |
+| `/relations` | who is who in the chat |
+| `/ratelimits` | rate limit status |
+| `/ltm_privacy [smart\|strict]`, `/ltm_export` | what to remember about you; your facts as a file in a private chat |
+| `/web` | web search in this chat on/off (`web_search`) |
+| `/todo`, `/add_todo` | to-do list (`todo`) |
+| `/remind`, `/reminders`, `/cancel_reminder` | reminders (`reminder`) |
+| `/inventory`, `/add_inventory` | inventory (`inventory`) |
+| `/learn <topic>`, `/stop_learning` | a learning course (`learning`) |
+| `/files`, `/reset_files` | uploaded files (`file_upload`) |
+| `/erase N`, `/context`, `/resetall`, `/reset_diary` | owner only: erase the last N messages, the prompt context as a file, all memory, the diary |
 
-В скобках — модуль персоны, без которого команды нет. Команды проходят те же фильтры, что
-и сообщения: блокировки, лимиты, модерацию, заморозку.
+In parentheses — the persona module the command needs. Commands go through the same filters
+as messages: blocks, limits, moderation, muting.
 
-### Веб-интерфейс
+### Web interface
 
-- **Старт** — знакомство и шпаргалка команд режима управления.
-- **Главная** — календарь и лента «пока вас не было»: инициативы, дневник, напоминания.
-- **Чат** — все чаты списком, затем чат с персоной, голосовой режим, скины.
-- **Комната** — живая сцена персоны: где она, чем занята, её вещи; окно «картинка в картинке».
-- **Персоны** — создание (форма и YAML рядом), правка YAML, переименование, копия, цвет.
-- **Скины** — оформление чата, досье и комнаты: библиотека, загрузка, генерация.
-- **Настройки** — язык (ru/en), уведомления, режим разработчика, местоположение, часовой
-  пояс, ключи провайдеров, веб-чаты.
-- **Досье персоны** — память, напоминания и дела, инициатива, режим управления, обучение,
-  файлы, настройки персоны (модели, генерация, модули).
+- **Start** — an introduction and a control mode command cheat sheet.
+- **Home** — a calendar and a "while you were away" feed: initiatives, diary, reminders.
+- **Chat** — all chats as a list, then the chat with a persona, voice mode, skins.
+- **Room** — the persona's live scene: where it is, what it is doing, its things;
+  a picture-in-picture window.
+- **Personas** — create (form with the YAML next to it), edit YAML, rename, copy, color.
+- **Skins** — looks for the chat, dossier and room: library, upload, generation.
+- **Settings** — language (ru/en), notifications, developer mode, location, time zone,
+  provider keys, web chats.
+- **Persona dossier** — memory, reminders and to-dos, initiative, control mode, learning,
+  files, persona settings (models, generation, modules).
 
-Веб ищет бэкенд по `VITE_API_URL` (по умолчанию `http://127.0.0.1:8000`). Если задан
-`API_TOKEN`, веб спросит его при входе. Без бэкенда через 3 секунды можно продолжить на
-демо-данных — интерфейс сам переключится на живые, когда бэкенд появится.
+The web finds the backend through `VITE_API_URL` (`http://127.0.0.1:8000` by default). If
+`API_TOKEN` is set, the web asks for it on sign-in. Without a backend you can continue on
+demo data after 3 seconds — the interface switches to live data by itself once the backend
+is up.
 
-## Персоны
+## Personas
 
-В проекте одна встроенная персона — тестовый **Коннор** (`app/personas/connor.yaml`): андроид
-RK800, ассистент студентов, уровень `bot`, с режимом управления. Без своих провайдеров и
-моделей — отвечает тем, что выбрано в «Настройках». Аддон Арродеса (отдельный репозиторий)
-добавляет персону `arrodes`.
+The project ships one built-in persona — the test persona **Connor**
+(`app/personas/connor.yaml`): an RK800 android, a students' assistant, tier `bot`, with
+control mode. It has no providers or models of its own and answers with whatever is chosen
+in "Settings". The Arrodes add-on (a separate repository) adds the `arrodes` persona.
 
-Ваши персоны живут в `data/personas/` и в git не попадают. Персона там с тем же id, что у
-встроенной, перекрывает встроенную.
+Your personas live in `data/personas/` and never go into git. A persona there with the same
+id as a built-in one overrides the built-in one.
 
-Язык ответа следует за языком собеседника, язык фоновых сообщений — за языком
-`system_prompt`.
+The reply language follows the language of the person; the language of background messages
+follows the language of `system_prompt`.
 
-### Как создать персону
+### Creating a persona
 
-- **В вебе:** «Персоны» → «Создать». Форма слева, итоговый YAML справа.
-- **Файлом:** положите `<id>.yaml` в `data/personas/`. Веб увидит его сразу, Telegram-боту
-  нужны токен `<ID>_BOT_TOKEN` и перезапуск.
+- **On the web:** "Personas" → "Create". The form is on the left, the resulting YAML on the
+  right.
+- **As a file:** put `<id>.yaml` into `data/personas/`. The web sees it right away; a
+  Telegram bot needs a `<ID>_BOT_TOKEN` token and a restart.
 
-Персона — любой YAML с непустым `system_prompt`. id — имя файла: латиница, цифры, `_` и `-`,
-до 64 символов. Заняты: `tg`, `default`, `skins`, `skin_gen`, `settings_probe`,
-`persona_drafts`, `personas` и всё, что начинается с `api_`.
+A persona is any YAML with a non-empty `system_prompt`. The id is the file name: Latin
+letters, digits, `_` and `-`, up to 64 characters. Reserved: `tg`, `default`, `skins`,
+`skin_gen`, `settings_probe`, `persona_drafts`, `personas` and anything starting with `api_`.
 
-Всё, что меняется из веба, пишется в `data/personas/`. Первая правка встроенной персоны
-создаёт там её копию — файл в `app/personas/` не меняется. Удалить встроенную персону нельзя
-(можно заморозить или скопировать); удаление копии сбрасывает персону к встроенной версии.
+Everything changed from the web is written to `data/personas/`. The first edit of a built-in
+persona creates its copy there — the file in `app/personas/` does not change. A built-in
+persona cannot be deleted (it can be muted or copied); deleting the copy resets the persona
+to the built-in version.
 
-Правки применяются к веб-боту сразу, кроме нескольких ключей — про них веб скажет, что нужен
-перезапуск. Telegram-бот — отдельный процесс: сразу он видит только заморозку (`muted`),
-остальное — после перезапуска.
+Edits apply to the web bot immediately, except for a few keys — for those the web says that
+a restart is needed. A Telegram bot is a separate process: it sees only muting (`muted`)
+right away, everything else after a restart.
 
-### YAML персоны
+### Persona YAML
 
 ```yaml
 id: helper
-name: Помощник
-description: Вежливый ассистент
-color: '#38b6a5'                 # цвет в вебе; без него — из палитры по id
-stm_size: 50                     # сколько последних сообщений чата помнить дословно
+name: Helper
+description: A polite assistant
+color: '#38b6a5'                 # color on the web; without it — from the palette by id
+stm_size: 50                     # how many recent chat messages to remember verbatim
 
 system_prompt: |
-  Ты — полезный ассистент. Отвечай кратко и по существу.
+  You are a helpful assistant. Answer briefly and to the point.
 
 settings:
   temperature: 0.7
@@ -229,67 +242,67 @@ intellect:
   tier: bot                      # primitive | normal | bot
 
 features:
-  trigger_words: [помощник, helper]   # слова-триггеры в группах, строчными буквами
+  trigger_words: [helper]        # trigger words in groups, in lower case
   web_search: true
   file_upload: true
-  self_memory: true              # дневник персоны
+  self_memory: true              # the persona's diary
   todo: true
   reminder: true
   inventory: true
   learning: true
-  proactive: true                # инициатива
-  rhythm: true                   # утро, ночь, погода
-  life: true                     # жизнь между сообщениями
+  proactive: true                # initiative
+  rhythm: true                   # morning, night, weather
+  life: true                     # life between messages
 
 llm:
-  primary: groq                  # провайдер, local, webchat или webchat:<сайт>
+  primary: groq                  # a provider, local, webchat or webchat:<site>
   fallback: [deepseek, local]
 ```
 
-Без `features` у персоны остаются разговор и память. Ключи верхнего уровня:
+Without `features` a persona keeps conversation and memory. Top-level keys:
 
-| Ключ | Что задаёт |
+| Key | What it sets |
 |---|---|
-| `id`, `name`, `description`, `color` | имя, описание, цвет в вебе |
-| `system_prompt` | характер — единственное обязательное поле |
-| `settings` | `temperature`, `max_tokens`, `top_p`, `split_messages` (ответ несколькими сообщениями) |
-| `stm_size` | размер буфера последних сообщений; по умолчанию `STM_SIZE` из `.env.config` |
-| `special_users` | особые собеседники: `id` (можно `${ПЕРЕМЕННАЯ}`), `aliases`, `greeting`, `behavior` |
-| `intellect` | уровень интеллекта — см. ниже |
-| `conversation_style` | частота вопросов в конце ответа — см. ниже |
-| `llm` | модели персоны — см. [Модели](#модели) |
-| `world_binding` | `real_world` или `fictional_universe`; без ключа модель определит сама по `system_prompt` |
-| `room` | вещи, питомец и места в комнате персоны |
-| `start_greeting`, `pre_reply_text` | Telegram: текст на `/start` (`{name}` — имя собеседника); фраза перед долгим ответом |
-| `max_docs`, `max_file_size_mb` | лимиты загруженных файлов: 3 документа, 10 МБ |
+| `id`, `name`, `description`, `color` | name, description, color on the web |
+| `system_prompt` | the character — the only required field |
+| `settings` | `temperature`, `max_tokens`, `top_p`, `split_messages` (reply in several messages) |
+| `stm_size` | size of the recent message buffer; `STM_SIZE` from `.env.config` by default |
+| `special_users` | special people: `id` (`${VARIABLE}` works), `aliases`, `greeting`, `behavior` |
+| `intellect` | intelligence tier — see below |
+| `conversation_style` | how often a reply ends with a question — see below |
+| `llm` | the persona's models — see [Models](#models) |
+| `world_binding` | `real_world` or `fictional_universe`; without the key the model decides from `system_prompt` |
+| `room` | things, a pet and places in the persona's room |
+| `start_greeting`, `pre_reply_text` | Telegram: the `/start` text (`{name}` — the person's name); a phrase before a long reply |
+| `max_docs`, `max_file_size_mb` | uploaded file limits: 3 documents, 10 MB |
 
-Модули в `features`:
+Modules in `features`:
 
-| Ключ | Что включает |
+| Key | What it enables |
 |---|---|
-| `owner` | Telegram ID владельца; без него — `OWNER_USER_ID` |
-| `trigger_words`, `allowed_dm_users`, `blocked_users` | триггеры в группах; кому можно в личку (пусто — всем); блок-лист |
-| `rate_limit`, `moderation`, `punish_block` | лимит сообщений, модерация, блокировка маркером `[PUNISH:BLOCK]` (только Telegram) |
-| `web_search` | поиск в интернете; память и файлы важнее |
-| `file_upload` | загрузка документов (docx, pdf, pptx, xlsx и др.) с поиском по содержимому |
-| `self_memory` | дневник персоны: эпизоды разговоров и заметки |
-| `todo`, `reminder`, `inventory` | дела, напоминания, инвентарь |
-| `learning` | курсы «научи меня X»; словарём — `quiz_every`, интервалы уроков |
-| `proactive` | инициатива — см. ниже |
-| `rhythm` | утреннее приветствие, «пора спать», погода |
-| `life` | жизнь между сообщениями; по слоям — `state_engine`, `world_lore`, `external_stimuli` |
-| `muted` | заморозка: персона молчит, напоминания не приходят |
-| `light_context` | урезанный промпт для слабых моделей; включается сам при локальной основной модели |
-| `computer_control` | режим управления — см. [Режим управления](#режим-управления) |
-| `addons` | аддоны персоны, например `[arrodes_book]` |
-| `export_server`, `restore_memory` | Telegram: HTTP-экспорт памяти по токену; восстановление из дампа при пустой памяти |
+| `owner` | the owner's Telegram ID; without it — `OWNER_USER_ID` |
+| `trigger_words`, `allowed_dm_users`, `blocked_users` | triggers in groups; who may write in private (empty — everyone); a block list |
+| `rate_limit`, `moderation`, `punish_block` | message limit, moderation, blocking via the `[PUNISH:BLOCK]` marker (Telegram only) |
+| `web_search` | internet search; memory and files take priority |
+| `file_upload` | document upload (docx, pdf, pptx, xlsx and more) with full-text search |
+| `self_memory` | the persona's diary: conversation episodes and notes |
+| `todo`, `reminder`, `inventory` | to-dos, reminders, inventory |
+| `learning` | "teach me X" courses; as a dict — `quiz_every`, lesson intervals |
+| `proactive` | initiative — see below |
+| `rhythm` | morning greeting, "time to sleep", weather |
+| `life` | life between messages; per layer — `state_engine`, `world_lore`, `external_stimuli` |
+| `muted` | muting: the persona stays silent, reminders don't arrive |
+| `light_context` | a trimmed prompt for weak models; turns on by itself with a local primary model |
+| `computer_control` | control mode — see [Control mode](#control-mode) |
+| `addons` | the persona's add-ons, e.g. `[arrodes_book]` |
+| `export_server`, `restore_memory` | Telegram: HTTP memory export by token; restore from a dump when memory is empty |
 
-### Уровень интеллекта
+### Intelligence tier
 
 ```yaml
 intellect:
   tier: normal                   # primitive | normal | bot
-  overrides:                     # для нетипичных персон
+  overrides:                     # for unusual personas
     self_memory_mode: null       # none | primitive | full
     world_lore_enabled: null
     help_response_style: null    # action_only | casual_human | full_assistant
@@ -297,45 +310,47 @@ intellect:
 
 | | `primitive` | `normal` | `bot` |
 |---|---|---|---|
-| Кто | животное, дух, простой робот | человек | высокий интеллект |
-| Просьба о помощи | действие или жест, без объяснений | коротко, по-бытовому | полный разбор: расчёты, код, уточнения |
-| Дневник | вспышки впечатлений | полный | полный |
-| Мир с людьми и сюжетами | нет | есть | есть |
+| Who | an animal, a spirit, a simple robot | a human | high intelligence |
+| A request for help | an action or a gesture, no explanations | short, everyday | a full breakdown: calculations, code, follow-up questions |
+| Diary | flashes of impressions | full | full |
+| A world with people and storylines | no | yes | yes |
 
-`normal` — не «глупее» `bot`, это другой способ помогать. Без блока `intellect` уровневые
-правила не действуют вовсе.
+`normal` is not "dumber" than `bot` — it is a different way of helping. Without an
+`intellect` block the tier rules don't apply at all.
 
-### Вопросы в конце ответа
+### Questions at the end of a reply
 
-Модели любят заканчивать каждый ответ вопросом «А у тебя?». Платформа это ограничивает:
+Models love to end every reply with "And you?". The platform limits this:
 
 ```yaml
 conversation_style:
   question_frequency: rare       # none | rare | natural | frequent
 ```
 
-По умолчанию — `rare`: вопрос только по делу и не два ответа подряд. Ответ сверх лимита
-переписывается один раз. `natural` и `frequent` — для персон, у которых вопросы в характере.
+The default is `rare`: a question only when it matters, and never in two replies in a row.
+A reply over the limit is rewritten once. `natural` and `frequent` are for personas whose
+character is to ask questions.
 
-### Инициатива
+### Initiative
 
 ```yaml
 features:
   proactive:
     enabled: true
     check_interval_minutes: 30
-    silence_threshold_minutes: 180   # молчание, после которого можно писать
+    silence_threshold_minutes: 180   # silence after which the persona may write
     initiative_probability: 0.3
     max_daily_initiatives: 5
-    initiative_hours: "09:00-23:00"  # окно; без него — круглые сутки
-    adaptive_threshold: true         # порог — по тому, как часто пишет собеседник
-    feedback_enabled: true           # чаще — то, на что отвечают
+    initiative_hours: "09:00-23:00"  # window; without it — around the clock
+    adaptive_threshold: true         # threshold follows how often the person writes
+    feedback_enabled: true           # more of what gets replies
 ```
 
-Персона пишет первой, когда есть повод: вспомнила разговор, дело, событие своей жизни,
-захотела совета. Окно часов и порог меняются в досье, вкладка «Инициатива».
+The persona writes first when there is a reason: it remembered a conversation, a task, an
+event of its own life, or wants advice. The hours window and the threshold can be changed in
+the dossier, "Initiative" tab.
 
-### Ритм суток
+### Daily rhythm
 
 ```yaml
 features:
@@ -346,143 +361,147 @@ features:
     weather_alerts: {rain_lead_hours: 3, temp_delta_c: 8}
 ```
 
-Утром — приветствие, когда вы садитесь за компьютер или пишете впервые за день. Ночью —
-«пора спать», но только если вы недавно были активны. Погода (Open-Meteo) — если в
-«Настройках» задано местоположение.
+In the morning — a greeting when you sit down at the computer or write for the first time
+that day. At night — "time to sleep", but only if you were active recently. Weather
+(Open-Meteo) — if a location is set in "Settings".
 
-### Жизнь между сообщениями
+### Life between messages
 
 ```yaml
 features:
   life:
     enabled: true
-    tick_interval_minutes: 20    # как часто меняется состояние
+    tick_interval_minutes: 20    # how often the state changes
     events_per_day: [1, 3]
     max_active_storylines: 2
 ```
 
-Состояние (настроение, энергия, занятие, место) меняется само; мир персоны — люди, места,
-сюжеты — растёт из `system_prompt` и разговоров. Частые черновые шаги делает локальная
-модель, текст для собеседника — основная, голосом персоны. Без Ollama состояние меняется
-по простым правилам.
+The state (mood, energy, activity, place) changes by itself; the persona's world — people,
+places, storylines — grows out of `system_prompt` and conversations. Frequent draft steps are
+done by the local model, text for the person — by the main one, in the persona's voice.
+Without Ollama the state changes by simple rules.
 
-![Комната персоны: день сменяется ночью, персона занимается своими делами](https://github.com/user-attachments/assets/af81db48-1de9-4772-8feb-e01e644df735)
+![The persona's room: day turns into night, the persona goes about its business](https://github.com/user-attachments/assets/30a20272-bc16-4841-b893-3c5c22122983)
 
-Персона из выдуманного мира (`fictional_universe`) интернета не видит никогда. Персоне из
-реального мира (`real_world`) можно включить `external_stimuli` — новости по её интересам.
+A persona from a made-up world (`fictional_universe`) never sees the internet. A persona from
+the real world (`real_world`) can get `external_stimuli` — news on its interests.
 
-## Режим управления
+## Control mode
 
-Бот работает с браузером и приложениями владельца. Режим включается на чат и сам гаснет
-после 30 минут простоя; перезапуск бота его не сбрасывает.
+The bot works with the owner's browser and apps. The mode is turned on per chat and turns
+itself off after 30 minutes of inactivity; a bot restart does not reset it.
 
-![Режим управления: «закажи пиццу» — агент собирает заказ и останавливается перед оплатой](https://github.com/user-attachments/assets/af41d57c-cedb-49fd-ab68-4d485847ea6b)
+![Control mode: "order a pizza" — the agent builds the order and stops before payment](https://github.com/user-attachments/assets/386e6a3d-9ac5-4714-8799-2ed87aa278ef)
 
-- **Включить у персоны:** досье → «Режим управления» или `features.computer_control` в YAML.
-- **Войти:** «перейди в режим управления» / «enter control mode».
-- **Выйти:** «выйди из режима управления» / «exit control mode».
+- **Enable for a persona:** dossier → "Control mode" or `features.computer_control` in YAML.
+- **Enter:** "enter control mode".
+- **Exit:** "exit control mode".
 
-Пока режим включён, напоминания, дела, инвентарь и обучение молчат, чтобы не спорить с
-командами.
+While the mode is on, reminders, to-dos, inventory and learning stay silent so they don't
+compete with commands.
 
-**Кто может.** Только владелец (`owner` или `OWNER_USER_ID`) и `allowed_users` из YAML.
-В вебе пользователь — владелец, но команды из скина не исполняются никогда. Для остальных
-режима нет: их сообщения уходят в обычный разговор.
+**Who can.** Only the owner (`owner` or `OWNER_USER_ID`) and `allowed_users` from the YAML.
+On the web the user is the owner, but commands from a skin are never executed. For everyone
+else there is no control mode: their messages go into ordinary conversation.
 
-**Что умеет:**
+**What it can do:**
 
-| | Пример |
+| | Example |
 |---|---|
-| сайты и приложения | «открой ютуб», «открой ютуб и запусти музыку» |
-| поиск на сайте | «включи интерстеллар на кинопоиске», «найди X на ютубе» |
-| клики и наведение | «нажми скачать», «наведи на меню» |
-| ввод и клавиши | «введи в поле поиск кофе», «отправь», «нажми пробел» |
-| вкладки и прокрутка | «закрой вкладку», «назад», «пролистай до напитков» |
-| плеер | «пауза», «тише», «без звука», «следующее видео», «третий результат» |
-| чтение | «что на странице?», «пришли скриншот», «прочитай последнее сообщение» |
-| скачивание | «скачай отчёт» |
-| задачи | «закажи пиццу» или «задача: …» — агент делает шаги сам, спрашивает выбор, оплату не нажимает |
-| сценарии | «запомни сценарий заказ пиццы», потом — просто «заказ пиццы» |
-| браузер | «почини браузер» — показать окно бота, чтобы войти на сайт или пройти капчу |
+| sites and apps | "open youtube", "launch …" |
+| search on a site | "play interstellar on youtube", "search for … on <site>" |
+| clicks and hover | "click download", "hover over the menu" |
+| typing and keys | "type coffee into the search field", "send", "press space" |
+| tabs and scrolling | "close the … tab", "go back", "scroll to drinks" |
+| player | "pause", "quieter", "mute", "open the second result" |
+| reading | "what's on the page?", "send a screenshot", "read the page" |
+| downloads | "download the report" |
+| tasks | "order a pizza" or "task: …" — the agent takes the steps itself, asks you to choose, never presses pay |
+| scenarios | "remember this scenario as pizza order", later — just "pizza order" |
+| browser | "fix the browser" — show the bot's window to sign in to a site or pass a captcha |
 
-Полная шпаргалка на русском и английском — в вебе, раздел «Старт».
+The full cheat sheet in English and Russian is on the web, in the "Start" section.
 
-**Подтверждение.** Перед действием бот спрашивает, ответ — «да» или «нет». Подтвердить может
-только тот, кто просил; вопрос живёт 5 минут, для клавиш — минуту. `confirm: false` убирает
-вопросы, но оплату, удаление, ввод в поля пароля, почты и телефона и действия, которые
-предложила сама модель, бот подтверждает всегда. «Стоп» отменяет.
+**Confirmation.** Before an action the bot asks; the answer is "yes" or "no". Only the person
+who asked can confirm; the question lives for 5 minutes, for keys — one minute.
+`confirm: false` removes the questions, but payment, deletion, typing into password, email
+and phone fields, and actions suggested by the model itself are always confirmed. "Stop"
+cancels.
 
-**Приватность.** На страницах входа, оплаты и банков и на сайтах из `private_hosts` скриншоты
-и текст страницы не уходят ни облачным моделям, ни веб-чатам. Пароли, коды, карты, почта и
-телефоны в журнале хранятся маской, а в сценарии не записываются — бот спросит их при
-повторе. Журнал — `data/<контекст>/computer_control/audit.jsonl`; старые записи чистит
+**Privacy.** On sign-in, payment and banking pages and on sites from `private_hosts`,
+screenshots and page text go neither to cloud models nor to web chats. Passwords, codes,
+cards, emails and phone numbers are stored masked in the log and are never written into
+scenarios — the bot asks for them on replay. The log is
+`data/<context>/computer_control/audit.jsonl`; old entries are cleaned by
 `python -m scripts.scrub_cc_audit`.
 
-**Браузер.** Бот сам запускает свой Chromium с отдельным профилем и ваш обычный браузер не
-трогает. Окон два:
+**Browser.** The bot starts its own Chromium with a separate profile and does not touch your
+usual browser. There are two windows:
 
-- **видимое** (порт 9222) — для команд; запускается со входом в режим и гаснет после
-  20 минут простоя;
-- **скрытое** (порт 9223) — для веб-чатов LLM и поиска.
+- **visible** (port 9222) — for commands; starts when you enter the mode and shuts down
+  after 20 minutes of inactivity;
+- **hidden** (port 9223) — for LLM web chats and search.
 
-В веб-чаты нужно один раз войти в профиле бота: скажите «почини браузер» или нажмите кнопку
-в панели — скрытое окно станет видимым. Если подключиться к Chromium не удалось, на macOS
-есть запасной путь через AppleScript и Safari. На Linux режим работает частично.
+You need to sign in to the web chats once in the bot's profile: say "fix the browser" or
+press the button in the panel — the hidden window becomes visible. If connecting to Chromium
+fails, macOS has a fallback via AppleScript and Safari. On Linux the mode works partially.
 
 ```yaml
 features:
   computer_control:
     confirm: true
-    allowed_users: []              # кроме владельца
-    idle_exit_min: 30              # 0 — не выключаться
-    allow_domains: []              # пусто — любые http(s)
-    private_hosts: []              # плюс встроенные признаки входа и оплаты
-    sites:                         # быстрые имена: «открой ютуб»
-      ютуб: youtube.com
-    search:                        # «включи X на ютубе»: шаблон поиска и первый результат
-      ютуб:
+    allowed_users: []              # besides the owner
+    idle_exit_min: 30              # 0 — never turn off
+    allow_domains: []              # empty — any http(s)
+    private_hosts: []              # plus built-in sign-in and payment signs
+    sites:                         # quick names: "open youtube"
+      youtube: youtube.com
+    search:                        # "play X on youtube": search template and first result
+      youtube:
         url: https://www.youtube.com/results?search_query={q}
         first: /watch\?v=[\w-]{11}
-    apps:                          # «открой заметки»; строка или по ОС
-      заметки: Notes
+    apps:                          # "launch notes"; a string or per OS
+      notes: Notes
       chrome: {darwin: Google Chrome, win32: chrome}
-    tasks:                         # именованные команды: shell или recipe:<id>
-      музыка: {darwin: 'shortcuts run "Музыка"'}
+    tasks:                         # named commands: shell or recipe:<id>
+      music: {darwin: 'shortcuts run "Music"'}
     scenarios: true
     task_agent: true
 ```
 
-Значения из `tasks` исполняются в shell. Поэтому доступ к API — это доступ к компьютеру:
-держите бэкенд на `127.0.0.1` и задайте `API_TOKEN`, если открываете его в сеть.
+Values from `tasks` run in a shell. So access to the API is access to the computer: keep the
+backend on `127.0.0.1` and set `API_TOKEN` if you expose it to a network.
 
-## Модели
+## Models
 
-### Провайдеры по API
+### API providers
 
-Все — через OpenAI-совместимый API: `zai`, `openai`, `anthropic`, `groq`, `deepseek`, `kimi`,
-`google`, `mimo`, `hf`. У каждого — ключ `<ПРОВАЙДЕР>_API_KEY` и модель `<ПРОВАЙДЕР>_MODEL`;
-свой адрес API — `<ПРОВАЙДЕР>_BASE_URL`, по умолчанию официальный.
+All of them go through an OpenAI-compatible API: `zai`, `openai`, `anthropic`, `groq`,
+`deepseek`, `kimi`, `google`, `mimo`, `hf`. Each has a key `<PROVIDER>_API_KEY` and a model
+`<PROVIDER>_MODEL`; a custom API address — `<PROVIDER>_BASE_URL`, the official one by
+default.
 
-Моделей по умолчанию нет. Модель вписывается в «Настройках», в поле «модель» под ключом
-провайдера, — с подсказками из списка. Провайдер с ключом, но без модели помечен «нет
-модели» и не используется. У персоны может быть своя модель провайдера: досье → «Модели
-провайдеров».
+There are no default models. The model is entered in "Settings", in the "model" field under
+the provider key, with suggestions from a list. A provider with a key but no model is marked
+"no model" and is not used. A persona can have its own provider model: dossier → "Provider
+models".
 
-Не ответил провайдер — бот пробует следующий. Порядок: основной провайдер, `llm.fallback`
-персоны, остальные провайдеры с ключами в порядке списка выше, веб-чаты, локальная модель.
-Без интернета бот сразу идёт к локальной модели. Несколько ключей одного провайдера бот
-перебирает, начиная с последнего рабочего.
+If a provider doesn't answer, the bot tries the next one. The order: the primary provider,
+the persona's `llm.fallback`, the other providers with keys in the order of the list above,
+web chats, the local model. Without internet the bot goes straight to the local model.
+Several keys of one provider are rotated, starting with the last working one.
 
-### Веб-чаты
+### Web chats
 
-Промпт уходит в чат на сайте, ответ читается со страницы. Сайты: `deepseek`, `qwen`,
-`claude`, `zai`, `chatgpt`, `kimi`, `google` (AI Mode), `duckai` (без аккаунта).
+The prompt goes into a chat on the site, and the answer is read from the page. Sites:
+`deepseek`, `qwen`, `claude`, `zai`, `chatgpt`, `kimi`, `google` (AI Mode), `duckai` (no
+account).
 
 ```env
 WEBCHAT_SITES=deepseek,qwen
 ```
 
-или у персоны:
+or per persona:
 
 ```yaml
 llm:
@@ -490,194 +509,198 @@ llm:
   webchat_mode: {deepseek: headless}   # headless | hidden | headed
 ```
 
-На каждом сайте — один постоянный чат на канал: свежие чаты пачками сайты считают спамом.
-Ответ приходит за 10–60 секунд, без стриминга. Автоматизацию сайты не приветствуют.
+Each site gets one persistent chat per channel: sites treat batches of fresh chats as spam.
+An answer takes 10–60 seconds, without streaming. Sites don't welcome automation.
 
-Автоматика — шаги агента задач и фоновые задачи — пишет на сайт не чаще раза в
-20–30 секунд и не больше 60 сообщений в час. Счёт общий для всех персон, потому что аккаунт
-у них один. Ответы на ваши сообщения не ждут. Настраивается в `.env`:
-`WEBCHAT_AUTO_GAP_SEC`, `WEBCHAT_AUTO_JITTER_SEC`, `WEBCHAT_AUTO_PER_HOUR`. Правила агента
-задач и неизменившуюся страницу чат, который уже видел их, получает короткой ссылкой, а не
-полным текстом.
+Automation — task agent steps and background work — writes to a site no more than once
+every 20–30 seconds and no more than 60 messages an hour. The count is shared by all
+personas, because they use the same account. Replies to your own messages don't wait.
+Configured in `.env`: `WEBCHAT_AUTO_GAP_SEC`, `WEBCHAT_AUTO_JITTER_SEC`,
+`WEBCHAT_AUTO_PER_HOUR`. A chat that has already seen the task agent's rules and an unchanged
+page gets a short reference to them instead of the full text.
 
-### Локальная модель
+### Local model
 
 ```bash
 ollama pull gemma4:e2b
 ```
 
-Затем впишите модель в «Настройках» (строка Ollama) или в `OLLAMA_MODEL` — без неё Ollama
-не используется. Ollama делает служебную работу: классификации, черновики жизни персоны,
-разбор намерений. Персона с `llm.primary: local` отвечает локальной моделью целиком, в
-облегчённом режиме.
+Then enter the model in "Settings" (the Ollama row) or in `OLLAMA_MODEL` — without it Ollama
+is not used. Ollama does the internal work: classification, drafts of the persona's life,
+intent parsing. A persona with `llm.primary: local` answers entirely with the local model,
+in a lightweight mode.
 
-### Модели персоны
+### Persona models
 
 ```yaml
 llm:
-  primary: deepseek                # провайдер | local | webchat | webchat:<сайт>
+  primary: deepseek                # provider | local | webchat | webchat:<site>
   fallback: [groq, webchat, local]
-  exclude: [hf]                    # к этим не ходить
+  exclude: [hf]                    # never use these
   models: {groq: llama-3.1-8b-instant}
 ```
 
 ## API
 
-`python -m app.main api` поднимает FastAPI на `http://127.0.0.1:8000`. Все эндпоинты с
-описанием — в Swagger: `/docs`.
+`python -m app.main api` starts FastAPI on `http://127.0.0.1:8000`. All endpoints with
+descriptions are in Swagger: `/docs`.
 
-| Метод | Путь | Что делает |
+| Method | Path | What it does |
 |---|---|---|
-| GET | `/api/health` | бэкенд жив (без пароля) |
-| GET, POST | `/api/personas` | список персон; создать персону из YAML |
-| GET, PUT | `/api/personas/{p}/yaml` | YAML персоны |
-| POST | `/api/chat`, `/api/chat/stream` | сообщение персоне; со стримингом (SSE) |
-| GET | `/api/chat/history` | история чата |
-| POST | `/api/chat/clear` | стереть память персоны (копия хранится 7 дней) |
-| GET | `/api/personas/{p}/inbox` | фоновые сообщения: напоминания, уроки, инициатива |
-| GET | `/api/personas/{p}/state` | состояние персоны и лента её жизни |
-| GET | `/api/providers` | провайдеры, ключи, активный |
-| GET | `/api/system/status`, `/api/logs` | браузеры бота; лог — для панели и режима разработчика |
+| GET | `/api/health` | the backend is alive (no password) |
+| GET, POST | `/api/personas` | list of personas; create a persona from YAML |
+| GET, PUT | `/api/personas/{p}/yaml` | the persona's YAML |
+| POST | `/api/chat`, `/api/chat/stream` | a message to a persona; with streaming (SSE) |
+| GET | `/api/chat/history` | chat history |
+| POST | `/api/chat/clear` | erase the persona's memory (a copy is kept for 7 days) |
+| GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative |
+| GET | `/api/personas/{p}/state` | the persona's state and its life feed |
+| GET | `/api/providers` | providers, keys, the active one |
+| GET | `/api/system/status`, `/api/logs` | the bot's browsers; the log — for the panel and developer mode |
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"persona": "connor", "message": "Привет!"}'
+  -d '{"persona": "connor", "message": "Hi!"}'
 ```
 
-**Кто в вебе — тот и владелец.** Поэтому API закрыт от чужих страниц:
+**Whoever is on the web is the owner.** That is why the API is closed to other pages:
 
-- по умолчанию слушает только `127.0.0.1`;
-- принимает запросы только со своих страниц (`localhost` и `127.0.0.1` на любом порту),
-  чужой сайт получает отказ до исполнения. Список заменяется `API_CORS_ORIGINS`;
-- проверяет имя хоста — защита от DNS rebinding. Свои имена добавляются в
+- by default it listens only on `127.0.0.1`;
+- it accepts requests only from its own pages (`localhost` and `127.0.0.1` on any port);
+  another site is refused before anything runs. The list is replaced by `API_CORS_ORIGINS`;
+- it checks the host name — protection against DNS rebinding. Your own names go into
   `API_ALLOWED_HOSTS`;
-- с `API_TOKEN` требует `Authorization: Bearer <токен>`.
+- with `API_TOKEN` it requires `Authorization: Bearer <token>`.
 
-Открываете веб с телефона или по сети — задайте `API_TOKEN`, `API_HOST`, `API_CORS_ORIGINS`
-и соберите веб с нужным `VITE_API_URL`.
+Opening the web from a phone or over a network — set `API_TOKEN`, `API_HOST`,
+`API_CORS_ORIGINS` and build the web with the right `VITE_API_URL`.
 
 ## Docker
 
-В `docker-compose.yml` три сервиса:
+`docker-compose.yml` has three services:
 
-| Сервис | Что запускает | Адрес |
+| Service | What it runs | Address |
 |---|---|---|
-| `api` | бэкенд `python -m app.main api` | http://127.0.0.1:8000 |
-| `web` | собранный веб-интерфейс (nginx) | http://127.0.0.1:5173 |
-| `bots` | Telegram-боты всех персон с `<ПЕРСОНА>_BOT_TOKEN` в `.env` (профиль `telegram`) | — |
+| `api` | the backend, `python -m app.main api` | http://127.0.0.1:8000 |
+| `web` | the built web interface (nginx) | http://127.0.0.1:5173 |
+| `bots` | Telegram bots of all personas with `<PERSONA>_BOT_TOKEN` in `.env` (profile `telegram`) | — |
 
 ```bash
-cp .env.example .env                              # ключи провайдера, токены
-docker compose up -d --build                      # API + веб
-docker compose --profile telegram up -d --build   # API + веб + Telegram-боты
-docker compose logs -f api                        # лог бэкенда
-docker compose down                               # остановить (данные остаются)
+cp .env.example .env                              # provider keys, tokens
+docker compose up -d --build                      # API + web
+docker compose --profile telegram up -d --build   # API + web + Telegram bots
+docker compose logs -f api                        # backend log
+docker compose down                               # stop (data stays)
 ```
 
-Порты открыты только на `127.0.0.1` хоста. Другие порты задаются в `.env`: `API_PORT` и
-`WEB_PORT`. Адрес API вшивается в веб при сборке, поэтому после смены `API_PORT` нужна
-пересборка (`--build`).
+Ports are open only on the host's `127.0.0.1`. Other ports are set in `.env`: `API_PORT` and
+`WEB_PORT`. The API address is baked into the web at build time, so after changing
+`API_PORT` you need a rebuild (`--build`).
 
-Где хранятся данные:
+Where the data is kept:
 
-- **`.env`** — файл хоста, смонтирован в контейнер. Ключи и настройки, сохранённые из веба,
-  пишутся в него же. Без `.env` контейнер не запустится.
-- **Ваши персоны и память** — том `vpc_data` (`data/personas/` и память), отдельно от `data/`
-  локального запуска. Встроенные персоны — в образе. Чтобы работать с локальными персонами
-  и памятью, замените в `docker-compose.yml` `vpc_data:/app/data` на `./data:/app/data` и не
-  запускайте бота локально и в Docker одновременно.
-- **Модели Hugging Face** — том `hf_cache`. Модель памяти уже в образе; модели книжного
-  поиска Арродеса скачиваются при первом обращении.
+- **`.env`** — the host's file, mounted into the container. Keys and settings saved from the
+  web are written to it as well. Without `.env` the container won't start.
+- **Your personas and memory** — the `vpc_data` volume (`data/personas/` and memory), separate
+  from the `data/` of a local run. Built-in personas are in the image. To work with your
+  local personas and memory, replace `vpc_data:/app/data` with `./data:/app/data` in
+  `docker-compose.yml` and don't run the bot locally and in Docker at the same time.
+- **Hugging Face models** — the `hf_cache` volume. The memory model is already in the image;
+  the models for Arrodes' book search are downloaded on first use.
 
-Особенности:
+Notes:
 
-- **Ollama** берётся с хоста: `http://host.docker.internal:11434`, другой адрес —
-  `DOCKER_OLLAMA_URL` в `.env`. `OLLAMA_URL` из `.env` в контейнере не используется:
-  `localhost` там — сам контейнер.
-- **Часовой пояс** в контейнере — UTC. Задайте `TIMEZONE` в `.env`, иначе напоминания и
-  границы суток сдвинутся.
-- **Браузера в контейнере нет:** режим управления, веб-чаты и поиск через браузер работают
-  только при локальном запуске.
-- API в контейнере слушает `0.0.0.0` — иначе до него не дойдёт проброс порта — и проверяет
-  имя хоста (`API_ALLOWED_HOSTS`, по умолчанию `localhost`). Предупреждение в логе о привязке
-  не к loopback ожидаемо: снаружи API доступен только с `127.0.0.1` хоста.
+- **Ollama** is taken from the host: `http://host.docker.internal:11434`, another address —
+  `DOCKER_OLLAMA_URL` in `.env`. `OLLAMA_URL` from `.env` is not used inside the container:
+  `localhost` there is the container itself.
+- **The time zone** in the container is UTC. Set `TIMEZONE` in `.env`, otherwise reminders
+  and day boundaries will shift.
+- **There is no browser in the container:** control mode, web chats and browser search work
+  only in a local run.
+- The API in the container listens on `0.0.0.0` — otherwise the port mapping can't reach it —
+  and checks the host name (`API_ALLOWED_HOSTS`, `localhost` by default). The log warning
+  about binding to a non-loopback address is expected: from outside, the API is reachable
+  only from the host's `127.0.0.1`.
 
-## Аддоны
+## Add-ons
 
-Аддон — Python-пакет, который подключается через entry points:
+An add-on is a Python package that plugs in through entry points:
 
-- `virtual_persona.addons` — класс аддона;
-- `virtual_persona.personas` — папка с YAML его персон.
+- `virtual_persona.addons` — the add-on class;
+- `virtual_persona.personas` — a folder with the YAML of its personas.
 
-Персона включает аддон списком `features.addons`. Аддон добавляет блок в промпт
-(`build_context`) и чинит или чистит ответ (`repair`, `postprocess`). Сломанный или
-неустановленный аддон пропускается с предупреждением в логе.
+A persona enables an add-on with the `features.addons` list. An add-on adds a block to the
+prompt (`build_context`) and fixes or cleans the reply (`repair`, `postprocess`). A broken
+or missing add-on is skipped with a warning in the log.
 
-**Арродес** — персона-знаток «Lord of Mysteries», отдельный репозиторий: поиск по тексту
-книги (векторы, BM25, переранжирование), глоссарий в промпте, ссылки на фрагменты `[ФN]`.
-Ставится в тот же Python, что и ядро, после него:
+**Arrodes** — a persona who knows "Lord of Mysteries", in a separate repository: search over
+the book's text (vectors, BM25, reranking), a glossary in the prompt, references to
+fragments `[ФN]`. Install it into the same Python as the core, after the core:
 
 ```bash
-pip install -e .                          # ядро — первым
-pip install -e <папка Арродеса>
+pip install -e .                          # the core — first
+pip install -e <Arrodes folder>
 ```
 
-Книжная база лежит в папке Арродеса, память персоны — в данных ядра. Сборка базы и
-проверки — в README Арродеса.
+The book database lives in the Arrodes folder, the persona's memory — in the core's data.
+Building the database and checks — in the Arrodes README.
 
-## Устройство
+## Project layout
 
-| Путь | Что внутри |
+| Path | What's inside |
 |---|---|
-| `app/main.py` | точка входа: меню, Telegram-боты, API |
-| `app/bot_instance.py` | `BotInstance` — одна персона: память, модели, модули, обработка сообщения |
-| `app/telegram_bot.py` | команды и сообщения Telegram |
-| `app/core/` | персона, память (ChromaDB), роутер моделей, жизнь персоны, уровни интеллекта, аддоны |
-| `app/features/` | модули: напоминания, дела, обучение, инициатива, ритм, поиск, режим управления, браузер, веб-чаты |
-| `app/api/` | FastAPI: сервер, настройки, защита, скины, комната |
-| `app/personas/` | встроенная тестовая персона (Коннор) |
-| `data/personas/` | ваши персоны (вне git) |
-| `web/` | веб-интерфейс (React, Vite) |
-| `desktop/` | панель в трее (Tauri) |
-| `scripts/` | тесты, замеры, служебные утилиты |
-| `.env.example`, `.env.config` | шаблон личных настроек; несекретные значения по умолчанию |
+| `app/main.py` | entry point: menu, Telegram bots, API |
+| `app/bot_instance.py` | `BotInstance` — one persona: memory, models, modules, message handling |
+| `app/telegram_bot.py` | Telegram commands and messages |
+| `app/core/` | persona, memory (ChromaDB), model router, persona life, intelligence tiers, add-ons |
+| `app/features/` | modules: reminders, to-dos, learning, initiative, rhythm, search, control mode, browser, web chats |
+| `app/api/` | FastAPI: server, settings, security, skins, room |
+| `app/personas/` | the built-in test persona (Connor) |
+| `data/personas/` | your personas (outside git) |
+| `web/` | the web interface (React, Vite) |
+| `desktop/` | the tray panel (Tauri) |
+| `scripts/` | tests, benchmarks, utilities |
+| `.env.example`, `.env.config` | template of personal settings; non-secret defaults |
 
-Путь одного сообщения — фильтры, память, поиск, модель, маркеры, сохранение — читается в
+The path of one message — filters, memory, search, model, markers, saving — can be read in
 `BotInstance.process_message`.
 
-## Тесты
+## Tests
 
-Тесты — скрипты `scripts/test_*.py` (86), без pytest; тесты Арродеса — в его
-репозитории. Запуск из корня проекта:
+Tests are `scripts/test_*.py` scripts (92), without pytest; Arrodes tests are in its own
+repository. Run them from the project root:
 
 ```bash
 OLLAMA_URL=http://127.0.0.1:9 python -m scripts.test_computer_control
 ```
 
-`OLLAMA_URL` на мёртвый порт — чтобы тест не грузил настоящую модель. Каждая проверка
-печатает `[OK]` или `[FAIL]`, в конце — итог. Часть скриптов завершается с кодом 0 и при
-провалах, поэтому смотрите на `[FAIL]` в выводе, а не на код возврата. Для Telegram-тестов
-нужен `python-telegram-bot`, для части тестов браузера — Node.js и Playwright с Chromium.
+`OLLAMA_URL` points to a dead port so the test doesn't load a real model. Each check prints
+`[OK]` or `[FAIL]`, and a summary at the end. Some scripts exit with code 0 even on failures,
+so look for `[FAIL]` in the output, not at the exit code. Telegram tests need
+`python-telegram-bot`, some browser tests need Node.js and Playwright with Chromium.
 
-## Зависимости
+## Dependencies
 
-**Python.** В `pyproject.toml` — диапазоны версий: снизу то, на чём проект проверен, сверху —
-до следующей мажорной. `requirements.txt` — lock-файл с точными версиями для всех платформ,
-его собирает [uv](https://docs.astral.sh/uv/) из `pyproject.toml`. Чтобы обновить пакеты,
-поправьте диапазоны, пересоберите lock командой из шапки `requirements.txt` (с `--upgrade` —
-до новейших версий в диапазонах) и прогоните тесты.
+**Python.** `pyproject.toml` holds version ranges: the lower bound is what the project is
+tested on, the upper one is the next major version. `requirements.txt` is a lock file with
+exact versions for all platforms, built by [uv](https://docs.astral.sh/uv/) from
+`pyproject.toml`. To update packages, adjust the ranges, rebuild the lock with the command
+from the header of `requirements.txt` (with `--upgrade` — to the newest versions within the
+ranges) and run the tests.
 
-**Веб и панель.** Точные версии — в `web/package-lock.json` и `desktop/package-lock.json`.
-`npm ci` ставит ровно их, `npm install` может обновить lock.
+**Web and panel.** Exact versions are in `web/package-lock.json` and
+`desktop/package-lock.json`. `npm ci` installs exactly those; `npm install` may update the
+lock.
 
-## Лицензия
+## License
 
-Код проекта распространяется по [Mozilla Public License 2.0](LICENSE) (MPL-2.0).
+The project's code is distributed under the [Mozilla Public License 2.0](LICENSE) (MPL-2.0).
 
-- Пользоваться может кто угодно и для чего угодно, в том числе в коммерческих и закрытых продуктах.
-- Тот, кто распространяет изменённые файлы проекта, обязан открыть их исходный код под той же
-  MPL-2.0. Собственный код, который только использует проект, можно держать закрытым.
+- Anyone can use it for anything, including commercial and closed-source products.
+- Whoever distributes modified files of the project must open their source code under the
+  same MPL-2.0. Your own code that only uses the project can stay closed.
 
-Лицензия не распространяется на чужие материалы в репозитории: персонажей «Lord of Mysteries»
-в демо-данных веба (`web/src/mockData.ts`). Права на них принадлежат их владельцам.
+The license does not cover third-party material in the repository: the "Lord of Mysteries"
+characters in the web demo data (`web/src/mockData.ts`). The rights to them belong to their
+owners.
