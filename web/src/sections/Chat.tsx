@@ -2051,7 +2051,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
               <span className="chip-label">{t('chat.dossier')}</span>
             </button>
             {apiOnline && (
-              <button className="btn btn--chip" title={t('chat.personaYaml')} onClick={() => setYamlOpen(true)}>
+              <button className="btn btn--chip chat-yaml-btn" title={t('chat.personaYaml')} onClick={() => setYamlOpen(true)}>
                 YAML
               </button>
             )}

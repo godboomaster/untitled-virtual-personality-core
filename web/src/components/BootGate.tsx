@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { api, apiHost, AUTH_REQUIRED_EVENT, LINK_REVOKED_EVENT, getApiToken, getApiUrl, isLinkMode, isNativeApp, normalizeApiUrl, setApiToken, setApiUrl } from '../api';
 import { getLinkConfig, pair, parsePairingUri, refusalKey, setLinkConfig } from '../link/client.ts';
 import QrScanner from '../link/QrScanner';
+import { syncSystemBars } from '../nativeBars';
 import { refetchPersonas } from '../apiData';
 import { useI18n } from '../i18n';
 import { getInitialTheme } from '../useAppTheme';
@@ -84,6 +85,7 @@ export default function BootGate({ children }: { children: ReactNode }) {
     if (!document.documentElement.hasAttribute('data-theme')) {
       document.documentElement.setAttribute('data-theme', getInitialTheme());
     }
+    syncSystemBars(document.documentElement.getAttribute('data-theme') ?? getInitialTheme());
   }, []);
 
   // Опрос ядра → загрузка персон → открытие приложения
