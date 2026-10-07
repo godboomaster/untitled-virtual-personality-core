@@ -1,0 +1,252 @@
+/* Узкий экран: телефон (приложение для Android и мобильный браузер).
+   Подключается после index.css и только поправляет раскладку — на широком
+   экране отсюда действуют лишь скрытые по умолчанию элементы.
+   env(safe-area-inset-*) — вырезы и системные панели при viewport-fit=cover. */
+
+.topbar-menu,
+.sidebar-backdrop,
+.chat-header-back {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  /* ===== Каркас: меню — выдвижная панель ===== */
+
+  .sidebar,
+  .sidebar--collapsed {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 60;
+    width: min(280px, 82vw);
+    padding: calc(16px + env(safe-area-inset-top)) 12px calc(16px + env(safe-area-inset-bottom));
+    transform: translateX(-102%);
+    transition: transform 0.25s ease, background 0.25s ease;
+  }
+
+  .sidebar--open {
+    transform: none;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.45);
+  }
+
+  /* Сворачивание в полоску иконок — только на широком экране */
+  .sidebar-toggle {
+    display: none;
+  }
+
+  .sidebar--collapsed .sidebar-logo {
+    justify-content: flex-start;
+  }
+
+  .sidebar--collapsed .sidebar-logo-text,
+  .sidebar--collapsed .nav-item-label,
+  .sidebar--collapsed .sidebar-footer-text {
+    display: block;
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 59;
+    background: var(--overlay-bg);
+    animation: fade-in 0.2s ease;
+  }
+
+  /* Пункты повыше — под палец; индикатор едет на тот же шаг (44 + 2) */
+  .nav-item {
+    height: 44px;
+  }
+
+  .nav-indicator {
+    height: 44px;
+    transform: translateY(calc(var(--active-index, 0) * 46px));
+  }
+
+  .topbar {
+    gap: 10px;
+    padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+  }
+
+  .topbar-menu {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin-left: -6px;
+    flex-shrink: 0;
+    border: none;
+    background: none;
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .topbar-menu-dot {
+    position: absolute;
+    top: 8px;
+    right: 7px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--bg);
+  }
+
+  .topbar-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .topbar-right {
+    gap: 10px;
+  }
+
+  /* Статус ядра — только индикатор (подпись длинная); нет связи — подпись
+     нужна (на телефоне это частый случай: ноутбук уснул, сменилась сеть),
+     место под неё — за счёт переключателя темы */
+  .topbar-status > span:not(.status-led) {
+    display: none;
+  }
+
+  .topbar-status--down > span:not(.status-led):not(.badge) {
+    display: inline;
+  }
+
+  .topbar-right:has(.topbar-status--down) .theme-toggle {
+    display: none;
+  }
+
+  .theme-toggle span {
+    padding: 6px 8px;
+  }
+
+  .content-scroll {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* ===== Чат: один столбец — переписка во весь экран ===== */
+
+  /* Список персон — страница «Все чаты» (кнопка «назад» в шапке чата),
+     панель статуса — досье */
+  .chat-persona-list,
+  .chat-context,
+  .chat-status-bar {
+    display: none;
+  }
+
+  /* Окно браузера агента — над перепиской */
+  .chat-layout {
+    flex-direction: column;
+  }
+
+  .chat-main {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .chat-browser {
+    order: -1;
+    flex: 0 0 42%;
+    min-width: 0;
+    min-height: 0;
+    border-left: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .chat-header {
+    gap: 8px;
+    padding: 8px 10px 8px 4px;
+  }
+
+  .chat-header-back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 40px;
+    flex-shrink: 0;
+    border: none;
+    background: none;
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .chat-header .avatar--large {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+  }
+
+  .chat-header > div:not(.avatar):not(.chat-header-actions) {
+    min-width: 0;
+  }
+
+  .chat-header-name,
+  .chat-header-status {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-header-actions {
+    flex-wrap: nowrap;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  /* Кнопки шапки — одними иконками */
+  .chat-header-actions .chip-label {
+    display: none;
+  }
+
+  .chat-messages {
+    padding: 14px 12px;
+  }
+
+  .chat-input-bar {
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  /* 16px — мобильный браузер не увеличивает страницу при фокусе на поле */
+  .chat-input {
+    min-width: 0;
+    font-size: 16px;
+  }
+
+  .chat-input-bar .btn {
+    flex-shrink: 0;
+  }
+
+  .chat-input-bar .btn--primary {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  /* ===== Разделы ===== */
+
+  .section {
+    padding: 18px 16px 24px;
+  }
+
+  /* Заголовок раздела и его кнопки — друг под другом */
+  .section-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .room-header-actions {
+    justify-content: flex-start;
+  }
+
+  /* Угловые подписи героя («CORE v0.1.0», «TRACKS 03») наезжают на заголовок */
+  .home-readout {
+    display: none;
+  }
+}

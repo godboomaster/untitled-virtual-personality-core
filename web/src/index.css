@@ -11962,3 +11962,125 @@ img.art-thumb {
   letter-spacing: 0;
   color: var(--term-dim);
 }
+
+
+/* ===== VPC Link: телефон по защищённому каналу ===== */
+
+/* QR-код: всегда чёрное на белом (камеры хуже читают инверсию) */
+.link-qr {
+  display: block;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+
+.link-pairing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 18px;
+  margin: 10px 0 16px;
+}
+
+.link-pairing-text {
+  flex: 1;
+  min-width: 220px;
+}
+
+.link-pairing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.link-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.link-device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+}
+
+.link-device-name {
+  font-weight: 600;
+}
+
+.link-device-meta {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.status-led--off {
+  background: var(--text-muted);
+  animation: none;
+}
+
+/* Экран подключения: QR-код — основной путь, адрес — запасной */
+.boot-link > .btn {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.boot-link-or {
+  margin: 14px 0 0;
+}
+
+/* Сканер — поверх всего экрана */
+.link-scanner {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
+  background: #000;
+  color: #eee;
+}
+
+.link-scanner-view {
+  position: relative;
+  width: min(92vw, 420px);
+  aspect-ratio: 1;
+  overflow: hidden;
+}
+
+.link-scanner-view video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.link-scanner-frame {
+  position: absolute;
+  inset: 12%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.35);
+}
+
+.link-scanner-hint {
+  max-width: 420px;
+  margin: 0;
+  text-align: center;
+  font-size: 14px;
+}
+
+.link-scanner .btn {
+  color: #eee;
+  border-color: #888;
+}

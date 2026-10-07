@@ -14,6 +14,7 @@ import LearningPanel from './LearningPanel';
 import FilesPanel from './FilesPanel';
 import InfoButton from '../components/InfoButton';
 import Collapsible from './Collapsible';
+import { BACK_PANEL, useBackHandler } from '../backStack';
 
 /* Встроенное «Досье персоны»: память, напоминания и задачи, инициатива и
    настройки выбранной в чате персоны. Рендерится в потоке вместо окна
@@ -150,6 +151,8 @@ export default function PersonaDossier({ persona, onClose, onClearDialog, onStmC
     setConfirmPart(null);
     setModels({ ...(modelChoices[persona.id] ?? {}) });
   }, [persona.id]);
+
+  useBackHandler(true, BACK_PANEL, onClose);
 
   // Закрытие по Esc
   useEffect(() => {

@@ -8,7 +8,8 @@
 
 Авторизация: если задан env API_TOKEN — все /api/* (кроме /api/health)
 требуют заголовок ``Authorization: Bearer <API_TOKEN>``. Без API_TOKEN API
-открыт (локальный режим по умолчанию).
+открыт только запросам по localhost (локальный режим по умолчанию); по
+другому имени хоста (телефон, другая машина) — 403.
 """
 
 import asyncio
@@ -22,7 +23,7 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -31,7 +32,8 @@ from app.api import runtime
 from app.api.runtime import chat_lock, get_persona_info, list_personas
 from app.core.router import NoProvidersError
 from app.api.security import (BodySizeLimit, LOOPBACK_HOSTS, LOOPBACK_ORIGIN_RE,
-                              LocalOriginGuard, PersonaIdPath, PersonaIdQuery)
+                              LocalOriginGuard, PersonaIdPath, PersonaIdQuery,
+                              host_without_port)
 from app.api.schemas import (
     ActiveProviderRequest,
     CalendarEntryCreate,
@@ -115,6 +117,25 @@ def _shutdown_bot_browser():
     except Exception:
         pass
 
+@app.on_event("startup")
+async def _start_link():
+    # VPC Link — защищённый канал до телефона (app/link): поднимается сам,
+    # если есть сопряжённые устройства или LINK_ENABLED=1
+    try:
+        from app.link import host as link_host
+        await link_host.start_if_needed()
+    except Exception as e:
+        logger.warning(f"[Link] не запустился: {e}")
+
+
+@app.on_event("shutdown")
+async def _stop_link():
+    try:
+        from app.link import host as link_host
+        await link_host.shutdown()
+    except Exception:
+        pass
+
 # Буфер логов для режима разработчика (GET /api/logs)
 from app.api import log_buffer
 log_buffer.install()
@@ -168,14 +189,14 @@ else:
 app.add_middleware(LocalOriginGuard, origins=_cors_origins, origin_regex=_cors_regex,
                    hosts=_allowed_hosts)
 
-# Не-loopback хост без токена — API открыт всем в локальной сети/интернете
-# без единой проверки: не роняем процесс (это может быть осознанный выбор
-# в доверенном окружении), но громко предупреждаем в лог при старте.
-if _api_host not in ("127.0.0.1", "localhost", "::1") and not _api_token:
+# Ядро смотрит наружу (привязка не к loopback или чужие имена в
+# API_ALLOWED_HOSTS), а токена нет: запросы не по localhost получат 403
+# (require_auth) — предупреждаем при старте, почему
+if (_api_host not in LOOPBACK_HOSTS or _extra_hosts - LOOPBACK_HOSTS) and not _api_token:
     logging.getLogger(__name__).warning(
-        f"[Security] API_HOST={_api_host!r} (не loopback), а API_TOKEN не задан — "
-        "все /api/* эндпоинты доступны без авторизации всем, кто достучится до "
-        "этого хоста. Задайте API_TOKEN в .env, если сервер смотрит наружу."
+        f"[Security] API_HOST={_api_host!r}, API_ALLOWED_HOSTS={sorted(_extra_hosts)}, "
+        "а API_TOKEN не задан — удалённые запросы (не через localhost) будут "
+        "отклонены. Задайте API_TOKEN в .env для доступа с телефона или другой машины."
     )
 
 # Чаты, где прямо сейчас идёт генерация ответа: "persona:chat_key" → число
@@ -275,9 +296,21 @@ async def _run_generation(gen_key: str, fn, on_done=None):
         raise
 
 
-async def require_auth(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
+async def require_auth(request: Request,
+                       credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
     # Bearer-авторизация активна только когда задан API_TOKEN
     if not _api_token:
+        # Без токена API — только для этой машины. Запрос по другому имени
+        # хоста (телефон или другой компьютер по адресу в сети) или через
+        # обратный прокси (он ставит X-Forwarded-For; браузер на
+        # этой машине — никогда) получает отказ с подсказкой: иначе ядро
+        # молча открылось бы всей сети
+        h = request.headers
+        if (host_without_port(h.get("host", "")) not in LOOPBACK_HOSTS
+                or "x-forwarded-for" in h or "forwarded" in h):
+            raise HTTPException(status_code=403, detail=(
+                "Удалённый доступ к ядру — только с токеном: задайте API_TOKEN "
+                "в .env и перезапустите ядро"))
         return
     # compare_digest вместо != — токен не сравнивается char-by-char с ранним
     # выходом на первом несовпадении, что убирает timing-канал подбора токена
@@ -311,6 +344,96 @@ def _check_not_muted(bot, persona: str):
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── VPC Link: телефон через защищённый канал (app/link) ─────────────
+
+_LINK_DEVICE_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+def _link_disabled() -> bool:
+    return (os.getenv("LINK_ENABLED") or "").strip().lower() in ("0", "false", "no", "off")
+
+
+def _via_link(request: Request) -> str | None:
+    # Запрос пришёл с телефона по каналу: заголовок ставит сам ноутбук
+    # (app/link/tunnel.py), подменить его с телефона нельзя
+    return request.headers.get("x-vpc-link") or None
+
+
+@app.get("/api/link", dependencies=[Depends(require_auth)])
+async def link_status(request: Request):
+    from app.link import host as link_host, store as link_store
+    h = link_host.current()
+    online = h.online() if h else {}
+    devices = [{"id": did, "name": d.get("name"), "paired_at": d.get("paired_at"),
+                "last_seen": d.get("last_seen"), "online": online.get(did)}
+               for did, d in (await asyncio.to_thread(link_store.devices)).items()]
+    devices.sort(key=lambda d: d.get("paired_at") or 0)
+    return {
+        "enabled": not _link_disabled(),
+        "running": h is not None,
+        "port": h.lan_port if h else link_host.lan_port(),
+        "lan": await asyncio.to_thread(link_store.lan_addresses),
+        "lan_error": h.lan_error if h else None,
+        "relay": link_host.configured_relay(),
+        "relay_connected": bool(h and h.relay_connected),
+        "relay_error": h.relay_error if h else None,
+        "devices": devices,
+        "pairing_expires": link_store.offer_active(),
+        "this_device": _via_link(request),
+    }
+
+
+@app.post("/api/link/pair", dependencies=[Depends(require_auth)])
+async def link_pair(request: Request):
+    # QR-код для нового телефона — только с самого компьютера: телефон,
+    # пришедший по каналу, других устройств не добавляет
+    if _via_link(request):
+        raise HTTPException(status_code=403, detail="Новый телефон подключается только с компьютера")
+    if _link_disabled():
+        raise HTTPException(status_code=409, detail="VPC Link выключен (LINK_ENABLED=0 в .env)")
+    from app.link import host as link_host, store as link_store
+    from app.link.tunnel import laptop_name
+    h = await link_host.ensure_started()
+    offer_id, psk, expires = link_store.create_offer()
+    ips = [] if h.lan_error else await asyncio.to_thread(link_store.lan_addresses)
+    uri = link_store.pairing_uri(offer_id, psk, name=laptop_name(), relay=link_host.configured_relay(),
+                                 lan=[f"{ip}:{h.lan_port}" for ip in ips])
+    return {"uri": uri, "expires": expires, "ttl": link_store.OFFER_TTL_SEC}
+
+
+@app.delete("/api/link/pair", dependencies=[Depends(require_auth)])
+async def link_pair_cancel(request: Request):
+    from app.link import store as link_store
+    if not _via_link(request):
+        link_store.cancel_offers()
+    return {"ok": True}
+
+
+@app.delete("/api/link/devices/{device_id}", dependencies=[Depends(require_auth)])
+async def link_unpair(device_id: str, request: Request):
+    if not _LINK_DEVICE_RE.match(device_id):
+        raise HTTPException(status_code=422, detail="Неверный id устройства")
+    # Телефон по каналу может отвязать только себя
+    via = _via_link(request)
+    if via and via != device_id:
+        raise HTTPException(status_code=403, detail="С телефона можно отвязать только его самого")
+    from app.link import host as link_host, store as link_store
+    removed = await asyncio.to_thread(link_store.remove_device, device_id)
+    h = link_host.current()
+    if h and via:
+        # Телефон отвязывает себя: сначала пусть получит ответ, потом — разрыв
+        async def _later():
+            await asyncio.sleep(1.0)
+            await h.revoke(device_id)
+        _detached_generations.add(t := asyncio.create_task(_later()))
+        t.add_done_callback(_detached_generations.discard)
+    elif h:
+        await h.revoke(device_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Устройство не найдено")
+    return {"ok": True}
 
 
 @app.get("/api/logs", dependencies=[Depends(require_auth)])
@@ -2210,7 +2333,8 @@ def _read_last_message_ts(persona: str, chat_id: str) -> float:
 
 
 @app.get("/api/personas/{persona}/inbox", dependencies=[Depends(require_auth)])
-async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool = False):
+async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool = False,
+                client_id: str = Query("", max_length=64, pattern=r"^[A-Za-z0-9_-]*$")):
     from app.api.inbox import inbox_pop
     from app.api.runtime import registry
     if get_persona_info(persona) is None:
@@ -2263,7 +2387,7 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     # Карточка задачи агента: опрос во время хода (быстрый поллинг фронта)
     # обновляет её на месте — шаги, статус, план
     task = bot.cc_task_card(chat_id, chat_id)
-    return {"messages": inbox_pop(persona, chat_id), "generating": generating,
+    return {"messages": inbox_pop(persona, chat_id, client_id), "generating": generating,
             "last_ts": last_ts, "control_mode": control_mode,
             "answer_options": answer_options, "task": task,
             "webchat_quarantine": quarantine, "browser_pools": pools}

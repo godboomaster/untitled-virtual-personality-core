@@ -40,6 +40,7 @@ import { useSkinEnv } from '../skins/useSkinEnv';
 import { parseReminderWhen } from '../reminderWhen';
 import { fmtRecurrence, formFromRepeatText, recurrenceFromForm } from '../reminderRepeat';
 import { useRoomView } from '../room/useRoomView';
+import { BACK_PANEL, BACK_SCREEN, useBackHandler } from '../backStack';
 
 // Допуск сравнения серверных меток: last_ts и timestamp реплики STM — один и
 // тот же float (memory.add_message), но после рестарта буфер читается из БД
@@ -596,6 +597,10 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     }
   };
   const showBrowser = ccOn && apiOnline && browserOpen && !dossierOpen && chatMode === 'classic';
+  // «Назад» на телефоне: панели — закрыть, переписку — к списку чатов
+  useBackHandler(true, BACK_SCREEN, onBack);
+  useBackHandler(chatMode === 'voice', BACK_PANEL, () => setChatMode('classic'));
+  useBackHandler(showBrowser, BACK_PANEL, () => setBrowserOpen(false));
   // Появилось окно браузера — правую панель сворачиваем, чтобы чату хватило места
   useEffect(() => {
     if (showBrowser) setPanelOpen(false);
@@ -1854,7 +1859,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           {activeScreen === 'chat' && (
             <button type="button" className="btn btn--chip" title={t('chat.modeVoiceTitle')} onClick={() => setChatMode('voice')}>
               <Icon name="voice" size={13} />
-              {t('chat.modeVoice')}
+              <span className="chip-label">{t('chat.modeVoice')}</span>
             </button>
           )}
           {apiOnline && (
@@ -1991,6 +1996,10 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           </div>
         )}
         <div className="chat-header">
+          {/* Узкий экран: списка персон слева нет — назад к странице всех чатов */}
+          <button type="button" className="chat-header-back" onClick={onBack} title={t('chat.allChatsTitle')} aria-label={t('chat.allChats')}>
+            <Icon name="chevronLeft" size={20} />
+          </button>
           <div className="avatar avatar--large">
             {avatars[persona.id] ? <img src={avatars[persona.id]} alt={persona.name} /> : persona.name.charAt(0)}
           </div>
@@ -2035,11 +2044,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             )}
             <button className="btn btn--chip" title={t('chat.modeVoiceTitle')} onClick={() => setChatMode('voice')}>
               <Icon name="voice" size={13} />
-              {t('chat.modeVoice')}
+              <span className="chip-label">{t('chat.modeVoice')}</span>
             </button>
             <button className="btn btn--chip" title={t('chat.dossierTitle')} onClick={() => setDossierOpen(true)}>
               <Icon name="dossier" size={13} />
-              {t('chat.dossier')}
+              <span className="chip-label">{t('chat.dossier')}</span>
             </button>
             {apiOnline && (
               <button className="btn btn--chip" title={t('chat.personaYaml')} onClick={() => setYamlOpen(true)}>

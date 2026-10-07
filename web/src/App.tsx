@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
+import Icon from './components/icons';
 import DevLogPanel from './components/DevLogPanel';
 import { DetroitBackground } from './effects/DetroitBackground';
 import { useI18n, useMockData } from './i18n';
@@ -20,6 +21,7 @@ import DialogHost from './components/DialogHost';
 import RoomPipHost from './room/RoomPip';
 import { getInitialTheme } from './useAppTheme';
 import type { AppTheme } from './useAppTheme';
+import { BACK_MENU, useBackHandler } from './backStack';
 
 export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings';
 
@@ -27,6 +29,9 @@ type Theme = AppTheme;
 
 export default function App() {
   const [section, setSection] = useState<Section>('home');
+  // Узкий экран (телефон): меню разделов — выдвижная панель по кнопке в шапке
+  const [menuOpen, setMenuOpen] = useState(false);
+  useBackHandler(menuOpen, BACK_MENU, () => setMenuOpen(false));
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const { t } = useI18n();
   const { personas } = useMockData();
@@ -83,14 +88,27 @@ export default function App() {
       <DetroitBackground />
       <Sidebar
         current={section}
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
         onSelect={(next) => {
           // Повторный клик по «Чат» внутри открытого чата — к странице всех чатов
           if (next === 'chat' && section === 'chat') requestChatOverview();
           setSection(next);
+          setMenuOpen(false);
         }}
       />
       <main className="content">
         <header className="topbar">
+          <button
+            type="button"
+            className="topbar-menu"
+            aria-label={t('topbar.menu')}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(true)}
+          >
+            <Icon name="menu" size={20} />
+            {totalUnread > 0 && <span className="topbar-menu-dot" aria-hidden="true" />}
+          </button>
           <div className="topbar-title">{t(`nav.${section}`)}</div>
           <div className="topbar-right">
             <div className="theme-toggle" role="button" aria-label={t('topbar.themeToggle')}>

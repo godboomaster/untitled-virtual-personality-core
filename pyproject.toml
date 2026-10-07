@@ -46,6 +46,10 @@ dependencies = [
     "rank-bm25>=0.2.2,<0.3",  # BM25 в локальном поиске
     "requests>=2.32.4,<3",
     "websocket-client>=1.9,<2",  # CDP в browser_actions
+    # VPC Link (app/link): канал до телефона — Noise на примитивах cryptography,
+    # WebSocket напрямую и до посредника
+    "cryptography>=48,<51",
+    "websockets>=14,<18",
 ]
 
 # Имя пакета app слишком общее; переименовать при публикации

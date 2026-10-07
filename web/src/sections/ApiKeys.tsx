@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import InfoButton from '../components/InfoButton';
 import Select from '../components/Select';
 import { useI18n, useMockData } from '../i18n';
-import { api, ApiError } from '../api';
+import { api, ApiError, isNativeApp } from '../api';
+import ConnectionCard from '../link/ConnectionCard';
+import LinkSettings from '../link/LinkSettings';
 import type { LocalStatus, LocationConfig, TimezoneConfig } from '../api';
 import { refetchProviders, useApiOnline, useApiProviders, useApiWebchat } from '../apiData';
 import { useDevMode, setDevMode } from '../devMode';
@@ -230,6 +232,10 @@ export default function ApiKeys() {
           </p>
         </div>
       </div>
+
+      {/* Телефон: к какому ноутбуку подключено и как. Компьютер: какие
+          телефоны подключены (VPC Link) и QR-код для нового */}
+      {isNativeApp() ? <ConnectionCard /> : <LinkSettings />}
 
       {/* Общие настройки: язык интерфейса, подсказки */}
       <div className="card">
