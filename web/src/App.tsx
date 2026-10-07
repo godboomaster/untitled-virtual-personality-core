@@ -22,6 +22,7 @@ import RoomPipHost from './room/RoomPip';
 import { getInitialTheme } from './useAppTheme';
 import type { AppTheme } from './useAppTheme';
 import { BACK_MENU, useBackHandler } from './backStack';
+import { syncSystemBars } from './nativeBars';
 
 export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings';
 
@@ -81,6 +82,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('vpc-theme', theme);
+    syncSystemBars(theme);
   }, [theme]);
 
   return (

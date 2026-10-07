@@ -1485,6 +1485,9 @@ html[data-vpc-shell] .detroit-bg {
 
 .message-bubble {
   max-width: 65%;
+  min-width: 0;
+  /* Длинная ссылка или слово без пробелов не вылезает за пузырь (и за экран) */
+  overflow-wrap: anywhere;
   padding: 10px 14px;
   border-radius: var(--radius);
   background: var(--bg-panel-2);
@@ -6394,11 +6397,20 @@ body.is-row-dragging * {
   max-height: none;
 }
 
-/* На узких экранах — обычный общий скролл */
+/* На узких экранах — обычный общий скролл, колонки друг под другом
+   (flex xl-модалки сильнее общего «одна колонка» выше) */
 @media (max-width: 860px) {
   .pcreate-panel--xl .pcreate-body {
     display: block;
     overflow-y: auto;
+  }
+
+  .pcreate-panel--xl .pcreate-columns {
+    flex-direction: column;
+  }
+
+  .pcreate-panel--xl .pcreate-form-col {
+    overflow-y: visible;
   }
 
   .pcreate-panel--xl .pcreate-yaml {
@@ -6717,16 +6729,23 @@ textarea.pcreate-yaml--edit:focus {
   display: contents;
 }
 
+/* Селектор как у основного правила (.room-art .room-art-grid) — иначе узкие
+   правила проигрывали ему по специфичности и на телефоне оставались две
+   колонки шире экрана */
 @media (max-width: 1100px) {
-  .room-art-grid {
+  .room-art .room-art-grid {
     grid-template-columns: 1fr 1fr;
   }
 }
 
 @media (max-width: 720px) {
-  .room-art-grid {
+  .room-art .room-art-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.room-art .room-art-grid > * {
+  min-width: 0;
 }
 
 /* ===== Провайдеры: основной + резервные ===== */
@@ -12048,7 +12067,7 @@ img.art-thumb {
   align-items: center;
   justify-content: center;
   gap: 16px;
-  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
+  padding: calc(16px + var(--sa-top)) 16px calc(16px + var(--sa-bottom));
   background: #000;
   color: #eee;
 }
