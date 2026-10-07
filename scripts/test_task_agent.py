@@ -559,8 +559,9 @@ def main():
           and rec["qa"][0][0] == "Какую пиццу?"
           and rec.get("result", "").startswith("Дошёл до оплаты")
           and rec.get("ok") is True)
+    # Хвост номера, а не «913»: метки времени с 07.10.2026 начинаются с 17913…
     check("память: телефон из ответа не сохранён",
-          "913" not in json.dumps(mem, ensure_ascii=False)
+          "123-45-67" not in json.dumps(mem, ensure_ascii=False)
           and rec["qa"][0][1] in ("Маргариту, телефон [hidden]",
                                   "Маргариту, телефон ***(16)"))
     cc = FakeCC()
@@ -2565,7 +2566,7 @@ def main():
           "вопрос без телефона",
           len(runs_au) == 1 and None not in runs_au
           and [r["kind"] for r in recs] == ["click", "task_ask"]
-          and "913" not in json.dumps(recs, ensure_ascii=False))
+          and "123-45-67" not in json.dumps(recs, ensure_ascii=False))
 
     # ── Находки красной команды по A+B ──
     # №1: «ОК»/«Да»/«Продолжить» в окне сайта — по тексту окна
