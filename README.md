@@ -250,7 +250,14 @@ background and set its battery usage to "Unrestricted", or the system will put i
 The service does not keep the phone awake: when the phone sleeps deeply, Android wakes it
 only every few minutes, so a message can arrive a little late. Over VPC Link the switch is hidden for now.
 
-Not there yet: voice mode (the Android WebView has no speech recognition).
+**Voice mode** in the app uses Android's own speech recognition and text-to-speech (the
+WebView has no Web Speech API): the phone needs a speech recognition service — usually the
+Google app ("Speech Services by Google"), another engine works too — and a text-to-speech
+engine (usually "Speech Services by Google" as well). The first tap on the microphone asks
+for permission to record audio. Without a recognition service you type instead and the
+persona still answers with voice; without a text-to-speech engine replies are text only. The
+speech language is the interface language (Russian or English); for offline recognition,
+download that language in the phone's voice input settings.
 
 ## Personas
 
@@ -736,7 +743,7 @@ The path of one message — filters, memory, search, model, markers, saving — 
 
 ## Tests
 
-Tests are `scripts/test_*.py` scripts (94), without pytest; Arrodes tests are in its own
+Tests are `scripts/test_*.py` scripts (98), without pytest; Arrodes tests are in its own
 repository. Run them from the project root:
 
 ```bash
