@@ -1,8 +1,8 @@
 import { useEffect, useReducer, useState } from 'react';
 import { api, apiHost, setApiUrl } from '../api';
 import { useI18n } from '../i18n';
-import { bgInboxStatus, bgNotifyEnabled, setBgNotify, stopBgInbox } from '../bgInbox';
-import type { BgNotifyResult } from '../bgInbox';
+import { bgInboxStatus, bgNotifyEnabled, retryBgNotifyPermission, setBgNotify, stopBgInbox } from '../bgInbox';
+import type { BgInboxStatus, BgNotifyResult } from '../bgInbox';
 import { getLinkConfig, linkState, onLinkState, reconnectLink, setLinkConfig } from './client.ts';
 
 /* «Настройки» → «Подключение» (приложение на телефоне): к какому ноутбуку
@@ -76,7 +76,7 @@ function BackgroundNotify({ linkMode }: { linkMode: boolean }) {
   const [on, setOn] = useState(bgNotifyEnabled);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<BgNotifyResult | null>(null);
-  const [status, setStatus] = useState<{ running: boolean; lastOk: number; lastError: string | null } | null>(null);
+  const [status, setStatus] = useState<BgInboxStatus | null>(null);
 
   // Состояние службы: на связи / нет связи — раз в несколько секунд, пока открыто
   useEffect(() => {
@@ -118,8 +118,19 @@ function BackgroundNotify({ linkMode }: { linkMode: boolean }) {
     setOn(r === 'ok' ? next : bgNotifyEnabled());
   };
 
+  // Уведомления запрещены в настройках Android: служба не запущена (или
+  // ничего не покажет) — вместо «на связи» подсказка и кнопка «Разрешить»
+  const blocked = on && status?.notificationsEnabled === false;
+  const allow = async () => {
+    setBusy(true);
+    setResult(null);
+    const r = await retryBgNotifyPermission();
+    setBusy(false);
+    setResult(r === 'ok' ? null : r);
+  };
+
   let statusText: string | null = null;
-  if (on && status) {
+  if (on && status && !blocked) {
     if (!status.running) statusText = t('settings.bgNotifyStopped');
     else if (status.lastError) statusText = t('settings.bgNotifyOffline', { err: status.lastError });
     else if (status.lastOk) statusText = t('settings.bgNotifyOnline');
@@ -134,8 +145,15 @@ function BackgroundNotify({ linkMode }: { linkMode: boolean }) {
           <span className="switch-slider" />
         </label>
         {statusText && <span>{statusText}</span>}
+        {blocked && (
+          <button type="button" className="btn btn--ghost btn--chip" disabled={busy} onClick={() => void allow()}>
+            {t('settings.bgNotifyAllow')}
+          </button>
+        )}
       </div>
-      {result === 'denied' && <p className="field-hint">{t('settings.bgNotifyDenied')}</p>}
+      {(result === 'denied' || (blocked && result !== 'error')) && (
+        <p className="field-hint">{t('settings.bgNotifyDenied')}</p>
+      )}
       {result === 'error' && <p className="field-hint">{t('settings.bgNotifyFailed')}</p>}
       <p className="field-hint">{t('settings.bgNotifyHint')}</p>
     </div>

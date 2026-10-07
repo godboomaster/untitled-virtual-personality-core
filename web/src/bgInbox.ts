@@ -15,10 +15,19 @@ import { OPEN_CHAT_EVENT } from './notifications';
    каждом запуске приложения служба перезапускается со свежими адресом и
    токеном (их могли сменить на экране подключения). */
 
+export interface BgInboxStatus {
+  running: boolean;
+  lastOk: number;
+  lastError: string | null;
+  // Уведомления приложению разрешены (Android 13+ — разрешение, раньше —
+  // выключатель в настройках приложения)
+  notificationsEnabled?: boolean;
+}
+
 interface BackgroundInboxPlugin {
   start(opts: { baseUrl: string; token: string; clientId: string }): Promise<void>;
   stop(): Promise<void>;
-  status(): Promise<{ running: boolean; lastOk: number; lastError: string | null; notificationsEnabled?: boolean }>;
+  status(): Promise<BgInboxStatus>;
   requestNotificationPermission(): Promise<{ granted: boolean }>;
   getLaunchPersona(): Promise<{ persona: string | null }>;
   addListener(event: 'notificationTap', cb: (data: { persona: string }) => void): Promise<PluginListenerHandle>;
@@ -79,14 +88,34 @@ export async function setBgNotify(on: boolean): Promise<BgNotifyResult> {
 }
 
 /** Запуск приложения (ядро ответило): включено — служба перезапускается со
- * свежими адресом и токеном; канал VPC Link — служба не нужна. */
+ * свежими адресом и токеном; канал VPC Link — служба не нужна. Уведомления
+ * запрещены в настройках Android — служба тоже не нужна: показать она ничего
+ * не сможет, а курсор на ядре сдвинет (сообщения пропадут для шторки).
+ * Выбор «включено» остаётся — в настройках подсказка, как разрешить. */
 export function syncBgInbox() {
   if (!isNativeApp() || !bgNotifyEnabled()) return;
   if (isLinkMode() || !getApiUrl()) {
     void BackgroundInbox.stop().catch(() => {});
     return;
   }
-  void startService().catch(() => {});
+  void BackgroundInbox.status()
+    .then((s) => (s.notificationsEnabled === false ? BackgroundInbox.stop() : startService()))
+    .catch(() => {});
+}
+
+/** Включено, но уведомления запрещены: снова спросить разрешение (Android 13+
+ * покажет системный запрос, если его не отклонили насовсем) и, если дали,
+ * запустить службу. */
+export async function retryBgNotifyPermission(): Promise<BgNotifyResult> {
+  if (!isNativeApp()) return 'error';
+  try {
+    const { granted } = await BackgroundInbox.requestNotificationPermission();
+    if (!granted) return 'denied';
+    await startService();
+    return 'ok';
+  } catch {
+    return 'error';
+  }
 }
 
 /** Смена сервера или отвязка: служба не должна опрашивать прежнее ядро

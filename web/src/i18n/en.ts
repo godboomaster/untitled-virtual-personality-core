@@ -829,6 +829,7 @@ const en = {
   'settings.bgNotify': 'Notifications when the app is closed',
   'settings.bgNotifyHint': 'The app keeps a connection to the core in the background (a silent icon in the notification shade) and shows reminders and persona messages even when it is minimized or closed. On Honor, Huawei and Xiaomi phones, allow the app to run in the background and choose "Unrestricted" in its battery settings, or the system will put it to sleep.',
   'settings.bgNotifyLinkOnly': 'Only for connecting by address and token for now — background notifications do not work over VPC Link yet.',
+  'settings.bgNotifyAllow': 'Allow',
   'settings.bgNotifyDenied': 'Notifications are not allowed — enable them for the app in Android settings.',
   'settings.bgNotifyFailed': 'Could not start the background service — please try again.',
   'settings.bgNotifyOnline': 'connected to the core',

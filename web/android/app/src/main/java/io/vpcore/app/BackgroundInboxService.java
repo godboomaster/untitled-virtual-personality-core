@@ -1,23 +1,30 @@
 package io.vpcore.app;
 
+import android.annotation.SuppressLint;
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.service.notification.StatusBarNotification;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.app.ServiceCompat;
+import androidx.core.content.ContextCompat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -39,6 +46,11 @@ import java.util.concurrent.TimeUnit;
  * WebView в фоне не работает, а Notification API в нём нет — поэтому опрос
  * ядра (GET /api/inbox — новые сообщения сразу по всем персонам) делает
  * эта служба переднего плана: каждые 20 с, без связи — с паузой до 60 с.
+ * Процессор постоянно не держим: пока он не спит, срабатывает таймер
+ * executor, а уснувший телефон будит будильник AlarmManager; блокировка
+ * сна — только на время одного запроса (с тайм-аутом). В глубоком сне
+ * (Doze) система будит не чаще раза в несколько минут — это плата за
+ * батарею.
  * Новое сообщение — уведомление «Сообщения персон» (заголовок — имя
  * персоны), тап открывает чат. Пока приложение на экране, уведомлений нет:
  * сообщения показывает сам веб, а опрос идёт дальше — курсор службы
@@ -60,6 +72,11 @@ public class BackgroundInboxService extends Service {
     static final String KEY_TOKEN = "token";
     static final String KEY_CLIENT_ID = "clientId";
 
+    // Действие интента службы: остановиться (выключено в приложении)
+    static final String ACTION_STOP = "io.vpcore.app.BG_INBOX_STOP";
+    // Будильник AlarmManager: пора опросить (рассылка только внутри приложения)
+    private static final String ACTION_ALARM = "io.vpcore.app.BG_INBOX_POLL";
+
     // Экстра интента MainActivity: id персоны из тапнутого уведомления
     static final String EXTRA_PERSONA = "io.vpcore.app.PERSONA";
 
@@ -73,6 +90,8 @@ public class BackgroundInboxService extends Service {
 
     private static final long POLL_MS = 20_000;
     private static final long MAX_BACKOFF_MS = 60_000;
+    // Блокировка сна на один опрос: соединение 10 с + чтение 15 с + запас
+    private static final long WAKE_MS = 40_000;
 
     // Приложение на экране (MainActivity onResume/onPause) — уведомлений не показываем
     static volatile boolean appVisible = false;
@@ -81,10 +100,26 @@ public class BackgroundInboxService extends Service {
     static volatile boolean running = false;
     static volatile long lastOk = 0;
     static volatile String lastError = null;
+    // Запуск запрошен (startForegroundService), а onStartCommand ещё не было —
+    // плагину stop() тогда нельзя просто stopService (см. stop())
+    static volatile boolean startPending = false;
 
     private ScheduledExecutorService executor;
     private ScheduledFuture<?> next;
     private PowerManager.WakeLock wakeLock;
+    private AlarmManager alarms;
+    private PendingIntent alarmIntent;
+    private BroadcastReceiver alarmReceiver;
+    // Служба остановлена: запрос, который ещё идёт (HttpURLConnection на
+    // прерывание потока не реагирует), не должен потом ничего показать.
+    // Проверка и notify — под notifyLock, onDestroy ставит флаг под ним же
+    private volatile boolean destroyed = false;
+    private final Object notifyLock = new Object();
+    // Текущий запрос — onDestroy его обрывает
+    private volatile HttpURLConnection current;
+    // Когда должен быть следующий опрос (elapsedRealtime): опоздавший
+    // будильник после свежего опроса таймером пропускаем
+    private volatile long dueAt = 0;
 
     // Настройки текущего запуска (меняются только в потоке executor)
     private String baseUrl = "";
@@ -99,12 +134,31 @@ public class BackgroundInboxService extends Service {
     /** Запустить (или перечитать настройки и опросить сразу). */
     static void start(Context ctx) {
         Intent i = new Intent(ctx, BackgroundInboxService.class);
-        if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i);
-        else ctx.startService(i);
+        startPending = true;
+        try {
+            if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i);
+            else ctx.startService(i);
+        } catch (RuntimeException e) {
+            startPending = false;
+            throw e;
+        }
     }
 
+    /**
+     * Остановить. Не stopService: если startForegroundService уже вызван, а
+     * onStartCommand ещё не было, остановка до startForeground роняет
+     * приложение (Android 9+). Поэтому — команда ACTION_STOP: служба сама
+     * сделает startForeground и тут же уйдёт.
+     */
     static void stop(Context ctx) {
-        ctx.stopService(new Intent(ctx, BackgroundInboxService.class));
+        if (!running && !startPending) return; // и так не работает
+        try {
+            ctx.startService(new Intent(ctx, BackgroundInboxService.class).setAction(ACTION_STOP));
+        } catch (RuntimeException e) {
+            // Приложение в фоне (Android 8+ не даёт startService) — запуска в
+            // полёте тогда быть не может, обычная остановка безопасна
+            ctx.stopService(new Intent(ctx, BackgroundInboxService.class));
+        }
     }
 
     static SharedPreferences prefs(Context ctx) {
@@ -116,29 +170,56 @@ public class BackgroundInboxService extends Service {
         super.onCreate();
         createChannels(this);
         executor = Executors.newSingleThreadScheduledExecutor();
-        // Без удержания процессора опрос при выключенном экране замирает:
-        // таймер executor стоит, пока телефон спит. Частичная блокировка —
-        // только процессор, экран не держит
+        // Частичная блокировка сна (только процессор, не экран) — лишь на время
+        // запроса: таймер executor стоит, пока телефон спит, а запрос, начатый
+        // перед сном, без неё замрёт на середине
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (pm != null) {
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vpc:background-inbox");
             wakeLock.setReferenceCounted(false);
         }
+        // Уснувший телефон будит будильник. Рассылка — приёмнику, а не
+        // запуск службы: пока идёт onReceive, AlarmManager держит процессор,
+        // и мы успеваем взять свою блокировку
+        alarms = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        alarmIntent = PendingIntent.getBroadcast(this, 0,
+                new Intent(ACTION_ALARM).setPackage(getPackageName()),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        alarmReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (destroyed) return;
+                holdAwake();
+                try {
+                    executor.execute(() -> {
+                        // Таймер успел раньше (телефон не спал) — этот лишний
+                        if (SystemClock.elapsedRealtime() + 2_000 < dueAt) {
+                            releaseAwake();
+                            return;
+                        }
+                        pollOnce();
+                    });
+                } catch (RuntimeException e) {
+                    releaseAwake(); // executor уже остановлен
+                }
+            }
+        };
+        ContextCompat.registerReceiver(this, alarmReceiver, new IntentFilter(ACTION_ALARM),
+                ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        startPending = false;
         SharedPreferences p = prefs(this);
         final String url = p.getString(KEY_BASE_URL, "");
-        if (!p.getBoolean(KEY_ENABLED, false) || url.isEmpty()) {
-            // Выключено в приложении (или перезапуск системой после stop) — не держимся
-            stopSelf();
-            return START_NOT_STICKY;
-        }
-        // startForeground — сразу, до любой работы: иначе система уронит
-        // приложение (5 с на вызов после startForegroundService)
+        boolean stopAsked = intent != null && ACTION_STOP.equals(intent.getAction());
+        boolean want = !stopAsked && p.getBoolean(KEY_ENABLED, false) && !url.isEmpty();
+        // startForeground — сразу и ВСЕГДА, даже если сейчас остановимся:
+        // после startForegroundService остановка без него роняет приложение
+        // (а запуск мог быть в полёте, когда пользователь выключил)
         try {
-            Notification n = ongoingNotification(getString(R.string.bg_connecting, hostOf(url)));
+            Notification n = ongoingNotification(getString(R.string.bg_connecting, hostOf(url)), want);
             if (Build.VERSION.SDK_INT >= 34) {
                 startForeground(ONGOING_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
             } else {
@@ -149,12 +230,16 @@ public class BackgroundInboxService extends Service {
             // (например, перезапуск системой в неудачный момент) — следующий
             // запуск приложения включит её снова
             Log.w(TAG, "startForeground не удался", e);
-            lastError = "start: " + e.getClass().getSimpleName();
-            stopSelf();
+            if (want) lastError = "start: " + e.getClass().getSimpleName();
+            halt(startId);
+            return START_NOT_STICKY;
+        }
+        if (!want) {
+            // Выключено в приложении (или перезапуск системой после stop) — не держимся
+            halt(startId);
             return START_NOT_STICKY;
         }
         running = true;
-        if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
         final String tok = p.getString(KEY_TOKEN, "");
         final String cid = p.getString(KEY_CLIENT_ID, "");
         executor.execute(() -> {
@@ -168,11 +253,47 @@ public class BackgroundInboxService extends Service {
         return START_STICKY;
     }
 
+    /** Остановиться по команде startId. stopSelf(startId), а не stopSelf():
+     * если за ней уже пришёл новый запуск, служба доживёт до его команды. */
+    private void halt(int startId) {
+        if (executor != null && !executor.isShutdown()) {
+            try {
+                executor.execute(() -> {
+                    if (next != null) next.cancel(false);
+                });
+            } catch (RuntimeException ignored) {
+                // executor остановлен — опросов и так не будет
+            }
+        }
+        if (alarms != null) alarms.cancel(alarmIntent);
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
+        stopSelf(startId);
+    }
+
     @Override
     public void onDestroy() {
+        synchronized (notifyLock) {
+            destroyed = true;
+            // Значок «связь с ядром» больше не наш — убрать, чтобы не остался
+            // неснимаемым уведомлением
+            NotificationManagerCompat.from(this).cancel(ONGOING_ID);
+        }
         running = false;
+        if (alarms != null) alarms.cancel(alarmIntent);
+        if (alarmReceiver != null) {
+            try {
+                unregisterReceiver(alarmReceiver);
+            } catch (RuntimeException ignored) {
+                // не зарегистрирован
+            }
+        }
         if (executor != null) executor.shutdownNow();
-        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        // Идущий запрос — оборвать: прерывание потока HttpURLConnection не слышит
+        HttpURLConnection c = current;
+        if (c != null) {
+            new Thread(c::disconnect).start(); // disconnect может ждать сеть — не в главном потоке
+        }
+        releaseAwake();
         super.onDestroy();
     }
 
@@ -183,35 +304,84 @@ public class BackgroundInboxService extends Service {
 
     // ── Опрос ─────────────────────────────────────────────────────────
 
+    /** Следующий опрос через delayMs: таймер executor (точный, пока процессор
+     * не спит) и будильник (разбудит уснувший телефон) — что раньше. */
     private void schedule(long delayMs) {
         if (next != null) next.cancel(false);
-        if (executor.isShutdown()) return;
+        if (destroyed || executor.isShutdown()) return;
+        dueAt = SystemClock.elapsedRealtime() + delayMs;
         next = executor.schedule(this::pollOnce, delayMs, TimeUnit.MILLISECONDS);
+        setAlarm(dueAt);
+    }
+
+    // Точный будильник — только после проверки canScheduleExactAlarms (или
+    // до Android 12, где разрешения нет): lint этой проверки не видит
+    @SuppressLint("MissingPermission")
+    private void setAlarm(long at) {
+        if (alarms == null) return;
+        try {
+            // Точный будильник — только где он разрешён без особого
+            // разрешения (до Android 12); иначе система сдвигает его сама
+            if (Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()) {
+                alarms.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, alarmIntent);
+            } else {
+                alarms.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, alarmIntent);
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "будильник не поставлен", e);
+        }
+    }
+
+    private void holdAwake() {
+        if (wakeLock != null) wakeLock.acquire(WAKE_MS);
+    }
+
+    private void releaseAwake() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        } catch (RuntimeException ignored) {
+            // тайм-аут уже снял блокировку
+        }
     }
 
     private void pollOnce() {
+        if (destroyed) return;
+        holdAwake();
         try {
-            JSONArray items = fetchInbox();
-            lastOk = System.currentTimeMillis();
-            lastError = null;
-            backoffMs = POLL_MS;
-            setConnected(true);
-            for (int i = 0; i < items.length(); i++) {
-                JSONObject m = items.optJSONObject(i);
-                if (m != null && !appVisible) showMessage(m);
+            JSONArray items = null;
+            String err = null;
+            try {
+                items = fetchInbox();
+            } catch (Exception e) {
+                err = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             }
-        } catch (Exception e) {
-            lastError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            setConnected(false);
-            // Нет связи — пауза растёт до минуты: ноутбук спит или телефон вне дома
-            backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+            // Пока шёл запрос, службу остановили — ничего не показываем
+            if (destroyed || executor.isShutdown()) return;
+            if (err == null) {
+                lastOk = System.currentTimeMillis();
+                lastError = null;
+                backoffMs = POLL_MS;
+                setConnected(true);
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject m = items.optJSONObject(i);
+                    if (m != null && !appVisible) showMessage(m);
+                }
+            } else {
+                lastError = err;
+                setConnected(false);
+                // Нет связи — пауза растёт до минуты: ноутбук спит или телефон вне дома
+                backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+            }
+            schedule(err == null ? POLL_MS : backoffMs);
+        } finally {
+            releaseAwake();
         }
-        schedule(lastError == null ? POLL_MS : backoffMs);
     }
 
     private JSONArray fetchInbox() throws Exception {
         String q = "?chat_id=web_user&client_id=" + URLEncoder.encode(clientId + "-bg", "UTF-8");
         HttpURLConnection c = (HttpURLConnection) new URL(baseUrl + "/api/inbox" + q).openConnection();
+        current = c;
         try {
             c.setConnectTimeout(10_000);
             c.setReadTimeout(15_000);
@@ -229,6 +399,7 @@ public class BackgroundInboxService extends Service {
             }
             return new JSONArray(t);
         } finally {
+            current = null;
             c.disconnect();
         }
     }
@@ -250,14 +421,19 @@ public class BackgroundInboxService extends Service {
         connected = ok;
         String text = ok ? getString(R.string.bg_connected, hostOf(baseUrl))
                 : getString(R.string.bg_offline);
-        try {
-            NotificationManagerCompat.from(this).notify(ONGOING_ID, ongoingNotification(text));
-        } catch (SecurityException e) {
-            // Нет разрешения на уведомления — служба работает без значка в шторке
+        synchronized (notifyLock) {
+            if (destroyed) return;
+            try {
+                NotificationManagerCompat.from(this).notify(ONGOING_ID, ongoingNotification(text, true));
+            } catch (SecurityException e) {
+                // Нет разрешения на уведомления — служба работает без значка в шторке
+            }
         }
     }
 
-    private Notification ongoingNotification(String text) {
+    /** immediate=false — значок для мгновенной остановки: система его
+     * обычно и не успевает показать. */
+    private Notification ongoingNotification(String text, boolean immediate) {
         Intent open = new Intent(this, MainActivity.class)
                 .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent pi = PendingIntent.getActivity(this, 0, open,
@@ -273,7 +449,9 @@ public class BackgroundInboxService extends Service {
                 .setSilent(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+                .setForegroundServiceBehavior(immediate
+                        ? NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE
+                        : NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
                 .build();
     }
 
@@ -319,12 +497,15 @@ public class BackgroundInboxService extends Service {
                 .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .build();
-        try {
-            NotificationManagerCompat nm = NotificationManagerCompat.from(this);
-            nm.notify(TAG_MESSAGE + persona, ++messageSeq, msg);
-            nm.notify(TAG_SUMMARY + persona, 0, summary);
-        } catch (SecurityException e) {
-            // Разрешение на уведомления отозвано — молча пропускаем
+        synchronized (notifyLock) {
+            if (destroyed) return; // уведомления выключили, пока шёл запрос
+            try {
+                NotificationManagerCompat nm = NotificationManagerCompat.from(this);
+                nm.notify(TAG_MESSAGE + persona, ++messageSeq, msg);
+                nm.notify(TAG_SUMMARY + persona, 0, summary);
+            } catch (SecurityException e) {
+                // Разрешение на уведомления отозвано — молча пропускаем
+            }
         }
     }
 

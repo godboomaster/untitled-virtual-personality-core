@@ -247,7 +247,8 @@ and shows reminders and persona messages as notifications; tapping one opens tha
 persona's chat. No Google/Firebase push is involved — it works only while the phone can
 reach the computer. On Honor, Huawei and Xiaomi phones allow the app to run in the
 background and set its battery usage to "Unrestricted", or the system will put it to sleep.
-Over VPC Link the switch is hidden for now.
+The service does not keep the phone awake: when the phone sleeps deeply, Android wakes it
+only every few minutes, so a message can arrive a little late. Over VPC Link the switch is hidden for now.
 
 Not there yet: voice mode (the Android WebView has no speech recognition).
 
