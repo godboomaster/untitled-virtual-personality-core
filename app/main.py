@@ -284,7 +284,10 @@ def run_api():
 
 
 def start_target(target: str):
-    # Запускает выбранную цель.
+    # Запускает выбранную цель. Первые 10–20 минут фон персон молчит
+    # (app/core/startup_quiet): после запуска все боты не пишут разом
+    from app.core import startup_quiet
+    startup_quiet.mark_started()
     if target == "api":
         run_api()
         return

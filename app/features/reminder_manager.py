@@ -29,6 +29,7 @@ from app.core.persona import addressee_note
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import (detect_language, detect_dialogue_language, language_name,
                                persona_language, user_language_line)
+from app.core import startup_quiet
 
 logger = logging.getLogger(__name__)
 
@@ -2119,6 +2120,12 @@ class ReminderManager:
         with self._lock:
             due = [r for r in self._reminders
                    if not r.get("fired") and not is_paused(r) and r["trigger_at"] <= now]
+        # Тишина после запуска (startup_quiet): пропущенные, пока бот был
+        # выключен, ждут её конца (иначе разом пачкой); наступившие уже после
+        # запуска — вовремя
+        if due and startup_quiet.is_quiet(self.context):
+            started = startup_quiet.started_at()
+            due = [r for r in due if r["trigger_at"] >= started]
 
         # fired ставим только ПОСЛЕ успешной отправки — иначе при сбое
         # (падение процесса, ошибка сети) напоминание потерялось бы без повтора

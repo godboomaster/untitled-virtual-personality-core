@@ -36,6 +36,7 @@ from app.core.language import (detect_dialogue_language, language_name,
 from app.core.paths import data_dir
 from app.core.persona import addressee_note
 from app.features.env_context import _WMO_DESC, fetch_forecast, is_precip_code, load_location
+from app.core import startup_quiet
 
 logger = logging.getLogger(__name__)
 
@@ -548,9 +549,10 @@ class RhythmManager:
                 # Замороженная персона молчит, приветствие сгорает (как напоминания)
                 self._mark(chat_id, morning_date=now.date().isoformat())
                 return
-            if self._turn_busy(chat_id):
-                # Ход пользователя (в TG утро запускает само его сообщение) —
-                # не генерируем впустую, повтор тиком после ответа
+            if self._turn_busy(chat_id) or startup_quiet.is_quiet(self.context):
+                # Ход пользователя (в TG утро запускает само его сообщение) или
+                # тишина после запуска — не генерируем сейчас, повтор тиком
+                # (после ответа / после тишины: цикл её дожидается)
                 self._deferred_morning[str(chat_id)] = last_seen
                 return
             lang = self._lang(chat_id)
@@ -582,8 +584,8 @@ class RhythmManager:
             if self._muted():
                 self._mark(chat_id, night_key=self._night_key(now, self.config.sleep.bedtime_hour))
                 return
-            if self._turn_busy(chat_id):
-                return  # идёт ход — _check_night повторит следующим тиком
+            if self._turn_busy(chat_id) or startup_quiet.is_quiet(self.context):
+                return  # идёт ход / тишина — _check_night повторит следующим тиком
             lang = self._lang(chat_id)
             text = None
             try:
@@ -700,6 +702,9 @@ class RhythmManager:
 
     async def _loop(self):
         logger.info(f"[Rhythm] Цикл запущен для context={self.context}")
+        # Тишина после запуска (startup_quiet): ни погоды, ни ночи, ни
+        # отложенного утра — до её конца
+        await startup_quiet.wait_quiet(self.context, "[Rhythm]")
         self._next_weather_ts = time.time() + 90  # первая проверка погоды — после старта
         while self._running:
             wall_before, mono_before = time.time(), time.monotonic()
