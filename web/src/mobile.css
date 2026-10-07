@@ -281,11 +281,6 @@
   }
 
   /* Окна поверх экрана — в пределах экрана без панелей */
-  .pcreate-overlay {
-    padding-top: calc(48px + var(--sa-top));
-    padding-bottom: calc(20px + var(--sa-bottom));
-  }
-
   .dialog-overlay,
   .info-overlay,
   .image-lightbox {
@@ -346,5 +341,64 @@
 
   .dossier-panel .tab {
     padding: 8px 10px;
+  }
+
+  /* ===== Окна на весь экран ===== */
+
+  /* Формы (новая персона, YAML, напоминания, задачи…) — на всю площадь
+     между системными панелями: панель по центру с отступами на телефоне
+     уходила вниз под навигацию */
+  .pcreate-overlay {
+    align-items: stretch;
+    padding: var(--sa-top) 0 var(--sa-bottom);
+  }
+
+  .pcreate-overlay .pcreate-panel {
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    border-left: none;
+    border-right: none;
+  }
+
+  .pcreate-overlay .pcreate-panel > .corner {
+    display: none;
+  }
+
+  /* Досье — во всю область под шапкой */
+  .dossier-panel {
+    margin: 0;
+    border-left: none;
+    border-right: none;
+  }
+
+  .dossier-panel > .corner {
+    display: none;
+  }
+
+  /* ===== Строки списков (история, инициативы, дела) ===== */
+
+  /* Метки и время — первой строкой, текст — своей, во всю ширину: иначе
+     нерастяжимые метки съедали ширину и текст шёл столбиком по букве */
+  .memory-item {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .memory-item-text {
+    flex-basis: 100%;
+    order: 5;
+  }
+
+  /* ===== Свёрнутые блоки ===== */
+
+  .collapsible-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .collapsible-summary {
+    flex: 1 1 0;
   }
 }
