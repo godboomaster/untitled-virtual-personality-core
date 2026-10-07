@@ -401,4 +401,23 @@
   .collapsible-summary {
     flex: 1 1 0;
   }
+
+  /* ===== Календарь ===== */
+
+  /* «‹ Октябрь 2026 г. › Сегодня» в одну строку не влезает: стрелки и
+     месяц — первой строкой, «Сегодня» — под ними */
+  .cal-head {
+    flex-wrap: wrap;
+  }
+
+  .cal-month {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .cal-today {
+    order: 5;
+    width: 100%;
+    margin-left: 0;
+  }
 }
