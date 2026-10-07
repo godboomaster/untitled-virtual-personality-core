@@ -327,7 +327,14 @@ export default function ApiKeys() {
               style={{ width: '100%', accentColor: 'var(--accent)' }}
             />
           </div>
-          <p className="field-hint">{notifyTestResult ?? t(`settings.notifyState.${notifyPermissionState()}`)}</p>
+          {/* В приложении Notification API нет — подсказка про браузер ни к чему:
+              в шторку пишет фоновая служба («Подключение» выше) */}
+          <p className="field-hint">
+            {notifyTestResult ??
+              (isNativeApp() && notifyPermissionState() === 'unsupported'
+                ? t('settings.notifyState.app')
+                : t(`settings.notifyState.${notifyPermissionState()}`))}
+          </p>
         </div>
         <div className="field">
           <label className="field-label">{t('settings.hints')}</label>

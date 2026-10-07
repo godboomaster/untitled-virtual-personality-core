@@ -210,8 +210,9 @@
     flex-shrink: 0;
   }
 
-  /* Кнопки шапки — одними иконками */
-  .chat-header-actions .chip-label {
+  /* Кнопки шапки — одними иконками (подпись — в title) */
+  .chat-header-actions .chip-label,
+  .voice-chat-actions .chip-label {
     display: none;
   }
 

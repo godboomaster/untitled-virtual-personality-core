@@ -139,8 +139,13 @@ def test_web():
 
     css = read(WEB / "src" / "mobile.css")
     hidden = re.findall(r"([^{}]+)\{\s*display:\s*none;?\s*\}", css)
-    voice_hidden = [s for s in hidden if "voice" in s or "chat-header-actions .btn" in s]
+    # Подписи кнопок (.chip-label) на телефоне прячутся — кнопки остаются иконками
+    sels = [x.strip() for s in hidden for x in s.split(",")]
+    voice_hidden = [x for x in sels if ("voice" in x or "chat-header-actions .btn" in x)
+                    and not x.endswith(".chip-label")]
     check("телефон: кнопку голосового режима в шапке не прячем", not voice_hidden)
+    check("телефон: кнопки шапки голосового режима — иконками (подписи спрятаны)",
+          ".voice-chat-actions .chip-label" in sels)
     chat = read(WEB / "src" / "sections" / "Chat.tsx")
     check("кнопка голосового режима в шапке без условия «не в приложении»",
           "setChatMode('voice')" in chat and "isNativeApp" not in chat[max(0, chat.find("chat.modeVoiceTitle") - 300):chat.find("chat.modeVoiceTitle")])

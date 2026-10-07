@@ -860,6 +860,7 @@ const en = {
   'settings.notifyState.default': 'Browser permission: not requested yet — click anywhere on the page',
   'settings.notifyState.denied': 'Browser permission: denied — see the 🔒 icon left of the address',
   'settings.notifyState.unsupported': 'Notification API unavailable — open the page via localhost or HTTPS',
+  'settings.notifyState.app': 'In the app these settings are the sound while it is open; for notifications in the shade see Connection → Notifications when the app is closed',
   'settings.hints': 'Hints ("?")',
   'settings.hintsToggle': 'Show "?" hint buttons',
   'settings.locationTitle': 'Location & weather',

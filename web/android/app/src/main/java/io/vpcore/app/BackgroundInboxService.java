@@ -112,9 +112,15 @@ public class BackgroundInboxService extends Service {
     private BroadcastReceiver alarmReceiver;
     // Служба остановлена: запрос, который ещё идёт (HttpURLConnection на
     // прерывание потока не реагирует), не должен потом ничего показать.
-    // Проверка и notify — под notifyLock, onDestroy ставит флаг под ним же
+    // Проверка и notify — под NOTIFY_LOCK, onDestroy ставит флаг под ним же
     private volatile boolean destroyed = false;
-    private final Object notifyLock = new Object();
+    private static final Object NOTIFY_LOCK = new Object();
+    // Остановка началась (stop() из приложения или halt()) — значок больше не
+    // обновляем. Ставится под NOTIFY_LOCK ДО stopForeground/stopService: notify
+    // с тем же id после них Android 12+ считает «новее» отмены и отмену
+    // пропускает, а уведомление наследует флаг службы переднего плана —
+    // приложение его уже не снимет, и в шторке навсегда висит «Подключено»
+    private static boolean stopping = false;
     // Текущий запрос — onDestroy его обрывает
     private volatile HttpURLConnection current;
     // Когда должен быть следующий опрос (elapsedRealtime): опоздавший
@@ -152,6 +158,9 @@ public class BackgroundInboxService extends Service {
      */
     static void stop(Context ctx) {
         if (!running && !startPending) return; // и так не работает
+        synchronized (NOTIFY_LOCK) {
+            stopping = true;
+        }
         try {
             ctx.startService(new Intent(ctx, BackgroundInboxService.class).setAction(ACTION_STOP));
         } catch (RuntimeException e) {
@@ -240,6 +249,9 @@ public class BackgroundInboxService extends Service {
             return START_NOT_STICKY;
         }
         running = true;
+        synchronized (NOTIFY_LOCK) {
+            stopping = false; // новый запуск после остановки
+        }
         final String tok = p.getString(KEY_TOKEN, "");
         final String cid = p.getString(KEY_CLIENT_ID, "");
         executor.execute(() -> {
@@ -266,13 +278,16 @@ public class BackgroundInboxService extends Service {
             }
         }
         if (alarms != null) alarms.cancel(alarmIntent);
+        synchronized (NOTIFY_LOCK) {
+            stopping = true;
+        }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
         stopSelf(startId);
     }
 
     @Override
     public void onDestroy() {
-        synchronized (notifyLock) {
+        synchronized (NOTIFY_LOCK) {
             destroyed = true;
             // Значок «связь с ядром» больше не наш — убрать, чтобы не остался
             // неснимаемым уведомлением
@@ -421,8 +436,8 @@ public class BackgroundInboxService extends Service {
         connected = ok;
         String text = ok ? getString(R.string.bg_connected, hostOf(baseUrl))
                 : getString(R.string.bg_offline);
-        synchronized (notifyLock) {
-            if (destroyed) return;
+        synchronized (NOTIFY_LOCK) {
+            if (destroyed || stopping) return;
             try {
                 NotificationManagerCompat.from(this).notify(ONGOING_ID, ongoingNotification(text, true));
             } catch (SecurityException e) {
@@ -497,8 +512,8 @@ public class BackgroundInboxService extends Service {
                 .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .build();
-        synchronized (notifyLock) {
-            if (destroyed) return; // уведомления выключили, пока шёл запрос
+        synchronized (NOTIFY_LOCK) {
+            if (destroyed || stopping) return; // уведомления выключили, пока шёл запрос
             try {
                 NotificationManagerCompat nm = NotificationManagerCompat.from(this);
                 nm.notify(TAG_MESSAGE + persona, ++messageSeq, msg);

@@ -185,7 +185,7 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
         <div className="voice-chat-actions">
           <button type="button" className="btn btn--ghost" title={t('chat.modeClassicTitle')} onClick={onSwitchToClassic}>
             <Icon name="chat" size={13} />
-            {t('chat.modeClassic')}
+            <span className="chip-label">{t('chat.modeClassic')}</span>
           </button>
           <button
             type="button"
@@ -194,7 +194,7 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
             onClick={() => setFullscreen((v) => !v)}
           >
             <Icon name={fullscreen ? 'fullscreenExit' : 'fullscreen'} size={13} />
-            {fullscreen ? t('chat.exitFullscreen') : t('chat.fullscreen')}
+            <span className="chip-label">{fullscreen ? t('chat.exitFullscreen') : t('chat.fullscreen')}</span>
           </button>
         </div>
       </div>

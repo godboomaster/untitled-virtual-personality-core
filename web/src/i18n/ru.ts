@@ -860,6 +860,7 @@ const ru: Record<string, string> = {
   'settings.notifyState.default': 'Разрешение браузера: ещё не запрошено — кликни по странице',
   'settings.notifyState.denied': 'Разрешение браузера: запрещено — значок 🔒 слева от адреса',
   'settings.notifyState.unsupported': 'Notification API недоступен — открой страницу по localhost или HTTPS',
+  'settings.notifyState.app': 'В приложении эти настройки — звук, пока оно открыто; уведомления в шторке — «Подключение» → «Уведомления, когда приложение закрыто»',
   'settings.hints': 'Подсказки («?»)',
   'settings.hintsToggle': 'Показывать кнопки-подсказки «?»',
   'settings.locationTitle': 'Местоположение и погода',
