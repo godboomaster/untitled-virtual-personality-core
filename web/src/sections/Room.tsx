@@ -36,6 +36,9 @@ import { BACK_OVERLAY, useBackHandler } from '../backStack';
 // Подсветка события в ленте после клика по записке на столе
 const HIGHLIGHT_MS = 4000;
 
+// Ширина, в которой сцена комнаты рисуется на узком экране (потом ужимается)
+const SCENE_FIT_W = 720;
+
 export default function Room() {
   const { t } = useI18n();
   const { personas } = useMockData();
@@ -103,6 +106,21 @@ export default function Room() {
     return { scale, width: Math.min(win.innerWidth * 0.74, 1024) / scale };
   };
   const [fsBox, setFsBox] = useState<{ scale: number; width: number }>({ scale: 1, width: 1024 });
+  // Узкая сцена (телефон): реквизит задан в px и уходил за правый край —
+  // сцена рисуется в ширину настольной (SCENE_FIT_W) и уменьшается целиком
+  // через zoom (в отличие от transform, вместе с ней ужимается и её блок)
+  const sceneCardRef = useRef<HTMLDivElement>(null);
+  const [fitZoom, setFitZoom] = useState(1);
+  useEffect(() => {
+    const el = sceneCardRef.current;
+    if (!el || sceneFullscreen || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth;
+      setFitZoom(w > 0 && w < SCENE_FIT_W ? w / SCENE_FIT_W : 1);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [sceneFullscreen]);
   const openFullscreen = () => {
     setFsBox(measureFullscreen(sectionRef.current?.ownerDocument.defaultView ?? window));
     setSceneFullscreen(true);
@@ -221,7 +239,9 @@ export default function Room() {
               width: `${fsBox.width}px`,
               height: '430px',
             } as CSSProperties)
-          : undefined
+          : fitZoom < 1
+            ? ({ width: `${SCENE_FIT_W}px`, zoom: fitZoom } as CSSProperties)
+            : undefined
       }
     />
   );
@@ -405,6 +425,7 @@ export default function Room() {
         {(() => {
           const sceneCard = (
             <div
+              ref={sceneCardRef}
               className={`card room-scene-card stagger-item ${sceneFullscreen ? 'room-scene-card--fullscreen' : ''}`}
               onClick={sceneFullscreen ? () => setSceneFullscreen(false) : undefined}
             >

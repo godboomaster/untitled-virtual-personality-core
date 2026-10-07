@@ -313,4 +313,38 @@
   .chat-yaml-btn {
     display: none;
   }
+
+  /* ===== Низ страницы ===== */
+
+  /* Обёртка раздела растёт с содержимым: при высоте ровно 100% содержимое
+     вываливалось из неё, и отступ от панели навигации добавлялся после
+     обёртки, а не после содержимого — конец страницы уходил под панель.
+     Чату нужна ровно высота экрана (своя прокрутка ленты) */
+  .section-enter {
+    height: auto;
+    min-height: 100%;
+  }
+
+  .section-enter:has(> .chat-root) {
+    height: 100%;
+  }
+
+  /* ===== Досье ===== */
+
+  .dossier-panel {
+    margin: 8px;
+  }
+
+  .dossier-head .badge {
+    display: none;
+  }
+
+  /* Вложенные вкладки (STM / LTM / дневник) — в несколько строк */
+  .dossier-panel .tabs {
+    flex-wrap: wrap;
+  }
+
+  .dossier-panel .tab {
+    padding: 8px 10px;
+  }
 }
