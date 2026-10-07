@@ -122,11 +122,13 @@ function noteAuthFailure(res: Response) {
 }
 
 // Id этого устройства для очереди фоновых сообщений: у каждого клиента свой
-// курсор, и сообщение получают и ноутбук, и телефон (см. app/api/inbox.py)
+// курсор, и сообщение получают и ноутбук, и телефон (см. app/api/inbox.py).
+// Фоновая служба приложения на телефоне берёт его же с суффиксом "-bg"
+// (bgInbox.ts) — свой курсор, сообщения веба не забирает
 const CLIENT_KEY = 'vpc-client-id';
 let clientId = '';
 
-function inboxClientId(): string {
+export function inboxClientId(): string {
   if (clientId) return clientId;
   try {
     clientId = localStorage.getItem(CLIENT_KEY) ?? '';

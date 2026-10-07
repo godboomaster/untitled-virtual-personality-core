@@ -29,6 +29,18 @@
 
         </activity>
 
+        <!-- Фоновые сообщения персон, пока приложение закрыто: опрос ядра и
+             уведомления. specialUse, а не dataSync: у dataSync на Android 15
+             лимит 6 часов в сутки, а служба держит связь весь день -->
+        <service
+            android:name=".BackgroundInboxService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a connection to a self-hosted server owned by the user on the local network and shows messages it sends (reminders, persona messages) while the app is closed; no push service is used" />
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -43,6 +55,12 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Фоновые уведомления (BackgroundInboxService): служба переднего плана,
+         уведомления (Android 13+ спрашивает), процессор не засыпает между опросами -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Камера — только для сканирования QR-кода сопряжения (VPC Link) -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />

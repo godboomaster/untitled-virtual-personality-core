@@ -4,6 +4,7 @@ import { api, apiHost, AUTH_REQUIRED_EVENT, LINK_REVOKED_EVENT, getApiToken, get
 import { getLinkConfig, pair, parsePairingUri, refusalKey, setLinkConfig } from '../link/client.ts';
 import QrScanner from '../link/QrScanner';
 import { syncSystemBars } from '../nativeBars';
+import { stopBgInbox } from '../bgInbox';
 import { refetchPersonas } from '../apiData';
 import { useI18n } from '../i18n';
 import { getInitialTheme } from '../useAppTheme';
@@ -228,6 +229,8 @@ export default function BootGate({ children }: { children: ReactNode }) {
   };
 
   const changeServer = () => {
+    // Фоновая служба уведомлений не должна опрашивать прежнее ядро
+    stopBgInbox();
     // По каналу — забыть ноутбук (ключ этого телефона больше не нужен)
     if (getLinkConfig()) setLinkConfig(null);
     setUrlDraft(getApiUrl());

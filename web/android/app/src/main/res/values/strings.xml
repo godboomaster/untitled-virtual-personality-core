@@ -1,7 +1,17 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Virtual Persona</string>
-    <string name="title_activity_main">Virtual Persona</string>
-    <string name="package_name">io.vpcore.app</string>
-    <string name="custom_url_scheme">io.vpcore.app</string>
+    <string name="app_name" translatable="false">Virtual Persona</string>
+    <string name="title_activity_main" translatable="false">Virtual Persona</string>
+    <string name="package_name" translatable="false">io.vpcore.app</string>
+    <string name="custom_url_scheme" translatable="false">io.vpcore.app</string>
+
+    <!-- Фоновые уведомления (BackgroundInboxService); по-русски — values-ru -->
+    <string name="bg_ongoing_title">Background messages</string>
+    <string name="bg_connecting">Connecting to %1$s…</string>
+    <string name="bg_connected">Connected to %1$s</string>
+    <string name="bg_offline">No connection to the core — will retry</string>
+    <string name="bg_channel_link">Core connection</string>
+    <string name="bg_channel_link_desc">Silent notification while the app listens for persona messages in the background</string>
+    <string name="bg_channel_messages">Persona messages</string>
+    <string name="bg_channel_messages_desc">Reminders and messages from personas while the app is closed</string>
 </resources>
