@@ -3259,7 +3259,8 @@ class BotInstance:
         # пропускается, иначе деградация не видна. Текст зависит от природы
         # блокировки: капча (challenge — нужны руки пользователя), лимит
         # сообщений (ratelimit — есть время восстановления), отказ сайта
-        # (refused — перегрузка/тариф).
+        # (refused — перегрузка/тариф), блокировка аккаунта (suspended — до
+        # срока, названного сайтом).
         try:
             from app.features import web_llm as _wl
             for _alert in _wl.pop_quarantine_alerts():
@@ -3286,6 +3287,14 @@ class BotInstance:
                         "стало видимым). Пока пропускаю этот чат и отвечаю "
                         "через другие модели; как войдёшь — подхвачу сам "
                         "в течение пары минут.")
+                elif _kind == "suspended":
+                    _until = float(_alert.get("until") or 0)
+                    _when = timeutil.from_ts(_until).strftime("%d.%m %H:%M") \
+                        if _until else "снятия блокировки"
+                    self._pending_list_messages[str(chat_id)].append(
+                        f"⛔ {_site} заблокировал аккаунт (до {_when}). До этого "
+                        "к нему не обращаюсь вовсе — ни запросов, ни новых чатов; "
+                        "отвечаю через другие модели.")
                 elif _kind == "refused":
                     self._pending_list_messages[str(chat_id)].append(
                         f"⚠️ {_site} временно отклоняет сообщения "

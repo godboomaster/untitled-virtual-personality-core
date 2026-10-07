@@ -46,9 +46,15 @@ def main():
     from app.features import web_llm as wl
     from app.core.sticky_scope import StickyBlock, sticky_blocks
     wl._pace_path = lambda: tmp / "pacing.json"
+    wl._suspended_path = lambda: tmp / "suspended.json"
     env_keys = ("WEBCHAT_AUTO_GAP_SEC", "WEBCHAT_AUTO_JITTER_SEC",
-                "WEBCHAT_AUTO_PER_HOUR")
+                "WEBCHAT_AUTO_PER_HOUR", "WEBCHAT_NEW_CHATS_PER_HOUR",
+                "WEBCHAT_NEW_CHATS_PER_DAY")
     env_old = {k: os.environ.get(k) for k in env_keys}
+    # Бюджет новых чатов проверяет test_webchat_ban; здесь чатов открывается
+    # много подряд — без ограничения
+    os.environ["WEBCHAT_NEW_CHATS_PER_HOUR"] = "0"
+    os.environ["WEBCHAT_NEW_CHATS_PER_DAY"] = "0"
 
     def pacing(gap, jitter, cap):
         os.environ["WEBCHAT_AUTO_GAP_SEC"] = str(gap)
