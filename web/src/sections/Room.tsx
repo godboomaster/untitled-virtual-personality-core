@@ -22,6 +22,7 @@ import { patchRoomLayout } from '../room/roomLayoutStore';
 import { spotPoint } from '../room/roomModel';
 import { closeRoomPip, openRoomPip, roomPipSupported, useRoomPip } from '../room/roomPipStore';
 import { setSessionAvatar, useRoomScene, useTitleStatus } from '../room/useRoomScene';
+import { BACK_OVERLAY, useBackHandler } from '../backStack';
 
 /* Раздел «Комната» — личное пространство персоны. Сцена показывает живое
    состояние персоны (GET /room раз в минуту): где она в комнате, чем занята
@@ -127,6 +128,7 @@ export default function Room() {
 
   // Редактор размещения предметов — всплывающее окно поверх раздела
   const [editorOpen, setEditorOpen] = useState(false);
+  useBackHandler(editorOpen, BACK_OVERLAY, () => setEditorOpen(false));
   // Закрытие редактора по Esc
   useEffect(() => {
     if (!editorOpen) return;

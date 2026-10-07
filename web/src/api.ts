@@ -1,13 +1,93 @@
 /* HTTP-клиент бэкенда (app/api/server.py). Базовый URL — из
-   VITE_API_URL (см. web/.env), по умолчанию локальный сервер.
+   VITE_API_URL (см. web/.env), по умолчанию локальный сервер; адрес,
+   введённый на экране запуска, хранится в localStorage (vpc-api-url) и
+   важнее вшитого. В приложении на телефоне вшитого нет вовсе: ядро живёт на
+   ноутбуке, адрес вводит пользователь.
    Токен (если на бэке задан API_TOKEN) вводится на экране запуска и
    хранится в localStorage под ключом vpc-api-token. */
 
 import type { RoomArtData, RoomArtPatch, RoomFocus, RoomLayout, RoomLayoutPatch, RoomSource, RoomStyle, RoomView } from './room/roomTypes';
+import { getLinkConfig, linkFetch, refusalKey } from './link/client.ts';
 
-const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000';
-// Адрес бэкенда без схемы — для подписей в UI (экран загрузки)
-export const API_HOST = BASE_URL.replace(/^https?:\/\//, '');
+const BUILD_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000';
+const URL_KEY = 'vpc-api-url';
+
+// Веб внутри приложения Android (Capacitor): мост ставит window.Capacitor
+export function isNativeApp(): boolean {
+  const cap = (window as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+  return Boolean(cap?.isNativePlatform?.());
+}
+
+function storedApiUrl(): string {
+  try {
+    return localStorage.getItem(URL_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+// Адрес ядра; '' — не задан (приложение на телефоне до первого подключения)
+let baseUrl = storedApiUrl() || (isNativeApp() ? '' : BUILD_URL);
+
+export function getApiUrl(): string {
+  return baseUrl;
+}
+
+export function setApiUrl(url: string) {
+  baseUrl = url || (isNativeApp() ? '' : BUILD_URL);
+  try {
+    if (url) localStorage.setItem(URL_KEY, url);
+    else localStorage.removeItem(URL_KEY);
+  } catch {
+    /* хранилище недоступно — адрес проживёт до перезапуска */
+  }
+}
+
+// Адрес бэкенда без схемы — для подписей в UI (экран загрузки);
+// по защищённому каналу — имя ноутбука
+export function apiHost(): string {
+  const link = getLinkConfig();
+  if (link) return `VPC Link · ${link.n}`;
+  return baseUrl.replace(/^https?:\/\//, '');
+}
+
+/** Телефон сопряжён с ноутбуком: API — через защищённый канал (link/client.ts). */
+export function isLinkMode(): boolean {
+  return getLinkConfig() !== null;
+}
+
+// Ноутбук перестал узнавать телефон (отвязали на компьютере) — экран
+// запуска (BootGate) ловит событие и объясняет, что делать
+export const LINK_REVOKED_EVENT = 'vpc-link-revoked';
+
+// Все запросы к API — отсюда: по каналу VPC Link или обычным fetch
+function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  if (!getLinkConfig()) return fetch(`${baseUrl}${path}`, init);
+  return linkFetch(path, init).catch((e: unknown) => {
+    if (refusalKey(e) === 'link.errNotPaired') window.dispatchEvent(new Event(LINK_REVOKED_EVENT));
+    throw e;
+  });
+}
+
+/** Адрес из поля ввода → базовый URL ядра; null — не адрес.
+ * Без схемы: IP, localhost или явный порт — http (ядро в локальной сети),
+ * имя — https (обратный прокси обычно отдаёт ядро по HTTPS). */
+export function normalizeApiUrl(input: string): string | null {
+  let v = input.trim();
+  if (!v) return null;
+  if (!/^https?:\/\//i.test(v)) {
+    const host = v.split('/')[0];
+    const plain = /^(\d{1,3}\.){3}\d{1,3}(:\d+)?$/.test(host) || /^localhost(:\d+)?$/i.test(host) || /:\d+$/.test(host);
+    v = `${plain ? 'http' : 'https'}://${v}`;
+  }
+  try {
+    const u = new URL(v);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return null;
+  }
+}
 
 const TOKEN_KEY = 'vpc-api-token';
 
@@ -39,6 +119,29 @@ function authHeader(): Record<string, string> {
 
 function noteAuthFailure(res: Response) {
   if (res.status === 401) window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+}
+
+// Id этого устройства для очереди фоновых сообщений: у каждого клиента свой
+// курсор, и сообщение получают и ноутбук, и телефон (см. app/api/inbox.py)
+const CLIENT_KEY = 'vpc-client-id';
+let clientId = '';
+
+function inboxClientId(): string {
+  if (clientId) return clientId;
+  try {
+    clientId = localStorage.getItem(CLIENT_KEY) ?? '';
+  } catch {
+    /* хранилище недоступно — id проживёт до перезагрузки */
+  }
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(clientId)) {
+    clientId = Array.from({ length: 16 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
+    try {
+      localStorage.setItem(CLIENT_KEY, clientId);
+    } catch {
+      /* см. выше */
+    }
+  }
+  return clientId;
 }
 
 // Пользователь веб-интерфейса — один на всех персон (память у персон изолирована контекстом)
@@ -183,7 +286,7 @@ export class StreamInterruptedError extends ApiError {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await apiFetch(path, {
     ...init,
     headers: {
       ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
@@ -207,8 +310,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// VPC Link: состояние канала до телефона (GET /api/link)
+export interface LinkDevice {
+  id: string;
+  name: string;
+  paired_at: number;
+  last_seen: number;
+  online: 'lan' | 'relay' | null; // через что подключён сейчас
+}
+
+export interface LinkStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  lan: string[];
+  lan_error: string | null;
+  relay: string;
+  relay_connected: boolean;
+  relay_error: string | null;
+  devices: LinkDevice[];
+  pairing_expires: number | null;
+  this_device: string | null; // запрос пришёл с этого телефона
+}
+
 export const api = {
   health: (init?: RequestInit) => request<{ status: string }>('/api/health', init),
+
+  // VPC Link: телефоны, QR-код сопряжения, отвязка
+  getLink: () => request<LinkStatus>('/api/link'),
+  pairLink: () => request<{ uri: string; expires: number; ttl: number }>('/api/link/pair', { method: 'POST' }),
+  cancelPairLink: () => request<{ ok: boolean }>('/api/link/pair', { method: 'DELETE' }),
+  unpairLink: (id: string) =>
+    request<{ ok: boolean }>(`/api/link/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   getPersonas: () => request<ApiPersona[]>('/api/personas'),
 
@@ -530,7 +663,7 @@ export const api = {
 
   getInbox: (persona: string, focused?: boolean) =>
     request<{ messages: InboxMessage[]; generating?: boolean; last_ts?: number; control_mode?: boolean; answer_options?: AnswerOptions | null; task?: TaskCard | null }>(
-      `/api/personas/${encodeURIComponent(persona)}/inbox?chat_id=${WEB_CHAT_ID}${focused ? '&focused=1' : ''}`,
+      `/api/personas/${encodeURIComponent(persona)}/inbox?chat_id=${WEB_CHAT_ID}&client_id=${inboxClientId()}${focused ? '&focused=1' : ''}`,
     ),
 
   // Состояние вкладки чата (видима и в фокусе) — гейт фоновой активности бота
@@ -920,8 +1053,8 @@ export async function streamControlView(
   onEvent: (e: ControlViewEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(
-    `${BASE_URL}/api/personas/${encodeURIComponent(persona)}/control/view?chat_id=${WEB_CHAT_ID}`,
+  const res = await apiFetch(
+    `/api/personas/${encodeURIComponent(persona)}/control/view?chat_id=${WEB_CHAT_ID}`,
     { headers: { ...authHeader() }, signal },
   );
   if (!res.ok || !res.body) {
@@ -961,7 +1094,7 @@ export async function streamChat(
   // считаем обрывом, чат сверится с историей по last_ts
   let res: Response;
   try {
-    res = await fetch(`${BASE_URL}/api/chat/stream`, {
+    res = await apiFetch('/api/chat/stream', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1112,7 +1245,7 @@ export async function streamSkinGeneration(
   onStatus?: (status: string, info: { round?: number; direction?: ApiSkinDirection }) => void,
   signal?: AbortSignal,
 ): Promise<ApiSkinGenResult> {
-  const res = await fetch(`${BASE_URL}/api/skins/generate`, {
+  const res = await apiFetch('/api/skins/generate', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

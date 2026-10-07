@@ -111,7 +111,7 @@ with a chosen and downloaded model. There are no default models — a human pick
 | `LOCAL_LLM_BACKEND` | who does the internal work (classification, extraction): `ollama` or `webchat` |
 | `LTM_MODEL_PROVIDER` | a separate provider for fact extraction; empty — the persona's chain |
 | `API_HOST`, `API_PORT` | backend address: `127.0.0.1:8000` |
-| `API_TOKEN` | API password; the web asks for it on sign-in. Empty — no password |
+| `API_TOKEN` | API password; the web asks for it on sign-in. Empty — no password, but only for requests through `localhost` |
 | `API_CORS_ORIGINS`, `API_ALLOWED_HOSTS` | whose pages and which host names may reach the API — see [API](#api) |
 | `VPC_DATA_DIR` | folder for data and your personas, `data/` by default |
 | `RATE_LIMIT_DEFAULT`, `RATE_WINDOW` | Telegram message limit (6 per 3600 s) for personas with `rate_limit` |
@@ -187,6 +187,60 @@ The web finds the backend through `VITE_API_URL` (`http://127.0.0.1:8000` by def
 `API_TOKEN` is set, the web asks for it on sign-in. Without a backend you can continue on
 demo data after 3 seconds — the interface switches to live data by itself once the backend
 is up.
+
+### Phone app (Android)
+
+The web interface is also built as an Android app. The backend keeps running on your
+computer, the phone connects to it: the same chats and history, control mode with the live
+browser window, persona dossiers and settings. Background messages (reminders, initiative)
+reach every device — the computer and the phone each get their own copy.
+
+**Connecting — VPC Link.** The phone and the computer pair once by a QR code and from then
+on recognize each other by keys: no VPN on the phone, no accounts, no passwords. Everything
+is encrypted end to end ([Noise](https://noiseprotocol.org), the same protocol family as
+WireGuard), and the API itself stays on `127.0.0.1` — the channel carries requests to it.
+
+1. On the computer: Settings → Phone → **Connect a phone**. A one-time QR code appears
+   (valid for 10 minutes).
+2. In the app: **Scan QR code**. Done — the phone shows up in the list on the computer,
+   where it can be unpaired at any time.
+
+Paths, tried in this order:
+
+- **the same Wi-Fi** — directly, on port `LINK_PORT` (8766). If the macOS firewall is on,
+  allow incoming connections for Python;
+- **away from home** — through a relay: a tiny server (`app/link/relay.py`, one file,
+  needs `pip install websockets`) on any machine both devices can reach. It only forwards
+  ciphertext: it cannot read or forge anything. On the server:
+  `python3 relay.py --port 8443 --host-key <password>` (put it behind nginx/caddy with TLS,
+  or pass `--cert`/`--key`); in the core `.env`: `LINK_RELAY_URL=wss://<server>` and
+  `LINK_RELAY_KEY=<password>`. Without a relay the phone works only on the same Wi-Fi.
+
+The computer must stay awake while you use the app.
+
+**Connecting by address** (fallback): `API_HOST=0.0.0.0`, `API_ALLOWED_HOSTS=192.168.1.5`
+(the computer's address), `API_TOKEN`; in the app — `192.168.1.5:8000` and the token. The
+traffic is not encrypted here, so VPC Link is the better choice. Without `API_TOKEN` the
+backend refuses requests that don't come through `localhost` (403). If `API_CORS_ORIGINS`
+is set, add `https://localhost` to it — that is the app's origin.
+
+**Building the APK** needs Android Studio (it brings the Android SDK and Java):
+
+```bash
+cd web
+npm ci
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"  # macOS
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+npm run apk
+```
+
+The file is `web/android/app/build/outputs/apk/debug/app-debug.apk`: copy it to the phone
+and install it (allow installing apps from this source), or `adb install` it. On Windows
+the last step is `cd web/android && gradlew assembleDebug` after `npm run build` and
+`npx cap sync android`.
+
+Not there yet: notifications while the app is closed and voice mode (the Android WebView
+has no speech recognition).
 
 ## Personas
 
@@ -556,6 +610,7 @@ descriptions are in Swagger: `/docs`.
 | GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative |
 | GET | `/api/personas/{p}/state` | the persona's state and its life feed |
 | GET | `/api/providers` | providers, keys, the active one |
+| GET, POST, DELETE | `/api/link`, `/api/link/pair`, `/api/link/devices/{id}` | phones over VPC Link: list, pairing QR code, unpairing |
 | GET | `/api/system/status`, `/api/logs` | the bot's browsers; the log — for the panel and developer mode |
 
 ```bash
@@ -571,10 +626,12 @@ curl -X POST http://127.0.0.1:8000/api/chat \
   another site is refused before anything runs. The list is replaced by `API_CORS_ORIGINS`;
 - it checks the host name — protection against DNS rebinding. Your own names go into
   `API_ALLOWED_HOSTS`;
-- with `API_TOKEN` it requires `Authorization: Bearer <token>`.
+- with `API_TOKEN` it requires `Authorization: Bearer <token>`; without it, it refuses
+  requests that come by another host name or through a proxy (403).
 
-Opening the web from a phone or over a network — set `API_TOKEN`, `API_HOST`,
-`API_CORS_ORIGINS` and build the web with the right `VITE_API_URL`.
+Using it from a phone — see [Phone app](#phone-app-android). Opening the web over a
+network — set `API_TOKEN`, `API_HOST`, `API_CORS_ORIGINS` and build the web with the right
+`VITE_API_URL`.
 
 ## Docker
 
@@ -656,9 +713,10 @@ Building the database and checks — in the Arrodes README.
 | `app/core/` | persona, memory (ChromaDB), model router, persona life, intelligence tiers, add-ons |
 | `app/features/` | modules: reminders, to-dos, learning, initiative, rhythm, search, control mode, browser, web chats |
 | `app/api/` | FastAPI: server, settings, security, skins, room |
+| `app/link/` | VPC Link: the encrypted channel to the phone (Noise), the relay |
 | `app/personas/` | the built-in test persona (Connor) |
 | `data/personas/` | your personas (outside git) |
-| `web/` | the web interface (React, Vite) |
+| `web/` | the web interface (React, Vite); `web/android/` — the Android app (Capacitor) |
 | `desktop/` | the tray panel (Tauri) |
 | `scripts/` | tests, benchmarks, utilities |
 | `.env.example`, `.env.config` | template of personal settings; non-secret defaults |
@@ -668,7 +726,7 @@ The path of one message — filters, memory, search, model, markers, saving — 
 
 ## Tests
 
-Tests are `scripts/test_*.py` scripts (92), without pytest; Arrodes tests are in its own
+Tests are `scripts/test_*.py` scripts (94), without pytest; Arrodes tests are in its own
 repository. Run them from the project root:
 
 ```bash

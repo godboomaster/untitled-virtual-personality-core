@@ -13,7 +13,9 @@ export type IconName =
   // Действия карточки персоны (reset — сброс к встроенной версии)
   | 'copy' | 'snowflake' | 'camera' | 'close' | 'reset'
   // Навигация по местам в комнате
-  | 'chevronLeft' | 'chevronRight' | 'chevronDown';
+  | 'chevronLeft' | 'chevronRight' | 'chevronDown'
+  // Меню разделов на узком экране
+  | 'menu';
 
 const paths: Record<IconName, ReactNode> = {
   // Старт: кнопка «play» в круге
@@ -209,6 +211,13 @@ const paths: Record<IconName, ReactNode> = {
   chevronLeft: <polyline points="15 18 9 12 15 6" />,
   chevronRight: <polyline points="9 18 15 12 9 6" />,
   chevronDown: <polyline points="6 9 12 15 18 9" />,
+  menu: (
+    <>
+      <line x1="4" y1="7" x2="20" y2="7" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <line x1="4" y1="17" x2="20" y2="17" />
+    </>
+  ),
 };
 
 interface IconProps {

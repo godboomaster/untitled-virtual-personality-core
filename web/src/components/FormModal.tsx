@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import { useI18n } from '../i18n';
+import { BACK_OVERLAY, useBackHandler } from '../backStack';
 
 /* Общая обёртка модального окна с формой: оверлей, панель в HUD-стиле,
    шапка с заголовком, подвал «Отмена / Создать». Закрытие — крестик,
@@ -34,6 +35,7 @@ export default function FormModal({
   onClose,
 }: FormModalProps) {
   const { t } = useI18n();
+  useBackHandler(true, BACK_OVERLAY, onClose);
   // Закрытие по Esc
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

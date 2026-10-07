@@ -3,3 +3,4 @@ dist
 *.png
 .env
 .env.*
+android
