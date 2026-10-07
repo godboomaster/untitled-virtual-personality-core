@@ -2222,6 +2222,8 @@ html[data-theme='dark'] .persona-card-label {
 .memory-item-text {
   flex: 1;
   min-width: 0;
+  /* Длинные ссылки в истории (режим управления) не вылезают за досье */
+  overflow-wrap: anywhere;
 }
 
 .memory-item-time {
