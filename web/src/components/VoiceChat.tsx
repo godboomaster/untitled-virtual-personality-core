@@ -3,40 +3,25 @@ import { createPortal } from 'react-dom';
 import { useI18n } from '../i18n';
 import type { ChatMessage, Persona } from '../mockData';
 import Icon from './icons';
+import { getSpeechEngine, speechLangTag } from '../voice/speechIO';
+import type { ListenSession } from '../voice/speechIO';
 
 /* Голосовой режим чата: крупная аватарка персоны, общение голосом
    (SpeechRecognition → обычная отправка в чат → ответ бэкенда →
    speechSynthesis) либо текстом — персона в обоих случаях отвечает
    голосом. Полноэкранный режим скрывает весь остальной интерфейс
-   фиксированным оверлеем. */
+   фиксированным оверлеем. В приложении Android вместо Web Speech API —
+   распознавание и озвучка телефона (движок из voice/speechIO). */
 
-// Минимальные типы Web Speech API (в lib.dom их нет)
-interface SpeechRecognitionAlternativeLike {
-  transcript: string;
-}
-interface SpeechRecognitionResultLike {
-  isFinal: boolean;
-  0: SpeechRecognitionAlternativeLike;
-}
-interface SpeechRecognitionEventLike {
-  results: ArrayLike<SpeechRecognitionResultLike>;
-}
-interface SpeechRecognitionLike {
-  lang: string;
-  interimResults: boolean;
-  continuous: boolean;
-  onresult: ((e: SpeechRecognitionEventLike) => void) | null;
-  onend: (() => void) | null;
-  onerror: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-}
-type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
-
-function getRecognitionCtor(): SpeechRecognitionCtor | null {
-  const w = window as unknown as Record<string, unknown>;
-  return (w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null) as SpeechRecognitionCtor | null;
-}
+// Ошибки распознавания в приложении, о которых стоит сказать; «не расслышал»
+// и тишина — просто конец прослушивания. В браузере подсказок нет, как было
+const MIC_ERROR_HINTS: Record<string, string> = {
+  'not-allowed': 'chat.micDenied',
+  'service-not-allowed': 'chat.micDenied',
+  network: 'chat.micNetwork',
+  server: 'chat.micNetwork',
+  'language-not-supported': 'chat.micLanguage',
+};
 
 interface VoiceChatProps {
   persona: Persona;
@@ -53,29 +38,46 @@ interface VoiceChatProps {
 
 export default function VoiceChat({ persona, messages, avatar, typing, onSend, onSwitchToClassic }: VoiceChatProps) {
   const { lang, t } = useI18n();
+  const engine = getSpeechEngine();
+  // Есть ли распознавание речи: браузер отвечает сразу, приложение — после
+  // вопроса к телефону (до ответа считаем, что есть)
+  const [micSupported, setMicSupported] = useState(() => engine.recognitionSupportedNow() ?? true);
   // Как говорит оператор: голосом (микрофон) или текстом
-  const [inputMode, setInputMode] = useState<'voice' | 'text'>(() => (getRecognitionCtor() ? 'voice' : 'text'));
+  const [inputMode, setInputMode] = useState<'voice' | 'text'>(() => (micSupported ? 'voice' : 'text'));
   const [fullscreen, setFullscreen] = useState(false);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   // Живая расшифровка (промежуточные результаты распознавания)
   const [interim, setInterim] = useState('');
   const [draft, setDraft] = useState('');
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const micSupported = getRecognitionCtor() != null;
+  // Подсказка о сбое микрофона (нет разрешения, нет сети...) и об озвучке
+  const [micHint, setMicHint] = useState('');
+  const [ttsMissing, setTtsMissing] = useState(false);
+  const sessionRef = useRef<ListenSession | null>(null);
+  // Номер реплики: конец прерванной озвучки не гасит «говорит» у следующей
+  const speakSeq = useRef(0);
+
+  useEffect(() => {
+    if (engine.recognitionSupportedNow() !== null) return;
+    let alive = true;
+    void engine.recognitionAvailable().then((ok) => {
+      if (!alive || ok) return;
+      setMicSupported(false);
+      setInputMode('text');
+    });
+    return () => {
+      alive = false;
+    };
+  }, [engine]);
 
   // Озвучка реплики персоны: голос подбирается под текущий язык интерфейса
   const speak = (text: string) => {
-    if (!('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = lang === 'ru' ? 'ru-RU' : 'en-US';
-    const voice = window.speechSynthesis.getVoices().find((v) => v.lang.toLowerCase().startsWith(lang));
-    if (voice) utter.voice = voice;
+    const seq = ++speakSeq.current;
     setSpeaking(true);
-    utter.onend = () => setSpeaking(false);
-    utter.onerror = () => setSpeaking(false);
-    window.speechSynthesis.speak(utter);
+    void engine.speak(text, speechLangTag(lang)).then((status) => {
+      if (status === 'unavailable' && engine.kind === 'native') setTtsMissing(true);
+      if (seq === speakSeq.current) setSpeaking(false);
+    });
   };
 
   // Отправка реплики оператора (общий путь для голоса и текста)
@@ -117,46 +119,40 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
   // Микрофон: старт/стоп распознавания речи
   const toggleMic = () => {
     if (listening) {
-      recognitionRef.current?.stop();
+      sessionRef.current?.stop();
       return;
     }
-    const Ctor = getRecognitionCtor();
-    if (!Ctor) return;
-    const rec = new Ctor();
-    rec.lang = lang === 'ru' ? 'ru-RU' : 'en-US';
-    rec.interimResults = true;
-    rec.continuous = false;
-    rec.onresult = (e) => {
-      let finalText = '';
-      let interimText = '';
-      for (let i = 0; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) finalText += r[0].transcript;
-        else interimText += r[0].transcript;
-      }
-      setInterim(interimText);
-      if (finalText.trim()) send(finalText);
-    };
-    rec.onend = () => {
-      setListening(false);
-      setInterim('');
-    };
-    rec.onerror = () => {
-      setListening(false);
-      setInterim('');
-    };
-    recognitionRef.current = rec;
+    if (!micSupported) return;
+    setMicHint('');
     setListening(true);
-    rec.start();
+    sessionRef.current = engine.listen(speechLangTag(lang), {
+      onResult: (finalText, interimText) => {
+        setInterim(interimText);
+        if (finalText.trim()) send(finalText);
+      },
+      onError: (code) => {
+        setListening(false);
+        setInterim('');
+        if (code === 'unavailable') {
+          setMicSupported(false);
+          setInputMode('text');
+        } else if (engine.kind === 'native' && MIC_ERROR_HINTS[code]) setMicHint(MIC_ERROR_HINTS[code]);
+      },
+      onEnd: () => {
+        setListening(false);
+        setInterim('');
+      },
+    });
   };
 
   // Остановка синтеза/распознавания при уходе с экрана или смене персоны
   useEffect(() => {
     return () => {
-      recognitionRef.current?.stop();
-      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      sessionRef.current?.stop();
+      // Прерванная реплика допоёт свой промис со «прервано» — «говорит» погаснет
+      engine.stopSpeaking();
     };
-  }, [persona.id]);
+  }, [persona.id, engine]);
 
   // Последняя реплика персоны — «субтитр» под аватаркой
   const lastBotLine = [...messages].reverse().find((m) => m.role === 'bot');
@@ -259,7 +255,13 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
             </button>
           </div>
         )}
-        {!micSupported && <div className="voice-chat-note">{t('chat.micUnsupported')}</div>}
+        {!micSupported && (
+          <div className="voice-chat-note">
+            {t(engine.kind === 'native' ? 'chat.micUnsupportedApp' : 'chat.micUnsupported')}
+          </div>
+        )}
+        {micSupported && micHint && <div className="voice-chat-note">{t(micHint)}</div>}
+        {ttsMissing && <div className="voice-chat-note">{t('chat.ttsUnavailable')}</div>}
       </div>
     </div>
   );

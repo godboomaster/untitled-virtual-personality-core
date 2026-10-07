@@ -46,4 +46,18 @@
     <!-- Камера — только для сканирования QR-кода сопряжения (VPC Link) -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Микрофон — голосовой режим чата (распознавание речи телефона) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <!-- Android 11+: без этого службы распознавания и озвучки приложению не видны,
+         и isRecognitionAvailable() отвечает «нет» -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
 </manifest>
