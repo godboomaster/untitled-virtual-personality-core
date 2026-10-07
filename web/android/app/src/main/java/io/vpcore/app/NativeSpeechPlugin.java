@@ -44,8 +44,10 @@ public class NativeSpeechPlugin extends Plugin {
     // Сколько ждать ответа движка озвучки на инициализацию
     private static final long TTS_INIT_TIMEOUT_MS = 8000;
     // Сколько ждать итога после stopListening: часть движков после остановки
-    // молчит — тогда сессию закрываем сами, иначе веб так и «слушает»
-    private static final long STOP_GRACE_MS = 5000;
+    // молчит — тогда сессию закрываем сами, иначе веб так и «слушает».
+    // Онлайн-распознавание при медленной сети отвечает и через 5–8 с, поэтому
+    // запас — около собственного сетевого таймаута движка
+    private static final long STOP_GRACE_MS = 10000;
 
     private final Handler main = new Handler(Looper.getMainLooper());
 
@@ -121,9 +123,10 @@ public class NativeSpeechPlugin extends Plugin {
                 try {
                     recognizer.stopListening();
                     // Страховка: движок так и не ответил — закрываем сессию
-                    // без ошибки, веб получит end
+                    // с сетевой ошибкой: фраза потеряна, и веб скажет почему,
+                    // а не промолчит
                     main.postDelayed(() -> {
-                        if (seq == sessionSeq && sessionOpen) closeSession(null, null);
+                        if (seq == sessionSeq && sessionOpen) closeSession("network", "No result after stopListening");
                     }, STOP_GRACE_MS);
                 } catch (Exception e) {
                     closeSession("client", "stopListening failed: " + e.getMessage());
@@ -265,9 +268,13 @@ public class NativeSpeechPlugin extends Plugin {
     // null — инициализация идёт (или не начиналась), true/false — итог
     private Boolean ttsReady = null;
     private final List<Runnable> ttsWaiting = new ArrayList<>();
-    // Текущая реплика: длинный текст уходит в движок кусками
+    // Текущая реплика: длинный текст уходит в движок кусками. job и jobSeq
+    // меняются только в главном потоке — реплики не обгоняют друг друга
     private SpeakJob job;
     private int jobSeq = 0;
+    // Счётчик stopSpeaking: реплика, заказанная до остановки, но ждавшая
+    // готовности движка, после остановки уже не звучит
+    private volatile int stopSeq = 0;
 
     private static final class SpeakJob {
 
@@ -283,7 +290,9 @@ public class NativeSpeechPlugin extends Plugin {
         }
     }
 
-    // Выполнить action, когда движок озвучки готов (или окончательно не поднялся)
+    // Выполнить action в главном потоке, когда движок озвучки готов (или
+    // окончательно не поднялся). Всё про реплики идёт через главный поток:
+    // так doSpeak и stopSpeaking не бегут параллельно
     private void whenTtsReady(Runnable action) {
         boolean runNow;
         boolean startInit = false;
@@ -295,7 +304,7 @@ public class NativeSpeechPlugin extends Plugin {
             }
         }
         if (runNow) {
-            action.run();
+            main.post(action);
             return;
         }
         if (startInit) main.post(this::initTts);
@@ -328,33 +337,33 @@ public class NativeSpeechPlugin extends Plugin {
             @Override
             public void onStart(String utteranceId) {}
 
+            // Колбэки движка приходят в его потоке — разбираем их в главном,
+            // рядом с doSpeak/stopSpeaking
             @Override
             public void onDone(String utteranceId) {
-                SpeakJob j;
-                synchronized (ttsLock) {
-                    j = job;
-                }
-                if (j != null && utteranceId.equals(j.lastId)) finishJob(j, "done");
+                main.post(() -> {
+                    SpeakJob j = job;
+                    if (j != null && utteranceId != null && utteranceId.equals(j.lastId)) finishJob(j, "done");
+                });
             }
 
             @Override
             @Deprecated
             public void onError(String utteranceId) {
-                failUtterance(utteranceId);
+                main.post(() -> failUtterance(utteranceId));
             }
 
             @Override
             public void onError(String utteranceId, int errorCode) {
-                failUtterance(utteranceId);
+                main.post(() -> failUtterance(utteranceId));
             }
 
             @Override
             public void onStop(String utteranceId, boolean interrupted) {
-                SpeakJob j;
-                synchronized (ttsLock) {
-                    j = job;
-                }
-                if (j != null && utteranceId.startsWith(j.prefix)) finishJob(j, "interrupted");
+                main.post(() -> {
+                    SpeakJob j = job;
+                    if (j != null && utteranceId != null && utteranceId.startsWith(j.prefix)) finishJob(j, "interrupted");
+                });
             }
         });
         // Движок может не ответить вовсе — тогда считаем озвучку недоступной
@@ -382,12 +391,27 @@ public class NativeSpeechPlugin extends Plugin {
         for (Runnable r : waiting) r.run();
     }
 
+    // Сорвался кусок реплики: реплика окончена с ошибкой, а её хвост, уже
+    // стоящий в очереди движка, снимаем — иначе голос звучит после резолва.
+    // Только из главного потока
     private void failUtterance(String utteranceId) {
-        SpeakJob j;
+        SpeakJob j = job;
+        if (j == null || utteranceId == null || !utteranceId.startsWith(j.prefix)) return;
+        finishJob(j, "error");
+        stopEngine();
+    }
+
+    private void stopEngine() {
+        TextToSpeech engine;
         synchronized (ttsLock) {
-            j = job;
+            engine = tts;
         }
-        if (j != null && utteranceId != null && utteranceId.startsWith(j.prefix)) finishJob(j, "error");
+        if (engine == null) return;
+        try {
+            engine.stop();
+        } catch (Exception ignored) {
+            /* движок уже остановлен */
+        }
     }
 
     private void finishJob(SpeakJob j, String status) {
@@ -421,9 +445,20 @@ public class NativeSpeechPlugin extends Plugin {
         final String text = call.getString("text", "");
         final String lang = call.getString("lang", "");
         final Float rate = call.getFloat("rate", 1.0f);
-        whenTtsReady(() -> doSpeak(call, text, lang, rate == null ? 1.0f : rate));
+        final int stopAtCall = stopSeq;
+        whenTtsReady(() -> {
+            if (stopAtCall != stopSeq) {
+                // Пока ждали движок, озвучку остановили — реплика не звучит
+                JSObject ret = new JSObject();
+                ret.put("status", "interrupted");
+                call.resolve(ret);
+                return;
+            }
+            doSpeak(call, text, lang, rate == null ? 1.0f : rate);
+        });
     }
 
+    // Только из главного потока
     private void doSpeak(PluginCall call, String text, String lang, float rate) {
         if (!ttsUsable()) {
             JSObject ret = new JSObject();
@@ -432,10 +467,7 @@ public class NativeSpeechPlugin extends Plugin {
             return;
         }
         // Новая реплика вытесняет прошлую
-        SpeakJob old;
-        synchronized (ttsLock) {
-            old = job;
-        }
+        SpeakJob old = job;
         if (old != null) finishJob(old, "interrupted");
         if (text.trim().isEmpty()) {
             JSObject ret = new JSObject();
@@ -466,7 +498,9 @@ public class NativeSpeechPlugin extends Plugin {
             int mode = i == 0 ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
             int res = engine.speak(chunks.get(i), mode, null, prefix + i);
             if (res != TextToSpeech.SUCCESS) {
+                // Уже принятые куски не договариваем: реплика сорвалась
                 finishJob(j, "error");
+                stopEngine();
                 return;
             }
         }
@@ -496,24 +530,29 @@ public class NativeSpeechPlugin extends Plugin {
 
     @PluginMethod
     public void stopSpeaking(PluginCall call) {
-        SpeakJob j;
-        TextToSpeech engine;
-        synchronized (ttsLock) {
-            j = job;
-            engine = tts;
-        }
-        if (engine != null) {
-            try {
-                engine.stop();
-            } catch (Exception ignored) {
-                /* движок уже остановлен */
-            }
-        }
-        if (j != null) finishJob(j, "interrupted");
-        call.resolve();
+        stopSeq++;
+        main.post(() -> {
+            stopEngine();
+            SpeakJob j = job;
+            if (j != null) finishJob(j, "interrupted");
+            call.resolve();
+        });
     }
 
     // ===== Жизненный цикл =====
+
+    // Приложение ушло в фон (свернули, погас экран): микрофон отпускаем —
+    // сессия закрывается без ошибки, веб получит только end. Иначе служба
+    // распознавания сама оборвёт её «нет разрешения», и веб покажет ложную
+    // подсказку про настройки. Озвучку не трогаем: как и скрытая вкладка
+    // браузера, она договаривает
+    @Override
+    protected void handleOnPause() {
+        super.handleOnPause();
+        main.post(() -> {
+            if (sessionOpen) closeSession(null, null);
+        });
+    }
 
     @Override
     protected void handleOnDestroy() {

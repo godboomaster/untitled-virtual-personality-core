@@ -85,9 +85,25 @@ def test_android():
     m = re.search(r"public void stopListening\(PluginCall call\)\s*\{(.*?)\n    \}\n", plugin, re.S)
     stop_body = m.group(1) if m else ""
     check("после stopListening — страховочный таймаут: молчащий движок не держит сессию",
-          "postDelayed" in stop_body and "closeSession(null, null)" in stop_body and "seq == sessionSeq" in stop_body)
+          "postDelayed" in stop_body and "closeSession(" in stop_body and "seq == sessionSeq" in stop_body)
+    check("таймаут после stop — с кодом network (фраза не пропадает молча)",
+          'closeSession("network"' in stop_body)
+    g = re.search(r"STOP_GRACE_MS\s*=\s*(\d+)", plugin)
+    check("запас после stop — не меньше 10 с (медленная мобильная сеть)", g is not None and int(g.group(1)) >= 10000)
     check("озвучка ждёт конца фразы (UtteranceProgressListener)", "UtteranceProgressListener" in plugin and "onDone" in plugin)
     check("вызовы до готовности TTS ждут её", "whenTtsReady" in plugin and "ttsWaiting" in plugin)
+    m = re.search(r"private void whenTtsReady\(Runnable action\)\s*\{(.*?)\n    \}\n", plugin, re.S)
+    wbody = m.group(1) if m else ""
+    check("готовый TTS: реплика всё равно идёт через главный поток (без гонки doSpeak)",
+          "main.post(action)" in wbody and "action.run()" not in wbody)
+    m = re.search(r"public void stopSpeaking\(PluginCall call\)\s*\{(.*?)\n    \}\n", plugin, re.S)
+    check("stopSpeaking — в главном потоке", "main.post(" in (m.group(1) if m else ""))
+    m = re.search(r"private void failUtterance\(String utteranceId\)\s*\{(.*?)\n    \}\n", plugin, re.S)
+    fbody = m.group(1) if m else ""
+    check("сорвался кусок — хвост реплики снимается с движка", "finishJob(j, \"error\")" in fbody and "stopEngine()" in fbody)
+    m = re.search(r"protected void handleOnPause\(\)\s*\{(.*?)\n    \}\n", plugin, re.S)
+    pbody = m.group(1) if m else ""
+    check("уход в фон закрывает прослушивание без ошибки", "closeSession(null, null)" in pbody and "sessionOpen" in pbody)
     m = re.search(r"protected void handleOnDestroy\(\)\s*\{(.*?)\n    \}\n", plugin, re.S)
     body = m.group(1) if m else ""
     check("handleOnDestroy освобождает распознаватель и TTS", "recognizer.destroy()" in body and "shutdown()" in body)
@@ -132,6 +148,8 @@ def test_web():
     check("в браузере подсказок о сбоях микрофона и озвучки нет (как было)",
           "engine.kind === 'native' && MIC_ERROR_HINTS[code]" in vc
           and "status === 'unavailable' && engine.kind === 'native'" in vc)
+    check("подсказка «озвучка недоступна» снимается, когда реплика прозвучала",
+          "status === 'done' || status === 'interrupted') setTtsMissing(false)" in vc)
 
     ru, en = _keys(WEB / "src" / "i18n" / "ru.ts"), _keys(WEB / "src" / "i18n" / "en.ts")
     used = set(re.findall(r"'(chat\.(?:mic|tts)\w*)'", vc))

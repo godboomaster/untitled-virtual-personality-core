@@ -75,7 +75,10 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
     const seq = ++speakSeq.current;
     setSpeaking(true);
     void engine.speak(text, speechLangTag(lang)).then((status) => {
+      // «Недоступно» бывает и от медленного холодного старта движка — когда
+      // реплика всё же прозвучала, подсказку снимаем
       if (status === 'unavailable' && engine.kind === 'native') setTtsMissing(true);
+      else if (status === 'done' || status === 'interrupted') setTtsMissing(false);
       if (seq === speakSeq.current) setSpeaking(false);
     });
   };
