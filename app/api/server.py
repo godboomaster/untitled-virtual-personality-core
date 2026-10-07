@@ -2393,6 +2393,34 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
             "webchat_quarantine": quarantine, "browser_pools": pools}
 
 
+@app.get("/api/inbox", dependencies=[Depends(require_auth)])
+async def inbox_all(client_id: str = Query(..., min_length=1, max_length=64,
+                                           pattern=r"^[A-Za-z0-9_-]+$"),
+                    chat_id: str = Query("web_user", max_length=128)):
+    # Новые фоновые сообщения сразу по всем персонам — для фоновой службы
+    # приложения на телефоне (уведомления, пока приложение свёрнуто или
+    # закрыто). У службы свой client_id, а значит свой курсор: сообщения,
+    # которые она забрала, веб получит своим опросом как обычно.
+    # Это не сигнал присутствия: служба опрашивает и при выключенном экране,
+    # поэтому ни presence, ни note_presence (ритм, «доброе утро») не трогаем
+    from app.api.inbox import inbox_pop_all
+    items = inbox_pop_all(chat_id, client_id)
+    if not items:
+        return []
+
+    def _names(ids):
+        # Имя персоны — из её YAML; персоны больше нет — id вместо имени
+        out = {}
+        for pid in ids:
+            info = get_persona_info(pid)
+            out[pid] = (info or {}).get("name") or pid
+        return out
+
+    names = await asyncio.to_thread(_names, sorted({m["persona"] for m in items}))
+    return [{"persona": m["persona"], "name": names[m["persona"]], "text": m["text"],
+             "kind": m["kind"], "ts": m["ts"]} for m in items]
+
+
 # ── Режим управления: трансляция вкладки агента ──────────────────────
 
 def _offer_latest(q: "asyncio.Queue", item: dict) -> None:

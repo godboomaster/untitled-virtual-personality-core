@@ -239,8 +239,18 @@ and install it (allow installing apps from this source), or `adb install` it. On
 the last step is `cd web/android && gradlew assembleDebug` after `npm run build` and
 `npx cap sync android`.
 
-Not there yet: notifications while the app is closed and voice mode (the Android WebView
-has no speech recognition).
+**Notifications while the app is closed** (connection by address only, for now): Settings →
+Connection → **Notifications when the app is closed**. The app then keeps a small background
+service (a silent "Core connection" notification in the shade) that asks the core for new
+messages every 20 seconds (`GET /api/inbox`, up to a minute while the core is unreachable)
+and shows reminders and persona messages as notifications; tapping one opens that
+persona's chat. No Google/Firebase push is involved — it works only while the phone can
+reach the computer. On Honor, Huawei and Xiaomi phones allow the app to run in the
+background and set its battery usage to "Unrestricted", or the system will put it to sleep.
+The service does not keep the phone awake: when the phone sleeps deeply, Android wakes it
+only every few minutes, so a message can arrive a little late. Over VPC Link the switch is hidden for now.
+
+Not there yet: voice mode (the Android WebView has no speech recognition).
 
 ## Personas
 

@@ -23,6 +23,7 @@ import { getInitialTheme } from './useAppTheme';
 import type { AppTheme } from './useAppTheme';
 import { BACK_MENU, useBackHandler } from './backStack';
 import { syncSystemBars } from './nativeBars';
+import { listenBgNotificationTaps, syncBgInbox } from './bgInbox';
 
 export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings';
 
@@ -76,6 +77,14 @@ export default function App() {
     };
     window.addEventListener(OPEN_CHAT_EVENT, openChat);
     return () => window.removeEventListener(OPEN_CHAT_EVENT, openChat);
+  }, []);
+
+  // Приложение на телефоне: тап уведомления фоновой службы — чат персоны
+  // (после подписки выше: тап, которым приложение запустили, ждёт в плагине);
+  // ядро ответило — служба перезапускается со свежими адресом и токеном
+  useEffect(() => {
+    syncBgInbox();
+    return listenBgNotificationTaps();
   }, []);
 
   // Применяем тему к <html> и запоминаем выбор

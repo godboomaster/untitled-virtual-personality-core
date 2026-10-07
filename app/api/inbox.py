@@ -36,6 +36,12 @@ _delivered: dict[tuple[str, str], int] = {}
 # client_id → {ключ очереди → номер последнего полученного}
 _cursors: dict[str, dict[tuple[str, str], int]] = {}
 _client_seen: dict[str, float] = {}
+# (client_id, chat_id) → сквозной номер на момент последнего общего опроса
+# (inbox_pop_all). Очередь персоны, появившаяся после него, у клиента ещё
+# без курсора — с этой отметки, а не «только недоставленное»: иначе
+# сообщение новой очереди, которое первым забрал другой клиент, этот бы
+# пропустил
+_all_seen: dict[tuple[str, str], int] = {}
 _MAX_CLIENTS = 16
 _CLIENT_TTL_SEC = 7 * 24 * 3600
 
@@ -52,13 +58,35 @@ def inbox_push(persona: str, chat_id: str, text: str, kind: str = "message"):
 def _forget_stale_clients(now: float) -> None:
     # Под _inbox_lock. Давно не опрашивавшие клиенты и лишние сверх лимита
     # (сначала самые давние) — их курсоры больше не нужны
-    for cid in [c for c, t in _client_seen.items() if now - t > _CLIENT_TTL_SEC]:
+    gone = [c for c, t in _client_seen.items() if now - t > _CLIENT_TTL_SEC]
+    for cid in gone:
         _client_seen.pop(cid, None)
         _cursors.pop(cid, None)
     while len(_client_seen) > _MAX_CLIENTS:
         cid = min(_client_seen, key=_client_seen.get)
         _client_seen.pop(cid, None)
         _cursors.pop(cid, None)
+        gone.append(cid)
+    if gone:
+        for key in [k for k in _all_seen if k[0] not in _client_seen]:
+            _all_seen.pop(key, None)
+
+
+def _pop_locked(key: tuple[str, str], client_id: str, cursors: dict) -> list[dict]:
+    # Под _inbox_lock: новые для клиента сообщения очереди key (с его
+    # курсора cursors[key]); курсор и отметка доставки двигаются
+    start = cursors.get(key)
+    if start is None:
+        start = _all_seen.get((client_id, key[1]))
+    if start is None:
+        start = _delivered.get(key, 0)
+    q = _inbox.get(key) or ()
+    items = [m for m in q if m["seq"] > start]
+    if items:
+        start = items[-1]["seq"]
+        _delivered[key] = max(_delivered.get(key, 0), start)
+    cursors[key] = start
+    return items
 
 
 def inbox_pop(persona: str, chat_id: str, client_id: str = "") -> list[dict]:
@@ -68,18 +96,29 @@ def inbox_pop(persona: str, chat_id: str, client_id: str = "") -> list[dict]:
     now = time.time()
     with _inbox_lock:
         _client_seen[client_id] = now
-        cursors = _cursors.setdefault(client_id, {})
-        start = cursors.get(key)
-        if start is None:
-            start = _delivered.get(key, 0)
-        q = _inbox.get(key) or ()
-        items = [m for m in q if m["seq"] > start]
-        if items:
-            start = items[-1]["seq"]
-            _delivered[key] = max(_delivered.get(key, 0), start)
-        cursors[key] = start
+        items = _pop_locked(key, client_id, _cursors.setdefault(client_id, {}))
         _forget_stale_clients(now)
         return [{"text": m["text"], "kind": m["kind"], "ts": m["ts"]} for m in items]
+
+
+def inbox_pop_all(chat_id: str, client_id: str = "") -> list[dict]:
+    # Новые для клиента сообщения сразу по всем персонам чата chat_id —
+    # один запрос вместо опроса каждой персоны (фоновая служба приложения
+    # на телефоне). Курсор тот же, что у inbox_pop: по каждой очереди
+    # (persona, chat_id) клиент получает сообщение один раз, как бы он ни
+    # спрашивал — по персоне или по всем сразу. Порядок — порядок появления
+    chat_id = str(chat_id)
+    now = time.time()
+    with _inbox_lock:
+        _client_seen[client_id] = now
+        cursors = _cursors.setdefault(client_id, {})
+        got = []
+        for key in [k for k in _inbox if k[1] == chat_id]:
+            got += [(key[0], m) for m in _pop_locked(key, client_id, cursors)]
+        _all_seen[(client_id, chat_id)] = _seq
+        _forget_stale_clients(now)
+    got.sort(key=lambda pm: pm[1]["seq"])
+    return [{"persona": p, "text": m["text"], "kind": m["kind"], "ts": m["ts"]} for p, m in got]
 
 
 def _move_key(old_key, new_key) -> None:

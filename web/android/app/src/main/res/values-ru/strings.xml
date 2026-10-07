@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <!-- Фоновые уведомления (BackgroundInboxService) -->
+    <string name="bg_ongoing_title">Фоновые сообщения</string>
+    <string name="bg_connecting">Подключаюсь к %1$s…</string>
+    <string name="bg_connected">Подключено к %1$s</string>
+    <string name="bg_offline">Нет связи с ядром — повторю</string>
+    <string name="bg_channel_link">Связь с ядром</string>
+    <string name="bg_channel_link_desc">Тихое уведомление, пока приложение ждёт сообщений персон в фоне</string>
+    <string name="bg_channel_messages">Сообщения персон</string>
+    <string name="bg_channel_messages_desc">Напоминания и сообщения персон, когда приложение закрыто</string>
+</resources>
