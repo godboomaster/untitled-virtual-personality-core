@@ -344,6 +344,8 @@ export const api = {
   cancelPairLink: () => request<{ ok: boolean }>('/api/link/pair', { method: 'DELETE' }),
   unpairLink: (id: string) =>
     request<{ ok: boolean }>(`/api/link/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // API_TOKEN ядра для входа по адресу и токену; null — в .env не задан
+  getServerToken: () => request<{ token: string | null }>('/api/token'),
 
   getPersonas: () => request<ApiPersona[]>('/api/personas'),
 

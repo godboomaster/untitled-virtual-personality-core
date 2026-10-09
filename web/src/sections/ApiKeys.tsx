@@ -4,6 +4,7 @@ import Select from '../components/Select';
 import { useI18n, useMockData } from '../i18n';
 import { api, ApiError, isNativeApp } from '../api';
 import ConnectionCard from '../link/ConnectionCard';
+import { testNativeNotification } from '../bgInbox';
 import LinkSettings from '../link/LinkSettings';
 import type { LocalStatus, LocationConfig, TimezoneConfig } from '../api';
 import { refetchProviders, useApiOnline, useApiProviders, useApiWebchat } from '../apiData';
@@ -46,7 +47,12 @@ export default function ApiKeys() {
   const [notifyTesting, setNotifyTesting] = useState(false);
   const runNotifyTest = () => {
     setNotifyTesting(true);
-    testNotification()
+    // В приложении — уведомление Android (тот же канал, что у сообщений
+    // персон); в браузере — системное уведомление браузера
+    const run = isNativeApp()
+      ? testNativeNotification().then((r) => t(`settings.notifyTestNative.${r}`))
+      : testNotification();
+    run
       .then(setNotifyTestResult)
       .catch(() => setNotifyTestResult('Не удалось проверить — см. консоль браузера (F12)'))
       .finally(() => setNotifyTesting(false));

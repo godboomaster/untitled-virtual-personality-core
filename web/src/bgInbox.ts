@@ -5,7 +5,8 @@ import { OPEN_CHAT_EVENT } from './notifications';
 
 /* Приложение на Android: уведомления о сообщениях персон, когда приложение
    свёрнуто или закрыто. WebView в фоне не работает, поэтому опрос ядра
-   (GET /api/inbox) делает нативная служба переднего плана
+   (GET /api/inbox, долгий: ответ приходит, как только есть сообщение) делает
+   нативная служба переднего плана
    (BackgroundInboxService, плагин BackgroundInbox в web/android). У неё свой
    курсор на ядре (clientId веба + "-bg"): что забрала служба, веб получит
    своим опросом как обычно.
@@ -29,6 +30,7 @@ interface BackgroundInboxPlugin {
   stop(): Promise<void>;
   status(): Promise<BgInboxStatus>;
   requestNotificationPermission(): Promise<{ granted: boolean }>;
+  testNotification(): Promise<{ shown: boolean; problem: 'denied' | 'channel' | null }>;
   getLaunchPersona(): Promise<{ persona: string | null }>;
   addListener(event: 'notificationTap', cb: (data: { persona: string }) => void): Promise<PluginListenerHandle>;
 }
@@ -127,6 +129,23 @@ export function stopBgInbox() {
 
 export function bgInboxStatus() {
   return BackgroundInbox.status();
+}
+
+export type NativeNotifyTest = 'ok' | 'denied' | 'channel' | 'error';
+
+/** «Проверить» в настройках приложения: настоящее уведомление Android в
+ * канал «Сообщения персон» — тем же путём, что сообщения персон (Notification
+ * API веба в приложении не работает). Android 13+ сначала спросит разрешение. */
+export async function testNativeNotification(): Promise<NativeNotifyTest> {
+  if (!isNativeApp()) return 'error';
+  try {
+    await BackgroundInbox.requestNotificationPermission();
+    const r = await BackgroundInbox.testNotification();
+    if (r.shown) return 'ok';
+    return r.problem === 'channel' ? 'channel' : 'denied';
+  } catch {
+    return 'error';
+  }
 }
 
 /** Тап уведомления → чат персоны. Вызывать после того, как App подписался

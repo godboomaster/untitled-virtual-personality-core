@@ -346,6 +346,18 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/token", dependencies=[Depends(require_auth)])
+async def api_token(request: Request):
+    """API_TOKEN ядра — скопировать в приложение на телефоне (вход по адресу
+    и токену). Нового он никому не открывает: с заданным токеном сюда пускают
+    только тех, кто его уже прислал, а без токена — только эту машину, и
+    ответ пустой. Исключение — телефон по VPC Link: токен за него подставляет
+    ноутбук (app/link/tunnel.py), сам телефон его не знает и не узнает."""
+    if _via_link(request):
+        raise HTTPException(status_code=403, detail="Токен API по каналу VPC Link не выдаётся")
+    return JSONResponse({"token": _api_token or None}, headers={"Cache-Control": "no-store"})
+
+
 # ── VPC Link: телефон через защищённый канал (app/link) ─────────────
 
 _LINK_DEVICE_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -2394,17 +2406,37 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
 
 
 @app.get("/api/inbox", dependencies=[Depends(require_auth)])
-async def inbox_all(client_id: str = Query(..., min_length=1, max_length=64,
+async def inbox_all(request: Request,
+                    client_id: str = Query(..., min_length=1, max_length=64,
                                            pattern=r"^[A-Za-z0-9_-]+$"),
-                    chat_id: str = Query("web_user", max_length=128)):
+                    chat_id: str = Query("web_user", max_length=128),
+                    wait: float = Query(0, ge=0),
+                    since: int | None = Query(None, ge=0),
+                    epoch: str | None = Query(None, max_length=32)):
     # Новые фоновые сообщения сразу по всем персонам — для фоновой службы
     # приложения на телефоне (уведомления, пока приложение свёрнуто или
     # закрыто). У службы свой client_id, а значит свой курсор: сообщения,
     # которые она забрала, веб получит своим опросом как обычно.
     # Это не сигнал присутствия: служба опрашивает и при выключенном экране,
-    # поэтому ни presence, ни note_presence (ритм, «доброе утро») не трогаем
-    from app.api.inbox import inbox_pop_all
-    items = inbox_pop_all(chat_id, client_id)
+    # поэтому ни presence, ни note_presence (ритм, «доброе утро») не трогаем.
+    #
+    # Долгий опрос (есть wait, since или epoch): пустой ответ ждёт до wait
+    # секунд (не больше inbox.MAX_WAIT_SEC), ответ — {"messages", "cursor",
+    # "epoch"}. Курсор клиент присылает обратно в since вместе с epoch: так
+    # ответ, потерянный по дороге, придёт снова. Первый запрос — epoch пустой
+    # и без wait: сразу, чтобы получить курсор. Без этих параметров — сразу
+    # и списком, как ждут службы прежних версий приложения
+    from app.api import inbox as inbox_mod
+    if wait <= 0 and since is None and epoch is None:
+        items = inbox_mod.inbox_pop_all(chat_id, client_id)
+        return await _inbox_named(items)
+    start = since if epoch == inbox_mod.EPOCH else None
+    items, cursor = await inbox_mod.inbox_wait(chat_id, client_id, start, wait,
+                                               gone=request.is_disconnected)
+    return {"messages": await _inbox_named(items), "cursor": cursor, "epoch": inbox_mod.EPOCH}
+
+
+async def _inbox_named(items: list[dict]) -> list[dict]:
     if not items:
         return []
 

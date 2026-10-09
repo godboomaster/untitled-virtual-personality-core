@@ -5,7 +5,9 @@
     открытый доступ; с токеном — обычная проверка Bearer;
   - фоновые сообщения (inbox) получает каждое устройство: у клиента свой
     курсор, новый клиент получает только то, что ещё никому не доставлено;
-    смена id персоны переносит и курсоры, архив id — снимает очередь.
+    смена id персоны переносит и курсоры, архив id — снимает очередь;
+  - токен API для приложения (GET /api/token) получает только тот, кто его
+    уже знает (или эта машина, если токена нет); телефону по VPC Link — 403.
 
 Запуск: PYTHONPATH=. python3 scripts/test_mobile_access.py
 """
@@ -108,6 +110,49 @@ def test_remote_needs_token():
         check("inbox: client_id длиннее 64 — 422", r.status_code == 422)
         r = client.get("/api/personas/connor/inbox", params={"client_id": "phone_1-a"})
         check("inbox: допустимый client_id — 200", r.status_code == 200)
+    finally:
+        server_mod._api_token = orig
+
+
+def test_api_token_endpoint():
+    section("A2. Токен API для приложения (GET /api/token)")
+    try:
+        from fastapi.testclient import TestClient
+    except ImportError as e:
+        print(f"  (пропущено — fastapi/httpx недоступны: {e})")
+        return
+    import app.api.server as server_mod
+
+    orig = server_mod._api_token
+    try:
+        client = TestClient(server_mod.app, base_url="http://127.0.0.1")
+        remote = TestClient(server_mod.app, base_url="http://192.168.1.5:8000")
+
+        server_mod._api_token = ""
+        r = client.get("/api/token")
+        check("без API_TOKEN, localhost — 200 и token: null",
+              r.status_code == 200 and r.json() == {"token": None})
+        check("ответ не кэшируется (Cache-Control: no-store)",
+              r.headers.get("cache-control") == "no-store")
+        check("без API_TOKEN, адрес в сети — 403", remote.get("/api/token").status_code == 403)
+
+        server_mod._api_token = "s3cr3t"
+        good = {"Authorization": "Bearer s3cr3t"}
+        check("с API_TOKEN: без токена — 401", client.get("/api/token").status_code == 401)
+        check("с API_TOKEN: неверный — 401",
+              client.get("/api/token", headers={"Authorization": "Bearer nope"}).status_code == 401)
+        r = client.get("/api/token", headers=good)
+        check("с API_TOKEN и верным токеном — 200 и сам токен",
+              r.status_code == 200 and r.json() == {"token": "s3cr3t"}
+              and r.headers.get("cache-control") == "no-store")
+        r = remote.get("/api/token", headers=good)
+        check("с API_TOKEN: адрес в сети с верным токеном — 200",
+              r.status_code == 200 and r.json() == {"token": "s3cr3t"})
+        # Телефон по каналу: Authorization подставил ноутбук, сам телефон
+        # токена не знает — и не должен его получить
+        r = client.get("/api/token", headers={**good, "X-VPC-Link": "0123456789ab"})
+        check("по VPC Link — 403, токена в ответе нет",
+              r.status_code == 403 and "s3cr3t" not in r.text)
     finally:
         server_mod._api_token = orig
 
@@ -215,6 +260,7 @@ def test_inbox_rename_drop():
 
 def main():
     test_remote_needs_token()
+    test_api_token_endpoint()
     test_inbox_cursors()
     test_inbox_rename_drop()
 

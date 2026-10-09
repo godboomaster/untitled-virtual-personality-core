@@ -12036,6 +12036,26 @@ img.art-thumb {
   font-weight: 600;
 }
 
+/* Токен API: скрыт точками, по «Показать» — целиком, выделяется одним кликом */
+.link-token {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.link-token-value {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+  user-select: all;
+}
+
 .link-device-meta {
   flex: 1;
   min-width: 0;

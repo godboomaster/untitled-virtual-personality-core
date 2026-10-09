@@ -19,6 +19,7 @@ import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.service.notification.StatusBarNotification;
+import android.text.format.DateFormat;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
@@ -35,6 +36,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Date;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -43,14 +45,26 @@ import java.util.concurrent.TimeUnit;
 /**
  * Фоновые сообщения персон, пока приложение свёрнуто или закрыто.
  *
- * WebView в фоне не работает, а Notification API в нём нет — поэтому опрос
- * ядра (GET /api/inbox — новые сообщения сразу по всем персонам) делает
- * эта служба переднего плана: каждые 20 с, без связи — с паузой до 60 с.
- * Процессор постоянно не держим: пока он не спит, срабатывает таймер
- * executor, а уснувший телефон будит будильник AlarmManager; блокировка
- * сна — только на время одного запроса (с тайм-аутом). В глубоком сне
- * (Doze) система будит не чаще раза в несколько минут — это плата за
- * батарею.
+ * WebView в фоне не работает, а Notification API в нём нет — поэтому ядро
+ * (GET /api/inbox — новые сообщения сразу по всем персонам) опрашивает эта
+ * служба переднего плана. Опрос долгий: запрос висит на ядре, пока не
+ * появится сообщение (или до LONG_WAIT_SEC), и сразу за ответом уходит
+ * следующий. Телефон тем временем спит: блокировка сна — только на отправку
+ * запроса и разбор ответа, а сам ответ будит телефон приходом по сети
+ * (службе переднего плана Android не отключает сеть и в глубоком сне). Так
+ * сообщение приходит за секунды, а холостое пробуждение — раз в LONG_WAIT_SEC.
+ * Раньше служба спрашивала ядро каждые 20 с, а во сне её будил будильник —
+ * не чаще раза в ~10 минут, и сообщения опаздывали на столько же.
+ *
+ * Ядро присылает курсор (до какого сообщения клиент получил всё) и id своего
+ * запуска; служба возвращает их в следующем запросе. Ответ, потерянный по
+ * дороге (телефон ушёл из Wi-Fi, пока ждал), ядро отдаст ещё раз.
+ *
+ * Будильник AlarmManager остаётся: во время долгого опроса — сторож (таймаут
+ * чтения во сне не идёт, а соединение может умереть молча — ноутбук уснул),
+ * без связи — пауза до следующей попытки (до 60 с; в глубоком сне система
+ * будит реже). Ядро старой версии отвечает сразу и без курсора — тогда служба
+ * спрашивает его, как раньше, раз в 20 с.
  * Новое сообщение — уведомление «Сообщения персон» (заголовок — имя
  * персоны), тап открывает чат. Пока приложение на экране, уведомлений нет:
  * сообщения показывает сам веб, а опрос идёт дальше — курсор службы
@@ -71,6 +85,9 @@ public class BackgroundInboxService extends Service {
     static final String KEY_BASE_URL = "baseUrl";
     static final String KEY_TOKEN = "token";
     static final String KEY_CLIENT_ID = "clientId";
+    // Курсор долгого опроса и id запуска ядра, к которому он относится
+    static final String KEY_CURSOR = "cursor";
+    static final String KEY_EPOCH = "epoch";
 
     // Действие интента службы: остановиться (выключено в приложении)
     static final String ACTION_STOP = "io.vpcore.app.BG_INBOX_STOP";
@@ -86,11 +103,21 @@ public class BackgroundInboxService extends Service {
     // Метки уведомлений сообщений: по ним их снимают, когда приложение на экране
     private static final String TAG_MESSAGE = "vpc-msg:";
     private static final String TAG_SUMMARY = "vpc-sum:";
+    private static final String TAG_TEST = "vpc-test";
     private static final String GROUP_PREFIX = "io.vpcore.app.persona.";
 
+    // Ожидание ответа на ядре (там же предел — MAX_WAIT_SEC в app/api/inbox.py)
+    private static final int LONG_WAIT_SEC = 300;
+    // Таймаут чтения — с запасом сверх ожидания на ядре
+    private static final int READ_TIMEOUT_MS = (LONG_WAIT_SEC + 30) * 1000;
+    // Сторож: столько ответа нет — соединение мертво (во сне таймаут чтения стоит)
+    private static final long WATCHDOG_MS = (LONG_WAIT_SEC + 60) * 1000L;
+    // Ядро без долгого опроса (старая версия) — спрашиваем, как раньше
     private static final long POLL_MS = 20_000;
     private static final long MAX_BACKOFF_MS = 60_000;
-    // Блокировка сна на один опрос: соединение 10 с + чтение 15 с + запас
+    // Блокировка сна на отправку запроса: дальше ответ ждём без неё
+    private static final long SEND_WAKE_MS = 3_000;
+    // Блокировка сна на разбор ответа или обычный опрос: соединение 10 с + чтение 15 с + запас
     private static final long WAKE_MS = 40_000;
 
     // Приложение на экране (MainActivity onResume/onPause) — уведомлений не показываем
@@ -121,8 +148,19 @@ public class BackgroundInboxService extends Service {
     // пропускает, а уведомление наследует флаг службы переднего плана —
     // приложение его уже не снимет, и в шторке навсегда висит «Подключено»
     private static boolean stopping = false;
-    // Текущий запрос — onDestroy его обрывает
+    // Текущий запрос — onDestroy, сторож и перезапуск его обрывают
     private volatile HttpURLConnection current;
+    // Идёт запрос (у долгого опроса — минуты): будильник тогда — сторож
+    private volatile boolean waiting = false;
+    private volatile long waitDeadline = 0;
+    // Сторож оборвал молчащее соединение — это сбой связи
+    private volatile boolean watchdogFired = false;
+    // Пришли новые настройки (onStartCommand): опрос обрывается не как сбой,
+    // следующий запустит задача с новыми настройками
+    private volatile boolean restarting = false;
+    // Ядро уже ответило после запуска или сбоя. До того запрос — без
+    // ожидания: значок «Подключено» и курсор появляются сразу, а не через минуты
+    private boolean primed = false;
     // Когда должен быть следующий опрос (elapsedRealtime): опоздавший
     // будильник после свежего опроса таймером пропускаем
     private volatile long dueAt = 0;
@@ -131,8 +169,11 @@ public class BackgroundInboxService extends Service {
     private String baseUrl = "";
     private String token = "";
     private String clientId = "";
+    private long cursor = -1; // -1 — курсора нет: ядро начнёт со своего
+    private String epoch = "";
     private long backoffMs = POLL_MS;
-    private Boolean connected = null; // null — ещё не опрашивали
+    // Текст значка в шторке: обновляем, только когда он меняется
+    private String shownStatus = null;
     // Номера уведомлений сообщений: от времени запуска — после перезапуска
     // службы новые не перетирают ещё висящие в шторке
     private int messageSeq = (int) ((System.currentTimeMillis() / 1000) & 0x3fffffff);
@@ -198,14 +239,30 @@ public class BackgroundInboxService extends Service {
             @Override
             public void onReceive(Context context, Intent intent) {
                 if (destroyed) return;
-                holdAwake();
+                if (waiting) {
+                    // Идёт долгий опрос — будильник здесь сторож. Ответа нет
+                    // дольше положенного: соединение умерло молча (ноутбук
+                    // уснул, телефон сменил сеть) — обрываем, опрос повторится
+                    if (SystemClock.elapsedRealtime() >= waitDeadline) {
+                        holdAwake(WAKE_MS);
+                        watchdogFired = true;
+                        abortCurrent();
+                    } else {
+                        setAlarm(waitDeadline);
+                    }
+                    return;
+                }
+                holdAwake(WAKE_MS);
                 try {
                     executor.execute(() -> {
-                        // Таймер успел раньше (телефон не спал) — этот лишний
-                        if (SystemClock.elapsedRealtime() + 2_000 < dueAt) {
+                        // Запускаем опрос, который ждёт своего часа и дождался
+                        // (таймер executor во сне стоит). Его нет — он уже
+                        // прошёл; час не настал — таймер успел раньше
+                        if (next == null || next.isDone() || SystemClock.elapsedRealtime() + 2_000 < dueAt) {
                             releaseAwake();
                             return;
                         }
+                        next.cancel(false);
                         pollOnce();
                     });
                 } catch (RuntimeException e) {
@@ -254,11 +311,21 @@ public class BackgroundInboxService extends Service {
         }
         final String tok = p.getString(KEY_TOKEN, "");
         final String cid = p.getString(KEY_CLIENT_ID, "");
+        final long cur = p.getLong(KEY_CURSOR, -1);
+        final String ep = p.getString(KEY_EPOCH, "");
+        // Долгий опрос держит поток executor до ответа (минуты) — обрываем его,
+        // чтобы новые адрес и токен вступили в силу сразу
+        restarting = true;
+        abortCurrent();
         executor.execute(() -> {
+            restarting = false;
             baseUrl = url.replaceAll("/+$", "");
             token = tok;
             clientId = cid;
-            connected = null;
+            cursor = cur;
+            epoch = ep;
+            primed = false;
+            shownStatus = null;
             backoffMs = POLL_MS;
             schedule(0);
         });
@@ -303,11 +370,7 @@ public class BackgroundInboxService extends Service {
             }
         }
         if (executor != null) executor.shutdownNow();
-        // Идущий запрос — оборвать: прерывание потока HttpURLConnection не слышит
-        HttpURLConnection c = current;
-        if (c != null) {
-            new Thread(c::disconnect).start(); // disconnect может ждать сеть — не в главном потоке
-        }
+        abortCurrent();
         releaseAwake();
         super.onDestroy();
     }
@@ -347,8 +410,16 @@ public class BackgroundInboxService extends Service {
         }
     }
 
-    private void holdAwake() {
-        if (wakeLock != null) wakeLock.acquire(WAKE_MS);
+    /** Не держать процессор дольше ms (повторный вызов — новый срок). */
+    private void holdAwake(long ms) {
+        if (wakeLock != null) wakeLock.acquire(ms);
+    }
+
+    /** Оборвать идущий запрос: прерывание потока HttpURLConnection не слышит,
+     * а disconnect может ждать сеть — не в вызывающем потоке. */
+    private void abortCurrent() {
+        HttpURLConnection c = current;
+        if (c != null) new Thread(c::disconnect).start();
     }
 
     private void releaseAwake() {
@@ -360,63 +431,115 @@ public class BackgroundInboxService extends Service {
     }
 
     private void pollOnce() {
-        if (destroyed) return;
-        holdAwake();
+        if (destroyed || restarting) return;
+        // Блокировка сна — на отправку запроса; ответа долгий опрос ждёт без
+        // неё: телефон спит, а пришедший ответ его будит
+        holdAwake(SEND_WAKE_MS);
+        boolean keepAwake = false;
         try {
-            JSONArray items = null;
+            Reply reply = null;
             String err = null;
             try {
-                items = fetchInbox();
+                reply = fetchInbox();
             } catch (Exception e) {
                 err = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             }
+            holdAwake(WAKE_MS); // ответ (или обрыв) пришёл — разобрать, не засыпая
+            boolean watchdog = watchdogFired;
+            watchdogFired = false;
             // Пока шёл запрос, службу остановили — ничего не показываем
             if (destroyed || executor.isShutdown()) return;
             if (err == null) {
                 lastOk = System.currentTimeMillis();
                 lastError = null;
                 backoffMs = POLL_MS;
-                setConnected(true);
-                for (int i = 0; i < items.length(); i++) {
-                    JSONObject m = items.optJSONObject(i);
+                for (int i = 0; i < reply.messages.length(); i++) {
+                    JSONObject m = reply.messages.optJSONObject(i);
                     if (m != null && !appVisible) showMessage(m);
                 }
+                // Курсор — после показа: если процесс умрёт посередине, ответ
+                // придёт ещё раз (повтор уведомления лучше пропажи)
+                if (reply.longPoll) saveCursor(reply.cursor, reply.epoch);
+                primed = true;
+                showStatus(true);
+                if (restarting) return; // новые настройки — опрос запустит их задача
+                // Долгий опрос — следующий сразу (блокировку сна не снимаем:
+                // его отправка тут же возьмёт свою); ядро старой версии
+                // отвечает без ожидания — тогда раз в POLL_MS
+                keepAwake = reply.longPoll;
+                schedule(reply.longPoll ? 0 : POLL_MS);
             } else {
-                lastError = err;
-                setConnected(false);
+                if (restarting) return; // оборвали ради новых настроек — не сбой
+                lastError = watchdog ? "timeout" : err;
+                primed = false;
+                showStatus(false);
                 // Нет связи — пауза растёт до минуты: ноутбук спит или телефон вне дома
                 backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+                schedule(backoffMs);
             }
-            schedule(err == null ? POLL_MS : backoffMs);
         } finally {
-            releaseAwake();
+            if (!keepAwake) releaseAwake();
         }
     }
 
-    private JSONArray fetchInbox() throws Exception {
-        String q = "?chat_id=web_user&client_id=" + URLEncoder.encode(clientId + "-bg", "UTF-8");
+    /** Ответ ядра: сообщения и, у долгого опроса, курсор с id запуска ядра. */
+    private static final class Reply {
+        JSONArray messages = new JSONArray();
+        boolean longPoll = false;
+        long cursor = -1;
+        String epoch = "";
+    }
+
+    private Reply fetchInbox() throws Exception {
+        // epoch — всегда (пустой — курсора ещё нет): по нему ядро понимает,
+        // что клиент умеет долгий опрос, и отвечает с курсором
+        StringBuilder q = new StringBuilder("?chat_id=web_user&client_id=")
+                .append(URLEncoder.encode(clientId + "-bg", "UTF-8"))
+                .append("&wait=").append(primed ? LONG_WAIT_SEC : 0)
+                .append("&epoch=").append(URLEncoder.encode(epoch, "UTF-8"));
+        if (cursor >= 0 && !epoch.isEmpty()) q.append("&since=").append(cursor);
         HttpURLConnection c = (HttpURLConnection) new URL(baseUrl + "/api/inbox" + q).openConnection();
         current = c;
         try {
             c.setConnectTimeout(10_000);
-            c.setReadTimeout(15_000);
+            c.setReadTimeout(READ_TIMEOUT_MS);
             c.setUseCaches(false);
             c.setRequestProperty("Accept", "application/json");
             if (!token.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + token);
+            waitDeadline = SystemClock.elapsedRealtime() + WATCHDOG_MS;
+            waiting = true;
+            setAlarm(waitDeadline);
             int code = c.getResponseCode();
             if (code != 200) throw new Exception("HTTP " + code);
-            String body = readAll(c.getInputStream());
-            // Ответ — список; на будущее терпим и {"messages": [...]}
-            String t = body.trim();
+            String t = readAll(c.getInputStream()).trim();
+            Reply r = new Reply();
             if (t.startsWith("{")) {
-                JSONArray arr = new JSONObject(t).optJSONArray("messages");
-                return arr != null ? arr : new JSONArray();
+                JSONObject o = new JSONObject(t);
+                JSONArray arr = o.optJSONArray("messages");
+                if (arr != null) r.messages = arr;
+                if (o.has("cursor")) {
+                    r.longPoll = true;
+                    r.cursor = o.optLong("cursor", -1);
+                    r.epoch = o.optString("epoch", "");
+                }
+            } else {
+                r.messages = new JSONArray(t); // ядро старой версии — просто список
             }
-            return new JSONArray(t);
+            return r;
         } finally {
+            waiting = false;
             current = null;
             c.disconnect();
         }
+    }
+
+    private void saveCursor(long cur, String ep) {
+        if (cur < 0) return;
+        String e = ep == null ? "" : ep;
+        if (cur == cursor && e.equals(epoch)) return;
+        cursor = cur;
+        epoch = e;
+        prefs(this).edit().putLong(KEY_CURSOR, cur).putString(KEY_EPOCH, e).apply();
     }
 
     private static String readAll(InputStream in) throws Exception {
@@ -431,11 +554,16 @@ public class BackgroundInboxService extends Service {
 
     // ── Уведомления ───────────────────────────────────────────────────
 
-    private void setConnected(boolean ok) {
-        if (connected != null && connected == ok) return;
-        connected = ok;
-        String text = ok ? getString(R.string.bg_connected, hostOf(baseUrl))
+    /** Значок в шторке: «Подключено к … · ответ ядра в 23:58» — по времени
+     * видно, жива ли связь (долгий опрос отвечает не реже раза в
+     * LONG_WAIT_SEC), — или «нет связи». */
+    private void showStatus(boolean ok) {
+        String text = ok
+                ? getString(R.string.bg_connected_at, hostOf(baseUrl),
+                        DateFormat.getTimeFormat(this).format(new Date(lastOk)))
                 : getString(R.string.bg_offline);
+        if (text.equals(shownStatus)) return;
+        shownStatus = text;
         synchronized (NOTIFY_LOCK) {
             if (destroyed || stopping) return;
             try {
@@ -522,6 +650,40 @@ public class BackgroundInboxService extends Service {
                 // Разрешение на уведомления отозвано — молча пропускаем
             }
         }
+    }
+
+    /** «Проверить» в настройках приложения: уведомление в канал «Сообщения
+     * персон» — тем же путём, что настоящее. → null — показано, иначе
+     * причина: "denied" — уведомления приложению запрещены, "channel" —
+     * выключен канал «Сообщения персон». */
+    static String showTest(Context ctx) {
+        createChannels(ctx);
+        NotificationManagerCompat nm = NotificationManagerCompat.from(ctx);
+        if (!nm.areNotificationsEnabled()) return "denied";
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationManager sys = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            NotificationChannel ch = sys == null ? null : sys.getNotificationChannel(CHANNEL_MESSAGES);
+            if (ch != null && ch.getImportance() == NotificationManager.IMPORTANCE_NONE) return "channel";
+        }
+        Intent open = new Intent(ctx, MainActivity.class)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent pi = PendingIntent.getActivity(ctx, 0x7e57, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification n = new NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
+                .setSmallIcon(R.drawable.ic_stat_vpc)
+                .setContentTitle(ctx.getString(R.string.bg_test_title))
+                .setContentText(ctx.getString(R.string.bg_test_text))
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .build();
+        try {
+            nm.notify(TAG_TEST, 0, n);
+        } catch (SecurityException e) {
+            return "denied";
+        }
+        return null;
     }
 
     /** Приложение вышло на экран: сообщения из шторки показывает уже сам чат. */

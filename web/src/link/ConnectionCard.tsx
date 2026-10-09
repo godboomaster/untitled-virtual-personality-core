@@ -72,7 +72,7 @@ export default function ConnectionCard() {
 
 // Переключатель «Уведомления, когда приложение закрыто» и состояние службы
 function BackgroundNotify({ linkMode }: { linkMode: boolean }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [on, setOn] = useState(bgNotifyEnabled);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<BgNotifyResult | null>(null);
@@ -133,7 +133,15 @@ function BackgroundNotify({ linkMode }: { linkMode: boolean }) {
   if (on && status && !blocked) {
     if (!status.running) statusText = t('settings.bgNotifyStopped');
     else if (status.lastError) statusText = t('settings.bgNotifyOffline', { err: status.lastError });
-    else if (status.lastOk) statusText = t('settings.bgNotifyOnline');
+    else if (status.lastOk) {
+      // Время последнего ответа ядра: оно отвечает не реже раза в 5 минут,
+      // время старше — связь застряла
+      const time = new Date(status.lastOk).toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      statusText = t('settings.bgNotifyOnline', { time });
+    }
   }
 
   return (

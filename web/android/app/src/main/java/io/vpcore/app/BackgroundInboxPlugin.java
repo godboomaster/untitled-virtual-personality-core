@@ -21,7 +21,8 @@ import com.getcapacitor.annotation.PermissionCallback;
  *
  * JS: start({baseUrl, token, clientId}), stop(), status() →
  * {running, lastOk, lastError}, requestNotificationPermission() →
- * {granted}, getLaunchPersona() → {persona}; событие notificationTap {persona}.
+ * {granted}, testNotification() → {shown, problem}, getLaunchPersona() →
+ * {persona}; событие notificationTap {persona}.
  */
 @CapacitorPlugin(
         name = "BackgroundInbox",
@@ -122,6 +123,17 @@ public class BackgroundInboxPlugin extends Plugin {
         ret.put("lastOk", BackgroundInboxService.lastOk);
         ret.put("lastError", BackgroundInboxService.lastError);
         ret.put("notificationsEnabled", NotificationManagerCompat.from(getContext()).areNotificationsEnabled());
+        call.resolve(ret);
+    }
+
+    /** «Проверить» в настройках: настоящее уведомление в канал «Сообщения
+     * персон». problem — "denied" или "channel", если показать нельзя. */
+    @PluginMethod
+    public void testNotification(PluginCall call) {
+        String problem = BackgroundInboxService.showTest(getContext());
+        JSObject ret = new JSObject();
+        ret.put("shown", problem == null);
+        ret.put("problem", problem);
         call.resolve(ret);
     }
 

@@ -278,9 +278,22 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
 def run_api():
     # Запускает FastAPI-сервер для веб-фронта и десктоп-приложения.
     import uvicorn
+    from app.api import inbox
     host = os.getenv("API_HOST", "127.0.0.1")
     port = int(os.getenv("API_PORT", "8000"))
-    uvicorn.run("app.api.server:app", host=host, port=port)
+    # Server вместо uvicorn.run — ради should_exit: при остановке uvicorn
+    # ждёт незавершённые запросы, и долгий опрос фоновой службы телефона
+    # (GET /api/inbox?wait=…) держал бы Ctrl+C до конца ожидания
+    server = uvicorn.Server(uvicorn.Config("app.api.server:app", host=host, port=port))
+    inbox.set_stop_check(lambda: server.should_exit)
+    # Дальше — как в uvicorn.run: сигнал остановки uvicorn поднимает заново
+    # после завершения, это не ошибка; не поднялся (порт занят) — код 3
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+    if not server.started:
+        sys.exit(3)
 
 
 def start_target(target: str):

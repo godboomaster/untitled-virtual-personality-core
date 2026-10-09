@@ -7,15 +7,23 @@
     chat_id не смешивается; курсор общий с inbox_pop (по персоне) — одно и
     то же сообщение клиент получает один раз, каким бы путём ни спросил;
   - маршрут: имя персоны из её YAML (нет персоны — id), без токена при
-    заданном API_TOKEN — 401, неверный или пустой client_id — 422.
+    заданном API_TOKEN — 401, неверный или пустой client_id — 422;
+  - долгий опрос (wait/since/epoch): пустой ответ ждёт сообщения, будится
+    толчком из другого потока, отвечает по таймауту и при остановке ядра;
+    курсор клиента (since) возвращает потерянный ответ ещё раз, курсор
+    чужого процесса (другой epoch) не применяется; без новых параметров
+    ответ прежний — список.
 
 LLM, Ollama и сеть не вызываются, data/ — временный каталог.
 Запуск: PYTHONPATH=. python3 -m scripts.test_inbox_all
 """
 
+import asyncio
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -179,9 +187,175 @@ def test_route():
         server_mod._api_token = orig
 
 
+# ════════════ C. Долгий опрос: курсор клиента и ожидание ════════════
+
+def test_long_poll():
+    section("C. Долгий опрос: since, ожидание, таймаут, остановка")
+    from app.api import inbox
+
+    _reset_inbox(inbox)
+    items, c0 = inbox.inbox_take("web_user", "svc-bg")
+    check("первый take — пусто, курсор = текущий номер", items == [] and c0 == inbox._seq)
+    inbox.inbox_push("connor", "web_user", "раз")
+    items, c1 = inbox.inbox_take("web_user", "svc-bg", c0)
+    check("since: новое после курсора", [m["text"] for m in items] == ["раз"] and c1 > c0)
+    items, _ = inbox.inbox_take("web_user", "svc-bg", c0)
+    check("since: ответ потерялся — тот же курсор отдаёт сообщение снова",
+          [m["text"] for m in items] == ["раз"])
+    items, c2 = inbox.inbox_take("web_user", "svc-bg", c1)
+    check("since: с нового курсора — пусто", items == [] and c2 == c1)
+    inbox.inbox_push("connor", "web_user", "два")
+    items, _ = inbox.inbox_take("web_user", "svc-bg", 10 ** 9)
+    check("since больше текущего номера (чужой процесс) — как без since",
+          [m["text"] for m in items] == ["два"])
+    items, _ = inbox.inbox_take("web_user", "svc-bg")
+    check("…и курсоры ядра сдвинулись вместе с ним", items == [])
+    # Курсор клиента не отбирает сообщения у других клиентов
+    inbox.inbox_pop_all("web_user", "laptop")
+    inbox.inbox_push("lena", "web_user", "три")
+    items, c3 = inbox.inbox_take("web_user", "svc-bg", inbox._seq - 1)
+    check("since: сообщение получено", [m["text"] for m in items] == ["три"])
+    check("…ноутбук получает свою копию",
+          [m["text"] for m in inbox.inbox_pop_all("web_user", "laptop")] == ["три"])
+
+    async def run_wait(since, timeout):
+        t0 = time.monotonic()
+        res = await inbox.inbox_wait("web_user", "svc-bg", since, timeout)
+        return res, time.monotonic() - t0
+
+    inbox.inbox_push("connor", "web_user", "уже есть")
+    (items, c4), dt = asyncio.run(run_wait(c3, 5))
+    check("ожидание: сообщение уже есть — ответ сразу",
+          [m["text"] for m in items] == ["уже есть"] and dt < 0.5)
+
+    (items, c5), dt = asyncio.run(run_wait(c4, 0.4))
+    check("ожидание: таймаут — пусто, примерно через wait",
+          items == [] and 0.35 <= dt < 1.5 and c5 == c4)
+
+    def push_later():
+        time.sleep(0.3)
+        inbox.inbox_push("lena", "web_user", "из другого потока")
+    threading.Thread(target=push_later).start()
+    (items, c6), dt = asyncio.run(run_wait(c5, 10))
+    check("ожидание: толчок из другого потока будит сразу",
+          [m["text"] for m in items] == ["из другого потока"] and dt < 1.5)
+
+    def push_other_chat():
+        time.sleep(0.2)
+        inbox.inbox_push("lena", "other_chat", "чужой чат")
+    threading.Thread(target=push_other_chat).start()
+    (items, _), dt = asyncio.run(run_wait(c6, 0.8))
+    check("ожидание: сообщение другого чата не отдаётся, ждём дальше",
+          items == [] and dt >= 0.7)
+
+    stop = {"on": False}
+    inbox.set_stop_check(lambda: stop["on"])
+    try:
+        def stop_later():
+            time.sleep(0.3)
+            stop["on"] = True
+        threading.Thread(target=stop_later).start()
+        (items, _), dt = asyncio.run(run_wait(c6, 30))
+        check("ожидание: остановка ядра — ответ в пределах секунды-двух",
+              items == [] and dt < 2.5)
+    finally:
+        inbox.set_stop_check(None)
+    gone = {"on": False}
+
+    async def is_gone():
+        return gone["on"]
+
+    async def run_wait_gone():
+        t0 = time.monotonic()
+        res = await inbox.inbox_wait("web_user", "svc-bg", c6, 30, gone=is_gone)
+        return res, time.monotonic() - t0
+
+    def leave_later():
+        time.sleep(0.3)
+        gone["on"] = True
+    threading.Thread(target=leave_later).start()
+    (items, _), dt = asyncio.run(run_wait_gone())
+    check("ожидание: клиент закрыл соединение — запрос отпускается",
+          items == [] and dt < 2.5)
+    check("после ожиданий не осталось ждущих", not inbox._waiters)
+    _reset_inbox(inbox)
+
+
+def test_route_long_poll():
+    section("D. GET /api/inbox: долгий опрос")
+    try:
+        from fastapi.testclient import TestClient
+    except ImportError as e:
+        print(f"  (пропущено — fastapi/httpx недоступны: {e})")
+        return
+    import app.api.server as server_mod
+    from app.api import inbox
+
+    orig = server_mod._api_token
+    server_mod._api_token = ""
+    try:
+        client = TestClient(server_mod.app, base_url="http://127.0.0.1")
+        _reset_inbox(inbox)
+        base = {"client_id": "svc-bg"}
+
+        r = client.get("/api/inbox", params=base)
+        check("без wait/since — прежний ответ: список", r.status_code == 200 and r.json() == [])
+        r = client.get("/api/inbox", params={**base, "wait": -1})
+        check("wait < 0 — 422", r.status_code == 422)
+        t0 = time.monotonic()
+        r = client.get("/api/inbox", params={**base, "epoch": ""})
+        data = r.json() if r.status_code == 200 else {}
+        check("первый запрос службы (пустой epoch, без wait) — сразу, с курсором",
+              set(data) == {"messages", "cursor", "epoch"} and time.monotonic() - t0 < 1)
+
+        t0 = time.monotonic()
+        r = client.get("/api/inbox", params={**base, "wait": 0.3})
+        data = r.json() if r.status_code == 200 else {}
+        check("wait: пусто — объект messages/cursor/epoch после ожидания",
+              set(data) == {"messages", "cursor", "epoch"} and data["messages"] == []
+              and data["epoch"] == inbox.EPOCH and time.monotonic() - t0 >= 0.25)
+        cursor = data.get("cursor", 0)
+
+        box = {}
+
+        def long_get():
+            box["r"] = client.get("/api/inbox", params={**base, "wait": 20, "since": cursor,
+                                                        "epoch": inbox.EPOCH})
+            box["t"] = time.monotonic()
+        th = threading.Thread(target=long_get)
+        t0 = time.monotonic()
+        th.start()
+        time.sleep(0.4)
+        inbox.inbox_push("connor", "web_user", "Пора!", kind="reminder")
+        th.join(10)
+        r = box.get("r")
+        data = r.json() if r is not None and r.status_code == 200 else {}
+        msgs = data.get("messages") or []
+        check("ожидающий запрос отвечает, как только пришло сообщение",
+              [m.get("text") for m in msgs] == ["Пора!"] and box["t"] - t0 < 3)
+        check("поля сообщения — как в прежнем ответе",
+              bool(msgs) and set(msgs[0]) == {"persona", "name", "text", "kind", "ts"}
+              and msgs[0]["name"] == "Коннор")
+
+        r = client.get("/api/inbox", params={**base, "since": cursor, "epoch": inbox.EPOCH})
+        check("тот же since — ответ повторяется (потерянный по дороге не пропадёт)",
+              r.status_code == 200 and [m["text"] for m in r.json()["messages"]] == ["Пора!"])
+        r = client.get("/api/inbox", params={**base, "since": data.get("cursor"), "epoch": inbox.EPOCH})
+        check("новый since — пусто, сразу (wait не задан)",
+              r.status_code == 200 and r.json()["messages"] == [])
+        r = client.get("/api/inbox", params={**base, "since": cursor, "epoch": "old-process"})
+        check("курсор прошлого запуска ядра (другой epoch) не применяется",
+              r.status_code == 200 and r.json()["messages"] == [])
+        _reset_inbox(inbox)
+    finally:
+        server_mod._api_token = orig
+
+
 def main():
     test_pop_all()
     test_route()
+    test_long_poll()
+    test_route_long_poll()
 
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0

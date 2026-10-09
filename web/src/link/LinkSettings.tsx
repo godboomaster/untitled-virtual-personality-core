@@ -7,7 +7,8 @@ import { confirmDialog } from '../dialogStore';
 import QrCode from './QrCode';
 
 /* «Настройки» → «Телефон» (на компьютере): подключить телефон по QR-коду,
-   список сопряжённых телефонов, отвязка. Канал — app/link (VPC Link). */
+   список сопряжённых телефонов, отвязка. Канал — app/link (VPC Link).
+   Внизу — токен API для запасного входа по адресу и токену. */
 
 const POLL_MS = 3000; // пока карточка открыта — видно, кто в сети
 const POLL_PAIRING_MS = 1500; // пока показан QR — быстрее, чтобы сразу увидеть телефон
@@ -21,6 +22,10 @@ export default function LinkSettings() {
   const [paired, setPaired] = useState<string | null>(null); // имя только что сопряжённого
   const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
+  // undefined — ещё не загружен (или старое ядро без /api/token), null — не задан
+  const [token, setToken] = useState<string | null | undefined>(undefined);
+  const [tokenShown, setTokenShown] = useState(false);
+  const [tokenCopied, setTokenCopied] = useState(false);
 
   const load = useCallback(() => {
     api
@@ -40,6 +45,15 @@ export default function LinkSettings() {
     }, offer ? POLL_PAIRING_MS : POLL_MS);
     return () => window.clearInterval(timer);
   }, [load, offer]);
+
+  // Токен — один раз при открытии, не в опросе: к нажатию «Скопировать» он
+  // уже здесь, и буфер обмена получает его прямо в обработчике клика
+  useEffect(() => {
+    api
+      .getServerToken()
+      .then((r) => setToken(r.token))
+      .catch(() => setToken(undefined));
+  }, []);
 
   // Новый телефон в списке — QR-код больше не нужен
   useEffect(() => {
@@ -88,6 +102,23 @@ export default function LinkSettings() {
         window.setTimeout(() => setCopied(false), 1500);
       })
       .catch(() => {});
+  };
+
+  const copyToken = () => {
+    if (!token) return;
+    // Буфер недоступен (страница не по localhost/https) — показываем токен,
+    // чтобы его можно было выделить вручную
+    if (!navigator.clipboard) {
+      setTokenShown(true);
+      return;
+    }
+    navigator.clipboard
+      .writeText(token)
+      .then(() => {
+        setTokenCopied(true);
+        window.setTimeout(() => setTokenCopied(false), 1500);
+      })
+      .catch(() => setTokenShown(true));
   };
 
   const left = offer ? Math.max(0, Math.round(offer.expires - now / 1000)) : 0;
@@ -166,6 +197,24 @@ export default function LinkSettings() {
                 : t('link.lanIdle')}
           </p>
           <p className="field-hint">{relayLine}</p>
+        </div>
+      )}
+
+      {token !== undefined && (
+        <div className="field">
+          <label className="field-label">{t('link.token')}</label>
+          <p className="field-hint">{token ? t('link.tokenHint') : t('link.tokenNone')}</p>
+          {token && (
+            <div className="link-token">
+              <code className="link-token-value">{tokenShown ? token : '•'.repeat(16)}</code>
+              <button type="button" className="btn btn--ghost btn--chip" onClick={() => setTokenShown((v) => !v)}>
+                {tokenShown ? t('link.tokenHide') : t('link.tokenShow')}
+              </button>
+              <button type="button" className="btn btn--ghost btn--chip" onClick={copyToken}>
+                {tokenCopied ? t('common.copied') : t('common.copy')}
+              </button>
+            </div>
+          )}
         </div>
       )}
       {failed && <p className="field-hint">{failed}</p>}
