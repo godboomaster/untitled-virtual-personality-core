@@ -12125,3 +12125,55 @@ img.art-thumb {
   color: #eee;
   border-color: #888;
 }
+
+/* Кадр с веб-камеры для чата (CameraCapture): экран тёмный, как у сканера QR */
+.camera-capture {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: calc(16px + var(--sa-top)) 16px calc(16px + var(--sa-bottom));
+  background: #000;
+  color: #eee;
+}
+
+.camera-capture-view {
+  width: min(92vw, 720px);
+  aspect-ratio: 16 / 9;
+  background: #111;
+  overflow: hidden;
+}
+
+.camera-capture-view video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.camera-capture-hint {
+  max-width: 520px;
+  margin: 0;
+  text-align: center;
+  font-size: 14px;
+}
+
+.camera-capture-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.camera-capture .btn--ghost {
+  color: #eee;
+  border-color: #888;
+}
+
+/* На чёрном фоне тёмная основная кнопка теряется — светлая */
+.camera-capture .btn--primary {
+  background: #eee;
+  border-color: #eee;
+  color: #000;
+}

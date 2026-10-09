@@ -28,6 +28,7 @@ from app.core.telegram_sender import TelegramMessageSender
 from app.core.message_pacing import send_delay as _send_delay
 from app.features.file_sender import prepare_response, cleanup_files
 from app.features.reply_context import extract_reply_context
+from app.features import screen_look
 
 logger = logging.getLogger(__name__)
 
@@ -879,6 +880,23 @@ def create_handlers(bot: BotInstance) -> dict:
                         + input_for_log(clean_text, control_mode_active(
                             bot, chat_id), 60))
 
+            # «Посмотри на экран» (app/features/screen_look): снимок экрана
+            # этого компьютера смотрит только локальная модель, персона
+            # отвечает по описанию. Только владельцу — экран его; в режиме
+            # управления «экран» — страница агента, её смотрит сам режим
+            screen_raw = None
+            if (screen_look.is_screen_request(clean_text) and _is_owner(bot, user_id)
+                    and not bot.control_mode_on(chat_id)):
+                await update.message.reply_text("Смотрю на экран...")
+                lang = detect_language(clean_text) or bot.chat_user_language(chat_id)
+                try:
+                    screen_text = await asyncio.to_thread(
+                        screen_look.screen_input, bot._local_router, clean_text, lang)
+                except screen_look.ScreenLookError as e:
+                    await update.message.reply_text(str(e))
+                    return
+                screen_raw, clean_text = clean_text, screen_text
+
             # Вступительная реплика персоны до генерации ответа
             pre_reply_text = bot.persona.persona_data.get("pre_reply_text")
             if pre_reply_text:
@@ -904,7 +922,10 @@ def create_handlers(bot: BotInstance) -> dict:
                         user_id=user_id, chat_id=chat_id,
                         user_name=user_tag if chat_id != user_id else user_name,
                         reply_context=reply_ctx,
-                        reply_to_bot_message_id=reply_to_bot_message_id
+                        reply_to_bot_message_id=reply_to_bot_message_id,
+                        # Подтверждение pending-действия — по тому, что ввёл
+                        # пользователь, а не по описанию экрана
+                        raw_user_text=screen_raw,
                     )
                 finally:
                     typing_task.cancel()

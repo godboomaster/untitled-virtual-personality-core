@@ -801,11 +801,7 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                 provider, model = _answer_provider(bot) if llm_used else (None, None)
                 split_extra = bot.pop_pending_split_messages(req.chat_id)
             else:
-                llm_input = (
-                    _prepare_image_input(bot, req.message, req.image,
-                                         req.chat_id, req.user_id)
-                    if req.image else req.message
-                )
+                llm_input, shown = _prepare_turn_input(bot, req)
                 reply = bot.process_message(
                     llm_input,
                     user_id=req.user_id,
@@ -814,8 +810,9 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                     reply_context=req.reply_context,
                     # Подтверждение pending-действия (computer_control) — только
                     # по тому, что реально ввёл пользователь, а не по OCR внутри
-                    # llm_input (там текст с картинки — см. _prepare_image_input)
-                    raw_user_text=req.message if req.image else None,
+                    # llm_input (там текст с картинки или экрана — см.
+                    # _prepare_turn_input)
+                    raw_user_text=req.message if shown else None,
                     from_skin=req.from_skin,
                 )
                 # Провайдер ответа — СРАЗУ после process_message и в этом же
@@ -824,12 +821,8 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                 # Хвост расщеплённого ответа (settings.split_messages) забираем
                 # до правки STM картинки — переписываемый хвост включает его части
                 split_extra = bot.pop_pending_split_messages(req.chat_id)
-                if req.image:
-                    cap = req.message.strip()
-                    _rewrite_image_stm(
-                        bot, stm_key, req.user_id,
-                        f"📷 {cap}" if cap else "📷 (изображение)", [reply] + split_extra,
-                    )
+                if shown:
+                    _rewrite_image_stm(bot, stm_key, req.user_id, shown, [reply] + split_extra)
         # Части расщеплённого ответа идут раньше досылаемых списков:
         # это продолжение реплики, а список — приложение к ней
         extra = split_extra + bot.pop_pending_list_messages(req.chat_id)
@@ -931,20 +924,72 @@ def _decode_image(data: str) -> bytes:
         raise HTTPException(status_code=400, detail="Некорректные данные изображения (base64)")
 
 
-def _prepare_image_input(bot, message: str, image_b64: str,
-                         chat_id: str = None, user_id: str = None) -> str:
-    # Текст для LLM из сообщения с картинкой: подпись + содержимое по
-    # vision-модели. Каскад как у TG-бота: vision-провайдер основного роутера
-    # → локальная LLM (OCR)
-    image_bytes = _decode_image(image_b64)
-    question = message.strip()
-    # Язык описания — язык подписи, без неё — язык пользователя в чате
-    lang = detect_language(question)
+def _prepare_turn_input(bot, req: ChatRequest) -> tuple[str, str | None]:
+    """Текст хода для process_message → (текст, что показать в истории).
+
+    Второе — None для обычной реплики; для картинки, кадра камеры и снимка
+    экрана — подпись «📷 …»/«🖥 …»: в STM ложится служебный текст с
+    описанием, а веб показывает историю пользователю (_rewrite_image_stm)."""
+    message = req.message.strip()
+    if req.image:
+        llm_input = _prepare_image_input(bot, req.message, req.image, req.chat_id, req.user_id,
+                                         local_only=req.image_source == "camera")
+        return llm_input, f"📷 {message}" if message else "📷 (изображение)"
+    if _wants_screen(bot, req):
+        return _prepare_screen_input(bot, message, req.chat_id, req.user_id), f"🖥 {message}"
+    return req.message, None
+
+
+def _wants_screen(bot, req: ChatRequest) -> bool:
+    # «Посмотри на экран». Не из скина: скин — сторонний код, ответ с
+    # описанием экрана он бы прочитал. Не в режиме управления: там «экран»
+    # — страница агента, её смотрит сам режим
+    from app.features import screen_look
+    if req.from_skin or not screen_look.is_screen_request(req.message):
+        return False
+    try:
+        return not bot.control_mode_on(req.chat_id or req.user_id)
+    except Exception:
+        return True
+
+
+def _turn_language(bot, text: str, chat_id: str = None, user_id: str = None):
+    # Язык описания — язык подписи или просьбы, без них — язык пользователя в чате
+    lang = detect_language(text)
     if not lang and (chat_id or user_id):
         try:
             lang = bot.chat_user_language(bot.stm_key(chat_id, user_id))
         except Exception:
             lang = None
+    return lang
+
+
+def _prepare_screen_input(bot, message: str, chat_id: str = None, user_id: str = None) -> str:
+    # Снимок экрана смотрит только локальная модель (app/features/screen_look)
+    from app.features import screen_look
+    try:
+        return screen_look.screen_input(getattr(bot, "_local_router", None), message,
+                                        _turn_language(bot, message, chat_id, user_id))
+    except screen_look.ScreenLookError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+def _prepare_image_input(bot, message: str, image_b64: str,
+                         chat_id: str = None, user_id: str = None, local_only: bool = False) -> str:
+    # Текст для LLM из сообщения с картинкой: подпись + содержимое по
+    # vision-модели. Каскад как у TG-бота: vision-провайдер основного роутера
+    # → локальная LLM (OCR). local_only — кадр с камеры: только локальная
+    image_bytes = _decode_image(image_b64)
+    question = message.strip()
+    lang = _turn_language(bot, question, chat_id, user_id)
+    if local_only:
+        from app.features import screen_look
+        try:
+            desc = screen_look.describe_locally(getattr(bot, "_local_router", None),
+                                                image_bytes, question, lang, subject="image")
+        except screen_look.ScreenLookError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        return (f"{question}\n\n" if question else "") + screen_look.CAMERA_NOTE + desc
     ocr = bot.describe_image(image_bytes, question, lang)
     if not ocr and getattr(bot, "_local_router", None) and bot._local_router.is_available():
         ocr = bot._local_router.ocr_image(image_bytes, question, lang)
@@ -1182,11 +1227,7 @@ async def chat_stream(req: ChatRequest):
                 provider, model = _answer_provider(bot) if llm_used else (None, None)
                 split_rest = bot.pop_pending_split_messages(req.chat_id)
             else:
-                llm_input = (
-                    _prepare_image_input(bot, req.message, req.image,
-                                         req.chat_id, req.user_id)
-                    if req.image else req.message
-                )
+                llm_input, shown = _prepare_turn_input(bot, req)
                 reply = bot.process_message(
                     llm_input,
                     user_id=req.user_id,
@@ -1195,18 +1236,14 @@ async def chat_stream(req: ChatRequest):
                     reply_context=req.reply_context,
                     # См. /api/chat: подтверждение pending-действия — только по
                     # тому, что реально ввёл пользователь, не по OCR картинки
-                    raw_user_text=req.message if req.image else None,
+                    raw_user_text=req.message if shown else None,
                     from_skin=req.from_skin,
                 )
                 # Провайдер ответа — сразу и в этом же потоке (_answer_provider)
                 provider, model = _answer_provider(bot)
                 split_rest = bot.pop_pending_split_messages(req.chat_id)
-                if req.image:
-                    cap = req.message.strip()
-                    _rewrite_image_stm(
-                        bot, stm_key, req.user_id,
-                        f"📷 {cap}" if cap else "📷 (изображение)", [reply] + split_rest,
-                    )
+                if shown:
+                    _rewrite_image_stm(bot, stm_key, req.user_id, shown, [reply] + split_rest)
             # В кадре хода — пока якорь STM этого хода виден
             reply_ts = _reply_stm_ts(bot, stm_key, reply)
         # Pending-бакеты снимаем здесь же, в потоке под локом чата: без лока
@@ -1254,6 +1291,12 @@ async def chat_stream(req: ChatRequest):
             (reply, split_rest, extra, question_kind, images,
              provider, model, reply_ts) = await _run_generation(
                 gen_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token))
+        except HTTPException as e:
+            # Отказ нашего же кода до генерации (картинку, камеру или экран
+            # не посмотреть: нет разрешения на запись экрана, Ollama не
+            # запущена) — текст для пользователя, в нём нет ключей
+            yield f"data: {json.dumps({'error': str(e.detail)}, ensure_ascii=False)}\n\n"
+            return
         except Exception:
             # Клиенту — обезличенное сообщение: текст исключения LLM-клиента
             # может содержать фрагменты API-ключа/URL с токеном авторизации

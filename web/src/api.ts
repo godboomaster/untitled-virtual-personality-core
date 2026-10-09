@@ -1089,7 +1089,8 @@ export async function streamControlView(
 
 export async function streamChat(
   // fromSkin — реплика из скина: бэкенд не пускает её в режим управления
-  params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string; fromSkin?: boolean },
+  // imageSource camera — кадр с камеры: ядро отдаёт его только локальной модели
+  params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string; imageSource?: 'camera'; fromSkin?: boolean },
   onToken: (text: string) => void,
   onPartBreak?: () => void,
   onReplyTs?: (ts: number) => void,
@@ -1112,6 +1113,7 @@ export async function streamChat(
         user_name: params.userName ?? null,
         reply_context: params.replyContext ?? null,
         image: params.image ?? null,
+        ...(params.image && params.imageSource === 'camera' ? { image_source: 'camera' } : {}),
         ...(params.fromSkin ? { from_skin: true } : {}),
       }),
     });

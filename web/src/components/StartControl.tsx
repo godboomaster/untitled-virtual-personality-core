@@ -319,7 +319,7 @@ const DEMOS: { labelKey: string; lines: DemoLine[]; en: DemoLine[] }[] = [
   },
 ];
 
-const FAQ_COUNT = 6;
+const FAQ_COUNT = 7;
 
 // Длина «печатаемой» части строки: служебные и скриншот появляются целиком
 const lineLen = (l: DemoLine): number => (l.who === 'you' || l.who === 'bot' ? l.text.length : 0);

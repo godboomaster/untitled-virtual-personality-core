@@ -20,6 +20,9 @@ class ChatRequest(BaseModel):
     user_name: Optional[str] = None
     reply_context: Optional[str] = None
     image: Optional[str] = None  # картинка: base64 или dataURL («data:image/...;base64,...»)
+    # camera — кадр с камеры: смотрит только локальная модель (как экран);
+    # upload — обычное вложение, каскад vision-провайдер → локальная
+    image_source: Literal["upload", "camera"] = "upload"
     # Реплика пришла из скина (SkinFrame): скин — сторонний код и мог отправить
     # её сам, поэтому в таком ходе режим управления недоступен
     # (BotInstance.process_message(from_skin=True))

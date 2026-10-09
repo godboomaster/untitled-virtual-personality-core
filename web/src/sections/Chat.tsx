@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, useMockData } from '../i18n';
 import type { ChatMessage, DiaryEntry, InitiativeEvent, InventoryItem, LearningSession, LtmFact, PersonaFile, Reminder, TodoItem } from '../mockData';
-import { api, streamChat, StreamInterruptedError } from '../api';
+import { api, isNativeApp, streamChat, StreamInterruptedError } from '../api';
 import type { AnswerOption, ApiHistoryMessage, ClearPart, InitiativeData, PersonaConfig, ReminderEntry } from '../api';
 import { refetchPersonaLlm, useApiOnline, useApiPersonaLlm, useApiProviders, usePersonaLivingState } from '../apiData';
 import { alertDialog, confirmDialog } from '../dialogStore';
@@ -29,6 +29,8 @@ import MessageText from '../components/MessageText';
 import TaskCard from '../components/TaskCard';
 import BrowserPanel from '../components/BrowserPanel';
 import VoiceChat from '../components/VoiceChat';
+import CameraCapture from '../components/CameraCapture';
+import { downscalePhoto } from '../cameraImage';
 import Icon from '../components/icons';
 import type { IconName } from '../components/icons';
 import SkinFrame from '../components/SkinFrame';
@@ -251,6 +253,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // Прикреплённая картинка к черновику (dataURL) и скрытый file input
   const [pendingImage, setPendingImage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Кадр с камеры: смотрит только локальная модель ядра (image_source=camera).
+  // В приложении — системная камера Android, в браузере — окно веб-камеры
+  const [pendingCamera, setPendingCamera] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   // Отправленные оператором реплики — локально, по id персоны (не в mockData)
   const [sentByPersona, setSentByPersona] = useState<Record<string, ChatMessage[]>>({});
   // Бэкенд: доступен ли API и история из STM по id персоны
@@ -1056,16 +1063,18 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     const text = draft.trim();
     if (!text && !pendingImage) return;
     const image = pendingImage;
+    const camera = pendingCamera;
     setPendingImage(null);
+    setPendingCamera(false);
     setDraft('');
-    submitMessage(text, image);
+    submitMessage(text, image, false, camera);
   };
 
   // Реплика пользователя — общий путь поля ввода, скина и голосового режима:
   // пузырь + отправка на бэкенд со стримом ответа. fromSkin — из скина:
   // бэкенд не пустит такую реплику в режим управления (скин мог отправить
   // её сам)
-  const submitMessage = (text: string, image: string | null, fromSkin = false) => {
+  const submitMessage = (text: string, image: string | null, fromSkin = false, camera = false) => {
     if (!text && !image) return;
     // Человек ответил (кнопкой или текстом) — прежние кнопки ответа снимаем;
     // новые, если бот снова спросит, придут с ответом
@@ -1085,7 +1094,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     markBotRead(pid); // пользователь ответил — реплики бота прочитаны
 
     pushMessage(text, image, 'sent');
-    startGeneration(pid, personaName, text, quoted?.text, image, fromSkin);
+    startGeneration(pid, personaName, text, quoted?.text, image, fromSkin, camera);
   };
 
   // Полная очистка диалога из скина — с тем же подтверждением, что в досье:
@@ -1102,7 +1111,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
   // Отправка сообщения и стриминг ответа
   const startGeneration = (pid: string, personaName: string, text: string,
-                           replyContext?: string, image?: string | null, fromSkin = false) => {
+                           replyContext?: string, image?: string | null, fromSkin = false,
+                           camera = false) => {
     localExchange.current[pid] = true; // своя генерация — перечитку истории пропустим
     // Новый обмен закрывает окно поглощения прошлого: его метки теперь
     // прикрывает «in flight», а после конца стрима окно откроется заново
@@ -1154,7 +1164,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       }));
     };
     streamChat(
-      { persona: pid, message: text, replyContext, image: image ?? undefined, fromSkin },
+      { persona: pid, message: text, replyContext, image: image ?? undefined, imageSource: camera ? 'camera' : undefined, fromSkin },
       (tok) => {
         bubbleTexts[bubbleTexts.length - 1] += tok;
         upsertBot(bubbleIds[bubbleIds.length - 1], bubbleTexts[bubbleTexts.length - 1]);
@@ -2237,8 +2247,16 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         {pendingImage && (
           <div className="chat-attach-bar">
             <img className="chat-attach-thumb" src={pendingImage} alt={t('chat.attachment')} />
-            <span className="chat-attach-label">{t('chat.attached')}</span>
-            <button type="button" className="btn btn--icon" title={t('chat.removeAttach')} onClick={() => setPendingImage(null)}>
+            <span className="chat-attach-label">{pendingCamera ? t('chat.cameraAttached') : t('chat.attached')}</span>
+            <button
+              type="button"
+              className="btn btn--icon"
+              title={t('chat.removeAttach')}
+              onClick={() => {
+                setPendingImage(null);
+                setPendingCamera(false);
+              }}
+            >
               ✕
             </button>
           </div>
@@ -2254,10 +2272,32 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
               const f = e.target.files?.[0];
               if (f && f.type.startsWith('image/')) {
                 const reader = new FileReader();
-                reader.onload = () => setPendingImage(String(reader.result));
+                reader.onload = () => {
+                  setPendingImage(String(reader.result));
+                  setPendingCamera(false);
+                };
                 reader.readAsDataURL(f);
               }
               e.target.value = '';
+            }}
+          />
+          <input
+            ref={cameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (f && f.type.startsWith('image/')) {
+                void downscalePhoto(f)
+                  .then((url) => {
+                    setPendingImage(url);
+                    setPendingCamera(true);
+                  })
+                  .catch(() => {});
+              }
             }}
           />
           <button
@@ -2267,6 +2307,25 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           >
             +
           </button>
+          <button
+            type="button"
+            className="btn btn--icon"
+            title={t('chat.cameraTitle')}
+            aria-label={t('chat.cameraTitle')}
+            onClick={() => (isNativeApp() ? cameraInputRef.current?.click() : setCameraOpen(true))}
+          >
+            <Icon name="camera" size={16} />
+          </button>
+          {cameraOpen && (
+            <CameraCapture
+              onCapture={(url) => {
+                setPendingImage(url);
+                setPendingCamera(true);
+                setCameraOpen(false);
+              }}
+              onClose={() => setCameraOpen(false)}
+            />
+          )}
           <input
             className="chat-input"
             type="text"

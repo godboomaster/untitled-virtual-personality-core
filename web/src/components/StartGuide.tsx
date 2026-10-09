@@ -86,6 +86,7 @@ const TRACKS: Track[] = [
       { id: 'home', nav: 'home' },
       { id: 'chat', nav: 'chat' },
       { id: 'room', nav: 'room' },
+      { id: 'phone', nav: 'settings', warn: 'guide.console.phoneWarn' },
     ],
     window: 'console — chat — persona',
     dialog: [
@@ -188,6 +189,16 @@ const TRACKS: Track[] = [
       { id: 'files', chips: [{ code: '/files', hint: 'guide.cmdFiles' }] },
       { id: 'initiative', dossier: 'initiative' },
       { id: 'rhythm', dossier: 'settings' },
+      {
+        id: 'screen',
+        warn: 'guide.features.screenWarn',
+        chips: [
+          { code: 'guide.phrScreen', i18n: true },
+          { code: 'guide.phrScreenWhat', i18n: true },
+          { code: 'guide.phrScreenError', i18n: true },
+        ],
+      },
+      { id: 'camera', nav: 'chat' },
       { id: 'control', anchor: 'start-control' },
     ],
     window: 'console — chat — persona',
@@ -221,6 +232,7 @@ const TRACKS: Track[] = [
       {
         id: 'memory',
         chips: [
+          { code: '/clear', hint: 'guide.cmdClear' },
           { code: 'guide.codeForget', i18n: true, hint: 'guide.cmdForget' },
           { code: '/reset', hint: 'guide.cmdReset' },
           { code: '/ltm_privacy smart|strict', hint: 'guide.cmdPrivacy' },
@@ -241,6 +253,7 @@ const TRACKS: Track[] = [
           { code: '/files', hint: 'guide.cmdFiles' },
           { code: '/reset_files', hint: 'guide.cmdResetFiles' },
           { code: '/web', hint: 'guide.cmdWeb' },
+          { code: 'guide.phrScreen', i18n: true, hint: 'guide.cmdScreen' },
         ],
       },
       {

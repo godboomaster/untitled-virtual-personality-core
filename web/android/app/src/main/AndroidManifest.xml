@@ -69,13 +69,17 @@
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <!-- Android 11+: без этого службы распознавания и озвучки приложению не видны,
-         и isRecognitionAvailable() отвечает «нет» -->
+         и isRecognitionAvailable() отвечает «нет»; без IMAGE_CAPTURE Capacitor
+         не находит камеру и кнопка камеры в чате открывает галерею -->
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
         </intent>
     </queries>
 </manifest>

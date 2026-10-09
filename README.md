@@ -4,9 +4,9 @@
 
 A platform for "living" characters: bots that remember the person they talk to, live their
 own lives between messages and message you first. A persona is a YAML file with a
-character, memory and a set of modules. The same persona works in Telegram and in the web
-interface, can remind you of things, keep your to-do list and teach you, and — at the
-owner's request — drive their browser.
+character, memory and a set of modules. The same persona works in Telegram, in the web
+interface and in the phone app, can remind you of things, keep your to-do list and teach
+you, and — at the owner's request — drive their browser.
 
 Replies come from any OpenAI-compatible model with an API key, from an LLM web chat in the
 bot's browser (DeepSeek, Qwen, Claude, ChatGPT and more) or from a local model in Ollama —
@@ -20,9 +20,11 @@ https://github.com/user-attachments/assets/aa87b619-6564-4703-81d8-762ad478f123
 
 ## What it can do
 
-- **Telegram and web.** In Telegram — private chats and groups (by a trigger word or a reply
-  to the bot's message), commands, long code is sent as files. On the web — chats with all
-  personas, dossier, the persona's room, settings, a persona editor, voice mode.
+- **Telegram, web and phone.** In Telegram — private chats and groups (by a trigger word or a
+  reply to the bot's message), commands, long code is sent as files. On the web — chats with
+  all personas, dossier, the persona's room, settings, a persona editor, voice mode. On
+  Android — an app with the same chats, voice, camera and notifications while it is closed;
+  the phone connects to the computer over an encrypted channel.
 - **Memory.** Recent chat messages, facts about the person (the model extracts them by
   itself, merges duplicates and resolves contradictions), a chat dossier, the persona's own
   diary, files with full-text search.
@@ -40,6 +42,9 @@ https://github.com/user-attachments/assets/aa87b619-6564-4703-81d8-762ad478f123
 - **Control mode.** On the owner's command the bot opens sites and apps, searches on sites,
   clicks buttons, types text, reads pages, carries out multi-step tasks ("order a pizza")
   and replays recorded scenarios. Actions are confirmed.
+- **Screen and camera.** "Look at my screen" — the persona looks at the computer's screen;
+  the camera button in the chat — at a photo from the phone or a webcam. Only the local
+  model in Ollama sees the picture; the persona gets its description.
 - **No keys needed.** LLM web chats in the bot's browser or a local model in Ollama.
 - **Add-ons.** Example — Arrodes: a persona that knows a book, with hybrid search over its
   text.
@@ -171,15 +176,18 @@ as messages: blocks, limits, moderation, muting.
 
 ### Web interface
 
-- **Start** — an introduction and a control mode command cheat sheet.
+- **Start** — how to use it: where to begin, special features, the phone, screen and camera,
+  a control mode cheat sheet, Telegram commands.
 - **Home** — a calendar and a "while you were away" feed: initiatives, diary, reminders.
-- **Chat** — all chats as a list, then the chat with a persona, voice mode, skins.
+- **Chat** — all chats as a list, then the chat with a persona, voice mode, camera, skins; in
+  control mode — answer buttons, a task card and the agent's live browser window.
 - **Room** — the persona's live scene: where it is, what it is doing, its things;
   a picture-in-picture window.
 - **Personas** — create (form with the YAML next to it), edit YAML, rename, copy, color.
 - **Skins** — looks for the chat, dossier and room: library, upload, generation.
 - **Settings** — language (ru/en), notifications, developer mode, location, time zone,
-  provider keys, web chats.
+  provider keys, web chats; "Phone" — connect a phone by QR code and the API token for
+  connecting by address.
 - **Persona dossier** — memory, reminders and to-dos, initiative, control mode, learning,
   files, persona settings (models, generation, modules).
 
@@ -191,8 +199,8 @@ is up.
 ### Phone app (Android)
 
 The web interface is also built as an Android app. The backend keeps running on your
-computer, the phone connects to it: the same chats and history, control mode with the live
-browser window, persona dossiers and settings. Background messages (reminders, initiative)
+computer, the phone connects to it: the same chats and history, voice and camera, control
+mode with the live browser window, persona dossiers and settings. Background messages (reminders, initiative)
 reach every device — the computer and the phone each get their own copy.
 
 **Connecting — VPC Link.** The phone and the computer pair once by a QR code and from then
@@ -220,7 +228,9 @@ The computer must stay awake while you use the app.
 
 **Connecting by address** (fallback): `API_HOST=0.0.0.0`, `API_ALLOWED_HOSTS=192.168.1.5`
 (the computer's address), `API_TOKEN`; in the app — `192.168.1.5:8000` and the token. The
-traffic is not encrypted here, so VPC Link is the better choice. Without `API_TOKEN` the
+token is shown on the computer: Settings → Phone → "API token", with "Show" and "Copy"
+buttons. The port in the address is the API port (`API_PORT`, 8000), not `LINK_PORT`: that
+one is for VPC Link only. The traffic is not encrypted here, so VPC Link is the better choice. Without `API_TOKEN` the
 backend refuses requests that don't come through `localhost` (403). If `API_CORS_ORIGINS`
 is set, add `https://localhost` to it — that is the app's origin.
 
@@ -241,14 +251,24 @@ the last step is `cd web/android && gradlew assembleDebug` after `npm run build`
 
 **Notifications while the app is closed** (connection by address only, for now): Settings →
 Connection → **Notifications when the app is closed**. The app then keeps a small background
-service (a silent "Core connection" notification in the shade) that asks the core for new
-messages every 20 seconds (`GET /api/inbox`, up to a minute while the core is unreachable)
-and shows reminders and persona messages as notifications; tapping one opens that
-persona's chat. No Google/Firebase push is involved — it works only while the phone can
-reach the computer. On Honor, Huawei and Xiaomi phones allow the app to run in the
+service (a silent "Core connection" notification in the shade). The service keeps a request
+to the core open (`GET /api/inbox` with `wait`): the core answers as soon as a message
+appears, or with an empty reply every 5 minutes if there is none, and the service opens a new
+request right away. Android keeps the network on for a service with a notification even in
+deep sleep, and the incoming reply wakes the phone, so reminders and persona messages arrive
+within seconds; tapping one opens that persona's chat. A reply lost on the way is sent again.
+
+The shade shows the time of the last reply: "Connected to … · core replied at 23:58". If it is
+older than 6 minutes, the connection is stuck. The "Test" button in the app's Settings shows
+a real Android notification. No Google/Firebase push is involved — it works while the phone
+can reach the computer; without a connection the service retries up to once a minute, less
+often while the phone sleeps. On Honor, Huawei and Xiaomi phones allow the app to run in the
 background and set its battery usage to "Unrestricted", or the system will put it to sleep.
-The service does not keep the phone awake: when the phone sleeps deeply, Android wakes it
-only every few minutes, so a message can arrive a little late. Over VPC Link the switch is hidden for now.
+Over VPC Link the switch is hidden for now.
+
+**Camera.** The camera button next to "+" in the chat opens the phone's camera (Android asks
+for permission). The photo is scaled down and sent to the core, where only the local model
+sees it — see [Screen and camera](#screen-and-camera).
 
 **Voice mode** in the app uses Android's own speech recognition and text-to-speech (the
 WebView has no Web Speech API): the phone needs a speech recognition service — usually the
@@ -421,6 +441,11 @@ The persona writes first when there is a reason: it remembered a conversation, a
 event of its own life, or wants advice. The hours window and the threshold can be changed in
 the dossier, "Initiative" tab.
 
+For the first 10–20 minutes after the core starts, personas don't write on their own:
+initiative, daily rhythm, life and lessons stay quiet (`BOT_STARTUP_QUIET_MIN`, `0` — no
+quiet). Replies to you are not delayed. Reminders due after the start arrive on time; those
+missed while the bot was off come after the quiet period.
+
 ### Daily rhythm
 
 ```yaml
@@ -457,6 +482,28 @@ Without Ollama the state changes by simple rules.
 A persona from a made-up world (`fictional_universe`) never sees the internet. A persona from
 the real world (`real_world`) can get `external_stimuli` — news on its interests.
 
+## Screen and camera
+
+A persona can look at the computer's screen or at a camera photo. Only the local model in
+Ollama sees the picture — it never leaves the computer — and the persona answers with its
+usual model from the text description. You need a local model with vision: `gemma4:e2b`
+works (`ollama show <model>` lists `vision` among its capabilities).
+
+- **"Look at my screen"** — "what's on my screen?", "check the screen, what is this error?",
+  "посмотри на экран". It captures the main screen of the computer the core runs on, even
+  when you ask from the phone; the screenshot is scaled down to 1600 px on the long side.
+  Works on the web, in the app and in Telegram — there for the owner only. It does not work
+  in control mode (there "screen" means the agent's page) or from skins.
+- **Camera** — the camera button next to "+" in the chat: the phone's camera in the app, a
+  webcam with a preview in the browser. A picture attached with "+" is handled as before: by a
+  cloud model with vision if one is set up, otherwise by the local one.
+
+On macOS the screen can be captured only with permission. On the first request the system
+asks it for the app the core was started from (Terminal, iTerm, VS Code or the tray panel).
+Turn it on in System Settings → Privacy & Security → Screen & System Audio Recording and
+restart that app. Until the permission is granted, or while Ollama is not running, the chat
+shows what to do instead of a reply.
+
 ## Control mode
 
 The bot works with the owner's browser and apps. The mode is turned on per chat and turns
@@ -492,6 +539,12 @@ else there is no control mode: their messages go into ordinary conversation.
 | browser | "fix the browser" — show the bot's window to sign in to a site or pass a captcha |
 
 The full cheat sheet in English and Russian is on the web, in the "Start" section.
+
+**On the web chat** the mode is visible right away: the header shows a "Control" badge and
+"Browser", "Stop" and "Exit" buttons. "Browser" opens a live window of the tab the agent works
+in, next to the chat. The agent's questions come with buttons: "Yes" and "No", choices, "Drop
+the task". A task ("order a pizza") is shown as a card: the plan with checkmarks, the step log
+and the status update in place.
 
 **Confirmation.** Before an action the bot asks; the answer is "yes" or "no". Only the person
 who asked can confirm; the question lives for 5 minutes, for keys — one minute.
@@ -580,7 +633,12 @@ llm:
   webchat_mode: {deepseek: headless}   # headless | hidden | headed
 ```
 
-Each site gets one persistent chat per channel: sites treat batches of fresh chats as spam.
+Every dialog has its own persistent chat on the site (each Telegram chat and web chat of a
+persona), so the model never sees other conversations. A new chat is opened only when the old
+one is unavailable, and no more than 3 times an hour and 10 a day per site
+(`WEBCHAT_NEW_CHATS_PER_HOUR`, `WEBCHAT_NEW_CHATS_PER_DAY`): sites treat batches of fresh
+chats as spam. `/clear` and clearing the history on the web start a new chat on the site. If
+a site suspends the account, the bot recognizes it and stays away until the suspension ends.
 An answer takes 10–60 seconds, without streaming. Sites don't welcome automation.
 
 Automation — task agent steps and background work — writes to a site no more than once
@@ -625,9 +683,11 @@ descriptions are in Swagger: `/docs`.
 | GET | `/api/chat/history` | chat history |
 | POST | `/api/chat/clear` | erase the persona's memory (a copy is kept for 7 days) |
 | GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative |
+| GET | `/api/inbox` | new background messages of all personas — for the app's notification service; with `wait` it waits up to `wait` seconds for a message |
 | GET | `/api/personas/{p}/state` | the persona's state and its life feed |
 | GET | `/api/providers` | providers, keys, the active one |
 | GET, POST, DELETE | `/api/link`, `/api/link/pair`, `/api/link/devices/{id}` | phones over VPC Link: list, pairing QR code, unpairing |
+| GET | `/api/token` | `API_TOKEN` for connecting a phone by address (403 over VPC Link) |
 | GET | `/api/system/status`, `/api/logs` | the bot's browsers; the log — for the panel and developer mode |
 
 ```bash
@@ -728,7 +788,7 @@ Building the database and checks — in the Arrodes README.
 | `app/bot_instance.py` | `BotInstance` — one persona: memory, models, modules, message handling |
 | `app/telegram_bot.py` | Telegram commands and messages |
 | `app/core/` | persona, memory (ChromaDB), model router, persona life, intelligence tiers, add-ons |
-| `app/features/` | modules: reminders, to-dos, learning, initiative, rhythm, search, control mode, browser, web chats |
+| `app/features/` | modules: reminders, to-dos, learning, initiative, rhythm, search, control mode, browser, web chats, screenshots |
 | `app/api/` | FastAPI: server, settings, security, skins, room |
 | `app/link/` | VPC Link: the encrypted channel to the phone (Noise), the relay |
 | `app/personas/` | the built-in test persona (Connor) |
@@ -743,7 +803,7 @@ The path of one message — filters, memory, search, model, markers, saving — 
 
 ## Tests
 
-Tests are `scripts/test_*.py` scripts (98), without pytest; Arrodes tests are in its own
+Tests are `scripts/test_*.py` scripts (99), without pytest; Arrodes tests are in its own
 repository. Run them from the project root:
 
 ```bash
