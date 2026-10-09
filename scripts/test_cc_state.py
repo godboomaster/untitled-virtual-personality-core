@@ -162,6 +162,7 @@ def _text_keys_problems(paths, texts) -> list:
 
 def main():
     os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="cc_state_smoke_")
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     tmp = Path(tempfile.mkdtemp(prefix="cc_state_data_"))
     import app.core.router as _net_router
     _net_router.internet_available = lambda: True

@@ -1433,10 +1433,10 @@ def set_persona_color(persona: str, color: str | None) -> dict:
 
 
 def _data_roots() -> list[Path]:
-    """Папки данных, где может лежать память персоны. Их несколько: data_dir()
-    (VPC_DATA_DIR), Config.DATA_DIR (DATA_DIR — Chroma, living, self_memory,
-    календарь) и data/ в корне проекта (clear_backups) — обычно это одна и та
-    же папка, но env может развести их."""
+    """Папки данных, где может лежать память персоны: data_dir() (она же
+    Config.DATA_DIR) и data/ в корне проекта — там раньше всегда лежала
+    корзина (clear_backups). Обычно это одна папка, но запуск не из корня
+    проекта их разводит."""
     from app.core.config import Config
     roots: list[Path] = []
     for root in (data_dir(), Path(Config.DATA_DIR), Path(__file__).parent.parent.parent / "data"):

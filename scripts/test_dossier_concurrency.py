@@ -93,7 +93,8 @@ def _in_thread(fn, *a, **kw):
 def main():
     tmp = tempfile.mkdtemp(prefix="dossier_conc_")
     os.environ["DATA_DIR"] = tmp
-    os.chdir(tmp)  # ChatDossier пишет в относительный data/<context>/
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
+    os.chdir(tmp)  # на случай относительных путей — тоже во временной папке
 
     ok = 0
     failures = 0
@@ -216,7 +217,8 @@ def main():
     router4.gate.set()
     t4.join(timeout=10)
     check("после анализа профиль НЕ воскрес в памяти", d4.get_profile("w") is None)
-    on_disk = json.loads(Path("data/conc4/chat_dossier.json").read_text("utf-8"))
+    from app.core.paths import data_dir
+    on_disk = json.loads((data_dir() / "conc4" / "chat_dossier.json").read_text("utf-8"))
     check("после анализа профиль НЕ воскрес на диске", "w" not in on_disk)
     check("флаг снят и при отброшенном результате", "w" not in d4._analyzing)
 

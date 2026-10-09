@@ -19,6 +19,7 @@ def main():
     import os
     tmp = tempfile.mkdtemp(prefix="calendar_smoke_")
     os.environ["DATA_DIR"] = tmp
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     os.chdir(tmp)
 
     import importlib

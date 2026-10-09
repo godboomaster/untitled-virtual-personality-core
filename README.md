@@ -118,7 +118,7 @@ with a chosen and downloaded model. There are no default models — a human pick
 | `API_HOST`, `API_PORT` | backend address: `127.0.0.1:8000` |
 | `API_TOKEN` | API password; the web asks for it on sign-in. Empty — no password, but only for requests through `localhost` |
 | `API_CORS_ORIGINS`, `API_ALLOWED_HOSTS` | whose pages and which host names may reach the API — see [API](#api) |
-| `VPC_DATA_DIR` | folder for data and your personas, `data/` by default |
+| `VPC_DATA_DIR` | the data folder — one for everything: memory, your personas, state; `data/` by default. `DATA_DIR` is the old name of the same setting |
 | `RATE_LIMIT_DEFAULT`, `RATE_WINDOW` | Telegram message limit (6 per 3600 s) for personas with `rate_limit` |
 
 Everything else is in `.env.example`, with comments.
@@ -803,7 +803,7 @@ The path of one message — filters, memory, search, model, markers, saving — 
 
 ## Tests
 
-Tests are `scripts/test_*.py` scripts (99), without pytest; Arrodes tests are in its own
+Tests are `scripts/test_*.py` scripts (100), without pytest; Arrodes tests are in its own
 repository. Run them from the project root:
 
 ```bash

@@ -191,6 +191,7 @@ class Recorder:
 def main():
     tmp = tempfile.mkdtemp(prefix="tg_live_")
     os.environ["DATA_DIR"] = tmp
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     os.environ.setdefault("OWNER_USER_ID", "")
     os.chdir(tmp)
 

@@ -138,8 +138,18 @@ def first_ready_provider(available: dict) -> str | None:
     return (ready or list(available) or [None])[0]
 
 
+class _DataDirAttr:
+    """Config.DATA_DIR — текущая папка данных ядра (paths.data_dir(): одна на
+    всё, VPC_DATA_DIR, иначе DATA_DIR). Читается при каждом обращении, а не при
+    импорте: тест или стенд, сменивший переменную позже, не получит старую."""
+
+    def __get__(self, obj, owner=None) -> str:
+        from app.core.paths import data_dir
+        return str(data_dir())
+
+
 class Config:
-    DATA_DIR = os.getenv("DATA_DIR") or "./data"
+    DATA_DIR = _DataDirAttr()
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     STM_SIZE = int(os.getenv("STM_SIZE", "500"))
     LTM_EXTRACTION_ENABLED = os.getenv("LTM_EXTRACTION_ENABLED", "true").lower() == "true"

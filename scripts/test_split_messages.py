@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 def main():
     tmp = tempfile.mkdtemp(prefix="split_smoke_")
     os.environ["DATA_DIR"] = tmp
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
 
     import importlib
 

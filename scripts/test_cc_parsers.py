@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def main():
     os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="cc_parsers_")
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     tmp = Path(tempfile.mkdtemp(prefix="cc_parsers_data_"))
 
     ok = 0

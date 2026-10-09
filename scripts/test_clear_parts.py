@@ -8,8 +8,8 @@
      неизвестная часть и пустой список — 422;
   3. backup_info отдаёт список частей последнего снапшота.
 
-Данные и корзина — во временной папке, настоящий data/ не трогается
-(clear_backup._DATA_DIR подменяется: он не смотрит на VPC_DATA_DIR).
+Данные и корзина — во временной папке (VPC_DATA_DIR; корзине она ещё и
+подставлена явно), настоящий data/ не трогается.
 Запуск: python3 -m scripts.test_clear_parts
 """
 
@@ -95,6 +95,9 @@ def test_endpoint(base: Path):
     from app.features import web_llm as wl
 
     clear_backup._DATA_DIR = base  # корзина — во временной папке
+    # Без API_TOKEN: в личном .env он может быть задан (телефон по адресу),
+    # а запросы теста идут без заголовка
+    server_mod._api_token = ""
     bot = FakeBot()
     wiped, collected = [], []
 

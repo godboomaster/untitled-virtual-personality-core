@@ -36,6 +36,7 @@ class _FakeRouter:
 def main():
     tmpdir = tempfile.mkdtemp(prefix="lang_smoke_")
     os.environ["DATA_DIR"] = tmpdir
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     # learning_manager пишет в относительный data/ — уводим из репозитория
     os.chdir(tmpdir)
     import importlib

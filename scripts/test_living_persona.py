@@ -58,6 +58,7 @@ def main():
     # Подменяем DATA_DIR до импорта движков
     import os
     os.environ["DATA_DIR"] = tmp
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
 
     import importlib
     import app.core.config as config_mod

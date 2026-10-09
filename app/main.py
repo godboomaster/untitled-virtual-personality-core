@@ -300,7 +300,10 @@ def start_target(target: str):
     # Запускает выбранную цель. Первые 10–20 минут фон персон молчит
     # (app/core/startup_quiet): после запуска все боты не пишут разом
     from app.core import startup_quiet
+    from app.core.paths import warn_legacy_data
     startup_quiet.mark_started()
+    # Данные, оставшиеся на старом месте после объединения папок данных
+    warn_legacy_data()
     if target == "api":
         run_api()
         return

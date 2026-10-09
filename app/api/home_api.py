@@ -27,8 +27,8 @@ _PREVIEW_MAX = 160  # превью последней реплики на стр
 
 
 def _ctx_dirs(persona: str) -> list[Path]:
-    # Папка веб-контекста персоны: data_dir() и Config.DATA_DIR (Chroma,
-    # living, self_memory) обычно совпадают, но env может их развести
+    # Папка веб-контекста персоны: data_dir() — она же Config.DATA_DIR
+    # (повтор отбрасывается)
     out = []
     for root in (data_dir(), Path(Config.DATA_DIR)):
         path = safe_join(root, persona, prefix="api_")
