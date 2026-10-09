@@ -12,6 +12,7 @@ public class MainActivity extends BridgeActivity {
         // Свои плагины регистрируются до super.onCreate — там поднимается мост
         registerPlugin(BackgroundInboxPlugin.class);
         registerPlugin(NativeSpeechPlugin.class);
+        registerPlugin(OfflineLlmPlugin.class);
         super.onCreate(savedInstanceState);
         handleTap(getIntent());
     }

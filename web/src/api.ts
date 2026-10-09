@@ -335,6 +335,18 @@ export interface LinkStatus {
   this_device: string | null; // запрос пришёл с этого телефона
 }
 
+// Персона-кит для ответов без ноутбука (app/api/offline_api.py: build_kit)
+export interface OfflineKitResponse {
+  version: number;
+  persona: string;
+  name: string;
+  generated_at: number;
+  system: string; // целиком — для облачной модели
+  parts: { character: string; rules: string; style: string; language: string };
+  facts: string[];
+  history: { role: 'user' | 'assistant'; text: string; ts: number }[];
+}
+
 export const api = {
   health: (init?: RequestInit) => request<{ status: string }>('/api/health', init),
 
@@ -346,6 +358,20 @@ export const api = {
     request<{ ok: boolean }>(`/api/link/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   // API_TOKEN ядра для входа по адресу и токену; null — в .env не задан
   getServerToken: () => request<{ token: string | null }>('/api/token'),
+
+  // Ответы без ноутбука (приложение на телефоне, web/src/offline): персона-кит,
+  // ключи API-провайдеров персоны, приём офлайн-переписки
+  getOfflineKit: (persona: string) =>
+    request<OfflineKitResponse>(
+      `/api/personas/${encodeURIComponent(persona)}/offline/kit?chat_id=${encodeURIComponent(WEB_CHAT_ID)}&user_id=${encodeURIComponent(WEB_USER_ID)}`,
+    ),
+  getOfflineProviders: (persona: string) =>
+    request<{ providers: unknown[] }>(`/api/personas/${encodeURIComponent(persona)}/offline/providers`),
+  offlineImport: (persona: string, messages: { id: string; role: 'user' | 'assistant'; text: string; ts: number; source?: string }[]) =>
+    request<{ imported: number; skipped: number }>(`/api/personas/${encodeURIComponent(persona)}/offline/import`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: WEB_USER_ID, chat_id: WEB_CHAT_ID, messages }),
+    }),
 
   getPersonas: () => request<ApiPersona[]>('/api/personas'),
 

@@ -24,6 +24,7 @@ import type { AppTheme } from './useAppTheme';
 import { BACK_MENU, useBackHandler } from './backStack';
 import { syncSystemBars } from './nativeBars';
 import { listenBgNotificationTaps, syncBgInbox } from './bgInbox';
+import { useOfflineSync } from './offline/state';
 
 export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings';
 
@@ -46,6 +47,8 @@ export default function App() {
   // Единый поллер фоновых сообщений персон (напоминания, инициативы) —
   // работает на всех экранах, накапливает непрочитанные
   useInboxPolling(apiOnline, personas);
+  // Телефон: ноутбук снова на связи — переписка без него уходит на него
+  useOfflineSync();
   // Присутствие (гейт фона) репортит экран чата — там известно, ЧЕЙ чат
   // открыт; ключ отметки — (персона, чат), см. presence.ts
   const { unread } = useInbox();

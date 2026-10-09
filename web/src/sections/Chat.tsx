@@ -31,6 +31,17 @@ import BrowserPanel from '../components/BrowserPanel';
 import VoiceChat from '../components/VoiceChat';
 import CameraCapture from '../components/CameraCapture';
 import { downscalePhoto } from '../cameraImage';
+import { OFFLINE_SYNCED_EVENT, useOfflineMode } from '../offline/state';
+import {
+  addOfflineMessage,
+  offlineMessages,
+  removeOfflineMessages,
+  unansweredTail,
+  updateOfflineMessage,
+  useOfflineMessages,
+} from '../offline/store';
+import { getKit, refreshKit } from '../offline/kit';
+import { answerOffline, OfflineUnavailable } from '../offline/engine';
 import Icon from '../components/icons';
 import type { IconName } from '../components/icons';
 import SkinFrame from '../components/SkinFrame';
@@ -305,6 +316,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   } | null>(null);
 
   const persona = personas.find((p) => p.id === selectedId) ?? personas[0];
+  // Без ноутбука (приложение на телефоне, web/src/offline): отвечает облачная
+  // модель по ключу или Gemma на телефоне; переписка хранится на телефоне до
+  // возврата к ноутбуку. Черновик — ответ модели телефона по мере печати
+  const offlineMode = useOfflineMode();
+  const offlineStore = useOfflineMessages(persona.id);
+  const [offlineDraft, setOfflineDraft] = useState<Record<string, { num: number; text: string } | null>>({});
+  const [offlineNote, setOfflineNote] = useState<string | null>(null);
   const sideData = sideDataState?.persona === persona.id ? sideDataState : null;
   const apiFacts = apiFactsState?.persona === persona.id ? apiFactsState.facts : null;
   const apiPersonaConfig = apiPersonaConfigState?.persona === persona.id ? apiPersonaConfigState.config : null;
@@ -779,11 +797,20 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   const overlay = usePersonaOverlay(persona.id, () => void alertDialog({ message: t('skin.errQuota') }));
   // История = (STM бэкенда | моковый диалог) + отправленные в этой сессии реплики
   // + фоновые сообщения из inbox-стора (напоминания, инициативы)
+  const kitHistory: ChatMessage[] | null = offlineMode && !historyByPersona[persona.id]
+    ? (getKit(persona.id)?.history ?? []).map((h, i) => ({
+        id: -1 - i,
+        role: h.role === 'user' ? ('user' as const) : ('bot' as const),
+        text: h.text,
+        time: new Date(h.ts * 1000).toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' }),
+        ts: h.ts,
+      }))
+    : null;
   const baseMessages = apiOnline
-    ? (historyByPersona[persona.id] ?? [])
+    ? (historyByPersona[persona.id] ?? kitHistory ?? [])
     : (chatByPersona[persona.id] ?? []);
   // История персоны ещё не пришла с бэкенда — в ленте индикатор загрузки
-  const historyLoading = apiOnline && !historyByPersona[persona.id];
+  const historyLoading = apiOnline && !historyByPersona[persona.id] && !offlineMode;
   // Дедупликация: инициатива/напоминание лежит и в STM (история), и в inbox —
   // показываем inbox-копию, только если её текста ещё нет в истории
   const baseTexts = new Set(baseMessages.map((m) => m.text));
@@ -809,7 +836,23 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // при простом склеивании инициатива из inbox встала бы ПОСЛЕ свежего
   // сообщения пользователя — сортируем по реальному времени (стабильная
   // сортировка: при равном/отсутствующем ts порядок источников сохраняется)
-  const messages = [...baseMessages, ...sentVisible, ...inboxChat].sort(
+  // Переписка без ноутбука (ещё не ушедшая на него) и черновик ответа модели телефона
+  const fmtTime = (ts: number) =>
+    new Date(ts * 1000).toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' });
+  const offlineChat: ChatMessage[] = offlineStore.map((m) => ({
+    id: m.num,
+    role: m.role === 'user' ? ('user' as const) : ('bot' as const),
+    text: m.text,
+    time: fmtTime(m.ts),
+    ts: m.ts,
+    offline: m.source,
+    ...(m.role === 'user' ? { status: m.source === 'queued' ? ('queued' as const) : ('read' as const) } : {}),
+  }));
+  const draftMsg = offlineDraft[persona.id];
+  if (draftMsg) {
+    offlineChat.push({ id: draftMsg.num, role: 'bot', text: draftMsg.text || '…', time: fmtTime(Date.now() / 1000), ts: Date.now() / 1000, offline: 'local' });
+  }
+  const messages = [...baseMessages, ...sentVisible, ...inboxChat, ...offlineChat].sort(
     (a, b) => (a.ts ?? 0) - (b.ts ?? 0),
   );
   // ── Окно видимых сообщений и скролл ──
@@ -1074,8 +1117,43 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // пузырь + отправка на бэкенд со стримом ответа. fromSkin — из скина:
   // бэкенд не пустит такую реплику в режим управления (скин мог отправить
   // её сам)
+  // Без ноутбука: реплика сохраняется на телефоне, отвечает облако или
+  // модель телефона; ни того ни другого — ждёт связи в очереди
+  const sendOffline = async (text: string, image: string | null) => {
+    const pid = persona.id;
+    if (image) setOfflineNote(t('offline.noImages'));
+    if (!text) return;
+    const history = messages.map((m) => ({ role: m.role === 'user' ? ('user' as const) : ('assistant' as const), text: m.text }));
+    const userMsg = addOfflineMessage(pid, { role: 'user', text, source: 'queued' });
+    setWaitingByPersona((prev) => ({ ...prev, [pid]: true }));
+    const num = Date.now() * 10 + 7;
+    try {
+      const res = await answerOffline(pid, text, history, (chunk) => {
+        setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: (prev[pid]?.text ?? '') + chunk } }));
+      });
+      updateOfflineMessage(pid, userMsg.id, { source: res.source });
+      addOfflineMessage(pid, { role: 'assistant', text: res.text, source: res.source, provider: res.provider });
+      setOfflineNote(null);
+    } catch (e) {
+      let note = t('offline.failed', { err: e instanceof Error ? e.message : String(e) });
+      if (e instanceof OfflineUnavailable) {
+        if (e.reason === 'no_kit') note = t('offline.noKit');
+        else if (e.reason === 'model_broken') note = t('offline.modelBroken');
+        else note = t(e.cloud === 'failed' ? 'offline.cloudFailed' : 'offline.noRoute');
+      }
+      setOfflineNote(note);
+    } finally {
+      setOfflineDraft((prev) => ({ ...prev, [pid]: null }));
+      setWaitingByPersona((prev) => ({ ...prev, [pid]: false }));
+    }
+  };
+
   const submitMessage = (text: string, image: string | null, fromSkin = false, camera = false) => {
     if (!text && !image) return;
+    if (offlineMode) {
+      void sendOffline(text, image);
+      return;
+    }
     // Человек ответил (кнопкой или текстом) — прежние кнопки ответа снимаем;
     // новые, если бот снова спросит, придут с ответом
     setAnswerOptions(persona.id, null);
@@ -1096,6 +1174,43 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     pushMessage(text, image, 'sent');
     startGeneration(pid, personaName, text, quoted?.text, image, fromSkin, camera);
   };
+
+  // Связь вернулась — пометки режима без ноутбука больше не к месту
+  useEffect(() => {
+    if (!offlineMode) setOfflineNote(null);
+  }, [offlineMode]);
+
+  // Ноутбук на связи — освежить кит персоны (и ключи) для ответов без него:
+  // при открытии чата и после каждого ответа
+  useEffect(() => {
+    if (!isNativeApp() || offlineMode || !apiOnline || waiting) return;
+    void refreshKit(persona.id);
+  }, [persona.id, offlineMode, apiOnline, waiting]);
+
+  // Ноутбук вернулся: реплики, оставшиеся без ответа, — обычной отправкой
+  // (на них ответит полная персона). Сначала остальная переписка уходит в
+  // историю (syncOffline), поэтому — только когда в очереди одни они
+  useEffect(() => {
+    if (offlineMode || !apiOnline || waiting) return;
+    const list = offlineMessages(persona.id);
+    const tail = unansweredTail(list);
+    if (!tail.length || tail.length !== list.length) return;
+    removeOfflineMessages(persona.id, tail.map((m) => m.id));
+    submitMessage(tail.map((m) => m.text).join('\n\n'), null);
+    // submitMessage — замыкание текущего рендера, перезапуск по нему не нужен
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offlineMode, apiOnline, waiting, persona.id, offlineStore.length]);
+
+  // Переписка без ноутбука ушла на него — лента из истории ядра
+  useEffect(() => {
+    const onSynced = (e: Event) => {
+      const synced = (e as CustomEvent<string[]>).detail ?? [];
+      if (synced.includes(persona.id)) void reloadHistory(persona.id, true);
+    };
+    window.addEventListener(OFFLINE_SYNCED_EVENT, onSynced);
+    return () => window.removeEventListener(OFFLINE_SYNCED_EVENT, onSynced);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persona.id]);
 
   // Полная очистка диалога из скина — с тем же подтверждением, что в досье:
   // кнопка скина (или его скрипт) не стирает всё одним нажатием
@@ -2073,6 +2188,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           </div>
         </div>
 
+        {(offlineMode || offlineNote) && (
+          <div className="chat-offline-banner" role="status">
+            {offlineMode && <span>{t('offline.banner')}</span>}
+            {offlineNote && <span className="chat-offline-note">{offlineNote}</span>}
+          </div>
+        )}
+
         <div
           className="chat-messages"
           ref={listRef}
@@ -2181,6 +2303,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                   )}
                   <div className="message-time">
                     {m.time}
+                    {m.offline && (
+                      <span className={`msg-offline msg-offline--${m.offline}`} title={t('offline.tagTitle')}>
+                        {t(`offline.tag.${m.offline}`)}
+                      </span>
+                    )}
                     {/* Доставка/прочтение: наши — очередь → ✓ → ✓✓ (бот ответил);
                         бота — ✓✓, когда чат виден (фокус/наш ответ) */}
                     {m.role === 'user' && m.status === 'queued' && (

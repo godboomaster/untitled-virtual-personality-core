@@ -5,7 +5,8 @@ import { getLinkConfig, pair, parsePairingUri, refusalKey, setLinkConfig } from 
 import QrScanner from '../link/QrScanner';
 import { syncSystemBars } from '../nativeBars';
 import { stopBgInbox } from '../bgInbox';
-import { refetchPersonas } from '../apiData';
+import { hasOfflinePersonas, refetchPersonas, seedOfflinePersonas } from '../apiData';
+import { setOfflineBoot } from '../offline/state';
 import { useI18n } from '../i18n';
 import { getInitialTheme } from '../useAppTheme';
 import { DetroitBackground } from '../effects/DetroitBackground';
@@ -466,6 +467,25 @@ export default function BootGate({ children }: { children: ReactNode }) {
             </div>
             {auth === 'wrong' && <p className="boot-hint">{t('boot.authWrong')}</p>}
           </form>
+        )}
+
+        {NATIVE && !server && offline && hasOfflinePersonas() && (
+          <div className="boot-actions">
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => {
+                // Без ноутбука: персоны из снимка, отвечают облако или модель телефона
+                if (seedOfflinePersonas()) {
+                  setOfflineBoot(true);
+                  setOpen(true);
+                }
+              }}
+            >
+              {t('offline.bootButton')}
+            </button>
+            <p className="boot-hint">{t('offline.bootHint')}</p>
+          </div>
         )}
 
         {NATIVE && !server && (offline || auth || denied) && (

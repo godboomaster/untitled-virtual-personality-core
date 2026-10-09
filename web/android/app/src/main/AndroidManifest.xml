@@ -50,11 +50,16 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+        <!-- Gemma на телефоне (LiteRT-LM) на видеоядре; нет библиотек — на процессоре -->
+        <uses-native-library android:name="libvndksupport.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
     </application>
 
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Без ноутбука: модель телефона качается только по Wi-Fi (OfflineLlmPlugin) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Фоновые уведомления (BackgroundInboxService): служба переднего плана,
          уведомления (Android 13+ спрашивает), процессор не засыпает между опросами -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
