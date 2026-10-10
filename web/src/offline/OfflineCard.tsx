@@ -3,6 +3,9 @@ import { useI18n } from '../i18n';
 import { confirmDialog } from '../dialogStore';
 import { OfflineLlm, pluginCode } from './plugin';
 import type { ModelStatus } from './plugin';
+import { onRemindersChange } from './reminders';
+import { runOfflineCheck } from './check';
+import type { CheckStep } from './check';
 
 /* «Настройки» → «Без ноутбука» (приложение на телефоне): как персона
    отвечает без ноутбука и модель на телефоне — Gemma 4 E2B (≈2,6 ГБ):
@@ -15,10 +18,27 @@ export default function OfflineCard() {
   const [status, setStatus] = useState<ModelStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [metered, setMetered] = useState(false);
+  const [alarms, setAlarms] = useState<{ pending: number; exact: boolean } | null>(null);
+  const [check, setCheck] = useState<CheckStep[] | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const runCheck = async () => {
+    setChecking(true);
+    setCheck([]);
+    try {
+      await runOfflineCheck(setCheck);
+    } finally {
+      setChecking(false);
+      read();
+    }
+  };
 
   const read = () => {
     OfflineLlm.modelStatus()
       .then(setStatus)
+      .catch(() => {});
+    OfflineLlm.reminderStatus()
+      .then(setAlarms)
       .catch(() => {});
   };
 
@@ -34,8 +54,10 @@ export default function OfflineCard() {
         read();
       }),
     ];
+    const offReminders = onRemindersChange(read);
     return () => {
       window.clearInterval(timer);
+      offReminders();
       handles.forEach((h) => void h.then((x) => x.remove()));
     };
   }, []);
@@ -114,7 +136,46 @@ export default function OfflineCard() {
         {lowSpace && <p className="field-hint">{t('offline.model.space', { free: gb(status.freeBytes) })}</p>}
         {error && <p className="field-hint">{t('offline.model.error', { err: error })}</p>}
       </div>
+      {alarms && (
+        <div className="field">
+          <label className="field-label">{t('offline.reminders.label')}</label>
+          <div className="offline-model-row">
+            <span>{alarms.pending ? t('offline.reminders.status', { n: alarms.pending }) : t('offline.reminders.none')}</span>
+          </div>
+          {!alarms.exact && (
+            <div className="offline-model-row">
+              <p className="field-hint">{t('offline.reminders.inexact')}</p>
+              <button type="button" className="btn btn--ghost btn--chip" onClick={() => void OfflineLlm.openExactAlarmSettings()}>
+                {t('offline.reminders.allow')}
+              </button>
+            </div>
+          )}
+          <p className="field-hint">{t('offline.reminders.hint')}</p>
+        </div>
+      )}
       <p className="field-hint">{t('offline.card.keys')}</p>
+      <div className="field">
+        <div className="offline-model-row">
+          <button type="button" className="btn btn--ghost" disabled={checking} onClick={() => void runCheck()}>
+            {checking ? t('offline.check.buttonRunning') : t('offline.check.button')}
+          </button>
+        </div>
+        {check && check.length > 0 && (
+          <ul className="offline-check">
+            {check.map((s) => (
+              <li key={s.key} className={`offline-check-item offline-check-item--${s.state}`}>
+                <span className="offline-check-mark" aria-hidden="true">
+                  {s.state === 'ok' ? '✓' : s.state === 'fail' ? '✗' : s.state === 'warn' ? '!' : '…'}
+                </span>
+                <span>
+                  <b>{t(`offline.check.step.${s.key}`)}:</b> {t(s.text, s.vars)}
+                  {s.detail && <span className="offline-check-detail">{s.detail}</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

@@ -1218,6 +1218,13 @@ def _choice_target_id(stored_ids: List[str], active: List[dict], reply: str) -> 
     return None
 
 
+def reminder_ref(r: dict, at: Optional[float] = None) -> str:
+    """Метка одного срабатывания: «<id>@<время>». Её несёт сообщение
+    напоминания в inbox, и она же — у будильника телефона (upcoming_for_chat):
+    по ней телефон понимает, что это напоминание уже показал сам."""
+    return f"{r.get('id')}@{int(r.get('trigger_at', 0) if at is None else at)}"
+
+
 def is_paused(r: dict) -> bool:
     return bool(r.get("paused"))
 
@@ -1422,6 +1429,36 @@ class ReminderManager:
         logger.info(f"[Reminder] Добавлено: id={reminder['id']} chat={chat_id} task='{task}' "
                     + (format_schedule(schedule) if schedule else f"через {delay_seconds:.0f}с"))
         return reminder
+
+    def upcoming_for_chat(self, chat_id: str, horizon_days: float = 14,
+                          limit: int = 60) -> List[dict]:
+        """Срабатывания напоминаний чата на horizon_days вперёд — для будильника
+        телефона без ноутбука (app/api/offline_api.py). Повторяющиеся
+        раскрываются по расписанию здесь, по часам пользователя (timeutil):
+        метки срабатываний совпадут с теми, что ядро пришлёт само.
+        → [{"id", "ref", "task", "at", "recurring"}] по времени."""
+        now = time.time()
+        until = now + horizon_days * 86400
+        out: List[dict] = []
+        with self._lock:
+            items = [dict(r) for r in self._reminders
+                     if r.get("chat_id") == str(chat_id)
+                     and not r.get("fired") and not is_paused(r)]
+        for r in items:
+            at = float(r.get("trigger_at") or 0)
+            schedule = r.get("recurrence")
+            while at <= until and len(out) < limit * 2:
+                # Просроченное (ядро было выключено) телефону не нужно: его
+                # догонит само ядро, когда проснётся
+                if at > now:
+                    out.append({"id": r.get("id"), "ref": reminder_ref(r, at),
+                                "task": r.get("task"), "at": at,
+                                "recurring": bool(schedule)})
+                if not schedule:
+                    break
+                at = _next_occurrence(schedule, at)
+        out.sort(key=lambda x: x["at"])
+        return out[:limit]
 
     def get_active(self, chat_id: str) -> List[dict]:
         # Не сработавшие напоминания чата, включая поставленные на паузу
@@ -2006,7 +2043,13 @@ class ReminderManager:
             entry = res.entry
 
         try:
-            ok = await self._sender.send_message(chat_id, text, topic_id=topic_id)
+            if getattr(self._sender, "supports_refs", False):
+                # Метка срабатывания: телефон, сам напомнивший без ноутбука
+                # (upcoming_for_chat), это сообщение второй раз не покажет
+                ok = await self._sender.send_message(chat_id, text, topic_id=topic_id,
+                                                     ref=reminder_ref(reminder))
+            else:
+                ok = await self._sender.send_message(chat_id, text, topic_id=topic_id)
         except Exception as e:
             logger.error(f"[Reminder] Ошибка отправки в {chat_id}: {e}")
             ok = False

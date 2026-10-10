@@ -1,7 +1,9 @@
 import { useEffect, useReducer } from 'react';
 import { api, isNativeApp } from '../api';
-import { refetchPersonas, useCoreHealth } from '../apiData';
+import { refetchPersonas, useApiPersonas, useCoreHealth } from '../apiData';
 import { offlineMessages, personasWithOffline, removeOfflineMessages, unansweredTail } from './store';
+import { pushAlarms, syncLocalReminders } from './reminders';
+import { refreshAllKits } from './kit';
 
 /* Режим «без ноутбука» в приложении на телефоне и возврат к ноутбуку.
 
@@ -66,15 +68,24 @@ export function syncOffline(): Promise<string[]> {
   return syncing;
 }
 
-/** App: ядро на связи — выйти из запуска без ноутбука и отдать ему переписку. */
+/** App: ядро на связи — выйти из запуска без ноутбука и отдать ему переписку
+ * и поставленные без него напоминания. Запуск — будильник телефона заново
+ * по сохранённым китам (на случай, если его сбросила система). */
 export function useOfflineSync() {
   const health = useCoreHealth();
+  // Список персон пришёл позже связи — киты всех персон тогда же
+  const personaCount = useApiPersonas()?.length ?? 0;
+  useEffect(() => {
+    if (isNativeApp()) void pushAlarms();
+  }, []);
   useEffect(() => {
     if (!isNativeApp() || health !== 'ok') return;
     if (offlineBoot) {
       setOfflineBoot(false);
       void refetchPersonas();
     }
-    void syncOffline();
-  }, [health]);
+    void syncOffline()
+      .then(() => syncLocalReminders())
+      .then(() => refreshAllKits());
+  }, [health, personaCount]);
 }

@@ -336,6 +336,20 @@ export interface LinkStatus {
 }
 
 // Персона-кит для ответов без ноутбука (app/api/offline_api.py: build_kit)
+export interface OfflineHistoryLine {
+  role: 'user' | 'assistant';
+  text: string;
+  ts: number;
+}
+
+// Память персоны для телефона: вся переписка чата и факты (кит версии 3)
+export interface OfflineMemoryResponse {
+  persona: string;
+  generated_at: number;
+  history: OfflineHistoryLine[];
+  facts: string[];
+}
+
 export interface OfflineKitResponse {
   version: number;
   persona: string;
@@ -344,7 +358,23 @@ export interface OfflineKitResponse {
   system: string; // целиком — для облачной модели
   parts: { character: string; rules: string; style: string; language: string };
   facts: string[];
-  history: { role: 'user' | 'assistant'; text: string; ts: number }[];
+  history: OfflineHistoryLine[];
+  // Версия 3: сообщения старше на ноутбуке стёрты (0 — переписки нет); строка
+  // досье и личная память персоны — как в ответе ядра
+  history_first_ts?: number;
+  history_total?: number; // сообщений в памяти для телефона (GET …/offline/memory)
+  dossier?: string;
+  self_memory?: string;
+  // Город для погоды (её телефон берёт у Open-Meteo сам); null — выключено
+  env: { city: string; lat: number; lon: number; codes: Record<string, string> } | null;
+  // Срабатывания напоминаний чата на две недели — будильником телефона
+  reminders: { id: string; ref: string; task: string | null; at: number; recurring: boolean }[];
+  reminders_enabled: boolean;
+  // те же правила, что в промпте ядра (self_memory, recall* — с версии 3)
+  rules: { web: string; env: string; self_memory?: string; recall_head?: string; recall?: string };
+  notes: Record<'set' | 'ask_time' | 'past' | 'recurring' | 'scheduled' | 'extract', string> &
+    Partial<Record<'not_understood' | 'declined', string>>;
+  search_gate: { address_words: string[]; smalltalk: string[]; self_patterns: string[] };
 }
 
 export const api = {
@@ -365,8 +395,17 @@ export const api = {
     request<OfflineKitResponse>(
       `/api/personas/${encodeURIComponent(persona)}/offline/kit?chat_id=${encodeURIComponent(WEB_CHAT_ID)}&user_id=${encodeURIComponent(WEB_USER_ID)}`,
     ),
+  getOfflineMemory: (persona: string) =>
+    request<OfflineMemoryResponse>(
+      `/api/personas/${encodeURIComponent(persona)}/offline/memory?chat_id=${encodeURIComponent(WEB_CHAT_ID)}&user_id=${encodeURIComponent(WEB_USER_ID)}`,
+    ),
   getOfflineProviders: (persona: string) =>
     request<{ providers: unknown[] }>(`/api/personas/${encodeURIComponent(persona)}/offline/providers`),
+  offlineReminders: (persona: string, reminders: { id: string; task: string; at: number }[]) =>
+    request<{ created: Record<string, string>; past: string[]; enabled: boolean }>(
+      `/api/personas/${encodeURIComponent(persona)}/offline/reminders`,
+      { method: 'POST', body: JSON.stringify({ user_id: WEB_USER_ID, chat_id: WEB_CHAT_ID, reminders }) },
+    ),
   offlineImport: (persona: string, messages: { id: string; role: 'user' | 'assistant'; text: string; ts: number; source?: string }[]) =>
     request<{ imported: number; skipped: number }>(`/api/personas/${encodeURIComponent(persona)}/offline/import`, {
       method: 'POST',
@@ -1327,6 +1366,8 @@ export interface InboxMessage {
   text: string;
   kind: string; // message | document
   ts: number;
+  // Метка срабатывания напоминания («id@время») — будильник телефона её знает
+  ref?: string;
 }
 
 export interface TodoEntry {

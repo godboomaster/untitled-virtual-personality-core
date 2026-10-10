@@ -32,6 +32,21 @@
         <!-- Фоновые сообщения персон, пока приложение закрыто: опрос ядра и
              уведомления. specialUse, а не dataSync: у dataSync на Android 15
              лимит 6 часов в сутки, а служба держит связь весь день -->
+        <!-- Будильник напоминания: интент только от самого приложения (PendingIntent) -->
+        <receiver
+            android:name=".ReminderReceiver"
+            android:exported="false" />
+        <!-- Перезагрузка/обновление — будильники заново; события только системные -->
+        <receiver
+            android:name=".ReminderBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".BackgroundInboxService"
             android:exported="false"
@@ -60,6 +75,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Без ноутбука: модель телефона качается только по Wi-Fi (OfflineLlmPlugin) -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Напоминания без ноутбука — будильником телефона (ReminderAlarms): точно ко
+         времени, и заново после перезагрузки. USE_EXACT_ALARM — Android 13+,
+         SCHEDULE_EXACT_ALARM — 12 (там выдаётся по умолчанию) -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Фоновые уведомления (BackgroundInboxService): служба переднего плана,
          уведомления (Android 13+ спрашивает), процессор не засыпает между опросами -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

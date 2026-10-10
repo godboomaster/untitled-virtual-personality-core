@@ -98,7 +98,7 @@ public class BackgroundInboxService extends Service {
     static final String EXTRA_PERSONA = "io.vpcore.app.PERSONA";
 
     private static final String CHANNEL_LINK = "vpc_link";
-    private static final String CHANNEL_MESSAGES = "vpc_messages";
+    static final String CHANNEL_MESSAGES = "vpc_messages";
     private static final int ONGOING_ID = 1;
     // Метки уведомлений сообщений: по ним их снимают, когда приложение на экране
     private static final String TAG_MESSAGE = "vpc-msg:";
@@ -455,7 +455,14 @@ public class BackgroundInboxService extends Service {
                 backoffMs = POLL_MS;
                 for (int i = 0; i < reply.messages.length(); i++) {
                     JSONObject m = reply.messages.optJSONObject(i);
-                    if (m != null && !appVisible) showMessage(m);
+                    if (m == null) continue;
+                    // Напоминание с меткой: телефон уже показал его сам, без
+                    // ноутбука, — второй раз не уведомляем; иначе будильник
+                    // телефона (ReminderAlarms) больше не нужен
+                    String ref = m.optString("ref", "");
+                    boolean shownByPhone = ReminderAlarms.wasFired(this, ref);
+                    ReminderAlarms.markDelivered(this, ref);
+                    if (!appVisible && !shownByPhone) showMessage(m);
                 }
                 // Курсор — после показа: если процесс умрёт посередине, ответ
                 // придёт ещё раз (повтор уведомления лучше пропажи)

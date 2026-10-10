@@ -24,6 +24,21 @@ export interface ModelStatus {
   freeBytes: number;
 }
 
+export interface WebResult {
+  title: string;
+  body: string;
+  href: string;
+}
+
+// Будильник напоминания (ReminderAlarms.java): ref — «id@время» ядра или «local:…»
+export interface AlarmItem {
+  ref: string;
+  persona: string;
+  name: string;
+  text: string; // текст уведомления
+  at: number; // unix-секунды
+}
+
 interface OfflineLlmPlugin {
   setProviders(opts: { persona: string; providers: unknown[] }): Promise<{ count: number }>;
   providersInfo(opts: { persona: string }): Promise<{ names: string[] }>;
@@ -47,6 +62,12 @@ interface OfflineLlmPlugin {
   }): Promise<{ text: string; backend: string }>;
   stopLocal(): Promise<void>;
   unloadModel(): Promise<void>;
+  webSearch(opts: { query: string; max?: number; engine?: 'ddg' | 'bing' }): Promise<{ results: WebResult[] }>;
+  syncReminders(opts: { items: AlarmItem[]; probes: string[] }): Promise<{ armed: number; exact: boolean }>;
+  reminderStatus(): Promise<{ pending: number; exact: boolean }>;
+  markDelivered(opts: { refs: string[] }): Promise<void>;
+  firedReminders(): Promise<{ items: (AlarmItem & { firedAt: number })[] }>;
+  openExactAlarmSettings(): Promise<void>;
   addListener(event: 'modelProgress', cb: (d: { bytes: number; total: number }) => void): Promise<PluginListenerHandle>;
   addListener(event: 'modelDone', cb: () => void): Promise<PluginListenerHandle>;
   addListener(event: 'modelError', cb: (d: { message: string }) => void): Promise<PluginListenerHandle>;

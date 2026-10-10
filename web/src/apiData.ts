@@ -83,6 +83,16 @@ export function seedOfflinePersonas(): boolean {
   }
 }
 
+/** Персоны из снимка (id, имя, описание) — для ответов без ноутбука. */
+export function offlinePersonaList(): { id: string; name: string; description: string }[] {
+  try {
+    const list = JSON.parse(localStorage.getItem(PERSONAS_SNAPSHOT_KEY) || '[]') as ApiPersona[];
+    return Array.isArray(list) ? list.map((p) => ({ id: p.id, name: p.name, description: p.description || '' })) : [];
+  } catch {
+    return [];
+  }
+}
+
 export function hasOfflinePersonas(): boolean {
   try {
     return !!localStorage.getItem(PERSONAS_SNAPSHOT_KEY);

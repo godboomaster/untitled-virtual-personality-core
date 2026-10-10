@@ -50,7 +50,9 @@ export interface ChatMessage {
   read?: boolean; // сообщение бота прочитано пользователем (чат видим/в фокусе)
   // Без ноутбука (web/src/offline): кто ответил — облако с телефона, модель
   // телефона; у реплики пользователя queued — ждёт связи
-  offline?: 'cloud' | 'local' | 'queued';
+  offline?: 'cloud' | 'local' | 'queued' | 'reminder';
+  // Напоминание, поставленное этой репликой без ноутбука (карточка с отменой)
+  offlineReminder?: { id: string; task: string; at: number };
 }
 
 export interface LtmFact {

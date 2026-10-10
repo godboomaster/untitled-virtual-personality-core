@@ -85,6 +85,7 @@ class FakeBot:
             {"role": "assistant", "content": "Здравствуйте.", "timestamp": 12.0},
             {"role": "assistant", "content": "", "timestamp": 13.0},
         ]
+        self.stm = stm
         bot = self
 
         class Ltm:
@@ -93,14 +94,31 @@ class FakeBot:
                 return ["Имя: Хэнк", "  ", "Работа: полиция"]
 
         class Stm:
-            def get_last(self, n, chat_id=None):
-                bot.calls.append(("tail", n, chat_id))
-                return list(stm)
+            def get_messages(self, chat_id=None):
+                bot.calls.append(("stm", chat_id))
+                return list(bot.stm)
 
         def add_message(role, content, user_id="default", chat_id=None, user_name=None, timestamp=None):
             bot.calls.append(("add", role, content, user_id, chat_id, user_name, bool(bot.turns), timestamp))
 
         self.memory = SimpleNamespace(ltm=Ltm(), stm=Stm(), add_message=add_message)
+
+        class Rm:
+            def upcoming_for_chat(self, key):
+                bot.calls.append(("upcoming", key))
+                return [{"id": "r1", "ref": "r1@2000000000", "task": "позвонить", "at": 2e9,
+                         "recurring": False}]
+
+            def add_reminder(self, chat_id, user_name, task, delay, user_id=None):
+                bot.calls.append(("remind", chat_id, user_name, task, round(delay), user_id))
+                return {"id": f"c{len(bot.calls)}"}
+
+        self.reminder_manager = Rm()
+        self.self_memory = SimpleNamespace(get_context_block=lambda: "[PERSONAL MEMORY Коннор]\n- [вчера] расследовал дело")
+
+    def _get_dossier_context_line(self, chat_id, user_id):
+        self.calls.append(("dossier", chat_id, user_id))
+        return "Known about the user (chat analysis): interests: рыбалка"
 
     @staticmethod
     def stm_key(chat_id, user_id):
@@ -138,9 +156,65 @@ def test_kit():
           parts["character"].startswith("Ты Коннор") and parts["rules"] == offline_api.OFFLINE_RULES
           and "Do not end your reply with a question" in parts["style"] and parts["language"] in system)
     check("факты — с учётом приватности этого чата", ("facts", "web_user", "web_user") in bot.calls)
+    from app.core.persona import (ENV_RULE, SELF_MEMORY_RULE, STM_RELEVANT_HEAD, STM_RELEVANT_RULE,
+                                  WEB_SOURCE_PRIORITY)
+    check("кит версии 3", kit["version"] == 3)
+    check("напоминания чата — из ReminderManager (ключ чата)",
+          kit["reminders"][0]["ref"] == "r1@2000000000" and ("upcoming", "web_user") in bot.calls
+          and kit["reminders_enabled"] is True)
+    check("правила выдачи, окружения, личной памяти и найденных реплик — те же, что в промпте ядра",
+          kit["rules"] == {"web": WEB_SOURCE_PRIORITY, "env": ENV_RULE, "self_memory": SELF_MEMORY_RULE,
+                           "recall_head": STM_RELEVANT_HEAD, "recall": STM_RELEVANT_RULE})
+    check("строка досье — как в ответе ядра (чат и собеседник)",
+          kit["dossier"].startswith("Known about the user") and ("dossier", "web_user", "web_user") in bot.calls)
+    check("личная память персоны — блок ядра", kit["self_memory"].startswith("[PERSONAL MEMORY"))
+    notes = kit["notes"]
+    check("заметки о напоминаниях — без экранирования {{ }}, с подстановками",
+          "{now}" in notes["extract"] and "{{" not in notes["extract"] and '{"task"' in notes["extract"]
+          and "{when}" in notes["set"] and "{list}" in notes["scheduled"])
+    check("заметки «не понял время» и «передумал» — с задачей и запретом подтверждать",
+          all("{task}" in notes[k] and "Do NOT" in notes[k] for k in ("not_understood", "declined", "ask_time", "past")))
+    gate = kit["search_gate"]
+    check("гейт поиска: связки, обращения и шаблоны вопросов о персоне",
+          "привет" in gate["smalltalk"] and "эй" in gate["address_words"] and len(gate["self_patterns"]) >= 5)
+    check("без местоположения — города для погоды нет", kit["env"] is None)
+    from app.features import env_context
+    orig_load = env_context.load_location
+    env_context.load_location = lambda: {"mode": "manual", "city": "Новосибирск", "lat": 55.0, "lon": 82.9}
+    try:
+        kit2 = offline_api.build_kit(bot, "connor", "web_user", "web_user")
+    finally:
+        env_context.load_location = orig_load
+    env = kit2["env"] or {}
+    check("с местоположением — город, координаты и описания погодных кодов",
+          (env.get("city"), env.get("lat"), env.get("lon")) == ("Новосибирск", 55.0, 82.9)
+          and env.get("codes", {}).get("0") == "clear")
+    bot.reminder_manager, rm = None, bot.reminder_manager
+    kit3 = offline_api.build_kit(bot, "connor", "web_user", "web_user")
+    bot.reminder_manager = rm
+    check("напоминания у персоны выключены — пустой список и флаг",
+          kit3["reminders"] == [] and kit3["reminders_enabled"] is False)
     check("хвост переписки: только user/assistant с текстом, по порядку",
           [(m["role"], m["text"]) for m in kit["history"]] == [("user", "привет"), ("assistant", "Здравствуйте.")])
-    check(f"хвост — последние {offline_api.HISTORY_TAIL}", ("tail", offline_api.HISTORY_TAIL, "web_user") in bot.calls)
+    check("переписка — этого чата", ("stm", "web_user") in bot.calls)
+    check("граница истории — время первого сообщения в STM", kit["history_first_ts"] == 10.0)
+    check("число сообщений для памяти телефона — только user/assistant с текстом", kit["history_total"] == 2)
+    bot.stm = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}" + "я" * (3000 if i == 5 else 0),
+                "timestamp": 100.0 + i} for i in range(45)]
+    kit4 = offline_api.build_kit(bot, "connor", "web_user", "web_user")
+    check(f"в ките — последние {offline_api.HISTORY_TAIL}",
+          [m["text"] for m in kit4["history"]] == [f"m{i}" for i in range(15, 45)] and kit4["history_first_ts"] == 100.0
+          and kit4["history_total"] == 45)
+    mem = offline_api.build_memory(bot, "connor", "web_user", "web_user")
+    check("память для телефона — вся переписка, по порядку",
+          [m["text"][:3].rstrip("я") for m in mem["history"]] == [f"m{i}" for i in range(45)])
+    check(f"…длинное сообщение — до {offline_api.MEMORY_TEXT} символов",
+          len(mem["history"][5]["text"]) == offline_api.MEMORY_TEXT)
+    check("…и факты без пустых", mem["facts"] == ["Имя: Хэнк", "Работа: полиция"] and mem["persona"] == "connor")
+    bot.stm = []
+    kit5 = offline_api.build_kit(bot, "connor", "web_user", "web_user")
+    check("пустая переписка — граница 0, хвост пуст", kit5["history_first_ts"] == 0.0 and kit5["history"] == [])
+    bot.stm = list(FakeBot().stm)
     flat = repr(kit)
     check("в ките нет ключей", "sk-" not in flat and "gsk" not in flat)
 
@@ -229,8 +303,84 @@ def test_stm_timestamp():
     check("метка последнего сообщения не уехала в прошлое", last["c"] >= now - 1)
 
 
+def test_reminders():
+    section("E. Напоминания: срабатывания, метка, приём с телефона")
+    import asyncio
+    from app.features.reminder_manager import ReminderManager, reminder_ref
+    from app.api import offline_api
+    from app.api.inbox import WebInboxSender, inbox_take
+
+    rm = ReminderManager(context="offline_rm")
+    now = time.time()
+    one = rm.add_reminder("web_user", "Хэнк", "купить хлеб", 3600)
+    rm.add_reminder("web_user", "Хэнк", "старое", 3600)["trigger_at"] = now - 60
+    rm.add_reminder("other_chat", "Хэнк", "чужой чат", 3600)
+    daily = rm.add_reminder("web_user", "Хэнк", "таблетки", 0,
+                            schedule={"type": "daily", "hour": 9, "minute": 0, "weekday": None})
+    paused = rm.add_reminder("web_user", "Хэнк", "на паузе", 7200)
+    paused["paused"] = True
+    up = rm.upcoming_for_chat("web_user")
+    tasks = [u["task"] for u in up]
+    check("разовое — в списке, со своей меткой",
+          any(u["ref"] == reminder_ref(one) and u["at"] == one["trigger_at"] for u in up))
+    check("прошедшее, чужой чат и на паузе — не в списке",
+          "старое" not in tasks and "чужой чат" not in tasks and "на паузе" not in tasks)
+    pills = [u for u in up if u["task"] == "таблетки"]
+    check(f"ежедневное раскрыто на две недели ({len(pills)} раз), метки разные",
+          14 <= len(pills) <= 15 and len({u["ref"] for u in pills}) == len(pills)
+          and all(u["recurring"] for u in pills))
+    check("первое срабатывание ежедневного — его trigger_at",
+          pills and pills[0]["ref"] == reminder_ref(daily) and pills[0]["at"] == daily["trigger_at"])
+    check("по времени", [u["at"] for u in up] == sorted(u["at"] for u in up))
+
+    sent = []
+
+    class Capture:
+        supports_refs = True
+
+        async def send_message(self, chat_id, text, *, topic_id=None, parse_mode=None, ref=None):
+            sent.append((chat_id, text, ref))
+            return True
+    rm.set_sender(Capture())
+    asyncio.run(rm._fire(one))
+    check("срабатывание уходит с меткой «id@время»",
+          sent and sent[0][2] == f"{one['id']}@{int(one['trigger_at'])}")
+
+    class Plain:
+        async def send_message(self, chat_id, text, *, topic_id=None, parse_mode=None):
+            sent.append((chat_id, text, "plain"))
+            return True
+    rm.set_sender(Plain())
+    asyncio.run(rm._fire(one))
+    check("транспорт без меток (Telegram) — как раньше, без ref", sent[-1][2] == "plain")
+
+    asyncio.run(WebInboxSender("connor").send_message("ref_chat", "напоминаю: хлеб", ref="r9@123"))
+    asyncio.run(WebInboxSender("connor").send_message("ref_chat", "просто сообщение"))
+    got, _ = inbox_take("ref_chat", "test-client")
+    check("в inbox метка — у напоминания, у обычного сообщения её нет",
+          got[0].get("ref") == "r9@123" and "ref" not in got[1])
+
+    bot = SimpleNamespace(context="offline_rm", reminder_manager=rm)
+    later = time.time() + 7200
+    items = [{"id": "L1", "task": "забрать посылку", "at": later},
+             {"id": "L2", "task": "уже было", "at": time.time() - 10}]
+    res = offline_api.import_reminders(bot, "web_user", "web_user", items, "Хэнк")
+    made = res["created"].get("L1")
+    created = next((r for r in rm._reminders if r.get("id") == made), None)
+    check("будущее — создано в ядре на то же время",
+          created is not None and abs(created["trigger_at"] - later) < 2 and created["task"] == "забрать посылку")
+    check("прошедшее — не создано (телефон напомнил сам)", res["past"] == ["L2"])
+    n = len(rm._reminders)
+    again = offline_api.import_reminders(bot, "web_user", "web_user", items, "Хэнк")
+    check("повтор той же пачки — прежний ответ, новых нет",
+          again["created"] == {"L1": made} and again["past"] == ["L2"] and len(rm._reminders) == n)
+    off = offline_api.import_reminders(SimpleNamespace(context="x", reminder_manager=None),
+                                       "web_user", "web_user", items)
+    check("напоминания у персоны выключены — enabled: false", off == {"created": {}, "past": [], "enabled": False})
+
+
 def test_routes():
-    section("D. Маршруты /offline/*")
+    section("F. Маршруты /offline/*")
     try:
         from fastapi.testclient import TestClient
     except ImportError as e:
@@ -249,6 +399,10 @@ def test_routes():
         c = TestClient(server_mod.app, base_url="http://127.0.0.1")
         r = c.get("/api/personas/connor/offline/kit")
         check("кит — 200, с текстом персоны", r.status_code == 200 and r.json()["name"] == "Коннор")
+        r = c.get("/api/personas/connor/offline/memory")
+        check("память — 200, переписка и факты",
+              r.status_code == 200 and [m["text"] for m in r.json()["history"]] == ["привет", "Здравствуйте."]
+              and r.json()["facts"] == ["Имя: Хэнк", "Работа: полиция"])
         r = c.get("/api/personas/connor/offline/providers")
         check("ключи — 200 и Cache-Control: no-store",
               r.status_code == 200 and r.headers.get("cache-control") == "no-store"
@@ -258,6 +412,14 @@ def test_routes():
         check("приём — 200, одно сообщение", r.status_code == 200 and r.json() == {"imported": 1, "skipped": 0})
         r = c.post("/api/personas/connor/offline/import", json=body)
         check("повтор — пропущен", r.status_code == 200 and r.json() == {"imported": 0, "skipped": 1})
+        rbody = {"reminders": [{"id": "rem1", "task": "полить цветы", "at": time.time() + 600}]}
+        r = c.post("/api/personas/connor/offline/reminders", json=rbody)
+        check("напоминания с телефона — 200, создано в ядре",
+              r.status_code == 200 and list(r.json()["created"]) == ["rem1"]
+              and any(c_[0] == "remind" and c_[3] == "полить цветы" for c_ in bot.calls))
+        r = c.post("/api/personas/connor/offline/reminders",
+                   json={"reminders": [{"id": "bad id", "task": "t", "at": 1}]})
+        check("напоминание с кривым id — 422", r.status_code == 422)
         bad = [
             ({"messages": [{"id": "x", "role": "system", "text": "t", "ts": 1}]}, "роль system"),
             ({"messages": [{"id": "x y", "role": "user", "text": "t", "ts": 1}]}, "id с пробелом"),
@@ -270,6 +432,8 @@ def test_routes():
         server_mod._api_token = "s3cr3t"
         r = c.get("/api/personas/connor/offline/providers")
         check("с API_TOKEN без токена — 401 (ключи не отдаются)", r.status_code == 401)
+        r = c.get("/api/personas/connor/offline/memory")
+        check("…и память — 401", r.status_code == 401)
     finally:
         server_mod._get_bot, server_mod._api_token = orig_get, orig_token
 
@@ -279,6 +443,7 @@ def main():
     test_providers()
     test_import()
     test_stm_timestamp()
+    test_reminders()
     test_routes()
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0

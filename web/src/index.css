@@ -12062,11 +12062,68 @@ img.art-thumb {
   opacity: 0.75;
 }
 
+.msg-reminder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  font-size: 12px;
+}
+
+.msg-reminder-off {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
 .offline-model-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+.offline-check {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.offline-check-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.offline-check-mark {
+  flex: 0 0 1.2em;
+  font-family: var(--font-mono);
+  text-align: center;
+}
+
+.offline-check-item--ok .offline-check-mark {
+  color: var(--accent);
+}
+
+.offline-check-item--fail .offline-check-mark,
+.offline-check-item--warn .offline-check-mark {
+  color: var(--danger);
+}
+
+.offline-check-detail {
+  display: block;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .offline-progress {

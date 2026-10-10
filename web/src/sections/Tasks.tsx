@@ -10,6 +10,9 @@ import Select from '../components/Select';
 import { alertDialog } from '../dialogStore';
 import { parseReminderWhen } from '../reminderWhen';
 import { fmtRecurrence, formFromRecurrence, recurrenceFromForm, REPEAT_KINDS } from '../reminderRepeat';
+import { useOfflineMode } from '../offline/state';
+import { addLocalReminder } from '../offline/reminders';
+import PhoneReminders from '../offline/PhoneReminders';
 
 // «ЧЧ:ММ» с ведущими нулями — для предзаполнения полей формы и сравнения дат
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -58,6 +61,8 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
   const { lang, t } = useI18n();
   const { personas, remindersByPersona, todosByPersona } = useMockData();
   const apiOnline = useApiOnline();
+  // Телефон без ноутбука: напоминания — будильника телефона, дела недоступны
+  const offlineMode = useOfflineMode();
 
   // Варианты повтора напоминания и дни недели — из словаря текущей локали
   const repeatOptions = t('tasks.repeatOptions').split('|');
@@ -237,6 +242,16 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
         void alertDialog({ message: t(key, vars) });
         return;
       }
+      if (offlineMode) {
+        // Без ноутбука — разовое на будильник телефона; при связи уйдёт ядру
+        if (repeatOptions.indexOf(reminderRepeat) > 0) {
+          void alertDialog({ message: t('offline.tasks.noRepeat') });
+          return;
+        }
+        addLocalReminder(persona.id, text, Math.round(when.at.getTime() / 1000));
+        setModal(null);
+        return;
+      }
       // Повтор из формы → расписание сервера (время сервер берёт из срока
       // напоминания — по часовому поясу пользователя, а не браузера)
       const kindIdx = repeatOptions.indexOf(reminderRepeat);
@@ -372,7 +387,8 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
             </h2>
             <button className="btn btn--primary" onClick={() => openReminderModal()}>{t('tasks.addReminder')}</button>
           </div>
-          <ul className="memory-list">
+          {offlineMode && <PhoneReminders persona={persona.id} />}
+          <ul className="memory-list" hidden={offlineMode}>
             {reminders.map((r, i) => (
               <li key={r.id} className="reminder-item stagger-item" style={{ animationDelay: `${i * 50}ms` }}>
                 <div className="reminder-main">
@@ -403,8 +419,11 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
               {t('tasks.todo')}
               <InfoButton helpKey="tasks.todo" />
             </h2>
-            <button className="btn btn--primary" onClick={() => openTodoModal()}>{t('tasks.addReminder')}</button>
+            {!offlineMode && (
+              <button className="btn btn--primary" onClick={() => openTodoModal()}>{t('tasks.addReminder')}</button>
+            )}
           </div>
+          {offlineMode && <p className="field-hint">{t('offline.tasks.todoOff')}</p>}
           <ul className="memory-list">
             {todos.map((todo, i) => (
               <li key={todo.id} className="todo-item stagger-item" style={{ animationDelay: `${i * 50}ms` }}>
@@ -417,7 +436,7 @@ export default function Tasks({ personaId: fixedId, embedded }: TasksProps) {
               </li>
             ))}
           </ul>
-          <div className="todo-progress">
+          <div className="todo-progress" hidden={offlineMode}>
             {t('tasks.progress', { done: todos.filter((t) => t.done).length, total: todos.length })}
             <InfoButton helpKey="tasks.todoProgress" />
           </div>

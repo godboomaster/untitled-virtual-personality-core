@@ -20,10 +20,13 @@ import httpx
 
 from app.core import timeutil
 from app.core.atomic_io import atomic_write_text, load_json_safe
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = Path(__file__).parent.parent.parent / "data" / "env_location.json"
+def _config_path() -> Path:
+    # Общая папка данных (VPC_DATA_DIR), а не data/ рядом с кодом
+    return data_dir() / "env_location.json"
 _CACHE_TTL = 30 * 60  # погода обновляется не чаще раза в полчаса
 _cache: dict = {"key": None, "ts": 0.0, "line": None}
 # Файл общий на процесс (не per-context) — сериализуем чтение/запись, иначе
@@ -53,13 +56,13 @@ _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 def load_location() -> dict:
     # Текущий конфиг местоположения. По умолчанию — выключено.
     with _LOCATION_LOCK:
-        data = load_json_safe(_CONFIG_PATH, default={"mode": "off"}, label="Env")
+        data = load_json_safe(_config_path(), default={"mode": "off"}, label="Env")
     return data if isinstance(data, dict) else {"mode": "off"}
 
 
 def save_location(cfg: dict) -> dict:
     with _LOCATION_LOCK:
-        atomic_write_text(_CONFIG_PATH, json.dumps(cfg, ensure_ascii=False, indent=2))
+        atomic_write_text(_config_path(), json.dumps(cfg, ensure_ascii=False, indent=2))
     _cache.update(key=None, ts=0.0, line=None)  # сброс кеша — конфиг изменился
     logger.info(f"[Env] Местоположение сохранено: {cfg}")
     return cfg

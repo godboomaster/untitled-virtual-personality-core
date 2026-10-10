@@ -15,6 +15,7 @@ export interface OfflineMsg {
   ts: number; // unix-секунды
   source: OfflineSource;
   provider?: string;
+  reminder?: { id: string; task: string; at: number }; // поставлено этой репликой
 }
 
 const PREFIX = 'vpc-offline-msgs:';
@@ -55,7 +56,7 @@ export function offlineMessages(persona: string): OfflineMsg[] {
 
 export function addOfflineMessage(
   persona: string,
-  msg: Pick<OfflineMsg, 'role' | 'text' | 'source'> & { provider?: string },
+  msg: Pick<OfflineMsg, 'role' | 'text' | 'source'> & Pick<Partial<OfflineMsg>, 'provider' | 'reminder'>,
 ): OfflineMsg {
   const full: OfflineMsg = {
     ...msg,

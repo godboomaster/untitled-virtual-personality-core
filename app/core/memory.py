@@ -311,10 +311,12 @@ class ShortTermMemory:
             entry["sender_id"] = user_id
         if user_name:
             entry["user_name"] = user_name
+        # Буфер — до записи в базу: подгрузка чата из базы после записи
+        # принесла бы это сообщение, и оно легло бы в буфер дважды
+        buf = self._get_buffer(filter_id)
         saved = self._save_to_db(role, content, filter_id, user_name,
                                  sender_id=user_id if chat_id is not None else None,
                                  at=timestamp)
-        buf = self._get_buffer(filter_id)
         if timestamp is None:
             buf.append(entry)
             self._stamp_last_message(filter_id, entry["timestamp"])

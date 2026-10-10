@@ -47,6 +47,20 @@ class OfflineImportRequest(BaseModel):
     messages: list[OfflineMessage] = Field(..., max_length=200)
 
 
+class OfflineReminder(BaseModel):
+    # Напоминание, поставленное на телефоне без ноутбука (offline_api.import_reminders)
+    id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    task: str = Field("", max_length=500)
+    at: float
+
+
+class OfflineRemindersRequest(BaseModel):
+    user_id: str = "web_user"
+    chat_id: Optional[str] = "web_user"
+    user_name: Optional[str] = None
+    reminders: list[OfflineReminder] = Field(..., max_length=50)
+
+
 class ChatResponse(BaseModel):
     reply: str
     extra_messages: list[str] = Field(default_factory=list)

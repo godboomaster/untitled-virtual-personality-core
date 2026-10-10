@@ -1,12 +1,15 @@
 package io.vpcore.app;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
+import android.net.Uri;
 import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.provider.Settings;
 import android.util.Base64;
 import android.util.Log;
 
@@ -79,6 +82,12 @@ import javax.crypto.spec.GCMParameterSpec;
  * localChat({requestId, system, history, text, maxTokens?, temperature?}) →
  * {text, backend}, stopLocal(), unloadModel(); события modelProgress
  * {bytes, total}, modelDone, modelError {message}, localToken {requestId, text}.
+ *
+ * Поиск: webSearch({query, max?, engine?: "ddg" | "bing"}) → {results:
+ * [{title, body, href}]} — страница выдачи без ключа, скрытым WebView. Напоминания будильником
+ * телефона (ReminderAlarms): syncReminders({items, probes}) → {armed, exact},
+ * reminderStatus() → {pending, exact}, markDelivered({refs}),
+ * firedReminders() → {items}, openExactAlarmSettings().
  */
 @CapacitorPlugin(name = "OfflineLlm")
 public class OfflineLlmPlugin extends Plugin {
@@ -87,6 +96,8 @@ public class OfflineLlmPlugin extends Plugin {
     private static final String PREFS = "vpc_offline";
     private static final String KS_ALIAS = "vpc_offline_secrets";
     private static final String PROV_PREFIX = "prov:";
+    // Видеоядро на этом телефоне не годится (не загрузилось или не считает) — сразу процессор
+    private static final String KEY_GPU_BAD = "gpu_bad";
 
     static final String MODEL_URL =
             "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm";
@@ -99,6 +110,9 @@ public class OfflineLlmPlugin extends Plugin {
     // Ответ модели телефона дольше — прерывается; после «стоп» ждём не дольше
     private static final long LOCAL_TIMEOUT_MS = 4 * 60_000L;
     private static final long CANCEL_GRACE_MS = 5_000L;
+    // На видеоядре за столько нет первого слова — видеоядро зависло (на
+    // эмуляторе без OpenCL оно уходит в медленную эмуляцию): дальше процессор
+    private static final long GPU_FIRST_TOKEN_MS = 60_000L;
 
     private final ExecutorService io = Executors.newCachedThreadPool();
     // Модель — строго по одному: загрузка, генерация, выгрузка не пересекаются
@@ -240,8 +254,10 @@ public class OfflineLlmPlugin extends Plugin {
                         ret.put("model", p.optString("model"));
                         call.resolve(ret);
                         return;
-                    } catch (UnknownHostException | ConnectException | NoRouteToHostException e) {
-                        // Сети нет (или провайдер недоступен) — следующий провайдер
+                    } catch (UnknownHostException | ConnectException | NoRouteToHostException
+                             | SocketTimeoutException e) {
+                        // Сети нет (или провайдер недоступен) — другие ключи того же
+                        // провайдера не помогут, следующий провайдер
                         lastError = p.optString("name") + ": нет соединения";
                         break;
                     } catch (Exception e) {
@@ -260,7 +276,7 @@ public class OfflineLlmPlugin extends Plugin {
         HttpURLConnection c = (HttpURLConnection) new URL(baseUrl + "/chat/completions").openConnection();
         try {
             c.setConnectTimeout(10_000);
-            c.setReadTimeout(90_000);
+            c.setReadTimeout(60_000);
             c.setRequestMethod("POST");
             c.setDoOutput(true);
             c.setRequestProperty("Content-Type", "application/json");
@@ -448,6 +464,7 @@ public class OfflineLlmPlugin extends Plugin {
         cancelDownload = true;
         llm.execute(() -> {
             closeEngine();
+            prefs().edit().remove(KEY_GPU_BAD).apply(); // новая модель — попробовать видеоядро снова
             //noinspection ResultOfMethodCallIgnored
             modelFile().delete();
             //noinspection ResultOfMethodCallIgnored
@@ -492,15 +509,18 @@ public class OfflineLlmPlugin extends Plugin {
             throw new IOException("model_broken");
         }
         String cache = getContext().getCacheDir().getAbsolutePath();
-        try {
-            Engine e = new Engine(new EngineConfig(f.getAbsolutePath(), new Backend.GPU(), null, null,
-                    MAX_CONTEXT_TOKENS, null, cache));
-            e.initialize();
-            engine = e;
-            engineBackend = "gpu";
-            return e;
-        } catch (Throwable t) {
-            Log.i(TAG, "видеоядро не подошло, загружаю на процессоре: " + t);
+        if (!prefs().getBoolean(KEY_GPU_BAD, false) && !isEmulator()) {
+            try {
+                Engine e = new Engine(new EngineConfig(f.getAbsolutePath(), new Backend.GPU(), null, null,
+                        MAX_CONTEXT_TOKENS, null, cache));
+                e.initialize();
+                engine = e;
+                engineBackend = "gpu";
+                return e;
+            } catch (Throwable t) {
+                Log.i(TAG, "видеоядро не подошло, загружаю на процессоре: " + t);
+                prefs().edit().putBoolean(KEY_GPU_BAD, true).apply();
+            }
         }
         Engine e = new Engine(new EngineConfig(f.getAbsolutePath(), new Backend.CPU(), null, null,
                 MAX_CONTEXT_TOKENS, null, cache));
@@ -508,6 +528,14 @@ public class OfflineLlmPlugin extends Plugin {
         engine = e;
         engineBackend = "cpu";
         return e;
+    }
+
+    /** Эмулятор: видеоядро там программное — модель на нём не считает. */
+    private static boolean isEmulator() {
+        String hw = Build.HARDWARE == null ? "" : Build.HARDWARE;
+        String fp = Build.FINGERPRINT == null ? "" : Build.FINGERPRINT;
+        return hw.contains("ranchu") || hw.contains("goldfish") || fp.startsWith("generic")
+                || fp.contains("emulator") || fp.contains("sdk_gphone");
     }
 
     private void scheduleIdleUnload() {
@@ -524,6 +552,122 @@ public class OfflineLlmPlugin extends Plugin {
         return sb.toString();
     }
 
+    /** Один ответ модели (в потоке llm): поток слов — событиями localToken.
+     * Ошибка без единого слова — исключение; прерванный ответ — то, что успело. */
+    private String generate(Engine e, String requestId, String system, JSArray history, String text,
+                            int maxTokens, double temperature) throws Exception {
+        final boolean gpu = "gpu".equals(engineBackend);
+        boolean stalled = false;
+        List<Message> initial = new ArrayList<>();
+        for (int i = 0; i < history.length(); i++) {
+            JSONObject m = history.optJSONObject(i);
+            if (m == null) continue;
+            String body = m.optString("content", "");
+            if (body.isEmpty()) continue;
+            initial.add("user".equals(m.optString("role"))
+                    ? Message.Companion.user(body) : Message.Companion.model(body));
+        }
+        Conversation conv = e.createConversation(new ConversationConfig(
+                Contents.Companion.of(system), initial, Collections.emptyList(),
+                new SamplerConfig(40, 0.95, temperature, 0), false, Collections.emptyList(),
+                Collections.emptyMap(), null, false, maxTokens, new ThinkingConfig(false)));
+        current = conv;
+        try {
+            final StringBuilder out = new StringBuilder();
+            final Object done = new Object();
+            final Throwable[] failure = new Throwable[1];
+            final boolean[] finished = new boolean[1];
+            conv.sendMessageAsync(text, new MessageCallback() {
+                @Override
+                public void onMessage(Message message) {
+                    String chunk = textOf(message);
+                    if (chunk.isEmpty()) return;
+                    out.append(chunk);
+                    JSObject ev = new JSObject();
+                    ev.put("requestId", requestId);
+                    ev.put("text", chunk);
+                    notifyListeners("localToken", ev);
+                }
+
+                @Override
+                public void onDone() {
+                    synchronized (done) {
+                        finished[0] = true;
+                        done.notifyAll();
+                    }
+                }
+
+                @Override
+                public void onError(Throwable t) {
+                    synchronized (done) {
+                        failure[0] = t;
+                        finished[0] = true;
+                        done.notifyAll();
+                    }
+                }
+            }, Collections.emptyMap(), null, null, null, null, null, null);
+            // Обычно конец приходит в onDone/onError; страховка — если после
+            // прерывания или по таймауту библиотека промолчит, не висеть
+            final long started = System.currentTimeMillis();
+            long stalledAt = 0;
+            synchronized (done) {
+                while (!finished[0]) {
+                    done.wait(500);
+                    long now = System.currentTimeMillis();
+                    if (gpu && stalledAt == 0 && cancelledAt == 0 && out.length() == 0
+                            && now - started > GPU_FIRST_TOKEN_MS) {
+                        stalledAt = now;
+                        // Прерывание ждёт, пока видеоядро досчитает шаг, — не здесь
+                        inBackground(conv::cancelProcess);
+                    }
+                    if (stalledAt > 0 && now - stalledAt > CANCEL_GRACE_MS) break;
+                    if (now - started > LOCAL_TIMEOUT_MS && cancelledAt == 0) {
+                        cancelledAt = now;
+                        try {
+                            conv.cancelProcess();
+                        } catch (Exception ignored) {
+                            // уже закончил
+                        }
+                    }
+                    if (cancelledAt > 0 && now - cancelledAt > CANCEL_GRACE_MS) break;
+                }
+            }
+            if (stalledAt > 0 && out.length() == 0) {
+                stalled = true;
+                throw new IOException("gpu_stalled");
+            }
+            if (failure[0] != null && out.length() == 0) throw new IOException(String.valueOf(failure[0].getMessage()));
+            return out.toString();
+        } finally {
+            current = null;
+            if (stalled) {
+                inBackground(conv::close); // зависший диалог закрывается, когда отпустит
+            } else {
+                try {
+                    conv.close();
+                } catch (Exception ignored) {
+                    // уже закрыт
+                }
+            }
+        }
+    }
+
+    /** Действие с моделью, которое может надолго заблокироваться (прерывание
+     * или закрытие на зависшем видеоядре), — в отдельном потоке. */
+    private static void inBackground(ThrowingRunnable r) {
+        new Thread(() -> {
+            try {
+                r.run();
+            } catch (Throwable ignored) {
+                // уже закрыт/закончил
+            }
+        }, "vpc-llm-release").start();
+    }
+
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
     @PluginMethod
     public void localChat(PluginCall call) {
         final String requestId = call.getString("requestId", "");
@@ -534,78 +678,29 @@ public class OfflineLlmPlugin extends Plugin {
         final double temperature = call.getDouble("temperature", 0.8);
         llm.execute(() -> {
             if (idleUnload != null) idleUnload.cancel(false);
-            Conversation conv = null;
+            cancelledAt = 0;
             try {
-                Engine e = ensureEngine();
-                List<Message> initial = new ArrayList<>();
-                for (int i = 0; i < history.length(); i++) {
-                    JSONObject m = history.optJSONObject(i);
-                    if (m == null) continue;
-                    String body = m.optString("content", "");
-                    if (body.isEmpty()) continue;
-                    initial.add("user".equals(m.optString("role"))
-                            ? Message.Companion.user(body) : Message.Companion.model(body));
+                String out;
+                try {
+                    out = generate(ensureEngine(), requestId, system, history, text, maxTokens, temperature);
+                } catch (Throwable first) {
+                    String m = String.valueOf(first.getMessage());
+                    if (!"gpu".equals(engineBackend) || cancelledAt > 0
+                            || "model_missing".equals(m) || "model_broken".equals(m)) throw first;
+                    // На видеоядре модель загрузилась, но не считает (нет OpenCL
+                    // и т. п.): дальше — процессор, и телефон это запоминает
+                    Log.w(TAG, "видеоядро не считает, перехожу на процессор: " + first);
+                    prefs().edit().putBoolean(KEY_GPU_BAD, true).apply();
+                    // Модель на видеоядре может висеть в его шаге — закрыть её в фоне,
+                    // не дожидаясь, и загрузить на процессоре
+                    final Engine stuck = engine;
+                    engine = null;
+                    engineBackend = null;
+                    if (stuck != null) inBackground(stuck::close);
+                    out = generate(ensureEngine(), requestId, system, history, text, maxTokens, temperature);
                 }
-                conv = e.createConversation(new ConversationConfig(
-                        Contents.Companion.of(system), initial, Collections.emptyList(),
-                        new SamplerConfig(40, 0.95, temperature, 0), false, Collections.emptyList(),
-                        Collections.emptyMap(), null, false, maxTokens, new ThinkingConfig(false)));
-                current = conv;
-                cancelledAt = 0;
-                final StringBuilder out = new StringBuilder();
-                final Object done = new Object();
-                final Throwable[] failure = new Throwable[1];
-                final boolean[] finished = new boolean[1];
-                conv.sendMessageAsync(text, new MessageCallback() {
-                    @Override
-                    public void onMessage(Message message) {
-                        String chunk = textOf(message);
-                        if (chunk.isEmpty()) return;
-                        out.append(chunk);
-                        JSObject ev = new JSObject();
-                        ev.put("requestId", requestId);
-                        ev.put("text", chunk);
-                        notifyListeners("localToken", ev);
-                    }
-
-                    @Override
-                    public void onDone() {
-                        synchronized (done) {
-                            finished[0] = true;
-                            done.notifyAll();
-                        }
-                    }
-
-                    @Override
-                    public void onError(Throwable t) {
-                        synchronized (done) {
-                            failure[0] = t;
-                            finished[0] = true;
-                            done.notifyAll();
-                        }
-                    }
-                }, Collections.emptyMap(), null, null, null, null, null, null);
-                // Обычно конец приходит в onDone/onError; страховка — если после
-                // прерывания или по таймауту библиотека промолчит, не висеть
-                final long started = System.currentTimeMillis();
-                synchronized (done) {
-                    while (!finished[0]) {
-                        done.wait(500);
-                        long now = System.currentTimeMillis();
-                        if (now - started > LOCAL_TIMEOUT_MS && cancelledAt == 0) {
-                            cancelledAt = now;
-                            try {
-                                conv.cancelProcess();
-                            } catch (Exception ignored) {
-                                // уже закончил
-                            }
-                        }
-                        if (cancelledAt > 0 && now - cancelledAt > CANCEL_GRACE_MS) break;
-                    }
-                }
-                if (failure[0] != null && out.length() == 0) throw new IOException(String.valueOf(failure[0].getMessage()));
                 JSObject ret = new JSObject();
-                ret.put("text", out.toString());
+                ret.put("text", out);
                 ret.put("backend", engineBackend);
                 call.resolve(ret);
             } catch (Throwable t) {
@@ -613,14 +708,6 @@ public class OfflineLlmPlugin extends Plugin {
                 call.reject("Модель на телефоне не ответила: " + msg,
                         "model_missing".equals(msg) || "model_broken".equals(msg) ? msg : "failed");
             } finally {
-                current = null;
-                if (conv != null) {
-                    try {
-                        conv.close();
-                    } catch (Exception ignored) {
-                        // уже закрыт
-                    }
-                }
                 scheduleIdleUnload();
             }
         });
@@ -646,6 +733,183 @@ public class OfflineLlmPlugin extends Plugin {
             closeEngine();
             call.resolve();
         });
+    }
+
+    // ── Поиск в интернете без ноутбука: DuckDuckGo ──────────────────────
+
+    private static final String DDG_LITE = "https://lite.duckduckgo.com/lite/";
+
+
+    // Результаты со страницы выдачи (по поисковику): заголовок, ссылка, описание
+    private static final String DDG_EXTRACT = "(function(){var out=[];"
+            + "var links=document.querySelectorAll('a.result-link');"
+            + "var snips=document.querySelectorAll('td.result-snippet');"
+            + "for(var i=0;i<links.length;i++){out.push({title:links[i].textContent.trim(),href:links[i].href,"
+            + "body:(snips[i]?snips[i].textContent:'').replace(/\\s+/g,' ').trim()});}"
+            + "return JSON.stringify({items:out,blocked:/anomaly/i.test(document.documentElement.innerHTML)});})()";
+    // Bing: ссылка результата — переход через bing.com/ck/a?…&u=a1<base64url адреса>
+    private static final String BING_EXTRACT = "(function(){var out=[];"
+            + "function real(h){try{var u=new URL(h);var p=u.searchParams.get('u');"
+            + "if(u.hostname.endsWith('bing.com')&&p&&p.indexOf('a1')===0){"
+            + "return decodeURIComponent(escape(atob(p.slice(2).replace(/-/g,'+').replace(/_/g,'/'))));}}catch(e){}return h;}"
+            + "document.querySelectorAll('li.b_algo').forEach(function(li){"
+            + "var h=li.querySelector('h2');var a=li.querySelector('h2 a')||(h&&h.closest('a'))||li.querySelector('a');"
+            + "if(!a)return;"
+            + "var p=li.querySelector('.b_caption p, p.b_lineclamp2, p.b_lineclamp3, p.b_lineclamp4, .b_algoSlug, p');"
+            + "out.push({title:(h||a).textContent.trim(),href:real(a.href),"
+            + "body:(p?p.textContent:'').replace(/\\s+/g,' ').trim()});});"
+            + "return JSON.stringify({items:out,blocked:!!document.querySelector('#b_captcha, .captcha')});})()";
+
+    /**
+     * Поиск — скрытым WebView (движок Chromium): запрос из Java-клиента
+     * DuckDuckGo принимает за бота (HTTP 202), а браузерный движок — нет.
+     * У этого WebView нет мостов в приложение: он только открывает страницу
+     * выдачи и отдаёт из неё ссылки и описания.
+     */
+    @PluginMethod
+    public void webSearch(PluginCall call) {
+        final String query = call.getString("query", "").trim();
+        final int max = Math.max(1, Math.min(10, call.getInt("max", 5)));
+        final boolean bing = "bing".equals(call.getString("engine", "ddg"));
+        if (query.isEmpty()) {
+            call.reject("query");
+            return;
+        }
+        final String url;
+        try {
+            String q = java.net.URLEncoder.encode(query, "UTF-8");
+            url = bing ? "https://www.bing.com/search?q=" + q : DDG_LITE + "?q=" + q;
+        } catch (java.io.UnsupportedEncodingException e) {
+            call.reject("query");
+            return;
+        }
+        final String extract = bing ? BING_EXTRACT : DDG_EXTRACT;
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+            final android.webkit.WebView web = new android.webkit.WebView(getContext());
+            final boolean[] done = new boolean[1];
+            final android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+            final Runnable finish = () -> {
+                web.stopLoading();
+                web.destroy();
+            };
+            final Runnable timeout = () -> {
+                if (done[0]) return;
+                done[0] = true;
+                finish.run();
+                call.reject("Поиск не ответил вовремя", "timeout");
+            };
+            android.webkit.WebSettings ws = web.getSettings();
+            ws.setJavaScriptEnabled(true); // только для чтения результатов со страницы
+            ws.setBlockNetworkImage(true);
+            ws.setAllowFileAccess(false);
+            ws.setAllowContentAccess(false);
+            web.setWebViewClient(new android.webkit.WebViewClient() {
+                @Override
+                public void onPageFinished(android.webkit.WebView view, String loaded) {
+                    if (done[0]) return;
+                    view.evaluateJavascript(extract, value -> {
+                        if (done[0]) return;
+                        done[0] = true;
+                        main.removeCallbacks(timeout);
+                        finish.run();
+                        try {
+                            // evaluateJavascript отдаёт строку как JSON-литерал
+                            Object raw = new org.json.JSONTokener(value).nextValue();
+                            JSONObject page = new JSONObject(String.valueOf(raw));
+                            JSONArray items = page.optJSONArray("items");
+                            if ((items == null || items.length() == 0) && page.optBoolean("blocked")) {
+                                call.reject("Поисковик принял запрос за бота", "blocked");
+                                return;
+                            }
+                            JSArray results = new JSArray();
+                            for (int i = 0; items != null && i < items.length() && results.length() < max; i++) {
+                                JSONObject it = items.optJSONObject(i);
+                                if (it == null || it.optString("href").contains("duckduckgo.com/y.js")) continue;
+                                JSObject r = new JSObject();
+                                r.put("title", it.optString("title"));
+                                r.put("body", it.optString("body"));
+                                r.put("href", it.optString("href"));
+                                results.put(r);
+                            }
+                            JSObject ret = new JSObject();
+                            ret.put("results", results);
+                            call.resolve(ret);
+                        } catch (Exception e) {
+                            call.reject("Поиск не удался: " + e.getMessage(), "failed");
+                        }
+                    });
+                }
+
+                @Override
+                public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest req,
+                                            android.webkit.WebResourceError err) {
+                    if (done[0] || !req.isForMainFrame()) return;
+                    done[0] = true;
+                    main.removeCallbacks(timeout);
+                    finish.run();
+                    call.reject("Нет интернета", "offline");
+                }
+            });
+            main.postDelayed(timeout, 15_000);
+            web.loadUrl(url);
+        });
+    }
+
+    // ── Напоминания будильником телефона (ReminderAlarms) ───────────────
+
+    @PluginMethod
+    public void syncReminders(PluginCall call) {
+        final JSArray items = call.getArray("items", new JSArray());
+        final JSArray probes = call.getArray("probes", new JSArray());
+        io.execute(() -> {
+            JSObject ret = new JSObject();
+            ret.put("armed", ReminderAlarms.sync(getContext(), items, probes));
+            ret.put("exact", ReminderAlarms.canExact(getContext()));
+            call.resolve(ret);
+        });
+    }
+
+    @PluginMethod
+    public void reminderStatus(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("pending", ReminderAlarms.pendingCount(getContext()));
+        ret.put("exact", ReminderAlarms.canExact(getContext()));
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void markDelivered(PluginCall call) {
+        JSArray refs = call.getArray("refs", new JSArray());
+        for (int i = 0; i < refs.length(); i++) ReminderAlarms.markDelivered(getContext(), refs.optString(i));
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void firedReminders(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            ret.put("items", new JSArray(ReminderAlarms.firedLog(getContext()).toString()));
+        } catch (org.json.JSONException e) {
+            ret.put("items", new JSArray());
+        }
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void openExactAlarmSettings(PluginCall call) {
+        if (Build.VERSION.SDK_INT < 31) {
+            call.resolve();
+            return;
+        }
+        try {
+            Intent i = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                    Uri.parse("package:" + getContext().getPackageName()))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Настройки точных будильников не открылись");
+        }
     }
 
     @Override

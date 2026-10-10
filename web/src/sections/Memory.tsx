@@ -3,6 +3,8 @@ import type { DiaryEntry, LtmFact, StmMessage } from '../mockData';
 import { useI18n, useMockData } from '../i18n';
 import { api } from '../api';
 import { useApiOnline } from '../apiData';
+import { useOfflineMode } from '../offline/state';
+import { phoneMemoryView } from '../offline/memoryView';
 import FormModal from '../components/FormModal';
 import InfoButton from '../components/InfoButton';
 
@@ -44,6 +46,9 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
   const { lang, t } = useI18n();
   const { personas, stmByPersona, ltmByPersona, diaryByPersona } = useMockData();
   const apiOnline = useApiOnline();
+  // Телефон без ноутбука: копия памяти с телефона, только посмотреть
+  const offlineMode = useOfflineMode();
+  const readOnly = apiOnline && offlineMode;
   const [tab, setTab] = useState<Tab>('stm');
   // Память индивидуальна: у каждой персоны свои STM, LTM и дневник
   const [selectedId, setSelectedId] = useState(() => fixedId ?? personas[0].id);
@@ -77,6 +82,17 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
     if (!apiOnline) return;
     const id = persona.id;
     let stale = false;
+    if (offlineMode) {
+      void phoneMemoryView(id).then((v) => {
+        if (stale) return;
+        setApiStm(v.history.map((m, i) => ({ id: i + 1, role: m.role === 'user' ? 'user' : 'bot', text: m.text, time: timeFmt(m.ts) })));
+        setApiLtm(v.facts.map((raw, i) => ({ f: parseFact(raw, i), raw })));
+        setApiDiary(v.diary.map((e, i) => ({ id: i + 1, date: e.date, text: e.text })));
+      });
+      return () => {
+        stale = true;
+      };
+    }
     api
       .getHistory(id)
       .then((msgs) => {
@@ -128,7 +144,7 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
       stale = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiOnline, persona.id]);
+  }, [apiOnline, offlineMode, persona.id]);
 
   // STM: сколько последних сообщений удалено + развёрнут ли весь буфер
   const [trimmed, setTrimmed] = useState(0);
@@ -389,6 +405,8 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
         </div>
       </div>
 
+      {readOnly && <p className="field-hint">{t('offline.memory.lead')}</p>}
+
       {/* Вкладки */}
       <div className="tabs">
         <button className={`tab ${tab === 'stm' ? 'tab--active' : ''}`} onClick={() => setTab('stm')}>
@@ -416,7 +434,7 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
           </div>
 
           {/* Удаление последних N сообщений из буфера */}
-          <div className="mem-trim">
+          <div className="mem-trim" hidden={readOnly}>
             <span className="field-label" style={{ marginBottom: 0 }}>{t('mem.trimLast')}</span>
             <input
               className="input mem-trim-input"
@@ -452,7 +470,7 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
                 <span className="memory-item-text">{m.text}</span>
                 <span className="memory-item-time">{m.time}</span>
                 {/* В развёрнутом виде — поштучное удаление с подтверждением */}
-                {showAllStm &&
+                {showAllStm && !readOnly &&
                   (confirmId === m.id ? (
                     <span className="mem-del-confirm">
                       <button
@@ -495,7 +513,7 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
               {t('mem.factsTitle')}
               <InfoButton helpKey="mem.ltm" />
             </h2>
-            <button className="btn btn--primary" onClick={() => openFactEditor()}>{t('mem.addFact')}</button>
+            {!readOnly && <button className="btn btn--primary" onClick={() => openFactEditor()}>{t('mem.addFact')}</button>}
           </div>
           {categories.map((cat) => (
             <div key={cat} className="ltm-category">
@@ -506,10 +524,14 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
                   .map((f, i) => (
                     <li key={f.id} className="memory-item stagger-item" style={{ animationDelay: `${i * 40}ms` }}>
                       <span className="memory-item-text">{f.fact}</span>
-                      <button className="btn btn--icon" title={t('common.edit')} onClick={() => openFactEditor(f)}>
-                        ✎
-                      </button>
-                      <button className="btn btn--icon" title={t('common.delete')} onClick={() => deleteFact(f)}>✕</button>
+                      {!readOnly && (
+                        <>
+                          <button className="btn btn--icon" title={t('common.edit')} onClick={() => openFactEditor(f)}>
+                            ✎
+                          </button>
+                          <button className="btn btn--icon" title={t('common.delete')} onClick={() => deleteFact(f)}>✕</button>
+                        </>
+                      )}
                     </li>
                   ))}
               </ul>
