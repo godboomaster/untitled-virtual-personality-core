@@ -48,6 +48,11 @@ export interface ChatMessage {
   fromInbox?: boolean; // фоновое сообщение (inbox): в STM не пишется — при перечитывании истории сохраняем
   status?: 'queued' | 'sent' | 'read'; // доставка нашей реплики: в дебаунс-очереди → отправлено → прочитано ботом
   read?: boolean; // сообщение бота прочитано пользователем (чат видим/в фокусе)
+  // Без ноутбука (web/src/offline): кто ответил — облако с телефона, модель
+  // телефона; у реплики пользователя queued — ждёт связи
+  offline?: 'cloud' | 'local' | 'queued' | 'reminder';
+  // Напоминание, поставленное этой репликой без ноутбука (карточка с отменой)
+  offlineReminder?: { id: string; task: string; at: number };
 }
 
 export interface LtmFact {

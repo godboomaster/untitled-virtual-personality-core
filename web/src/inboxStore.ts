@@ -1,5 +1,6 @@
 import { useEffect, useReducer } from 'react';
-import { api } from './api';
+import { api, isNativeApp } from './api';
+import { OfflineLlm } from './offline/plugin';
 import type { AnswerOptions, TaskCard } from './api';
 import { notifyBotMessage } from './notifications';
 import { getFocusedPersona, tabActive } from './presence';
@@ -189,6 +190,9 @@ export function useInboxPolling(apiOnline: boolean, personas: Persona[]) {
           // Свежесть переписки с бэкенда (сортировка списка персон)
           if (r.last_ts) touchActivity(id, r.last_ts);
           if (r.messages.length === 0) return;
+          // Напоминание пришло от ядра — будильнику телефона оно больше не нужно
+          const refs = r.messages.map((m) => m.ref).filter((x): x is string => !!x);
+          if (refs.length && isNativeApp()) void OfflineLlm.markDelivered({ refs }).catch(() => {});
           const items: InboxItem[] = r.messages.map((m, i) => ({ id: Date.now() + i, text: m.text, ts: m.ts }));
           messages = { ...messages, [id]: [...(messages[id] ?? []), ...items] };
           unread = { ...unread, [id]: (unread[id] ?? 0) + items.length };

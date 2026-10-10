@@ -3,7 +3,7 @@
    работают на моковых данных (прототипный режим). */
 
 import { useEffect, useReducer } from 'react';
-import { api, ApiError } from './api';
+import { api, ApiError, isNativeApp } from './api';
 import type { ApiPersona, LivingStateData, PersonaLlmConfig, ProviderInfo } from './api';
 import type { Persona, PersonaFeature } from './mockData';
 
@@ -55,6 +55,51 @@ function mapPersona(p: ApiPersona): Persona {
 // следующем монтировании потребителя (навигация по секциям) пробуем снова.
 let cache: Persona[] | null = null;
 let failedAt = 0; // время последней неудачной попытки; 0 — не было
+
+// Приложение на телефоне: снимок списка персон — чтобы без ноутбука
+// (web/src/offline) открыть чаты по сохранённым данным
+const PERSONAS_SNAPSHOT_KEY = 'vpc-offline-personas';
+
+function saveSnapshot(list: ApiPersona[]) {
+  if (!isNativeApp()) return;
+  try {
+    localStorage.setItem(PERSONAS_SNAPSHOT_KEY, JSON.stringify(list));
+  } catch {
+    /* хранилище недоступно — без офлайн-запуска */
+  }
+}
+
+/** Запуск без ноутбука: список персон из снимка. false — снимка нет. */
+export function seedOfflinePersonas(): boolean {
+  try {
+    const raw = localStorage.getItem(PERSONAS_SNAPSHOT_KEY);
+    const list = raw ? (JSON.parse(raw) as ApiPersona[]) : null;
+    if (!Array.isArray(list) || !list.length) return false;
+    cache = list.map(mapPersona);
+    listeners.forEach((l) => l());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Персоны из снимка (id, имя, описание) — для ответов без ноутбука. */
+export function offlinePersonaList(): { id: string; name: string; description: string }[] {
+  try {
+    const list = JSON.parse(localStorage.getItem(PERSONAS_SNAPSHOT_KEY) || '[]') as ApiPersona[];
+    return Array.isArray(list) ? list.map((p) => ({ id: p.id, name: p.name, description: p.description || '' })) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function hasOfflinePersonas(): boolean {
+  try {
+    return !!localStorage.getItem(PERSONAS_SNAPSHOT_KEY);
+  } catch {
+    return false;
+  }
+}
 let inflight: Promise<void> | null = null;
 const listeners = new Set<() => void>();
 const RETRY_AFTER_MS = 5000; // антифлап-пауза между попытками после неудачи
@@ -68,6 +113,7 @@ function ensureFetch(): Promise<void> {
     .then((list) => {
       cache = list.map(mapPersona);
       failedAt = 0;
+      saveSnapshot(list);
     })
     .catch(() => {
       failedAt = Date.now(); // бэкенд недоступен — моковый режим до следующей попытки
@@ -105,6 +151,7 @@ export function refetchPersonas(): Promise<ApiError | null> {
     .getPersonas()
     .then((list) => {
       cache = list.map(mapPersona);
+      saveSnapshot(list);
       return null;
     })
     .catch((e: unknown) => {
@@ -123,14 +170,19 @@ export function useApiOnline(): boolean {
 // ── Связь с ядром (шапка, подвал сайдбара) ───────────────────────────
 // Список персон грузится один раз, и падение ядра посреди работы без
 // отдельного опроса было не заметно: шапка писала «все системы в норме».
-// /api/health — раз в 15 с, пока вкладка видна; ответ дольше 5 с — нет связи
+// /api/health — раз в 15 с, пока вкладка видна; ответ дольше 5 с — нет связи.
+// «Нет связи» — только после двух неудач подряд (вторая проверка через 3 с):
+// ядро бывает занято секунды (создание персоны при первом открытии чата), а
+// на телефоне «нет связи» включает ответы без ноутбука (web/src/offline)
 
 export type CoreHealth = 'ok' | 'down' | 'unknown';
 
 const HEALTH_POLL_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 5_000;
+const HEALTH_RECHECK_MS = 3_000;
 let health: CoreHealth = 'unknown';
 let healthTimer: number | null = null;
+let healthFails = 0;
 const healthListeners = new Set<() => void>();
 
 function setHealth(next: CoreHealth) {
@@ -145,8 +197,15 @@ function checkHealth() {
   const timer = window.setTimeout(() => ctl.abort(), HEALTH_TIMEOUT_MS);
   api
     .health({ signal: ctl.signal })
-    .then(() => setHealth('ok'))
-    .catch(() => setHealth('down'))
+    .then(() => {
+      healthFails = 0;
+      setHealth('ok');
+    })
+    .catch(() => {
+      healthFails += 1;
+      if (healthFails >= 2 || health === 'down') setHealth('down');
+      else window.setTimeout(checkHealth, HEALTH_RECHECK_MS);
+    })
     .finally(() => window.clearTimeout(timer));
 }
 

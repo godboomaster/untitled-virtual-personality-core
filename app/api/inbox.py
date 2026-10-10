@@ -63,13 +63,19 @@ _stop_check: Optional[Callable[[], bool]] = None
 _STOP_POLL_SEC = 1.0
 
 
-def inbox_push(persona: str, chat_id: str, text: str, kind: str = "message"):
+def inbox_push(persona: str, chat_id: str, text: str, kind: str = "message",
+               ref: Optional[str] = None):
+    # ref — метка срабатывания напоминания («<id>@<время>»): телефон, сам
+    # показавший это напоминание без ноутбука, второй раз не уведомляет
     global _seq
     key = (persona, str(chat_id))
     with _inbox_lock:
         _seq += 1
         q = _inbox.setdefault(key, deque(maxlen=_MAX_QUEUED))
-        q.append({"seq": _seq, "text": text, "kind": kind, "ts": time.time()})
+        item = {"seq": _seq, "text": text, "kind": kind, "ts": time.time()}
+        if ref:
+            item["ref"] = ref
+        q.append(item)
         waiters = list(_waiters)
     for loop, event in waiters:
         try:
@@ -112,6 +118,14 @@ def _pop_locked(key: tuple[str, str], client_id: str, cursors: dict) -> list[dic
     return items
 
 
+def _public(m: dict) -> dict:
+    # Сообщение очереди для клиента: без служебного seq, ref — если есть
+    out = {"text": m["text"], "kind": m["kind"], "ts": m["ts"]}
+    if m.get("ref"):
+        out["ref"] = m["ref"]
+    return out
+
+
 def inbox_pop(persona: str, chat_id: str, client_id: str = "") -> list[dict]:
     # Новые для этого клиента сообщения (с его курсора); у остальных
     # клиентов они остаются непрочитанными
@@ -121,7 +135,7 @@ def inbox_pop(persona: str, chat_id: str, client_id: str = "") -> list[dict]:
         _client_seen[client_id] = now
         items = _pop_locked(key, client_id, _cursors.setdefault(client_id, {}))
         _forget_stale_clients(now)
-        return [{"text": m["text"], "kind": m["kind"], "ts": m["ts"]} for m in items]
+        return [_public(m) for m in items]
 
 
 def inbox_pop_all(chat_id: str, client_id: str = "") -> list[dict]:
@@ -165,7 +179,7 @@ def inbox_take(chat_id: str, client_id: str = "", since: Optional[int] = None) -
         cursor = _all_seen[(client_id, chat_id)] = _seq
         _forget_stale_clients(now)
     got.sort(key=lambda pm: pm[1]["seq"])
-    return [{"persona": p, "text": m["text"], "kind": m["kind"], "ts": m["ts"]} for p, m in got], cursor
+    return [{"persona": p, **_public(m)} for p, m in got], cursor
 
 
 def set_stop_check(fn: Optional[Callable[[], bool]]) -> None:
@@ -257,13 +271,14 @@ class WebInboxSender:
     # нет id, reply на вопрос невозможен.
     supports_documents = False
     supports_replies = False
+    supports_refs = True  # send_message(ref=) — метка срабатывания напоминания
 
     def __init__(self, persona: str):
         self._persona = persona
 
     async def send_message(self, chat_id: str, text: str, *,
-                           topic_id=None, parse_mode=None) -> bool:
-        inbox_push(self._persona, chat_id, text)
+                           topic_id=None, parse_mode=None, ref=None) -> bool:
+        inbox_push(self._persona, chat_id, text, ref=ref)
         return True
 
     async def send_document(self, chat_id: str, file_path: str, filename: str, *,

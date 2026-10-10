@@ -40,6 +40,8 @@ from app.api.schemas import (
     CalendarEntryUpdate,
     ChatRequest,
     ChatResponse,
+    OfflineImportRequest,
+    OfflineRemindersRequest,
     ClearChatRequest,
     FactRequest,
     FactUpdateRequest,
@@ -344,6 +346,61 @@ def _check_not_muted(bot, persona: str):
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── Ответы без ноутбука (приложение на телефоне, app/api/offline_api.py) ──
+
+@app.get("/api/personas/{persona}/offline/kit", dependencies=[Depends(require_auth)])
+async def offline_kit(persona: PersonaIdPath,
+                      chat_id: str = Query("web_user", max_length=128),
+                      user_id: str = Query("web_user", max_length=128)):
+    # Персона-кит: характер, правила офлайна, факты, хвост переписки — без секретов
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    return await asyncio.to_thread(offline_api.build_kit, bot, persona, chat_id, user_id)
+
+
+@app.get("/api/personas/{persona}/offline/memory", dependencies=[Depends(require_auth)])
+async def offline_memory(persona: PersonaIdPath,
+                         chat_id: str = Query("web_user", max_length=128),
+                         user_id: str = Query("web_user", max_length=128)):
+    # Память для телефона: вся переписка чата и факты — поиск по ним без ноутбука
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    return await asyncio.to_thread(offline_api.build_memory, bot, persona, chat_id, user_id)
+
+
+@app.get("/api/personas/{persona}/offline/providers", dependencies=[Depends(require_auth)])
+async def offline_providers(persona: PersonaIdPath):
+    # Ключи API-провайдеров персоны для ответов с телефона без ноутбука. Кто
+    # прошёл require_auth — владелец (веб, его телефон по VPC Link или по
+    # адресу с токеном); остальные секреты .env сюда не попадают
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    return JSONResponse({"providers": offline_api.provider_creds(bot)},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/personas/{persona}/offline/import", dependencies=[Depends(require_auth)])
+async def offline_import(persona: PersonaIdPath, req: OfflineImportRequest):
+    # Переписка без ноутбука → история чата и память (повторы по id — мимо).
+    # Под локом чата: не вклинивается в идущую генерацию ответа
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    async with chat_lock(f"{persona}:{req.chat_id or req.user_id}"):
+        return await asyncio.to_thread(
+            offline_api.import_messages, bot, req.chat_id, req.user_id,
+            [m.model_dump() for m in req.messages], req.user_name)
+
+
+@app.post("/api/personas/{persona}/offline/reminders", dependencies=[Depends(require_auth)])
+async def offline_reminders(persona: PersonaIdPath, req: OfflineRemindersRequest):
+    # Напоминания, поставленные на телефоне без ноутбука → напоминания ядра
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    return await asyncio.to_thread(
+        offline_api.import_reminders, bot, req.chat_id or req.user_id, req.user_id,
+        [r.model_dump() for r in req.reminders], req.user_name)
 
 
 @app.get("/api/token", dependencies=[Depends(require_auth)])
@@ -2492,8 +2549,7 @@ async def _inbox_named(items: list[dict]) -> list[dict]:
         return out
 
     names = await asyncio.to_thread(_names, sorted({m["persona"] for m in items}))
-    return [{"persona": m["persona"], "name": names[m["persona"]], "text": m["text"],
-             "kind": m["kind"], "ts": m["ts"]} for m in items]
+    return [{**m, "name": names[m["persona"]]} for m in items]
 
 
 # ── Режим управления: трансляция вкладки агента ──────────────────────

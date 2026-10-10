@@ -191,6 +191,8 @@ else:
         from app.api import server
         from app.api.runtime import registry
         from app.features import browser_actions as ba
+        # API_TOKEN из личного .env подхватывается при импорте ядра — без токена
+        server._api_token = ""
         mode = {"on": True}
         registry._bots["connor"] = SimpleNamespace(
             control_mode_on=lambda c: mode["on"],

@@ -6,6 +6,7 @@ import { api, ApiError, isNativeApp } from '../api';
 import ConnectionCard from '../link/ConnectionCard';
 import { testNativeNotification } from '../bgInbox';
 import LinkSettings from '../link/LinkSettings';
+import OfflineCard from '../offline/OfflineCard';
 import type { LocalStatus, LocationConfig, TimezoneConfig } from '../api';
 import { refetchProviders, useApiOnline, useApiProviders, useApiWebchat } from '../apiData';
 import { useDevMode, setDevMode } from '../devMode';
@@ -242,6 +243,8 @@ export default function ApiKeys() {
       {/* Телефон: к какому ноутбуку подключено и как. Компьютер: какие
           телефоны подключены (VPC Link) и QR-код для нового */}
       {isNativeApp() ? <ConnectionCard /> : <LinkSettings />}
+      {/* Телефон: ответы без ноутбука и модель на телефоне */}
+      {isNativeApp() && <OfflineCard />}
 
       {/* Общие настройки: язык интерфейса, подсказки */}
       <div className="card">

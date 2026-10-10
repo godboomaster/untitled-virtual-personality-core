@@ -29,6 +29,38 @@ class ChatRequest(BaseModel):
     from_skin: bool = False
 
 
+class OfflineMessage(BaseModel):
+    """Реплика, написанная без ноутбука (приложение на телефоне)."""
+    id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    role: Literal["user", "assistant"]
+    text: str = Field(..., max_length=8000)
+    ts: float
+    # cloud — ответила облачная модель с телефона, local — Gemma на телефоне,
+    # queued — ответа не было (только реплика пользователя)
+    source: Optional[Literal["cloud", "local", "queued"]] = None
+
+
+class OfflineImportRequest(BaseModel):
+    user_id: str = "web_user"
+    chat_id: Optional[str] = "web_user"
+    user_name: Optional[str] = None
+    messages: list[OfflineMessage] = Field(..., max_length=200)
+
+
+class OfflineReminder(BaseModel):
+    # Напоминание, поставленное на телефоне без ноутбука (offline_api.import_reminders)
+    id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    task: str = Field("", max_length=500)
+    at: float
+
+
+class OfflineRemindersRequest(BaseModel):
+    user_id: str = "web_user"
+    chat_id: Optional[str] = "web_user"
+    user_name: Optional[str] = None
+    reminders: list[OfflineReminder] = Field(..., max_length=50)
+
+
 class ChatResponse(BaseModel):
     reply: str
     extra_messages: list[str] = Field(default_factory=list)

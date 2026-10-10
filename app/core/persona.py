@@ -55,6 +55,41 @@ def addressee_note(persona, chat_id=None, user_id=None) -> str:
 # Как часто заглядывать в YAML за свежей заморозкой (features.muted)
 _MUTED_RECHECK_SEC = 5.0
 
+# Правила к результатам веб-поиска и к строке окружения — общие для промпта
+# ядра и ответов телефона без ноутбука (app/api/offline_api.py: кит)
+WEB_SOURCE_PRIORITY = """SOURCE PRIORITY:
+1. If the question is about you yourself — what you did, how you are, your day, your feelings, \
+your plans — answer ONLY from your own life: current state, personal memory, the conversation. \
+Ignore the web search entirely.
+2. If the answer is in memory (LTM facts) or uploaded files — use those, ignore the web search.
+3. If memory and files do not contain the answer — use the web search data.
+4. Do not mention internet sources if the answer came from memory/files.
+5. If you use web search data — answer in the user's language, cite sources when appropriate."""
+
+ENV_RULE = (
+    "STRICT RULE: this is background information — use it only to understand "
+    "the time of day and give time-appropriate replies. It is STRICTLY FORBIDDEN "
+    "to be the first to mention the city, location, time or weather — talk about them "
+    "ONLY if the user themselves asked about the weather/time or brought up "
+    "their own location."
+)
+
+
+# Правила к блоку личной памяти и к найденным в переписке репликам — общие
+# для промпта ядра и телефона без ноутбука (app/api/offline_api.py)
+SELF_MEMORY_RULE = (
+    "STRICT RULE: the block above is your own inner memories. "
+    "Use them as context, but it is STRICTLY FORBIDDEN to mention them explicitly in your reply. "
+    "DO NOT write: \"Inner monologue:\", \"My thoughts:\", \"I think to myself:\", \"To myself:\", "
+    "\"I recall:\" or any similar labels. "
+    "Just reply naturally, as if these memories were your own natural knowledge."
+)
+STM_RELEVANT_HEAD = "Earlier in the conversation, related things were discussed:"
+STM_RELEVANT_RULE = (
+    "Use this context if it relates to the current question. "
+    "DO NOT mention that these are \"retrieved memories\" — just use them as natural context."
+)
+
 
 class PersonaLayer:
     def __init__(self, persona_name: str = "connor"):
@@ -327,23 +362,11 @@ Use the information from the uploaded files in your answer if the user mentions 
 
         # Личная память бота (эпизоды и наблюдения)
         if self_memory_block:
-            context_block += (
-                f"\n\n{self_memory_block}\n\n"
-                "STRICT RULE: the block above is your own inner memories. "
-                "Use them as context, but it is STRICTLY FORBIDDEN to mention them explicitly in your reply. "
-                "DO NOT write: \"Inner monologue:\", \"My thoughts:\", \"I think to myself:\", \"To myself:\", "
-                "\"I recall:\" or any similar labels. "
-                "Just reply naturally, as if these memories were your own natural knowledge."
-            )
+            context_block += f"\n\n{self_memory_block}\n\n{SELF_MEMORY_RULE}"
 
         # Релевантный контекст из STM (векторный поиск)
         if stm_relevant:
-            context_block += (
-                f"\n\nEarlier in the conversation, related things were discussed:\n"
-                f"{stm_relevant}\n\n"
-                "Use this context if it relates to the current question. "
-                "DO NOT mention that these are \"retrieved memories\" — just use them as natural context."
-            )
+            context_block += f"\n\n{STM_RELEVANT_HEAD}\n{stm_relevant}\n\n{STM_RELEVANT_RULE}"
 
         # Блоки аддонов персоны (напр. книжный RAG) — каждый готов целиком,
         # вместе со своими правилами
@@ -353,20 +376,7 @@ Use the information from the uploaded files in your answer if the user mentions 
 
         # Веб-контекст (результаты поиска в интернете)
         if web_context:
-            context_block += f"""
-
-WEB SEARCH RESULTS:
-{web_context}
-
-SOURCE PRIORITY:
-1. If the question is about you yourself — what you did, how you are, your day, your feelings, \
-your plans — answer ONLY from your own life: current state, personal memory, the conversation. \
-Ignore the web search entirely.
-2. If the answer is in memory (LTM facts) or uploaded files — use those, ignore the web search.
-3. If memory and files do not contain the answer — use the web search data.
-4. Do not mention internet sources if the answer came from memory/files.
-5. If you use web search data — answer in the user's language, cite sources when appropriate.
-"""
+            context_block += f"\n\nWEB SEARCH RESULTS:\n{web_context}\n\n{WEB_SOURCE_PRIORITY}\n"
 
         # Кто пишет (особый пользователь или обычный) — по ID; в системном
         # блоке ближе к концу (после книжного/веб-контекста), чтобы не
@@ -378,14 +388,7 @@ Ignore the web search entirely.
         # Окружение пользователя: город, его локальное время и погода (одна строка)
         env_note = ""
         if env_context:
-            env_note = (
-                f"\n\nUser's current environment: {env_context}\n"
-                "STRICT RULE: this is background information — use it only to understand "
-                "the time of day and give time-appropriate replies. It is STRICTLY FORBIDDEN "
-                "to be the first to mention the city, location, time or weather — talk about them "
-                "ONLY if the user themselves asked about the weather/time or brought up "
-                "their own location."
-            )
+            env_note = f"\n\nUser's current environment: {env_context}\n{ENV_RULE}"
 
         # Todo-контекст: инструкция для LLM + текущий список
         todo_note = ""

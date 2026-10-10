@@ -233,10 +233,18 @@ class ShortTermMemory:
                     buf.append(entry)
 
     def _save_to_db(self, role: str, content: str, chat_id: str = "default",
-                    user_name: str = None, sender_id: str = None):
+                    user_name: str = None, sender_id: str = None,
+                    at: float = None) -> float:
         # Сохранить сообщение в базу данных. Метка — уникальная миллисекунда
-        # (_unique_ms): она же id записи, совпадение id = потеря сообщения
-        timestamp = _unique_ms()
+        # (_unique_ms): она же id записи, совпадение id = потеря сообщения.
+        # at — время из прошлого (переписка с телефона без ноутбука): его
+        # миллисекунда, занята — следующая свободная. → метка в секундах
+        if at is None:
+            timestamp = _unique_ms()
+        else:
+            timestamp = int(min(at, time.time()) * 1000)
+            while self.collection.get(ids=[f"stm_{chat_id}_{timestamp}"])["ids"]:
+                timestamp += 1
         metadata = {"role": role, "timestamp": timestamp, "chat_id": chat_id}
         if user_name:
             metadata["user_name"] = user_name
@@ -251,6 +259,7 @@ class ShortTermMemory:
 
         # Автоочистка: удаляем самые старые записи чата если превышен лимит
         self._trim_db(chat_id)
+        return timestamp / 1000
 
     def _trim_db(self, chat_id: str):
         """
@@ -283,7 +292,8 @@ class ShortTermMemory:
             logger.warning(f"  [STM] Trim error for chat {chat_id}: {e}")
 
     def add_message(self, role: str, content: str, user_id: str = "default",
-                    chat_id: str = None, user_name: str = None):
+                    chat_id: str = None, user_name: str = None,
+                    timestamp: float = None):
         """
         Добавляет сообщение в буфер чата и сохраняет в базу.
 
@@ -291,6 +301,8 @@ class ShortTermMemory:
             user_id: Реальный ID отправителя.
             chat_id: ID чата для фильтрации. Если None — используется user_id.
             user_name: Имя пользователя для отображения в истории.
+            timestamp: время сообщения из прошлого (unix-секунды; переписка
+                с телефона без ноутбука) — встаёт в историю на своё место.
         """
         filter_id = chat_id if chat_id is not None else user_id
         entry = {"role": role, "content": content, "chat_id": filter_id, "timestamp": time.time()}
@@ -299,12 +311,24 @@ class ShortTermMemory:
             entry["sender_id"] = user_id
         if user_name:
             entry["user_name"] = user_name
-        self._get_buffer(filter_id).append(entry)
-        self._save_to_db(role, content, filter_id, user_name,
-                         sender_id=user_id if chat_id is not None else None)
-        self._stamp_last_message(filter_id, entry["timestamp"])
+        # Буфер — до записи в базу: подгрузка чата из базы после записи
+        # принесла бы это сообщение, и оно легло бы в буфер дважды
+        buf = self._get_buffer(filter_id)
+        saved = self._save_to_db(role, content, filter_id, user_name,
+                                 sender_id=user_id if chat_id is not None else None,
+                                 at=timestamp)
+        if timestamp is None:
+            buf.append(entry)
+            self._stamp_last_message(filter_id, entry["timestamp"])
+            return
+        entry["timestamp"] = saved
+        with self._lock:
+            items = sorted([*buf, entry], key=lambda e: e.get("timestamp") or 0)
+            buf.clear()
+            buf.extend(items[-buf.maxlen:] if buf.maxlen else items)
+        self._stamp_last_message(filter_id, saved, only_newer=True)
 
-    def _stamp_last_message(self, chat_key: str, ts: float):
+    def _stamp_last_message(self, chat_key: str, ts: float, only_newer: bool = False):
         """Метка времени последнего сообщения чата на диске
         (data/{context}/last_message.json). API отдаёт её фронту для
         сортировки персон по свежести переписки; метка производная —
@@ -321,6 +345,8 @@ class ShortTermMemory:
                 data = load_json_safe(path, default={}, label="Memory.last_message")
                 if not isinstance(data, dict):
                     data = {}
+                if only_newer and (data.get(chat_key) or 0) >= ts:
+                    return
                 data[chat_key] = ts
                 atomic_write_text(path, json.dumps(data, ensure_ascii=False))
         except Exception as e:
@@ -1645,7 +1671,7 @@ class MemoryManager:
 
     def add_message(self, role: str, content: str, user_id: str = "default",
                     chat_id: str = None, user_name: str = None,
-                    light_mode: bool = None):
+                    light_mode: bool = None, timestamp: float = None):
         """
         Добавить сообщение в память.
         Факты для LTM извлекаются в фоновом потоке пакетами: каждые
@@ -1658,8 +1684,10 @@ class MemoryManager:
             user_name: Имя пользователя для отображения в истории.
             light_mode: урезанный контекст (local-primary / light_context) —
                      интервал 6 вместо 15; None — определить по роутеру.
+            timestamp: время сообщения из прошлого (см. ShortTermMemory).
         """
-        self.stm.add_message(role, content, user_id, chat_id, user_name)
+        self.stm.add_message(role, content, user_id, chat_id, user_name,
+                             timestamp=timestamp)
         if role == "user":
             self.ltm.note_user_language(user_id, content)
 
