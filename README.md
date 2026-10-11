@@ -45,6 +45,9 @@ https://github.com/user-attachments/assets/aa87b619-6564-4703-81d8-762ad478f123
 - **Screen and camera.** "Look at my screen" — the persona looks at the computer's screen;
   the camera button in the chat — at a photo from the phone or a webcam. Only the local
   model in Ollama sees the picture; the persona gets its description.
+- **Files from the computer.** "Open the file report on physics", "send me the file about the
+  tax deduction" — the bot finds the file on the computer the core runs on: the web there opens
+  it, the phone app and Telegram get the file itself.
 - **No keys needed.** LLM web chats in the bot's browser or a local model in Ollama.
 - **Add-ons.** Example — Arrodes: a persona that knows a book, with hybrid search over its
   text.
@@ -503,6 +506,33 @@ asks it for the app the core was started from (Terminal, iTerm, VS Code or the t
 Turn it on in System Settings → Privacy & Security → Screen & System Audio Recording and
 restart that app. Until the permission is granted, or while Ollama is not running, the chat
 shows what to do instead of a reply.
+
+## Files from the computer
+
+The owner can ask for any file on the computer the core runs on — by name or by what is inside.
+The search uses the system index (Spotlight on macOS, Windows Search on Windows, `locate` on
+Linux); without an index it walks the home folder by file name.
+
+- **How to ask:** "open the file lab report 1", "open the presentation on physics", "send me
+  the pdf of the lease", "open the latest file from Downloads", "send the file from the folder
+  smad", "open report.docx". "About …" / "on …" also searches inside files. Russian works too:
+  «открой файл отчёт по лабе», «пришли файл про налоговый вычет».
+- **Narrowing by folders:** "open the manual in db in LabS7" — the bot finds the folder LabS7 (the
+  name may be inexact: LabsS7 matches), db inside it, and searches only there. The order of the
+  folders doesn't matter. With folders the word "file" is optional: then the bot takes the request
+  only if the folders and a matching file exist ("open search in youtube" goes on as usual). It
+  also knows document words: «методичка» (a manual) matches «УП_…» and «Методические указания».
+- **What happens:** in the web opened on the core's computer the file opens in its default app;
+  in the phone app and in Telegram the file is sent to the chat (up to 50 MB). In the app the
+  "Save" button puts it into Downloads/Virtual Persona and opens it.
+- **Several matches** — a numbered list; reply with the number ("yes" means the first, "no"
+  cancels). Only the list's stub goes into the dialog history, not the names of other files.
+- **Not touched:** system and hidden folders (`~/Library` except iCloud Drive and cloud drives,
+  `.ssh`, AppData…), the core's data folder, keys, certificates and password databases.
+  Programs and scripts are never opened from a message — the bot shows them in their folder.
+- **Who:** the owner only; in Telegram only in a private chat; not from skins. Every action is
+  logged to `data/<context>/file_access/audit.jsonl`. Turn it off for a persona with
+  `features.file_access: false`.
 
 ## Control mode
 

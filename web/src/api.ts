@@ -206,6 +206,16 @@ export interface ApiHistoryMessage {
   timestamp: number | null;
   user_name: string | null;
   sender_id: string | null;
+  files?: SentFile[] | null; // файлы, присланные этим ответом, пока ссылки живы
+}
+
+// Файл с компьютера ядра, присланный в чат («пришли файл X»): url отдаёт его
+// под тем же токеном, пока ссылка жива (сутки, до перезапуска ядра)
+export interface SentFile {
+  id: string;
+  name: string;
+  size: number;
+  url: string;
 }
 
 export interface ApiChatResponse {
@@ -221,6 +231,8 @@ export interface ApiChatResponse {
   reply_ts?: number | null; // метка ответа в STM (серверные секунды) — место пузыря в ленте
   answer_options?: AnswerOptions | null; // кнопки ответа на вопрос режима управления
   task?: TaskCard | null; // карточка задачи агента (итог хода; дальше — inbox)
+  files?: SentFile[]; // файлы с компьютера ядра («пришли файл X»)
+  reply_stm?: string | null; // текст ответа в истории, если другой (список файлов — заглушкой)
 }
 
 // Карточка задачи агента (TaskAgent.task_card): статус, план заказа с
@@ -250,6 +262,7 @@ export interface AnswerOption {
 export interface AnswerOptions {
   kind: 'options' | 'yesno' | 'continue';
   options: AnswerOption[];
+  scope?: 'files'; // список «какой файл?» — кнопки и вне режима управления
 }
 
 // Части «Очистить диалог» (app/api/schemas.py: ClearPart) — в порядке кнопок досье
@@ -1180,6 +1193,9 @@ export async function streamChat(
         image: params.image ?? null,
         ...(params.image && params.imageSource === 'camera' ? { image_source: 'camera' } : {}),
         ...(params.fromSkin ? { from_skin: true } : {}),
+        // Приложение на телефоне: «открой файл X» присылает файл в чат, а не
+        // открывает его на компьютере ядра
+        ...(isNativeApp() ? { client: 'app' } : {}),
       }),
     });
   } catch (e) {
@@ -1227,6 +1243,25 @@ export async function streamChat(
     }
   }
   throw new StreamInterruptedError('Стрим оборвался без финального события');
+}
+
+// Файл, присланный в чат (GET /api/files/{id}), — целиком в память: по VPC
+// Link иначе нельзя, а размер ядро ограничивает (50 МБ)
+export async function fetchSentFile(file: SentFile): Promise<Blob> {
+  if (!/^\/api\/files\/[A-Za-z0-9_-]+$/.test(file.url)) throw new ApiError(400, 'bad file url');
+  const res = await apiFetch(file.url, { headers: authHeader() });
+  if (!res.ok) {
+    noteAuthFailure(res);
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch {
+      /* тело не JSON — оставляем HTTP-код */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return res.blob();
 }
 
 // Арт-направление скина (POST /api/skins/direction): сюжет, палитра с ролями,

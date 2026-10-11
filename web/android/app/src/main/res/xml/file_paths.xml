@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <external-path name="my_images" path="." />
     <cache-path name="my_cache_images" path="." />
+    <!-- Файлы, присланные ядром в чат, на Android 7–9 (FileSavePlugin) -->
+    <external-files-path name="sent_files" path="Download/" />
 </paths>

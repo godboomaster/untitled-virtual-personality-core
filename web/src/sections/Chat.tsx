@@ -48,6 +48,7 @@ import { cancelLocalReminder, localReminders, onRemindersChange } from '../offli
 import Icon from '../components/icons';
 import type { IconName } from '../components/icons';
 import SkinFrame from '../components/SkinFrame';
+import SentFileCard from '../components/SentFileCard';
 import { usePersonaSkin } from '../skins/skinStore';
 import { usePersonaOverlay } from '../skins/overlayStore';
 import { buildChatPayload } from '../skins/payloads';
@@ -415,6 +416,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       ? new Date(m.timestamp * 1000).toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' })
       : '',
     ts: m.timestamp ?? undefined,
+    ...(m.files?.length ? { files: m.files } : {}),
   });
 
   // Догрузка поздних ответов по серверному last_ts (см. checkFreshness ниже).
@@ -456,7 +458,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         if (dropLocal) {
           setSentByPersona((prev) => ({
             ...prev,
-            [id]: (prev[id] ?? []).filter((m) => m.image || (m.images && m.images.length > 0)),
+            [id]: (prev[id] ?? []).filter((m) => m.image || (m.images && m.images.length > 0) || (m.files && m.files.length > 0)),
           }));
         }
         return true;
@@ -854,7 +856,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // старым совпадением текста
   // (TS_EPS: метки STM, перечитанные из БД после рестарта, — с точностью до мс)
   const sentVisible = (sentByPersona[persona.id] ?? []).filter(
-    (m) => !baseMessages.some((h) => h.text === m.text && (h.ts ?? 0) + TS_EPS >= (m.ts ?? 0)),
+    (m) => !baseMessages.some((h) => h.text === (m.stmText ?? m.text) && (h.ts ?? 0) + TS_EPS >= (m.ts ?? 0)),
   );
   // Лента смешанная (история STM + локальные реплики сессии + inbox):
   // при простом склеивании инициатива из inbox встала бы ПОСЛЕ свежего
@@ -886,7 +888,18 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   if (draftMsg) {
     offlineChat.push({ id: draftMsg.num, role: 'bot', text: draftMsg.text || '…', time: fmtTime(Date.now() / 1000), ts: Date.now() / 1000, offline: 'local' });
   }
-  const messages = [...baseMessages, ...sentVisible, ...inboxChat, ...offlineChat].sort(
+  // Ответ с файлами уже в истории, а ссылки к нему сервер не привязал
+  // (не та метка) — карточки берём из локальной копии сессии. Только тот же
+  // обмен (метки рядом): такой же текст бывает и у прошлых ответов
+  const localFiles = (sentByPersona[persona.id] ?? []).filter((m) => m.files?.length);
+  const baseWithFiles = localFiles.length
+    ? baseMessages.map((h) => {
+        if (h.role !== 'bot' || h.files?.length) return h;
+        const twin = localFiles.find((m) => m.text === h.text && Math.abs((h.ts ?? 0) - (m.ts ?? 0)) < 5);
+        return twin ? { ...h, files: twin.files } : h;
+      })
+    : baseMessages;
+  const messages = [...baseWithFiles, ...sentVisible, ...inboxChat, ...offlineChat].sort(
     (a, b) => (a.ts ?? 0) - (b.ts ?? 0),
   );
   // ── Окно видимых сообщений и скролл ──
@@ -1324,6 +1337,14 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           m.id === msgId ? { ...m, images: [...(m.images ?? []), ...imgs] } : m),
       }));
     };
+    // Файлы с компьютера ядра («пришли файл X») — карточками в том же пузыре
+    const attachBotFiles = (msgId: number, files: NonNullable<ChatMessage['files']>) => {
+      setSentByPersona((prev) => ({
+        ...prev,
+        [pid]: (prev[pid] ?? []).map((m) =>
+          m.id === msgId ? { ...m, files: [...(m.files ?? []), ...files] } : m),
+      }));
+    };
     streamChat(
       { persona: pid, message: text, replyContext, image: image ?? undefined, imageSource: camera ? 'camera' : undefined, fromSkin },
       (tok) => {
@@ -1352,6 +1373,15 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         absorbUntil.current[pid] = Date.now() + ABSORB_MS;
         pollInboxNow(pid);
         upsertBot(bubbleIds[0], res.reply);
+        // Ответ лёг в историю другим текстом (список файлов — заглушкой):
+        // запоминаем его, чтобы пузырь сессии отсёкся, когда история придёт
+        if (res.reply_stm) {
+          const stmText = res.reply_stm;
+          setSentByPersona((prev) => ({
+            ...prev,
+            [pid]: (prev[pid] ?? []).map((m) => (m.id === bubbleIds[0] ? { ...m, stmText } : m)),
+          }));
+        }
         // Ответ пришёл — нашу серию реплик бот «прочитал»
         setUserMsgsStatus(pid, ['queued', 'sent'], 'read');
         // Ответ бота виден (чат в фокусе) — сразу метим прочитанным
@@ -1369,6 +1399,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         // В STM не пишутся — как и картинки пользователя, живут до перечитки
         // истории
         if (res.images?.length) attachBotImages(bubbleIds[0], res.images);
+        // Файлы — ссылками на скачивание; история после перечитки отдаёт их
+        // снова, пока ссылки живы
+        if (res.files?.length) attachBotFiles(bubbleIds[0], res.files);
         const label = providerLabel(res.provider, res.model);
         if (label) setAnswerer((prev) => ({ ...prev, [pid]: label }));
         // Режим управления мог переключиться самим этим сообщением —
@@ -2300,10 +2333,12 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             const cardHere = taskCard && i === taskCardAt ? <TaskCard card={taskCard} /> : null;
             // Пузырь только из строк хода (они в карточке) — не показываем
             const ownText = withoutTaskLines(m);
-            if (!ownText && m.text && !m.image && !m.images?.length) return <Fragment key={m.id}>{cardHere}</Fragment>;
+            if (!ownText && m.text && !m.image && !m.images?.length && !m.files?.length) return <Fragment key={m.id}>{cardHere}</Fragment>;
             // Кнопки ответа — под последним сообщением бота, пока режим
-            // управления ждёт ответа и бот не занят
-            const answer = ccOn && !waiting && m.role === 'bot' && i === visibleMessages.length - 1
+            // управления ждёт ответа и бот не занят; список «какой файл?» —
+            // и вне режима
+            const answer = (ccOn || curAnswer?.scope === 'files') && !waiting && m.role === 'bot'
+              && i === visibleMessages.length - 1
               ? curAnswer
               : null;
             const shownText = answer?.kind === 'options'
@@ -2365,6 +2400,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                     <div className="message-images">
                       {m.images.map((src, k) => (
                         <img key={k} className="message-image" src={src} alt={t('chat.attachment')} />
+                      ))}
+                    </div>
+                  )}
+                  {m.files && m.files.length > 0 && (
+                    <div className="message-files">
+                      {m.files.map((f) => (
+                        <SentFileCard key={f.id} file={f} />
                       ))}
                     </div>
                   )}

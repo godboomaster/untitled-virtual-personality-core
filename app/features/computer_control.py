@@ -669,6 +669,8 @@ _CHOICE_FILLER = frozenset({
     "та", "то", "ту", "й", "я", "е", "ю", "го", "ой",
     "number", "option", "link", "site", "open", "the", "one", "take",
     "let", "s", "go", "with", "i", "ll", "pick", "choose", "want", "need",
+    # Ответ на список файлов (app/features/file_access): «пришли второй файл»
+    "файл", "пришли", "скинь", "отправь", "кидай", "file", "send",
 })
 
 

@@ -112,6 +112,44 @@ async def _reply_ai(message, text: str):
     return sent_message_ids
 
 
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+async def _reply_with_files(message, text: str, files: list) -> list:
+    """Ответ + файлы с компьютера ядра («пришли файл X», file_access):
+    документами, первый несёт ответ подписью (лимит подписи — 1024).
+    Файлы — настоящие файлы пользователя: только читаем, не удаляем
+    (не prepare_response/cleanup_files — те стирают временные файлы кода).
+    Возвращает message_id отправленных."""
+    from app.features import file_access
+    ids = []
+    caption = text if text and len(text) <= 1024 else None
+    if text and caption is None:
+        ids += await _reply_ai(message, text)
+    lang = detect_language(text)
+    for i, f in enumerate(files):
+        try:
+            # Чтение — в потоке: файл до 50 МБ не должен держать event loop
+            data = await asyncio.to_thread(_read_bytes, f["path"])
+            sent = await message.reply_document(
+                document=InputFile(data, filename=f["name"]),
+                caption=caption if i == 0 else None)
+            if getattr(sent, "message_id", None):
+                ids.append(sent.message_id)
+        except Exception as e:
+            logger.warning(f"[files] не отправлен {f.get('name')}: {e}")
+            if i == 0 and caption:
+                ids += await _reply_ai(message, text)
+            try:
+                await message.reply_text(file_access.t(
+                    "send_failed", lang, name=f.get("name"), detail=str(e)[:200]))
+            except Exception:
+                pass
+    return ids
+
+
 async def _reply_with_photos(message, text: str, photos: list) -> list:
     """Ответ + скриншоты режима управления одним сообщением, когда возможно:
     первый кадр несёт текст ответа в подписи (лимит подписи Telegram —
@@ -926,6 +964,8 @@ def create_handlers(bot: BotInstance) -> dict:
                         # Подтверждение pending-действия — по тому, что ввёл
                         # пользователь, а не по описанию экрана
                         raw_user_text=screen_raw,
+                        # «Открой/пришли файл X» — из Telegram файл присылается
+                        file_delivery="send",
                     )
                 finally:
                     typing_task.cancel()
@@ -939,7 +979,12 @@ def create_handlers(bot: BotInstance) -> dict:
                 # «текст, следом фото»); не влезло в подпись — текст и кадры
                 # отдельно
                 photos = bot.pop_pending_photos(chat_id)
-                sent_ids = await _reply_with_photos(update.message, response, photos)
+                # Файлы с компьютера ядра («пришли файл X») — документами
+                found_files = bot.pop_pending_files(chat_id)
+                if found_files:
+                    sent_ids = await _reply_with_files(update.message, response, found_files)
+                else:
+                    sent_ids = await _reply_with_photos(update.message, response, photos)
                 # Хвост расщеплённого ответа — отдельными сообщениями следом
                 sent_ids += await _send_split_parts(bot, update, context, chat_id)
 

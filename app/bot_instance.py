@@ -794,6 +794,11 @@ class BotInstance:
         # Per-chat — та же защита от гонок, что у списков выше.
         self._pending_photos: Dict[str, List[dict]] = {}
 
+        # Файлы с компьютера ядра для отправки в чат («пришли файл X»,
+        # app/features/file_access): {"path", "name", "size"}. Забирает канал
+        # (TG — документом, веб — ссылкой на скачивание). Per-chat — как выше
+        self._pending_files: Dict[str, List[dict]] = {}
+
         # Переспрос «Записать «X» в список дел?» / «Добавить «X» в инвентарь?»
         # (без локальной модели): отложенный вопрос чата ждёт «да»/«нет»
         # того, кого спросили (см. _list_offer_turn)
@@ -907,6 +912,8 @@ class BotInstance:
         self._control_mode_path = (data_dir() / self.context
                                    / "computer_control" / "control_mode.json")
         self._cc_mode_load()
+        # «Открой файл X» / «пришли файл про Y» — ход и его список вариантов
+        self._file_access()
 
         # Learning manager (только если learning) — режим обучения по запросу
         self.learning_manager: Optional[LearningManager] = None
@@ -1287,6 +1294,70 @@ class BotInstance:
             return True
         return bool(user_id) and user_id in {self.owner, os.getenv("OWNER_USER_ID", "")}
 
+    def file_access_allowed(self, user_id: str, chat_id=None) -> bool:
+        """Можно ли этому собеседнику открывать и получать файлы с компьютера
+        ядра: только владелец, не из скина (реплику мог написать скрипт
+        скина) и в Telegram — только в личке (в группе файл увидели бы все).
+        features.file_access: false — выключено совсем."""
+        if getattr(self, "features", {}).get("file_access", True) is False:
+            return False
+        if getattr(_SKIN_TURN, "on", False):
+            return False
+        if not getattr(self, "web_single_user", False) and str(chat_id or "").startswith("-"):
+            return False
+        return self.is_owner(user_id)
+
+    def _file_access(self):
+        # Менеджер хода «файл с компьютера» — лениво: заготовки без __init__
+        fa = getattr(self, "_file_access_mgr", None)
+        if fa is None:
+            from app.features.file_access import FileAccess
+            fa = self._file_access_mgr = FileAccess(
+                base_dir=data_dir() / str(getattr(self, "context", "") or "default")
+                / "file_access")
+        return fa
+
+    def _file_access_turn(self, text: str, user_id: str, chat_id,
+                          delivery: Optional[str], lang: Optional[str]) -> Optional[str]:
+        """Реплика про файл → ответ (файлы — в бакет хода) или None."""
+        if delivery not in ("open", "send") or not text \
+                or not self.file_access_allowed(user_id, chat_id):
+            return None
+        fa = self._file_access()
+        key = str(chat_id or user_id or "")
+        if not key:
+            return None
+        # Подтверждение режима управления, ждущее ответа, — новее нашего
+        # списка (наш при создании гасит его, см. ниже): «да»/«2» — ему
+        cc = getattr(self, "computer_control", None)
+        foreign = False
+        if cc is not None and fa.has_pending(key, user_id):
+            try:
+                foreign = cc.get_pending(chat_id, user_id=user_id) is not None
+            except Exception:
+                foreign = False
+        try:
+            res = fa.turn(text, key, user_id, delivery, lang=lang,
+                          names=self._address_names(), foreign_pending=foreign)
+        except Exception:
+            logger.exception("[BotInstance] файл с компьютера: сбой хода")
+            return None
+        if res is None:
+            return None
+        reply, files = res
+        if fa.has_pending(key, user_id) and cc is not None:
+            # Наш список стал последним вопросом чата: старое подтверждение
+            # режима управления «да»/«2» больше не получает
+            try:
+                cc.clear_pending(chat_id)
+            except Exception:
+                pass
+        if files:
+            self._files_bucket().setdefault(str(chat_id), []).extend(files)
+        logger.info(f"[BotInstance] файл с компьютера ({delivery}): "
+                    f"{len(files)} к отправке | chat_id={chat_id}")
+        return reply
+
     def _cc_allowed(self, user_id: str, chat_id=None) -> bool:
         """Единая точка авторизации режима управления (браузер/ОС от имени
         пользователя): владелец персоны или allowlist фичи
@@ -1358,6 +1429,30 @@ class BotInstance:
         Вызывается платформой после отправки основного ответа (TG шлёт
         фото, веб — dataURL в ответе)."""
         return self._pending_photos.pop(str(chat_id), [])
+
+    def pop_pending_files(self, chat_id) -> List[dict]:
+        """Забирает файлы хода для отправки в чат («пришли файл X») — и
+        очищает бакет. Файлы — настоящие файлы пользователя: канал их только
+        читает, никогда не удаляет (не cleanup_files из file_sender)."""
+        return self._files_bucket().pop(str(chat_id), [])
+
+    def pop_reply_history_text(self, chat_id) -> Optional[str]:
+        """Каким текстом ответ хода лёг в историю, если не самим ответом
+        (список файлов — заглушкой); None — тем же текстом."""
+        return self._reply_history_bucket().pop(str(chat_id), None)
+
+    def _reply_history_bucket(self) -> Dict[str, str]:
+        b = getattr(self, "_reply_history_text", None)
+        if b is None:
+            b = self._reply_history_text = {}
+        return b
+
+    def _files_bucket(self) -> Dict[str, List[dict]]:
+        # getattr — тестовые заготовки бота собираются без __init__
+        b = getattr(self, "_pending_files", None)
+        if b is None:
+            b = self._pending_files = {}
+        return b
 
     def pop_pending_question_kind(self, chat_id) -> Optional[str]:
         """Забирает (и снимает) тип последнего ответа-вопроса бота для чата:
@@ -1979,6 +2074,12 @@ class BotInstance:
         прогон без вариантов (свободный ответ) кнопок не даёт. Кнопка шлёт
         обычную реплику, поэтому здесь ничего не меняется — только чтение."""
         key = str(chat_id or user_id or "")
+        # Список «какой файл?» (file_access) — вне режима управления тоже
+        fa = getattr(self, "_file_access_mgr", None)
+        if key and fa is not None:
+            opts = fa.answer_options(key, user_id)
+            if opts:
+                return opts
         cc = getattr(self, "computer_control", None)
         if not key or cc is None:
             return None
@@ -3164,12 +3265,16 @@ class BotInstance:
                         reply_to_bot_message_id: Optional[int] = None,
                         on_token=None,
                         raw_user_text: Optional[str] = None,
-                        from_skin: bool = False) -> str:
+                        from_skin: bool = False,
+                        file_delivery: Optional[str] = None) -> str:
         """Обработка сообщения; парная к START строка END — по её наличию в
         логе видно, дошла ли генерация до конца и сколько заняла (без неё
         не отличить «ответ сгенерирован, но не доставлен» от «завис»).
         from_skin — реплика из скина веб-интерфейса: режим управления в этом
-        ходе недоступен (см. _SKIN_TURN)."""
+        ходе недоступен (см. _SKIN_TURN).
+        file_delivery — что канал сделает с файлом по «открой/пришли файл X»
+        (app/features/file_access): "open" — веб на компьютере ядра,
+        "send" — телефон и Telegram; None — канал файлы не обслуживает."""
         t0 = time.monotonic()
         # Вложенный вызов внутри хода из скина (агент задач передаёт реплику
         # дальше) флаг не снимает: возвращаем прежнее значение, а не False
@@ -3194,7 +3299,7 @@ class BotInstance:
                     reply_context=reply_context,
                     reply_to_bot_message_id=reply_to_bot_message_id,
                     on_token=on_token, raw_user_text=raw_user_text,
-                    from_skin=_SKIN_TURN.on,
+                    from_skin=_SKIN_TURN.on, file_delivery=file_delivery,
                 )
         except BaseException:
             logger.info(f"[BotInstance] process_message END (исключение): "
@@ -3214,7 +3319,8 @@ class BotInstance:
                               reply_to_bot_message_id: Optional[int] = None,
                               on_token=None,
                               raw_user_text: Optional[str] = None,
-                              from_skin: bool = False) -> str:
+                              from_skin: bool = False,
+                              file_delivery: Optional[str] = None) -> str:
         from app.features import side_tasks
 
         # Что пользователь реально НАПИСАЛ (текст сообщения/подпись), в отличие
@@ -3244,6 +3350,8 @@ class BotInstance:
         self._pending_split_messages[str(chat_id)] = []
         # Скриншоты страницы от предыдущего вызова — тоже
         self._pending_photos[str(chat_id)] = []
+        self._files_bucket()[str(chat_id)] = []
+        self._reply_history_bucket().pop(str(chat_id), None)
         # Каким был последний ответ-вопрос: 'frequency' | 'continue' | None.
         # Нужно telegram-слою, чтобы зарегистрировать отправленное сообщение как «вопрос бота»
         # для reply-to-логики обучения (пользователь может ответить reply-ом на этот вопрос).
@@ -3415,6 +3523,23 @@ class BotInstance:
                 _wl.finish_idle_rescue()
             except Exception:
                 pass
+
+        # «Открой файл X» / «пришли файл про Y» — файл с компьютера ядра
+        # (app/features/file_access). Раньше режима управления: там «открой
+        # файл …» ушло бы в поиск сайта. Ответ — служебный, без модели
+        _fa = self._file_access_turn(raw_user_text, user_id, chat_id,
+                                     file_delivery, turn_lang)
+        if _fa is not None:
+            self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+            # Список вариантов — в историю заглушкой (file_access.history_text);
+            # веб сверяет свой пузырь с историей по этому тексту
+            _fa_hist = self._file_access().history_text(_fa)
+            if _fa_hist != _fa:
+                self._reply_history_bucket()[str(chat_id)] = _fa_hist
+            self.memory.add_message("assistant", _fa_hist, user_id, chat_id)
+            if self.proactive:
+                self.proactive.record_user_response(chat_id)
+            return _fa
 
         # Быстрый путь computer_control: перехват «да»/«нет» на pending-действие
         # и голая команда «открой X» — оба обслуживаются шаблонно, весь тяжёлый
