@@ -360,6 +360,15 @@ async def offline_kit(persona: PersonaIdPath,
     return await asyncio.to_thread(offline_api.build_kit, bot, persona, chat_id, user_id)
 
 
+@app.get("/api/personas/{persona}/offline/short-prompt", dependencies=[Depends(require_auth)])
+async def offline_short_prompt(persona: PersonaIdPath):
+    # Краткое описание персоны для модели телефона (посмотреть); не составлено —
+    # начнёт составляться в фоне (app/features/short_prompt.py)
+    from app.features import short_prompt
+    bot = await _get_bot(persona)
+    return await asyncio.to_thread(short_prompt.get_short_prompt, bot)
+
+
 @app.get("/api/personas/{persona}/offline/memory", dependencies=[Depends(require_auth)])
 async def offline_memory(persona: PersonaIdPath,
                          chat_id: str = Query("web_user", max_length=128),
@@ -888,6 +897,7 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                     # _prepare_turn_input)
                     raw_user_text=req.message if shown else None,
                     from_skin=req.from_skin,
+                    turn_note=_phone_note(req),
                     file_delivery=delivery,
                 )
                 # Провайдер ответа — СРАЗУ после process_message и в этом же
@@ -1025,6 +1035,16 @@ def _prepare_turn_input(bot, req: ChatRequest) -> tuple[str, str | None]:
     if _wants_screen(bot, req):
         return _prepare_screen_input(bot, message, req.chat_id, req.user_id), f"🖥 {message}"
     return req.message, None
+
+
+def _phone_note(req: ChatRequest) -> str | None:
+    # Команду уже исполнил телефон — персоне заметка об итоге. Не из скина:
+    # скин — сторонний код, «итог» он мог бы прислать сам. С картинкой
+    # команд телефону не бывает
+    if req.phone_action is None or req.from_skin or req.image:
+        return None
+    from app.features import phone_actions
+    return phone_actions.request_note(req.phone_action)
 
 
 def _wants_screen(bot, req: ChatRequest) -> bool:
@@ -1326,6 +1346,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     # тому, что реально ввёл пользователь, не по OCR картинки
                     raw_user_text=req.message if shown else None,
                     from_skin=req.from_skin,
+                    turn_note=_phone_note(req),
                     file_delivery=delivery,
                 )
                 # Провайдер ответа — сразу и в этом же потоке (_answer_provider)

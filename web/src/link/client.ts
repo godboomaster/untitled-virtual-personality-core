@@ -312,7 +312,7 @@ class Session {
     if (this.dead) return;
     this.send(PING, 0);
     this.pongTimer ??= setTimeout(() => {
-      this.kill(new TypeError('VPC Link: ноутбук не отвечает'));
+      this.kill(new TypeError('VPC Link: ядро не отвечает'));
       try {
         this.ws.close();
       } catch {
@@ -491,7 +491,7 @@ async function getSession(): Promise<Session> {
   if (session && !session.dead) return session;
   if (opening) return opening;
   const cfg = getLinkConfig();
-  if (!cfg) throw new TypeError('VPC Link: ноутбук не сопряжён');
+  if (!cfg) throw new TypeError('VPC Link: ядро не сопряжено');
   setState('connecting');
   opening = connect(cfg, unb64u(cfg.sk), MODE_CONNECT, enc.encode('{"v":1}'))
     .then((o) => {

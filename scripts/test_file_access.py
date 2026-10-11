@@ -256,6 +256,99 @@ def test_hints():
     m.clear("h1")
 
 
+def test_numbers_paths():
+    section("C3. Номер работы, пути, язык, реплай на список")
+    P = ff.parse_file_request
+    r = P("открой отчёт по первой работе в km")
+    check("«первой» → номер 1", r and "1" in r.terms and r.hints == ["km"])
+    r = P("открой отчёт по лр 1 в km")
+    check("«лр 1» — слова и номер", r and r.terms == ["отчет", "лр", "1"])
+    check("порядковые: «третьей» → 3, «2-й» → 2, «second» → 2, «пятница» — нет",
+          ff._ordinal("третьей") == "3" and ff._ordinal("2-й") == "2"
+          and ff._ordinal("second") == "2" and ff._ordinal("пятница") is None)
+    check("номер — целым числом: «1» в «lab1», не в «lab12» и «2021»",
+          ff._term_score("1", "km_lab1_report.pdf", {"km", "lab1", "report"}) == 1.0
+          and ff._term_score("1", "lab12.pdf", {"lab12"}) == 0.0
+          and ff._term_score("1", "x_2021.pdf", {"x", "2021"}) == 0.0)
+
+    make("Documents/LabsS7/km/src/lab1/reports/km_lab1_report.pdf", age_days=15)
+    make("Documents/LabsS7/km/artifacts/lab2/km_lab2_report.pdf", age_days=5)
+    make("Documents/LabsS7/km/artifacts/lab2/km_lab2_report.docx", age_days=5)
+    make("Documents/LabsS7/km/artifacts/lab1/README.md", age_days=6)
+    make("Documents/LabsS7/km/artifacts/lab1/km_lab1_CONTROL_QUESTIONS.md", age_days=6)
+    make("Documents/LabsS7/km/materials/Лабораторная работа 2 КМ.pdf", age_days=5)
+    make("Documents/proj/app/build/intermediates/values-km/strings.xml")
+    make("Library/Preferences/x.plist")
+    m = fa.FileAccess(base_dir=None)
+    for q in ("пришли отчёт по лр 1 в km", "пришли отчёт по первой работе в km"):
+        reply, files = m.turn(q, "g1", "u1", "send", lang="ru")
+        check(f"«{q}» — km_lab1_report из src/lab1/reports, не lab2",
+              len(files) == 1 and files[0]["name"] == "km_lab1_report.pdf")
+    roots, _u = ff.resolve_hints(["km"], [])
+    check("папки сборки («build/…/values-km») — не подсказка «km»",
+          roots and all("build" not in str(p) for p, _s in roots))
+    reply, files = m.turn("пришли отчёт по второй лабе в km", "g1", "u1", "send", lang="ru")
+    check("«второй лабе» — отчёт lab2, отчёта lab1 нет",
+          ("km_lab2_report" in reply or (files and "lab2" in files[0]["name"]))
+          and "km_lab1_report" not in reply)
+    m.clear("g1")
+
+    r = P("открой ~/Documents/LabsS7/km/artifacts/lab1")
+    check("путь целиком после глагола — req.path",
+          r and r.path and r.path.endswith("km/artifacts/lab1"))
+    check("«/help» — не путь", P("/help") is None)
+    reply, files = m.turn("пришли ~/Documents/LabsS7/km/artifacts/lab1", "g1", "u1", "send", lang="ru")
+    check("папка путём — список её файлов",
+          reply.startswith("В папке ~/Documents/LabsS7/km/artifacts/lab1") and "README.md" in reply
+          and files == [])
+    reply, files = m.turn("1", "g1", "u1", "send", lang="ru")
+    check("номер из списка папки — файл", len(files) == 1)
+    opened = []
+    orig = ff.open_folder
+    ff.open_folder = lambda p: opened.append(p)
+    try:
+        reply, _f = m.turn("открой ~/Documents/LabsS7/km", "g1", "u1", "open", lang="ru")
+        check("на ядре папка путём — открывается сама папка",
+              opened and opened[0].endswith("LabsS7/km") and reply.startswith("Открываю папку"))
+    finally:
+        ff.open_folder = orig
+    reply, _f = m.turn("открой ~/Documents/нет_такого", "g1", "u1", "send", lang="ru")
+    check("пути нет — честно", reply.startswith("На компьютере с ядром нет пути"))
+    reply, _f = m.turn("пришли отчёт в ~/Documents/нет_такого", "g1", "u1", "send", lang="ru")
+    check("подсказка-путь, которого нет, — «папки не нашлось»", reply.startswith("Не нашлось папки"))
+    reply, files = m.turn("пришли отчёт в ~/Documents/LabsS7/km/artifacts/lab1", "g1", "u1",
+                          "send", lang="ru")
+    check("подсказка-путь — ищем только в ней (отчёт lab2 не всплывает)",
+          reply is not None and "lab2" not in reply and not files)
+    m.clear("g1")
+    reply, _f = m.turn("пришли ~/Library/Preferences", "g1", "u1", "send", lang="ru")
+    check("служебная папка путём — отказ", "не открываю и не присылаю" in reply)
+
+    reply, files = m.turn("пришли km_lab1_report.pdf", "g3", "u1", "send", lang="en")
+    check("«пришли km_lab1_report.pdf» — по-русски, хотя латиницы больше",
+          reply.startswith("Вот «km_lab1_report.pdf»") and len(files) == 1)
+    reply, files = m.turn("km_lab1_report.pdf", "g3", "u1", "send", lang="en")
+    check("голое имя файла — файл; язык — прошлой просьбы чата",
+          reply.startswith("Вот «") and len(files) == 1)
+    check("голое имя, которого нет, — не наше (просто упоминание)",
+          m.turn("nothing_here.pdf", "g3", "u1", "send", lang="ru") is None)
+
+    lst = ("[Connor]: Нашлось несколько файлов — какой прислать?\n"
+           "1. a.pdf — ~/x · 01.01.2026, 1 КБ\n2. b.pdf — ~/x · 01.01.2026, 2 КБ\n"
+           "Ответь номером («да» — первый) или «нет».")
+    check("реплай на список — модели заглушка без имён",
+          fa.scrub_reply_context(lst) == "[Connor]: Нашлось несколько файлов (2) — выбор показан в чате.")
+    check("реплай на список папки и на EN-список — тоже без имён",
+          "a.pdf" not in fa.scrub_reply_context("В папке ~/x — какой файл прислать?\n1. a.pdf — x")
+          and "a.pdf" not in fa.scrub_reply_context(
+              "I found several files — which one should I send?\n1. a.pdf — x"))
+    check("обычный реплай — как есть", fa.scrub_reply_context("[Connor]: привет") == "[Connor]: привет")
+    check("разговор о файлах: папка, путь, имя с расширением; «привет» — нет",
+          ff.looks_like_file_talk("что в этой папке?") and ff.looks_like_file_talk("глянь ~/Documents/x")
+          and ff.looks_like_file_talk("km_lab1_report.pdf")
+          and not ff.looks_like_file_talk("привет, как дела"))
+
+
 class Spy:
     def __init__(self):
         self.opened = []
@@ -379,6 +472,21 @@ def test_bot():
           b._file_access_turn("пришли файл отчёт по лабораторной", "u2", "u2", "send", "ru") is None)
     check("группа Telegram — не перехватываем даже владельца",
           b._file_access_turn("пришли файл отчёт по лабораторной", "u1", "-100500", "send", "ru") is None)
+    g = _stub_bot()
+    g.features = {"file_access": {"allowed_chats": ["-100500", -100700]}}
+    r = g._file_access_turn("пришли файл отчёт по лабораторной", "u1", "-100500", "send", "ru")
+    check("группа из allowed_chats — владельцу файл в бакет",
+          r and r.startswith("Вот «") and len(g.pop_pending_files("-100500")) == 1)
+    check("allowed_chats числом из YAML — тоже группа из списка",
+          g._file_access_turn("пришли файл отчёт по лабораторной", "u1", "-100700", "send", "ru") is not None)
+    g.pop_pending_files("-100700")
+    check("группа из allowed_chats — не владельцу нет",
+          g._file_access_turn("пришли файл отчёт по лабораторной", "u2", "-100500", "send", "ru") is None)
+    check("другая группа — нет",
+          g._file_access_turn("пришли файл отчёт по лабораторной", "u1", "-100600", "send", "ru") is None)
+    g.features = {"file_access": {"enabled": False, "allowed_chats": ["-100500"]}}
+    check("file_access.enabled: false — выключено и в группе из списка",
+          g._file_access_turn("пришли файл отчёт по лабораторной", "u1", "-100500", "send", "ru") is None)
     check("канал файлы не обслуживает (None) — не перехватываем",
           b._file_access_turn("пришли файл отчёт по лабораторной", "u1", "u1", None, "ru") is None)
     bi._SKIN_TURN.on = True
@@ -387,6 +495,20 @@ def test_bot():
               b._file_access_turn("пришли файл отчёт по лабораторной", "u1", "u1", "send", "ru") is None)
     finally:
         bi._SKIN_TURN.on = False
+    import inspect
+    check("заметка модели: о файлах и реплай на список — да, «привет» — нет",
+          bi.BotInstance._file_talk("что в папке lab1?")
+          and bi.BotInstance._file_talk("ок", "[Connor]: Нашлось несколько файлов (2) — выбор показан в чате.")
+          and not bi.BotInstance._file_talk("привет"))
+    src = inspect.getsource(bi.BotInstance._process_message_impl)
+    check("заметка — в системный блок хода; реплай чистится до модели",
+          "FILE_TALK_NOTE" in src and "scrub_reply_context(reply_context)" in src)
+    bi._PHONE_TURN.on = True
+    try:
+        check("ход команды телефону — не перехватываем",
+              b._file_access_turn("пришли файл отчёт по лабораторной", "u1", "u1", "send", "ru") is None)
+    finally:
+        bi._PHONE_TURN.on = False
     b.features = {"file_access": False}
     check("features.file_access: false — выключено",
           b._file_access_turn("пришли файл отчёт по лабораторной", "u1", "u1", "send", "ru") is None)
@@ -564,6 +686,7 @@ def main():
     test_paths()
     test_search()
     test_hints()
+    test_numbers_paths()
     test_turn()
     test_bot()
     test_api()

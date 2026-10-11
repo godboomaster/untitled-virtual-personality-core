@@ -19,7 +19,8 @@ interface FormModalProps {
   submitDisabled?: boolean;
   wide?: boolean; // широкая панель (~560px) для больших форм
   xl?: boolean; // очень широкая панель (~900px), двухпанельные формы
-  onSubmit: () => void;
+  onSubmit?: () => void; // нет — окно только посмотреть: в подвале одна «Закрыть»
+  cancelLabel?: string;
   onClose: () => void;
 }
 
@@ -32,6 +33,7 @@ export default function FormModal({
   wide,
   xl,
   onSubmit,
+  cancelLabel,
   onClose,
 }: FormModalProps) {
   const { t } = useI18n();
@@ -63,11 +65,13 @@ export default function FormModal({
         <div className="pcreate-body">{children}</div>
         <div className="pcreate-foot">
           <button type="button" className="btn btn--ghost" onClick={onClose}>
-            {t('common.cancel')}
+            {cancelLabel ?? (onSubmit ? t('common.cancel') : t('common.close'))}
           </button>
-          <button type="button" className="btn btn--primary" disabled={submitDisabled} onClick={onSubmit}>
-            {submitLabel ?? t('common.create')}
-          </button>
+          {onSubmit && (
+            <button type="button" className="btn btn--primary" disabled={submitDisabled} onClick={onSubmit}>
+              {submitLabel ?? t('common.create')}
+            </button>
+          )}
         </div>
       </div>
     </div>,

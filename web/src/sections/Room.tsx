@@ -16,6 +16,7 @@ import InventoryCard from '../room/InventoryCard';
 import RoomFeed from '../room/RoomFeed';
 import { RoomFocusControls, RoomFocusOverlay } from '../room/RoomFocus';
 import RoomScene from '../room/RoomScene';
+import RoomPersonaPicker from '../room/RoomPersonaPicker';
 import { claimPoke } from '../room/poke';
 import RoomTelemetry, { AwayStrip } from '../room/RoomTelemetry';
 import { patchRoomLayout } from '../room/roomLayoutStore';
@@ -23,6 +24,8 @@ import { spotPoint } from '../room/roomModel';
 import { closeRoomPip, openRoomPip, roomPipSupported, useRoomPip } from '../room/roomPipStore';
 import { setSessionAvatar, useRoomScene, useTitleStatus } from '../room/useRoomScene';
 import { BACK_OVERLAY, useBackHandler } from '../backStack';
+import Collapsible from '../components/Collapsible';
+import { useNarrowScreen } from '../useNarrowScreen';
 
 /* Раздел «Комната» — личное пространство персоны. Сцена показывает живое
    состояние персоны (GET /room раз в минуту): где она в комнате, чем занята
@@ -46,6 +49,9 @@ export default function Room() {
   const [personaId, setPersonaId] = useState(() => personas[0].id);
   const persona = personas.find((p) => p.id === personaId) ?? personas[0];
   const sectionRef = useRef<HTMLDivElement>(null);
+  // Узкий экран: вместо заголовка и вкладок персон — кнопка выбора над
+  // сценой, арт-мастерская свёрнута (на телефоне она длиной в несколько экранов)
+  const narrow = useNarrowScreen();
 
   // Вся модель сцены (живое состояние / демо, предметы, аватар, сигналы
   // присутствия, сессия фокуса) — общий хук с PiP-окном
@@ -246,15 +252,56 @@ export default function Room() {
     />
   );
 
+  const fullscreenButton = (
+    <button
+      type="button"
+      className="btn btn--ghost room-fs-btn"
+      title={t('room.sceneFullscreen')}
+      aria-label={t('room.sceneFullscreen')}
+      onClick={openFullscreen}
+    >
+      <Icon name="fullscreen" size={13} />
+    </button>
+  );
+
+  // Промпт-пак и загрузка ассетов; конструктор аватара встроен в «Загрузку»
+  const artGrid = (
+    <div className="room-art-grid">
+      <div className="room-art-side">
+        <ArtPanel
+          persona={persona}
+          constructorSlot={
+            <AvatarBuilder key={`${persona.id}:${JSON.stringify(applied)}`} value={applied} seed={persona.id} onApply={applyAvatar} />
+          }
+        />
+      </div>
+    </div>
+  );
+
   return (
     <div className="section" ref={sectionRef}>
       <div className="section-header">
-        <div>
-          <h2 className="section-title">{t('nav.room')}</h2>
-          <p className="section-subtitle">
-            {t('room.subtitle')}
-          </p>
-        </div>
+        {narrow ? (
+          // Заголовок «Комната» уже в верхней полосе — здесь чья комната
+          <div className="room-pick-bar">
+            <RoomPersonaPicker
+              personas={personas}
+              current={persona}
+              statusLine={[t(`status.${persona.status}`), away ? t('room.statusAway') : activityKnown ? activity.label : '']
+                .filter(Boolean)
+                .join(' · ')}
+              onPick={setPersonaId}
+            />
+            {fullscreenButton}
+          </div>
+        ) : (
+          <div>
+            <h2 className="section-title">{t('nav.room')}</h2>
+            <p className="section-subtitle">
+              {t('room.subtitle')}
+            </p>
+          </div>
+        )}
         <div className="room-header-actions">
           {/* Поработать вместе: 25/50 мин, персона садится за работу */}
           <RoomFocusControls focus={focus} />
@@ -283,8 +330,8 @@ export default function Room() {
               </button>
             </>
           )}
-          {/* PiP: только Chromium (Document Picture-in-Picture); иначе кнопки нет */}
-          {pipOk && (
+          {/* PiP: только Chromium (Document Picture-in-Picture), не на телефоне; иначе кнопки нет */}
+          {pipOk && !narrow && (
             <button
               type="button"
               className="btn btn--ghost"
@@ -294,20 +341,13 @@ export default function Room() {
               {pipHere ? t('room.pip.back') : t('room.pip.open')}
             </button>
           )}
-          <button
-            type="button"
-            className="btn btn--ghost"
-            title={t('room.sceneFullscreen')}
-            aria-label={t('room.sceneFullscreen')}
-            onClick={openFullscreen}
-          >
-            <Icon name="fullscreen" size={13} />
-          </button>
-          <span className="badge badge--active">{persona.name} · {t(`status.${persona.status}`)}</span>
+          {!narrow && fullscreenButton}
+          {!narrow && <span className="badge badge--active">{persona.name} · {t(`status.${persona.status}`)}</span>}
         </div>
       </div>
 
       {/* Переключатель персон: у каждой своя комната */}
+      {!narrow && (
       <div className="tabs room-persona-tabs">
         {personas.map((p) => (
           <button
@@ -320,6 +360,7 @@ export default function Room() {
           </button>
         ))}
       </div>
+      )}
 
       {/* Откат при сломанном скине комнаты: дефолтный вид + объяснение */}
       {broken.room && (
@@ -473,6 +514,7 @@ export default function Room() {
             place={activityKnown ? activity.place || '—' : '—'}
             duration={duration}
             sourceLabel={sourceLabel}
+            offline={room.noLink}
           />
         </div>
       </div>
@@ -491,23 +533,22 @@ export default function Room() {
         />
       )}
 
-      {/* Арт-мастерская: конструктор аватара + промпт-паки и загрузка арта */}
+      {/* Арт-мастерская: конструктор аватара + промпт-паки и загрузка арта.
+          Телефон — свёрнутым блоком (раскрытие запоминается) */}
       <div className="room-art">
-        <div className="home-block-head">
-          <span className="home-block-title">{t('room.artWorkshop')}</span>
-          <span className="home-block-num">ART // IN-ROOM</span>
-        </div>
-        <div className="room-art-grid">
-          {/* Промпт-пак и загрузка ассетов; конструктор аватара встроен в «Загрузку» */}
-          <div className="room-art-side">
-            <ArtPanel
-              persona={persona}
-              constructorSlot={
-                <AvatarBuilder key={`${persona.id}:${JSON.stringify(applied)}`} value={applied} seed={persona.id} onApply={applyAvatar} />
-              }
-            />
-          </div>
-        </div>
+        {narrow ? (
+          <Collapsible title={t('room.artWorkshop')} summary={t('room.artSummary')} storageKey="vpc-room-open-art">
+            {artGrid}
+          </Collapsible>
+        ) : (
+          <>
+            <div className="home-block-head">
+              <span className="home-block-title">{t('room.artWorkshop')}</span>
+              <span className="home-block-num">ART // IN-ROOM</span>
+            </div>
+            {artGrid}
+          </>
+        )}
       </div>
 
       {/* Инвентарь и лента: при активном скине живут внутри скина */}

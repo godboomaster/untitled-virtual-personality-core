@@ -83,6 +83,11 @@ class FileRequest:
     # Заполняет search: найденные папки → похожесть, ненайденные подсказки
     root_sims: Dict[str, float] = field(default_factory=dict)
     unresolved: List[str] = field(default_factory=list)
+    # «открой ~/Documents/LabsS7/km» — путь целиком: файл или папка
+    path: Optional[str] = None
+    # Язык глагола («открой km_lab1_report.pdf» — русский, хотя латиницы
+    # больше); None — глагола нет (голое «km_lab1_report.pdf»)
+    lang: Optional[str] = None
 
 
 _OPEN_VERBS = (r"открой(?:те)?|открыть|откроешь|открывай(?:те)?|покажи(?:те)?|"
@@ -160,8 +165,8 @@ _HERE_RE = re.compile(
     r"пк|диск\w*|маке|мака|mac\w*)\b|\b(?:from|on)\s+(?:my\s+|the\s+)?"
     r"(?:computer|laptop|pc|mac|disk|drive)\b", re.IGNORECASE)
 _FOLDER_RE = re.compile(
-    r"\b(?:из|в|во)\s+папк\w+\s+(«[^»]+»|\"[^\"]+\"|[\w\-.]+)"
-    r"|\b(?:from|in)\s+(?:the\s+)?(?:folder|directory)\s+(\"[^\"]+\"|[\w\-.]+)"
+    r"\b(?:из|в|во)\s+папк\w+\s+(«[^»]+»|\"[^\"]+\"|[\w\-.~/\\:]+)"
+    r"|\b(?:from|in)\s+(?:the\s+)?(?:folder|directory)\s+(\"[^\"]+\"|[\w\-.~/\\:]+)"
     r"|\b(?:from|in)\s+(?:the\s+)?(\"[^\"]+\"|[\w\-.]+)\s+(?:folder|directory)",
     re.IGNORECASE)
 _RECENT_RE = re.compile(
@@ -206,7 +211,10 @@ _SYNONYMS: Dict[str, Tuple[str, ...]] = {
     "конспект": ("лекци", "notes", "summary"),
     "отчет": ("report",), "report": ("отчет",),
     "задани": ("task", "assignment", "вариант"),
-    "лаб": ("lab", "лабораторн"), "лабораторн": ("lab", "лаб"), "lab": ("лаб",),
+    "лаб": ("lab", "лабораторн", "лр"), "лабораторн": ("lab", "лаб", "лр"),
+    "lab": ("лаб", "лр"), "лр": ("lab", "лаб", "лабораторн"),
+    # «отчёт по первой работе» — у студента это лабораторная
+    "работ": ("lab", "лр"),
     "договор": ("contract", "agreement"), "contract": ("договор",),
     "резюме": ("resume", "cv"), "resume": ("резюме", "cv"),
     "билет": ("вопрос", "question"), "вопрос": ("билет", "question"),
@@ -249,6 +257,65 @@ _MODIFIER_RE = re.compile(
     r"тот|та|ту|то|сам\w*|один|одну|какой-то|какую-то|the|a|an|my|this|that|"
     r"same|old)$", re.IGNORECASE)
 
+# «отчёт по первой работе», «3-й лабе», «second lab» — номер, как в имени
+# «km_lab1_report»
+_ORDINALS = (("перв", "1"), ("втор", "2"), ("трет", "3"), ("четверт", "4"),
+             ("пят", "5"), ("шест", "6"), ("седьм", "7"), ("восьм", "8"),
+             ("девят", "9"), ("десят", "10"))
+_ORD_END = (r"(?:ый|ий|ой|ая|яя|ое|ее|ую|юю|ого|его|ому|ему|ом|ем|ые|ие|ых|их|"
+            r"ым|им|ыми|ими|ья|ье|ью|ьи|ьей|ьего|ьему|ьим|ьих|ьем)")
+_EN_ORDINALS = {"first": "1", "second": "2", "third": "3", "fourth": "4",
+                "fifth": "5", "sixth": "6", "seventh": "7", "eighth": "8",
+                "ninth": "9", "tenth": "10"}
+
+# Путь целиком: «~/Documents/LabsS7», «/Users/…», «C:\Users\…»; «/help» —
+# команда, не путь (у пути от корня — хотя бы две части)
+_ABS_PATH_RE = re.compile(r"^(?:~(?=$|[/\\])|[A-Za-z]:[\\/]|/[^/\s]+/)")
+# Голое имя файла репликой: «km_lab1_report.pdf»
+_BARE_NAME_RE = re.compile(r"^[^\s/\\«»\"]+\.([a-z0-9]{2,5})$", re.IGNORECASE)
+
+
+# Разговор о файлах и папках компьютера: «файл», «папка», путь, имя с
+# расширением (заметка модели, что сама она их не видит)
+_FILE_TALK_RE = re.compile(
+    r"\b(?:файл\w*|папк\w*|директори\w*|каталог\w*|документ\w*|"
+    r"files?|folders?|director(?:y|ies)|documents?)\b"
+    r"|(?:^|\s)~[/\\]|(?:^|\s)/(?:Users|home|Volumes)/|\b[A-Za-z]:\\"
+    r"|\b[\w\-]+\.(?:pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf|txt|csv|md|epub|djvu|"
+    r"zip|rar|7z|jpe?g|png|heic|mp3|mp4|mov|ipynb)\b",
+    re.IGNORECASE)
+
+
+def looks_like_file_talk(text: str) -> bool:
+    return bool(text) and bool(_FILE_TALK_RE.search(text))
+
+
+def _ordinal(word: str) -> Optional[str]:
+    """Порядковое числительное → номер строкой: «первой» → «1», «3-й» → «3»."""
+    w = _fold(word)
+    m = re.fullmatch(r"(\d{1,3})-?(?:й|я|е|ю|ой|ая|ую|ий|ый|ого|ом|th|st|nd|rd)", w)
+    if m:
+        return str(int(m.group(1)))
+    for base, n in _ORDINALS:
+        if re.fullmatch(base + _ORD_END, w):
+            return n
+    return _EN_ORDINALS.get(w)
+
+
+def is_path_like(s: str) -> bool:
+    """Похоже на путь: «~/…», «/…», «C:\\…» или «km/artifacts/lab1»."""
+    s = (s or "").strip()
+    return bool(s) and (bool(_ABS_PATH_RE.match(s)) or "/" in s or "\\" in s)
+
+
+def expand_path(s: str) -> Path:
+    s = s.strip().strip("«»\"'“”")
+    if s == "~":
+        return _HOME
+    if s.startswith(("~/", "~\\")):
+        return _HOME / s[2:]
+    return Path(s)
+
 
 def _fold(s: str) -> str:
     # NFC: имена файлов на macOS разложены (ё = е + U+0308, й = и + U+0306)
@@ -284,17 +351,45 @@ def stem(word: str) -> str:
     return w
 
 
-def _match_lead(text: str) -> Optional[Tuple[str, str]]:
-    """Глагол в начале реплики → (verb, хвост)."""
+def _match_lead(text: str) -> Optional[Tuple[str, str, str]]:
+    """Глагол в начале реплики → (verb, хвост, язык глагола)."""
     lead = re.match(_LEAD, text, re.IGNORECASE)
     rest = text[lead.end():] if lead else text
-    for verb, pat in (("open", _OPEN_VERBS), ("send", _SEND_VERBS),
-                      ("find", _FIND_VERBS), ("open", _EN_OPEN),
-                      ("send", _EN_SEND), ("find", _EN_FIND)):
+    for verb, pat, lang in (("open", _OPEN_VERBS, "ru"), ("send", _SEND_VERBS, "ru"),
+                            ("find", _FIND_VERBS, "ru"), ("open", _EN_OPEN, "en"),
+                            ("send", _EN_SEND, "en"), ("find", _EN_FIND, "en")):
         m = re.match(rf"(?:{pat})\b[\s,]*", rest, re.IGNORECASE)
         if m:
-            return verb, rest[m.end():]
+            return verb, rest[m.end():], lang
     return None
+
+
+def _terms_of(words: Iterable[str]) -> List[str]:
+    """Слова запроса → основы для поиска; «первой» → «1»."""
+    terms: List[str] = []
+    for w in words:
+        t = _ordinal(w) or stem(w)
+        if t and (len(t) >= 2 or t.isdigit()) and t not in terms:
+            terms.append(t)
+    return terms
+
+
+def _bare_request(s: str) -> Optional[FileRequest]:
+    """Реплика — только путь или имя файла: «~/Documents/LabsS7/km»,
+    «km_lab1_report.pdf» (ответ на «назови имя файла»). Имя — мягко: наше,
+    только если такой файл нашёлся, иначе это просто упоминание."""
+    x = s.strip().strip("«»\"'“”")
+    if _ABS_PATH_RE.match(x):
+        return FileRequest(verb="open", query=x, terms=[], path=str(expand_path(x)))
+    m = _BARE_NAME_RE.match(x)
+    if not m or m.group(1).lower() not in _BARE_EXTS:
+        return None
+    ext = m.group(1).lower()
+    terms = _terms_of(w for w in _WORD_RE.findall(x) if _fold(w) != ext)
+    if not terms:
+        return None
+    return FileRequest(verb="open", query=x, terms=terms[:8], exts={ext},
+                       strict_ext=True, exact=x, soft=True)
 
 
 def parse_file_request(text: str) -> Optional[FileRequest]:
@@ -309,9 +404,14 @@ def parse_file_request(text: str) -> Optional[FileRequest]:
     s = " ".join(text.strip().split()).rstrip(".!?…")
     lead = _match_lead(s)
     if not lead:
-        return None
-    verb, rest = lead
+        return _bare_request(s)
+    verb, rest, lang = lead
     rest = re.sub(r"^(?:мне|нам|me|us)\b[\s,]*", "", rest, flags=re.IGNORECASE)
+    # «открой ~/Documents/LabsS7/km/artifacts/lab1» — путь целиком
+    target = rest.strip().strip("«»\"'“”")
+    if _ABS_PATH_RE.match(target):
+        return FileRequest(verb=verb, query=target, terms=[],
+                           path=str(expand_path(target)), lang=lang)
     if _NOT_FILE_RE.search(rest):
         return None
 
@@ -366,6 +466,9 @@ def parse_file_request(text: str) -> Optional[FileRequest]:
             break
         hints.append(word)
         rest = rest[:m.start()].rstrip()
+    # «отчёт в ~/Documents/LabsS7/km» — путь сам говорит «это про файлы»
+    if any(is_path_like(h) for h in hints):
+        strong = True
     recent = bool(_RECENT_RE.search(rest))
     if recent:
         rest = _RECENT_RE.sub(" ", rest)
@@ -430,11 +533,7 @@ def parse_file_request(text: str) -> Optional[FileRequest]:
     if exact and m_ext and exact == m_ext.group(0):
         # «отчёт.docx»: расширение — в exts, не в словах
         words = [w for w in words if _fold(w) != m_ext.group(1).lower()]
-    terms = []
-    for w in words:
-        t = stem(w)
-        if t and (len(t) >= 2 or t.isdigit()) and t not in terms:
-            terms.append(t)
+    terms = _terms_of(words)
     # Без слов — только «последний/с рабочего стола/из папки X»; «пришли
     # презентацию» без названия — переспросим (need_name), а не отдадим
     # персоне: та «откроет» файл на словах
@@ -451,7 +550,7 @@ def parse_file_request(text: str) -> Optional[FileRequest]:
     return FileRequest(verb=verb, query=query_text, terms=terms[:8], mode=mode,
                        exts=exts, strict_ext=strict, folder=folder, roots=roots,
                        recent=recent, exact=exact, need_name=need_name,
-                       hints=hints, soft=soft)
+                       hints=hints, soft=soft, lang=lang)
 
 
 # ---------------------------------------------------------------- фильтры
@@ -781,6 +880,10 @@ def _search_walk(req: FileRequest) -> Dict[str, Set[str]]:
     found: Dict[str, Set[str]] = {}
     deadline = time.monotonic() + WALK_BUDGET_SEC
     seen = 0
+    # Внутри папок из подсказок место уже узкое: берём файл и по части слов
+    # («отчёт по лр 1» — в «km_lab1_report» нет «лр»), отсеет ранжирование
+    scoped = bool(req.root_sims)
+    limit = MAX_RAW * 5 if scoped else MAX_RAW
     for root in _walk_roots(req):
         for dirpath, dirnames, filenames in os.walk(root):
             top = os.path.normpath(dirpath) == os.path.normpath(str(_HOME))
@@ -789,10 +892,16 @@ def _search_walk(req: FileRequest) -> Dict[str, Set[str]]:
                 seen += 1
                 low = _fold(fn)
                 toks = _name_tokens_fold(fn)
-                if not req.terms or all(_term_score(t, low, toks) for t in req.terms):
+                if not req.terms:
+                    ok = True
+                elif scoped:
+                    ok = any(_term_score(t, low, toks) for t in req.terms)
+                else:
+                    ok = all(_term_score(t, low, toks) for t in req.terms)
+                if ok:
                     found.setdefault(os.path.join(dirpath, fn), set()).add("name")
             if (time.monotonic() > deadline or seen > WALK_MAX_ENTRIES
-                    or len(found) >= MAX_RAW):
+                    or len(found) >= limit):
                 logger.info(f"[FileFinder] обход остановлен на {seen} записях")
                 return found
     return found
@@ -803,6 +912,17 @@ def _search_walk(req: FileRequest) -> Dict[str, Set[str]]:
 FOLDER_MIN_SIM = 0.8      # ниже — папка «не та»
 FOLDER_KEEP_GAP = 0.05    # корни хуже лучшего больше чем на это — отбрасываем
 SCOPED_MAX_DEPTH = 6      # «db» ищем внутри «LabsS7» не глубже
+
+# Папки сборки: «в km» — не «build/…/values-km» из проекта Android
+_DEV_DIRS = frozenset({
+    "build", "intermediates", "dist", "target", "deriveddata", "pods", "obj",
+    "generated", "cmake-build-debug", "cmake-build-release",
+})
+
+
+def _in_dev_tree(path: Path) -> bool:
+    # Папка лежит внутри папки сборки (сама может так называться: «в build»)
+    return any(_fold(x) in _DEV_DIRS for x in path.parts[:-1])
 
 
 def _latin(s: str) -> str:
@@ -819,9 +939,17 @@ def _name_tokens_fold(name: str) -> Set[str]:
     return {t for t in re.split(r"[^\w]|_", _fold(base)) if t}
 
 
+def _numbers(toks: Iterable[str]) -> Set[int]:
+    """Номера в словах имени: «km_lab1_report» → {1}, «Работа 2 КМ» → {2}."""
+    return {int(x) for tok in toks for x in re.findall(r"\d+", tok) if len(x) <= 6}
+
+
 def _term_score(t: str, low: str, toks: Set[str]) -> float:
     """Слово запроса в имени файла: само (1.0) или документный синоним
-    (0.85: «методичка» — «УП_…»); короткий синоним — только целым словом."""
+    (0.85: «методичка» — «УП_…»); короткий синоним — только целым словом.
+    Номер — только целым числом: «1» есть в «lab1», но не в «lab12» и «2021»."""
+    if t.isdigit():
+        return 1.0 if int(t) in _numbers(toks) else 0.0
     if t in low:
         return 1.0
     for a in _SYNONYMS.get(t, ()):
@@ -904,7 +1032,7 @@ def _global_dirs(hint: str) -> List[Tuple[Path, float]]:
     out = []
     for c in cands:
         sim = folder_sim(hint, os.path.basename(c.rstrip("/\\")))
-        if sim >= FOLDER_MIN_SIM and path_allowed_dir(c):
+        if sim >= FOLDER_MIN_SIM and not _in_dev_tree(Path(c)) and path_allowed_dir(c):
             out.append((Path(c), sim))
     return out
 
@@ -923,8 +1051,10 @@ def _scoped_dirs(roots: Iterable[Path], hint: str,
                 dirnames[:] = []
             for d in dirnames:
                 sim = folder_sim(hint, d)
-                if sim >= FOLDER_MIN_SIM:
+                if sim >= FOLDER_MIN_SIM and not _in_dev_tree(Path(dirpath) / d):
                     out.append((Path(dirpath) / d, sim))
+            # В папки сборки не спускаемся (сама «build» — кандидат выше)
+            dirnames[:] = [d for d in dirnames if _fold(d) not in _DEV_DIRS]
             if time.monotonic() > deadline:
                 break
     return out
@@ -944,10 +1074,26 @@ def resolve_hints(hints: List[str], base: List[Path]
 
     Самая длинная подсказка ищется первой (по всему устройству или внутри
     мест «с рабочего стола»), остальные — среди папок над найденной или
-    внутри неё: «в db в LabS7» и «в LabS7 в db» дают одно и то же."""
-    order = sorted(dict.fromkeys(hints), key=lambda h: -len(_norm_name(h)))
+    внутри неё: «в db в LabS7» и «в LabS7 в db» дают одно и то же.
+    Путь от корня («в ~/Documents/LabsS7») — сама папка, без поиска;
+    относительный («в km/artifacts/lab1») — цепочка из его частей."""
+    flat: List[str] = []
     cur: Optional[List[Tuple[Path, float]]] = None
     unresolved: List[str] = []
+    for h in hints:
+        if _ABS_PATH_RE.match(h.strip()):
+            p = expand_path(h)
+            if p.is_dir() and path_allowed_dir(str(p)):
+                cur = (cur or []) + [(p, 1.0)]
+            else:
+                unresolved.append(h)
+        elif is_path_like(h):
+            flat += [x for x in re.split(r"[/\\]+", h) if x and x != "."]
+        else:
+            flat.append(h)
+    if unresolved:
+        return [], unresolved      # явного пути нет — дальше не ищем
+    order = sorted(dict.fromkeys(flat), key=lambda h: -len(_norm_name(h)))
     for h in order:
         if cur is None:
             cands = _scoped_dirs(base, h) if base else _global_dirs(h)
@@ -1089,6 +1235,51 @@ def _name_key(name: str) -> str:
     return _fold(_COPY_RE.sub("", base)) + "." + (_fold(ext) if dot else "")
 
 
+def _dir_numbers(req: FileRequest, path: str) -> Set[int]:
+    """Номера в папках файла ниже папки из подсказок («km/src/lab1/reports»
+    при «в km» → {1}); без подсказок — в его папке. Выше подсказки не
+    смотрим: «S7» в «LabsS7» — не номер работы."""
+    parent = os.path.dirname(path)
+    under = [r for r in req.root_sims
+             if parent == r or parent.startswith(r.rstrip(os.sep) + os.sep)]
+    if under:
+        rel = parent[len(max(under, key=len)):]
+        dirs = [x for x in re.split(r"[/\\]+", rel) if x]
+    else:
+        dirs = [os.path.basename(parent)]
+    return _numbers(t for d in dirs for t in re.split(r"[^\w]|_", _fold(d)) if t)
+
+
+def _match_frac(req: FileRequest, path: str) -> float:
+    """Доля слов запроса в имени файла (с синонимами); номер засчитываем и
+    по папке: «отчёт по лр 1» — «…/lab1/report.pdf»."""
+    if not req.terms:
+        return 0.0
+    name = os.path.basename(path)
+    low, toks = _fold(name), _name_tokens_fold(name)
+    dir_nums: Optional[Set[int]] = None
+    total = 0.0
+    for t in req.terms:
+        s = _term_score(t, low, toks)
+        if not s and t.isdigit():
+            if dir_nums is None:
+                dir_nums = _dir_numbers(req, path)
+            s = 0.85 if int(t) in dir_nums else 0.0
+        total += s
+    return total / len(req.terms)
+
+
+def _num_conflict(req: FileRequest, path: str) -> bool:
+    """Номер назван, а у файла (или его папки) другой: «лр 1» — не «lab2».
+    Большие числа (годы, коды) номером работы не считаем."""
+    nums = {int(t) for t in req.terms if t.isdigit()}
+    if not nums:
+        return False
+    toks = _name_tokens_fold(os.path.basename(path))
+    have = {n for n in _numbers(toks) | _dir_numbers(req, path) if n < 100}
+    return bool(have) and not have & nums
+
+
 def _score(req: FileRequest, path: str, kinds: Set[str], st) -> float:
     name = os.path.basename(path)
     low = _fold(name)
@@ -1097,8 +1288,9 @@ def _score(req: FileRequest, path: str, kinds: Set[str], st) -> float:
     score = 0.0
     toks = _name_tokens_fold(name)
     if terms:
-        hits = sum(_term_score(t, low, toks) for t in terms)
-        frac = hits / len(terms)
+        frac = _match_frac(req, path)
+        if _num_conflict(req, path):
+            score -= 20
         content = "content" in kinds
         if req.mode == "topic":
             score += 45 * frac + (40 if content else 0)
@@ -1145,9 +1337,45 @@ def _score(req: FileRequest, path: str, kinds: Set[str], st) -> float:
     return score
 
 
+def _path_hits(req: FileRequest, for_send: bool) -> List[FileHit]:
+    """«открой ~/…/report.pdf» — сам файл; «открой ~/…/lab1» — файлы папки
+    (только её верхний уровень, свежие первыми)."""
+    p = req.path or ""
+    if os.path.isfile(p):
+        files, single = [p], True
+    elif os.path.isdir(p) and path_allowed_dir(p):
+        try:
+            with os.scandir(p) as it:
+                files = [e.path for e in it if e.is_file()]
+        except OSError:
+            files = []
+        single = False
+    else:
+        return []
+    out: List[FileHit] = []
+    for f in files:
+        if not path_allowed(f):
+            continue
+        ok_open = openable(f)
+        if not for_send and not ok_open:
+            continue
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        out.append(FileHit(path=f, name=unicodedata.normalize("NFC", os.path.basename(f)),
+                           folder=display_folder(f), size=st.st_size, mtime=st.st_mtime,
+                           score=100.0 if single else 40.0, openable=ok_open,
+                           name_frac=1.0 if single else 0.0))
+    out.sort(key=lambda h: -h.mtime)
+    return out[:MAX_CHOICES * 4]
+
+
 def search(req: FileRequest, for_send: bool = False) -> List[FileHit]:
     """Найти и упорядочить кандидатов. for_send — присылать: программы и
     скрипты допустимы (их не запускаем); иначе — только открываемое."""
+    if req.path:
+        return _path_hits(req, for_send)
     if req.hints and not req.root_sims and not req.unresolved:
         roots, req.unresolved = resolve_hints(req.hints, list(req.roots))
         if roots:
@@ -1157,11 +1385,11 @@ def search(req: FileRequest, for_send: bool = False) -> List[FileHit]:
             if req.soft:
                 return []        # «открой поиск в ютубе» — папки нет, не наше
             # «файл отчёт в 2025» — не папка, так слово запроса; явное «из
-            # папки X» — нет (ответит «папки не нашлось»)
+            # папки X» и путь — нет (ответит «папки не нашлось»)
+            if req.folder in req.unresolved or any(is_path_like(h) for h in req.unresolved):
+                return []
             extra = [stem(h) for h in req.unresolved if h != req.folder]
             req.terms = (req.terms + [t for t in extra if t not in req.terms])[:8]
-            if req.folder in req.unresolved:
-                return []
     raw = _raw_search(req)
     hits: Dict[str, FileHit] = {}
     for path, kinds in raw.items():
@@ -1184,14 +1412,15 @@ def search(req: FileRequest, for_send: bool = False) -> List[FileHit]:
         prev = hits.get(key)
         if prev and prev.mtime >= st.st_mtime:
             continue
-        low = _fold(name)
-        toks = _name_tokens_fold(name)
-        frac = (sum(_term_score(t, low, toks) for t in req.terms) / len(req.terms)
-                if req.terms else 0.0)
         hits[key] = FileHit(path=path, name=name, folder=display_folder(path),
                             size=st.st_size, mtime=st.st_mtime, score=sc,
-                            openable=ok_open, name_frac=frac)
+                            openable=ok_open, name_frac=_match_frac(req, path))
     ordered = sorted(hits.values(), key=lambda h: (-h.score, -h.mtime))
+    # Есть файлы с названным номером — файлы с другим номером не предлагаем
+    if any(t.isdigit() for t in req.terms):
+        fit = [h for h in ordered if not _num_conflict(req, h.path)]
+        if fit:
+            ordered = fit
     return ordered[:MAX_CHOICES * 4]
 
 
@@ -1232,6 +1461,23 @@ def open_file(path: str) -> None:
         return
     else:
         cmd = ["xdg-open", path]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=15, **_no_window())
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise FileOpenError(str(e))
+    if r.returncode != 0:
+        detail = (r.stderr or b"").decode("utf-8", "replace").strip()
+        raise FileOpenError(detail[:200] or f"код {r.returncode}")
+
+
+def open_folder(path: str) -> None:
+    """Открыть папку в Finder / Проводнике на компьютере ядра."""
+    if not path_allowed_dir(path):
+        raise FileOpenError("эту папку открывать нельзя")
+    if sys.platform == "win32":
+        os.startfile(path)  # noqa: S606 — папка проверена path_allowed_dir
+        return
+    cmd = ["open", "--", path] if sys.platform == "darwin" else ["xdg-open", path]
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=15, **_no_window())
     except (OSError, subprocess.TimeoutExpired) as e:

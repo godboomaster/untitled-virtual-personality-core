@@ -71,7 +71,7 @@ export const helpTextsRu = {
   },
   'settings.feature.rhythm': {
     title: 'Суточный ритм',
-    body: 'Персона живёт в ритме суток: утром, когда вы включаете ноутбук (или впервые появляетесь в чате), — «доброе утро» в своём характере; в полночь — «пора спать», но только если вы были активны незадолго до этого; при приближении дождя, грозы или резкой смене погоды — предупреждение (нужна настроенная локация в настройках окружения). Отправленное отмечается в досье чата, чтобы персона не повторялась. Применяется сразу, перезапуск не нужен.',
+    body: 'Персона живёт в ритме суток: утром, когда вы включаете компьютер (или впервые появляетесь в чате), — «доброе утро» в своём характере; в полночь — «пора спать», но только если вы были активны незадолго до этого; при приближении дождя, грозы или резкой смене погоды — предупреждение (нужна настроенная локация в настройках окружения). Отправленное отмечается в досье чата, чтобы персона не повторялась. Применяется сразу, перезапуск не нужен.',
   },
   'settings.feature.life': {
     title: 'Жизнь персоны',
@@ -426,7 +426,7 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
   },
   'settings.feature.rhythm': {
     title: 'Daily rhythm',
-    body: 'The persona lives in the daily rhythm: in the morning, when you turn on your laptop (or first show up in the chat), — a "good morning" in its own character; at midnight — a "time to sleep" nudge, but only if you were active shortly before; when rain, a thunderstorm or a sharp weather change approaches — a warning (requires a configured location in the environment settings). What was sent is noted in the chat dossier so the persona does not repeat itself. Applies instantly, no restart needed.',
+    body: 'The persona lives in the daily rhythm: in the morning, when you turn on your computer (or first show up in the chat), — a "good morning" in its own character; at midnight — a "time to sleep" nudge, but only if you were active shortly before; when rain, a thunderstorm or a sharp weather change approaches — a warning (requires a configured location in the environment settings). What was sent is noted in the chat dossier so the persona does not repeat itself. Applies instantly, no restart needed.',
   },
   'settings.feature.life': {
     title: 'Persona life',

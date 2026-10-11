@@ -93,6 +93,9 @@
     <!-- Микрофон — голосовой режим чата (распознавание речи телефона) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- Команды телефону (PhoneActionsPlugin): «поставь будильник» / «таймер»
+         системными «Часами» — без SET_ALARM часы интент не примут -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
     <!-- Android 11+: без этого службы распознавания и озвучки приложению не видны,
          и isRecognitionAvailable() отвечает «нет»; без IMAGE_CAPTURE Capacitor
@@ -106,6 +109,21 @@
         </intent>
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <!-- Команды телефону: «Часы» (будильник, таймер, список) и «открой X» —
+             приложения с иконкой на рабочем столе (не все пакеты) -->
+        <intent>
+            <action android:name="android.intent.action.SET_ALARM" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SET_TIMER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SHOW_ALARMS" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
         </intent>
     </queries>
 </manifest>

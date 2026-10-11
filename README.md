@@ -206,6 +206,15 @@ computer, the phone connects to it: the same chats and history, voice and camera
 mode with the live browser window, persona dossiers and settings. Background messages (reminders, initiative)
 reach every device — the computer and the phone each get their own copy.
 
+**Phone commands.** In the app's chat (typed or spoken): "set an alarm for 7 on weekdays",
+"wake me up in 20 minutes", "set a timer for 10 minutes", "show my alarms", "open Telegram",
+"turn on the flashlight" — in Russian too. The phone does it itself: alarms and timers go to
+the system Clock app, apps are opened by name. The persona replies based on the result and
+says honestly when something did not work (no such app, or the clock app cannot take a
+date). The phone cannot delete or turn off alarms — it opens the alarm list instead. In
+control mode, commands are still meant for the computer; the phone also leaves alone anything
+said "on the computer". Works without a connection to the core too.
+
 **Connecting — VPC Link.** The phone and the computer pair once by a QR code and from then
 on recognize each other by keys: no VPN on the phone, no accounts, no passwords. Everything
 is encrypted end to end ([Noise](https://noiseprotocol.org), the same protocol family as
@@ -522,6 +531,12 @@ Linux); without an index it walks the home folder by file name.
   folders doesn't matter. With folders the word "file" is optional: then the bot takes the request
   only if the folders and a matching file exist ("open search in youtube" goes on as usual). It
   also knows document words: «методичка» (a manual) matches «УП_…» and «Методические указания».
+- **Work number:** "the report for lab 1", "for the first lab" — the number is matched as a whole
+  number (in the name or a folder: `lab1`, not `lab12` or `lab2`); files with another number stay
+  out of the list.
+- **A full path:** "open ~/Documents/LabsS7/km" — on the core the folder opens, the phone and
+  Telegram get a list of its files; "the report in ~/Documents/…" searches only there. A file
+  name sent on its own ("km_lab1_report.pdf") is a request too, if such a file exists.
 - **What happens:** in the web opened on the core's computer the file opens in its default app;
   in the phone app and in Telegram the file is sent to the chat (up to 50 MB). In the app the
   "Save" button puts it into Downloads/Virtual Persona and opens it.
@@ -530,9 +545,10 @@ Linux); without an index it walks the home folder by file name.
 - **Not touched:** system and hidden folders (`~/Library` except iCloud Drive and cloud drives,
   `.ssh`, AppData…), the core's data folder, keys, certificates and password databases.
   Programs and scripts are never opened from a message — the bot shows them in their folder.
-- **Who:** the owner only; in Telegram only in a private chat; not from skins. Every action is
-  logged to `data/<context>/file_access/audit.jsonl`. Turn it off for a persona with
-  `features.file_access: false`.
+- **Who:** the owner only; in Telegram only in a private chat, plus the groups listed in
+  `features.file_access.allowed_chats` (everyone in such a group sees the file); not from skins.
+  Every action is logged to `data/<context>/file_access/audit.jsonl`. Turn it off for a persona
+  with `features.file_access: false`.
 
 ## Control mode
 

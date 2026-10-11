@@ -90,6 +90,7 @@ export type RoomSceneBaseProps = Pick<
   RoomSceneProps,
   | 'personaId' | 'personaName' | 'config' | 'spotKey' | 'pose' | 'statusLine' | 'avatar' | 'sprite'
   | 'sprites' | 'roomBg' | 'items' | 'itemsReady' | 'timeOfDay' | 'weather' | 'note' | 'nextPlan' | 'onPoke'
+  | 'offline'
 >;
 
 export interface RoomSceneModel extends RoomItemsApi {
@@ -106,6 +107,7 @@ export interface RoomSceneModel extends RoomItemsApi {
   // Занятие настоящее (живое состояние или сессия «поработать вместе»),
   // а не спокойная поза по умолчанию
   activityKnown: boolean;
+  noLink: boolean; // нет связи с ядром и своего занятия нет — сцена «дремлет»
   duration: string | null; // null — занятие неизвестно
   energy: string; // '—' без живого состояния
   energyPct: number | null; // null без живого состояния
@@ -139,6 +141,9 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
   const viewOpts = useMemo(() => ({ ownerDocument, keepAlive }), [ownerDocument, keepAlive]);
   const { view, mode, loaded } = useRoomView(persona.id, viewOpts);
   const live = mode === 'live';
+  // Нет связи с ядром: состояния нет и не будет до связи — персона дремлет
+  // за столом, сцена приглушена, вместо прочерков — объяснение
+  const noLink = loaded && mode === 'demo';
   const living = view?.living && view.living.enabled && view.living.ui_sync && view.living.state ? view.living : null;
   const state = living?.state ?? null;
 
@@ -159,7 +164,8 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
   const now = useMinuteNow(rootRef, ownerDocument);
 
   // Текущее место/поза/занятие: живое состояние; без него — спокойно стоит
-  // на обычном месте (стол, иначе первое место в комнате), занятия нет
+  // (без связи — сидит) на обычном месте (стол, иначе первое место в
+  // комнате), занятия нет
   const base = useMemo<RoomActivityNow>(() => {
     if (state) {
       const spot = inferSpot(state, cfg.spots);
@@ -174,8 +180,8 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
     }
     const rest = cfg.spots.find((s) => s.key === 'desk')
       ?? cfg.spots.find((s) => s.key !== 'away' && s.key !== 'bed');
-    return { spot: rest?.key ?? 'desk', pose: 'stand', label: '', place: '', since: null };
-  }, [state, cfg.spots, t]);
+    return { spot: rest?.key ?? 'desk', pose: noLink ? 'sit' : 'stand', label: '', place: '', since: null };
+  }, [state, cfg.spots, t, noLink]);
 
   // Сессия «поработать вместе»: сверка с view.focus, таймер окончания
   const focus = useFocusSession(persona.id, { focus: view?.focus, mode, loaded, doc: ownerDocument });
@@ -197,6 +203,7 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
     };
   }, [base, focusStart, cfg.spots, t]);
   const activityKnown = state != null || focusStart != null;
+  const dozing = noLink && !activityKnown;
   const duration = focus.active
     ? t('room.focus.left', { n: focus.remainingMin })
     : activityKnown ? durationSince(activity.since, now, t) : null;
@@ -276,7 +283,7 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
   const skinEnv = useSkinEnv({ locale: lang, t, personaName: persona.name, apiOnline: mode !== 'demo', enabled: true });
 
   const away = activityKnown && activity.spot === 'away';
-  const mainText = away ? t('room.statusAway') : activity.label || '—';
+  const mainText = away ? t('room.statusAway') : activity.label || (dozing ? t('room.noLink.status') : '—');
   const placeText = statusWithPlace && !away && activity.place ? activity.place : '';
   const statusLine = useMemo<ReactNode>(
     () =>
@@ -315,8 +322,9 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
       note,
       nextPlan,
       onPoke,
+      offline: dozing,
     }),
-    [persona.id, persona.name, cfg, activity.spot, pose, statusLine, avatar, art, items, itemsReady, skinEnv.timeOfDay, weather, note, nextPlan, onPoke],
+    [persona.id, persona.name, cfg, activity.spot, pose, statusLine, avatar, art, items, itemsReady, skinEnv.timeOfDay, weather, note, nextPlan, onPoke, dozing],
   );
 
   return {
@@ -332,6 +340,7 @@ export function useRoomScene(persona: Persona, opts: UseRoomSceneOptions): RoomS
     avatar,
     activity,
     activityKnown,
+    noLink: dozing,
     duration,
     energy,
     energyPct,

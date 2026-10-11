@@ -19,6 +19,7 @@ audit.jsonl (папка данных персоны, file_access/).
 
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -97,7 +98,59 @@ _T = {
     "gone": {
         "ru": "«{name}» больше нет на месте — видимо, его переместили или удалили.",
         "en": "“{name}” is no longer there — it was probably moved or deleted."},
+    # «открой ~/Documents/LabsS7/km/artifacts/lab1» — путь целиком
+    "folder_choices": {
+        "ru": "В папке {folder} — какой файл {verb}?\n{items}\n"
+              "Ответь номером («да» — первый) или «нет».",
+        "en": "In {folder} — which file should I {verb}?\n{items}\n"
+              "Reply with a number (\"yes\" means the first) or \"no\"."},
+    "folder_more": {
+        "ru": "Показаны самые свежие — если нужного нет, назови его.",
+        "en": "These are the newest — if yours isn't here, tell me its name."},
+    "folder_empty": {"ru": "В папке {folder} нет файлов, которые можно прислать.",
+                     "en": "There are no files I can send in {folder}."},
+    "opened_folder": {"ru": "Открываю папку {folder}.", "en": "Opening the folder {folder}."},
+    "path_not_found": {"ru": "На компьютере с ядром нет пути {path}.",
+                       "en": "There's no {path} on the core's computer."},
+    "path_forbidden": {
+        "ru": "{path} — служебное или закрытое место, его не открываю и не присылаю.",
+        "en": "{path} is a system or private location — I don't open or send it."},
 }
+
+# Модели — в ход, где о файлах говорят, но поиск файлов реплику не взял:
+# сама она файлов не видит, а без заметки «открывает» их на словах и
+# сочиняет содержимое папок
+FILE_TALK_NOTE = (
+    "You cannot see, list, open or send files or folders on the user's computer "
+    "yourself. Files are found and sent only by a separate system step that answers "
+    "on its own, and it did not handle this message. Never claim that you opened, "
+    "found, listed or sent a file, and never invent file names, folders, sizes or "
+    "folder contents.")
+FILE_TALK_HINT = (
+    " If the user wants a file, briefly suggest asking like \"send the file <words "
+    "from its name> in <folder>\" or giving the full path, in the user's language.")
+
+
+def _head_rx(key: str, lang: str) -> "re.Pattern":
+    head = _T[key][lang].split("\n", 1)[0]
+    parts = re.split(r"\{\w+\}", head)
+    return re.compile(".+?".join(re.escape(p) for p in parts))
+
+
+def scrub_reply_context(text: Optional[str]) -> Optional[str]:
+    """Реплай на список файлов («открой отчёт в …» ответом на него): модели —
+    заглушка вместо списка. Имена, папки и размеры посторонних файлов ей не
+    нужны, а увидев их, она сочиняет «содержимое» других папок по образцу."""
+    if not text:
+        return text
+    for key, stub in (("choices", "choices_history"), ("folder_choices", "choices_history"),
+                      ("one_choice", "one_choice_history")):
+        for lang in ("ru", "en"):
+            m = _head_rx(key, lang).search(text)
+            if m:
+                n = len(re.findall(r"(?m)^\s*\d+\.\s", text[m.start():])) or 1
+                return text[:m.start()] + t(stub, lang, n=n)
+    return text
 
 
 def t(key: str, lang: Optional[str] = None, **values) -> str:
@@ -144,6 +197,8 @@ class FileAccess:
         self._pending: Dict[str, dict] = {}
         # Ответ-список → заглушка для истории (забирает history_text)
         self._history: Dict[str, str] = {}
+        # Язык последней просьбы чата: голое «km_lab1_report.pdf» — на нём
+        self._lang: Dict[str, str] = {}
         self.base_dir = base_dir
 
     # --- ожидание ответа на список
@@ -200,6 +255,8 @@ class FileAccess:
             n = parse_choice(text, names)
             verdict = "YES" if n is not None else classify_confirmation(text, names)
             hits = p["hits"]
+            # «2» и «да» — на языке списка, а не по угадыванию из цифры
+            lang = p.get("lang") or lang
             if n is not None and not 1 <= n <= len(hits):
                 return t("range", lang, n=n, max=len(hits)), []
             if verdict == "NO":
@@ -213,8 +270,15 @@ class FileAccess:
         req = ff.parse_file_request(text)
         if req is None:
             return None
+        # Язык — по глаголу: в «открой km_lab1_report.pdf» латиницы больше,
+        # но просьба русская; без глагола — как в прошлой просьбе чата
+        lang = req.lang or self._lang.get(str(chat_key)) or lang
+        if req.lang:
+            self._lang[str(chat_key)] = req.lang
         if req.need_name:
             return t("ask_name", lang), []
+        if req.path:
+            return self._path_turn(req, chat_key, user_id, delivery, lang)
         hits = ff.search(req, for_send=True)
         if req.soft:
             # Без слова «файл»: наше, только если папки нашлись и в них есть
@@ -241,29 +305,74 @@ class FileAccess:
                      lang, q=req.query or req.folder or "", where=where), []
         if leader is not None:
             return self._act(leader, delivery, chat_key, lang)
+        return self._offer(choices, delivery, chat_key, user_id, lang), []
+
+    def _offer(self, choices: List[ff.FileHit], delivery: str, chat_key: str,
+               user_id, lang: Optional[str], folder: Optional[str] = None,
+               more: bool = False) -> str:
+        """Список «какой файл?» ждёт ответа; в историю — заглушка."""
         with self._lock:
             self._pending[str(chat_key)] = {
-                "hits": choices, "delivery": delivery,
+                "hits": choices, "delivery": delivery, "lang": lang,
                 "expires": time.time() + PENDING_TTL_SEC,
                 "user_id": str(user_id) if user_id is not None else None,
             }
         en = str(lang or "").startswith("en")
         verb = ("send" if en else "прислать") if delivery == "send" \
             else ("open" if en else "открыть")
-        if len(choices) == 1:
+        if len(choices) == 1 and folder is None:
             reply = t("one_choice", lang, verb=verb, item=choice_label(choices[0], lang))
             stub = t("one_choice_history", lang)
         else:
             items = "\n".join(f"{i}. {choice_label(h, lang)}"
                               for i, h in enumerate(choices, 1))
-            reply = t("choices", lang, verb=verb, items=items)
+            if folder is not None:
+                reply = t("folder_choices", lang, verb=verb, folder=folder, items=items)
+                if more:
+                    reply += "\n" + t("folder_more", lang)
+            else:
+                reply = t("choices", lang, verb=verb, items=items)
             stub = t("choices_history", lang, n=len(choices))
         with self._lock:
             # Ответ, не дошедший до истории (сбой хода), не копится
             while len(self._history) >= 50:
                 self._history.pop(next(iter(self._history)))
             self._history[reply] = stub
-        return reply, []
+        return reply
+
+    def _path_turn(self, req: ff.FileRequest, chat_key: str, user_id, delivery: str,
+                   lang: Optional[str]) -> Tuple[str, List[dict]]:
+        """«открой ~/Documents/LabsS7/km/artifacts/lab1»: файл — как найденный;
+        папка — на ядре открыть её, телефону и Telegram — выбрать файл из неё."""
+        p = req.path or ""
+        shown = ff.display_folder(os.path.join(p, "x"))
+        if not os.path.exists(p):
+            self._audit(chat_key, "not_found", None, False, query=req.query)
+            return t("path_not_found", lang, path=shown), []
+        if os.path.isdir(p):
+            if not ff.path_allowed_dir(p):
+                self._audit(chat_key, "forbidden", p, False)
+                return t("path_forbidden", lang, path=shown), []
+            if delivery == "open":
+                try:
+                    ff.open_folder(p)
+                except ff.FileOpenError as e:
+                    self._audit(chat_key, "open_dir", p, False, detail=str(e))
+                    return t("open_failed", lang, name=shown, detail=e), []
+                self._audit(chat_key, "open_dir", p, True)
+                return t("opened_folder", lang, folder=shown), []
+            hits = ff.search(req, for_send=True)
+            if not hits:
+                return t("folder_empty", lang, folder=shown), []
+            choices = hits[:ff.MAX_CHOICES]
+            return self._offer(choices, delivery, chat_key, user_id, lang, folder=shown,
+                               more=len(hits) > len(choices)), []
+        hits = ff.search(req, for_send=True)
+        if not hits:
+            self._audit(chat_key, "forbidden", p, False)
+            return t("path_forbidden", lang, path=ff.display_folder(p) + os.sep
+                     + os.path.basename(p)), []
+        return self._act(hits[0], delivery, chat_key, lang)
 
     def history_text(self, reply: str) -> str:
         """Текст ответа для истории: список вариантов — заглушкой (имена и

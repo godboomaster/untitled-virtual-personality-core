@@ -130,7 +130,7 @@ def main():
     line = "реплика " * 40  # ~320 символов
     hist30 = [{"role": "user" if i % 2 == 0 else "assistant", "text": f"{i}: {line}"} for i in range(30)]
     cases = [
-        # 0. Маленькая персона: всё целиком, история — 16 реплик
+        # 0. Маленькая персона: всё целиком, история — 8 реплик
         {"kit": {}, "history": hist30, "text": "Как дела?"},
         # 1. Огромная персона: характер ужат, история влезает в бюджет
         {"kit": {"parts": {"character": character}, "self_memory": "[PERSONAL MEMORY]\n" + "эпизод. " * 600}, "history": hist30,
@@ -199,8 +199,8 @@ def main():
                                           "[PERSONAL MEMORY Коннор]", "SELF RULE", "LANG")))
     check("…факты — последние 25", "Факт 55" in p0["system"] and "Факт 54" not in p0["system"])
     check(f"…в бюджете {budget} символов", total(p0) <= budget)
-    check("…история — сколько влезло (≤16, по порядку, первая — пользователя)",
-          0 < len(p0["history"]) <= 16 and p0["history"][0]["role"] == "user"
+    check("…история — сколько влезло (≤8, по порядку, первая — пользователя)",
+          0 < len(p0["history"]) <= 8 and p0["history"][0]["role"] == "user"
           and p0["history"][-1]["content"].startswith("29:"))
     check(f"огромная персона — в бюджете ({total(p1)} ≤ {budget})", total(p1) <= budget)
     self1 = p1["system"].split("[PERSONAL MEMORY]")[1].split("[END OF PERSONAL MEMORY]")[0]
@@ -221,8 +221,8 @@ def main():
     check("хвост — реплика пользователя: уходит вместе с новой",
           p2["text"] == "эй\n\nответь" and [m["role"] for m in p2["history"]] == ["user", "assistant"]
           and p2["history"][0]["content"] == "ты тут?")
-    check("огромная реплика истории — обрезана до 1200 с «…»",
-          p3["history"][0]["content"] == "а" * 1200 + "…")
+    check("огромная реплика истории — обрезана до 600 с «…»",
+          p3["history"][0]["content"] == "а" * 600 + "…")
 
     print(f"\nИтого: {results['ok'] + results['fail']} проверок, {results['fail']} провалов")
     return 1 if results["fail"] else 0

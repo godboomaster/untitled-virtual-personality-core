@@ -19,7 +19,8 @@ import type { RoomClientPose, RoomPose } from './roomTypes';
    with_you/glance не поднимают со стула, а только поворачивают лицо к
    зрителю. seat — на чём сидит: desk — на стуле за столом (стол рисует
    сцена, лист лежит на столешнице), chair — на сиденье без стола (кровать,
-   фон пользователя), floor — по-турецки на полу, null — стоит. */
+   фон пользователя), floor — по-турецки на полу, null — стоит.
+   dozing — дремлет (нет связи с ядром): глаза закрыты, над головой «z z». */
 
 export interface AvatarFigureProps {
   config: RoomAvatarPreset;
@@ -29,13 +30,14 @@ export interface AvatarFigureProps {
   height?: number;
   seed?: string; // разводит фазы моргания (обычно id персоны)
   title?: string;
+  dozing?: boolean;
 }
 
 // Светлая «бумага» для книги и листа — видна в обеих темах
 const PAPER = '#f1efe8';
 const INK = '#9a9a9a';
 
-function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAttention = null, seat: rawSeat, height = 132, seed = '', title }: AvatarFigureProps) {
+function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAttention = null, seat: rawSeat, height = 132, seed = '', title, dozing = false }: AvatarFigureProps) {
   const { t } = useI18n();
   // Старый вызов: pose='with_you'/'glance' без тела — стоя
   const legacyCue = rawPose === 'with_you' || rawPose === 'glance' ? rawPose : null;
@@ -77,6 +79,7 @@ function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAtten
   const headTilt =
     attention === 'glance' ? 'rotate(5 32 54)'
     : attention === 'with_you' ? 'rotate(-3 32 54)'
+    : dozing ? 'rotate(7 32 54)'
     : pose === 'look' ? 'rotate(8 32 54)'
     : pose === 'write' || pose === 'read' ? 'rotate(-4 32 54)'
     : undefined;
@@ -153,13 +156,26 @@ function AvatarFigureImpl({ config, pose: rawPose = 'stand', attention: rawAtten
   const head = (
     <g transform={headTilt} className={attention === 'glance' ? 'room-av-head room-av-head--glance' : 'room-av-head'}>
       {headShape}
-      <g transform={eyeShift}>
-        <g className="room-av-eyes" style={blink}>
-          <text x="32" y="40" textAnchor="middle" fontSize="9" fill={eyeColor} fontFamily="'JetBrains Mono', monospace">
-            {eyeOptions[config.eyes] ?? eyeOptions[0]}
-          </text>
+      {dozing ? (
+        <>
+          <g fill="none" stroke={eyeColor} strokeWidth="2" strokeLinecap="round">
+            <path d="M22,37 Q25.5,40.5 29,37" />
+            <path d="M35,37 Q38.5,40.5 42,37" />
+          </g>
+          <g fill="var(--text-muted)" fontFamily="'JetBrains Mono', monospace">
+            <text x="47" y="12" className="room-av-z" fontSize="9">z</text>
+            <text x="54" y="5" className="room-av-z room-av-z--2" fontSize="7">z</text>
+          </g>
+        </>
+      ) : (
+        <g transform={eyeShift}>
+          <g className="room-av-eyes" style={blink}>
+            <text x="32" y="40" textAnchor="middle" fontSize="9" fill={eyeColor} fontFamily="'JetBrains Mono', monospace">
+              {eyeOptions[config.eyes] ?? eyeOptions[0]}
+            </text>
+          </g>
         </g>
-      </g>
+      )}
       {attention === 'with_you' && (
         <path d="M28,45 Q32,48 36,45" fill="none" stroke={eyeColor} strokeWidth="1.2" strokeLinecap="round" />
       )}

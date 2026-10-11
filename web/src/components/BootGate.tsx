@@ -77,6 +77,7 @@ export default function BootGate({ children }: { children: ReactNode }) {
   const [pairError, setPairError] = useState<string | null>(null);
   const [run, setRun] = useState(0); // смена — запуск последовательности заново (после ввода токена)
   const openRef = useRef(false);
+  const serverFormRef = useRef<HTMLFormElement>(null);
   useEffect(() => {
     openRef.current = open;
   }, [open]);
@@ -150,6 +151,18 @@ export default function BootGate({ children }: { children: ReactNode }) {
       window.clearInterval(tick);
     };
   }, [run, server]);
+
+  // Клавиатура ужала экран — показать форму адреса целиком (оба поля и
+  // «Подключиться»), а не только поле в фокусе
+  useEffect(() => {
+    if (!server) return;
+    const onResize = () => {
+      const form = serverFormRef.current;
+      if (form?.contains(document.activeElement)) form.scrollIntoView({ block: 'nearest' });
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [server]);
 
   // 401 посреди работы — назад на экран запуска с вопросом о токене
   useEffect(() => {
@@ -310,29 +323,35 @@ export default function BootGate({ children }: { children: ReactNode }) {
                     : t('boot.lead')}
         </p>
 
-        <ul className="boot-steps">
-          {steps.map((s) => (
-            <li key={s.label} className={`boot-step boot-step--${s.state}`}>
-              <span className="boot-step-tag">{tag[s.state]}</span>
-              <span className="boot-step-label">{s.label}</span>
-            </li>
-          ))}
-        </ul>
+        {/* Форма подключения: ядро не опрашивается — шаги и счётчики пусты,
+            а на телефоне форма и без них едва влезает в экран */}
+        {!server && (
+          <>
+            <ul className="boot-steps">
+              {steps.map((s) => (
+                <li key={s.label} className={`boot-step boot-step--${s.state}`}>
+                  <span className="boot-step-tag">{tag[s.state]}</span>
+                  <span className="boot-step-label">{s.label}</span>
+                </li>
+              ))}
+            </ul>
 
-        <div className="boot-cells" aria-hidden="true">
-          {Array.from({ length: CELLS }, (_, i) => (
-            <i
-              key={i}
-              className={i < litCells ? 'on' : undefined}
-              style={i < litCells ? undefined : { animationDelay: `${(i - litCells) * 50}ms` }}
-            />
-          ))}
-        </div>
+            <div className="boot-cells" aria-hidden="true">
+              {Array.from({ length: CELLS }, (_, i) => (
+                <i
+                  key={i}
+                  className={i < litCells ? 'on' : undefined}
+                  style={i < litCells ? undefined : { animationDelay: `${(i - litCells) * 50}ms` }}
+                />
+              ))}
+            </div>
 
-        <div className="boot-meta">
-          <span>{t('boot.attempt', { n: attempt })}</span>
-          <span>T+{formatElapsed(elapsed)}</span>
-        </div>
+            <div className="boot-meta">
+              <span>{t('boot.attempt', { n: attempt })}</span>
+              <span>T+{formatElapsed(elapsed)}</span>
+            </div>
+          </>
+        )}
 
         {offline && !NATIVE && (
           <div className="boot-cmd">
@@ -388,6 +407,7 @@ export default function BootGate({ children }: { children: ReactNode }) {
 
         {server && (
           <form
+            ref={serverFormRef}
             className="boot-cmd boot-server"
             noValidate
             onSubmit={(e) => {

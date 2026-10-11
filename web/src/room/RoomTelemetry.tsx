@@ -5,7 +5,8 @@ import type { AwaySummary } from './usePresenceCues';
 /* Колонка состояния справа от сцены: энергия с баром, настроение +
    последнее событие, занятие и место с реальной длительностью. Внизу —
    приглушённо, откуда взято состояние (веб-чат или Telegram). Неизвестное
-   значение — прочерк, без бара и длительности. */
+   значение — прочерк, без бара и длительности. Нет связи с ядром — вместо
+   четырёх прочерков одна ячейка с объяснением. */
 
 export default function RoomTelemetry({
   energy,
@@ -16,6 +17,7 @@ export default function RoomTelemetry({
   place,
   duration,
   sourceLabel,
+  offline = false,
 }: {
   energy: string;
   energyPct: number | null;
@@ -25,8 +27,20 @@ export default function RoomTelemetry({
   place: string;
   duration: string | null;
   sourceLabel?: string | null;
+  offline?: boolean;
 }) {
   const { t } = useI18n();
+  if (offline) {
+    return (
+      <div className="home-telemetry room-telemetry stagger-item">
+        <div className="home-tele-cell room-tele-offline">
+          <div className="home-tele-label">{t('room.noLink.label')}</div>
+          <div className="home-tele-value room-tele-text">{t('room.noLink.title')}</div>
+          <div className="room-tele-sub">{t('room.noLink.telemetry')}</div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="home-telemetry room-telemetry stagger-item">
       <div className="home-tele-cell">

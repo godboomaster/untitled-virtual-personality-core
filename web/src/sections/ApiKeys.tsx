@@ -7,6 +7,7 @@ import ConnectionCard from '../link/ConnectionCard';
 import { testNativeNotification } from '../bgInbox';
 import LinkSettings from '../link/LinkSettings';
 import OfflineCard from '../offline/OfflineCard';
+import PhoneCheckCard from '../phone/PhoneCheckCard';
 import type { LocalStatus, LocationConfig, TimezoneConfig } from '../api';
 import { refetchProviders, useApiOnline, useApiProviders, useApiWebchat } from '../apiData';
 import { useDevMode, setDevMode } from '../devMode';
@@ -245,6 +246,8 @@ export default function ApiKeys() {
       {isNativeApp() ? <ConnectionCard /> : <LinkSettings />}
       {/* Телефон: ответы без ноутбука и модель на телефоне */}
       {isNativeApp() && <OfflineCard />}
+      {/* Телефон: команды телефону из чата — проверка и журнал */}
+      {isNativeApp() && <PhoneCheckCard />}
 
       {/* Общие настройки: язык интерфейса, подсказки */}
       <div className="card">

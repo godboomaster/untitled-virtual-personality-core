@@ -6,6 +6,7 @@ import { useEffect, useReducer } from 'react';
 import { api, ApiError, isNativeApp } from './api';
 import type { ApiPersona, LivingStateData, PersonaLlmConfig, ProviderInfo } from './api';
 import type { Persona, PersonaFeature } from './mockData';
+import { saveProvidersCopy } from './offline/settingsCopy';
 
 // Коды фич, известные UI (подписи — fb.* в словарях i18n)
 const KNOWN_FEATURES = new Set<PersonaFeature>([
@@ -253,6 +254,8 @@ function ensureProvidersFetch() {
         sites: r.webchat_sites ?? (r.webchat_site ? [r.webchat_site] : []),
         options: r.webchat_options ?? [],
       };
+      // Телефон: копия для досье без связи с ядром
+      saveProvidersCopy(provCache, provWebchat);
     })
     .catch(() => {
       provFailed = true;

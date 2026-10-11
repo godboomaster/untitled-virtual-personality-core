@@ -42,9 +42,13 @@ import {
 } from '../offline/store';
 import { getKit, refreshKit } from '../offline/kit';
 import { answerOffline, OfflineUnavailable } from '../offline/engine';
+import { warmEmbedder } from '../offline/embed';
 import { OfflineLlm } from '../offline/plugin';
 import type { AlarmItem } from '../offline/plugin';
 import { cancelLocalReminder, localReminders, onRemindersChange } from '../offline/reminders';
+import { notePhoneSkip, phoneActionsAvailable, runPhoneCommand } from '../phone/actions';
+import { actionNote } from '../phone/notes';
+import type { PhoneActionReport } from '../phone/notes';
 import Icon from '../components/icons';
 import type { IconName } from '../components/icons';
 import SkinFrame from '../components/SkinFrame';
@@ -68,6 +72,11 @@ const TS_EPS = 0.001;
 const ABSORB_MS = 30000;
 // Пауза перед повторной загрузкой истории, если первый запрос не прошёл
 const HISTORY_RETRY_MS = 3000;
+// Пояснение о работе без ядра: показано ли уже (один раз за всё время) и сколько висит
+const OFFLINE_INTRO_KEY = 'vpc-offline-intro-seen';
+const OFFLINE_INTRO_MS = 10000;
+// Записка о конкретной отправке («нет ни интернета, ни модели…») — столько же
+const OFFLINE_NOTE_MS = 10000;
 // Самая свежая серверная метка в истории STM (локальные пузыри сюда не идут:
 // их ts — часы браузера, с серверными не сравнимы)
 const newestTs = (list: ChatMessage[] | undefined) =>
@@ -327,6 +336,32 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   const offlineStore = useOfflineMessages(persona.id);
   const [offlineDraft, setOfflineDraft] = useState<Record<string, { num: number; text: string } | null>>({});
   const [offlineNote, setOfflineNote] = useState<string | null>(null);
+  // Пояснение «нет связи — отвечаю без ядра» — один раз за всё время:
+  // при первом уходе в офлайн, ~10 с, дальше в шапке и так «нет связи»
+  const [offlineIntro, setOfflineIntro] = useState(() => {
+    try {
+      return localStorage.getItem(OFFLINE_INTRO_KEY) !== '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    if (!offlineMode || !offlineIntro) return;
+    try {
+      localStorage.setItem(OFFLINE_INTRO_KEY, '1');
+    } catch {
+      /* без хранилища покажется и в следующий раз */
+    }
+    const timer = window.setTimeout(() => setOfflineIntro(false), OFFLINE_INTRO_MS);
+    return () => window.clearTimeout(timer);
+  }, [offlineMode, offlineIntro]);
+  // Записка о последней отправке гаснет сама; причина осталась — следующая
+  // отправка покажет её снова
+  useEffect(() => {
+    if (!offlineNote) return;
+    const timer = window.setTimeout(() => setOfflineNote(null), OFFLINE_NOTE_MS);
+    return () => window.clearTimeout(timer);
+  }, [offlineNote]);
   // Сработавшие будильником телефона напоминания (ReminderAlarms) и
   // напоминания, поставленные без ноутбука (для карточек с отменой)
   const [firedAlarms, setFiredAlarms] = useState<(AlarmItem & { firedAt: number })[]>([]);
@@ -884,9 +919,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       offlineChat.push({ id: Math.round(f.at * 10) + 3, role: 'bot', text: f.text, time: fmtTime(f.at), ts: f.at, offline: 'reminder' });
     }
   }
+  // Черновик ответа модели телефона — в ленте с первого слова; пока слов нет,
+  // как и с ядром: «печатает…» в шапке, а не пузырь «…»
   const draftMsg = offlineDraft[persona.id];
-  if (draftMsg) {
-    offlineChat.push({ id: draftMsg.num, role: 'bot', text: draftMsg.text || '…', time: fmtTime(Date.now() / 1000), ts: Date.now() / 1000, offline: 'local' });
+  if (draftMsg?.text) {
+    offlineChat.push({ id: draftMsg.num, role: 'bot', text: draftMsg.text, time: fmtTime(Date.now() / 1000), ts: Date.now() / 1000, offline: 'local' });
   }
   // Ответ с файлами уже в истории, а ссылки к нему сервер не привязал
   // (не та метка) — карточки берём из локальной копии сессии. Только тот же
@@ -978,7 +1015,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         : t('chat.trendStable');
   // «Последний ответ · когда напишет сама»: время последней реплики
   // пользователя из истории и порог молчания с бэкенда (адаптивный —
-  // две медианы интервала между репликами). Нет данных — прочерк
+  // две медианы интервала между репликами). Без ядра — только время
+  // последней реплики (без него — «неизвестно»)
   const lastUserTs = [...messages].reverse().find((m) => m.role === 'user' && m.ts)?.ts ?? null;
   const lastReplyText = apiOnline && initApi
     ? t('chat.lastReplyLine', {
@@ -989,7 +1027,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
               n: formatSilence(initApi.effective_silence_minutes ?? initApi.silence_threshold_minutes, t, lang),
             }),
       })
-    : t('chat.lastReplyUnknown');
+    : apiOnline && lastUserTs
+      ? t('home.lastReplyLabel', { t: agoLabel(lastUserTs, new Date(), t, lang === 'ru' ? 'ru-RU' : 'en-US') })
+      : t('chat.lastReplyUnknown');
   // Текущее занятие персоны: только живое состояние из кеша комнаты (если
   // она уже загружалась — свой поллинг не запускаем); нет его — прочерк,
   // демо-занятия не подставляем
@@ -1166,10 +1206,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // её сам)
   // Без ноутбука: реплика сохраняется на телефоне, отвечает облако или
   // модель телефона; ни того ни другого — ждёт связи в очереди
-  const sendOffline = async (text: string, image: string | null) => {
+  const sendOffline = async (text: string, image: string | null, phone = false) => {
     const pid = persona.id;
     if (image) setOfflineNote(t('offline.noImages'));
     if (!text) return;
+    // Команда телефону — до ответа модели: будильник встанет, даже если
+    // ответить некому и реплика ждёт связи
+    const action = phone ? await runPhoneCommand(pid, text, [persona.name]) : null;
     const history = messages.map((m) => ({ role: m.role === 'user' ? ('user' as const) : ('assistant' as const), text: m.text }));
     // Прежние реплики без ответа модель увидит в истории — ответ и на них
     const pending = unansweredTail(offlineMessages(pid));
@@ -1183,6 +1226,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         history,
         (chunk) => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: (prev[pid]?.text ?? '') + chunk } })),
         () => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: '' } })),
+        action ? actionNote(action) : undefined,
       );
       for (const m of [...pending, userMsg]) updateOfflineMessage(pid, m.id, { source: res.source });
       addOfflineMessage(pid, {
@@ -1207,10 +1251,20 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     }
   };
 
-  const submitMessage = (text: string, image: string | null, fromSkin = false, camera = false) => {
+  // phone — реплику можно разобрать как команду телефону («поставь
+  // будильник на 8», «открой Telegram», phone/actions.ts): исполняет само
+  // приложение, персона отвечает по итогу. Не из скина (сторонний код), не с
+  // картинкой и не в режиме управления — там команды адресованы компьютеру
+  const submitMessage = (text: string, image: string | null, fromSkin = false, camera = false, phone = true) => {
     if (!text && !image) return;
+    const phoneTurn = phone && !fromSkin && !image && !ccOn && phoneActionsAvailable();
+    // Похожее на команду, но не исполненное — в журнал проверки («Настройки»):
+    // видно, почему телефон ничего не сделал
+    if (phone && !phoneTurn && isNativeApp()) {
+      notePhoneSkip(text, fromSkin ? 'skin' : image ? 'image' : ccOn ? 'control_mode' : 'no_plugin', [persona.name]);
+    }
     if (offlineMode) {
-      void sendOffline(text, image);
+      void sendOffline(text, image, phoneTurn);
       return;
     }
     // Человек ответил (кнопкой или текстом) — прежние кнопки ответа снимаем;
@@ -1231,12 +1285,19 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     markBotRead(pid); // пользователь ответил — реплики бота прочитаны
 
     pushMessage(text, image, 'sent');
-    startGeneration(pid, personaName, text, quoted?.text, image, fromSkin, camera);
+    if (phoneTurn) {
+      void runPhoneCommand(pid, text, [personaName]).then((action) =>
+        startGeneration(pid, personaName, text, quoted?.text, image, fromSkin, camera, action ?? undefined));
+    } else {
+      startGeneration(pid, personaName, text, quoted?.text, image, fromSkin, camera);
+    }
   };
 
-  // Связь вернулась — пометки режима без ноутбука больше не к месту
+  // Связь вернулась — пометки режима без ноутбука больше не к месту; пропала —
+  // загрузить модель поиска по смыслу (если скачана), первый ответ её не ждёт
   useEffect(() => {
     if (!offlineMode) setOfflineNote(null);
+    else warmEmbedder();
   }, [offlineMode]);
 
   // Ноутбук на связи — освежить кит персоны (и ключи) для ответов без него:
@@ -1255,7 +1316,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     const tail = unansweredTail(list);
     if (!tail.length || tail.length !== list.length) return;
     removeOfflineMessages(persona.id, tail.map((m) => m.id));
-    submitMessage(tail.map((m) => m.text).join('\n\n'), null);
+    // Команды телефону в них уже исполнены, когда их писали
+    submitMessage(tail.map((m) => m.text).join('\n\n'), null, false, false, false);
     // submitMessage — замыкание текущего рендера, перезапуск по нему не нужен
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offlineMode, apiOnline, waiting, persona.id, offlineStore.length]);
@@ -1286,7 +1348,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // Отправка сообщения и стриминг ответа
   const startGeneration = (pid: string, personaName: string, text: string,
                            replyContext?: string, image?: string | null, fromSkin = false,
-                           camera = false) => {
+                           camera = false, phoneAction?: PhoneActionReport) => {
     localExchange.current[pid] = true; // своя генерация — перечитку истории пропустим
     // Новый обмен закрывает окно поглощения прошлого: его метки теперь
     // прикрывает «in flight», а после конца стрима окно откроется заново
@@ -1346,7 +1408,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       }));
     };
     streamChat(
-      { persona: pid, message: text, replyContext, image: image ?? undefined, imageSource: camera ? 'camera' : undefined, fromSkin },
+      { persona: pid, message: text, replyContext, image: image ?? undefined, imageSource: camera ? 'camera' : undefined, fromSkin, phoneAction },
       (tok) => {
         bubbleTexts[bubbleTexts.length - 1] += tok;
         upsertBot(bubbleIds[bubbleIds.length - 1], bubbleTexts[bubbleTexts.length - 1]);
@@ -2110,7 +2172,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   if (chatSkin && dossierOpen) {
     return (
       <div className="chat-layout">
-        <PersonaDossier persona={persona} initialTab={dossierTab} onClose={() => { setDossierOpen(false); setDossierTab(undefined); }} onClearDialog={clearStm} onStmChange={() => { reloadHistory(persona.id, true); setSideEpoch((e) => e + 1); }} stmEpoch={stmEpoch} />
+        <PersonaDossier persona={persona} initialTab={dossierTab} model={headerModel} onClose={() => { setDossierOpen(false); setDossierTab(undefined); }} onClearDialog={clearStm} onStmChange={() => { reloadHistory(persona.id, true); setSideEpoch((e) => e + 1); }} stmEpoch={stmEpoch} />
       </div>
     );
   }
@@ -2178,7 +2240,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
       {/* Окно чата либо встроенное досье персоны (одно заменяет другое) */}
       {dossierOpen ? (
-        <PersonaDossier persona={persona} initialTab={dossierTab} onClose={() => { setDossierOpen(false); setDossierTab(undefined); }} onClearDialog={clearStm} onStmChange={() => { reloadHistory(persona.id, true); setSideEpoch((e) => e + 1); }} stmEpoch={stmEpoch} />
+        <PersonaDossier persona={persona} initialTab={dossierTab} model={headerModel} onOpenYaml={() => setYamlOpen(true)} onClose={() => { setDossierOpen(false); setDossierTab(undefined); }} onClearDialog={clearStm} onStmChange={() => { reloadHistory(persona.id, true); setSideEpoch((e) => e + 1); }} stmEpoch={stmEpoch} />
       ) : chatMode === 'voice' ? (
         <VoiceChat
           persona={persona}
@@ -2273,9 +2335,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           </div>
         </div>
 
-        {(offlineMode || offlineNote) && (
+        {((offlineMode && offlineIntro) || offlineNote) && (
           <div className="chat-offline-banner" role="status">
-            {offlineMode && <span>{t('offline.banner')}</span>}
+            {offlineMode && offlineIntro && <span>{t('offline.banner')}</span>}
             {offlineNote && <span className="chat-offline-note">{offlineNote}</span>}
           </div>
         )}
@@ -2356,7 +2418,11 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                 className={`message message--${m.role}${answer ? ' message--answers' : ''}`}
                 style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
               >
-                <div className="message-bubble">
+                {/* Ждёт ответа (без связи с ядром) — пунктирный пузырь вместо значка */}
+                <div
+                  className={`message-bubble${m.role === 'user' && m.status === 'queued' ? ' message-bubble--queued' : ''}`}
+                  title={m.role === 'user' && m.status === 'queued' ? t('chat.msgQueued') : undefined}
+                >
                   <button
                     type="button"
                     className="message-reply-btn"
@@ -2412,16 +2478,15 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                   )}
                   <div className="message-time">
                     {m.time}
-                    {m.offline && (
-                      <span className={`msg-offline msg-offline--${m.offline}`} title={t('offline.tagTitle')}>
-                        {t(`offline.tag.${m.offline}`)}
+                    {/* Без связи подписи «облако / телефон / ждёт связи» не нужны:
+                        очередь видна по ◷; подписано только напоминание будильника */}
+                    {m.offline === 'reminder' && (
+                      <span className="msg-offline msg-offline--reminder" title={t('offline.tagTitle')}>
+                        {t('offline.tag.reminder')}
                       </span>
                     )}
-                    {/* Доставка/прочтение: наши — очередь → ✓ → ✓✓ (бот ответил);
-                        бота — ✓✓, когда чат виден (фокус/наш ответ) */}
-                    {m.role === 'user' && m.status === 'queued' && (
-                      <span className="msg-status" title={t('chat.msgQueued')}>◷</span>
-                    )}
+                    {/* Доставка/прочтение: наши — очередь (пунктирный пузырь) → ✓ → ✓✓
+                        (бот ответил); бота — ✓✓, когда чат виден (фокус/наш ответ) */}
                     {m.role === 'user' && m.status === 'sent' && (
                       <span className="msg-status" title={t('chat.msgSent')}>✓</span>
                     )}

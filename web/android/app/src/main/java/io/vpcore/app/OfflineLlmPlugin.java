@@ -35,7 +35,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -79,9 +78,15 @@ import javax.crypto.spec.GCMParameterSpec;
  * {names}, clearProviders({persona?}), cloudChat({persona, messages,
  * maxTokens?, temperature?}) → {text, provider, model}; modelStatus(),
  * downloadModel({url?, allowMetered?}), cancelDownload(), deleteModel(),
- * localChat({requestId, system, history, text, maxTokens?, temperature?}) →
+ * localChat({requestId, system, history, text, maxTokens?, temperature?, topP?}) →
  * {text, backend}, stopLocal(), unloadModel(); события modelProgress
  * {bytes, total}, modelDone, modelError {message}, localToken {requestId, text}.
+ *
+ * Поиск по смыслу: модель векторов ядра в ONNX (≈135 МБ) — embedStatus() →
+ * {downloaded, dir, size, partial, downloading, bytes, total, unmetered,
+ * freeBytes}, downloadEmbed({allowMetered?}), cancelEmbed(), deleteEmbed();
+ * события embedProgress {bytes, total}, embedDone, embedError {message}.
+ * Считает её WebView, плагин только скачивает.
  *
  * Поиск: webSearch({query, max?, engine?: "ddg" | "bing"}) → {results:
  * [{title, body, href}]} — страница выдачи без ключа, скрытым WebView. Напоминания будильником
@@ -407,26 +412,18 @@ public class OfflineLlmPlugin extends Plugin {
     /** Докачка в .part (Range), затем переименование: битого файла модели не бывает. */
     private void download(String url) throws Exception {
         File part = new File(modelDir(), MODEL_FILE + ".part");
-        long have = part.exists() ? part.length() : 0;
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setInstanceFollowRedirects(true);
-        c.setConnectTimeout(15_000);
-        c.setReadTimeout(60_000);
-        if (have > 0) c.setRequestProperty("Range", "bytes=" + have + "-");
-        int code = c.getResponseCode();
-        if (code == 200) have = 0; // сервер не умеет докачку — заново
-        else if (code != 206) throw new IOException("HTTP " + code);
-        long rest = c.getContentLengthLong();
-        downloadTotal = rest > 0 ? have + rest : 0;
-        downloadBytes = have;
-        long lastEvent = 0;
-        try (InputStream in = c.getInputStream(); OutputStream out = new FileOutputStream(part, have > 0)) {
-            byte[] buf = new byte[1 << 16];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                if (cancelDownload) throw new IOException("cancelled");
-                out.write(buf, 0, n);
-                downloadBytes += n;
+        ModelDownload.fetch(url, part, new ModelDownload.Progress() {
+            long lastEvent = 0;
+
+            @Override
+            public void start(long total, long have) {
+                downloadTotal = total;
+                downloadBytes = have;
+            }
+
+            @Override
+            public void bytes(long have) {
+                downloadBytes = have;
                 long now = System.currentTimeMillis();
                 if (now - lastEvent > 1000) {
                     lastEvent = now;
@@ -436,12 +433,12 @@ public class OfflineLlmPlugin extends Plugin {
                     notifyListeners("modelProgress", ev);
                 }
             }
-        } finally {
-            c.disconnect();
-        }
-        if (downloadTotal > 0 && part.length() != downloadTotal) {
-            throw new IOException("файл скачан не полностью");
-        }
+
+            @Override
+            public boolean cancelled() {
+                return cancelDownload;
+            }
+        });
         if (!hasModelMagic(part)) {
             //noinspection ResultOfMethodCallIgnored
             part.delete();
@@ -469,6 +466,166 @@ public class OfflineLlmPlugin extends Plugin {
             modelFile().delete();
             //noinspection ResultOfMethodCallIgnored
             new File(modelDir(), MODEL_FILE + ".part").delete();
+            call.resolve();
+        });
+    }
+
+    // ── Модель векторов: поиск по смыслу в памяти персоны ───────────────
+    // Та же модель, что у ядра (paraphrase-multilingual-MiniLM-L12-v2), в
+    // ONNX int8; считает её WebView (onnxruntime-web, web/src/offline/embed.ts),
+    // файлы читает по Capacitor.convertFileSrc(dir + "/" + имя). Ревизия
+    // закреплена, файл проверяется по SHA-256 — подменённый не возьмём.
+
+    private static final String EMBED_BASE =
+            "https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/"
+                    + "2c4055b12046f11709e9df2c122e59ffbdc2f900/";
+    // {путь в репозитории, имя на телефоне, SHA-256, размер}
+    private static final String[][] EMBED_FILES = {
+            {"onnx/model_quantized.onnx", "model_quantized.onnx",
+                    "66fc00f5f29afcaff34092e1bdd20008ca3918265a82fb9695a551e510cc4ebc", "118308126"},
+            {"tokenizer.json", "tokenizer.json",
+                    "b60b6b43406a48bf3638526314f3d232d97058bc93472ff2de930d43686fa441", "17082913"},
+    };
+
+    private volatile boolean embedDownloading = false;
+    private volatile boolean embedCancel = false;
+    private volatile long embedBytes = 0;
+
+    private File embedDir() {
+        File dir = new File(modelDir(), "embed");
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        return dir;
+    }
+
+    private static long embedTotal() {
+        long sum = 0;
+        for (String[] f : EMBED_FILES) sum += Long.parseLong(f[3]);
+        return sum;
+    }
+
+    /** Файл модели векторов на месте: проверен по SHA-256 при скачивании. */
+    private boolean embedFileReady(String[] f) {
+        File file = new File(embedDir(), f[1]);
+        return file.exists() && file.length() == Long.parseLong(f[3]);
+    }
+
+    @PluginMethod
+    public void embedStatus(PluginCall call) {
+        long size = 0;
+        long partial = 0;
+        boolean all = true;
+        for (String[] f : EMBED_FILES) {
+            if (embedFileReady(f)) size += Long.parseLong(f[3]);
+            else all = false;
+            File part = new File(embedDir(), f[1] + ".part");
+            if (part.exists()) partial += part.length();
+        }
+        JSObject ret = new JSObject();
+        ret.put("downloaded", all);
+        ret.put("dir", embedDir().getAbsolutePath());
+        ret.put("size", size);
+        ret.put("partial", size + partial);
+        ret.put("downloading", embedDownloading);
+        ret.put("bytes", embedBytes);
+        ret.put("total", embedTotal());
+        ret.put("unmetered", unmetered());
+        ret.put("freeBytes", embedDir().getUsableSpace());
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void downloadEmbed(PluginCall call) {
+        boolean allowMetered = Boolean.TRUE.equals(call.getBoolean("allowMetered", false));
+        if (embedDownloading) {
+            call.resolve();
+            return;
+        }
+        if (!allowMetered && !unmetered()) {
+            call.reject("Модель поиска (≈135 МБ) — скачивается только по Wi-Fi", "metered");
+            return;
+        }
+        embedDownloading = true;
+        embedCancel = false;
+        call.resolve();
+        io.execute(() -> {
+            try {
+                downloadEmbedFiles();
+                notifyListeners("embedDone", new JSObject());
+            } catch (Exception e) {
+                JSObject ev = new JSObject();
+                ev.put("message", embedCancel ? "cancelled" : String.valueOf(e.getMessage()));
+                notifyListeners("embedError", ev);
+            } finally {
+                embedDownloading = false;
+            }
+        });
+    }
+
+    private void downloadEmbedFiles() throws Exception {
+        long done = 0;
+        embedBytes = 0;
+        for (String[] f : EMBED_FILES) {
+            final long before = done;
+            if (!embedFileReady(f)) {
+                File part = new File(embedDir(), f[1] + ".part");
+                ModelDownload.fetch(EMBED_BASE + f[0], part, new ModelDownload.Progress() {
+                    long lastEvent = 0;
+
+                    @Override
+                    public void start(long total, long have) {
+                        embedBytes = before + have;
+                    }
+
+                    @Override
+                    public void bytes(long have) {
+                        embedBytes = before + have;
+                        long now = System.currentTimeMillis();
+                        if (now - lastEvent > 1000) {
+                            lastEvent = now;
+                            JSObject ev = new JSObject();
+                            ev.put("bytes", embedBytes);
+                            ev.put("total", embedTotal());
+                            notifyListeners("embedProgress", ev);
+                        }
+                    }
+
+                    @Override
+                    public boolean cancelled() {
+                        return embedCancel;
+                    }
+                });
+                if (!ModelDownload.sha256(part).equals(f[2])) {
+                    //noinspection ResultOfMethodCallIgnored
+                    part.delete();
+                    throw new IOException("файл " + f[1] + " не тот (SHA-256 не совпал)");
+                }
+                File target = new File(embedDir(), f[1]);
+                if (target.exists()) //noinspection ResultOfMethodCallIgnored
+                    target.delete();
+                if (!part.renameTo(target)) throw new IOException("не удалось сохранить " + f[1]);
+            }
+            done += Long.parseLong(f[3]);
+            embedBytes = done;
+        }
+    }
+
+    @PluginMethod
+    public void cancelEmbed(PluginCall call) {
+        embedCancel = true;
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void deleteEmbed(PluginCall call) {
+        embedCancel = true;
+        io.execute(() -> {
+            for (String[] f : EMBED_FILES) {
+                //noinspection ResultOfMethodCallIgnored
+                new File(embedDir(), f[1]).delete();
+                //noinspection ResultOfMethodCallIgnored
+                new File(embedDir(), f[1] + ".part").delete();
+            }
             call.resolve();
         });
     }
@@ -555,7 +712,7 @@ public class OfflineLlmPlugin extends Plugin {
     /** Один ответ модели (в потоке llm): поток слов — событиями localToken.
      * Ошибка без единого слова — исключение; прерванный ответ — то, что успело. */
     private String generate(Engine e, String requestId, String system, JSArray history, String text,
-                            int maxTokens, double temperature) throws Exception {
+                            int maxTokens, double temperature, double topP) throws Exception {
         final boolean gpu = "gpu".equals(engineBackend);
         boolean stalled = false;
         List<Message> initial = new ArrayList<>();
@@ -569,7 +726,7 @@ public class OfflineLlmPlugin extends Plugin {
         }
         Conversation conv = e.createConversation(new ConversationConfig(
                 Contents.Companion.of(system), initial, Collections.emptyList(),
-                new SamplerConfig(40, 0.95, temperature, 0), false, Collections.emptyList(),
+                new SamplerConfig(40, topP, temperature, 0), false, Collections.emptyList(),
                 Collections.emptyMap(), null, false, maxTokens, new ThinkingConfig(false)));
         current = conv;
         try {
@@ -676,13 +833,14 @@ public class OfflineLlmPlugin extends Plugin {
         final String text = call.getString("text", "");
         final int maxTokens = call.getInt("maxTokens", 400);
         final double temperature = call.getDouble("temperature", 0.8);
+        final double topP = call.getDouble("topP", 0.95);
         llm.execute(() -> {
             if (idleUnload != null) idleUnload.cancel(false);
             cancelledAt = 0;
             try {
                 String out;
                 try {
-                    out = generate(ensureEngine(), requestId, system, history, text, maxTokens, temperature);
+                    out = generate(ensureEngine(), requestId, system, history, text, maxTokens, temperature, topP);
                 } catch (Throwable first) {
                     String m = String.valueOf(first.getMessage());
                     if (!"gpu".equals(engineBackend) || cancelledAt > 0
@@ -697,7 +855,7 @@ public class OfflineLlmPlugin extends Plugin {
                     engine = null;
                     engineBackend = null;
                     if (stuck != null) inBackground(stuck::close);
-                    out = generate(ensureEngine(), requestId, system, history, text, maxTokens, temperature);
+                    out = generate(ensureEngine(), requestId, system, history, text, maxTokens, temperature, topP);
                 }
                 JSObject ret = new JSObject();
                 ret.put("text", out);

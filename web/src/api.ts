@@ -8,6 +8,7 @@
 
 import type { RoomArtData, RoomArtPatch, RoomFocus, RoomLayout, RoomLayoutPatch, RoomSource, RoomStyle, RoomView } from './room/roomTypes';
 import { getLinkConfig, linkFetch, refusalKey } from './link/client.ts';
+import type { PhoneActionReport } from './phone/notes';
 
 const BUILD_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000';
 const URL_KEY = 'vpc-api-url';
@@ -353,14 +354,30 @@ export interface OfflineHistoryLine {
   role: 'user' | 'assistant';
   text: string;
   ts: number;
+  vec?: string; // вектор текста (int8, base64) — в памяти для телефона
 }
 
-// Память персоны для телефона: вся переписка чата и факты (кит версии 3)
+// Память персоны для телефона: вся переписка чата и факты (кит версии 3);
+// с векторами из базы ядра — для поиска по смыслу (vectors — их модель)
 export interface OfflineMemoryResponse {
   persona: string;
   generated_at: number;
   history: OfflineHistoryLine[];
   facts: string[];
+  vectors?: { model: string; dim: number } | null;
+  facts_vec?: string[]; // по порядку facts, '' — вектора нет
+}
+
+// Краткое описание персоны для модели телефона (app/features/short_prompt.py):
+// source — yaml (поле short_prompt персоны) или auto (составила модель);
+// status — ready, pending (составляется), failed (error — почему), none
+export interface ShortPrompt {
+  text: string;
+  source: 'yaml' | 'auto' | '';
+  status: 'ready' | 'pending' | 'failed' | 'none';
+  at: number;
+  chars?: number; // символов в полном характере
+  error?: string;
 }
 
 export interface OfflineKitResponse {
@@ -369,7 +386,11 @@ export interface OfflineKitResponse {
   name: string;
   generated_at: number;
   system: string; // целиком — для облачной модели
-  parts: { character: string; rules: string; style: string; language: string };
+  // short — краткое описание для модели телефона (пусто — ещё не составлено),
+  // rules_local — правила офлайна короче; у ядра до них — нет
+  parts: { character: string; rules: string; style: string; language: string; short?: string; rules_local?: string };
+  short_prompt?: Pick<ShortPrompt, 'source' | 'status' | 'at'>;
+  lang?: string | null; // язык чата — запасной (язык ответа — по текущей реплике)
   facts: string[];
   history: OfflineHistoryLine[];
   // Версия 3: сообщения старше на ноутбуке стёрты (0 — переписки нет); строка
@@ -408,6 +429,8 @@ export const api = {
     request<OfflineKitResponse>(
       `/api/personas/${encodeURIComponent(persona)}/offline/kit?chat_id=${encodeURIComponent(WEB_CHAT_ID)}&user_id=${encodeURIComponent(WEB_USER_ID)}`,
     ),
+  getShortPrompt: (persona: string) =>
+    request<ShortPrompt>(`/api/personas/${encodeURIComponent(persona)}/offline/short-prompt`),
   getOfflineMemory: (persona: string) =>
     request<OfflineMemoryResponse>(
       `/api/personas/${encodeURIComponent(persona)}/offline/memory?chat_id=${encodeURIComponent(WEB_CHAT_ID)}&user_id=${encodeURIComponent(WEB_USER_ID)}`,
@@ -1168,7 +1191,8 @@ export async function streamControlView(
 export async function streamChat(
   // fromSkin — реплика из скина: бэкенд не пускает её в режим управления
   // imageSource camera — кадр с камеры: ядро отдаёт его только локальной модели
-  params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string; imageSource?: 'camera'; fromSkin?: boolean },
+  // phoneAction — команду уже исполнил телефон (phone/actions.ts): персона отвечает по итогу
+  params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string; imageSource?: 'camera'; fromSkin?: boolean; phoneAction?: PhoneActionReport },
   onToken: (text: string) => void,
   onPartBreak?: () => void,
   onReplyTs?: (ts: number) => void,
@@ -1193,6 +1217,7 @@ export async function streamChat(
         image: params.image ?? null,
         ...(params.image && params.imageSource === 'camera' ? { image_source: 'camera' } : {}),
         ...(params.fromSkin ? { from_skin: true } : {}),
+        ...(params.phoneAction ? { phone_action: params.phoneAction } : {}),
         // Приложение на телефоне: «открой файл X» присылает файл в чат, а не
         // открывает его на компьютере ядра
         ...(isNativeApp() ? { client: 'app' } : {}),

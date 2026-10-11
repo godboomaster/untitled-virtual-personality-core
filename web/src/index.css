@@ -69,6 +69,12 @@ html[data-theme='dark'] {
   box-sizing: border-box;
 }
 
+/* hidden прячет всегда: иначе display: flex класса (.mem-trim, .memory-list)
+   его перебивал, и скрытое без связи с ядром оставалось на экране */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body,
 #root {
@@ -234,13 +240,18 @@ html[data-vpc-shell] .detroit-bg {
 
 /* ===== Экран запуска (BootGate): ждём ядро API ===== */
 
+/* Панель по центру, но выше экрана — прокрутка, а не обрезка: на телефоне
+   форма подключения длиннее экрана, а клавиатура ужимает его ещё вдвое
+   (поля адреса и токена уходили под неё). Центрирует margin: auto у
+   панели — в отличие от align-items: center он не уводит верх за край. */
 .boot {
   position: fixed;
   inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: calc(16px + var(--sa-top)) calc(16px + var(--sa-right)) calc(16px + var(--sa-bottom))
+    calc(16px + var(--sa-left));
 }
 
 /* Появляется с задержкой: при уже работающем API экран не мелькает */
@@ -248,6 +259,7 @@ html[data-vpc-shell] .detroit-bg {
   position: relative;
   z-index: 1;
   width: min(520px, 100%);
+  margin: auto;
   padding: 34px 30px 26px;
   background: var(--bg-panel);
   border: 1px solid var(--border-soft);
@@ -430,6 +442,11 @@ html[data-vpc-shell] .detroit-bg {
 .boot-actions {
   margin-top: 20px;
   animation: fade-in 0.3s ease;
+}
+
+/* Форма адреса над клавиатурой — с зазором (BootGate прокручивает к ней) */
+.boot-server {
+  scroll-margin-bottom: 14px;
 }
 
 /* ===== Каркас ===== */
@@ -1500,6 +1517,16 @@ html[data-vpc-shell] .detroit-bg {
   border: 1px solid var(--border);
 }
 
+/* Ждёт ответа (без связи с ядром): пунктирная рамка, текст бледнее —
+   как черновик; ответ пришёл — обычный пузырь с ✓✓ */
+.message--user .message-bubble--queued {
+  border-style: dashed;
+}
+
+.message-bubble--queued .message-text {
+  opacity: 0.7;
+}
+
 .message-text {
   color: inherit;
   /* Переносы строк в ответах бота значимы (абзацы, списки) */
@@ -1835,6 +1862,32 @@ html[data-vpc-shell] .detroit-bg {
   flex: 1;
   min-width: 0;
   padding-top: 4px;
+}
+
+/* Узкий экран: имя, @id и статус — кнопка «раскрыть карточку» */
+.persona-card-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.persona-card-toggle > svg {
+  flex: none;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+}
+
+.persona-card-toggle[aria-expanded='true'] > svg {
+  transform: rotate(180deg);
 }
 
 .persona-card-name {
@@ -3439,6 +3492,25 @@ body.is-row-dragging * {
   }
 }
 
+/* Нет связи с ядром: число персон и широкая ячейка с объяснением */
+.home-telemetry--nolink {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
+}
+
+@media (max-width: 760px) {
+  .home-telemetry--nolink {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  }
+}
+
+.home-tele-note {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
 .home-tele-cell {
   position: relative;
   background: var(--bg-panel);
@@ -3990,6 +4062,13 @@ body.is-row-dragging * {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Нет связи — одна ячейка вместо четырёх прочерков, объяснение в строки */
+.room-tele-offline .room-tele-sub {
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: normal;
 }
 
 /* Тонкий прогресс-бар (энергия, цикл занятия) */
@@ -5623,6 +5702,50 @@ body.is-row-dragging * {
   background: rgba(0, 0, 0, 0.16);
 }
 
+/* Нет связи с ядром: комната приглушена (персона дремлет за столом, см.
+   AvatarFigure dozing), поверх — табличка; статус над вуалью */
+.room-offline-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg-panel) 45%, transparent);
+}
+
+.room-offline-plate {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  z-index: 4;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 80%;
+  padding: 12px 18px;
+  background: var(--term-bg);
+  border: 1px solid var(--term-line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--term-dim);
+  pointer-events: none;
+}
+
+.room-offline-plate-k {
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--term-bright);
+}
+
+.room-scene--offline .room-status-plate .status-led {
+  background: var(--text-muted);
+  animation: none;
+}
+
 .room-scene--tod-night.room-scene--lamp-on .room-lamp-cone {
   animation-name: room-lamp-glow-night;
 }
@@ -5910,17 +6033,44 @@ body.is-row-dragging * {
   color: var(--text-dim);
 }
 
-/* Кнопка закрытия (pxe-close) прижата вправо */
-.dossier-head .pxe-close {
-  margin-left: auto;
+/* Имя и подпись — в одну строку (длинная модель — с многоточием); кнопки
+   шапки (YAML, «Для Gemma»), значок и закрытие — справа */
+.dossier-title {
+  flex: 1;
+  min-width: 0;
 }
 
-.dossier-head .badge {
-  margin-left: auto;
+.dossier-name,
+.dossier-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.dossier-head .badge + .pxe-close {
-  margin-left: 0;
+.dossier-head-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.dossier-head-actions .btn {
+  gap: 5px;
+  padding: 6px 12px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Досье узкое (средняя колонка чата между двумя панелями) — значок
+   «DOSSIER // …» уступает место имени */
+.dossier-panel {
+  container-type: inline-size;
+}
+
+@container (max-width: 640px) {
+  .dossier-head .badge {
+    display: none;
+  }
 }
 
 .dossier-tabs {
@@ -8475,6 +8625,48 @@ html[data-theme='dark'] .input::-webkit-calendar-picker-indicator {
 .devlog-line--error .devlog-msg,
 .devlog-line--critical .devlog-msg {
   color: #d86a6a;
+}
+
+/* Телефон: кнопка LOGS в шапке, панель — полоса между шапкой и разделом
+   (в потоке: раздел ужимается, поле ввода чата и «Отправить» не закрыты) */
+.topbar-devlog {
+  flex-shrink: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--term-line);
+  background: var(--term-bg);
+  color: var(--term-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.topbar-devlog--on {
+  color: var(--term-bright);
+  border-color: var(--term-bright);
+}
+
+.devlog-panel--docked {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  z-index: 5;
+  flex-shrink: 0;
+  width: auto;
+  height: 300px;
+  height: min(300px, 38dvh);
+  padding: 0 var(--sa-right) 0 var(--sa-left);
+  border-width: 0 0 1px;
+}
+.devlog-panel--docked .devlog-head {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.devlog-panel--docked .devlog-head-actions {
+  align-items: center;
+}
+.devlog-panel--docked .devmem-chip {
+  position: static;
+  padding: 2px 6px;
 }
 
 /* Событие ленты, уже озвученное пользователю (дневник/инициатива) */
@@ -11452,6 +11644,183 @@ img.art-thumb {
 }
 
 /* «Поработать вместе»: подпись + 25/50 мин или «Закончить» */
+/* Узкий экран: чья комната — кнопка над сценой (RoomPersonaPicker) */
+.room-pick-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.room-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.room-pick > svg {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.room-pick-face {
+  --persona: var(--accent-dim);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  border: 1px solid var(--persona);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-family: var(--font-disp);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.room-pick-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.room-pick-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.room-pick-name,
+.room-pick-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-pick-name {
+  font-family: var(--font-disp);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.room-pick-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.room-pick-bar .room-fs-btn {
+  flex: none;
+  width: 52px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Нижний лист: выбор из списка поверх экрана (телефон) */
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: flex-end;
+  background: var(--overlay-bg);
+  animation: fade-in 0.15s ease-out;
+}
+
+.sheet {
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 16px calc(16px + var(--sa-bottom, 0px));
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  animation: sheet-up 0.2s ease-out;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet,
+  .sheet-overlay {
+    animation: none;
+  }
+}
+
+.sheet-grip {
+  width: 40px;
+  height: 4px;
+  margin: 2px auto 12px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.sheet-title {
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.sheet-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.sheet-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 4px;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sheet-row:last-child {
+  border-bottom: none;
+}
+
+.sheet-row.is-current .room-pick-face {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sheet-check {
+  flex: none;
+  color: var(--accent);
+  font-size: 16px;
+}
+
 .room-focus-controls {
   display: inline-flex;
   align-items: center;
@@ -12176,6 +12545,19 @@ img.art-thumb {
   color: var(--text-dim);
   font-family: var(--font-mono);
   font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* Краткое описание персоны для модели телефона (ShortPromptModal) */
+.short-prompt-text {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

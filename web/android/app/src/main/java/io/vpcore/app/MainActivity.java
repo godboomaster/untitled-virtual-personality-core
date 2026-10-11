@@ -13,6 +13,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(BackgroundInboxPlugin.class);
         registerPlugin(NativeSpeechPlugin.class);
         registerPlugin(OfflineLlmPlugin.class);
+        registerPlugin(PhoneActionsPlugin.class);
         registerPlugin(FileSavePlugin.class);
         super.onCreate(savedInstanceState);
         handleTap(getIntent());

@@ -1,18 +1,21 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import Collapsible from '../components/Collapsible';
 import InfoButton from '../components/InfoButton';
 import Select from '../components/Select';
 import { useHelpTexts, useI18n, useMockData } from '../i18n';
 import type { HelpKey } from '../helpTexts';
 import { api } from '../api';
-import type { PersonaLocalTasks, ProviderInfo } from '../api';
+import type { PersonaConfig, PersonaLocalTasks, ProviderInfo } from '../api';
 import { refetchProviders, useApiOnline, useApiProviders, refetchPersonaLlm, useApiWebchat } from '../apiData';
 import { WEB_HIDDEN_FEATURES } from '../mockData';
+import { useOfflineMode } from '../offline/state';
+import { getSettingsCopy, savePersonaConfigCopy } from '../offline/settingsCopy';
 
 /* Настройки персоны (вкладка в досье): провайдеры, параметры генерации,
    фичи. При доступном бэкенде — реальные: ключи/active из .env, генерация
    и фичи пишутся в YAML персоны (фичи применяются после перезапуска).
-   Без бэкенда — статичный мок-прототип. */
+   Телефон без связи с ядром — копия с телефона, только посмотреть (нет
+   копии — пояснение). Без бэкенда вовсе — статичный мок-прототип. */
 
 const featureHelpKeys: Record<string, HelpKey> = {
   web_search: 'settings.feature.web_search',
@@ -56,15 +59,21 @@ interface SettingsProps {
 }
 
 export default function Settings({ embedded, personaId }: SettingsProps) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { llmProviders, generationDefaults, featureFlags, providerModels } = useMockData();
   const helpTexts = useHelpTexts();
   const apiOnline = useApiOnline();
+  // Телефон без связи с ядром: настройки — копия на телефоне, менять нельзя
+  const offlineMode = useOfflineMode();
+  const copy = useMemo(() => (offlineMode && personaId ? getSettingsCopy(personaId) : null), [offlineMode, personaId]);
+  const readOnly = offlineMode;
+  const copyDate = (ms: number) =>
+    new Date(ms).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
-  // Провайдеры с бэкенда (общий кеш)
-  const providers = useApiProviders();
+  // Провайдеры с бэкенда (общий кеш); без связи — из копии
+  const providers = useApiProviders() ?? copy?.providers ?? null;
   // Веб-чаты с бэкенда: включённые сайты (для строк персональной цепочки)
-  const webchat = useApiWebchat();
+  const webchat = useApiWebchat() ?? copy?.webchat ?? null;
   // Служебные задачи персоны: у каждой свой движок — Ollama или веб-чат
   // (веб-чат — с выбором конкретного сайта); без выбора — дефолт по роду
   // задачи. Сайты фоновых задач зависят от цепочки провайдеров персоны —
@@ -105,68 +114,79 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
   const [wcLimitsInit, setWcLimitsInit] = useState<Record<string, { enabled: boolean; per_hour: number }>>({});
 
   useEffect(() => {
-    if (!apiOnline || !personaId) return;
+    if (!personaId) return;
+    // Настройки персоны → черновики форм: с ядра или (телефон без связи с
+    // ядром) из копии на телефоне — только посмотреть
+    const apply = (c: PersonaConfig) => {
+      const loadedGen = {
+        temperature: c.settings.temperature ?? 0.7,
+        maxTokens: c.settings.max_tokens ?? 2000,
+        topP: c.settings.top_p ?? 0.9,
+        stmSize: c.stm_size ?? 500,
+        splitMessages: c.settings.split_messages === true,
+      };
+      setGen(loadedGen);
+      setGenInit(loadedGen);
+      // Полный список: все известные фичи (отсутствующие в YAML — выключены)
+      // + любые дополнительные boolean-флаги из конкретного YAML
+      const bools: Record<string, boolean> = {};
+      for (const f of featureFlags) {
+        const v = c.features[f.id];
+        // computer_control — dict конфига без enabled-ключа: режим включён
+        // (enabled: false внутри dict — выключен, списки при этом сохраняются)
+        bools[f.id] =
+          typeof v === 'boolean'
+            ? v
+            : v !== null && typeof v === 'object'
+              ? f.id === 'computer_control'
+                ? (v as { enabled?: unknown }).enabled !== false
+                : Boolean((v as { enabled?: unknown }).enabled)
+              : false;
+      }
+      for (const [k, v] of Object.entries(c.features)) {
+        // фичи, специфичные для мессенджера (export_server/restore_memory), в вебе инертны — скрываем
+        if (WEB_HIDDEN_FEATURES.has(k)) continue;
+        if (typeof v === 'boolean' && !(k in bools)) bools[k] = v;
+      }
+      setFeatureDraft(bools);
+      setFeatureInit(bools);
+      setFeatureRaw(c.features);
+      const loadedPrimary = c.llm?.primary ?? null;
+      const loadedFallback = c.llm?.fallback ?? [];
+      const loadedExclude = c.llm?.exclude ?? [];
+      setLlmPrimary(loadedPrimary);
+      setLlmFallback(loadedFallback);
+      setLlmExclude(loadedExclude);
+      setLlmInit({ primary: loadedPrimary, fallback: loadedFallback, exclude: loadedExclude });
+      const loadedPurpose = {
+        answer: c.llm?.answer_provider ?? '',
+        cc: c.llm?.cc_provider ?? '',
+        vision: c.llm?.vision_provider ?? '',
+      };
+      setPurposeProvs(loadedPurpose);
+      setPurposeInit(loadedPurpose);
+      const loadedWc: Record<string, { enabled: boolean; per_hour: number }> = {};
+      for (const [site, cfg] of Object.entries(c.llm?.webchat_limits ?? {})) {
+        loadedWc[site] = { enabled: cfg.enabled !== false, per_hour: cfg.per_hour ?? 40 };
+      }
+      setWcLimits(loadedWc);
+      setWcLimitsInit(loadedWc);
+    };
+    if (offlineMode) {
+      if (copy) apply(copy.config);
+      return;
+    }
+    if (!apiOnline) return;
     setRestartNote(false);
     api.getPersonaLocalTasks(personaId).then(setLocalTasks).catch(() => setLocalTasks(null));
     api
       .getPersonaConfig(personaId)
       .then((c) => {
-        const loadedGen = {
-          temperature: c.settings.temperature ?? 0.7,
-          maxTokens: c.settings.max_tokens ?? 2000,
-          topP: c.settings.top_p ?? 0.9,
-          stmSize: c.stm_size ?? 500,
-          splitMessages: c.settings.split_messages === true,
-        };
-        setGen(loadedGen);
-        setGenInit(loadedGen);
-        // Полный список: все известные фичи (отсутствующие в YAML — выключены)
-        // + любые дополнительные boolean-флаги из конкретного YAML
-        const bools: Record<string, boolean> = {};
-        for (const f of featureFlags) {
-          const v = c.features[f.id];
-          // computer_control — dict конфига без enabled-ключа: режим включён
-          // (enabled: false внутри dict — выключен, списки при этом сохраняются)
-          bools[f.id] =
-            typeof v === 'boolean'
-              ? v
-              : v !== null && typeof v === 'object'
-                ? f.id === 'computer_control'
-                  ? (v as { enabled?: unknown }).enabled !== false
-                  : Boolean((v as { enabled?: unknown }).enabled)
-                : false;
-        }
-        for (const [k, v] of Object.entries(c.features)) {
-          // фичи, специфичные для мессенджера (export_server/restore_memory), в вебе инертны — скрываем
-          if (WEB_HIDDEN_FEATURES.has(k)) continue;
-          if (typeof v === 'boolean' && !(k in bools)) bools[k] = v;
-        }
-        setFeatureDraft(bools);
-        setFeatureInit(bools);
-        setFeatureRaw(c.features);
-        const loadedPrimary = c.llm?.primary ?? null;
-        const loadedFallback = c.llm?.fallback ?? [];
-        const loadedExclude = c.llm?.exclude ?? [];
-        setLlmPrimary(loadedPrimary);
-        setLlmFallback(loadedFallback);
-        setLlmExclude(loadedExclude);
-        setLlmInit({ primary: loadedPrimary, fallback: loadedFallback, exclude: loadedExclude });
-        const loadedPurpose = {
-          answer: c.llm?.answer_provider ?? '',
-          cc: c.llm?.cc_provider ?? '',
-          vision: c.llm?.vision_provider ?? '',
-        };
-        setPurposeProvs(loadedPurpose);
-        setPurposeInit(loadedPurpose);
-        const loadedWc: Record<string, { enabled: boolean; per_hour: number }> = {};
-        for (const [site, cfg] of Object.entries(c.llm?.webchat_limits ?? {})) {
-          loadedWc[site] = { enabled: cfg.enabled !== false, per_hour: cfg.per_hour ?? 40 };
-        }
-        setWcLimits(loadedWc);
-        setWcLimitsInit(loadedWc);
+        apply(c);
+        savePersonaConfigCopy(personaId, c);
       })
       .catch(() => {});
-  }, [apiOnline, personaId, featureFlags]);
+  }, [apiOnline, offlineMode, copy, personaId, featureFlags]);
 
   const flashSaved = (card: 'llm' | 'gen' | 'features') => {
     setSavedCard(card);
@@ -259,7 +279,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
   const wcLimitOf = (site: string) => wcLimits[site] ?? { enabled: true, per_hour: 40 };
   const setWcLimit = (site: string, patch: Partial<{ enabled: boolean; per_hour: number }>) =>
     setWcLimits((m) => ({ ...m, [site]: { ...(m[site] ?? { enabled: true, per_hour: 40 }), ...patch } }));
-  const personaMode = apiOnline && providers !== null && !!personaId;
+  const personaMode = (apiOnline || !!copy) && providers !== null && !!personaId;
   const globalActiveId = providers?.find((p) => p.active)?.id ?? null;
   const effPrimary = llmPrimary ?? globalActiveId;
 
@@ -451,13 +471,25 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
     setBackupIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
-  const apiMode = apiOnline && providers !== null;
+  const apiMode = (apiOnline || !!copy) && providers !== null;
   // Сводка свёрнутого списка: первые звенья цепочки и их число
   const providersSummary = (() => {
     const names = apiMode ? orderedProviders().map((p) => p.name) : [main.name];
     const head = names.slice(0, 3).join(' → ');
     return names.length > 3 ? `${head} … (${names.length})` : head;
   })();
+
+  // Телефон без связи с ядром и без копии настроек: демо прототипа выглядело
+  // бы как настоящие провайдеры персоны — только пояснение
+  if (offlineMode && !copy) {
+    return (
+      <div className={embedded ? undefined : 'section'}>
+        <div className="card">
+          <p className="field-hint">{t('settings.offlineNoCopy')}</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={embedded ? undefined : 'section'}>
@@ -468,6 +500,10 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
             <p className="section-subtitle">{t('settings.subtitle')}</p>
           </div>
         </div>
+      )}
+
+      {readOnly && copy && (
+        <p className="field-hint">{t('settings.offlineCopy', { date: copyDate(copy.at) })}</p>
       )}
 
       {/* Провайдеры */}
@@ -490,7 +526,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                   const isMain = personaMode ? p.id === effPrimary : p.active;
                   const canUse = p.key_set || p.local;
                   const wcSite = p.id.startsWith('webchat:') ? p.id.split(':')[1] : null;
-                  const draggable = personaMode && !isMain && canUse;
+                  const draggable = personaMode && !isMain && canUse && !readOnly;
                   const dragging = fbDrag?.id === p.id;
                   return (
                     <li
@@ -564,6 +600,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                                   <input
                                     type="checkbox"
                                     checked={wcLimitOf(wcSite).enabled}
+                                    disabled={readOnly}
                                     onChange={(e) => setWcLimit(wcSite, { enabled: e.target.checked })}
                                   />
                                   <span className="switch-slider" />
@@ -574,7 +611,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                                   type="number"
                                   min={1}
                                   max={500}
-                                  disabled={!wcLimitOf(wcSite).enabled}
+                                  disabled={readOnly || !wcLimitOf(wcSite).enabled}
                                   value={wcLimitOf(wcSite).per_hour}
                                   title={t('settings.webchatPerHour')}
                                   onChange={(e) => {
@@ -599,7 +636,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                           </>
                         )}
                         {personaMode ? (
-                          !isMain && canUse && (
+                          !isMain && canUse && !readOnly && (
                             <>
                               <button
                                 className="btn btn--ghost"
@@ -704,11 +741,13 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                         )}
                       </span>
                     </div>
-                    <div className="provider-side">
-                      <button className="btn btn--ghost" onClick={() => restoreProvider(p.id)}>
-                        {t('settings.restoreToChain')}
-                      </button>
-                    </div>
+                    {!readOnly && (
+                      <div className="provider-side">
+                        <button className="btn btn--ghost" onClick={() => restoreProvider(p.id)}>
+                          {t('settings.restoreToChain')}
+                        </button>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -761,6 +800,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                       <Select
                         style={{ maxWidth: 220 }}
                         value={purposeProvs[key]}
+                        disabled={readOnly}
                         options={[{ value: '', label: t('settings.purposeChain') }, ...provOptions]}
                         onChange={(v) => setPurposeProvs((cur) => ({ ...cur, [key]: v }))}
                       />
@@ -911,7 +951,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
 
         {/* Сохранение провайдеров персоны — под всеми блоками карточки
             (движки локальных задач сохраняются сразу при выборе) */}
-        {personaMode && (
+        {personaMode && !readOnly && (
           <div className="dossier-confirm-actions" style={{ marginTop: 12 }}>
             <button className="btn btn--primary" onClick={saveLlm} disabled={!llmDirty}>
               {savedCard === 'llm' ? '✓' : t('common.save')}
@@ -962,7 +1002,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
               type="number"
               step="0.1"
               value={apiMode ? gen.temperature : generationDefaults.temperature}
-              readOnly={!apiMode}
+              readOnly={!apiMode || readOnly}
               onChange={(e) => setGen((g) => ({ ...g, temperature: Number(e.target.value) }))}
             />
           </div>
@@ -975,7 +1015,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
               className="input"
               type="number"
               value={apiMode ? gen.maxTokens : generationDefaults.maxTokens}
-              readOnly={!apiMode}
+              readOnly={!apiMode || readOnly}
               onChange={(e) => setGen((g) => ({ ...g, maxTokens: Number(e.target.value) }))}
             />
           </div>
@@ -989,7 +1029,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
               type="number"
               step="0.05"
               value={apiMode ? gen.topP : generationDefaults.topP}
-              readOnly={!apiMode}
+              readOnly={!apiMode || readOnly}
               onChange={(e) => setGen((g) => ({ ...g, topP: Number(e.target.value) }))}
             />
           </div>
@@ -1002,7 +1042,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
               className="input"
               type="number"
               value={apiMode ? gen.stmSize : generationDefaults.stmSize}
-              readOnly={!apiMode}
+              readOnly={!apiMode || readOnly}
               onChange={(e) => setGen((g) => ({ ...g, stmSize: Number(e.target.value) }))}
             />
           </div>
@@ -1012,11 +1052,12 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
             type="checkbox"
             checked={apiMode ? gen.splitMessages : false}
             readOnly={!apiMode}
+            disabled={readOnly}
             onChange={(e) => setGen((g) => ({ ...g, splitMessages: e.target.checked }))}
           />
           <span>{t('settings.splitMessages')}</span>
         </label>
-        {apiMode && (
+        {apiMode && !readOnly && (
           <button className="btn btn--primary" onClick={saveGen} disabled={!genDirty}>
             {savedCard === 'gen' ? '✓' : t('common.save')}
           </button>
@@ -1053,6 +1094,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
                           <input
                             type="checkbox"
                             checked={on}
+                            disabled={readOnly}
                             onChange={(e) => setFeatureDraft((d) => ({ ...d, [id]: e.target.checked }))}
                           />
                         ) : (
@@ -1069,7 +1111,7 @@ export default function Settings({ embedded, personaId }: SettingsProps) {
               </div>
             ));
         })()}
-        {apiMode && (
+        {apiMode && !readOnly && (
           <>
             <button className="btn btn--primary" onClick={saveFeatures} disabled={!featuresDirty}>
               {savedCard === 'features' ? '✓' : t('common.save')}
