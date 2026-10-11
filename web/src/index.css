@@ -7342,6 +7342,59 @@ html[data-theme='dark'] .input::-webkit-calendar-picker-indicator {
   margin-top: 0;
 }
 
+/* Файлы с компьютера ядра в пузыре ответа («пришли файл X») */
+.message-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.sent-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-panel-2);
+  min-width: 0;
+}
+
+.sent-file-glyph {
+  flex: none;
+  font-size: 16px;
+  color: var(--text-dim);
+}
+
+.sent-file-meta {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.sent-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.sent-file-size,
+.sent-file-note {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.sent-file-note {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.sent-file .btn {
+  flex: none;
+}
+
 /* Превью вложения над полем ввода */
 .chat-attach-bar {
   display: flex;

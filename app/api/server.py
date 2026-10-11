@@ -811,7 +811,7 @@ async def skin_generate(req: SkinGenRequest):
 
 
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(require_auth)])
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
     bot = await _get_bot(req.persona)
     _check_not_muted(bot, req.persona)
     await _touch_persona(req.persona)
@@ -836,13 +836,30 @@ async def chat(req: ChatRequest):
         _cc_turn_exit(bot, cc_token)
         raise
     try:
-        return await _chat_in_turn(bot, req, lock_key, stm_key, frame, cc_token)
+        return await _chat_in_turn(bot, req, lock_key, stm_key, frame, cc_token,
+                                   delivery=_file_delivery(request, req))
     finally:
         _end_turn(bot, frame)
 
 
+def _file_delivery(request: Request, req: ChatRequest):
+    """Что сделать с файлом по «открой/пришли файл X» (app/features/file_access).
+    Открыть на компьютере ядра — только вебу, открытому на нём самом (адрес
+    localhost, без VPC Link и прокси). Приложение на телефоне, VPC Link и
+    любой другой адрес — прислать файл в чат. Скин — никак: реплику мог
+    написать скрипт скина."""
+    if req.from_skin:
+        return None
+    h = request.headers
+    if (req.client == "app" or _via_link(request)
+            or host_without_port(h.get("host", "")) not in LOOPBACK_HOSTS
+            or "x-forwarded-for" in h or "forwarded" in h):
+        return "send"
+    return "open"
+
+
 async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, frame,
-                        cc_token=None):
+                        cc_token=None, delivery=None):
     def _generate():
         """Синхронная часть целиком (в потоке пула, под локом чата): и
         генерация, и разбор pending-бакетов — они должны сниматься тем же
@@ -871,6 +888,7 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                     # _prepare_turn_input)
                     raw_user_text=req.message if shown else None,
                     from_skin=req.from_skin,
+                    file_delivery=delivery,
                 )
                 # Провайдер ответа — СРАЗУ после process_message и в этом же
                 # потоке (см. _answer_provider)
@@ -884,12 +902,13 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
         # это продолжение реплики, а список — приложение к ней
         extra = split_extra + bot.pop_pending_list_messages(req.chat_id)
         question_kind = bot.pop_pending_question_kind(req.chat_id)
-        return reply, provider, model, extra, question_kind
+        files = _pending_files(bot, req, None)
+        return reply, provider, model, extra, question_kind, files
 
     # Лок на (персона, чат) и флаг «генерирует» держит _run_generation:
     # сообщения одного чата сериализуются, разные чаты и персоны идут
     # параллельно; разрыв соединения генерацию не обрывает
-    reply, provider, model, extra, question_kind = await _run_generation(
+    reply, provider, model, extra, question_kind, files = await _run_generation(
         lock_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token))
     return ChatResponse(
         reply=reply,
@@ -905,7 +924,18 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
         images=_pending_images(bot, req.chat_id),
         answer_options=bot.cc_answer_options(req.chat_id or req.user_id, req.user_id),
         task=bot.cc_task_card(req.chat_id or req.user_id, req.user_id),
+        files=files,
     )
+
+
+def _pending_files(bot, req: ChatRequest, reply_ts) -> list[dict]:
+    # Файлы с компьютера ядра («пришли файл X») — ссылками на скачивание
+    pop = getattr(bot, "pop_pending_files", None)
+    files = pop(req.chat_id) if callable(pop) else []
+    if not files:
+        return []
+    from app.api import file_links
+    return file_links.register(req.persona, _stm_key(req), files, reply_ts)
 
 
 def _pending_images(bot, chat_id) -> list[str]:
@@ -1253,7 +1283,7 @@ async def _typed_chunks(text: str):
 
 
 @app.post("/api/chat/stream", dependencies=[Depends(require_auth)])
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, request: Request):
     """SSE-стриминг ответа: события {"token": ...}, финал {"done": ..., "reply": ...}.
 
     Ядро генерирует ответ целиком (со всей постобработкой: _clean_response,
@@ -1267,6 +1297,7 @@ async def chat_stream(req: ChatRequest):
     gen_key = f"{req.persona}:{req.chat_id or req.user_id}"
     stm_key = _stm_key(req)
     turn = {"frame": None}
+    delivery = _file_delivery(request, req)
 
     def _generate():
         """Тяжёлая синхронная часть — идёт в потоке пула (asyncio.to_thread).
@@ -1295,22 +1326,28 @@ async def chat_stream(req: ChatRequest):
                     # тому, что реально ввёл пользователь, не по OCR картинки
                     raw_user_text=req.message if shown else None,
                     from_skin=req.from_skin,
+                    file_delivery=delivery,
                 )
                 # Провайдер ответа — сразу и в этом же потоке (_answer_provider)
                 provider, model = _answer_provider(bot)
                 split_rest = bot.pop_pending_split_messages(req.chat_id)
                 if shown:
                     _rewrite_image_stm(bot, stm_key, req.user_id, shown, [reply] + split_rest)
+            # Ответ лёг в историю другим текстом (список файлов — заглушкой):
+            # метку ищем по нему, фронт по нему же сверяет свой пузырь
+            pop_hist = getattr(bot, "pop_reply_history_text", None)
+            reply_stm = pop_hist(req.chat_id) if callable(pop_hist) else None
             # В кадре хода — пока якорь STM этого хода виден
-            reply_ts = _reply_stm_ts(bot, stm_key, reply)
+            reply_ts = _reply_stm_ts(bot, stm_key, reply_stm or reply)
         # Pending-бакеты снимаем здесь же, в потоке под локом чата: без лока
         # следующее сообщение в тот же чат успело бы обнулить/перехватить
         # бакеты этого ответа
         extra = split_rest + bot.pop_pending_list_messages(req.chat_id)
         question_kind = bot.pop_pending_question_kind(req.chat_id)
         images = _pending_images(bot, req.chat_id)
+        files = _pending_files(bot, req, reply_ts)
         return (reply, split_rest, extra, question_kind, images, provider,
-                model, reply_ts)
+                model, reply_ts, files, reply_stm)
 
     async def _gen():
         # Ход пользователя держим до конца «печати» (split-пузыри с паузами) —
@@ -1346,7 +1383,7 @@ async def chat_stream(req: ChatRequest):
             return
         try:
             (reply, split_rest, extra, question_kind, images,
-             provider, model, reply_ts) = await _run_generation(
+             provider, model, reply_ts, files, reply_stm) = await _run_generation(
                 gen_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token))
         except HTTPException as e:
             # Отказ нашего же кода до генерации (картинку, камеру или экран
@@ -1400,6 +1437,10 @@ async def chat_stream(req: ChatRequest):
                                                     req.user_id),
             # Карточка задачи агента — итог хода (дальше её обновляет inbox)
             "task": bot.cc_task_card(req.chat_id or req.user_id, req.user_id),
+            # Файлы с компьютера ядра («пришли файл X») — ссылки на скачивание
+            "files": files,
+            # Текст ответа в истории, если другой (список файлов — заглушкой)
+            "reply_stm": reply_stm,
         }
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -1418,7 +1459,50 @@ async def chat_history(
     messages = await asyncio.to_thread(
         bot.memory.stm.get_messages, user_id=user_id, chat_id=chat_id
     )
-    return messages
+    return _attach_history_files(persona, str(chat_id if chat_id is not None else user_id),
+                                 messages)
+
+
+def _attach_history_files(persona: str, chat_key: str, messages: list) -> list:
+    # Ответы, которыми присланы файлы («пришли файл X»), — снова со ссылками,
+    # пока те живы: иначе перезагрузка страницы теряла бы кнопку «Скачать»
+    from app.api import file_links
+    linked = file_links.for_history(persona, chat_key)
+    if not linked:
+        return messages
+    out = []
+    for m in messages:
+        ts = m.get("timestamp") if isinstance(m, dict) else None
+        if m.get("role") == "assistant" and isinstance(ts, (int, float)):
+            files = next((f for t, f in linked if abs(t - ts) < 0.002), None)
+            if files:
+                m = {**m, "files": files}
+        out.append(m)
+    return out
+
+
+@app.get("/api/files/{link_id}", dependencies=[Depends(require_auth)])
+async def sent_file(link_id: str):
+    """Файл, присланный в чат («пришли файл X»), по ссылке из ответа.
+    Перед отдачей — те же проверки, что при поиске: файл мог исчезнуть или
+    оказаться запрещённым (подмена симлинком) с момента ответа."""
+    from fastapi.responses import FileResponse
+    import mimetypes
+    from app.api import file_links
+    from app.features import file_finder
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", link_id or ""):
+        raise HTTPException(status_code=404, detail="Ссылка на файл не найдена")
+    entry = file_links.get(link_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=(
+            "Ссылка на файл устарела — попросите прислать его ещё раз"))
+    path = entry["path"]
+    ok = await asyncio.to_thread(file_finder.path_allowed, path)
+    if not ok:
+        raise HTTPException(status_code=410, detail="Файла больше нет на месте")
+    mime = mimetypes.guess_type(entry["name"])[0] or "application/octet-stream"
+    return FileResponse(path, media_type=mime, filename=entry["name"],
+                        content_disposition_type="attachment")
 
 
 @app.post("/api/chat/clear", dependencies=[Depends(require_auth)])
@@ -2493,8 +2577,10 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     except Exception:
         control_mode = False
     # Кнопки ответа переживают перезагрузку страницы: состояние ожидания
-    # живёт в боте, а не в ленте; пока идёт генерация — без кнопок
-    answer_options = (None if generating or not control_mode
+    # живёт в боте, а не в ленте; пока идёт генерация — без кнопок. Режим
+    # управления cc_answer_options проверяет сама: список «какой файл?»
+    # (file_access) ждёт ответа и вне режима
+    answer_options = (None if generating
                       else bot.cc_answer_options(chat_id, chat_id))
     # Карточка задачи агента: опрос во время хода (быстрый поллинг фронта)
     # обновляет её на месте — шаги, статус, план

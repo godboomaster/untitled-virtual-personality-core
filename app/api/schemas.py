@@ -27,6 +27,9 @@ class ChatRequest(BaseModel):
     # её сам, поэтому в таком ходе режим управления недоступен
     # (BotInstance.process_message(from_skin=True))
     from_skin: bool = False
+    # Клиент — приложение на телефоне: «открой файл X» присылает файл в чат,
+    # а не открывает его на компьютере ядра (server._file_delivery)
+    client: Optional[Literal["app"]] = None
 
 
 class OfflineMessage(BaseModel):
@@ -81,6 +84,9 @@ class ChatResponse(BaseModel):
     # Карточка задачи агента (BotInstance.cc_task_card): цель, статус,
     # план заказа с отметками и журнал хода
     task: Optional[dict] = None
+    # Файлы с компьютера ядра («пришли файл X»): {id, name, size, url} —
+    # url отдаёт файл под тем же токеном (app/api/file_links)
+    files: list[dict] = Field(default_factory=list)
 
 
 class PresenceRequest(BaseModel):
@@ -112,6 +118,8 @@ class HistoryMessage(BaseModel):
     timestamp: Optional[float] = None  # unix-секунды
     user_name: Optional[str] = None
     sender_id: Optional[str] = None
+    # Файлы, присланные этим ответом, пока ссылки живы (app/api/file_links)
+    files: Optional[list[dict]] = None
 
 
 # Части «Очистить диалог» (опасная зона досье): stm — переписка, ltm — факты,
