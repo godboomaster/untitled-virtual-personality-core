@@ -7,7 +7,10 @@
   - приём офлайн-переписки: по времени, внутри хода пользователя, обычным
     memory.add_message (с извлечением фактов); повторы по id не пишутся;
   - маршруты: ключи с Cache-Control: no-store, проверка входа (роль, id,
-    размер пачки).
+    размер пачки);
+  - векторы памяти для поиска по смыслу на телефоне: из базы по тексту,
+    недостающие — моделью ядра, int8 base64; векторы другой модели — не
+    отдаются.
 
 Бот подставной: модели, Chroma и сеть не вызываются; данные — во временной
 папке.
@@ -211,6 +214,8 @@ def test_kit():
     check(f"…длинное сообщение — до {offline_api.MEMORY_TEXT} символов",
           len(mem["history"][5]["text"]) == offline_api.MEMORY_TEXT)
     check("…и факты без пустых", mem["facts"] == ["Имя: Хэнк", "Работа: полиция"] and mem["persona"] == "connor")
+    check("без векторов в базе — поиск только по словам", mem["vectors"] is None and "vec" not in mem["history"][0]
+          and "facts_vec" not in mem)
     bot.stm = []
     kit5 = offline_api.build_kit(bot, "connor", "web_user", "web_user")
     check("пустая переписка — граница 0, хвост пуст", kit5["history_first_ts"] == 0.0 and kit5["history"] == [])
@@ -301,6 +306,104 @@ def test_stm_timestamp():
           [m["content"] for m in again.get_last(10, chat_id="c")] == order)
     last = json.loads((data_dir() / "offline_stm" / "last_message.json").read_text())
     check("метка последнего сообщения не уехала в прошлое", last["c"] >= now - 1)
+    import numpy as np
+    vecs = stm.stored_vectors("c")
+    fresh = stm.embedder(["из метро"])[0]
+    v = np.asarray(vecs.get("из метро", [0.0]), dtype=np.float32)
+    check("векторы сообщений из базы — по тексту, все четыре, той же моделью",
+          sorted(vecs) == sorted(order) and len(v) == len(fresh)
+          and float(v @ fresh / (np.linalg.norm(v) * np.linalg.norm(fresh))) > 0.999)
+    check("…чужой чат — пусто", stm.stored_vectors("other") == {})
+
+
+def _fake_vec(text, salt=""):
+    # Детерминированный «вектор» текста — как у модели, 384 числа
+    import hashlib
+    import numpy as np
+    seed = int.from_bytes(hashlib.sha256((salt + text).encode()).digest()[:8], "little")
+    return np.random.default_rng(seed).standard_normal(384).astype(np.float32)
+
+
+def test_vectors():
+    section("G. Векторы для поиска по смыслу на телефоне")
+    import base64
+    import numpy as np
+    from app.api import offline_api
+    from app.core.st_embedder import ST_MODEL_NAME
+
+    def unpack(b64):
+        return np.frombuffer(base64.b64decode(b64), dtype=np.int8).astype(np.float32)
+
+    def cos(a, b):
+        return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+    v = _fake_vec("x")
+    packed = offline_api.pack_vector(v)
+    q = unpack(packed)
+    check("упаковка: 384 байта int8, base64 — 512 символов", len(q) == 384 and len(packed) == 512)
+    check("…косинус с исходным ≥ 0.999", cos(q, v) >= 0.999)
+    check("…наибольшая координата — ±127", int(np.max(np.abs(q))) == 127)
+    check("нулевой вектор — пусто", offline_api.pack_vector(np.zeros(384)) == "")
+
+    bot = FakeBot()
+    bot.context = "api_vec1"
+    bot.stm = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"реплика {i}" + "я" * (3000 if i == 3 else 0),
+                "timestamp": 100.0 + i} for i in range(6)]
+    bot.stm.insert(2, {"role": "system", "content": "служебное", "timestamp": 101.5})
+    embedded = []
+
+    def embedder(texts):
+        embedded.append(list(texts))
+        return [_fake_vec(t) for t in texts]
+
+    texts = [m["content"] for m in bot.stm if m["role"] != "system"]
+    stored = {t: list(_fake_vec(t)) for t in texts if t != "реплика 4"}  # одной нет в базе
+    bot.memory.stm.embedder = embedder
+    bot.memory.stm.stored_vectors = lambda chat_id: (bot.calls.append(("stm_vec", chat_id)), stored)[1]
+    bot.memory.ltm.stored_vectors = lambda user_id: (bot.calls.append(("ltm_vec", user_id)),
+                                                     {"Имя: Хэнк": list(_fake_vec("Имя: Хэнк"))})[1]
+    mem = offline_api.build_memory(bot, "connor", "web_user", "web_user")
+    check("модель и размерность — в ответе", mem["vectors"] == {"model": ST_MODEL_NAME, "dim": 384})
+    hist = mem["history"]
+    check("у каждой реплики — вектор её полного текста (не обрезанного)",
+          len(hist) == 6 and all(cos(unpack(h["vec"]), _fake_vec(t)) >= 0.999 for h, t in zip(hist, texts))
+          and len(hist[3]["text"]) == offline_api.MEMORY_TEXT)
+    check("векторы фактов — по порядку фактов",
+          len(mem["facts_vec"]) == 2 and cos(unpack(mem["facts_vec"][0]), _fake_vec("Имя: Хэнк")) >= 0.999
+          and cos(unpack(mem["facts_vec"][1]), _fake_vec("Работа: полиция")) >= 0.999)
+    check("моделью ядра — сверка одного текста и только недостающие",
+          embedded[0] == [texts[0]] and embedded[1] == ["реплика 4", "Работа: полиция"] and len(embedded) == 2)
+    check("из базы — чат и пользователь этой переписки",
+          ("stm_vec", "web_user") in bot.calls and ("ltm_vec", "web_user") in bot.calls)
+    embedded.clear()
+    offline_api.build_memory(bot, "connor", "web_user", "web_user")
+    check("сверка — один раз за процесс", embedded == [["реплика 4", "Работа: полиция"]])
+
+    bot2 = FakeBot()
+    bot2.context = "api_vec2"
+    bot2.stm = bot.stm
+    bot2.memory.stm.embedder = lambda texts: [_fake_vec(t, "новая модель") for t in texts]
+    bot2.memory.stm.stored_vectors = lambda chat_id: stored
+    bot2.memory.ltm.stored_vectors = lambda user_id: {}
+    mem2 = offline_api.build_memory(bot2, "connor", "web_user", "web_user")
+    check("в базе векторы другой модели — без векторов (поиск по словам)",
+          mem2["vectors"] is None and "vec" not in mem2["history"][0] and len(mem2["history"]) == 6)
+
+    bot3 = FakeBot()
+    bot3.context = "api_vec3"
+    bot3.memory.stm.embedder = embedder
+    bot3.memory.stm.stored_vectors = lambda chat_id: (_ for _ in ()).throw(RuntimeError("chroma"))
+    mem3 = offline_api.build_memory(bot3, "connor", "web_user", "web_user")
+    check("база не читается — память без векторов, но с перепиской",
+          mem3["vectors"] is None and [h["text"] for h in mem3["history"]] == ["привет", "Здравствуйте."])
+    bot4 = FakeBot()
+    bot4.context = "api_vec4"
+    bot4.stm = []
+    bot4.memory.stm.embedder = embedder
+    bot4.memory.stm.stored_vectors = lambda chat_id: {}
+    bot4.memory.ltm.get_all_facts = lambda user_id="default", chat_id=None: []
+    mem4 = offline_api.build_memory(bot4, "connor", "web_user", "web_user")
+    check("пустая память — векторов нет, ошибки нет", mem4["history"] == [] and mem4["facts_vec"] == [])
 
 
 def test_reminders():
@@ -445,6 +548,7 @@ def main():
     test_stm_timestamp()
     test_reminders()
     test_routes()
+    test_vectors()
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0
 

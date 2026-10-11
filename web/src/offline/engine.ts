@@ -4,11 +4,14 @@ import { OfflineLlm, pluginCode } from './plugin';
 import { envNote, formatWeb, searchWeb, wantsSearch } from './context';
 import { askTimePlan, extractSystem, looksLikeReminder, parseExtraction, planFromText, planReminder, scheduledNote } from './reminders';
 import type { LocalReminder, ReminderPlan } from './reminders';
-import { getMemory, memoryHistory } from './memory';
-import { formatRecall, searchDocs } from './recall';
+import { getMemory, memoryHasVectors, memoryHistory } from './memory';
+import { formatRecall, searchDocs, vecBaseline } from './recall';
+import { queryVector, releaseEmbedder } from './embed';
+import { unpackVec } from './vectors';
 import type { RecallDoc } from './recall';
 import { cleanAnswer, LOCAL_HISTORY_MAX, localPrompt, normalizeHistory, selfMemoryNote } from './prompt';
 import type { HistoryLine, MemoryContext } from './prompt';
+import { dialogueLanguage, languageLine, languageName } from './language';
 
 /* Кто отвечает без ноутбука: сначала облачная модель по ключу (если есть
    интернет и ключи), иначе — Gemma на телефоне (если модель скачана). Нет
@@ -17,7 +20,8 @@ import type { HistoryLine, MemoryContext } from './prompt';
    пропускает), напоминания; просьбу «напомни» разбирает перенос парсера
    ядра, необычную — модель в JSON, код проверяет и ставит будильник
    (reminders.ts). Память — как в ответе ядра: хвост переписки, реплики
-   постарше к теме вопроса (memory.ts), факты, досье, личная память персоны. */
+   постарше к теме вопроса (memory.ts; по словам и по смыслу — embed.ts),
+   факты, досье, личная память персоны. */
 
 export interface OfflineAnswer {
   text: string;
@@ -51,18 +55,29 @@ async function gatherMemory(persona: string, kit: OfflineKit, text: string, hist
   recent.add(text.trim());
   const seen = new Set<string>();
   const older: RecallDoc[] = [];
-  const add = (role: 'user' | 'assistant', raw: string, ts?: number) => {
+  const vectors = memoryHasVectors(mem);
+  const add = (role: 'user' | 'assistant', raw: string, ts?: number, vec?: string) => {
     const t = raw.trim();
     if (!t || recent.has(t) || seen.has(t)) return;
     seen.add(t);
-    older.push({ role, text: t, ts });
+    older.push({ role, text: t, ts, vec: vectors ? unpackVec(vec) : null });
   };
-  for (const m of memoryHistory(kit, mem)) add(m.role, m.text, m.ts);
+  for (const m of memoryHistory(kit, mem)) add(m.role, m.text, m.ts, m.vec);
   for (const h of history.slice(0, -window)) add(h.role, h.text);
-  const facts = (mem && kit.version >= 3 && mem.facts.length ? mem.facts : kit.facts).map((f) => ({ role: 'fact' as const, text: f }));
+  const fromMemory = !!mem && kit.version >= 3 && mem.facts.length > 0;
+  const facts: RecallDoc[] = (fromMemory ? mem.facts : kit.facts).map((f, i) => ({
+    role: 'fact' as const,
+    text: f,
+    vec: fromMemory && vectors ? unpackVec(mem.facts_vec?.[i]) : null,
+  }));
+  // По смыслу — если модель векторов скачана (нет — только по словам); фон
+  // сходства — по всей памяти сразу: фактов одних для него мало
+  const all = [...older, ...facts];
+  const qvec = await queryVector(text, all).catch(() => null);
+  const base = qvec ? vecBaseline(qvec, all) : null;
   return {
-    recall: searchDocs(text, older, CLOUD_RECALL),
-    facts: searchDocs(text, facts, CLOUD_FACTS_RELEVANT),
+    recall: searchDocs(text, older, CLOUD_RECALL, qvec, base),
+    facts: searchDocs(text, facts, CLOUD_FACTS_RELEVANT, qvec, base),
   };
 }
 
@@ -76,6 +91,17 @@ function newRequestId(): string {
 
 const CLOUD_RESULTS = { max: 5, snippet: 500 };
 const LOCAL_RESULTS = { max: 3, snippet: 300 }; // телефону — короче промпт
+// Генерация на телефоне: ниже обычной температура — маленькая модель при
+// 0.8 сыпала опечатками по-русски, особенно капсом
+const LOCAL_SAMPLING = { temperature: 0.6, topP: 0.9 };
+
+/** Системный текст кита (облако) со строкой языка по текущей реплике
+ * вместо строки с момента загрузки кита. */
+function withLanguage(kit: OfflineKit, line: string): string {
+  const old = kit.parts.language;
+  if (old && kit.system.includes(old)) return kit.system.replace(old, line);
+  return `${kit.system}\n\n${line}`;
+}
 
 /** Ответ модели телефона целиком (без вывода в ленту) — для разбора просьбы. */
 async function localOnce(system: string, text: string, maxTokens: number): Promise<string> {
@@ -89,6 +115,7 @@ export async function answerOffline(
   history: HistoryLine[],
   onToken?: (chunk: string) => void,
   onLocalStart?: () => void, // ответ взяла модель телефона (до первого слова — секунды)
+  actionNote?: string, // итог команды телефону (phone/notes.ts): ответ — по нему
 ): Promise<OfflineAnswer> {
   const kit = getKit(persona) ?? fallbackKit(persona, text);
   if (!kit) throw new OfflineUnavailable('no_kit');
@@ -105,8 +132,8 @@ export async function answerOffline(
     if (r === 'model') needModel = true;
     else if (r) plan = r;
   }
-  // Просьба о напоминании — не вопрос к интернету
-  const reminderTalk = needModel || !!plan || looksLikeReminder(text);
+  // Просьба о напоминании или команда телефону — не вопрос к интернету
+  const reminderTalk = needModel || !!plan || looksLikeReminder(text) || !!actionNote;
   // Поиск, погода и память — общие для облака и телефона; без интернета — пусто
   const [env, results, memory] = await Promise.all([
     full ? envNote(kit) : Promise.resolve(''),
@@ -114,6 +141,9 @@ export async function answerOffline(
     gatherMemory(persona, kit, text, history, LOCAL_HISTORY_MAX),
   ]);
   const scheduled = full ? scheduledNote(kit) : '';
+  // Язык ответа — по текущей реплике (как у ядра), а не язык чата из кита
+  const lang = dialogueLanguage(text, history, kit.lang);
+  const langLine = languageLine(lang);
 
   // 1. Облако: ключи и перебор провайдеров — в нативном плагине
   let cloud = '';
@@ -131,7 +161,7 @@ export async function answerOffline(
     const known = new Set(kit.facts);
     const moreFacts = memory.facts.filter((f) => !known.has(f.text));
     const system = [
-      kit.system,
+      withLanguage(kit, langLine),
       moreFacts.length ? `More facts about the user:\n${moreFacts.map((f) => `- ${f.text}`).join('\n')}` : '',
       kit.dossier ?? '',
       selfMemoryNote(kit),
@@ -140,6 +170,7 @@ export async function answerOffline(
       env,
       formatWeb(kit, results, CLOUD_RESULTS),
       plan?.note,
+      actionNote,
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -154,9 +185,11 @@ export async function answerOffline(
     cloud = pluginCode(e);
   }
 
-  // 2. Модель на телефоне
+  // 2. Модель на телефоне — без модели векторов в памяти: вектор вопроса уже
+  // посчитан, а Gemma нужна вся память, что есть
   const status = await OfflineLlm.modelStatus().catch(() => null);
   if (!status?.downloaded) throw new OfflineUnavailable('no_route', cloud);
+  releaseEmbedder();
   const requestId = newRequestId();
   onLocalStart?.();
   const handle = await OfflineLlm.addListener('localToken', (d) => {
@@ -169,12 +202,15 @@ export async function answerOffline(
       plan = ex ? planReminder(kit, ex) : askTimePlan(kit, '');
     }
     const web = PERSONAL_RE.test(text) ? '' : formatWeb(kit, results, LOCAL_RESULTS);
-    const notes = [scheduled, env, web, plan?.note].filter((x): x is string => !!x);
-    const local = localPrompt(kit, memory, notes, history, text);
-    // Заметку о напоминании маленькая модель в конце длинного промпта
-    // пропускает и «подтверждает» по прежним ответам — она и в реплике
-    const prompt = plan ? `${local.text}\n\n(Note from the app, not from the user: ${plan.note})` : local.text;
-    const r = await OfflineLlm.localChat({ requestId, system: local.system, history: local.history, text: prompt });
+    const notes = [scheduled, env, web, plan?.note, actionNote].filter((x): x is string => !!x);
+    const local = localPrompt(kit, memory, notes, history, text, langLine);
+    // Заметки в конце длинного промпта маленькая модель пропускает: о
+    // напоминании и об итоге команды телефону «подтверждает» по прежним
+    // ответам, язык берёт из истории и характера — они и в реплике
+    const name = languageName(lang);
+    const appNote = [plan?.note, actionNote, name ? `Reply in ${name}.` : ''].filter(Boolean).join(' ');
+    const prompt = appNote ? `${local.text}\n\n(Note from the app, not from the user: ${appNote})` : local.text;
+    const r = await OfflineLlm.localChat({ requestId, system: local.system, history: local.history, text: prompt, ...LOCAL_SAMPLING });
     return { text: cleanAnswer(r.text), source: 'local', reminder: plan?.reminder, fallback };
   } catch (e) {
     const code = pluginCode(e);

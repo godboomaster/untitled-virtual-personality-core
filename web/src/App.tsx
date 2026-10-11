@@ -8,7 +8,8 @@ import { useApiOnline, useCoreHealth } from './apiData';
 import { useInbox, useInboxPolling } from './inboxStore';
 import { ensureNotifyPermission, OPEN_CHAT_EVENT, setUnreadTitle } from './notifications';
 import { requestChatOverview, requestChatPersona } from './chatNavStore';
-import { useDevMode } from './devMode';
+import { setDevLogOpen, useDevLogOpen, useDevMode } from './devMode';
+import { useNarrowScreen } from './useNarrowScreen';
 import Start from './sections/Start';
 import Home from './sections/Home';
 import Chat from './sections/Chat';
@@ -44,6 +45,9 @@ export default function App() {
   const coreDown = useCoreHealth() === 'down';
   const personasOnline = personas.filter((p) => p.status !== 'frozen').length;
   const devMode = useDevMode();
+  const devLogOpen = useDevLogOpen();
+  // Телефон: панель логов — полосой под шапкой, кнопка LOGS — в шапке
+  const narrow = useNarrowScreen();
   // Единый поллер фоновых сообщений персон (напоминания, инициативы) —
   // работает на всех экранах, накапливает непрочитанные
   useInboxPolling(apiOnline, personas);
@@ -125,6 +129,17 @@ export default function App() {
           </button>
           <div className="topbar-title">{t(`nav.${section}`)}</div>
           <div className="topbar-right">
+            {/* Без связи логов нет, а место нужно подписи «нет связи» и заголовку */}
+            {devMode && narrow && apiOnline && !coreDown && (
+              <button
+                type="button"
+                className={`topbar-devlog${devLogOpen ? ' topbar-devlog--on' : ''}`}
+                aria-pressed={devLogOpen}
+                onClick={() => setDevLogOpen(!devLogOpen)}
+              >
+                LOGS
+              </button>
+            )}
             <div className="theme-toggle" role="button" aria-label={t('topbar.themeToggle')}>
               <span className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>
                 LIGHT
@@ -146,6 +161,7 @@ export default function App() {
             </div>
           </div>
         </header>
+        {devMode && narrow && <DevLogPanel docked />}
         <div className="content-scroll">
           <div key={section} className="section-enter">
             {section === 'start' && <Start onNavigate={setSection} />}
@@ -158,7 +174,7 @@ export default function App() {
           </div>
         </div>
       </main>
-      {devMode && <DevLogPanel />}
+      {devMode && !narrow && <DevLogPanel />}
       {/* Лайтбокс: клик по контентной картинке — крупный просмотр */}
       <ImageLightbox />
       {/* Подтверждения и сообщения на странице (dialogStore) вместо window.confirm/alert */}

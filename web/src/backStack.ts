@@ -32,6 +32,13 @@ export function handleBack(): boolean {
   return true;
 }
 
+/** Открыто ли что-то выше level: Esc панели (досье) не закрывает её из-под
+    окна — окно закрывается своим обработчиком. */
+export function backOpenAbove(level: number): boolean {
+  for (const e of entries) if (e.level > level) return true;
+  return false;
+}
+
 /** Пока active — «Назад» вызывает fn (последнюю переданную). */
 export function useBackHandler(active: boolean, level: number, fn: () => void) {
   const fnRef = useRef(fn);

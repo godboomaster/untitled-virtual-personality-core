@@ -1,9 +1,17 @@
 import type { OfflineKit } from './kit';
+import { cosine } from './vectors';
+import type { Vec } from './vectors';
 
-/* Поиск по памяти персоны без ноутбука — как search_relevant ядра, только
-   по словам (BM25 по основам слов), а не по векторам: модели эмбеддингов на
-   телефоне нет, а для сотен сообщений слов хватает. Без зависимостей —
-   scripts/test_offline_recall.py гоняет его под Node. */
+/* Поиск по памяти персоны без ноутбука — как search_relevant ядра: по словам
+   (BM25 по основам слов) и, если на телефоне есть модель векторов, по
+   смыслу — «кот» найдёт «кошку Мурку», «собака» — «my dog». У маленькой
+   модели векторов много шума: короткие общие реплики («Работаю», «Как
+   дела?») близки почти к любому вопросу. Поэтому находка только по смыслу —
+   если вопрос о чём-то (есть редкое в переписке слово), реплика не короче
+   VEC_MIN_CHARS и сходство выделяется из фона всей памяти (vecBaseline).
+   Списки сливаются по местам (RRF): найденное и так и так — выше. Без
+   зависимостей — scripts/test_offline_recall.py и test_offline_vectors.py
+   гоняют его под Node. */
 
 // Служебные слова — не тема (как «и», «что», «the»)
 const STOP = new Set(
@@ -63,6 +71,7 @@ export interface RecallDoc {
   role: 'user' | 'assistant' | 'fact';
   text: string;
   ts?: number;
+  vec?: Vec | null; // вектор текста — с ноутбука или посчитан на телефоне
 }
 
 const K1 = 1.2;
@@ -71,9 +80,51 @@ const REL_SCORE = 0.35; // от лучшего: слабее — не к тем�
 // Тема — хотя бы одно редкое слово запроса: есть не больше чем в RARE_SHARE
 // реплик (и не меньше чем в двух) — «дела» из «как дела?» темой не считается
 const RARE_SHARE = 0.08;
+// По смыслу без совпадения слов (подобрано на модели ядра, переписка ~350
+// реплик: 11 из 16 вопросов другими словами находят своё, из 12 вопросов не
+// о памяти — ни одной находки только по смыслу). z — на сколько сигм
+// сходство выше фона вопроса со всей памятью: «кот» → «кошка Мурка» 0,66 /
+// z 6, «профессия» → «работаю в полиции» 0,50 / z 4,6; шум «чем я
+// увлекаюсь» → «Что делаешь?» 0,67 / z 3,3 — короткая реплика.
+const VEC_STRONG = { sim: 0.55, z: 3 };
+const VEC_WEAK = { sim: 0.35, z: 4 };
+export const VEC_MIN = 0.6; // фона нет (памяти меньше VEC_POOL_MIN) — только так
+const VEC_POOL_MIN = 30;
+const VEC_SPREAD = 0.15; // не дальше от лучшей находки
+export const VEC_MIN_CHARS = 20; // реплика короче — общая, в ней нечего вспоминать (факты — любые)
+const RRF_K = 5; // слияние по местам: малое k — первые места весят больше
 
-/** Документы к теме запроса по BM25 — лучшие сверху; к теме ничего — пусто. */
-export function searchDocs(query: string, docs: RecallDoc[], limit: number): RecallDoc[] {
+export interface VecBaseline {
+  mean: number;
+  sd: number;
+}
+
+/** Фон сходства вопроса со всей памятью (реплики и факты вместе): по нему
+ * видно, выделяется ли находка. Памяти с векторами мало — null. */
+export function vecBaseline(qvec: Vec, docs: RecallDoc[]): VecBaseline | null {
+  const sims = docs.filter((d) => d.vec).map((d) => cosine(qvec, d.vec!));
+  if (sims.length < VEC_POOL_MIN) return null;
+  const mean = sims.reduce((a, b) => a + b, 0) / sims.length;
+  const sd = Math.sqrt(sims.reduce((a, b) => a + (b - mean) ** 2, 0) / sims.length);
+  return sd > 0 ? { mean, sd } : null;
+}
+
+function vecHit(sim: number, base: VecBaseline | null): boolean {
+  if (!base) return sim >= VEC_MIN;
+  const z = (sim - base.mean) / base.sd;
+  return (sim >= VEC_STRONG.sim && z >= VEC_STRONG.z) || (sim >= VEC_WEAK.sim && z >= VEC_WEAK.z);
+}
+
+/** Документы к теме запроса — лучшие сверху; к теме ничего — пусто. По
+ * словам (BM25), а с вектором запроса qvec — ещё и по смыслу; base — фон
+ * сходства по всей памяти (нет — по этим документам). */
+export function searchDocs(
+  query: string,
+  docs: RecallDoc[],
+  limit: number,
+  qvec?: Vec | null,
+  base?: VecBaseline | null,
+): RecallDoc[] {
   const q = [...new Set(terms(query))];
   if (!q.length || !docs.length) return [];
   const docTerms = docs.map((d) => terms(d.text));
@@ -82,7 +133,7 @@ export function searchDocs(query: string, docs: RecallDoc[], limit: number): Rec
   const n = docs.length;
   const rareMax = Math.max(2, Math.floor(n * RARE_SHARE));
   const avg = docTerms.reduce((s, t) => s + t.length, 0) / n || 1;
-  const scored: { doc: RecallDoc; score: number; i: number }[] = [];
+  const scored: { score: number; i: number }[] = [];
   docTerms.forEach((ts, i) => {
     if (!ts.length) return;
     const tf = new Map<string, number>();
@@ -97,16 +148,33 @@ export function searchDocs(query: string, docs: RecallDoc[], limit: number): Rec
       const idf = Math.log(1 + (n - d + 0.5) / (d + 0.5));
       score += (idf * f * (K1 + 1)) / (f + K1 * (1 - B + (B * ts.length) / avg));
     }
-    if (score > 0 && rare) scored.push({ doc: docs[i], score, i });
+    if (score > 0 && rare) scored.push({ score, i });
   });
-  if (!scored.length) return [];
   // При равенстве — свежее (позже в списке)
   scored.sort((a, b) => b.score - a.score || b.i - a.i);
-  const top = scored[0].score;
-  return scored
-    .filter((s) => s.score >= top * REL_SCORE)
+  const top = scored[0]?.score ?? 0;
+  const lex = scored.filter((s) => s.score >= top * REL_SCORE).map((s) => s.i);
+  // Вопрос о чём-то: слово, редкое в переписке (или которого в ней нет —
+  // «кот», когда писали «кошка»); «как дела?» — нет
+  const topical = q.some((t) => (df.get(t) ?? 0) <= rareMax);
+  const sims = qvec && topical ? docs.map((d) => (d.vec ? cosine(qvec, d.vec) : -1)) : null;
+  if (!sims) return lex.slice(0, limit).map((i) => docs[i]);
+  const bg = base === undefined ? vecBaseline(qvec!, docs) : base;
+  const eligible = sims
+    .map((sim, i) => ({ sim, i }))
+    .filter((s) => docs[s.i].role === 'fact' || docs[s.i].text.length >= VEC_MIN_CHARS);
+  const best = Math.max(-1, ...eligible.map((s) => s.sim));
+  const sem = eligible
+    .filter((s) => vecHit(s.sim, bg) && s.sim >= best - VEC_SPREAD)
+    .sort((a, b) => b.sim - a.sim || b.i - a.i)
+    .map((s) => s.i);
+  const rank = new Map<number, number>();
+  lex.forEach((i, r) => rank.set(i, (rank.get(i) ?? 0) + 1 / (RRF_K + r)));
+  sem.forEach((i, r) => rank.set(i, (rank.get(i) ?? 0) + 1 / (RRF_K + r)));
+  return [...rank.entries()]
+    .sort((a, b) => b[1] - a[1] || sims[b[0]] - sims[a[0]] || b[0] - a[0])
     .slice(0, limit)
-    .map((s) => s.doc);
+    .map(([i]) => docs[i]);
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');

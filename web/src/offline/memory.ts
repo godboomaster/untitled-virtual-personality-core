@@ -1,14 +1,16 @@
 import { api, isNativeApp } from '../api';
 import type { OfflineHistoryLine, OfflineMemoryResponse } from '../api';
 import type { OfflineKit } from './kit';
+import { EMBED_DIM, EMBED_MODEL } from './vectors';
 
 /* Память персоны на телефоне: вся переписка чата (до 500 сообщений STM) и
    все факты о собеседнике — с ноутбука (GET …/offline/memory), не чаще
    MEMORY_TTL_MS: свежий хвост переписки приходит с китом. Лежит в IndexedDB
-   — в localStorage столько не влезет.
+   — в localStorage столько не влезет. С векторами из базы ядра — для
+   поиска по смыслу (около 0,5 КБ на сообщение).
 
    Без ноутбука модель видит хвост переписки, а реплики постарше к теме
-   вопроса находит поиск по словам (recall.ts). */
+   вопроса находит поиск по словам и по смыслу (recall.ts, embed.ts). */
 
 export interface OfflineMemory extends OfflineMemoryResponse {
   fetched_at: number;
@@ -93,4 +95,10 @@ export function memoryHistory(kit: OfflineKit, mem: OfflineMemory | null): Offli
   const first = kit.history_first_ts ?? 0;
   if (!first) return [];
   return mem.history.filter((m) => m.ts >= first - 0.001);
+}
+
+/** Векторы памяти с ноутбука годятся для поиска по смыслу: посчитаны той же
+ * моделью, что есть на телефоне. */
+export function memoryHasVectors(mem: OfflineMemory | null): boolean {
+  return !!mem?.vectors && mem.vectors.model === EMBED_MODEL && mem.vectors.dim === EMBED_DIM;
 }

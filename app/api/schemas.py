@@ -12,6 +12,31 @@ from app.api.security import PersonaId, SafeId
 # последний рубеж, на случай пути в обход pydantic), а дополняет её.
 
 
+class PhoneActionReport(BaseModel):
+    """Итог команды телефону («поставь будильник на 8», «открой Telegram»):
+    исполняет само приложение на телефоне (web/src/phone/), ядру — только
+    итог, из него app/features/phone_actions.py собирает заметку персоне."""
+    kind: Literal["alarm", "timer", "alarms_list", "alarm_off", "open_app", "torch"]
+    # ok — сделано; ask — не названо время/длительность, ничего не сделано;
+    # no_handler — на телефоне нет приложения (часов) или фонарика;
+    # unsupported_date — будильник на дату, а часы ставят только ближайшее время;
+    # not_found / ambiguous — приложение не нашлось / подходят несколько;
+    # busy — фонарик занят камерой
+    status: Literal["ok", "ask", "no_handler", "unsupported_date", "not_found",
+                    "ambiguous", "busy", "failed"]
+    hour: Optional[int] = Field(None, ge=0, le=23)
+    minute: Optional[int] = Field(None, ge=0, le=59)
+    # Дни повтора будильника: 1 — воскресенье … 7 — суббота (Calendar Android)
+    days: list[int] = Field(default_factory=list, max_length=7)
+    # Ближайшее срабатывание будильника — для unsupported_date
+    nearest: Optional[Literal["today", "tomorrow"]] = None
+    seconds: Optional[int] = Field(None, ge=1, le=86400)
+    label: Optional[str] = Field(None, max_length=80)
+    app: Optional[str] = Field(None, max_length=80)
+    candidates: list[str] = Field(default_factory=list, max_length=6)
+    on: Optional[bool] = None
+
+
 class ChatRequest(BaseModel):
     persona: PersonaId
     message: str
@@ -27,6 +52,9 @@ class ChatRequest(BaseModel):
     # её сам, поэтому в таком ходе режим управления недоступен
     # (BotInstance.process_message(from_skin=True))
     from_skin: bool = False
+    # Команда телефону, уже исполненная приложением: персона отвечает по
+    # итогу (заметка в промпт хода), сама ничего не исполняет
+    phone_action: Optional[PhoneActionReport] = None
     # Клиент — приложение на телефоне: «открой файл X» присылает файл в чат,
     # а не открывает его на компьютере ядра (server._file_delivery)
     client: Optional[Literal["app"]] = None

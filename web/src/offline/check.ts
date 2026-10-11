@@ -1,8 +1,9 @@
 import { api } from '../api';
 import { offlinePersonaList } from '../apiData';
 import { getKit, kitError, refreshKit } from './kit';
-import { getMemory, memoryHistory } from './memory';
+import { getMemory, memoryHasVectors, memoryHistory } from './memory';
 import { OfflineLlm } from './plugin';
+import { embedError, embedTexts, releaseEmbedder } from './embed';
 
 /* «Проверить» в «Без ноутбука»: что сейчас работает для ответов без
    ноутбука — по шагам, с причиной, если не работает. Шаги идут по одному,
@@ -11,7 +12,7 @@ import { OfflineLlm } from './plugin';
 export type CheckState = 'ok' | 'fail' | 'warn' | 'run';
 
 export interface CheckStep {
-  key: 'core' | 'kits' | 'memory' | 'cloud' | 'internet' | 'model';
+  key: 'core' | 'kits' | 'memory' | 'search' | 'cloud' | 'internet' | 'model';
   state: CheckState;
   // ключ i18n и подстановки; detail — техническая причина как есть
   text: string;
@@ -70,6 +71,29 @@ export async function runOfflineCheck(onStep: (steps: CheckStep[]) => void): Pro
       counts.push(`${p.name} — ${n}`);
     }
     push({ key: 'memory', state: 'ok', text: 'offline.check.memoryOk', vars: { list: counts.join(', ') } });
+  }
+
+  // 2в. Поиск по смыслу: модель векторов на телефоне и векторы памяти с ноутбука
+  push({ key: 'search', state: 'run', text: 'offline.check.running' });
+  const embed = await OfflineLlm.embedStatus().catch(() => null);
+  if (!embed?.downloaded) {
+    push({ key: 'search', state: 'warn', text: 'offline.check.searchNone' });
+  } else {
+    embedError(true); // сбой был раньше — проверить заново, а не ждать
+    const t0 = Date.now();
+    const vecs = await embedTexts(['проверка поиска по смыслу']);
+    releaseEmbedder(); // дальше проверка Gemma — ей нужна память
+    const withVectors: string[] = [];
+    for (const p of have) if (memoryHasVectors(await getMemory(p.id).catch(() => null))) withVectors.push(p.name);
+    if (!vecs) push({ key: 'search', state: 'fail', text: 'offline.check.searchFail', detail: embedError() });
+    else if (!withVectors.length) push({ key: 'search', state: 'warn', text: 'offline.check.searchNoVectors' });
+    else
+      push({
+        key: 'search',
+        state: 'ok',
+        text: 'offline.check.searchOk',
+        vars: { sec: ((Date.now() - t0) / 1000).toFixed(1), list: withVectors.join(', ') },
+      });
   }
 
   // 3. Облако по ключу: ключи есть — пробный короткий запрос

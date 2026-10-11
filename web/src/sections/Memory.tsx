@@ -7,6 +7,7 @@ import { useOfflineMode } from '../offline/state';
 import { phoneMemoryView } from '../offline/memoryView';
 import FormModal from '../components/FormModal';
 import InfoButton from '../components/InfoButton';
+import { useNarrowScreen } from '../useNarrowScreen';
 
 type Tab = 'stm' | 'ltm' | 'diary';
 
@@ -50,6 +51,10 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
   const offlineMode = useOfflineMode();
   const readOnly = apiOnline && offlineMode;
   const [tab, setTab] = useState<Tab>('stm');
+  // Узкий экран: у вкладок только название («STM · краткосрочная» → «STM») —
+  // три вкладки встают в одну строку, пояснение есть в заголовке карточки
+  const narrow = useNarrowScreen();
+  const tabLabel = (s: string) => (narrow ? s.split(' · ')[0] : s);
   // Память индивидуальна: у каждой персоны свои STM, LTM и дневник
   const [selectedId, setSelectedId] = useState(() => fixedId ?? personas[0].id);
   const persona = personas.find((p) => p.id === (fixedId ?? selectedId)) ?? personas[0];
@@ -374,7 +379,7 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
       )}
 
       {/* Статистика */}
-      <div className="stats-row">
+      <div className="stats-row mem-stats">
         <div className="card stat-card">
           <div className="stat-value">{stm.length}</div>
           <div className="stat-label">
@@ -408,22 +413,22 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
       {readOnly && <p className="field-hint">{t('offline.memory.lead')}</p>}
 
       {/* Вкладки */}
-      <div className="tabs">
+      <div className="tabs mem-tabs">
         <button className={`tab ${tab === 'stm' ? 'tab--active' : ''}`} onClick={() => setTab('stm')}>
-          {t('mem.tabStm')}
+          {tabLabel(t('mem.tabStm'))}
         </button>
         <button className={`tab ${tab === 'ltm' ? 'tab--active' : ''}`} onClick={() => setTab('ltm')}>
-          {t('mem.tabLtm')}
+          {tabLabel(t('mem.tabLtm'))}
         </button>
         <button className={`tab ${tab === 'diary' ? 'tab--active' : ''}`} onClick={() => setTab('diary')}>
-          {t('mem.tabDiary')}
+          {tabLabel(t('mem.tabDiary'))}
         </button>
         <InfoButton helpKey="mem.tabs" />
       </div>
 
       {tab === 'stm' && (
         <div className="card">
-          <div className="card-title-row">
+          <div className="card-title-row mem-stm-head">
             <h2 className="card-title">
               {showAllStm ? t('mem.bufferAll') : t('mem.bufferLast')}
               <InfoButton helpKey="mem.stm" />
@@ -445,7 +450,7 @@ export default function Memory({ personaId: fixedId, embedded, onStmChange, stmE
               onChange={(e) => setTrimCount(e.target.value)}
               onBlur={clampTrimInput}
             />
-            <span className="field-label" style={{ marginBottom: 0 }}>{t('mem.messagesN')}</span>
+            <span className="field-label mem-trim-unit" style={{ marginBottom: 0 }}>{t('mem.messagesN')}</span>
             <button
               className="btn btn--danger"
               disabled={stm.length === 0}

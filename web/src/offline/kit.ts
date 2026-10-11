@@ -3,6 +3,7 @@ import { offlinePersonaList } from '../apiData';
 import type { OfflineKitResponse } from '../api';
 import { OfflineLlm } from './plugin';
 import { refreshMemory } from './memory';
+import { refreshSettingsCopy } from './settingsCopy';
 
 /* Персона-кит на телефоне: характер, правила офлайна, факты, хвост
    переписки — всё, чтобы персона ответила без ноутбука. Чат обновляет его
@@ -149,6 +150,8 @@ export function refreshKit(persona: string): Promise<OfflineKit | null> {
         } catch {
           /* ключи не обновились — остаются прежние */
         }
+        // Копия настроек для досье без связи (settingsCopy.ts) — с той же частотой
+        await refreshSettingsCopy(persona).catch(() => {});
       }
       return kit;
     } catch (e) {

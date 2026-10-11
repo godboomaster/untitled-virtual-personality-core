@@ -20,7 +20,9 @@
 Память персоны на телефоне (build_memory) — отдельно от кита и реже: вся
 переписка чата из STM, все факты о собеседнике. По ней телефон сам находит
 реплики к теме вопроса (как search_relevant ядра) — модель видит не только
-хвост переписки. В ките — граница истории (history_first_ts): что старше,
+хвост переписки. Ищет по словам и по смыслу: векторы реплик и фактов —
+готовые из базы ядра, вектор вопроса телефон считает той же моделью
+(paraphrase-multilingual-MiniLM-L12-v2). В ките — граница истории (history_first_ts): что старше,
 на ноутбуке уже стёрто (/clear, срезка), и телефон это тоже забывает.
 
 Вернувшись, приложение отдаёт офлайн-переписку (import_messages): она встаёт
@@ -31,15 +33,20 @@
 ReminderManager ядра; дальше ими управляет он.
 """
 
+import base64
 import logging
 import time
 from typing import Optional
+
+import numpy as np
 
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import user_language_line
 from app.core.paths import data_dir
 from app.core.persona import (ENV_RULE, SELF_MEMORY_RULE, STM_RELEVANT_HEAD, STM_RELEVANT_RULE,
                               WEB_SOURCE_PRIORITY)
+from app.core.st_embedder import ST_MODEL_NAME
+from app.features import short_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +56,8 @@ MAX_FACTS = 80      # фактов о собеседнике (последние
 MEMORY_HISTORY = 500    # сообщений переписки в памяти для телефона (весь STM чата)
 MEMORY_TEXT = 2000      # символов одного сообщения в ней
 MEMORY_FACTS = 300      # фактов в ней
+MAX_EMBED_FILL = 200    # векторов, которых нет в базе, — досчитать за раз
+VECTOR_MATCH_MIN = 0.98     # сходство вектора из базы с пересчитанным — та же модель
 MAX_IMPORT = 200    # сообщений за один приём
 MAX_TEXT = 8000     # символов в одном сообщении
 _SEEN_KEEP = 2000   # сколько принятых id помнить для защиты от повтора
@@ -64,6 +73,19 @@ OFFLINE_RULES = (
     "sites or control the computer — if asked, say you'll do it once you're back on the "
     "computer. Don't invent facts about the user beyond what is listed below or noted "
     "from your earlier conversation."
+)
+
+# Те же правила для маленькой модели телефона: она понимает всё буквально —
+# «your tools are unavailable» превращалось в «у меня нет доступа к
+# инструментам» в ответ на «Привет», а свои прежние ответы она копировала
+# слово в слово. Поэтому — коротко, об инструментах только по просьбе
+OFFLINE_RULES_LOCAL = (
+    "Reply directly to the user's latest message, in character, briefly and "
+    "conversationally. Don't repeat your earlier replies word for word. Never write words "
+    "or sentences in capital letters. Reminders are handled by the app: confirm one only "
+    "when a note from the app says it was set. If asked to do something on the computer "
+    "(open sites, to-dos, inventory), say you'll do it once you're back on the computer. "
+    "Don't invent facts about the user."
 )
 
 # Заметки для ответа о напоминании на телефоне ({task} — « 'задача'» или
@@ -153,6 +175,14 @@ def build_kit(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
         except Exception as e:
             logger.debug(f"[Offline] {persona_id}: личная память недоступна: {e}")
 
+    # Краткое описание для модели телефона; нет — начнёт составляться в фоне,
+    # а телефон пока обойдётся началом полного характера
+    try:
+        short = short_prompt.get_short_prompt(bot)
+    except Exception as e:
+        logger.warning(f"[Offline] {persona_id}: краткое описание недоступно: {e}")
+        short = {"text": "", "source": "", "status": "failed", "at": 0, "error": str(e)[:200]}
+
     reminders = []
     rm = getattr(bot, "reminder_manager", None)
     if rm is not None:
@@ -169,8 +199,13 @@ def build_kit(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
         # Целиком — для облачной модели; части — чтобы телефон собрал
         # короче для своей модели (меньше фактов — быстрее первое слово)
         "system": "\n\n".join(p for p in (character, OFFLINE_RULES, style, facts_block, language) if p),
+        # short и rules_local — для модели телефона (краткое описание, пусто —
+        # ещё не составлено; правила короче)
         "parts": {"character": character, "rules": OFFLINE_RULES, "style": style or "",
-                  "language": language},
+                  "language": language, "short": short["text"], "rules_local": OFFLINE_RULES_LOCAL},
+        "short_prompt": {k: short[k] for k in ("source", "status", "at") if k in short},
+        # Язык чата — запасной: телефон берёт язык из текущей реплики, как ядро
+        "lang": lang,
         "facts": facts,
         "history": history,
         # Сообщения старше — на ноутбуке уже стёрты; 0 — переписки нет.
@@ -197,11 +232,79 @@ def _history(messages) -> list[dict]:
             for m in messages if m.get("role") in ("user", "assistant") and m.get("content")]
 
 
+def pack_vector(vec) -> str:
+    """Вектор для телефона: int8 по наибольшей по модулю координате, base64
+    (384 байта вместо 384 чисел в JSON). Масштаб телефону не нужен —
+    косинус от него не зависит."""
+    v = np.asarray(vec, dtype=np.float32)
+    top = float(np.max(np.abs(v))) if v.size else 0.0
+    if not np.isfinite(top) or top == 0.0:
+        return ""
+    q = np.clip(np.rint(v / top * 127), -127, 127).astype(np.int8)
+    return base64.b64encode(q.tobytes()).decode("ascii")
+
+
+# Векторы в базе посчитаны той же моделью, что считает сейчас ядро: сверка
+# одного текста на контекст за процесс (контекст → совпали ли)
+_vectors_match: dict[str, bool] = {}
+
+
+def _memory_vectors(bot, persona_id: str, key: str, user_id: str,
+                    texts: list[str], facts: list[str]) -> Optional[tuple[list[str], list[str], int]]:
+    """Векторы реплик и фактов для поиска по смыслу на телефоне: из базы
+    (их посчитали при записи), которых там нет — моделью ядра. Телефон
+    считает той же моделью только вектор вопроса. → (реплик, фактов,
+    размерность); None — векторов не будет (телефон ищет по словам)."""
+    stm, ltm = bot.memory.stm, bot.memory.ltm
+    embedder = getattr(stm, "embedder", None)
+    if embedder is None or not hasattr(stm, "stored_vectors"):
+        return None
+    try:
+        stored = stm.stored_vectors(key)
+        fact_stored = ltm.stored_vectors(user_id) if hasattr(ltm, "stored_vectors") else {}
+    except Exception as e:
+        logger.warning(f"[Offline] {persona_id}: векторы из базы не прочитаны: {e}")
+        return None
+    context = str(getattr(bot, "context", persona_id))
+    sample = next((t for t in texts if t in stored), None) or next((f for f in facts if f in fact_stored), None)
+    if sample is not None and context not in _vectors_match:
+        try:
+            fresh = np.asarray(embedder([sample])[0], dtype=np.float32)
+            old = np.asarray(stored.get(sample, fact_stored.get(sample)), dtype=np.float32)
+            cos = float(fresh @ old / (np.linalg.norm(fresh) * np.linalg.norm(old) or 1.0))
+            _vectors_match[context] = cos >= VECTOR_MATCH_MIN
+            if cos < VECTOR_MATCH_MIN:
+                logger.warning(f"[Offline] {persona_id}: векторы в базе посчитаны другой моделью "
+                               f"(сходство {cos:.2f}) — телефону поиск только по словам")
+        except Exception as e:
+            logger.warning(f"[Offline] {persona_id}: сверка векторов не удалась: {e}")
+            return None
+    if _vectors_match.get(context) is False:
+        return None
+    known = {**fact_stored, **stored}
+    missing = list(dict.fromkeys(t for t in [*texts, *facts] if t not in known))[-MAX_EMBED_FILL:]
+    if missing:
+        try:
+            known.update(zip(missing, embedder(missing)))
+        except Exception as e:
+            logger.warning(f"[Offline] {persona_id}: недостающие векторы не посчитаны: {e}")
+    pack = {}
+
+    def packed(text: str) -> str:
+        if text not in pack:
+            pack[text] = pack_vector(known[text]) if text in known else ""
+        return pack[text]
+
+    dim = next((len(v) for v in known.values()), 0)
+    return [packed(t) for t in texts], [packed(f) for f in facts], dim
+
+
 def build_memory(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
     """Память персоны для телефона: вся переписка чата из STM и все факты о
-    собеседнике — телефон ищет в них реплики к теме вопроса сам. Тяжелее
-    кита, поэтому отдельно: телефон берёт её реже (кит с хвостом переписки
-    держит её свежей)."""
+    собеседнике — телефон ищет в них реплики к теме вопроса сам: по словам
+    и по смыслу (векторы — те же, что в базе ядра). Тяжелее кита, поэтому
+    отдельно: телефон берёт её реже (кит с хвостом переписки держит её
+    свежей)."""
     key = bot.stm_key(chat_id, user_id)
     try:
         stm = bot.memory.stm.get_messages(chat_id=key)
@@ -213,12 +316,25 @@ def build_memory(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
     except Exception as e:
         logger.warning(f"[Offline] {persona_id}: факты для памяти не собраны: {e}")
         facts = []
-    return {
+    messages = [m for m in stm[-MEMORY_HISTORY:] if m.get("role") in ("user", "assistant") and m.get("content")]
+    history = _history(messages)
+    facts = [f for f in facts if isinstance(f, str) and f.strip()][-MEMORY_FACTS:]
+    vectors = _memory_vectors(bot, persona_id, key, user_id,
+                              [str(m.get("content")) for m in messages], facts)
+    out = {
         "persona": persona_id,
         "generated_at": time.time(),
-        "history": _history(stm[-MEMORY_HISTORY:]),
-        "facts": [f for f in facts if isinstance(f, str) and f.strip()][-MEMORY_FACTS:],
+        "history": history,
+        "facts": facts,
+        "vectors": None,
     }
+    if vectors is not None:
+        hist_vecs, fact_vecs, dim = vectors
+        for line, vec in zip(history, hist_vecs):
+            line["vec"] = vec
+        out["facts_vec"] = fact_vecs
+        out["vectors"] = {"model": ST_MODEL_NAME, "dim": dim}
+    return out
 
 
 def _env_location() -> Optional[dict]:

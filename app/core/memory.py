@@ -371,6 +371,17 @@ class ShortTermMemory:
         with self._lock:
             return list(self._get_buffer(filter_id))
 
+    def stored_vectors(self, chat_id: str) -> Dict[str, List[float]]:
+        """Векторы сообщений чата, посчитанные при записи в базу: текст →
+        вектор (у одинаковых текстов он один). Память персоны для телефона
+        берёт их отсюда, а не пересчитывает моделью."""
+        got = self.collection.get(where={"chat_id": chat_id}, include=["documents", "embeddings"])
+        docs = got.get("documents") or []
+        embs = got.get("embeddings")
+        if embs is None:
+            return {}
+        return {doc: list(emb) for doc, emb in zip(docs, embs) if doc and emb is not None}
+
     def get_last(self, n: int, user_id: str = None, chat_id: str = None) -> List[Dict[str, str]]:
         """
         Получить последние N сообщений.
@@ -1412,6 +1423,17 @@ class LongTermMemory:
                 ]
             return []
     
+    def stored_vectors(self, user_id: str) -> Dict[str, List[float]]:
+        # Векторы фактов пользователя из базы: текст → вектор (память
+        # персоны для телефона — без пересчёта моделью)
+        with self._facts_lock:
+            got = self.collection.get(where={"user_id": user_id}, include=["documents", "embeddings"])
+        docs = got.get("documents") or []
+        embs = got.get("embeddings")
+        if embs is None:
+            return {}
+        return {doc: list(emb) for doc, emb in zip(docs, embs) if doc and emb is not None}
+
     def get_facts_by_category(self, user_id: str, category: str, chat_id: str = None) -> List[str]:
         # Факты пользователя одной категории (с учётом приватности)
         with self._facts_lock:

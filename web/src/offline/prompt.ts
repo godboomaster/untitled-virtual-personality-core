@@ -9,11 +9,13 @@ import type { RecallDoc } from './recall';
 
 // Модель телефона: окно 4096 токенов на промпт и ответ (до 400) — промпт
 // не длиннее LOCAL_PROMPT_CHARS (≈ 3 символа русского текста на токен);
-// не влезает — короче характер, личная память, факты, потом история
+// не влезает — короче характер, личная память, факты, потом история.
+// История короткая: длинную маленькая модель не держит, а свои прежние
+// ответы из неё копирует слово в слово
 export const LOCAL_PROMPT_CHARS = 9000;
-export const LOCAL_HISTORY_MAX = 16;
+export const LOCAL_HISTORY_MAX = 8;
 const LOCAL_HISTORY_MIN = 2;
-const LOCAL_LINE_MAX = 1200; // символов одной реплики истории
+const LOCAL_LINE_MAX = 600; // символов одной реплики истории
 const LOCAL_HISTORY_ROOM = 1500; // меньше места истории — ужать промпт
 const LOCAL_LEVELS = [
   { character: 4000, self: 1200, facts: 25, recall: 3 },
@@ -66,6 +68,46 @@ export interface MemoryContext {
   facts: RecallDoc[]; // факты к теме вопроса
 }
 
+/** Текст не длиннее max — по абзацу или строке, если так теряется не больше
+ * половины, иначе по символу. */
+function cutText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const para = cut.lastIndexOf('\n\n');
+  if (para >= max / 2) return cut.slice(0, para);
+  const line = cut.lastIndexOf('\n');
+  return line >= max / 2 ? cut.slice(0, line) : cut;
+}
+
+// Строка-разделитель промпта (────, ====)
+const SEPARATOR_RE = /^[\s\-─━═=_*~#]+$/;
+// Слово капсом от 4 букв (ХАРАКТЕР, НЕЛЬЗЯ): заголовки разделов промпта
+const CAPS_WORD_RE = /(?<![\p{L}\p{N}])\p{Lu}{4,}(?![\p{L}\p{N}])/gu;
+
+/** Полный характер для модели телефона, пока краткого описания нет: без
+ * разделителей и заголовков капсом — маленькая модель подхватывает капс, а
+ * русский капс у неё рассыпается на опечатки («ТАКТИВАЦИЯ»). */
+export function plainCharacter(text: string): string {
+  return text
+    .split('\n')
+    .filter((l) => !SEPARATOR_RE.test(l))
+    .map((l) => {
+      // Заголовок целиком капсом («РЕЧЬ И ГОЛОС») — как предложение
+      if (/\p{Lu}{2}/u.test(l) && !/\p{Ll}/u.test(l)) return l.toLowerCase().replace(/\p{L}/u, (c) => c.toUpperCase());
+      return l.replace(CAPS_WORD_RE, (w, at: number) => (l.slice(0, at).trim() ? w.toLowerCase() : w[0] + w.slice(1).toLowerCase()));
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** Характер для модели телефона: краткое описание (составлено на ноутбуке
+ * или задано в YAML), нет его — полный характер без капса, по абзацам до max. */
+export function localCharacter(kit: OfflineKit, max: number = LOCAL_LEVELS[0].character): string {
+  const short = kit.parts.short?.trim();
+  return cutText(short || plainCharacter(kit.parts.character), max);
+}
+
 /** Факты для модели телефона: к теме вопроса, потом последние — не больше max. */
 function localFacts(kit: OfflineKit, memory: MemoryContext, max: number): string {
   const list = [...new Set([...memory.facts.map((f) => f.text), ...kit.facts.slice().reverse()])].slice(0, max);
@@ -79,6 +121,7 @@ export function localPrompt(
   notes: string[], // напоминания, окружение, выдача поиска, заметка о просьбе
   history: HistoryLine[],
   text: string,
+  language?: string, // строка языка по текущей реплике (language.ts); нет — из кита
 ): { system: string; history: ChatMsg[]; text: string } {
   const p = kit.parts;
   let system = '';
@@ -87,14 +130,14 @@ export function localPrompt(
     const recall = recallNote(memory.recall.slice(0, lv.recall));
     userText = recall ? `${recall}\n\n${text}` : text;
     system = [
-      p.character.slice(0, lv.character),
-      p.rules,
+      localCharacter(kit, lv.character),
+      p.rules_local || p.rules,
       p.style,
       localFacts(kit, memory, lv.facts),
       kit.dossier ?? '',
       selfMemoryNote(kit, lv.self),
       ...notes,
-      p.language,
+      language ?? p.language,
     ]
       .filter(Boolean)
       .join('\n\n');

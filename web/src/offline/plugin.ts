@@ -4,7 +4,8 @@ import type { PluginListenerHandle } from '@capacitor/core';
 /* Нативный плагин «OfflineLlm» (web/android/…/OfflineLlmPlugin.java): ответы
    персоны без ноутбука. Ключи провайдеров хранит и использует сам плагин —
    веб их не видит (только названия). Модель на телефоне — Gemma 4 E2B
-   (LiteRT-LM), события загрузки и потоковой выдачи. */
+   (LiteRT-LM), события загрузки и потоковой выдачи; модель векторов для
+   поиска по смыслу плагин только скачивает. */
 
 export interface ChatMsg {
   role: 'system' | 'user' | 'assistant';
@@ -21,6 +22,19 @@ export interface ModelStatus {
   loaded: boolean;
   backend: string | null; // gpu | cpu — на чём загружена
   unmetered: boolean; // сеть сейчас безлимитная (Wi-Fi)
+  freeBytes: number;
+}
+
+// Модель векторов (поиск по смыслу): файлы в dir, считает их WebView (embed.ts)
+export interface EmbedStatus {
+  downloaded: boolean;
+  dir: string;
+  size: number;
+  partial: number; // байт на телефоне, считая недокачанное
+  downloading: boolean;
+  bytes: number;
+  total: number;
+  unmetered: boolean;
   freeBytes: number;
 }
 
@@ -59,8 +73,13 @@ interface OfflineLlmPlugin {
     text: string;
     maxTokens?: number;
     temperature?: number;
+    topP?: number;
   }): Promise<{ text: string; backend: string }>;
   stopLocal(): Promise<void>;
+  embedStatus(): Promise<EmbedStatus>;
+  downloadEmbed(opts?: { allowMetered?: boolean }): Promise<void>;
+  cancelEmbed(): Promise<void>;
+  deleteEmbed(): Promise<void>;
   unloadModel(): Promise<void>;
   webSearch(opts: { query: string; max?: number; engine?: 'ddg' | 'bing' }): Promise<{ results: WebResult[] }>;
   syncReminders(opts: { items: AlarmItem[]; probes: string[] }): Promise<{ armed: number; exact: boolean }>;
@@ -71,6 +90,9 @@ interface OfflineLlmPlugin {
   addListener(event: 'modelProgress', cb: (d: { bytes: number; total: number }) => void): Promise<PluginListenerHandle>;
   addListener(event: 'modelDone', cb: () => void): Promise<PluginListenerHandle>;
   addListener(event: 'modelError', cb: (d: { message: string }) => void): Promise<PluginListenerHandle>;
+  addListener(event: 'embedProgress', cb: (d: { bytes: number; total: number }) => void): Promise<PluginListenerHandle>;
+  addListener(event: 'embedDone', cb: () => void): Promise<PluginListenerHandle>;
+  addListener(event: 'embedError', cb: (d: { message: string }) => void): Promise<PluginListenerHandle>;
   addListener(event: 'localToken', cb: (d: { requestId: string; text: string }) => void): Promise<PluginListenerHandle>;
 }
 

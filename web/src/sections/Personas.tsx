@@ -7,11 +7,13 @@ import { consumePersonaCreateRequest, usePersonaCreateRequest } from '../persona
 import type { PersonaCreatePrefill } from '../personaCreateStore';
 import PersonaCreateModal from '../components/PersonaCreateModal';
 import PersonaYamlModal from '../components/PersonaYamlModal';
+import ShortPromptModal from '../offline/ShortPromptModal';
 import InfoButton from '../components/InfoButton';
 import Icon from '../components/icons';
 import PersonaColorPicker from '../components/PersonaColorPicker';
 import { alertDialog, confirmDialog } from '../dialogStore';
 import { clearPersonaAvatar, fileToAvatarDataUrl, setPersonaAvatar, usePersonaAvatars } from '../avatarStore';
+import { useNarrowScreen } from '../useNarrowScreen';
 
 export default function Personas() {
   const { t } = useI18n();
@@ -23,6 +25,12 @@ export default function Personas() {
   const [prefill, setPrefill] = useState<PersonaCreatePrefill | undefined>(undefined);
   const [yamlEditId, setYamlEditId] = useState<string | null>(null); // персона в YAML-редакторе
   const [avatarEditId, setAvatarEditId] = useState<string | null>(null); // персона, которой меняем аватар
+  // Краткое описание для модели телефона — посмотреть
+  const [shortFor, setShortFor] = useState<{ id: string; name: string } | null>(null);
+  // Узкий экран: персоны — списком строк, нажатие раскрывает полную карточку
+  // (одну за раз); заголовок раздела уже в верхней полосе
+  const narrow = useNarrowScreen();
+  const [openId, setOpenId] = useState<string | null>(null);
 
   // Загрузка аватара: скрытый file-input один на секцию, id персоны — в state
   const avatarInputRef = useRef<HTMLInputElement>(null);
@@ -92,14 +100,18 @@ export default function Personas() {
 
   return (
     <div className="section">
-      <div className="section-header">
-        <div>
-          <h1 className="section-title">
-            {t('nav.personas')}
-            <InfoButton helpKey="persona.yaml" />
-          </h1>
-          <p className="section-subtitle">{t('personas.subtitle')}</p>
-        </div>
+      <div className={'section-header' + (narrow ? ' personas-head--narrow' : '')}>
+        {narrow ? (
+          <InfoButton helpKey="persona.yaml" />
+        ) : (
+          <div>
+            <h1 className="section-title">
+              {t('nav.personas')}
+              <InfoButton helpKey="persona.yaml" />
+            </h1>
+            <p className="section-subtitle">{t('personas.subtitle')}</p>
+          </div>
+        )}
         <button
           className="btn btn--primary"
           onClick={() => {
@@ -111,11 +123,30 @@ export default function Personas() {
         </button>
       </div>
 
-      <div className="persona-grid">
-        {personas.map((p, i) => (
+      <div className={'persona-grid' + (narrow ? ' persona-grid--list' : '')}>
+        {personas.map((p, i) => {
+          const collapsed = narrow && openId !== p.id;
+          const titleAndStatus = (
+            <>
+              <div className="persona-card-title">
+                <div className="persona-card-name">{p.name}</div>
+                <div className="persona-card-meta">
+                  <span>@{p.id}</span>
+                  {p.lastReply !== '—' && <span>{t('personas.lastReply', { t: p.lastReply })}</span>}
+                </div>
+              </div>
+              <span className={'persona-status' + (p.muted ? ' persona-status--frozen' : '')}>
+                {p.muted ? <Icon name="snowflake" size={11} /> : <span className="persona-status-dot" />}
+                <span className="persona-status-label">{p.muted ? t('personas.statusFrozen') : t('personas.statusActive')}</span>
+              </span>
+            </>
+          );
+          return (
           <div
             key={p.id}
-            className={'card persona-card stagger-item' + (p.muted ? ' persona-card--muted' : '')}
+            className={
+              'card persona-card stagger-item' + (p.muted ? ' persona-card--muted' : '') + (collapsed ? ' persona-card--collapsed' : '')
+            }
             // --persona — цвет метки персоны из YAML: уголки карточки и буква-аватар
             style={{ animationDelay: `${i * 50}ms`, ...(p.color ? { '--persona': p.color } : {}) } as CSSProperties}
           >
@@ -155,19 +186,24 @@ export default function Personas() {
                   </button>
                 )}
               </div>
-              <div className="persona-card-title">
-                <div className="persona-card-name">{p.name}</div>
-                <div className="persona-card-meta">
-                  <span>@{p.id}</span>
-                  {p.lastReply !== '—' && <span>{t('personas.lastReply', { t: p.lastReply })}</span>}
-                </div>
-              </div>
-              <span className={'persona-status' + (p.muted ? ' persona-status--frozen' : '')}>
-                {p.muted ? <Icon name="snowflake" size={11} /> : <span className="persona-status-dot" />}
-                {p.muted ? t('personas.statusFrozen') : t('personas.statusActive')}
-              </span>
+              {narrow ? (
+                // Строка списка: имя, @id и статус — кнопка «раскрыть/свернуть»
+                <button
+                  type="button"
+                  className="persona-card-toggle"
+                  aria-expanded={!collapsed}
+                  onClick={() => setOpenId(collapsed ? p.id : null)}
+                >
+                  {titleAndStatus}
+                  <Icon name="chevronDown" size={16} />
+                </button>
+              ) : (
+                titleAndStatus
+              )}
             </div>
 
+            {!collapsed && (
+            <>
             <p className="persona-card-desc" title={p.description}>
               {p.description || t('personas.noDescription')}
             </p>
@@ -221,6 +257,14 @@ export default function Personas() {
                   <PersonaColorPicker color={p.color} onChange={(c) => setColor(p.id, c)} />
                   <button
                     className="persona-icon-btn"
+                    title={t('shortPrompt.open')}
+                    aria-label={t('shortPrompt.open')}
+                    onClick={() => setShortFor({ id: p.id, name: p.name })}
+                  >
+                    <Icon name="dossier" size={15} />
+                  </button>
+                  <button
+                    className="persona-icon-btn"
                     title={t('personas.duplicate')}
                     aria-label={t('personas.duplicate')}
                     onClick={() => duplicate(p.id)}
@@ -251,8 +295,11 @@ export default function Personas() {
                 </div>
               </div>
             )}
+            </>
+            )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Скрытый выбор файла для аватара персоны (id — в avatarEditId) */}
@@ -278,6 +325,8 @@ export default function Personas() {
           }}
         />
       )}
+
+      {shortFor && <ShortPromptModal persona={shortFor.id} name={shortFor.name} onClose={() => setShortFor(null)} />}
 
       {/* YAML-редактор существующей персоны (кнопка «Редактировать») */}
       {yamlEditId && (

@@ -129,6 +129,12 @@ _CC_STOP_RE = STOP_CMD_RE
 # Фоновые потоки (инициатива, прогоны агента) флага не видят
 _SKIN_TURN = threading.local()
 
+# Ход, чью команду уже исполнил телефон (process_message(turn_note=…),
+# app/features/phone_actions.py): «открой браузер» открыл браузер на
+# телефоне — компьютер в этом ходе не трогается (ни «почини браузер», ни
+# режим управления, ни агент задач); флаг видит тот же _cc_allowed
+_PHONE_TURN = threading.local()
+
 # Шаговые команды: повтор — намеренный («громче» ×3, «дальше» ×2), дублем
 # не считается никогда (см. cc_turn_enter)
 _CC_STEP_CMD_RE = re.compile(
@@ -1297,15 +1303,28 @@ class BotInstance:
     def file_access_allowed(self, user_id: str, chat_id=None) -> bool:
         """Можно ли этому собеседнику открывать и получать файлы с компьютера
         ядра: только владелец, не из скина (реплику мог написать скрипт
-        скина) и в Telegram — только в личке (в группе файл увидели бы все).
+        скина) и в Telegram — только в личке (в группе файл увидели бы все),
+        кроме групп из features.file_access.allowed_chats. В ходе команды
+        телефону (_PHONE_TURN) — нет: реплику уже исполнил телефон.
         features.file_access: false — выключено совсем."""
-        if getattr(self, "features", {}).get("file_access", True) is False:
+        cfg = getattr(self, "features", {}).get("file_access", True)
+        if cfg is False or (isinstance(cfg, dict) and cfg.get("enabled", True) is False):
             return False
-        if getattr(_SKIN_TURN, "on", False):
+        if getattr(_SKIN_TURN, "on", False) or getattr(_PHONE_TURN, "on", False):
             return False
-        if not getattr(self, "web_single_user", False) and str(chat_id or "").startswith("-"):
-            return False
+        chat = str(chat_id or "")
+        if not getattr(self, "web_single_user", False) and chat.startswith("-"):
+            allowed = (cfg.get("allowed_chats") or []) if isinstance(cfg, dict) else []
+            if chat not in {str(c).strip() for c in allowed}:
+                return False
         return self.is_owner(user_id)
+
+    @staticmethod
+    def _file_talk(text: Optional[str], reply_context: Optional[str] = None) -> bool:
+        """Реплика про файлы и папки компьютера (или ответ на служебное
+        сообщение про них) — модели нужна заметка, что сама она их не видит."""
+        from app.features.file_finder import looks_like_file_talk
+        return looks_like_file_talk(text or "") or looks_like_file_talk(reply_context or "")
 
     def _file_access(self):
         # Менеджер хода «файл с компьютера» — лениво: заготовки без __init__
@@ -1368,8 +1387,9 @@ class BotInstance:
         обязан пройти через этот гейт. chat_id пока не используется в решении —
         зарезервирован под будущие чат-специфичные allowlist'ы/аудит.
         В ходе из скина (_SKIN_TURN) — всегда False: реплику мог написать
-        не человек, а скрипт скина."""
-        if getattr(_SKIN_TURN, "on", False):
+        не человек, а скрипт скина. В ходе команды телефону (_PHONE_TURN) —
+        тоже: команда уже исполнена на телефоне, компьютеру она не адресована."""
+        if getattr(_SKIN_TURN, "on", False) or getattr(_PHONE_TURN, "on", False):
             return False
         return self._cc_user_allowed(user_id)
 
@@ -3266,12 +3286,16 @@ class BotInstance:
                         on_token=None,
                         raw_user_text: Optional[str] = None,
                         from_skin: bool = False,
+                        turn_note: Optional[str] = None,
                         file_delivery: Optional[str] = None) -> str:
         """Обработка сообщения; парная к START строка END — по её наличию в
         логе видно, дошла ли генерация до конца и сколько заняла (без неё
         не отличить «ответ сгенерирован, но не доставлен» от «завис»).
         from_skin — реплика из скина веб-интерфейса: режим управления в этом
         ходе недоступен (см. _SKIN_TURN).
+        turn_note — служебная заметка к ответу этого хода (итог команды,
+        уже исполненной телефоном, app/features/phone_actions.py): в
+        системный блок промпта, реплика пользователя и STM — без неё.
         file_delivery — что канал сделает с файлом по «открой/пришли файл X»
         (app/features/file_access): "open" — веб на компьютере ядра,
         "send" — телефон и Telegram; None — канал файлы не обслуживает."""
@@ -3280,6 +3304,8 @@ class BotInstance:
         # дальше) флаг не снимает: возвращаем прежнее значение, а не False
         prev_skin = getattr(_SKIN_TURN, "on", False)
         _SKIN_TURN.on = prev_skin or bool(from_skin)
+        prev_phone = getattr(_PHONE_TURN, "on", False)
+        _PHONE_TURN.on = prev_phone or bool(turn_note)
         try:
             # Ход пользователя открыт ДО записи его реплики в STM и закрыт
             # после записи ответа: фоновая инициатива/ритм в этом окне в STM
@@ -3299,7 +3325,8 @@ class BotInstance:
                     reply_context=reply_context,
                     reply_to_bot_message_id=reply_to_bot_message_id,
                     on_token=on_token, raw_user_text=raw_user_text,
-                    from_skin=_SKIN_TURN.on, file_delivery=file_delivery,
+                    from_skin=_SKIN_TURN.on, turn_note=turn_note,
+                    file_delivery=file_delivery,
                 )
         except BaseException:
             logger.info(f"[BotInstance] process_message END (исключение): "
@@ -3307,6 +3334,7 @@ class BotInstance:
             raise
         finally:
             _SKIN_TURN.on = prev_skin
+            _PHONE_TURN.on = prev_phone
         logger.info(
             f"[BotInstance] process_message END: {time.monotonic() - t0:.1f}s | "
             f"ответ {len(reply) if isinstance(reply, str) else 'нет'} симв. | chat_id={chat_id}"
@@ -3320,6 +3348,7 @@ class BotInstance:
                               on_token=None,
                               raw_user_text: Optional[str] = None,
                               from_skin: bool = False,
+                              turn_note: Optional[str] = None,
                               file_delivery: Optional[str] = None) -> str:
         from app.features import side_tasks
 
@@ -3334,6 +3363,12 @@ class BotInstance:
         # app/api/server.py).
         if raw_user_text is None:
             raw_user_text = user_input
+        # Реплай на список «какой файл?»: модели — заглушка, не имена, папки
+        # и размеры посторонних файлов (по их образцу она сочиняла «содержимое»
+        # других папок)
+        if reply_context:
+            from app.features.file_access import scrub_reply_context
+            reply_context = scrub_reply_context(reply_context)
         # Язык пользователя в этом ходе — для изолированных реплик
         # (CC-результаты, настройка обучения): в них нет истории диалога
         try:
@@ -3999,7 +4034,10 @@ class BotInstance:
         if (self._web_search_enabled and chat_id not in self._web_search_disabled_chats
                 and not self._is_docs_only_request(user_input)
                 and search_skip is None
-                and page_section_note is None):
+                and page_section_note is None
+                # Команда телефону (будильник, «открой приложение») — не
+                # вопрос к интернету
+                and not turn_note):
             # Собираем контекст персоны для QueryEnhancer
             persona_context = self._get_persona_context_for_search()
             # Берём последние 6 сообщений для контекста
@@ -4554,6 +4592,17 @@ class BotInstance:
                     addon_results[addon.name] = res
                     if res is not None and res.prompt_block:
                         addon_blocks.append(res.prompt_block)
+            # Итог команды, исполненной телефоном, — и в light-режиме: без
+            # него персона «поставит будильник» на словах или откажется
+            if turn_note:
+                addon_blocks.append(turn_note)
+            # О файлах говорят, но поиск файлов реплику не взял: модель сама
+            # файлов не видит — без заметки «открывает» их на словах
+            if self._file_talk(raw_user_text, reply_context):
+                from app.features import file_access as _fa_mod
+                addon_blocks.append(_fa_mod.FILE_TALK_NOTE + (
+                    _fa_mod.FILE_TALK_HINT
+                    if self.file_access_allowed(user_id, chat_id) else ""))
 
             # Стилевой модификатор помощи по intellect tier: детекция
             # стартовала фоном в начале process_message — здесь только
