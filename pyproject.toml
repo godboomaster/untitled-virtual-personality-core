@@ -52,6 +52,15 @@ dependencies = [
     "websockets>=14,<18",
 ]
 
+# Необязательное: pip install -e ".[voice]"
+[project.optional-dependencies]
+# Голосовая активация на компьютере ядра (WAKE_LISTEN=1, app/voice): офлайн-
+# распознавание речи и микрофон
+voice = [
+    "sherpa-onnx>=1.13.8,<2",
+    "sounddevice>=0.5,<1",
+]
+
 # Имя пакета app слишком общее; переименовать при публикации
 [tool.setuptools.packages.find]
 include = ["app*"]

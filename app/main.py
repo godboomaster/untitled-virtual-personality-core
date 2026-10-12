@@ -286,12 +286,18 @@ def run_api():
     # (GET /api/inbox?wait=…) держал бы Ctrl+C до конца ожидания
     server = uvicorn.Server(uvicorn.Config("app.api.server:app", host=host, port=port))
     inbox.set_stop_check(lambda: server.should_exit)
+    # Голосовая активация («Коннор, …») — WAKE_LISTEN=1: микрофон компьютера
+    # слушается в фоне, просьбы идут в это же API (app/voice/wake_listener)
+    from app.voice import wake_listener
+    wake_listener.start_with_core(host, port)
     # Дальше — как в uvicorn.run: сигнал остановки uvicorn поднимает заново
     # после завершения, это не ошибка; не поднялся (порт занят) — код 3
     try:
         server.run()
     except KeyboardInterrupt:
         pass
+    finally:
+        wake_listener.stop_with_core()
     if not server.started:
         sys.exit(3)
 

@@ -40,6 +40,7 @@ from app.api.schemas import (
     CalendarEntryUpdate,
     ChatRequest,
     ChatResponse,
+    VoiceWakeHold,
     OfflineImportRequest,
     OfflineRemindersRequest,
     ClearChatRequest,
@@ -547,6 +548,28 @@ async def system_memory():
 # здесь. Браузеры бота и карантины веб-чатов общие для процесса — в inbox
 # они те же, но inbox требует персону.
 
+@app.get("/api/voice/wake", dependencies=[Depends(require_auth)])
+async def voice_wake_status():
+    # Голосовая активация на компьютере ядра (WAKE_LISTEN=1): слушает ли,
+    # какие имена, что услышала последним — для проверки перед показом
+    from app.voice import wake_listener
+    lst = wake_listener.get_listener()
+    if lst is None:
+        return {"enabled": wake_listener.enabled_by_env(), "running": False}
+    return {"enabled": True, **lst.status()}
+
+
+@app.post("/api/voice/wake/hold", dependencies=[Depends(require_auth)])
+async def voice_wake_hold(req: VoiceWakeHold):
+    # Открыт голосовой режим чата: слушатель ядра молчит (seconds, не больше
+    # 120; клиент продлевает), 0 — снова слушать
+    from app.voice import wake_listener
+    lst = wake_listener.get_listener()
+    if lst is not None:
+        lst.hold(req.seconds)
+    return {"held": bool(lst and lst.held)}
+
+
 @app.get("/api/system/status", dependencies=[Depends(require_auth)])
 async def system_status():
     # pool_status пробует CDP пула H по сети (до 2 с) — не в event loop
@@ -819,10 +842,47 @@ async def skin_generate(req: SkinGenRequest):
                              media_type="text/event-stream")
 
 
+# Голосовая активация слушает и на компьютере ядра, и на телефоне: фразу
+# «Коннор, …» рядом с обоими услышат оба. Пока голосовая просьба к персоне
+# идёт (и VOICE_DUP_SEC после неё), следующая голосовая — та же фраза с
+# другого устройства: ей duplicate, отвечает только первое
+VOICE_DUP_SEC = 3.0
+_voice_turns: dict[str, list] = {}  # персона → [просьб в работе, конец последней]
+
+
+def _voice_turn_enter(persona: str) -> bool:
+    """False — дубль. Проверка и отметка без await между ними: атомарно в loop."""
+    st = _voice_turns.setdefault(persona, [0, 0.0])
+    if st[0] > 0 or time.monotonic() - st[1] < VOICE_DUP_SEC:
+        return False
+    st[0] += 1
+    return True
+
+
+def _voice_turn_exit(persona: str) -> None:
+    st = _voice_turns.setdefault(persona, [1, 0.0])
+    st[0] = max(0, st[0] - 1)
+    st[1] = time.monotonic()
+
+
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(require_auth)])
 async def chat(req: ChatRequest, request: Request):
     bot = await _get_bot(req.persona)
     _check_not_muted(bot, req.persona)
+    if req.voice:
+        if not _voice_turn_enter(req.persona):
+            logger.info(f"[Voice] {req.persona}: та же голосовая просьба с другого устройства — пропуск")
+            return ChatResponse(reply="", persona=req.persona, chat_id=req.chat_id or req.user_id,
+                                control_mode=bot.control_mode_on(req.chat_id or req.user_id),
+                                duplicate=True)
+        try:
+            return await _chat_turn(bot, req, request)
+        finally:
+            _voice_turn_exit(req.persona)
+    return await _chat_turn(bot, req, request)
+
+
+async def _chat_turn(bot, req: ChatRequest, request: Request):
     await _touch_persona(req.persona)
     # Лок на (персона, чат): сериализуем сообщения одного чата,
     # разные чаты и персоны обрабатываются параллельно.

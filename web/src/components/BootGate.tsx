@@ -5,6 +5,7 @@ import { getLinkConfig, pair, parsePairingUri, refusalKey, setLinkConfig } from 
 import QrScanner from '../link/QrScanner';
 import { syncSystemBars } from '../nativeBars';
 import { stopBgInbox } from '../bgInbox';
+import { forgetWakeServer } from '../wakeWord';
 import { hasOfflinePersonas, refetchPersonas, seedOfflinePersonas } from '../apiData';
 import { setOfflineBoot } from '../offline/state';
 import { useI18n } from '../i18n';
@@ -245,6 +246,8 @@ export default function BootGate({ children }: { children: ReactNode }) {
   const changeServer = () => {
     // Фоновая служба уведомлений не должна опрашивать прежнее ядро
     stopBgInbox();
+    // И голосовая активация — по прежнему адресу
+    forgetWakeServer();
     // По каналу — забыть ноутбук (ключ этого телефона больше не нужен)
     if (getLinkConfig()) setLinkConfig(null);
     setUrlDraft(getApiUrl());

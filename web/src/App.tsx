@@ -25,6 +25,7 @@ import type { AppTheme } from './useAppTheme';
 import { BACK_MENU, useBackHandler } from './backStack';
 import { syncSystemBars } from './nativeBars';
 import { listenBgNotificationTaps, syncBgInbox } from './bgInbox';
+import { syncWakeWord } from './wakeWord';
 import { useOfflineSync } from './offline/state';
 
 export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings';
@@ -91,6 +92,8 @@ export default function App() {
   // ядро ответило — служба перезапускается со свежими адресом и токеном
   useEffect(() => {
     syncBgInbox();
+    // «Слушать по имени»: служба получает свежие адрес и токен
+    syncWakeWord();
     return listenBgNotificationTaps();
   }, []);
 
