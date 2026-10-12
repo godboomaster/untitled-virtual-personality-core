@@ -316,9 +316,13 @@ class WakeListener:
         self._thread = threading.Thread(target=self._run, name="wake-listener", daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, wait: float = 0.0) -> None:
+        """Остановить; wait — дождаться, пока поток закроет микрофон."""
         self._stop.set()
         self.voice.stop()
+        t = self._thread
+        if wait and t and t.is_alive() and t is not threading.current_thread():
+            t.join(wait)
 
     @property
     def running(self) -> bool:
@@ -446,7 +450,7 @@ class WakeListener:
 
     def _on_audio(self, indata, frames, time_info, status) -> None:
         # Поток PortAudio: только переложить кадры, без работы
-        if self.state == BUSY or self.held:
+        if self.state == BUSY or self.held or self._stop.is_set():
             return
         try:
             self._audio.put_nowait(indata[:, 0].copy())
@@ -602,9 +606,18 @@ def start_with_core(host: str, port: int) -> Optional[WakeListener]:
     return _listener
 
 
+# Ждать закрытия микрофона при остановке ядра — не дольше (цикл слушателя
+# проверяет остановку каждые 0.3 с; запрос к уже закрытому API падает сразу)
+STOP_WAIT_SEC = 5.0
+
+
 def stop_with_core() -> None:
+    """Остановка ядра: ждём, пока поток закроет микрофон. Иначе Python
+    завершается, atexit sounddevice выключает PortAudio, а поток ещё в
+    CloseStream — «bus error» (отчёт macOS 13.10: libportaudio CloseStream в
+    потоке слушателя, главный поток — в Py_FinalizeEx)."""
     if _listener is not None:
-        _listener.stop()
+        _listener.stop(wait=STOP_WAIT_SEC)
 
 
 def main() -> None:

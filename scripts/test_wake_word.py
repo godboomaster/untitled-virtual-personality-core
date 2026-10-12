@@ -219,6 +219,9 @@ def test_machine():
     lst.state = wl.IDLE
     lst._on_audio(np.zeros((1600, 1), np.float32), 1600, None, None)
     check("в ожидании имени кадры идут в распознавание", lst._audio.qsize() == 1)
+    lst._stop.set()
+    lst._on_audio(np.zeros((1600, 1), np.float32), 1600, None, None)
+    check("после стопа кадры не принимаются", lst._audio.qsize() == 1)
 
     lst = make()
     run_final(lst, "коннор")
@@ -471,9 +474,11 @@ def test_loop():
         check("ответы озвучены", lst.voice.said == ["Готово.", "Готово.", "А тебе зачем?", "Готово."])
         check("свой ответ «Коннор, …» не разбудил слушатель", len(sent) == 4)
         check("слушатель жив и ждёт имя", lst.running and lst.state == wl.IDLE and not lst.error)
-        lst.stop()
-        lst._thread.join(5)
-        check("стоп останавливает поток", not lst.running)
+        wl._listener = lst
+        wl.stop_with_core()
+        check("остановка ядра ждёт, пока слушатель закроет микрофон (иначе bus error в CloseStream)",
+              not lst.running)
+        wl._listener = None
 
         sd = FakeSD(zeros=True)
         sys.modules["sounddevice"] = sd
