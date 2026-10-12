@@ -1949,6 +1949,35 @@ html[data-vpc-shell] .detroit-bg {
   color: var(--text);
 }
 
+/* Персона создана на телефоне без ядра: статус пунктиром и пометка —
+   перенесётся на ядро при связи (или почему ядро её не приняло) */
+.persona-status--local {
+  border-style: dashed;
+}
+
+.persona-local-note {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.persona-local-note--error {
+  border-color: var(--danger);
+  color: var(--text);
+}
+
+.persona-avatar-btn:disabled {
+  cursor: default;
+}
+
+.persona-avatar-btn:disabled .persona-avatar-overlay {
+  display: none;
+}
+
 .persona-card-desc {
   display: -webkit-box;
   -webkit-box-orient: vertical;

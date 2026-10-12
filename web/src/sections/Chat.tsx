@@ -41,6 +41,7 @@ import {
   useOfflineMessages,
 } from '../offline/store';
 import { getKit, refreshKit } from '../offline/kit';
+import { onLocalPersonaRenamed } from '../offline/localPersonas';
 import { answerOffline, OfflineUnavailable } from '../offline/engine';
 import { warmEmbedder } from '../offline/embed';
 import { OfflineLlm } from '../offline/plugin';
@@ -331,8 +332,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   const persona = personas.find((p) => p.id === selectedId) ?? personas[0];
   // Без ноутбука (приложение на телефоне, web/src/offline): отвечает облачная
   // модель по ключу или Gemma на телефоне; переписка хранится на телефоне до
-  // возврата к ноутбуку. Черновик — ответ модели телефона по мере печати
-  const offlineMode = useOfflineMode();
+  // возврата к ноутбуку. Черновик — ответ модели телефона по мере печати.
+  // Персона, созданная на телефоне и ещё не перенесённая на ядро
+  // (offline/localPersonas.ts), — так же и при связи: у ядра её нет (404)
+  const coreOffline = useOfflineMode();
+  const offlineMode = coreOffline || !!persona.local;
+  // Перенос на ядро сменил её id (прежний занят) — чат за ней
+  useEffect(() => onLocalPersonaRenamed((from, to) => setSelectedId((cur) => (cur === from ? to : cur))), []);
   const offlineStore = useOfflineMessages(persona.id);
   const [offlineDraft, setOfflineDraft] = useState<Record<string, { num: number; text: string } | null>>({});
   const [offlineNote, setOfflineNote] = useState<string | null>(null);
@@ -346,7 +352,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     }
   });
   useEffect(() => {
-    if (!offlineMode || !offlineIntro) return;
+    if (!coreOffline || !offlineIntro) return;
     try {
       localStorage.setItem(OFFLINE_INTRO_KEY, '1');
     } catch {
@@ -354,7 +360,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     }
     const timer = window.setTimeout(() => setOfflineIntro(false), OFFLINE_INTRO_MS);
     return () => window.clearTimeout(timer);
-  }, [offlineMode, offlineIntro]);
+  }, [coreOffline, offlineIntro]);
   // Записка о последней отправке гаснет сама; причина осталась — следующая
   // отправка покажет её снова
   useEffect(() => {
@@ -717,8 +723,10 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // Подтягиваем историю персоны из бэкенда (один раз на персону за сессию).
   // Первый запрос к персоне поднимает её бота на сервере — это небыстро,
   // лента пока показывает загрузку; при сбое повторяем через паузу
+  // Персоны с телефона на ядре ещё нет — истории там нет (404 и повторы)
+  const localOnly = !!persona.local;
   useEffect(() => {
-    if (!apiOnline || historyByPersona[persona.id]) return;
+    if (!apiOnline || historyByPersona[persona.id] || localOnly) return;
     const id = persona.id;
     let stale = false;
     let retryTimer: number | undefined;
@@ -742,7 +750,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       window.clearTimeout(retryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiOnline, persona.id, historyRetry]);
+  }, [apiOnline, persona.id, historyRetry, localOnly]);
 
   // Сайдбар контекста: дела/инвентарь/напоминания/курсы с бэкенда.
   // Перечитываем после ответа бота (waiting) — он мог их изменить по ходу диалога.
@@ -1309,15 +1317,18 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
   // Ноутбук вернулся: реплики, оставшиеся без ответа, — обычной отправкой
   // (на них ответит полная персона). Сначала остальная переписка уходит в
-  // историю (syncOffline), поэтому — только когда в очереди одни они
+  // историю (syncOffline), поэтому — только когда в очереди одни они.
+  // Персона с телефона (offlineMode) — только после переноса на ядро: до
+  // него отправка дала бы 404, а реплики из очереди уже были бы удалены
   useEffect(() => {
     if (offlineMode || !apiOnline || waiting) return;
     const list = offlineMessages(persona.id);
     const tail = unansweredTail(list);
     if (!tail.length || tail.length !== list.length) return;
-    removeOfflineMessages(persona.id, tail.map((m) => m.id));
-    // Команды телефону в них уже исполнены, когда их писали
+    // Команды телефону в них уже исполнены, когда их писали. Из очереди —
+    // после отправки: пузырь «отправлено» уже в ленте
     submitMessage(tail.map((m) => m.text).join('\n\n'), null, false, false, false);
+    removeOfflineMessages(persona.id, tail.map((m) => m.id));
     // submitMessage — замыкание текущего рендера, перезапуск по нему не нужен
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offlineMode, apiOnline, waiting, persona.id, offlineStore.length]);
@@ -2128,7 +2139,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
               <span className="chip-label">{t('chat.modeVoice')}</span>
             </button>
           )}
-          {apiOnline && (
+          {/* YAML персоны — на ядре; у персоны с телефона его там ещё нет */}
+          {apiOnline && !persona.local && (
             <button type="button" className="btn btn--chip" title={t('chat.personaYaml')} onClick={() => setYamlOpen(true)}>
               YAML
             </button>
@@ -2137,7 +2149,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
             {t('chat.skinClassic')}
           </button>
         </div>
-        {yamlOpen && apiOnline && (
+        {yamlOpen && apiOnline && !persona.local && (
           <PersonaYamlModal
             personaId={persona.id}
             onClose={() => setYamlOpen(false)}
@@ -2230,7 +2242,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       </div>
 
       {/* YAML-редактор персоны — поверх чата */}
-      {yamlOpen && apiOnline && (
+      {yamlOpen && apiOnline && !persona.local && (
         <PersonaYamlModal
           personaId={persona.id}
           onClose={() => setYamlOpen(false)}
@@ -2322,7 +2334,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
               <Icon name="dossier" size={13} />
               <span className="chip-label">{t('chat.dossier')}</span>
             </button>
-            {apiOnline && (
+            {apiOnline && !persona.local && (
               <button className="btn btn--chip chat-yaml-btn" title={t('chat.personaYaml')} onClick={() => setYamlOpen(true)}>
                 YAML
               </button>
@@ -2335,9 +2347,9 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
           </div>
         </div>
 
-        {((offlineMode && offlineIntro) || offlineNote) && (
+        {((coreOffline && offlineIntro) || offlineNote) && (
           <div className="chat-offline-banner" role="status">
-            {offlineMode && offlineIntro && <span>{t('offline.banner')}</span>}
+            {coreOffline && offlineIntro && <span>{t('offline.banner')}</span>}
             {offlineNote && <span className="chat-offline-note">{offlineNote}</span>}
           </div>
         )}

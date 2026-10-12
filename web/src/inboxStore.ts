@@ -154,7 +154,8 @@ export function pruneInbox(persona: string, inStm: Set<string>) {
 
 // Единый поллер inbox'ов всех персон. Вызывать один раз — в App.
 export function useInboxPolling(apiOnline: boolean, personas: Persona[]) {
-  const ids = personas.map((p) => p.id).join(',');
+  // Персон с телефона (offline/localPersonas.ts) на ядре ещё нет — их inbox там 404
+  const ids = personas.filter((p) => !p.local).map((p) => p.id).join(',');
   useEffect(() => {
     if (!apiOnline || !ids) return;
     let stop = false;

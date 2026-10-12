@@ -4,6 +4,8 @@ import type { OfflineKitResponse } from '../api';
 import { OfflineLlm } from './plugin';
 import { refreshMemory } from './memory';
 import { refreshSettingsCopy } from './settingsCopy';
+import { buildLocalKit, isLocalPersona, localPersona } from './localPersonas';
+import type { LocalPersona } from './localPersonas';
 
 /* Персона-кит на телефоне: характер, правила офлайна, факты, хвост
    переписки — всё, чтобы персона ответила без ноутбука. Чат обновляет его
@@ -12,8 +14,9 @@ import { refreshSettingsCopy } from './settingsCopy';
    сразу в нативное хранилище (OfflineLlm.setProviders, шифрование ключом
    Android Keystore). Вся переписка и факты — отдельно и реже (memory.ts). */
 
-// fallback — запасной: кита с ноутбука нет, персона по имени и описанию
-export type OfflineKit = OfflineKitResponse & { fetched_at: number; fallback?: boolean };
+// fallback — запасной: кита с ноутбука нет, персона по имени и описанию;
+// local — собран на телефоне из YAML персоны, созданной без ядра (localPersonas.ts)
+export type OfflineKit = OfflineKitResponse & { fetched_at: number; fallback?: boolean; local?: boolean };
 
 const PREFIX = 'vpc-offline-kit:';
 const KEYS_TTL_MS = 10 * 60_000;
@@ -46,13 +49,98 @@ export function kitPersonas(): string[] {
   return out;
 }
 
-export function getKit(persona: string): OfflineKit | null {
+function storedKit(persona: string): OfflineKit | null {
   try {
     const raw = localStorage.getItem(PREFIX + persona);
     return raw ? (JSON.parse(raw) as OfflineKit) : null;
   } catch {
     return null;
   }
+}
+
+/** Кит персоны: с ядра, а у созданной на телефоне — из её YAML. */
+export function getKit(persona: string): OfflineKit | null {
+  const kit = storedKit(persona);
+  if (kit) return kit;
+  const local = localPersona(persona);
+  return local ? localKit(local) : null;
+}
+
+/** Записать кит персоны (с ядра или замену ему на время переноса). */
+export function storeKit(persona: string, kit: OfflineKit) {
+  try {
+    localStorage.setItem(PREFIX + persona, JSON.stringify(kit));
+  } catch {
+    /* хранилище переполнено — кит проживёт в памяти до перезапуска */
+  }
+  donor = undefined;
+}
+
+/** Убрать кит и ошибку его загрузки (персона удалена с телефона). */
+export function forgetKit(persona: string) {
+  try {
+    localStorage.removeItem(PREFIX + persona);
+    localStorage.removeItem(ERROR_PREFIX + persona);
+  } catch {
+    /* хранилище недоступно */
+  }
+  donor = undefined;
+  localMemo.delete(persona);
+}
+
+/** Кит и ошибка — под новым id (id персоны сменился при переносе на ядро). */
+export function renameKit(from: string, to: string) {
+  for (const prefix of [PREFIX, ERROR_PREFIX]) {
+    try {
+      const raw = localStorage.getItem(prefix + from);
+      if (raw === null) continue;
+      localStorage.setItem(prefix + to, raw);
+      localStorage.removeItem(prefix + from);
+    } catch {
+      /* хранилище недоступно */
+    }
+  }
+  donor = undefined;
+  localMemo.delete(from);
+}
+
+// Общее для всех персон (правила, заметки напоминаний, гейт поиска, погода)
+// — из самого свежего кита с ядра; undefined — ещё не искали (сброс при записи)
+let donor: OfflineKit | null | undefined;
+const localMemo = new Map<string, { key: string; kit: OfflineKit }>();
+
+function donorKit(): OfflineKit | null {
+  if (donor !== undefined) return donor;
+  let best: OfflineKit | null = null;
+  for (const id of kitPersonas()) {
+    const k = storedKit(id);
+    if (!k || k.local || k.fallback || k.version < 2 || !k.rules) continue;
+    if (!best || k.fetched_at > best.fetched_at) best = k;
+  }
+  donor = best;
+  return best;
+}
+
+function uiLanguage(): string | null {
+  try {
+    const v = localStorage.getItem('vpc-lang');
+    return v === 'ru' || v === 'en' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+// Кит из YAML собирается заново, только когда сменились YAML, кит-источник
+// или язык: getKit зовут на каждом рендере списков (lastMessage.ts)
+function localKit(p: LocalPersona): OfflineKit {
+  const from = donorKit();
+  const lang = uiLanguage();
+  const key = `${p.yaml}\u0000${from?.persona ?? ''}:${from?.fetched_at ?? 0}\u0000${lang ?? ''}`;
+  const memo = localMemo.get(p.id);
+  if (memo && memo.key === key) return memo.kit;
+  const kit = buildLocalKit(p, from, lang);
+  localMemo.set(p.id, { key, kit });
+  return kit;
 }
 
 const FALLBACK_RULES =
@@ -129,16 +217,14 @@ export async function refreshAllKits(force = false): Promise<void> {
 export function refreshKit(persona: string): Promise<OfflineKit | null> {
   if (!isNativeApp()) return Promise.resolve(null);
   const have = getKit(persona);
+  // Персоны с телефона на ядре ещё нет — запрос дал бы только 404
+  if (isLocalPersona(persona)) return Promise.resolve(have);
   const running = inflight.get(persona);
   if (running) return running;
   const job = (async () => {
     try {
       const kit: OfflineKit = { ...(await api.getOfflineKit(persona)), fetched_at: Date.now() };
-      try {
-        localStorage.setItem(PREFIX + persona, JSON.stringify(kit));
-      } catch {
-        /* хранилище переполнено — кит проживёт в памяти до перезапуска */
-      }
+      storeKit(persona, kit);
       setKitError(persona, null);
       refreshed.forEach((fn) => fn(persona));
       await refreshMemory(persona, kit);
