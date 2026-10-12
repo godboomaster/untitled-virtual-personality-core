@@ -920,7 +920,7 @@ The path of one message — filters, memory, search, model, markers, saving — 
 
 ## Tests
 
-Tests are `scripts/test_*.py` scripts (109), without pytest; Arrodes tests are in its own
+Tests are `scripts/test_*.py` scripts (111), without pytest; Arrodes tests are in its own
 repository. Run them from the project root:
 
 ```bash

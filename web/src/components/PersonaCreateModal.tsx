@@ -10,7 +10,7 @@ import { addLocalPersona, LocalPersonaError } from '../offline/localPersonas';
 import FormModal from './FormModal';
 import Select from './Select';
 import PersonaFormFields from './PersonaFormFields';
-import { defaultForm, formFromYaml, simpleFlags, transliterate, yamlWithForm } from './personaYamlSync';
+import { defaultForm, formFromYaml, simpleFlags, transliterate, yamlScalar, yamlWithForm } from './personaYamlSync';
 import type { FormState } from './personaYamlSync';
 
 /* Модалка создания персоны в виде YAML-редактора конфига: слева форма,
@@ -119,9 +119,9 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
 
     return [
       `id: ${v.id.trim() || 'your_persona_id'}`,
-      `name: ${v.name.trim() || t('pc.yamlName')}`,
+      `name: ${yamlScalar(v.name.trim() || t('pc.yamlName'))}`,
       `version: "${v.version.trim() || '1.0'}"`,
-      `description: ${v.description.trim() || t('pc.yamlDesc')}`,
+      `description: ${yamlScalar(v.description.trim() || t('pc.yamlDesc'))}`,
       `stm_size: ${v.stmSize}`,
       ...(v.intellectTier !== 'none' ? ['', 'intellect:', `  tier: ${v.intellectTier}   # primitive | normal | bot`] : []),
       '',
@@ -135,7 +135,7 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
       `    min_interval_seconds: ${v.learning.minInterval}`,
       `    max_interval_seconds: ${v.learning.maxInterval}   ${t('pc.yamlWeekComment')}`,
       '  trigger_words:',
-      ...(words.length ? words.map((w) => `    - "${w}"`) : [`    - "${t('pc.yamlKeyword')}"`]),
+      ...(words.length ? words.map((w) => `    - ${yamlScalar(w)}`) : [`    - "${t('pc.yamlKeyword')}"`]),
       '  proactive:',
       `    enabled: ${bool(v.features.proactive)}`,
       `    check_interval_minutes: ${v.proactive.checkInterval}`,
