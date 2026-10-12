@@ -9,7 +9,7 @@ import { formatRecall, searchDocs, vecBaseline } from './recall';
 import { queryVector, releaseEmbedder } from './embed';
 import { unpackVec } from './vectors';
 import type { RecallDoc } from './recall';
-import { cleanAnswer, LOCAL_HISTORY_MAX, localPrompt, normalizeHistory, selfMemoryNote } from './prompt';
+import { cleanAnswer, LOCAL_HISTORY_MAX, localPrompt, normalizeHistory, selfMemoryNote, withoutStaleUnanswered } from './prompt';
 import type { HistoryLine, MemoryContext } from './prompt';
 import { dialogueLanguage, languageLine, languageName } from './language';
 
@@ -120,6 +120,8 @@ export async function answerOffline(
   const kit = getKit(persona) ?? fallbackKit(persona, text);
   if (!kit) throw new OfflineUnavailable('no_kit');
   const fallback = !!kit.fallback;
+  // Старая реплика без ответа в хвосте — не к этому ходу (и облаку, и телефону)
+  history = withoutStaleUnanswered(history);
 
   // Кит старого ядра (до версии 2) или запасной — без поиска, погоды и напоминаний
   const full = kit.version >= 2 && !!kit.rules;

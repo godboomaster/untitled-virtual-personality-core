@@ -26,6 +26,23 @@ const LOCAL_LEVELS = [
 export interface HistoryLine {
   role: 'user' | 'assistant';
   text: string;
+  ts?: number; // unix-секунды — свежая ли реплика без ответа (withoutStaleUnanswered)
+}
+
+// Реплики пользователя без ответа в конце истории идут вместе с новой: это
+// очередь без связи, модель отвечает на все. Но только свежие — старая
+// («открой телеграм» час назад, ответ на которую не попал в историю) уводила
+// ответ в неё: на «мне грустно» — «Открываю приложение телеграм»
+export const STALE_UNANSWERED_SEC = 30 * 60;
+
+/** История без старых реплик пользователя в хвосте (без ответа); реплика без
+ * времени остаётся — не знаем, старая ли. */
+export function withoutStaleUnanswered(lines: HistoryLine[], nowSec = Date.now() / 1000): HistoryLine[] {
+  let start = lines.length;
+  while (start > 0 && lines[start - 1].role === 'user') start--;
+  if (start === lines.length) return lines;
+  const tail = lines.slice(start).filter((l) => l.ts == null || nowSec - l.ts <= STALE_UNANSWERED_SEC);
+  return tail.length === lines.length - start ? lines : [...lines.slice(0, start), ...tail];
 }
 
 /** Подряд идущие реплики одной стороны — одной (часть API требует чередования),
@@ -122,8 +139,10 @@ export function localPrompt(
   history: HistoryLine[],
   text: string,
   language?: string, // строка языка по текущей реплике (language.ts); нет — из кита
+  nowSec = Date.now() / 1000,
 ): { system: string; history: ChatMsg[]; text: string } {
   const p = kit.parts;
+  history = withoutStaleUnanswered(history, nowSec);
   let system = '';
   let userText = text;
   for (const [i, lv] of LOCAL_LEVELS.entries()) {

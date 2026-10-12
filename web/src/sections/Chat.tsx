@@ -1213,7 +1213,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     // Команда телефону — до ответа модели: будильник встанет, даже если
     // ответить некому и реплика ждёт связи
     const action = phone ? await runPhoneCommand(pid, text, [persona.name]) : null;
-    const history = messages.map((m) => ({ role: m.role === 'user' ? ('user' as const) : ('assistant' as const), text: m.text }));
+    const history = messages.map((m) => ({ role: m.role === 'user' ? ('user' as const) : ('assistant' as const), text: m.text, ts: m.ts }));
     // Прежние реплики без ответа модель увидит в истории — ответ и на них
     const pending = unansweredTail(offlineMessages(pid));
     const userMsg = addOfflineMessage(pid, { role: 'user', text, source: 'queued' });
