@@ -75,14 +75,10 @@ OFFLINE_RULES = (
     "from your earlier conversation."
 )
 
-# Те же правила для маленькой модели телефона: она понимает всё буквально —
-# «your tools are unavailable» превращалось в «у меня нет доступа к
-# инструментам» в ответ на «Привет», а свои прежние ответы она копировала
-# слово в слово. Поэтому — коротко, об инструментах только по просьбе.
-# Запрета на капс нет: Gemma поняла его как «без заглавных вообще» («я коннор,
-# rk800»), а капс шёл от заголовков характера — их теперь нет (short_prompt).
-# Язык действий — отдельно: примеры в описании персоны на её языке, и в
-# английском ответе Gemma оставляла «*Наклоняю голову.*»
+# Правила маленькой модели телефона — для прежних сборок приложения: новые
+# берут свои (web/src/offline/prompt.ts, LOCAL_RULES — там и почему они такие),
+# чтобы правка приходила с приложением, без запуска ядра.
+# scripts/test_offline_recall.py сверяет копии
 OFFLINE_RULES_LOCAL = (
     "Reply directly to the user's latest message, in character, briefly and "
     "conversationally. Don't repeat your earlier replies word for word. Write everything "

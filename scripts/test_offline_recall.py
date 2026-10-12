@@ -87,6 +87,7 @@ const out = {
   facts: recall.searchDocs('где я работаю?', input.facts.map((f) => ({ role: 'fact', text: f })), 3).map((d) => d.text),
   recallBlock: recall.formatRecall(kit, recall.searchDocs('как зовут мою кошку', docs, 3)),
   budget: prompt.LOCAL_PROMPT_CHARS,
+  localRules: prompt.LOCAL_RULES,
   prompts: input.cases.map((c) => {
     const k = { ...kit, ...c.kit, parts: { ...kit.parts, ...(c.kit.parts || {}) } };
     const memory = { recall: docs.slice(0, c.recall || 0), facts: [] };
@@ -158,6 +159,8 @@ def main():
                                 {"role": "user", "text": "открой телеграм", "ts": now - 7200},
                                 {"role": "user", "text": "ты тут?", "ts": now - 120}],
          "text": "ответь"},
+        # 7. Кит от ядра со своими правилами телефона (прежние сборки) — не они
+        {"kit": {"parts": {"rules_local": "OLD KIT RULES"}}, "history": [], "text": "привет"},
     ]
     facts = ["Имя: Хэнк", "Работа: детектив в полиции", "Любит рыбалку", "Кошка Мурка", "Город: Детройт"]
     try:
@@ -205,10 +208,10 @@ def main():
     def total(pr):
         return len(pr["system"]) + sum(len(m["content"]) for m in pr["history"]) + len(pr["text"])
 
-    p0, p1, p2, p4, p3, p5, p6 = got["prompts"]
+    p0, p1, p2, p4, p3, p5, p6, p7 = got["prompts"]
     check("без найденного — реплика как есть", p0["text"] == "Как дела?")
     check("маленькая персона: характер, правила, факты, досье, личная память, язык",
-          all(x in p0["system"] for x in ("Ты Коннор.", "RULES", "STYLE", "Факт 79", "interests: рыбалка",
+          all(x in p0["system"] for x in ("Ты Коннор.", got["localRules"], "STYLE", "Факт 79", "interests: рыбалка",
                                           "[PERSONAL MEMORY Коннор]", "SELF RULE", "LANG")))
     check("…факты — последние 25", "Факт 55" in p0["system"] and "Факт 54" not in p0["system"])
     check(f"…в бюджете {budget} символов", total(p0) <= budget)
@@ -218,7 +221,7 @@ def main():
     check(f"огромная персона — в бюджете ({total(p1)} ≤ {budget})", total(p1) <= budget)
     self1 = p1["system"].split("[PERSONAL MEMORY]")[1].split("[END OF PERSONAL MEMORY]")[0]
     check("…характер ≤ 4000, личная память обрезана (≤ 1200, не пустая), найденное ≤ 3",
-          len(p1["system"].split("\n\nRULES")[0]) <= 4000 and 500 < len(self1) <= 1200
+          len(p1["system"].split("\n\n" + got["localRules"])[0]) <= 4000 and 500 < len(self1) <= 1200
           and "эпизод" in self1 and "SELF RULE" in p1["system"])
     note1 = p1["text"].split("\n\nКак дела?")[0]
     check("…найденное — в реплике перед вопросом (до 3 строк), не в системном тексте",
@@ -228,7 +231,7 @@ def main():
           sum(len(m["content"]) for m in p1["history"]) + len(p1["text"]) >= 1500 - 400)
     check("…история всё равно есть (≥ 2 реплики)", len(p1["history"]) >= 1 and len(p1["text"]) >= len("Как дела?"))
     check("заметки огромные — характер до 2000, без личной памяти, найденное ≤ 2",
-          len(p4["system"].split("\n\nRULES")[0]) <= 2000 and "SELF RULE" not in p4["system"]
+          len(p4["system"].split("\n\n" + got["localRules"])[0]) <= 2000 and "SELF RULE" not in p4["system"]
           and p4["text"].count("the user wrote: ") + p4["text"].count("you replied: ") <= 2)
     check("…и всё равно есть история (последняя реплика)", len(p4["history"]) >= 1 or "29:" in p4["text"])
     check("хвост — реплика пользователя: уходит вместе с новой",
@@ -239,6 +242,13 @@ def main():
     check("старая реплика без ответа в хвосте — не склеивается с новой",
           p5["text"] == "мне грустно" and "телеграм" not in json.dumps(p5, ensure_ascii=False)
           and [m["role"] for m in p5["history"]] == ["user", "assistant"])
+    check("правила модели телефона — из приложения, не из кита",
+          got["localRules"] in p7["system"] and "OLD KIT RULES" not in p7["system"])
+    import ast
+    tree = ast.parse((ROOT / "app" / "api" / "offline_api.py").read_text("utf-8"))
+    core_rules = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                      and getattr(n.targets[0], "id", "") == "OFFLINE_RULES_LOCAL")
+    check("копия правил в ядре (для прежних сборок) совпадает с приложением", core_rules == got["localRules"])
     check("свежая реплика без ответа — вместе с новой, старая из того же хвоста — нет",
           p6["text"] == "ты тут?\n\nответь" and "телеграм" not in json.dumps(p6, ensure_ascii=False))
 
