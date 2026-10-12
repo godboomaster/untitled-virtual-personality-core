@@ -564,6 +564,12 @@ itself off after 30 minutes of inactivity; a bot restart does not reset it.
 While the mode is on, reminders, to-dos, inventory and learning stay silent so they don't
 compete with commands.
 
+**Typos.** "enter contorl mode", "opne youtube", "scrol down" and a command typed in the
+wrong keyboard layout are understood right away, without the model. Opening, scrolling and
+hovering run as usual; a corrected click, typing and the rest wait for "yes". With the mode
+off, "open youtube", "click …", "scroll …" get an immediate answer: "Control mode is off —
+turn it on and run it?". "Yes" turns the mode on and runs the command.
+
 **Who can.** Only the owner (`owner` or `OWNER_USER_ID`) and `allowed_users` from the YAML.
 On the web the user is the owner, but commands from a skin are never executed. For everyone
 else there is no control mode: their messages go into ordinary conversation.

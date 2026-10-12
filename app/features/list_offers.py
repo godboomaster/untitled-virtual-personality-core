@@ -73,6 +73,11 @@ _ACT_RE = {
         r"убери(?:те)?|убирай|удали(?:те)?|удаляй|выбрось|выкинь|выкидывай|"
         r"remove|delete|cross(?:\s+it)?\s+off|mark(?:\s+it)?(?:\s+as)?\s+done|"
         r"throw(?:\s+it)?\s+(?:away|out))\b", re.IGNORECASE),
+    # «Включить режим управления и выполнить «X»?» — «включай», «выполняй»
+    "cc": re.compile(
+        r"\b(?:включай(?:те)?|включи(?:те)?|выполняй(?:те)?|выполни(?:те)?|"
+        r"делай(?:те)?|сделай(?:те)?|открывай|открой|run(?:\s+it)?|"
+        r"do\s+it|go\s+ahead|turn\s+it\s+on)\b", re.IGNORECASE),
 }
 
 
@@ -111,7 +116,8 @@ def classify_reply(kind: str, reply: str, names=None) -> Optional[str]:
     («Коннор, да»)."""
     if not reply or not reply.strip() or _NOT_CONSENT_RE.match(reply):
         return None
-    group = "remove" if kind in ("todo_done", "inventory_remove") else "add"
+    group = ("remove" if kind in ("todo_done", "inventory_remove")
+             else "cc" if kind == "cc_mode" else "add")
     norm = _ACT_RE[group].sub("да", _CONSENT_PHRASE_RE.sub("да", reply))
     verdict = classify_confirmation(norm, names)
     if verdict == "YES":

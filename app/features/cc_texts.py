@@ -181,6 +181,24 @@ _T = {
               "control mode\"."},
     "cc_mode_already_off": {"ru": "Режим управления и так выключен.",
                             "en": "Control mode is already off."},
+    # Команда браузеру при выключенном режиме: честно и сразу, без модели
+    # (та «открывала» на словах), с предложением включить и выполнить
+    "cc_mode_offer": {
+        "ru": "Режим управления выключен, так что я ничего не сделал. "
+              "Включить его и выполнить «{cmd}»?",
+        "en": "Control mode is off, so I haven't done anything. Turn it on "
+              "and run \"{cmd}\"?"},
+    "cc_mode_offer_declined": {
+        "ru": "Хорошо, режим управления не включаю.",
+        "en": "Okay, I'm leaving control mode off."},
+    "cc_mode_on_short": {
+        "ru": "Включил режим управления (напоминания и дела пока молчат; "
+              "закончить — «выйди из режима управления»).",
+        "en": "Control mode is on (reminders and the todo list are paused; "
+              "to finish — \"exit control mode\")."},
+    "cc_mode_offer_repeat": {
+        "ru": "Повтори команду — теперь выполню.",
+        "en": "Repeat the command — I'll run it now."},
     "cc_mode_off": {
         "ru": "Вышел из режима управления — браузером не управляю. "
               "Напоминания, список дел, инвентарь и обучение снова работают.",
