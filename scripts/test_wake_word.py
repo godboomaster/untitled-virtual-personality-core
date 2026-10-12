@@ -524,6 +524,8 @@ def test_core():
     os.environ.pop("WAKE_LISTEN")
     from fastapi.testclient import TestClient
     from app.api import server
+    # Импорт сервера читает .env — там может стоять WAKE_LISTEN=1 (своё ядро)
+    os.environ.pop("WAKE_LISTEN", None)
     c = TestClient(server.app)
     tok = getattr(server, "_api_token", "")
     r = c.get("/api/voice/wake", headers={"Authorization": f"Bearer {tok}"} if tok else {})
