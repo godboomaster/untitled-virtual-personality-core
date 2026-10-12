@@ -61,8 +61,10 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -88,6 +90,10 @@ import java.util.concurrent.TimeUnit;
  *   BUSY  — POST /api/chat и озвучка ответа; звук микрофона выбрасываем,
  *   чтобы служба не слышала сама себя. Ответ кончился вопросом — ещё 6 с
  *   ждём ответа без имени.
+ *
+ * Команды телефону («Коннор, включи фонарик», «поставь таймер на 5 минут»)
+ * — как в чате: тот же разбор (PhoneVoiceJs), исполняет сама служба
+ * (PhoneVoiceOps), ядру уходит итог phone_action — персона отвечает по нему.
  *
  * Android 14+ не даёт запускать службу с микрофоном из фона — её включает
  * приложение (плагин WakeWord) и перезапускает MainActivity, когда
@@ -134,6 +140,8 @@ public class WakeWordService extends Service {
     // Голосовой чат приложения отпустил микрофон — забираем не сразу: следующая
     // его сессия обычно начинается сразу после озвучки ответа
     private static final long RESUME_DELAY_MS = 1_500;
+    // Список приложений для «открой X»: свежий раз в минуту, как у чата
+    private static final long APPS_TTL_MS = 60_000;
 
     private static final String MODEL_DIR = "wake-ru";
     private static final String[] MODEL_FILES = {
@@ -179,6 +187,13 @@ public class WakeWordService extends Service {
     // Имена и горячие слова — снимки, заменяются целиком
     private volatile List<WakeMatch.Phrase> phrases = Collections.emptyList();
     private volatile String hotwords = "";
+    // Обращения к персоне для разбора команд телефону: имя и trigger_words
+    private volatile Map<String, List<String>> personaNames = Collections.emptyMap();
+
+    // Команды телефону: разбор и список приложений — только в потоке chat
+    private PhoneVoiceJs phoneJs;
+    private List<PhoneActionsCore.App> apps = null;
+    private long appsAt = 0;
 
     private volatile Mode mode = Mode.IDLE;
     private volatile String awaitPersona = null;
@@ -315,6 +330,7 @@ public class WakeWordService extends Service {
         createChannel(this);
         net = Executors.newSingleThreadScheduledExecutor();
         chat = Executors.newSingleThreadExecutor();
+        phoneJs = new PhoneVoiceJs(this);
         // Процессор не спит, пока служба работает: иначе с погасшим экраном
         // распознавание встанет. Это и есть цена фичи в батарее
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
@@ -392,6 +408,11 @@ public class WakeWordService extends Service {
         if (first) {
             audioThread = new Thread(this::audioLoop, "vpc-wake-audio");
             audioThread.start();
+            // Движок разбора команд и список приложений — заранее, пока ждём имя
+            chat.execute(() -> {
+                phoneJs.warmUp();
+                installedApps();
+            });
         }
         // Система убила процесс — сама служба с микрофоном из фона всё равно
         // не поднимется (Android 14+); её запустит приложение
@@ -424,6 +445,7 @@ public class WakeWordService extends Service {
         if (audioThread != null) audioThread.interrupt();
         net.shutdownNow();
         chat.shutdownNow();
+        phoneJs.close();
         main.removeCallbacksAndMessages(null);
         if (tts != null) {
             try {
@@ -481,6 +503,7 @@ public class WakeWordService extends Service {
             List<WakeMatch.Phrase> list = WakeMatch.wakePhrases(arr);
             phrases = Collections.unmodifiableList(list);
             hotwords = WakeMatch.hotwords(list, HOTWORD_SCORE);
+            personaNames = namesByPersona(arr);
             activeNames = WakeMatch.displayNames(arr, list);
             if (save) prefs(this).edit().putString(KEY_PERSONAS, json).apply();
             if (debuggable) Log.i(TAG, "имена: " + activeNames + " горячие слова: " + hotwords);
@@ -489,6 +512,30 @@ public class WakeWordService extends Service {
         } catch (Exception e) {
             Log.w(TAG, "список персон не разобран", e);
         }
+    }
+
+    // Имя персоны и её trigger_words — чтобы разбор команды срезал обращение
+    private static Map<String, List<String>> namesByPersona(JSONArray arr) {
+        Map<String, List<String>> out = new HashMap<>();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject p = arr.optJSONObject(i);
+            if (p == null) continue;
+            String id = p.optString("id", "");
+            if (id.isEmpty()) continue;
+            List<String> names = new ArrayList<>();
+            String name = p.optString("name", "").trim();
+            if (!name.isEmpty()) names.add(name);
+            JSONObject features = p.optJSONObject("features");
+            JSONArray words = features == null ? null : features.optJSONArray("trigger_words");
+            for (int j = 0; words != null && j < words.length(); j++) {
+                Object w = words.opt(j);
+                if (w instanceof String && !((String) w).trim().isEmpty() && !names.contains(((String) w).trim())) {
+                    names.add(((String) w).trim());
+                }
+            }
+            out.put(id, Collections.unmodifiableList(names));
+        }
+        return Collections.unmodifiableMap(out);
     }
 
     // ── Распознавание (аудиопоток) ────────────────────────────────────
@@ -788,6 +835,9 @@ public class WakeWordService extends Service {
                             // Голосом: ядро гасит ту же фразу, услышанную и
                             // компьютером, и телефоном (ответ — duplicate)
                             .put("voice", true);
+                    // Команда телефону — исполнена здесь, ядру только итог
+                    JSONObject action = phoneAction(persona, message);
+                    if (action != null) body.put("phone_action", action);
                     JSONObject r = new JSONObject(httpPostJson(baseUrl + "/api/chat", body.toString()));
                     if (r.optBoolean("duplicate", false)) {
                         // Эту просьбу уже выполняет другой слушатель — молчим
@@ -834,6 +884,50 @@ public class WakeWordService extends Service {
         } catch (RuntimeException e) {
             toIdle(); // служба остановлена
         }
+    }
+
+    /** Реплика — команда телефону? Исполнить и вернуть итог (PhoneActionReport);
+     * null — обычная реплика или разбор не удался (уйдёт как текст).
+     * Только в потоке chat. */
+    private JSONObject phoneAction(String persona, String message) {
+        JSONObject plan;
+        try {
+            List<String> names = personaNames.get(persona);
+            plan = phoneJs.plan(persona, message, names == null ? Collections.emptyList() : names, installedApps());
+        } catch (Throwable e) {
+            Log.w(TAG, "команда телефону: разбор упал", e);
+            return null;
+        }
+        JSONObject report = plan == null ? null : plan.optJSONObject("report");
+        if (report == null) return null;
+        if (debuggable) Log.i(TAG, "команда телефону: " + plan);
+        try {
+            String status = PhoneVoiceOps.run(this, plan.optJSONArray("ops"));
+            if (status != null) report.put("status", status);
+        } catch (Throwable e) {
+            // Разобрано, но исполнение упало: персона не должна сказать «готово»
+            Log.w(TAG, "команда телефону: исполнение упало", e);
+            try {
+                report.put("status", "failed");
+            } catch (Exception ignored) {
+                // put строки не падает
+            }
+        }
+        Log.i(TAG, "команда телефону: " + report.optString("kind") + " → " + report.optString("status"));
+        return report;
+    }
+
+    private List<PhoneActionsCore.App> installedApps() {
+        long now = SystemClock.uptimeMillis();
+        if (apps == null || now - appsAt > APPS_TTL_MS) {
+            try {
+                apps = PhoneActionsCore.listApps(this);
+                appsAt = now;
+            } catch (RuntimeException e) {
+                if (apps == null) return Collections.emptyList();
+            }
+        }
+        return apps;
     }
 
     private void initTts() {

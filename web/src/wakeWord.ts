@@ -33,6 +33,13 @@ export interface WakeStatus {
   names: string[];
   lastError: string | null;
   micGranted: boolean;
+  // Право «Поверх других приложений»: без него голосом при свёрнутом
+  // приложении не открыть «Часы» и «открой X» (фонарик — можно). Нет в
+  // старой сборке — undefined
+  overlayAllowed?: boolean;
+  // Разбор команд телефону голосом (V8 из WebView): ready | unsupported
+  // (старый WebView — команды уйдут текстом) | no_bundle | error | off
+  phoneEngine?: string;
 }
 
 interface WakeWordPlugin {
@@ -40,6 +47,7 @@ interface WakeWordPlugin {
   stop(): Promise<void>;
   configure(opts: { baseUrl: string; token: string }): Promise<void>;
   status(): Promise<WakeStatus>;
+  openOverlaySettings(): Promise<void>;
 }
 
 const WakeWord = registerPlugin<WakeWordPlugin>('WakeWord');
@@ -70,6 +78,11 @@ export async function setWakeWord(on: boolean): Promise<WakeResult> {
 
 export function wakeStatus(): Promise<WakeStatus> {
   return WakeWord.status();
+}
+
+/** Экран Android с правом «Поверх других приложений» для этого приложения. */
+export function openOverlaySettings(): Promise<void> {
+  return WakeWord.openOverlaySettings();
 }
 
 /** Запуск приложения (ядро ответило): включено — служба получает свежие

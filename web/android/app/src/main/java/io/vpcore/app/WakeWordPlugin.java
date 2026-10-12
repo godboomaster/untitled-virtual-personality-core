@@ -1,8 +1,12 @@
 package io.vpcore.app;
 
 import android.Manifest;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -22,7 +26,8 @@ import com.getcapacitor.annotation.PermissionCallback;
  * микрофон и, Android 13+, уведомления), stop(), configure({baseUrl, token})
  * — свежие адрес и токен (пустой адрес — служба останавливается, выбор
  * «включено» остаётся), status() → {enabled, running, state, names,
- * lastError, micGranted}.
+ * lastError, micGranted, overlayAllowed, phoneEngine}, openOverlaySettings() — экран
+ * права «Поверх других приложений» (команды телефону голосом из фона).
  */
 @CapacitorPlugin(
         name = "WakeWord",
@@ -138,6 +143,33 @@ public class WakeWordPlugin extends Plugin {
         ret.put("names", names);
         ret.put("lastError", WakeWordService.lastError);
         ret.put("micGranted", WakeWordService.micGranted(getContext()));
+        // Можно ли голосом открыть «Часы» или приложение, пока наше свёрнуто
+        ret.put("overlayAllowed", Build.VERSION.SDK_INT < 29 || Settings.canDrawOverlays(getContext()));
+        // Разбор команд телефону голосом (PhoneVoiceJs): ready | unsupported | no_bundle | error | off
+        ret.put("phoneEngine", PhoneVoiceJs.engineState);
         call.resolve(ret);
+    }
+
+    /** Настройки права «Поверх других приложений» для этого приложения; не
+     * открылись (прошивка без такого экрана) — общий список, затем «О приложении». */
+    @PluginMethod
+    public void openOverlaySettings(PluginCall call) {
+        String pkg = getContext().getPackageName();
+        Intent[] tries = {
+                new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + pkg)),
+                new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION),
+                new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg)),
+        };
+        for (Intent i : tries) {
+            try {
+                if (getActivity() != null) getActivity().startActivity(i);
+                else getContext().startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                call.resolve();
+                return;
+            } catch (ActivityNotFoundException | SecurityException e) {
+                // следующий вариант
+            }
+        }
+        call.reject("Нет экрана настроек", "no_handler");
     }
 }

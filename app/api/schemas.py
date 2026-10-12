@@ -21,9 +21,10 @@ class PhoneActionReport(BaseModel):
     # no_handler — на телефоне нет приложения (часов) или фонарика;
     # unsupported_date — будильник на дату, а часы ставят только ближайшее время;
     # not_found / ambiguous — приложение не нашлось / подходят несколько;
-    # busy — фонарик занят камерой
+    # busy — фонарик занят камерой; background — голосом при свёрнутом
+    # приложении, а Android не дал открыть часы/приложение из фона
     status: Literal["ok", "ask", "no_handler", "unsupported_date", "not_found",
-                    "ambiguous", "busy", "failed"]
+                    "ambiguous", "busy", "background", "failed"]
     hour: Optional[int] = Field(None, ge=0, le=23)
     minute: Optional[int] = Field(None, ge=0, le=59)
     # Дни повтора будильника: 1 — воскресенье … 7 — суббота (Calendar Android)

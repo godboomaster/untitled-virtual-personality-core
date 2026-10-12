@@ -12,6 +12,7 @@ export type PhoneActionStatus =
   | 'not_found'
   | 'ambiguous'
   | 'busy'
+  | 'background'
   | 'failed';
 
 /** Итог команды — уходит ядру как ChatRequest.phone_action. */
@@ -64,9 +65,23 @@ function labelText(r: PhoneActionReport): string {
   return label ? ` labelled "${label}"` : '';
 }
 
+/** Что просили — для заметки «не дали из фона». */
+function asked(r: PhoneActionReport): string {
+  if (r.kind === 'alarm') return `an alarm at ${hm(r)}`;
+  if (r.kind === 'timer') return `a timer for ${duration(r.seconds)}`;
+  if (r.kind === 'open_app') return `to open "${cleanText(r.app)}"`;
+  if (r.kind === 'torch') return `to turn the flashlight ${r.on ? 'on' : 'off'}`;
+  return 'to show the alarms';
+}
+
 export function actionNote(r: PhoneActionReport): string {
   const { kind, status } = r;
   const app = cleanText(r.app);
+  // Голосом при свёрнутом приложении: Android не даёт открыть часы или
+  // другое приложение из фона без права «Поверх других приложений»
+  if (status === 'background') {
+    return `The user asked by voice for ${asked(r)}, but Android does not let the app open the clock or other apps while it is in the background, so nothing was done. ${NOT_DONE} Tell the user to open the app, or to allow it "Display over other apps" (the app's settings, under listening for a name) so it works with the screen off. Do NOT say that it was done.`;
+  }
   if (kind === 'alarm') {
     const t = hm(r);
     if (status === 'ok') {

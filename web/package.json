@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "apk": "npm run build && cap sync android && cd android && ./gradlew assembleDebug"
+    "phone-voice": "vite build --config vite.phone-voice.config.ts",
+    "apk": "npm run build && npm run phone-voice && cap sync android && cd android && ./gradlew assembleDebug"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.2",

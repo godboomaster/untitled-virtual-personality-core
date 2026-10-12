@@ -48,4 +48,6 @@ app/personas/*.yaml
 # Голосовая активация в приложении Android: модель и распознаватель sherpa-onnx
 # качает scripts/fetch_wake_model.sh — в git не попадают (размер репозитория)
 web/android/app/src/main/assets/wake-ru/
+# Команды телефону для голосовой службы — собирает npm run phone-voice (из src/phone)
+web/android/app/src/main/assets/phone-voice.js
 web/android/app/libs/*.aar
