@@ -77,6 +77,19 @@ export function removeOfflineMessages(persona: string, ids: string[]) {
   write(persona, read(persona).filter((m) => !drop.has(m.id)));
 }
 
+/** Переписка — под новым id (персона с телефона сменила id при переносе на ядро). */
+export function moveOfflineMessages(from: string, to: string) {
+  const list = read(from);
+  if (!list.length || from === to) return;
+  write(to, [...read(to), ...list]);
+  write(from, []);
+}
+
+/** Вся переписка персоны — прочь (персона удалена с телефона, на ядре её нет). */
+export function clearOfflineMessages(persona: string) {
+  write(persona, []);
+}
+
 /** Персоны, у которых есть неотправленная на ноутбук переписка. */
 export function personasWithOffline(): string[] {
   const out: string[] = [];

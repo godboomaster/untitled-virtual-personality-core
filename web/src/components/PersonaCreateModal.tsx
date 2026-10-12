@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
-import { api, ApiError, isMemoryConflict } from '../api';
+import { api, ApiError, isMemoryConflict, isNativeApp } from '../api';
 import type { PersonaDraft } from '../api';
+import { offlinePersonaList, useApiPersonas } from '../apiData';
 import { refetchAvatars } from '../avatarStore';
 import { askLeftoverMemory, forgetPersonaLocal } from '../personaRename';
+import { useOfflineMode } from '../offline/state';
+import { addLocalPersona, LocalPersonaError } from '../offline/localPersonas';
 import FormModal from './FormModal';
 import Select from './Select';
 import PersonaFormFields from './PersonaFormFields';
@@ -16,12 +19,16 @@ import type { FormState } from './personaYamlSync';
    текст — тогда поля формы заполняются из него и правки полей пишутся в него же
    (personaYamlSync). Флаги features — как в app/personas/*.yaml; флаги
    мессенджер-бота export_server/restore_memory в форму не входят — в вебе они
-   не действуют, но во вставленном YAML сохраняются. */
+   не действуют, но во вставленном YAML сохраняются.
+   Телефон без связи с ядром: персона сохраняется на телефоне и уходит на
+   ядро при связи (offline/localPersonas.ts, offline/personaSync.ts). */
 
 interface PersonaCreateModalProps {
   initial?: { name?: string }; // предзаполнение (legacy, из Home)
   onClose: () => void;
-  onCreate: () => void; // персона создана на бэкенде — родитель обновляет список
+  // core — создана на бэкенде (родитель перечитывает список); phone —
+  // сохранена на телефоне без ядра, в списке она уже есть
+  onCreate: (where: 'core' | 'phone') => void;
 }
 
 export default function PersonaCreateModal({ initial, onClose, onCreate }: PersonaCreateModalProps) {
@@ -36,6 +43,8 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
   const [rawYaml, setRawYaml] = useState<string | null>(null);
   const [yamlError, setYamlError] = useState(''); // текст не разбирается — форма не синхронизируется
   const fileRef = useRef<HTMLInputElement>(null);
+  const offline = useOfflineMode();
+  const personas = useApiPersonas();
 
   // ── Черновики (бэкенд data/persona_drafts). drafts=null — бэк недоступен, UI скрыт ──
   const [drafts, setDrafts] = useState<PersonaDraft[] | null>(null);
@@ -178,6 +187,29 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
     setTimeout(() => setCopied(false), 1500);
   };
 
+  // Персона не прошла проверку на телефоне — почему, словами
+  const localErrorText = (e: unknown): string => {
+    if (!(e instanceof LocalPersonaError)) return e instanceof Error ? e.message : String(e);
+    if (e.code === 'yaml') return t('pc.localYaml', { msg: e.message });
+    if (e.code === 'no_prompt') return t('pc.localNoPrompt');
+    if (e.code === 'bad_id') return t('pc.localBadId');
+    if (e.code === 'reserved') return t('pc.localReserved', { id: e.id });
+    if (e.code === 'exists') return t('pc.localExists', { id: e.id });
+    return t('pc.localStorage', { msg: e.message });
+  };
+
+  // Без ядра — на телефон: проверки те же, что у ядра, id не должен быть
+  // занят ни персоной из снимка списка, ни созданной на телефоне
+  const saveOnPhone = (): boolean => {
+    try {
+      addLocalPersona(effectiveYaml, [...(personas ?? []).map((p) => p.id), ...offlinePersonaList().map((p) => p.id)]);
+      return true;
+    } catch (e) {
+      setCreateError(localErrorText(e));
+      return false;
+    }
+  };
+
   // Создание персоны: YAML уходит на бэкенд (POST /api/personas),
   // файл data/personas/{id}.yaml подхватывается реестром без рестарта.
   // Если вставлен готовый YAML (rawYaml) — уходит он, форма игнорируется.
@@ -190,10 +222,20 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
     if (rawYaml !== null && !rawYaml.trim()) return;
     setCreating(true);
     setCreateError('');
+    if (offline) {
+      if (saveOnPhone()) onCreate('phone');
+      setCreating(false);
+      return;
+    }
     try {
       try {
         await api.createPersona(effectiveYaml);
       } catch (e) {
+        // Телефон: ядро не ответило (связь пропала, опрос ещё не заметил) — на телефон
+        if (isNativeApp() && !(e instanceof ApiError)) {
+          if (saveOnPhone()) onCreate('phone');
+          return;
+        }
         if (!isMemoryConflict(e)) throw e;
         const id = typeof e.data?.persona === 'string' ? e.data.persona : form.id.trim();
         const memory = await askLeftoverMemory(t, id);
@@ -204,7 +246,7 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
       }
       // Черновик, из которого создали персону, больше не нужен
       if (draftId) api.deletePersonaDraft(draftId).catch(() => {});
-      onCreate();
+      onCreate('core');
     } catch (e) {
       setCreateError(e instanceof ApiError ? e.message : String(e));
     } finally {
@@ -250,8 +292,9 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
       <div className="pcreate-columns">
         {/* Левая панель: форма конфига (скроллится отдельно) */}
         <div className="pcreate-form-col">
+          {offline && <p className="field-hint">{t('pc.offlineHint')}</p>}
           {/* Черновики: загрузка/удаление (видно, когда есть сохранённые и бэкенд доступен) */}
-          {drafts !== null && drafts.length > 0 && (
+          {drafts !== null && !offline && drafts.length > 0 && (
             <div className="field">
               <label className="field-label">{t('pc.drafts')}</label>
               <div className="pcreate-draft-row">
@@ -313,7 +356,7 @@ export default function PersonaCreateModal({ initial, onClose, onCreate }: Perso
                   {t('pc.backToForm')}
                 </button>
               )}
-              {drafts !== null && rawYaml === null && (
+              {drafts !== null && !offline && rawYaml === null && (
                 <button type="button" className="btn btn--ghost" onClick={saveDraft}>
                   {t('pc.draftSave')}
                 </button>

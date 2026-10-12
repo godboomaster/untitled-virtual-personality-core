@@ -826,6 +826,12 @@ const ru: Record<string, string> = {
   'personas.memoryFresh': 'С чистого листа (старая — в архив)',
   'personas.justNow': 'только что',
   'personas.noDescription': 'Персона без описания.',
+  'personas.statusLocal': 'На телефоне',
+  'personas.localNote': 'Только на телефоне — перенесётся на ядро при связи. Чат с ней уже работает без ядра.',
+  'personas.localError': 'Ядро не приняло персону: {msg}. Она осталась на телефоне — удалите её и создайте заново с исправленным YAML.',
+  'personas.localDelete': 'Удалить с телефона',
+  'personas.localDeleteTitle': 'Удалить персону «{name}» с телефона?',
+  'personas.localDeleteConfirm': 'Персона ещё не перенесена на ядро: её YAML и переписка с ней на телефоне удалятся безвозвратно.',
 
   // ===== Настройки (ApiKeys — секция «Настройки») =====
   // ===== VPC Link: телефон по защищённому каналу =====
@@ -1491,6 +1497,13 @@ const ru: Record<string, string> = {
   'pc.draftSaved': 'Черновик сохранён ✓',
   'pc.draftError': 'Не удалось сохранить черновик',
   'pc.creating': 'Создаю…',
+  'pc.offlineHint': '// нет связи с ядром: персона сохранится на телефоне и сразу появится в чатах, а при связи перенесётся на ядро',
+  'pc.localYaml': 'YAML не разбирается: {msg}',
+  'pc.localNoPrompt': 'Нужен непустой system_prompt',
+  'pc.localBadId': 'Поле id обязательно: латиница, цифры, _ и - (до 64 символов)',
+  'pc.localReserved': 'id «{id}» занят служебной папкой ядра — выберите другой',
+  'pc.localExists': 'Персона с id «{id}» уже есть — выберите другой id',
+  'pc.localStorage': 'Не удалось сохранить персону на телефоне: {msg}',
   'pc.draftName': '[имя персонажа]',
   'pc.draftDesc': '[Одно-два предложения: кто ты, откуда, зачем здесь.]',
   'pc.draftStart': 'Ты — {name}. {desc}',

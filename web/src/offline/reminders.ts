@@ -2,6 +2,7 @@ import { api, getApiUrl, isNativeApp } from '../api';
 import { getLinkConfig } from '../link/client';
 import { getKit, kitPersonas, onKitRefreshed, refreshKit } from './kit';
 import type { OfflineKit } from './kit';
+import { isLocalPersona } from './localPersonas';
 import { OfflineLlm } from './plugin';
 import type { AlarmItem } from './plugin';
 import { timeLine } from './context';
@@ -126,6 +127,25 @@ export function addLocalReminder(persona: string, task: string, at: number): Loc
 export function cancelLocalReminder(id: string) {
   saveLocal(localReminders().filter((r) => r.id !== id));
   void pushAlarms();
+}
+
+/** Напоминания и вопрос «когда напомнить?» — под новым id персоны (персона с
+ * телефона сменила id при переносе на ядро); to = null — убрать (удалена). */
+export function moveLocalReminders(from: string, to: string | null) {
+  const list = localReminders();
+  if (list.some((r) => r.persona === from)) {
+    saveLocal(to === null ? list.filter((r) => r.persona !== from) : list.map((r) => (r.persona === from ? { ...r, persona: to } : r)));
+    void pushAlarms();
+  }
+  const all = pendingAll();
+  if (!(from in all)) return;
+  if (to !== null) all[to] = all[from];
+  delete all[from];
+  try {
+    localStorage.setItem(PENDING_KEY, JSON.stringify(all));
+  } catch {
+    /* хранилище недоступно */
+  }
 }
 
 /** Напоминания ядра и телефона для промпта: «- 11.10 09:00 — задача». */
@@ -322,6 +342,8 @@ export function syncLocalReminders(): Promise<void> {
     const byPersona = new Map<string, LocalReminder[]>();
     for (const r of localReminders()) byPersona.set(r.persona, [...(byPersona.get(r.persona) ?? []), r]);
     for (const [persona, list] of byPersona) {
+      // Персоны с телефона на ядре ещё нет (404) — её напоминания уйдут после переноса
+      if (isLocalPersona(persona)) continue;
       try {
         const res = await api.offlineReminders(
           persona,

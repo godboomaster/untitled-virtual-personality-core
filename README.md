@@ -296,6 +296,16 @@ persona still answers with voice; without a text-to-speech engine replies are te
 speech language is the interface language (Russian or English); for offline recognition,
 download that language in the phone's voice input settings.
 
+**Without the core.** When the phone can't reach the computer, the app answers by itself: with a
+cloud model if the persona's API keys were copied to the phone, otherwise with Gemma downloaded
+to the phone (Settings → "Without the core"). The persona's description, facts and recent
+chat come with it from the core; the conversation is kept on the phone and goes into the core's
+history once it is reachable again. New personas can be created on the phone too: the form is
+the same, the persona is answered by Gemma from its full description and moves to the core as
+soon as it is reachable — under a new id with a `_2` suffix if that id is taken there. After that
+it is an ordinary persona: the core writes its short description for Gemma, gives it the API
+keys and so on.
+
 ## Personas
 
 The project ships one built-in persona — the test persona **Connor**

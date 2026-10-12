@@ -7,6 +7,8 @@ import { api, ApiError, isNativeApp } from './api';
 import type { ApiPersona, LivingStateData, PersonaLlmConfig, ProviderInfo } from './api';
 import type { Persona, PersonaFeature } from './mockData';
 import { saveProvidersCopy } from './offline/settingsCopy';
+import { localApiPersona, localPersonas, onLocalPersonasChange } from './offline/localPersonas';
+import type { LocalApiPersona } from './offline/localPersonas';
 
 // Коды фич, известные UI (подписи — fb.* в словарях i18n)
 const KNOWN_FEATURES = new Set<PersonaFeature>([
@@ -30,9 +32,10 @@ function mapFeatures(features: Record<string, unknown>): PersonaFeature[] {
   return out;
 }
 
-function mapPersona(p: ApiPersona): Persona {
+function mapPersona(p: ApiPersona | LocalApiPersona): Persona {
   const muted = p.features?.muted === true;
   return {
+    ...('local' in p ? { local: p.local } : {}),
     id: p.id,
     name: p.name,
     description: p.description,
@@ -70,39 +73,72 @@ function saveSnapshot(list: ApiPersona[]) {
   }
 }
 
-/** Запуск без ноутбука: список персон из снимка. false — снимка нет. */
-export function seedOfflinePersonas(): boolean {
-  try {
-    const raw = localStorage.getItem(PERSONAS_SNAPSHOT_KEY);
-    const list = raw ? (JSON.parse(raw) as ApiPersona[]) : null;
-    if (!Array.isArray(list) || !list.length) return false;
-    cache = list.map(mapPersona);
-    listeners.forEach((l) => l());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Персоны из снимка (id, имя, описание) — для ответов без ноутбука. */
-export function offlinePersonaList(): { id: string; name: string; description: string }[] {
+function readSnapshot(): ApiPersona[] {
   try {
     const list = JSON.parse(localStorage.getItem(PERSONAS_SNAPSHOT_KEY) || '[]') as ApiPersona[];
-    return Array.isArray(list) ? list.map((p) => ({ id: p.id, name: p.name, description: p.description || '' })) : [];
+    return Array.isArray(list) ? list : [];
   } catch {
     return [];
   }
 }
 
+/** Запуск без ноутбука: список персон из снимка. false — снимка нет. */
+export function seedOfflinePersonas(): boolean {
+  const list = readSnapshot();
+  if (!list.length && !localPersonas().length) return false;
+  cache = list.map(mapPersona);
+  listeners.forEach((l) => l());
+  return true;
+}
+
+/** Персоны из снимка и созданные на телефоне (id, имя, описание) — для
+ * ответов без ядра. */
+export function offlinePersonaList(): { id: string; name: string; description: string }[] {
+  const out = readSnapshot().map((p) => ({ id: p.id, name: p.name, description: p.description || '' }));
+  const have = new Set(out.map((p) => p.id));
+  for (const p of localPersonas()) if (!have.has(p.id)) out.push({ id: p.id, name: p.name, description: p.description });
+  return out;
+}
+
 export function hasOfflinePersonas(): boolean {
   try {
-    return !!localStorage.getItem(PERSONAS_SNAPSHOT_KEY);
+    return !!localStorage.getItem(PERSONAS_SNAPSHOT_KEY) || localPersonas().length > 0;
   } catch {
     return false;
   }
 }
+
+/** Персона только что появилась на ядре (перенос с телефона) — в список и
+ * снимок сразу, не дожидаясь перечитки: иначе на время запроса она пропала
+ * бы из списков, и открытый с ней чат переключился бы на другую. */
+export function upsertCachedPersona(p: ApiPersona) {
+  if (cache === null) return;
+  cache = [...cache.filter((x) => x.id !== p.id), mapPersona(p)];
+  saveSnapshot([...readSnapshot().filter((x) => x.id !== p.id), p]);
+  listeners.forEach((l) => l());
+}
+
+// Персоны, созданные на телефоне без ядра (offline/localPersonas.ts), — в
+// конце списка, пока их нет на ядре. Тот же массив, пока не сменились ни
+// кеш, ни они: потребители держат список в зависимостях эффектов
+let mergedBase: Persona[] | null = null;
+let mergedLocal: unknown = null;
+let merged: Persona[] | null = null;
+
+function withLocal(): Persona[] | null {
+  if (cache === null) return null;
+  const local = localPersonas();
+  if (cache === mergedBase && local === mergedLocal) return merged;
+  const have = new Set(cache.map((p) => p.id));
+  const extra = local.filter((p) => !have.has(p.id)).map((p) => mapPersona(localApiPersona(p)));
+  mergedBase = cache;
+  mergedLocal = local;
+  merged = extra.length ? [...cache, ...extra] : cache;
+  return merged;
+}
 let inflight: Promise<void> | null = null;
 const listeners = new Set<() => void>();
+onLocalPersonasChange(() => listeners.forEach((l) => l()));
 const RETRY_AFTER_MS = 5000; // антифлап-пауза между попытками после неудачи
 
 function ensureFetch(): Promise<void> {
@@ -136,7 +172,7 @@ export function useApiPersonas(): Persona[] | null {
       listeners.delete(force);
     };
   }, []);
-  return cache;
+  return withLocal();
 }
 
 // Сбросить кеш и перечитать список (после создания/удаления/дублирования персоны).
@@ -156,7 +192,10 @@ export function refetchPersonas(): Promise<ApiError | null> {
       return null;
     })
     .catch((e: unknown) => {
-      cache = null;
+      // Телефон без связи с ядром: прежний список остаётся (без ядра он и так
+      // из снимка) — иначе приложение ушло бы в демо-данные посреди работы
+      // без ядра (перечитка после переноса персоны с телефона, offline/personaSync.ts)
+      if (!(isNativeApp() && cache !== null && !(e instanceof ApiError))) cache = null;
       failedAt = Date.now();
       return e instanceof ApiError ? e : new ApiError(0, String(e));
     })
@@ -213,6 +252,11 @@ function checkHealth() {
 const onHealthVisibility = () => {
   if (!document.hidden) checkHealth();
 };
+
+/** Связь с ядром сейчас — для фоновых задач вне React (offline/personaSync.ts). */
+export function coreHealth(): CoreHealth {
+  return health;
+}
 
 export function useCoreHealth(): CoreHealth {
   const [, force] = useReducer((x: number) => x + 1, 0);

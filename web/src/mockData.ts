@@ -31,6 +31,9 @@ export interface Persona {
   muted?: boolean; // заморожена (features.muted): молчит везде, настроение испорчено
   builtin?: boolean; // встроенная персона проекта: удалить нельзя
   customized?: boolean; // у встроенной есть своя копия: удаление сбрасывает к встроенной
+  // Создана на телефоне без ядра и ещё не перенесена на него
+  // (offline/localPersonas.ts): error — ядро её не приняло, текст — в error
+  local?: { status: 'pending' | 'error'; error?: string };
   temperature: number;
   maxTokens: number;
   topP: number;

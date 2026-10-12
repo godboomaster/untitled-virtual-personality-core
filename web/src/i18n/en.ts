@@ -826,6 +826,12 @@ const en = {
   'personas.memoryFresh': 'Clean slate (archive the old)',
   'personas.justNow': 'just now',
   'personas.noDescription': 'Persona without a description.',
+  'personas.statusLocal': 'On the phone',
+  'personas.localNote': 'Only on the phone — it moves to the core once there is a connection. Chatting with it already works without the core.',
+  'personas.localError': 'The core did not accept the persona: {msg}. It stayed on the phone — delete it and create it again with fixed YAML.',
+  'personas.localDelete': 'Delete from the phone',
+  'personas.localDeleteTitle': 'Delete persona “{name}” from the phone?',
+  'personas.localDeleteConfirm': 'The persona has not moved to the core yet: its YAML and the chat with it on the phone will be deleted for good.',
 
   // ===== Settings (ApiKeys — the "Settings" section) =====
   // ===== VPC Link: телефон по защищённому каналу =====
@@ -1491,6 +1497,13 @@ const en = {
   'pc.draftSaved': 'Draft saved ✓',
   'pc.draftError': 'Failed to save draft',
   'pc.creating': 'Creating…',
+  'pc.offlineHint': '// no connection to the core: the persona is saved on the phone and shows up in chats right away; it moves to the core once connected',
+  'pc.localYaml': 'YAML does not parse: {msg}',
+  'pc.localNoPrompt': 'A non-empty system_prompt is required',
+  'pc.localBadId': 'The id field is required: Latin letters, digits, _ and - (up to 64 characters)',
+  'pc.localReserved': 'The id “{id}” is taken by a core service folder — choose another',
+  'pc.localExists': 'A persona with the id “{id}” already exists — choose another id',
+  'pc.localStorage': 'Could not save the persona on the phone: {msg}',
   'pc.draftName': '[character name]',
   'pc.draftDesc': '[One or two sentences: who you are, where from, why here.]',
   'pc.draftStart': 'You are {name}. {desc}',
