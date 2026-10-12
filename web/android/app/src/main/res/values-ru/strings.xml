@@ -11,4 +11,23 @@
     <string name="bg_channel_messages_desc">Напоминания и сообщения персон, когда приложение закрыто</string>
     <string name="bg_test_title">Проверка</string>
     <string name="bg_test_text">Уведомления о сообщениях персон работают</string>
+    <!-- Голосовая активация по имени (WakeWordService) -->
+    <string name="wake_channel">Слушать по имени</string>
+    <string name="wake_channel_desc">Тихое уведомление, пока приложение слушает имя персоны</string>
+    <string name="wake_title">Слушаю имена: %1$s</string>
+    <string name="wake_title_none">Слушать по имени: имён пока нет</string>
+    <string name="wake_stop">Выключить</string>
+    <string name="wake_state_idle">Скажите имя — отвечу</string>
+    <string name="wake_state_loading">Загружаю распознавание речи…</string>
+    <string name="wake_state_listening">Слушаю…</string>
+    <string name="wake_state_thinking">Думаю…</string>
+    <string name="wake_state_speaking">Говорю…</string>
+    <string name="wake_state_paused">Пауза: в приложении идёт голосовой чат</string>
+    <string name="wake_state_no_names">Имён нет: ядро недоступно, повторю</string>
+    <string name="wake_state_mic">Нет доступа к микрофону</string>
+    <string name="wake_state_model">Распознавание речи не запустилось</string>
+    <string name="wake_say_offline">Ядро не отвечает</string>
+    <string name="wake_say_denied">Нет доступа к ядру</string>
+    <string name="wake_say_error">Ядро ответило ошибкой</string>
+    <string name="wake_say_empty">Ответа нет</string>
 </resources>

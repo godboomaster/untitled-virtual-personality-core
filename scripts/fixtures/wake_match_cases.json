@@ -1,0 +1,39 @@
+{
+  "_comment": "Общие примеры голосовой активации: app/voice/wake_match.py (scripts/test_wake_word.py) и WakeMatch.java (WakeMatchTest). text — как пишет распознаватель (sherpa-onnx, малая русская модель).",
+  "personas": [
+    {"id": "connor", "name": "Коннор", "features": {"trigger_words": ["коннор", "connor", "жабка"]}},
+    {"id": "arrodes", "name": "Великий Арродес", "features": {"trigger_words": ["arrodes", "арродес", "mirror", "зеркало"]}},
+    {"id": "axel", "name": "Axel", "features": {"trigger_words": ["axel"]}},
+    {"id": "assistant", "name": "Ассистент", "features": {}},
+    {"id": "arrodes_master", "name": "Великий Арродес", "features": {"trigger_words": ["арродес"]}}
+  ],
+  "keys": [
+    ["коннор", "канар"],
+    ["Connor", "канар"],
+    ["коннер", "канир"],
+    ["арродес", "арадис"],
+    ["жабка", "жабка"],
+    ["axel", "аксил"],
+    ["Ёжик", "ижик"],
+    ["великий арродес", "виликиарадис"]
+  ],
+  "cases": [
+    {"text": "коннор какая сегодня погода", "persona": "connor", "command": "какая сегодня погода"},
+    {"text": "коннер какая сегодня погода", "persona": "connor", "command": "какая сегодня погода"},
+    {"text": "коннер", "persona": "connor", "command": ""},
+    {"text": "конор", "persona": "connor", "command": ""},
+    {"text": "эй коннор ты тут", "persona": "connor", "command": "ты тут"},
+    {"text": "жабко поставь напоминание на пять вечера", "persona": "connor", "command": "поставь напоминание на пять вечера"},
+    {"text": "родис расскажи что-нибудь", "persona": "arrodes", "command": "расскажи что-нибудь"},
+    {"text": "великий родис", "persona": "arrodes", "command": ""},
+    {"text": "ар родес привет", "persona": "arrodes", "command": "привет"},
+    {"text": "зеркало зеркало на стене", "persona": "arrodes", "command": "зеркало на стене"},
+    {"text": "аксель что нового", "persona": "axel", "command": "что нового"},
+    {"text": "мы вчера ходили в кино и было скучно", "persona": null},
+    {"text": "мы вчера говорили с коннором", "persona": null},
+    {"text": "канал не работает", "persona": null},
+    {"text": "кино", "persona": null},
+    {"text": "ассистент привет", "persona": null},
+    {"text": "", "persona": null}
+  ]
+}

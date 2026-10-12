@@ -58,6 +58,14 @@ class ChatRequest(BaseModel):
     # Клиент — приложение на телефоне: «открой файл X» присылает файл в чат,
     # а не открывает его на компьютере ядра (server._file_delivery)
     client: Optional[Literal["app"]] = None
+    # Просьба с голосовой активации («Коннор, …»): одну фразу могли услышать
+    # и компьютер ядра, и телефон — вторая копия получит duplicate
+    voice: bool = False
+
+
+class VoiceWakeHold(BaseModel):
+    """Пауза голосовой активации ядра (POST /api/voice/wake/hold), секунды."""
+    seconds: float = Field(..., ge=0, le=600)
 
 
 class OfflineMessage(BaseModel):
@@ -115,6 +123,9 @@ class ChatResponse(BaseModel):
     # Файлы с компьютера ядра («пришли файл X»): {id, name, size, url} —
     # url отдаёт файл под тем же токеном (app/api/file_links)
     files: list[dict] = Field(default_factory=list)
+    # Голосовая просьба, которую уже обрабатывает другое устройство
+    # (ChatRequest.voice): reply пустой, озвучивать нечего
+    duplicate: bool = False
 
 
 class PresenceRequest(BaseModel):

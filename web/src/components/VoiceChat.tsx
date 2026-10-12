@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useI18n } from '../i18n';
 import type { ChatMessage, Persona } from '../mockData';
 import Icon from './icons';
+import { api } from '../api';
 import { getSpeechEngine, speechLangTag } from '../voice/speechIO';
 import type { ListenSession } from '../voice/speechIO';
 
@@ -22,6 +23,9 @@ const MIC_ERROR_HINTS: Record<string, string> = {
   server: 'chat.micNetwork',
   'language-not-supported': 'chat.micLanguage',
 };
+
+// Пауза голосовой активации ядра, пока открыт режим (продлевается вдвое чаще)
+const WAKE_HOLD_SEC = 90;
 
 interface VoiceChatProps {
   persona: Persona;
@@ -147,6 +151,20 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
       },
     });
   };
+
+  // Голосовой режим открыт — голосовая активация ядра молчит: иначе фраза
+  // «Коннор, …» ушла бы дважды, а ответ прозвучал бы ещё и из колонок ядра.
+  // Пауза с запасом и продлевается, пока режим открыт; вкладку закрыли без
+  // «снять» — истечёт сама. Старое ядро без эндпоинта — просто ошибка, мимо
+  useEffect(() => {
+    const hold = (sec: number) => void api.holdWake(sec).catch(() => {});
+    hold(WAKE_HOLD_SEC);
+    const timer = window.setInterval(() => hold(WAKE_HOLD_SEC), (WAKE_HOLD_SEC / 2) * 1000);
+    return () => {
+      window.clearInterval(timer);
+      hold(0);
+    };
+  }, []);
 
   // Остановка синтеза/распознавания при уходе с экрана или смене персоны
   useEffect(() => {

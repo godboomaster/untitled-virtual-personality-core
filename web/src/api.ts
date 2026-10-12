@@ -469,6 +469,14 @@ export const api = {
       { method: 'POST' },
     ),
 
+  // Пауза голосовой активации ядра («Коннор, …», WAKE_LISTEN) на seconds,
+  // 0 — снять: пока открыт голосовой режим чата, голосом занят он
+  holdWake: (seconds: number) =>
+    request<{ held: boolean }>('/api/voice/wake/hold', {
+      method: 'POST',
+      body: JSON.stringify({ seconds }),
+    }),
+
   sendChat: (params: {
     persona: string;
     message: string;

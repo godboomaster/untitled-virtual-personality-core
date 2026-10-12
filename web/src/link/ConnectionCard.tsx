@@ -3,13 +3,16 @@ import { api, apiHost, setApiUrl } from '../api';
 import { useI18n } from '../i18n';
 import { bgInboxStatus, bgNotifyEnabled, retryBgNotifyPermission, setBgNotify, stopBgInbox } from '../bgInbox';
 import type { BgInboxStatus, BgNotifyResult } from '../bgInbox';
+import { forgetWakeServer, setWakeWord, wakeStatus } from '../wakeWord';
+import type { WakeResult, WakeStatus } from '../wakeWord';
 import { getLinkConfig, linkState, onLinkState, reconnectLink, setLinkConfig } from './client.ts';
 
 /* «Настройки» → «Подключение» (приложение на телефоне): к какому ноутбуку
    подключено и как — по защищённому каналу (Wi-Fi или посредник) или по
    адресу. Отвязка/смена сервера возвращают на экран подключения.
    Здесь же — уведомления, когда приложение закрыто (фоновая служба,
-   bgInbox.ts): пока только для подключения по адресу. */
+   bgInbox.ts), и «Слушать по имени» (wakeWord.ts): обе пока только для
+   подключения по адресу. */
 
 export default function ConnectionCard() {
   const { t } = useI18n();
@@ -22,6 +25,7 @@ export default function ConnectionCard() {
     // забываем ключ сами: без ключа телефон всё равно не подключится
     if (link?.id) await api.unpairLink(link.id).catch(() => {});
     stopBgInbox();
+    forgetWakeServer();
     setLinkConfig(null);
     window.location.reload();
   };
@@ -44,6 +48,7 @@ export default function ConnectionCard() {
               className="btn btn--ghost"
               onClick={() => {
                 stopBgInbox();
+                forgetWakeServer();
                 setApiUrl('');
                 window.location.reload();
               }}
@@ -66,6 +71,7 @@ export default function ConnectionCard() {
         </div>
       )}
       <BackgroundNotify linkMode={Boolean(link)} />
+      <WakeWordToggle linkMode={Boolean(link)} />
     </div>
   );
 }
@@ -164,6 +170,74 @@ function BackgroundNotify({ linkMode }: { linkMode: boolean }) {
       )}
       {result === 'error' && <p className="field-hint">{t('settings.bgNotifyFailed')}</p>}
       <p className="field-hint">{t('settings.bgNotifyHint')}</p>
+    </div>
+  );
+}
+
+// Переключатель «Слушать по имени» (голосовая активация) и что служба делает
+function WakeWordToggle({ linkMode }: { linkMode: boolean }) {
+  const { t } = useI18n();
+  const [status, setStatus] = useState<WakeStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<WakeResult | null>(null);
+
+  // Состояние службы: включена ли (её можно выключить и из шторки), что
+  // слышит и какие имена знает — раз в пару секунд, пока открыто
+  useEffect(() => {
+    if (linkMode) return;
+    let alive = true;
+    const read = () =>
+      wakeStatus()
+        .then((s) => alive && setStatus(s))
+        .catch(() => {});
+    read();
+    const timer = window.setInterval(read, 2000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [linkMode, busy]);
+
+  if (linkMode) {
+    return (
+      <div className="field">
+        <label className="field-label">{t('settings.wake')}</label>
+        <p className="field-hint">{t('settings.wakeLinkOnly')}</p>
+      </div>
+    );
+  }
+
+  const on = Boolean(status?.enabled);
+  const toggle = async (next: boolean) => {
+    setBusy(true);
+    setResult(null);
+    const r = await setWakeWord(next);
+    setResult(r === 'ok' ? null : r);
+    setBusy(false);
+  };
+
+  let stateText: string | null = null;
+  if (on && status) {
+    if (!status.running) stateText = t('settings.wakeState.off');
+    else stateText = t(`settings.wakeState.${status.state}`);
+  }
+
+  return (
+    <div className="field">
+      <label className="field-label">{t('settings.wake')}</label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+        <label className="switch" title={t('settings.wake')}>
+          <input type="checkbox" checked={on} disabled={busy || !status} onChange={(e) => void toggle(e.target.checked)} />
+          <span className="switch-slider" />
+        </label>
+        {stateText && <span>{stateText}</span>}
+      </div>
+      {on && status?.running && status.names.length > 0 && (
+        <p className="field-hint">{t('settings.wakeNames', { names: status.names.join(', ') })}</p>
+      )}
+      {result === 'mic-denied' && <p className="field-hint">{t('settings.wakeMicDenied')}</p>}
+      {result === 'error' && <p className="field-hint">{t('settings.wakeFailed')}</p>}
+      <p className="field-hint">{t('settings.wakeHint')}</p>
     </div>
   );
 }

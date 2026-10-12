@@ -56,6 +56,13 @@
                 android:value="Keeps a connection to a self-hosted server owned by the user on the local network and shows messages it sends (reminders, persona messages) while the app is closed; no push service is used" />
         </service>
 
+        <!-- Голосовая активация по имени: микрофон, пока экран выключен.
+             Запускает только приложение (Android 14+ не даёт из фона) -->
+        <service
+            android:name=".WakeWordService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -92,6 +99,8 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- Микрофон — голосовой режим чата (распознавание речи телефона) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Слушать по имени (WakeWordService): служба переднего плана с микрофоном -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <!-- Команды телефону (PhoneActionsPlugin): «поставь будильник» / «таймер»
          системными «Часами» — без SET_ALARM часы интент не примут -->
