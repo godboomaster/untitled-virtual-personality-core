@@ -555,7 +555,10 @@ async def voice_wake_status():
     from app.voice import wake_listener
     lst = wake_listener.get_listener()
     if lst is None:
-        return {"enabled": wake_listener.enabled_by_env(), "running": False}
+        out = {"enabled": wake_listener.enabled_by_env(), "running": False}
+        if wake_listener.start_error():
+            out["error"] = wake_listener.start_error()
+        return out
     return {"enabled": True, **lst.status()}
 
 

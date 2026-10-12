@@ -519,6 +519,20 @@ def threading_wait(ev, t):
 def test_core():
     section("E. Ядро")
     check("без WAKE_LISTEN слушатель не стартует", wl.start_with_core("127.0.0.1", 9) is None)
+    # Ядро в другом venv, без модулей: причина — в /api/voice/wake, не только в логе
+    os.environ["WAKE_LISTEN"] = "1"
+    saved = sys.modules.get("sherpa_onnx")
+    sys.modules["sherpa_onnx"] = None  # import → ImportError
+    try:
+        check("нет модулей — слушатель не стартует", wl.start_with_core("127.0.0.1", 9) is None)
+        check("…и причина с командой установки", "pip install" in wl.start_error()
+              and sys.executable in wl.start_error())
+    finally:
+        if saved is not None:
+            sys.modules["sherpa_onnx"] = saved
+        else:
+            sys.modules.pop("sherpa_onnx", None)
+        os.environ.pop("WAKE_LISTEN", None)
     os.environ["WAKE_LISTEN"] = "yes"
     check("WAKE_LISTEN=yes — включено", wl.enabled_by_env())
     os.environ.pop("WAKE_LISTEN")
@@ -529,8 +543,11 @@ def test_core():
     c = TestClient(server.app)
     tok = getattr(server, "_api_token", "")
     r = c.get("/api/voice/wake", headers={"Authorization": f"Bearer {tok}"} if tok else {})
-    check("GET /api/voice/wake без слушателя", r.status_code == 200
-          and r.json() == {"enabled": False, "running": False})
+    check("GET /api/voice/wake без слушателя — с причиной", r.status_code == 200
+          and r.json()["running"] is False and "pip install" in r.json().get("error", ""))
+    wl._start_error = ""
+    r = c.get("/api/voice/wake", headers={"Authorization": f"Bearer {tok}"} if tok else {})
+    check("GET /api/voice/wake без слушателя", r.json() == {"enabled": False, "running": False})
     calls = []
 
     async def fake_turn(bot, req, request):

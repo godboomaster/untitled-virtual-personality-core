@@ -567,24 +567,32 @@ def pick_input_device(sd):
 # ===== Запуск вместе с ядром =====
 
 _listener: Optional[WakeListener] = None
+# Почему слушатель не поднялся (видно в GET /api/voice/wake, а не только в логе)
+_start_error = ""
 
 
 def get_listener() -> Optional[WakeListener]:
     return _listener
 
 
+def start_error() -> str:
+    return _start_error
+
+
 def start_with_core(host: str, port: int) -> Optional[WakeListener]:
     """Поднять слушатель в фоне процесса ядра (WAKE_LISTEN=1). Не мешает
     запуску: нет модулей или микрофона — предупреждение в лог."""
-    global _listener
+    global _listener, _start_error
     if not enabled_by_env():
         return None
     try:
         import sherpa_onnx  # noqa: F401
         import sounddevice  # noqa: F401
     except Exception as e:
-        logger.warning(f"[Wake] Голосовая активация выключена — нет модулей ({e}); "
-                       "pip install sherpa-onnx sounddevice")
+        # Частый случай — ядро запущено из другого venv, чем ставились модули
+        _start_error = (f"нет модулей в этом Python ({e}): {sys.executable} -m pip install "
+                        f"\"sherpa-onnx>=1.13.8\" sounddevice")
+        logger.warning(f"[Wake] Голосовая активация выключена — {_start_error}")
         return None
     if host in ("", "0.0.0.0", "::", "localhost"):
         host = "127.0.0.1"
