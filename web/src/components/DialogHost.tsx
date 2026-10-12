@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useI18n } from '../i18n';
 import { settleDialog, useCurrentDialog } from '../dialogStore';
+import { BACK_OVERLAY, useBackHandler } from '../backStack';
 
 /* Показ диалогов из dialogStore (confirmDialog/alertDialog) — HUD-панель
    поверх страницы. Esc и клик мимо — отмена, Enter — кнопка в фокусе.
@@ -15,6 +16,7 @@ export default function DialogHost() {
   const dialog = useCurrentDialog();
   const confirmRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  useBackHandler(Boolean(dialog), BACK_OVERLAY, () => settleDialog(false));
 
   useEffect(() => {
     if (!dialog) return;

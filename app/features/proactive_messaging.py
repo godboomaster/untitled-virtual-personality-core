@@ -37,10 +37,12 @@ from app.core.language import (
     detect_dialogue_language, detect_language, initiative_language_note, language_name,
     user_language_line)
 from app.core.paths import data_dir
+from app.core.persona import addressee_note
 from app.core.presence import web_presence
 from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 from app.features.chat_dossier import ChatDossier
 from app.core.local_router import get_local_router
+from app.core import startup_quiet
 
 logger = logging.getLogger(__name__)
 
@@ -873,7 +875,8 @@ class ProactiveMessaging:
             if not context_parts:
                 return None
 
-            persona_prompt = self.persona.system_prompt.strip()
+            persona_prompt = (self.persona.system_prompt.strip()
+                              + addressee_note(self.persona, chat_id))
 
             # Язык рефлексии: явный детект по репликам пользователя из STM
             # (в контексте могут быть блоки на другом языке — не даём им
@@ -1360,7 +1363,8 @@ class ProactiveMessaging:
             type_desc = INITIATIVE_TYPE_DESCRIPTIONS.get(initiative_type, "")
             type_instruction = f"\nType of this initiative: {initiative_type.value}. {type_desc}\n"
 
-        persona_prompt = self.persona.system_prompt.strip()
+        persona_prompt = (self.persona.system_prompt.strip()
+                          + addressee_note(self.persona, chat_id))
 
         # Язык инициативы: явный детект по репликам пользователя — надёжнее,
         # чем просить модель угадать его по контексту (в контексте могут быть
@@ -1888,6 +1892,9 @@ class ProactiveMessaging:
         Не заменяет существующие гейты (muted, дневной лимит, интервалы) —
         только генерация уже «оплачена» скорингом, поэтому вероятностный
         бросок не повторяется. Отправка — через обычный пайплайн."""
+        if startup_quiet.is_quiet(self.context):
+            logger.info("[Proactive] Сигнал состояния в тишине после запуска — молчим")
+            return
         # Веб-вкладка ЭТОГО чата активна — сигнал ждёт, пока пользователь уйдёт
         if web_presence.is_active(self.context, chat_id):
             logger.info("[Proactive] Сигнал состояния при активной вкладке — молчим")
@@ -2006,7 +2013,9 @@ class ProactiveMessaging:
         return None
 
     async def _loop(self):
-        # Главный цикл проверки.
+        # Главный цикл проверки. Сразу после запуска — тишина (startup_quiet):
+        # все персоны разом не пишут и не грузят модели
+        await startup_quiet.wait_quiet(self.context, "[Proactive]")
         logger.info(f"[Proactive] Цикл запущен. Интервал: {self.config.check_interval_minutes} мин")
 
         while self._running:

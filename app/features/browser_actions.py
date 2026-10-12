@@ -9484,6 +9484,12 @@ def end_rescue_pool_h():
     logger.info("[BrowserActions] Rescue пула H завершён — возврат в штатный режим")
 
 
+def pool_v_cdp_url() -> str:
+    # Адрес CDP браузера агента (пул V): трансляция вкладки в веб
+    # подключается к нему отдельно от исполнителя (app/features/browser_stream.py)
+    return str(_BCFG.get("cdp_url") or CDP_URL)
+
+
 def pool_status() -> dict:
     # Состояние пулов для API/devlog: живость, режим, простой пула V.
     try:

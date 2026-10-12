@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { useI18n, useMockData } from '../i18n';
-import { api } from '../api';
+import { api, isNativeApp } from '../api';
 import type { HomeOverview } from '../api';
-import { useApiOnline } from '../apiData';
+import { useApiOnline, useCoreHealth } from '../apiData';
+import { localLast } from '../offline/lastMessage';
 import { useInbox } from '../inboxStore';
 import { usePersonaAvatars } from '../avatarStore';
 import { playFlip } from '../flip';
@@ -32,6 +33,14 @@ export default function ChatOverview({ onOpen, flipFrom }: Props) {
   const [home, setHome] = useState<HomeOverview | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const flipping = useRef(flipFrom !== null);
+  // Сводки с ядра нет (нет связи или ещё грузится) — переписка из копии на
+  // телефоне; нет и её — пишем, что нет связи, а не «сообщений пока нет»
+  const health = useCoreHealth();
+  const noLink = apiOnline && health === 'down' && !home;
+  const local = useMemo(
+    () => (!home && isNativeApp() ? new Map(personas.map((p) => [p.id, localLast(p.id).last])) : null),
+    [home, personas],
+  );
 
   useEffect(() => {
     if (!apiOnline) {
@@ -75,10 +84,10 @@ export default function ChatOverview({ onOpen, flipFrom }: Props) {
   };
 
   // Последняя известная реплика: свежее из фоновых сообщений сессии и
-  // сводки сервера; без бэкенда — из моков
+  // сводки сервера (без неё — копии на телефоне); без бэкенда — из моков
   const preview = (id: string): { text: string; you: boolean; ts: number | null; time?: string } | null => {
     const inboxLast = messages[id]?.[messages[id].length - 1];
-    const srv = home?.personas[id]?.last_message ?? null;
+    const srv = home?.personas[id]?.last_message ?? local?.get(id) ?? null;
     if (inboxLast && (!srv || inboxLast.ts > srv.ts)) return { text: inboxLast.text, you: false, ts: inboxLast.ts };
     if (srv) return { text: srv.text, you: srv.role === 'user', ts: srv.ts };
     if (!apiOnline) {
@@ -167,7 +176,7 @@ export default function ChatOverview({ onOpen, flipFrom }: Props) {
                     {pv.text}
                   </>
                 ) : (
-                  t('chat.previewEmpty')
+                  t(noLink ? 'chat.previewNoLink' : 'chat.previewEmpty')
                 )}
               </div>
               {(activity || controlMode[p.id]) && (

@@ -45,6 +45,7 @@ from app.core.relationship import RelationshipMemory
 from app.core.language import (
     detect_dialogue_language, persona_language, user_language_line,
 )
+from app.core import startup_quiet
 
 logger = logging.getLogger(__name__)
 
@@ -917,6 +918,9 @@ class LivingPersona:
             logger.info("[Living] Остановлен")
 
     async def _loop(self):
+        # Тишина после запуска (startup_quiet): ни тиков жизни, ни разовых
+        # вызовов LLM (выжимка, засев мира) — персоны не грузят модели разом
+        await startup_quiet.wait_quiet(self.context, "[Living]")
         # Первый заход: выжимка + засев мира (разовые вызовы основной LLM)
         try:
             await asyncio.to_thread(self.persona_context)

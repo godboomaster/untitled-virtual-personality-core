@@ -259,6 +259,7 @@ def test_harvest_live_path():
 
 def main():
     os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="prompt_defects_")
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     import importlib
     import app.core.config as config_mod
     importlib.reload(config_mod)

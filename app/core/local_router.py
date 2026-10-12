@@ -574,11 +574,13 @@ class LocalLLMRouter:
 
 
     def ocr_image(self, image_bytes: bytes, question: str = "",
-                  lang: Optional[str] = None) -> Optional[str]:
+                  lang: Optional[str] = None, subject: str = "image") -> Optional[str]:
         """
         Извлекает текст с изображения и описывает его (vision).
         Требует мультимодальную модель — веб-чату картинки не отдать, поэтому
         OCR всегда идёт в Ollama независимо от выбранного движка.
+        subject="screen" — снимок экрана компьютера («посмотри на экран»):
+        что открыто и главный текст, а не каждый пункт меню.
         Возвращает None при ошибке.
         """
         # is_available() в режиме webchat говорит про веб-чат — для OCR
@@ -592,13 +594,23 @@ class LocalLLMRouter:
             import base64
             img_b64 = base64.b64encode(image_bytes).decode()
 
-            prompt = (
-                "The user sent an image. Extract all visible text from it (OCR) "
-                "and briefly describe what is shown (1-2 sentences).\n"
-                "Response format:\nTEXT: <text from the image or \"no text\">\nDESCRIPTION: <...>"
-            )
+            if subject == "screen":
+                prompt = (
+                    "This is a screenshot of the user's computer screen. Briefly describe "
+                    "what is open (apps, windows, what the user is doing) and extract the "
+                    "important visible text (OCR): the main content, titles, error messages "
+                    "— not every menu item or icon label.\n"
+                    "Response format:\nTEXT: <important text from the screen or \"no text\">\n"
+                    "DESCRIPTION: <...>"
+                )
+            else:
+                prompt = (
+                    "The user sent an image. Extract all visible text from it (OCR) "
+                    "and briefly describe what is shown (1-2 sentences).\n"
+                    "Response format:\nTEXT: <text from the image or \"no text\">\nDESCRIPTION: <...>"
+                )
             if question:
-                prompt += f"\nAdditionally answer the user's question about the image: {question}"
+                prompt += f"\nAdditionally answer the user's question about the {'screen' if subject == 'screen' else 'image'}: {question}"
             # lang — язык пользователя; None — по подписи к картинке
             prompt += "\n" + user_language_line(lang or detect_language(question))
 
@@ -612,7 +624,8 @@ class LocalLLMRouter:
                 "think": False,
                 "options": {
                     "temperature": 0.2,
-                    "num_predict": 600,
+                    # На экране текста больше, чем на обычной картинке
+                    "num_predict": 900 if subject == "screen" else 600,
                 },
             }
 

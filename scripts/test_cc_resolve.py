@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def main():
     os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="cc_resolve_smoke_")
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     tmp = Path(tempfile.mkdtemp(prefix="cc_resolve_data_"))
     import app.core.router as _net_router
     _net_router.internet_available = lambda: True

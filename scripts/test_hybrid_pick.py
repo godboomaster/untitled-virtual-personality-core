@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def main():
     os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="hybrid_pick_smoke_")
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
 
     counts = {"ok": 0, "fail": 0}
 

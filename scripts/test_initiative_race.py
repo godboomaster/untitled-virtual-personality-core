@@ -91,6 +91,7 @@ class FakeSender:
 def main():
     tmp = tempfile.mkdtemp(prefix="initiative_race_")
     os.environ["DATA_DIR"] = tmp
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     # ProactiveMessaging/RhythmManager пишут в относительный data/ — уходим в tmp
     os.chdir(tmp)
 

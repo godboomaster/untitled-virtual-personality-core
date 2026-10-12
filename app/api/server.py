@@ -8,7 +8,8 @@
 
 Авторизация: если задан env API_TOKEN — все /api/* (кроме /api/health)
 требуют заголовок ``Authorization: Bearer <API_TOKEN>``. Без API_TOKEN API
-открыт (локальный режим по умолчанию).
+открыт только запросам по localhost (локальный режим по умолчанию); по
+другому имени хоста (телефон, другая машина) — 403.
 """
 
 import asyncio
@@ -22,7 +23,7 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -31,13 +32,17 @@ from app.api import runtime
 from app.api.runtime import chat_lock, get_persona_info, list_personas
 from app.core.router import NoProvidersError
 from app.api.security import (BodySizeLimit, LOOPBACK_HOSTS, LOOPBACK_ORIGIN_RE,
-                              LocalOriginGuard, PersonaIdPath, PersonaIdQuery)
+                              LocalOriginGuard, PersonaIdPath, PersonaIdQuery,
+                              host_without_port)
 from app.api.schemas import (
     ActiveProviderRequest,
     CalendarEntryCreate,
     CalendarEntryUpdate,
     ChatRequest,
     ChatResponse,
+    VoiceWakeHold,
+    OfflineImportRequest,
+    OfflineRemindersRequest,
     ClearChatRequest,
     FactRequest,
     FactUpdateRequest,
@@ -115,6 +120,25 @@ def _shutdown_bot_browser():
     except Exception:
         pass
 
+@app.on_event("startup")
+async def _start_link():
+    # VPC Link — защищённый канал до телефона (app/link): поднимается сам,
+    # если есть сопряжённые устройства или LINK_ENABLED=1
+    try:
+        from app.link import host as link_host
+        await link_host.start_if_needed()
+    except Exception as e:
+        logger.warning(f"[Link] не запустился: {e}")
+
+
+@app.on_event("shutdown")
+async def _stop_link():
+    try:
+        from app.link import host as link_host
+        await link_host.shutdown()
+    except Exception:
+        pass
+
 # Буфер логов для режима разработчика (GET /api/logs)
 from app.api import log_buffer
 log_buffer.install()
@@ -168,14 +192,14 @@ else:
 app.add_middleware(LocalOriginGuard, origins=_cors_origins, origin_regex=_cors_regex,
                    hosts=_allowed_hosts)
 
-# Не-loopback хост без токена — API открыт всем в локальной сети/интернете
-# без единой проверки: не роняем процесс (это может быть осознанный выбор
-# в доверенном окружении), но громко предупреждаем в лог при старте.
-if _api_host not in ("127.0.0.1", "localhost", "::1") and not _api_token:
+# Ядро смотрит наружу (привязка не к loopback или чужие имена в
+# API_ALLOWED_HOSTS), а токена нет: запросы не по localhost получат 403
+# (require_auth) — предупреждаем при старте, почему
+if (_api_host not in LOOPBACK_HOSTS or _extra_hosts - LOOPBACK_HOSTS) and not _api_token:
     logging.getLogger(__name__).warning(
-        f"[Security] API_HOST={_api_host!r} (не loopback), а API_TOKEN не задан — "
-        "все /api/* эндпоинты доступны без авторизации всем, кто достучится до "
-        "этого хоста. Задайте API_TOKEN в .env, если сервер смотрит наружу."
+        f"[Security] API_HOST={_api_host!r}, API_ALLOWED_HOSTS={sorted(_extra_hosts)}, "
+        "а API_TOKEN не задан — удалённые запросы (не через localhost) будут "
+        "отклонены. Задайте API_TOKEN в .env для доступа с телефона или другой машины."
     )
 
 # Чаты, где прямо сейчас идёт генерация ответа: "persona:chat_key" → число
@@ -275,9 +299,21 @@ async def _run_generation(gen_key: str, fn, on_done=None):
         raise
 
 
-async def require_auth(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
+async def require_auth(request: Request,
+                       credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
     # Bearer-авторизация активна только когда задан API_TOKEN
     if not _api_token:
+        # Без токена API — только для этой машины. Запрос по другому имени
+        # хоста (телефон или другой компьютер по адресу в сети) или через
+        # обратный прокси (он ставит X-Forwarded-For; браузер на
+        # этой машине — никогда) получает отказ с подсказкой: иначе ядро
+        # молча открылось бы всей сети
+        h = request.headers
+        if (host_without_port(h.get("host", "")) not in LOOPBACK_HOSTS
+                or "x-forwarded-for" in h or "forwarded" in h):
+            raise HTTPException(status_code=403, detail=(
+                "Удалённый доступ к ядру — только с токеном: задайте API_TOKEN "
+                "в .env и перезапустите ядро"))
         return
     # compare_digest вместо != — токен не сравнивается char-by-char с ранним
     # выходом на первом несовпадении, что убирает timing-канал подбора токена
@@ -313,6 +349,172 @@ async def health():
     return {"status": "ok"}
 
 
+# ── Ответы без ноутбука (приложение на телефоне, app/api/offline_api.py) ──
+
+@app.get("/api/personas/{persona}/offline/kit", dependencies=[Depends(require_auth)])
+async def offline_kit(persona: PersonaIdPath,
+                      chat_id: str = Query("web_user", max_length=128),
+                      user_id: str = Query("web_user", max_length=128)):
+    # Персона-кит: характер, правила офлайна, факты, хвост переписки — без секретов
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    return await asyncio.to_thread(offline_api.build_kit, bot, persona, chat_id, user_id)
+
+
+@app.get("/api/personas/{persona}/offline/short-prompt", dependencies=[Depends(require_auth)])
+async def offline_short_prompt(persona: PersonaIdPath):
+    # Краткое описание персоны для модели телефона (посмотреть); не составлено —
+    # начнёт составляться в фоне (app/features/short_prompt.py)
+    from app.features import short_prompt
+    bot = await _get_bot(persona)
+    return await asyncio.to_thread(short_prompt.get_short_prompt, bot)
+
+
+@app.get("/api/personas/{persona}/offline/memory", dependencies=[Depends(require_auth)])
+async def offline_memory(persona: PersonaIdPath,
+                         chat_id: str = Query("web_user", max_length=128),
+                         user_id: str = Query("web_user", max_length=128)):
+    # Память для телефона: вся переписка чата и факты — поиск по ним без ноутбука
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    return await asyncio.to_thread(offline_api.build_memory, bot, persona, chat_id, user_id)
+
+
+@app.get("/api/personas/{persona}/offline/providers", dependencies=[Depends(require_auth)])
+async def offline_providers(persona: PersonaIdPath):
+    # Ключи API-провайдеров персоны для ответов с телефона без ноутбука. Кто
+    # прошёл require_auth — владелец (веб, его телефон по VPC Link или по
+    # адресу с токеном); остальные секреты .env сюда не попадают
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    return JSONResponse({"providers": offline_api.provider_creds(bot)},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/personas/{persona}/offline/import", dependencies=[Depends(require_auth)])
+async def offline_import(persona: PersonaIdPath, req: OfflineImportRequest):
+    # Переписка без ноутбука → история чата и память (повторы по id — мимо).
+    # Под локом чата: не вклинивается в идущую генерацию ответа
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    async with chat_lock(f"{persona}:{req.chat_id or req.user_id}"):
+        return await asyncio.to_thread(
+            offline_api.import_messages, bot, req.chat_id, req.user_id,
+            [m.model_dump() for m in req.messages], req.user_name)
+
+
+@app.post("/api/personas/{persona}/offline/reminders", dependencies=[Depends(require_auth)])
+async def offline_reminders(persona: PersonaIdPath, req: OfflineRemindersRequest):
+    # Напоминания, поставленные на телефоне без ноутбука → напоминания ядра
+    from app.api import offline_api
+    bot = await _get_bot(persona)
+    return await asyncio.to_thread(
+        offline_api.import_reminders, bot, req.chat_id or req.user_id, req.user_id,
+        [r.model_dump() for r in req.reminders], req.user_name)
+
+
+@app.get("/api/token", dependencies=[Depends(require_auth)])
+async def api_token(request: Request):
+    """API_TOKEN ядра — скопировать в приложение на телефоне (вход по адресу
+    и токену). Нового он никому не открывает: с заданным токеном сюда пускают
+    только тех, кто его уже прислал, а без токена — только эту машину, и
+    ответ пустой. Исключение — телефон по VPC Link: токен за него подставляет
+    ноутбук (app/link/tunnel.py), сам телефон его не знает и не узнает."""
+    if _via_link(request):
+        raise HTTPException(status_code=403, detail="Токен API по каналу VPC Link не выдаётся")
+    return JSONResponse({"token": _api_token or None}, headers={"Cache-Control": "no-store"})
+
+
+# ── VPC Link: телефон через защищённый канал (app/link) ─────────────
+
+_LINK_DEVICE_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+def _link_disabled() -> bool:
+    return (os.getenv("LINK_ENABLED") or "").strip().lower() in ("0", "false", "no", "off")
+
+
+def _via_link(request: Request) -> str | None:
+    # Запрос пришёл с телефона по каналу: заголовок ставит сам ноутбук
+    # (app/link/tunnel.py), подменить его с телефона нельзя
+    return request.headers.get("x-vpc-link") or None
+
+
+@app.get("/api/link", dependencies=[Depends(require_auth)])
+async def link_status(request: Request):
+    from app.link import host as link_host, store as link_store
+    h = link_host.current()
+    online = h.online() if h else {}
+    devices = [{"id": did, "name": d.get("name"), "paired_at": d.get("paired_at"),
+                "last_seen": d.get("last_seen"), "online": online.get(did)}
+               for did, d in (await asyncio.to_thread(link_store.devices)).items()]
+    devices.sort(key=lambda d: d.get("paired_at") or 0)
+    return {
+        "enabled": not _link_disabled(),
+        "running": h is not None,
+        "port": h.lan_port if h else link_host.lan_port(),
+        "lan": await asyncio.to_thread(link_store.lan_addresses),
+        "lan_error": h.lan_error if h else None,
+        "relay": link_host.configured_relay(),
+        "relay_connected": bool(h and h.relay_connected),
+        "relay_error": h.relay_error if h else None,
+        "devices": devices,
+        "pairing_expires": link_store.offer_active(),
+        "this_device": _via_link(request),
+    }
+
+
+@app.post("/api/link/pair", dependencies=[Depends(require_auth)])
+async def link_pair(request: Request):
+    # QR-код для нового телефона — только с самого компьютера: телефон,
+    # пришедший по каналу, других устройств не добавляет
+    if _via_link(request):
+        raise HTTPException(status_code=403, detail="Новый телефон подключается только с компьютера")
+    if _link_disabled():
+        raise HTTPException(status_code=409, detail="VPC Link выключен (LINK_ENABLED=0 в .env)")
+    from app.link import host as link_host, store as link_store
+    from app.link.tunnel import laptop_name
+    h = await link_host.ensure_started()
+    offer_id, psk, expires = link_store.create_offer()
+    ips = [] if h.lan_error else await asyncio.to_thread(link_store.lan_addresses)
+    uri = link_store.pairing_uri(offer_id, psk, name=laptop_name(), relay=link_host.configured_relay(),
+                                 lan=[f"{ip}:{h.lan_port}" for ip in ips])
+    return {"uri": uri, "expires": expires, "ttl": link_store.OFFER_TTL_SEC}
+
+
+@app.delete("/api/link/pair", dependencies=[Depends(require_auth)])
+async def link_pair_cancel(request: Request):
+    from app.link import store as link_store
+    if not _via_link(request):
+        link_store.cancel_offers()
+    return {"ok": True}
+
+
+@app.delete("/api/link/devices/{device_id}", dependencies=[Depends(require_auth)])
+async def link_unpair(device_id: str, request: Request):
+    if not _LINK_DEVICE_RE.match(device_id):
+        raise HTTPException(status_code=422, detail="Неверный id устройства")
+    # Телефон по каналу может отвязать только себя
+    via = _via_link(request)
+    if via and via != device_id:
+        raise HTTPException(status_code=403, detail="С телефона можно отвязать только его самого")
+    from app.link import host as link_host, store as link_store
+    removed = await asyncio.to_thread(link_store.remove_device, device_id)
+    h = link_host.current()
+    if h and via:
+        # Телефон отвязывает себя: сначала пусть получит ответ, потом — разрыв
+        async def _later():
+            await asyncio.sleep(1.0)
+            await h.revoke(device_id)
+        _detached_generations.add(t := asyncio.create_task(_later()))
+        t.add_done_callback(_detached_generations.discard)
+    elif h:
+        await h.revoke(device_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Устройство не найдено")
+    return {"ok": True}
+
+
 @app.get("/api/logs", dependencies=[Depends(require_auth)])
 async def get_logs(since: int = 0, limit: int = 500):
     # Инкрементальная лента логов ядра (режим разработчика в веб-UI)
@@ -345,6 +547,31 @@ async def system_memory():
 # Панель следит за бэкендом снаружи: живость — /api/health, остальное —
 # здесь. Браузеры бота и карантины веб-чатов общие для процесса — в inbox
 # они те же, но inbox требует персону.
+
+@app.get("/api/voice/wake", dependencies=[Depends(require_auth)])
+async def voice_wake_status():
+    # Голосовая активация на компьютере ядра (WAKE_LISTEN=1): слушает ли,
+    # какие имена, что услышала последним — для проверки перед показом
+    from app.voice import wake_listener
+    lst = wake_listener.get_listener()
+    if lst is None:
+        out = {"enabled": wake_listener.enabled_by_env(), "running": False}
+        if wake_listener.start_error():
+            out["error"] = wake_listener.start_error()
+        return out
+    return {"enabled": True, **lst.status()}
+
+
+@app.post("/api/voice/wake/hold", dependencies=[Depends(require_auth)])
+async def voice_wake_hold(req: VoiceWakeHold):
+    # Открыт голосовой режим чата: слушатель ядра молчит (seconds, не больше
+    # 120; клиент продлевает), 0 — снова слушать
+    from app.voice import wake_listener
+    lst = wake_listener.get_listener()
+    if lst is not None:
+        lst.hold(req.seconds)
+    return {"held": bool(lst and lst.held)}
+
 
 @app.get("/api/system/status", dependencies=[Depends(require_auth)])
 async def system_status():
@@ -618,10 +845,47 @@ async def skin_generate(req: SkinGenRequest):
                              media_type="text/event-stream")
 
 
+# Голосовая активация слушает и на компьютере ядра, и на телефоне: фразу
+# «Коннор, …» рядом с обоими услышат оба. Пока голосовая просьба к персоне
+# идёт (и VOICE_DUP_SEC после неё), следующая голосовая — та же фраза с
+# другого устройства: ей duplicate, отвечает только первое
+VOICE_DUP_SEC = 3.0
+_voice_turns: dict[str, list] = {}  # персона → [просьб в работе, конец последней]
+
+
+def _voice_turn_enter(persona: str) -> bool:
+    """False — дубль. Проверка и отметка без await между ними: атомарно в loop."""
+    st = _voice_turns.setdefault(persona, [0, 0.0])
+    if st[0] > 0 or time.monotonic() - st[1] < VOICE_DUP_SEC:
+        return False
+    st[0] += 1
+    return True
+
+
+def _voice_turn_exit(persona: str) -> None:
+    st = _voice_turns.setdefault(persona, [1, 0.0])
+    st[0] = max(0, st[0] - 1)
+    st[1] = time.monotonic()
+
+
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(require_auth)])
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
     bot = await _get_bot(req.persona)
     _check_not_muted(bot, req.persona)
+    if req.voice:
+        if not _voice_turn_enter(req.persona):
+            logger.info(f"[Voice] {req.persona}: та же голосовая просьба с другого устройства — пропуск")
+            return ChatResponse(reply="", persona=req.persona, chat_id=req.chat_id or req.user_id,
+                                control_mode=bot.control_mode_on(req.chat_id or req.user_id),
+                                duplicate=True)
+        try:
+            return await _chat_turn(bot, req, request)
+        finally:
+            _voice_turn_exit(req.persona)
+    return await _chat_turn(bot, req, request)
+
+
+async def _chat_turn(bot, req: ChatRequest, request: Request):
     await _touch_persona(req.persona)
     # Лок на (персона, чат): сериализуем сообщения одного чата,
     # разные чаты и персоны обрабатываются параллельно.
@@ -644,13 +908,30 @@ async def chat(req: ChatRequest):
         _cc_turn_exit(bot, cc_token)
         raise
     try:
-        return await _chat_in_turn(bot, req, lock_key, stm_key, frame, cc_token)
+        return await _chat_in_turn(bot, req, lock_key, stm_key, frame, cc_token,
+                                   delivery=_file_delivery(request, req))
     finally:
         _end_turn(bot, frame)
 
 
+def _file_delivery(request: Request, req: ChatRequest):
+    """Что сделать с файлом по «открой/пришли файл X» (app/features/file_access).
+    Открыть на компьютере ядра — только вебу, открытому на нём самом (адрес
+    localhost, без VPC Link и прокси). Приложение на телефоне, VPC Link и
+    любой другой адрес — прислать файл в чат. Скин — никак: реплику мог
+    написать скрипт скина."""
+    if req.from_skin:
+        return None
+    h = request.headers
+    if (req.client == "app" or _via_link(request)
+            or host_without_port(h.get("host", "")) not in LOOPBACK_HOSTS
+            or "x-forwarded-for" in h or "forwarded" in h):
+        return "send"
+    return "open"
+
+
 async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, frame,
-                        cc_token=None):
+                        cc_token=None, delivery=None):
     def _generate():
         """Синхронная часть целиком (в потоке пула, под локом чата): и
         генерация, и разбор pending-бакетов — они должны сниматься тем же
@@ -666,11 +947,7 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                 provider, model = _answer_provider(bot) if llm_used else (None, None)
                 split_extra = bot.pop_pending_split_messages(req.chat_id)
             else:
-                llm_input = (
-                    _prepare_image_input(bot, req.message, req.image,
-                                         req.chat_id, req.user_id)
-                    if req.image else req.message
-                )
+                llm_input, shown = _prepare_turn_input(bot, req)
                 reply = bot.process_message(
                     llm_input,
                     user_id=req.user_id,
@@ -679,9 +956,12 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                     reply_context=req.reply_context,
                     # Подтверждение pending-действия (computer_control) — только
                     # по тому, что реально ввёл пользователь, а не по OCR внутри
-                    # llm_input (там текст с картинки — см. _prepare_image_input)
-                    raw_user_text=req.message if req.image else None,
+                    # llm_input (там текст с картинки или экрана — см.
+                    # _prepare_turn_input)
+                    raw_user_text=req.message if shown else None,
                     from_skin=req.from_skin,
+                    turn_note=_phone_note(req),
+                    file_delivery=delivery,
                 )
                 # Провайдер ответа — СРАЗУ после process_message и в этом же
                 # потоке (см. _answer_provider)
@@ -689,22 +969,19 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                 # Хвост расщеплённого ответа (settings.split_messages) забираем
                 # до правки STM картинки — переписываемый хвост включает его части
                 split_extra = bot.pop_pending_split_messages(req.chat_id)
-                if req.image:
-                    cap = req.message.strip()
-                    _rewrite_image_stm(
-                        bot, stm_key, req.user_id,
-                        f"📷 {cap}" if cap else "📷 (изображение)", [reply] + split_extra,
-                    )
+                if shown:
+                    _rewrite_image_stm(bot, stm_key, req.user_id, shown, [reply] + split_extra)
         # Части расщеплённого ответа идут раньше досылаемых списков:
         # это продолжение реплики, а список — приложение к ней
         extra = split_extra + bot.pop_pending_list_messages(req.chat_id)
         question_kind = bot.pop_pending_question_kind(req.chat_id)
-        return reply, provider, model, extra, question_kind
+        files = _pending_files(bot, req, None)
+        return reply, provider, model, extra, question_kind, files
 
     # Лок на (персона, чат) и флаг «генерирует» держит _run_generation:
     # сообщения одного чата сериализуются, разные чаты и персоны идут
     # параллельно; разрыв соединения генерацию не обрывает
-    reply, provider, model, extra, question_kind = await _run_generation(
+    reply, provider, model, extra, question_kind, files = await _run_generation(
         lock_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token))
     return ChatResponse(
         reply=reply,
@@ -718,7 +995,20 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
         control_mode=bot.control_mode_on(req.chat_id or req.user_id),
         # Скриншоты страницы из режима управления («что на странице?»)
         images=_pending_images(bot, req.chat_id),
+        answer_options=bot.cc_answer_options(req.chat_id or req.user_id, req.user_id),
+        task=bot.cc_task_card(req.chat_id or req.user_id, req.user_id),
+        files=files,
     )
+
+
+def _pending_files(bot, req: ChatRequest, reply_ts) -> list[dict]:
+    # Файлы с компьютера ядра («пришли файл X») — ссылками на скачивание
+    pop = getattr(bot, "pop_pending_files", None)
+    files = pop(req.chat_id) if callable(pop) else []
+    if not files:
+        return []
+    from app.api import file_links
+    return file_links.register(req.persona, _stm_key(req), files, reply_ts)
 
 
 def _pending_images(bot, chat_id) -> list[str]:
@@ -794,20 +1084,82 @@ def _decode_image(data: str) -> bytes:
         raise HTTPException(status_code=400, detail="Некорректные данные изображения (base64)")
 
 
-def _prepare_image_input(bot, message: str, image_b64: str,
-                         chat_id: str = None, user_id: str = None) -> str:
-    # Текст для LLM из сообщения с картинкой: подпись + содержимое по
-    # vision-модели. Каскад как у TG-бота: vision-провайдер основного роутера
-    # → локальная LLM (OCR)
-    image_bytes = _decode_image(image_b64)
-    question = message.strip()
-    # Язык описания — язык подписи, без неё — язык пользователя в чате
-    lang = detect_language(question)
+def _prepare_turn_input(bot, req: ChatRequest) -> tuple[str, str | None]:
+    """Текст хода для process_message → (текст, что показать в истории).
+
+    Второе — None для обычной реплики; для картинки, кадра камеры и снимка
+    экрана — подпись «📷 …»/«🖥 …»: в STM ложится служебный текст с
+    описанием, а веб показывает историю пользователю (_rewrite_image_stm)."""
+    message = req.message.strip()
+    if req.image:
+        llm_input = _prepare_image_input(bot, req.message, req.image, req.chat_id, req.user_id,
+                                         local_only=req.image_source == "camera")
+        return llm_input, f"📷 {message}" if message else "📷 (изображение)"
+    if _wants_screen(bot, req):
+        return _prepare_screen_input(bot, message, req.chat_id, req.user_id), f"🖥 {message}"
+    return req.message, None
+
+
+def _phone_note(req: ChatRequest) -> str | None:
+    # Команду уже исполнил телефон — персоне заметка об итоге. Не из скина:
+    # скин — сторонний код, «итог» он мог бы прислать сам. С картинкой
+    # команд телефону не бывает
+    if req.phone_action is None or req.from_skin or req.image:
+        return None
+    from app.features import phone_actions
+    return phone_actions.request_note(req.phone_action)
+
+
+def _wants_screen(bot, req: ChatRequest) -> bool:
+    # «Посмотри на экран». Не из скина: скин — сторонний код, ответ с
+    # описанием экрана он бы прочитал. Не в режиме управления: там «экран»
+    # — страница агента, её смотрит сам режим
+    from app.features import screen_look
+    if req.from_skin or not screen_look.is_screen_request(req.message):
+        return False
+    try:
+        return not bot.control_mode_on(req.chat_id or req.user_id)
+    except Exception:
+        return True
+
+
+def _turn_language(bot, text: str, chat_id: str = None, user_id: str = None):
+    # Язык описания — язык подписи или просьбы, без них — язык пользователя в чате
+    lang = detect_language(text)
     if not lang and (chat_id or user_id):
         try:
             lang = bot.chat_user_language(bot.stm_key(chat_id, user_id))
         except Exception:
             lang = None
+    return lang
+
+
+def _prepare_screen_input(bot, message: str, chat_id: str = None, user_id: str = None) -> str:
+    # Снимок экрана смотрит только локальная модель (app/features/screen_look)
+    from app.features import screen_look
+    try:
+        return screen_look.screen_input(getattr(bot, "_local_router", None), message,
+                                        _turn_language(bot, message, chat_id, user_id))
+    except screen_look.ScreenLookError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+def _prepare_image_input(bot, message: str, image_b64: str,
+                         chat_id: str = None, user_id: str = None, local_only: bool = False) -> str:
+    # Текст для LLM из сообщения с картинкой: подпись + содержимое по
+    # vision-модели. Каскад как у TG-бота: vision-провайдер основного роутера
+    # → локальная LLM (OCR). local_only — кадр с камеры: только локальная
+    image_bytes = _decode_image(image_b64)
+    question = message.strip()
+    lang = _turn_language(bot, question, chat_id, user_id)
+    if local_only:
+        from app.features import screen_look
+        try:
+            desc = screen_look.describe_locally(getattr(bot, "_local_router", None),
+                                                image_bytes, question, lang, subject="image")
+        except screen_look.ScreenLookError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        return (f"{question}\n\n" if question else "") + screen_look.CAMERA_NOTE + desc
     ocr = bot.describe_image(image_bytes, question, lang)
     if not ocr and getattr(bot, "_local_router", None) and bot._local_router.is_available():
         ocr = bot._local_router.ocr_image(image_bytes, question, lang)
@@ -1014,7 +1366,7 @@ async def _typed_chunks(text: str):
 
 
 @app.post("/api/chat/stream", dependencies=[Depends(require_auth)])
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, request: Request):
     """SSE-стриминг ответа: события {"token": ...}, финал {"done": ..., "reply": ...}.
 
     Ядро генерирует ответ целиком (со всей постобработкой: _clean_response,
@@ -1028,6 +1380,7 @@ async def chat_stream(req: ChatRequest):
     gen_key = f"{req.persona}:{req.chat_id or req.user_id}"
     stm_key = _stm_key(req)
     turn = {"frame": None}
+    delivery = _file_delivery(request, req)
 
     def _generate():
         """Тяжёлая синхронная часть — идёт в потоке пула (asyncio.to_thread).
@@ -1045,11 +1398,7 @@ async def chat_stream(req: ChatRequest):
                 provider, model = _answer_provider(bot) if llm_used else (None, None)
                 split_rest = bot.pop_pending_split_messages(req.chat_id)
             else:
-                llm_input = (
-                    _prepare_image_input(bot, req.message, req.image,
-                                         req.chat_id, req.user_id)
-                    if req.image else req.message
-                )
+                llm_input, shown = _prepare_turn_input(bot, req)
                 reply = bot.process_message(
                     llm_input,
                     user_id=req.user_id,
@@ -1058,28 +1407,31 @@ async def chat_stream(req: ChatRequest):
                     reply_context=req.reply_context,
                     # См. /api/chat: подтверждение pending-действия — только по
                     # тому, что реально ввёл пользователь, не по OCR картинки
-                    raw_user_text=req.message if req.image else None,
+                    raw_user_text=req.message if shown else None,
                     from_skin=req.from_skin,
+                    turn_note=_phone_note(req),
+                    file_delivery=delivery,
                 )
                 # Провайдер ответа — сразу и в этом же потоке (_answer_provider)
                 provider, model = _answer_provider(bot)
                 split_rest = bot.pop_pending_split_messages(req.chat_id)
-                if req.image:
-                    cap = req.message.strip()
-                    _rewrite_image_stm(
-                        bot, stm_key, req.user_id,
-                        f"📷 {cap}" if cap else "📷 (изображение)", [reply] + split_rest,
-                    )
+                if shown:
+                    _rewrite_image_stm(bot, stm_key, req.user_id, shown, [reply] + split_rest)
+            # Ответ лёг в историю другим текстом (список файлов — заглушкой):
+            # метку ищем по нему, фронт по нему же сверяет свой пузырь
+            pop_hist = getattr(bot, "pop_reply_history_text", None)
+            reply_stm = pop_hist(req.chat_id) if callable(pop_hist) else None
             # В кадре хода — пока якорь STM этого хода виден
-            reply_ts = _reply_stm_ts(bot, stm_key, reply)
+            reply_ts = _reply_stm_ts(bot, stm_key, reply_stm or reply)
         # Pending-бакеты снимаем здесь же, в потоке под локом чата: без лока
         # следующее сообщение в тот же чат успело бы обнулить/перехватить
         # бакеты этого ответа
         extra = split_rest + bot.pop_pending_list_messages(req.chat_id)
         question_kind = bot.pop_pending_question_kind(req.chat_id)
         images = _pending_images(bot, req.chat_id)
+        files = _pending_files(bot, req, reply_ts)
         return (reply, split_rest, extra, question_kind, images, provider,
-                model, reply_ts)
+                model, reply_ts, files, reply_stm)
 
     async def _gen():
         # Ход пользователя держим до конца «печати» (split-пузыри с паузами) —
@@ -1115,8 +1467,14 @@ async def chat_stream(req: ChatRequest):
             return
         try:
             (reply, split_rest, extra, question_kind, images,
-             provider, model, reply_ts) = await _run_generation(
+             provider, model, reply_ts, files, reply_stm) = await _run_generation(
                 gen_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token))
+        except HTTPException as e:
+            # Отказ нашего же кода до генерации (картинку, камеру или экран
+            # не посмотреть: нет разрешения на запись экрана, Ollama не
+            # запущена) — текст для пользователя, в нём нет ключей
+            yield f"data: {json.dumps({'error': str(e.detail)}, ensure_ascii=False)}\n\n"
+            return
         except Exception:
             # Клиенту — обезличенное сообщение: текст исключения LLM-клиента
             # может содержать фрагменты API-ключа/URL с токеном авторизации
@@ -1157,6 +1515,16 @@ async def chat_stream(req: ChatRequest):
             # Скриншоты страницы из режима управления («что на странице?»)
             "images": images,
             "reply_ts": reply_ts,
+            # Кнопки ответа на вопрос режима управления (номер варианта,
+            # «да»/«нет») — фронт шлёт выбранное обычной репликой
+            "answer_options": bot.cc_answer_options(req.chat_id or req.user_id,
+                                                    req.user_id),
+            # Карточка задачи агента — итог хода (дальше её обновляет inbox)
+            "task": bot.cc_task_card(req.chat_id or req.user_id, req.user_id),
+            # Файлы с компьютера ядра («пришли файл X») — ссылки на скачивание
+            "files": files,
+            # Текст ответа в истории, если другой (список файлов — заглушкой)
+            "reply_stm": reply_stm,
         }
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -1175,7 +1543,50 @@ async def chat_history(
     messages = await asyncio.to_thread(
         bot.memory.stm.get_messages, user_id=user_id, chat_id=chat_id
     )
-    return messages
+    return _attach_history_files(persona, str(chat_id if chat_id is not None else user_id),
+                                 messages)
+
+
+def _attach_history_files(persona: str, chat_key: str, messages: list) -> list:
+    # Ответы, которыми присланы файлы («пришли файл X»), — снова со ссылками,
+    # пока те живы: иначе перезагрузка страницы теряла бы кнопку «Скачать»
+    from app.api import file_links
+    linked = file_links.for_history(persona, chat_key)
+    if not linked:
+        return messages
+    out = []
+    for m in messages:
+        ts = m.get("timestamp") if isinstance(m, dict) else None
+        if m.get("role") == "assistant" and isinstance(ts, (int, float)):
+            files = next((f for t, f in linked if abs(t - ts) < 0.002), None)
+            if files:
+                m = {**m, "files": files}
+        out.append(m)
+    return out
+
+
+@app.get("/api/files/{link_id}", dependencies=[Depends(require_auth)])
+async def sent_file(link_id: str):
+    """Файл, присланный в чат («пришли файл X»), по ссылке из ответа.
+    Перед отдачей — те же проверки, что при поиске: файл мог исчезнуть или
+    оказаться запрещённым (подмена симлинком) с момента ответа."""
+    from fastapi.responses import FileResponse
+    import mimetypes
+    from app.api import file_links
+    from app.features import file_finder
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", link_id or ""):
+        raise HTTPException(status_code=404, detail="Ссылка на файл не найдена")
+    entry = file_links.get(link_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=(
+            "Ссылка на файл устарела — попросите прислать его ещё раз"))
+    path = entry["path"]
+    ok = await asyncio.to_thread(file_finder.path_allowed, path)
+    if not ok:
+        raise HTTPException(status_code=410, detail="Файла больше нет на месте")
+    mime = mimetypes.guess_type(entry["name"])[0] or "application/octet-stream"
+    return FileResponse(path, media_type=mime, filename=entry["name"],
+                        content_disposition_type="attachment")
 
 
 @app.post("/api/chat/clear", dependencies=[Depends(require_auth)])
@@ -1213,8 +1624,15 @@ async def chat_clear(req: ClearChatRequest):
         initiatives = await asyncio.to_thread(_pop_initiative_history, bot, req.persona, chat_key)
         daily_stats = await asyncio.to_thread(_pop_daily_stats, bot, req.persona, chat_key)
         last_activity = await asyncio.to_thread(_pop_last_activity, bot, req.persona, chat_key)
-    chat_urls = (await asyncio.to_thread(_wl.collect_chat_urls, f"api_{req.persona}")
-                 if "webchat" in parts else {})
+    # Одна переписка (без части webchat) — сбрасываются только треды этого
+    # диалога: сайт помнит стёртые ходы, без сброса бот продолжал бы разговор
+    dialog_only = "stm" in parts and "webchat" not in parts
+    chat_urls = {}
+    if "webchat" in parts:
+        chat_urls = await asyncio.to_thread(_wl.collect_chat_urls, f"api_{req.persona}")
+    elif dialog_only:
+        chat_urls = await asyncio.to_thread(_wl.collect_chat_urls, f"api_{req.persona}",
+                                            chat_key)
     stores = await asyncio.to_thread(memory_wipe.collect_stores, bot, req.persona,
                                      chat_key, None if full else parts)
     await asyncio.to_thread(
@@ -1238,6 +1656,8 @@ async def chat_clear(req: ClearChatRequest):
     # сохранены в снапшоте выше)
     if "webchat" in parts:
         await asyncio.to_thread(_wl.clear_chat_urls, f"api_{req.persona}")
+    elif dialog_only:
+        await asyncio.to_thread(_wl.clear_dialog_chat_urls, f"api_{req.persona}", chat_key)
     # Остальное: todo/напоминания/досье/обучение/инициативы/ритм/living/управление
     await asyncio.to_thread(memory_wipe.wipe_stores, bot, req.persona, chat_key,
                             None if full else parts)
@@ -2193,7 +2613,8 @@ def _read_last_message_ts(persona: str, chat_id: str) -> float:
 
 
 @app.get("/api/personas/{persona}/inbox", dependencies=[Depends(require_auth)])
-async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool = False):
+async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool = False,
+                client_id: str = Query("", max_length=64, pattern=r"^[A-Za-z0-9_-]*$")):
     from app.api.inbox import inbox_pop
     from app.api.runtime import registry
     if get_persona_info(persona) is None:
@@ -2227,8 +2648,8 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
         pools = {}
     if bot is None:
         return {"messages": [], "generating": generating, "last_ts": last_ts,
-                "control_mode": False, "webchat_quarantine": quarantine,
-                "browser_pools": pools}
+                "control_mode": False, "answer_options": None, "task": None,
+                "webchat_quarantine": quarantine, "browser_pools": pools}
     # Поллинг инбокса = пользователь открыл веб: сигнал присутствия для rhythm
     # (дёшев, с внутренним троттлингом — триггер утреннего приветствия)
     try:
@@ -2239,9 +2660,130 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
         control_mode = bot.control_mode_on(chat_id)
     except Exception:
         control_mode = False
-    return {"messages": inbox_pop(persona, chat_id), "generating": generating,
+    # Кнопки ответа переживают перезагрузку страницы: состояние ожидания
+    # живёт в боте, а не в ленте; пока идёт генерация — без кнопок. Режим
+    # управления cc_answer_options проверяет сама: список «какой файл?»
+    # (file_access) ждёт ответа и вне режима
+    answer_options = (None if generating
+                      else bot.cc_answer_options(chat_id, chat_id))
+    # Карточка задачи агента: опрос во время хода (быстрый поллинг фронта)
+    # обновляет её на месте — шаги, статус, план
+    task = bot.cc_task_card(chat_id, chat_id)
+    return {"messages": inbox_pop(persona, chat_id, client_id), "generating": generating,
             "last_ts": last_ts, "control_mode": control_mode,
+            "answer_options": answer_options, "task": task,
             "webchat_quarantine": quarantine, "browser_pools": pools}
+
+
+@app.get("/api/inbox", dependencies=[Depends(require_auth)])
+async def inbox_all(request: Request,
+                    client_id: str = Query(..., min_length=1, max_length=64,
+                                           pattern=r"^[A-Za-z0-9_-]+$"),
+                    chat_id: str = Query("web_user", max_length=128),
+                    wait: float = Query(0, ge=0),
+                    since: int | None = Query(None, ge=0),
+                    epoch: str | None = Query(None, max_length=32)):
+    # Новые фоновые сообщения сразу по всем персонам — для фоновой службы
+    # приложения на телефоне (уведомления, пока приложение свёрнуто или
+    # закрыто). У службы свой client_id, а значит свой курсор: сообщения,
+    # которые она забрала, веб получит своим опросом как обычно.
+    # Это не сигнал присутствия: служба опрашивает и при выключенном экране,
+    # поэтому ни presence, ни note_presence (ритм, «доброе утро») не трогаем.
+    #
+    # Долгий опрос (есть wait, since или epoch): пустой ответ ждёт до wait
+    # секунд (не больше inbox.MAX_WAIT_SEC), ответ — {"messages", "cursor",
+    # "epoch"}. Курсор клиент присылает обратно в since вместе с epoch: так
+    # ответ, потерянный по дороге, придёт снова. Первый запрос — epoch пустой
+    # и без wait: сразу, чтобы получить курсор. Без этих параметров — сразу
+    # и списком, как ждут службы прежних версий приложения
+    from app.api import inbox as inbox_mod
+    if wait <= 0 and since is None and epoch is None:
+        items = inbox_mod.inbox_pop_all(chat_id, client_id)
+        return await _inbox_named(items)
+    start = since if epoch == inbox_mod.EPOCH else None
+    items, cursor = await inbox_mod.inbox_wait(chat_id, client_id, start, wait,
+                                               gone=request.is_disconnected)
+    return {"messages": await _inbox_named(items), "cursor": cursor, "epoch": inbox_mod.EPOCH}
+
+
+async def _inbox_named(items: list[dict]) -> list[dict]:
+    if not items:
+        return []
+
+    def _names(ids):
+        # Имя персоны — из её YAML; персоны больше нет — id вместо имени
+        out = {}
+        for pid in ids:
+            info = get_persona_info(pid)
+            out[pid] = (info or {}).get("name") or pid
+        return out
+
+    names = await asyncio.to_thread(_names, sorted({m["persona"] for m in items}))
+    return [{**m, "name": names[m["persona"]]} for m in items]
+
+
+# ── Режим управления: трансляция вкладки агента ──────────────────────
+
+def _offer_latest(q: "asyncio.Queue", item: dict) -> None:
+    # В очереди зрителя — только свежее: медленный клиент получает последний
+    # кадр, а не догоняет очередь старых (вызывается в потоке event loop'а)
+    while q.full():
+        q.get_nowait()
+    q.put_nowait(item)
+
+
+@app.get("/api/personas/{persona}/control/view", dependencies=[Depends(require_auth)])
+async def control_view(persona: PersonaIdPath, chat_id: str = "web_user"):
+    """SSE: живые кадры вкладки, на которой работает агент чата (JPEG base64
+    + адрес/заголовок/признак приватной страницы), и смена состояния
+    браузера. Только в режиме управления; режим погас — {"status": "off"} и
+    конец потока. Отдельное CDP-подключение (app/features/browser_stream.py):
+    исполнитель агента не занимается кадрами."""
+    from app.api.runtime import registry
+    from app.features import browser_actions as _ba
+    from app.features import browser_stream as _bs
+    if get_persona_info(persona) is None:
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    bot = registry._bots.get(persona)
+    if bot is None or not bot.control_mode_on(chat_id):
+        raise HTTPException(status_code=409, detail="Режим управления выключен")
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+    stream = _bs.ControlViewStream(
+        _ba.pool_v_cdp_url(),
+        tracked=lambda: bot.cc_tracked_page(chat_id),
+        describe=bot.cc_view_describe,
+        emit=lambda item: loop.call_soon_threadsafe(_offer_latest, queue, item))
+
+    async def _gen():
+        stream.start()
+        last_sent = last_mode = time.monotonic()
+        try:
+            yield ": open\n\n"
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    item = None
+                now = time.monotonic()
+                if now - last_mode >= 2.0:
+                    last_mode = now
+                    if not bot.control_mode_on(chat_id):
+                        yield f"data: {json.dumps({'status': 'off'})}\n\n"
+                        return
+                if item is not None:
+                    last_sent = now
+                    yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+                elif now - last_sent >= 10:
+                    last_sent = now
+                    yield ": ping\n\n"
+        finally:
+            # Зритель ушёл (вкладка закрыта/скрыта, режим погас) — скринкаст
+            # останавливается вместе с потоком
+            stream.stop()
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache"})
 
 
 # ── Инициатива (proactive) ────────────────────────────────────────────

@@ -18,8 +18,10 @@ export function DetroitBackground() {
 
     function resize() {
       if (!canvas) return;
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      // Свой размер, а не окна: в приложении холст отступает от системных
+      // панелей (--sa-*), и уголки не уходят под них
+      canvas.width = canvas.clientWidth || window.innerWidth;
+      canvas.height = canvas.clientHeight || window.innerHeight;
     }
 
     function draw() {
@@ -96,22 +98,24 @@ export function DetroitBackground() {
         ctx.fillRect(barX + i * 12, h * 0.15, 3, barH);
       }
 
-      // Статусная точка и подпись
-      ctx.fillStyle = led(0.35 * pulse);
-      ctx.beginPath(); ctx.arc(w - 100, h - 30, 3, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = dark ? 'rgba(238, 236, 226, 0.25)' : 'rgba(19, 19, 17, 0.25)';
-      ctx.font = '10px "JetBrains Mono", monospace';
-      ctx.fillText('VPC // ONLINE', w - 165, h - 26);
+      // Подписи состояния на фоне нет: «VPC // ONLINE» горела и без связи с
+      // ядром, а под контентом и точками читалась плохо — состояние
+      // показывают боковая панель и шапка
 
       animId = requestAnimationFrame(draw);
     }
 
     resize();
     window.addEventListener('resize', resize);
+    // Отступы от панелей приходят из приложения уже после загрузки — размер
+    // холста меняется без события resize окна
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null;
+    ro?.observe(canvas);
     draw();
 
     return () => {
       window.removeEventListener('resize', resize);
+      ro?.disconnect();
       cancelAnimationFrame(animId);
     };
   }, []);
@@ -122,10 +126,10 @@ export function DetroitBackground() {
       className="detroit-bg"
       style={{
         position: 'fixed',
-        top: 0,
+        top: 'var(--sa-top, 0px)',
         left: 0,
         width: '100%',
-        height: '100%',
+        height: 'calc(100% - var(--sa-top, 0px) - var(--sa-bottom, 0px))',
         pointerEvents: 'none',
         zIndex: 0,
       }}

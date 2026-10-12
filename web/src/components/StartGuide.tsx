@@ -86,6 +86,7 @@ const TRACKS: Track[] = [
       { id: 'home', nav: 'home' },
       { id: 'chat', nav: 'chat' },
       { id: 'room', nav: 'room' },
+      { id: 'phone', nav: 'settings', warn: 'guide.console.phoneWarn' },
     ],
     window: 'console — chat — persona',
     dialog: [
@@ -188,6 +189,45 @@ const TRACKS: Track[] = [
       { id: 'files', chips: [{ code: '/files', hint: 'guide.cmdFiles' }] },
       { id: 'initiative', dossier: 'initiative' },
       { id: 'rhythm', dossier: 'settings' },
+      {
+        id: 'screen',
+        warn: 'guide.features.screenWarn',
+        chips: [
+          { code: 'guide.phrScreen', i18n: true },
+          { code: 'guide.phrScreenWhat', i18n: true },
+          { code: 'guide.phrScreenError', i18n: true },
+        ],
+      },
+      { id: 'camera', nav: 'chat' },
+      {
+        id: 'phonecmd',
+        chips: [
+          { code: '[поставь будильник] на 7 по будням' },
+          { code: '[разбуди меня] через 20 минут' },
+          { code: '[таймер] на 10 минут' },
+          { code: '[открой] Telegram' },
+          { code: '[включи фонарик]' },
+        ],
+        chipsEn: [
+          { code: '[set an alarm] for 7 on weekdays' },
+          { code: '[wake me up] in 20 minutes' },
+          { code: '[set a timer] for 10 minutes' },
+          { code: '[open] Telegram' },
+          { code: '[turn on the flashlight]' },
+        ],
+      },
+      // Голосовая активация: распознавание пока только русское — примеры
+      // по-русски и в английской локали
+      {
+        id: 'voice',
+        nav: 'settings',
+        warn: 'guide.features.voiceWarn',
+        chips: [
+          { code: '[Коннор], какая сегодня погода?' },
+          { code: '[Коннор] … поставь будильник на семь' },
+          { code: '[Коннор], включи фонарик' },
+        ],
+      },
       { id: 'control', anchor: 'start-control' },
     ],
     window: 'console — chat — persona',
@@ -221,6 +261,7 @@ const TRACKS: Track[] = [
       {
         id: 'memory',
         chips: [
+          { code: '/clear', hint: 'guide.cmdClear' },
           { code: 'guide.codeForget', i18n: true, hint: 'guide.cmdForget' },
           { code: '/reset', hint: 'guide.cmdReset' },
           { code: '/ltm_privacy smart|strict', hint: 'guide.cmdPrivacy' },
@@ -241,6 +282,7 @@ const TRACKS: Track[] = [
           { code: '/files', hint: 'guide.cmdFiles' },
           { code: '/reset_files', hint: 'guide.cmdResetFiles' },
           { code: '/web', hint: 'guide.cmdWeb' },
+          { code: 'guide.phrScreen', i18n: true, hint: 'guide.cmdScreen' },
         ],
       },
       {

@@ -9,7 +9,8 @@ import { usePersonaAvatars } from '../avatarStore';
 import CalendarWidget from '../components/CalendarWidget';
 import { api } from '../api';
 import type { HomeOverview } from '../api';
-import { useApiOnline } from '../apiData';
+import { useApiOnline, useCoreHealth } from '../apiData';
+import { localLast } from '../offline/lastMessage';
 import { agoLabel } from '../timeAgo';
 
 // Сводка главной с бэкенда обновляется раз в минуту
@@ -78,6 +79,17 @@ export default function Home({ onNavigate }: HomeProps) {
   }, [online]);
   const live = overview !== null;
   const ov = (id: string) => overview?.personas[id];
+  // Нет связи с ядром: занятие неизвестно (так и пишем), время последней
+  // реплики — из копии переписки на телефоне. Моки (демо прототипа) — только
+  // совсем без бэкенда: у телефона без ноутбука персоны настоящие, и
+  // выдуманные факты, напоминания и инициативы выглядели бы как их
+  const health = useCoreHealth();
+  const noLink = !live && (!online || health === 'down');
+  const mock = !online;
+  const local = useMemo(
+    () => (noLink && online ? new Map(personas.map((p) => [p.id, localLast(p.id)])) : null),
+    [noLink, online, personas],
+  );
 
   // «5 мин назад» / «вчера в 14:20» / «12.08» — от живых часов now
   const ago = (ts: number | null | undefined): string => agoLabel(ts, now, t, locale);
@@ -101,7 +113,9 @@ export default function Home({ onNavigate }: HomeProps) {
             .flatMap((p) => (overview.personas[p.id]?.events ?? []).slice(0, 1).map((e) => ({ name: p.name, text: e.text, ts: e.ts })))
             .sort((a, b) => b.ts - a.ts)
             .slice(0, 6)
-        : personas
+        : !mock
+          ? []
+          : personas
         .flatMap((p) => {
           const items: { name: string; text: string }[] = [];
           const diary = (diaryByPersona[p.id] ?? [])[0];
@@ -111,7 +125,7 @@ export default function Home({ onNavigate }: HomeProps) {
           return items;
         })
         .slice(0, 6),
-    [live, overview, personas, diaryByPersona, initiativeByPersona],
+    [live, mock, overview, personas, diaryByPersona, initiativeByPersona],
   );
   const [thoughtIdx, setThoughtIdx] = useState(0);
 
@@ -139,7 +153,7 @@ export default function Home({ onNavigate }: HomeProps) {
     personas.reduce((n, p) => n + (overview?.personas[p.id] ? pick(overview.personas[p.id]) : 0), 0);
   const totalLtmFacts = live
     ? sumLive((o) => o.ltm_facts)
-    : Object.values(ltmByPersona).reduce((n, facts) => n + facts.length, 0);
+    : mock ? Object.values(ltmByPersona).reduce((n, facts) => n + facts.length, 0) : 0;
 
   // Лента «пока вас не было»: живая — события каждой персоны после вашего
   // последнего сообщения ей (инициативы и записи дневника), свежие сверху;
@@ -157,6 +171,7 @@ export default function Home({ onNavigate }: HomeProps) {
         .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
         .slice(0, FEED_LIMIT);
     }
+    if (!mock) return [];
     const initRows: FeedRow[] = personas
       .flatMap((p) => {
         const e = (initiativeByPersona[p.id] ?? []).at(-1);
@@ -178,7 +193,7 @@ export default function Home({ onNavigate }: HomeProps) {
       )
       .slice(0, 2);
     return [...initRows, ...diaryRows, ...reminderRows];
-  }, [live, overview, personas, initiativeByPersona, diaryByPersona, remindersByPersona]);
+  }, [live, mock, overview, personas, initiativeByPersona, diaryByPersona, remindersByPersona]);
 
   // Строки журнала системы для терминального блока
   const logLines: React.ReactNode[] = [
@@ -204,13 +219,13 @@ export default function Home({ onNavigate }: HomeProps) {
 
   const activeReminders = live
     ? sumLive((o) => o.reminders_active)
-    : Object.values(remindersByPersona).reduce((n, rs) => n + rs.filter((r) => r.active).length, 0);
+    : mock ? Object.values(remindersByPersona).reduce((n, rs) => n + rs.filter((r) => r.active).length, 0) : 0;
   const initiativesToday = live
     ? sumLive((o) => o.initiatives_today)
-    : Object.values(initiativeStateByPersona).reduce((n, s) => n + s.initiativesToday, 0);
+    : mock ? Object.values(initiativeStateByPersona).reduce((n, s) => n + s.initiativesToday, 0) : 0;
   const initiativesMax = live
     ? sumLive((o) => o.initiatives_max)
-    : Object.values(initiativeStateByPersona).reduce((n, s) => n + s.maxPerDay, 0);
+    : mock ? Object.values(initiativeStateByPersona).reduce((n, s) => n + s.maxPerDay, 0) : 0;
 
   return (
     <div className="section home">
@@ -277,15 +292,16 @@ export default function Home({ onNavigate }: HomeProps) {
         <div className="home-presence-grid">
           {personas.map((p) => {
             // Занятие — только живое состояние персоны (living); без
-            // бэкенда — прочерк, демо-занятия не подставляем
+            // бэкенда — объяснение, демо-занятия не подставляем
             const o = ov(p.id);
             const activity = live
               ? o?.state
                 ? [o.state.pastime, o.state.location].filter(Boolean).join(' · ')
                 : t('home.noState')
-              : '—';
+              : noLink ? t('home.noLink') : '—';
             const mood = live ? o?.state?.mood : undefined;
-            const lastReply = live ? ago(o?.last_user_ts) : p.lastReply;
+            const localTs = local?.get(p.id)?.lastUserTs;
+            const lastReply = live ? ago(o?.last_user_ts) : localTs ? ago(localTs) : local ? t('home.unknown') : p.lastReply;
             return (
               <button
                 key={p.id}
@@ -316,7 +332,7 @@ export default function Home({ onNavigate }: HomeProps) {
                     </div>
                   </div>
                 </div>
-                <div className={'home-presence-activity' + (live && !o?.state ? ' home-presence-activity--none' : '')}>
+                <div className={'home-presence-activity' + ((live && !o?.state) || noLink ? ' home-presence-activity--none' : '')}>
                   {activity}
                 </div>
                 {(unread[p.id] ?? 0) > 0 ? (
@@ -332,35 +348,47 @@ export default function Home({ onNavigate }: HomeProps) {
         </div>
       </div>
 
-      {/* Телеметрия ядра */}
-      <div className="home-telemetry">
+      {/* Телеметрия ядра; без связи — только число персон (они на телефоне),
+          остальное — объяснение вместо цифр */}
+      <div className={`home-telemetry${noLink && !mock ? ' home-telemetry--nolink' : ''}`}>
         <div className="home-tele-cell">
           <div className="corner tl" />
           <div className="corner br" />
           <div className="home-tele-label">{t('home.telePersonas')}</div>
           <div className="home-tele-value">{personas.length}</div>
         </div>
-        <div className="home-tele-cell">
-          <div className="corner tl" />
-          <div className="corner br" />
-          <div className="home-tele-label">{t('home.teleLtm')}</div>
-          <div className="home-tele-value">{totalLtmFacts}</div>
-        </div>
-        <div className="home-tele-cell">
-          <div className="corner tl" />
-          <div className="corner br" />
-          <div className="home-tele-label">{t('home.teleReminders')}</div>
-          <div className="home-tele-value">{activeReminders}</div>
-        </div>
-        <div className="home-tele-cell">
-          <div className="corner tl" />
-          <div className="corner br" />
-          <div className="home-tele-label">{t('home.teleInitiatives')}</div>
-          <div className="home-tele-value">
-            {initiativesToday}
-            <span> / {initiativesMax}</span>
+        {noLink && !mock ? (
+          <div className="home-tele-cell">
+            <div className="corner tl" />
+            <div className="corner br" />
+            <div className="home-tele-label">{t('home.teleCore')}</div>
+            <div className="home-tele-note">{t('home.teleNoLink')}</div>
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="home-tele-cell">
+              <div className="corner tl" />
+              <div className="corner br" />
+              <div className="home-tele-label">{t('home.teleLtm')}</div>
+              <div className="home-tele-value">{totalLtmFacts}</div>
+            </div>
+            <div className="home-tele-cell">
+              <div className="corner tl" />
+              <div className="corner br" />
+              <div className="home-tele-label">{t('home.teleReminders')}</div>
+              <div className="home-tele-value">{activeReminders}</div>
+            </div>
+            <div className="home-tele-cell">
+              <div className="corner tl" />
+              <div className="corner br" />
+              <div className="home-tele-label">{t('home.teleInitiatives')}</div>
+              <div className="home-tele-value">
+                {initiativesToday}
+                <span> / {initiativesMax}</span>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Лента событий «пока вас не было» */}
@@ -371,6 +399,7 @@ export default function Home({ onNavigate }: HomeProps) {
         </div>
         <div className="home-feed">
           {live && feedRows.length === 0 && <div className="home-feed-empty">{t('home.feedEmpty')}</div>}
+          {noLink && !mock && <div className="home-feed-empty">{t('home.feedNoLink')}</div>}
           {feedRows.map((row, i) => (
             <div key={i} className="home-feed-row">
               <span className={`badge home-feed-badge--${row.kind}`}>

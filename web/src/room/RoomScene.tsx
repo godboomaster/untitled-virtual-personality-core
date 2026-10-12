@@ -48,6 +48,7 @@ export interface RoomSceneProps {
   note?: RoomSceneNote | null; // последнее непрочитанное событие — записка на столе
   nextPlan?: RoomPlan | null;
   compact?: boolean; // PiP: только сцена и одна строка статуса
+  offline?: boolean; // нет связи с ядром: сцена приглушена, персона дремлет за столом
   editable?: boolean; // перетаскивание/resize меток предметов
   ownerDocument?: Document | null;
   className?: string;
@@ -68,7 +69,7 @@ const SNAP_MS = 3000;
 function RoomSceneImpl(props: RoomSceneProps) {
   const {
     personaId, personaName, config, spotKey, pose, statusLine, avatar, sprite, sprites, roomBg, items,
-    itemsReady = true, timeOfDay, weather, note, nextPlan, compact = false, editable = false, ownerDocument, className, style,
+    itemsReady = true, timeOfDay, weather, note, nextPlan, compact = false, offline = false, editable = false, ownerDocument, className, style,
     overlay, onClick, onItemChange, onPoke, onNoteOpen,
   } = props;
   const { t } = useI18n();
@@ -99,9 +100,10 @@ function RoomSceneImpl(props: RoomSceneProps) {
 
   // Поза тела: реплики (with_you, взгляд) не поднимают персону с места —
   // тело остаётся в последней серверной позе на этом месте (или в позе места
-  // по умолчанию), к зрителю поворачивается только лицо. Спящего клик не будит
+  // по умолчанию), к зрителю поворачивается только лицо. Спящего (и
+  // дремлющего без связи) клик не будит
   const cue: 'with_you' | 'glance' | null =
-    pose === 'sleep' || pose === 'away' ? null
+    offline || pose === 'sleep' || pose === 'away' ? null
     : glancing || pose === 'glance' ? 'glance'
     : pose === 'with_you' ? 'with_you'
     : null;
@@ -136,6 +138,7 @@ function RoomSceneImpl(props: RoomSceneProps) {
     // Спит в кровати: кот перебирается на одеяло в ногах
     !roomBg && spotKey === 'bed' && body === 'sleep' ? 'room-scene--in-bed' : '',
     visible ? '' : 'room-scene--paused',
+    offline ? 'room-scene--offline' : '',
     className ?? '',
   ].filter(Boolean).join(' ');
 
@@ -177,6 +180,13 @@ function RoomSceneImpl(props: RoomSceneProps) {
         <ScenePet kind={config.pet} label={config.petLabel} compact={compact} ownerDocument={ownerDocument} />
       )}
       {(timeOfDay === 'night' || timeOfDay === 'evening') && <div className="room-night-shade" />}
+      {offline && <div className="room-offline-veil" />}
+      {offline && !compact && (
+        <div className="room-offline-plate" role="status">
+          <span className="room-offline-plate-k">{t('room.noLink.title')}</span>
+          <span>{t('room.noLink.hint')}</span>
+        </div>
+      )}
       {note && (
         <button
           type="button"
@@ -206,6 +216,7 @@ function RoomSceneImpl(props: RoomSceneProps) {
           sprites={sprites}
           seed={personaId}
           name={personaName}
+          dozing={offline}
           onPoke={poke}
         />
       )}
@@ -511,10 +522,11 @@ interface AvatarLayerProps {
   sprites?: Partial<Record<string, SpriteLike>> | null;
   seed: string;
   name: string;
+  dozing: boolean;
   onPoke: () => void;
 }
 
-const AvatarLayer = memo(function AvatarLayer({ point, body, cue, seat, avatar, sprite, sprites, seed, name, onPoke }: AvatarLayerProps) {
+const AvatarLayer = memo(function AvatarLayer({ point, body, cue, seat, avatar, sprite, sprites, seed, name, dozing, onPoke }: AvatarLayerProps) {
   const { t } = useI18n();
   const anchorRef = useRef<HTMLDivElement>(null);
   const mountedAt = useRef(0);
@@ -584,7 +596,7 @@ const AvatarLayer = memo(function AvatarLayer({ point, body, cue, seat, avatar, 
               alt={t('room.spriteAlt')}
             />
           ) : (
-            <AvatarFigure config={avatar} pose={shownBody} attention={shownCue} seat={seat} height={132} seed={seed} />
+            <AvatarFigure config={avatar} pose={shownBody} attention={shownCue} seat={seat} height={132} seed={seed} dozing={dozing && !walk} />
           )}
         </div>
       </div>

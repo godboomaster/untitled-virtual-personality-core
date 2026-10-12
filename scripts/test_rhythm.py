@@ -23,6 +23,7 @@ def main():
     import os
     tmp = tempfile.mkdtemp(prefix="rhythm_smoke_")
     os.environ["DATA_DIR"] = tmp
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     # RhythmManager/ChatActivityTracker пишут в относительный data/ — уходим в tmp
     os.chdir(tmp)
 

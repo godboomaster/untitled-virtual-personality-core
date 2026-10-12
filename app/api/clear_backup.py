@@ -19,10 +19,13 @@ import time
 from pathlib import Path
 
 from app.api.security import safe_join, safe_segment
+from app.core.paths import data_dir
 
 logger = logging.getLogger(__name__)
 
-_DATA_DIR = Path(__file__).parent.parent.parent / "data"
+# Корзина — в папке данных ядра (paths.data_dir()), как вся память; тест
+# может подставить свою папку
+_DATA_DIR: Path | None = None
 _RETENTION_DAYS = 7
 
 
@@ -30,7 +33,7 @@ def _backup_root(persona: str) -> Path | None:
     # None — persona не прошла проверку формата (см. app/api/security):
     # вызывающие уже гейтят persona через list_personas()/_get_bot, это —
     # рубеж защиты в глубину на случай, если такого вызова где-то не будет.
-    base = safe_join(_DATA_DIR, persona, prefix="api_")
+    base = safe_join(_DATA_DIR if _DATA_DIR is not None else data_dir(), persona, prefix="api_")
     return base / "clear_backups" if base is not None else None
 
 

@@ -26,6 +26,7 @@ from app.core.paths import data_dir
 # Общий классификатор ответов «да/нет» — одно определение на проект
 # (см. комментарий перед _LEARN_SYNONYMS)
 from app.features.computer_control import classify_confirmation
+from app.core import startup_quiet
 
 logger = logging.getLogger(__name__)
 
@@ -2311,6 +2312,8 @@ class LearningManager:
 
     async def _loop(self):
         logger.info(f"[Learning] Цикл запущен для context={self.context}")
+        # Уроки по расписанию — после тишины запуска (startup_quiet)
+        await startup_quiet.wait_quiet(self.context, "[Learning]")
         while self._running:
             try:
                 now = time.time()

@@ -7,6 +7,7 @@
 import { useEffect } from 'react';
 import { useI18n } from '../i18n';
 import { closeImageZoom, openImageZoom, useImageZoom } from '../imageZoomStore';
+import { BACK_OVERLAY, useBackHandler } from '../backStack';
 
 // Контентные картинки, по которым клик открывает лайтбокс:
 // сообщения чата, превью прикрепления над вводом, превью в панели арта
@@ -30,6 +31,8 @@ export default function ImageLightbox() {
     document.addEventListener('click', onClick);
     return () => document.removeEventListener('click', onClick);
   }, []);
+
+  useBackHandler(src !== null, BACK_OVERLAY, closeImageZoom);
 
   // Esc закрывает (слушатель только пока лайтбокс открыт)
   useEffect(() => {

@@ -181,6 +181,24 @@ _T = {
               "control mode\"."},
     "cc_mode_already_off": {"ru": "Режим управления и так выключен.",
                             "en": "Control mode is already off."},
+    # Команда браузеру при выключенном режиме: честно и сразу, без модели
+    # (та «открывала» на словах), с предложением включить и выполнить
+    "cc_mode_offer": {
+        "ru": "Режим управления выключен, так что я ничего не сделал. "
+              "Включить его и выполнить «{cmd}»?",
+        "en": "Control mode is off, so I haven't done anything. Turn it on "
+              "and run \"{cmd}\"?"},
+    "cc_mode_offer_declined": {
+        "ru": "Хорошо, режим управления не включаю.",
+        "en": "Okay, I'm leaving control mode off."},
+    "cc_mode_on_short": {
+        "ru": "Включил режим управления (напоминания и дела пока молчат; "
+              "закончить — «выйди из режима управления»).",
+        "en": "Control mode is on (reminders and the todo list are paused; "
+              "to finish — \"exit control mode\")."},
+    "cc_mode_offer_repeat": {
+        "ru": "Повтори команду — теперь выполню.",
+        "en": "Repeat the command — I'll run it now."},
     "cc_mode_off": {
         "ru": "Вышел из режима управления — браузером не управляю. "
               "Напоминания, список дел, инвентарь и обучение снова работают.",
@@ -442,6 +460,9 @@ _T = {
     "url_params_note": {
         "ru": "В адресе есть параметры: {url}",
         "en": "The address has parameters: {url}"},
+    "marker_url_unverified": {
+        "ru": "Адрес предложила модель — я его не проверял.",
+        "en": "The model suggested this address — I haven't checked it."},
     "marker_url_params": {
         "ru": "Ссылку с параметрами, которую предложила модель, сам не "
               "открываю — если нужно, скажи «открой …» и адрес.",
@@ -651,6 +672,14 @@ _T = {
                            "en": "Couldn't read the page."},
     "ladder_zoom_failed": {"ru": "Не удалось изменить масштаб.",
                            "en": "Couldn't change the zoom."},
+    # «открой X»: команда распознана моделью, а сайт не нашёлся — вместо
+    # адреса, придуманного моделью в обычном ответе
+    "open_not_found": {
+        "ru": "Не нашёл, что открыть по «{target}». Назови сайт или адрес точнее "
+              "(например, «открой nstu.ru») — гадать ссылку не буду.",
+        "en": "I couldn't find what to open for \"{target}\". Name the site or "
+              "address more precisely (for example, \"open nstu.ru\") — I won't "
+              "guess a link."},
     "ladder_not_found": {"ru": "Не нашёл это на странице.",
                          "en": "Couldn't find that on the page."},
 }

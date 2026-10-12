@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 def main():
     os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="cc_ux_smoke_")
     # Папки ботов-заготовок (ux_<ns>) — во временный каталог, не в data/:
-    # data_dir() читает VPC_DATA_DIR, DATA_DIR он не видит
+    # папка данных одна, и VPC_DATA_DIR важнее DATA_DIR
     os.environ["VPC_DATA_DIR"] = tempfile.mkdtemp(prefix="cc_ux_vpc_")
     tmp = Path(tempfile.mkdtemp(prefix="cc_ux_data_"))
     import app.core.router as _net_router

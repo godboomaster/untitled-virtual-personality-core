@@ -12,6 +12,32 @@ from app.api.security import PersonaId, SafeId
 # последний рубеж, на случай пути в обход pydantic), а дополняет её.
 
 
+class PhoneActionReport(BaseModel):
+    """Итог команды телефону («поставь будильник на 8», «открой Telegram»):
+    исполняет само приложение на телефоне (web/src/phone/), ядру — только
+    итог, из него app/features/phone_actions.py собирает заметку персоне."""
+    kind: Literal["alarm", "timer", "alarms_list", "alarm_off", "open_app", "torch"]
+    # ok — сделано; ask — не названо время/длительность, ничего не сделано;
+    # no_handler — на телефоне нет приложения (часов) или фонарика;
+    # unsupported_date — будильник на дату, а часы ставят только ближайшее время;
+    # not_found / ambiguous — приложение не нашлось / подходят несколько;
+    # busy — фонарик занят камерой; background — голосом при свёрнутом
+    # приложении, а Android не дал открыть часы/приложение из фона
+    status: Literal["ok", "ask", "no_handler", "unsupported_date", "not_found",
+                    "ambiguous", "busy", "background", "failed"]
+    hour: Optional[int] = Field(None, ge=0, le=23)
+    minute: Optional[int] = Field(None, ge=0, le=59)
+    # Дни повтора будильника: 1 — воскресенье … 7 — суббота (Calendar Android)
+    days: list[int] = Field(default_factory=list, max_length=7)
+    # Ближайшее срабатывание будильника — для unsupported_date
+    nearest: Optional[Literal["today", "tomorrow"]] = None
+    seconds: Optional[int] = Field(None, ge=1, le=86400)
+    label: Optional[str] = Field(None, max_length=80)
+    app: Optional[str] = Field(None, max_length=80)
+    candidates: list[str] = Field(default_factory=list, max_length=6)
+    on: Optional[bool] = None
+
+
 class ChatRequest(BaseModel):
     persona: PersonaId
     message: str
@@ -20,10 +46,59 @@ class ChatRequest(BaseModel):
     user_name: Optional[str] = None
     reply_context: Optional[str] = None
     image: Optional[str] = None  # картинка: base64 или dataURL («data:image/...;base64,...»)
+    # camera — кадр с камеры: смотрит только локальная модель (как экран);
+    # upload — обычное вложение, каскад vision-провайдер → локальная
+    image_source: Literal["upload", "camera"] = "upload"
     # Реплика пришла из скина (SkinFrame): скин — сторонний код и мог отправить
     # её сам, поэтому в таком ходе режим управления недоступен
     # (BotInstance.process_message(from_skin=True))
     from_skin: bool = False
+    # Команда телефону, уже исполненная приложением: персона отвечает по
+    # итогу (заметка в промпт хода), сама ничего не исполняет
+    phone_action: Optional[PhoneActionReport] = None
+    # Клиент — приложение на телефоне: «открой файл X» присылает файл в чат,
+    # а не открывает его на компьютере ядра (server._file_delivery)
+    client: Optional[Literal["app"]] = None
+    # Просьба с голосовой активации («Коннор, …»): одну фразу могли услышать
+    # и компьютер ядра, и телефон — вторая копия получит duplicate
+    voice: bool = False
+
+
+class VoiceWakeHold(BaseModel):
+    """Пауза голосовой активации ядра (POST /api/voice/wake/hold), секунды."""
+    seconds: float = Field(..., ge=0, le=600)
+
+
+class OfflineMessage(BaseModel):
+    """Реплика, написанная без ноутбука (приложение на телефоне)."""
+    id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    role: Literal["user", "assistant"]
+    text: str = Field(..., max_length=8000)
+    ts: float
+    # cloud — ответила облачная модель с телефона, local — Gemma на телефоне,
+    # queued — ответа не было (только реплика пользователя)
+    source: Optional[Literal["cloud", "local", "queued"]] = None
+
+
+class OfflineImportRequest(BaseModel):
+    user_id: str = "web_user"
+    chat_id: Optional[str] = "web_user"
+    user_name: Optional[str] = None
+    messages: list[OfflineMessage] = Field(..., max_length=200)
+
+
+class OfflineReminder(BaseModel):
+    # Напоминание, поставленное на телефоне без ноутбука (offline_api.import_reminders)
+    id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    task: str = Field("", max_length=500)
+    at: float
+
+
+class OfflineRemindersRequest(BaseModel):
+    user_id: str = "web_user"
+    chat_id: Optional[str] = "web_user"
+    user_name: Optional[str] = None
+    reminders: list[OfflineReminder] = Field(..., max_length=50)
 
 
 class ChatResponse(BaseModel):
@@ -40,6 +115,18 @@ class ChatResponse(BaseModel):
     control_mode: bool = False
     # Скриншоты страницы из режима управления («что на странице?») — dataURL
     images: list[str] = Field(default_factory=list)
+    # Кнопки ответа на вопрос режима управления, которого ждёт чат
+    # (BotInstance.cc_answer_options): {kind, options: [{label, send} | {role}]}
+    answer_options: Optional[dict] = None
+    # Карточка задачи агента (BotInstance.cc_task_card): цель, статус,
+    # план заказа с отметками и журнал хода
+    task: Optional[dict] = None
+    # Файлы с компьютера ядра («пришли файл X»): {id, name, size, url} —
+    # url отдаёт файл под тем же токеном (app/api/file_links)
+    files: list[dict] = Field(default_factory=list)
+    # Голосовая просьба, которую уже обрабатывает другое устройство
+    # (ChatRequest.voice): reply пустой, озвучивать нечего
+    duplicate: bool = False
 
 
 class PresenceRequest(BaseModel):
@@ -71,6 +158,8 @@ class HistoryMessage(BaseModel):
     timestamp: Optional[float] = None  # unix-секунды
     user_name: Optional[str] = None
     sender_id: Optional[str] = None
+    # Файлы, присланные этим ответом, пока ссылки живы (app/api/file_links)
+    files: Optional[list[dict]] = None
 
 
 # Части «Очистить диалог» (опасная зона досье): stm — переписка, ltm — факты,

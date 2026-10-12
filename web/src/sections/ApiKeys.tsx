@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import InfoButton from '../components/InfoButton';
 import Select from '../components/Select';
 import { useI18n, useMockData } from '../i18n';
-import { api, ApiError } from '../api';
+import { api, ApiError, isNativeApp } from '../api';
+import ConnectionCard from '../link/ConnectionCard';
+import { testNativeNotification } from '../bgInbox';
+import LinkSettings from '../link/LinkSettings';
+import OfflineCard from '../offline/OfflineCard';
+import PhoneCheckCard from '../phone/PhoneCheckCard';
 import type { LocalStatus, LocationConfig, TimezoneConfig } from '../api';
 import { refetchProviders, useApiOnline, useApiProviders, useApiWebchat } from '../apiData';
 import { useDevMode, setDevMode } from '../devMode';
@@ -44,7 +49,12 @@ export default function ApiKeys() {
   const [notifyTesting, setNotifyTesting] = useState(false);
   const runNotifyTest = () => {
     setNotifyTesting(true);
-    testNotification()
+    // В приложении — уведомление Android (тот же канал, что у сообщений
+    // персон); в браузере — системное уведомление браузера
+    const run = isNativeApp()
+      ? testNativeNotification().then((r) => t(`settings.notifyTestNative.${r}`))
+      : testNotification();
+    run
       .then(setNotifyTestResult)
       .catch(() => setNotifyTestResult('Не удалось проверить — см. консоль браузера (F12)'))
       .finally(() => setNotifyTesting(false));
@@ -231,6 +241,14 @@ export default function ApiKeys() {
         </div>
       </div>
 
+      {/* Телефон: к какому ноутбуку подключено и как. Компьютер: какие
+          телефоны подключены (VPC Link) и QR-код для нового */}
+      {isNativeApp() ? <ConnectionCard /> : <LinkSettings />}
+      {/* Телефон: ответы без ноутбука и модель на телефоне */}
+      {isNativeApp() && <OfflineCard />}
+      {/* Телефон: команды телефону из чата — проверка и журнал */}
+      {isNativeApp() && <PhoneCheckCard />}
+
       {/* Общие настройки: язык интерфейса, подсказки */}
       <div className="card">
         <h2 className="card-title">{t('settings.general')}</h2>
@@ -321,7 +339,14 @@ export default function ApiKeys() {
               style={{ width: '100%', accentColor: 'var(--accent)' }}
             />
           </div>
-          <p className="field-hint">{notifyTestResult ?? t(`settings.notifyState.${notifyPermissionState()}`)}</p>
+          {/* В приложении Notification API нет — подсказка про браузер ни к чему:
+              в шторку пишет фоновая служба («Подключение» выше) */}
+          <p className="field-hint">
+            {notifyTestResult ??
+              (isNativeApp() && notifyPermissionState() === 'unsupported'
+                ? t('settings.notifyState.app')
+                : t(`settings.notifyState.${notifyPermissionState()}`))}
+          </p>
         </div>
         <div className="field">
           <label className="field-label">{t('settings.hints')}</label>

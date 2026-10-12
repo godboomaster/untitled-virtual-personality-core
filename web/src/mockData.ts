@@ -31,6 +31,9 @@ export interface Persona {
   muted?: boolean; // заморожена (features.muted): молчит везде, настроение испорчено
   builtin?: boolean; // встроенная персона проекта: удалить нельзя
   customized?: boolean; // у встроенной есть своя копия: удаление сбрасывает к встроенной
+  // Создана на телефоне без ядра и ещё не перенесена на него
+  // (offline/localPersonas.ts): error — ядро её не приняло, текст — в error
+  local?: { status: 'pending' | 'error'; error?: string };
   temperature: number;
   maxTokens: number;
   topP: number;
@@ -45,9 +48,16 @@ export interface ChatMessage {
   replyTo?: number; // id сообщения, на которое это ответ (цитата)
   image?: string; // вложение-картинка (dataURL)
   images?: string[]; // несколько картинок одним сообщением (скриншоты страницы из режима управления)
+  files?: { id: string; name: string; size: number; url: string }[]; // файлы с компьютера ядра («пришли файл X»)
+  stmText?: string; // каким текстом ответ лёг в историю, если другим (список файлов — заглушкой)
   fromInbox?: boolean; // фоновое сообщение (inbox): в STM не пишется — при перечитывании истории сохраняем
   status?: 'queued' | 'sent' | 'read'; // доставка нашей реплики: в дебаунс-очереди → отправлено → прочитано ботом
   read?: boolean; // сообщение бота прочитано пользователем (чат видим/в фокусе)
+  // Без ноутбука (web/src/offline): кто ответил — облако с телефона, модель
+  // телефона; у реплики пользователя queued — ждёт связи
+  offline?: 'cloud' | 'local' | 'queued' | 'reminder';
+  // Напоминание, поставленное этой репликой без ноутбука (карточка с отменой)
+  offlineReminder?: { id: string; task: string; at: number };
 }
 
 export interface LtmFact {

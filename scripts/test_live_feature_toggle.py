@@ -21,6 +21,7 @@ def main():
     import os
     tmp = tempfile.mkdtemp(prefix="live_toggle_smoke_")
     os.environ["DATA_DIR"] = tmp
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
 
     import importlib
     import app.core.config as config_mod

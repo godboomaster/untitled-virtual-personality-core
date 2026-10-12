@@ -669,6 +669,8 @@ _CHOICE_FILLER = frozenset({
     "та", "то", "ту", "й", "я", "е", "ю", "го", "ой",
     "number", "option", "link", "site", "open", "the", "one", "take",
     "let", "s", "go", "with", "i", "ll", "pick", "choose", "want", "need",
+    # Ответ на список файлов (app/features/file_access): «пришли второй файл»
+    "файл", "пришли", "скинь", "отправь", "кидай", "file", "send",
 })
 
 
@@ -1883,6 +1885,22 @@ def parse_control_mode(text: str) -> Optional[bool]:
     if not text or len(text) > 60:
         return None
     text = _strip_polite(text)
+    exact = _control_mode_exact(text)
+    if exact is not None:
+        return exact
+    # Опечатка («режим урпавления») или не та раскладка («ht;bv
+    # eghfdktybz»): иначе фраза уходила модели, та отвечала «на словах»,
+    # а человек ждал ответа и набирал заново. Засчитывается, только если
+    # исправленную фразу целиком разобрала та же регулярка
+    from app.features.cc_typos import fix_mode_phrase
+    for cand in fix_mode_phrase(text):
+        got = _control_mode_exact(_strip_polite(cand))
+        if got is not None:
+            return got
+    return None
+
+
+def _control_mode_exact(text: str) -> Optional[bool]:
     if _CONTROL_MODE_OFF_RE.match(text) or _CONTROL_MODE_EN_OFF_RE.match(text):
         return False
     if _CONTROL_MODE_ON_RE.match(text) or _CONTROL_MODE_EN_ON_RE.match(text):
@@ -4683,6 +4701,8 @@ _NON_CLICK_ONOMATOPOEIA_RE = re.compile(r"^([^\W\d_]{2,5})(?:[-\s]\1){1,3}$",
 # ход бота) на время вызова, снимается токеном — в потоке пула не залипает
 _CC_CHAT: contextvars.ContextVar = contextvars.ContextVar("vpc_cc_chat",
                                                           default=None)
+# Адрес в вопросе «Открыть …?» длиннее — сокращается в середине с «…»
+URL_SHOWN_MAX = 90
 # Сколько чатов держит last_tab.json (свежие по ts)
 LAST_TAB_MAX_CHATS = 50
 
@@ -5367,6 +5387,13 @@ class ComputerControlManager:
             logger.info(f"[CompControl] Ожидаю подтверждения: "
                         f"{self._describe_log(accepted)}")
             q = self.confirm_question(accepted, lang=lang)
+            if any(a.get("kind") == "url" and urlparse(str(a.get("value") or ""))
+                   .path.strip("/") for a in passed):
+                # Глубокую ссылку из маркера составила модель — ни поиск, ни
+                # история, ни алиас её не видели (корень сайта она называет
+                # верно, а путь к странице выдумывает): человек должен знать
+                # это до «да»
+                q += "\n" + cc_texts.t("marker_url_unverified", lang)
             clean = f"{clean}\n\n{q}" if clean else q
         return clean, notices
 
@@ -6178,13 +6205,31 @@ class ComputerControlManager:
 
     @staticmethod
     def _host(action: dict) -> str:
-        p = urlparse(action["value"])
-        host = (p.hostname or action["value"]).lower().removeprefix("www.")
-        # Значимый сегмент пути показываем: «Открыть example.com/maps?»,
-        # а не «Открыть example.com?» (последний: путь может начинаться
-        # со служебных /intl/ru/…)
-        seg = next((s for s in reversed(p.path.split("/")) if s), "")
-        return f"{host}/{seg}" if seg else host
+        """Адрес действия человеку (вопрос «Открыть …?», «открыл …»): хост
+        без www и путь КАК ЕСТЬ — без схемы, query и fragment (параметры
+        показывает _url_params_note, секреты пути маскирует scrub_url).
+        Длинный путь сокращается в середине с «…»: показанное не должно
+        выглядеть рабочим адресом, которого нет. Раньше показывался хост +
+        последний сегмент — 05.10 «ciu.nstu.ru/kutuzova_irina_aleksandrovna»
+        вместо …/kaf/pii/a/ic/view/kutuzova_…: человек подтвердил один
+        адрес, открылся другой, а скопированный из вопроса — не существовал."""
+        from urllib.parse import unquote
+        from app.features.cc_privacy import scrub_url
+        raw = str(action["value"])
+        try:
+            p = urlparse(scrub_url(raw) or raw)
+        except Exception:
+            p = urlparse(raw)
+        host = (p.hostname or raw).lower().removeprefix("www.")
+        segs = [unquote(s) for s in (p.path or "").split("/") if s]
+        if not segs:
+            return host
+        shown = host + "/" + "/".join(segs)
+        if len(shown) <= URL_SHOWN_MAX:
+            return shown
+        last = segs[-1] if len(segs[-1]) <= 60 else segs[-1][:59] + "…"
+        mid = f"/{segs[0]}/…/" if len(segs) > 2 else "/…/"
+        return host + (mid if len(segs) > 1 else "/") + last
 
     @staticmethod
     def _url_params_note(action: dict, lang: Optional[str] = None) -> str:
@@ -6305,20 +6350,67 @@ class ComputerControlManager:
         return f"Выполнить задачу «{action.get('key') or action['kind']}»?"
 
     @staticmethod
-    def _choices_question(action: dict, lang: Optional[str] = None) -> str:
-        """«Какой сайт открыть?» — нумерованные варианты: заголовок из
-        выдачи и адрес (без схемы и секретных параметров, scrub_url)."""
+    def _choice_labels(action: dict) -> List[str]:
+        """Подписи вариантов «какой сайт открыть?»: заголовок из выдачи и
+        адрес (без схемы и секретных параметров, scrub_url) — те же строки,
+        что в вопросе и на кнопках веба."""
         from app.features import cc_texts
         from urllib.parse import unquote
         from app.features.cc_privacy import scrub_url
-        lines = []
-        for i, c in enumerate(action.get("choices") or (), 1):
+        out = []
+        for c in action.get("choices") or ():
             addr = re.sub(r"^https?://(www\.)?", "",
                           unquote(scrub_url(c.get("url"))))
             addr = cc_texts.clip(addr.rstrip("/"), 90)
             title = cc_texts.clip(" ".join(str(c.get("title") or "").split()), 70)
-            lines.append(f"{i}. {title} — {addr}" if title else f"{i}. {addr}")
+            out.append(f"{title} — {addr}" if title else addr)
+        return out
+
+    @classmethod
+    def _choices_question(cls, action: dict, lang: Optional[str] = None) -> str:
+        """«Какой сайт открыть?» — нумерованные варианты."""
+        from app.features import cc_texts
+        lines = [f"{i}. {s}" for i, s in enumerate(cls._choice_labels(action), 1)]
         return cc_texts.t("site_choices", lang, items="\n".join(lines))
+
+    def tracked_page(self, chat_id) -> Optional[dict]:
+        """Отслеживаемая вкладка чата {url, host, tab_id} — какую вкладку
+        показывать в трансляции веба. Только чтение: в отличие от _st(),
+        состояние нового чата не заводится."""
+        st = self._chat_states().get(_chat_key(chat_id))
+        if st is None or not (st.last_url or st.last_host):
+            return None
+        return {"url": st.last_url, "host": st.last_host, "tab_id": st.last_tab_id}
+
+    def view_describe(self, url: str) -> dict:
+        """Адрес вкладки для показа в вебе: без токенов/кодов (scrub_url) и
+        признак приватной страницы. Кадры приватной страницы человек видит
+        так же, как её скриншоты, — в модели и историю они не попадают."""
+        from app.features.cc_privacy import scrub_url
+        try:
+            private = bool(url) and self.is_private_page(url)
+        except Exception:
+            private = True  # проверить не вышло — консервативно
+        return {"url": scrub_url(url or ""), "private": private}
+
+    def pending_answer_options(self, chat_id: str, user_id=None) -> Optional[dict]:
+        """Варианты ответа на подтверждение, которого ждёт чат, — для кнопок
+        веба. Только чтение: в отличие от get_pending, протухший pending не
+        снимается и флаг «подтверждение истекло» не ставится (поллинг веба
+        не должен менять, что услышит человек на запоздалое «да»). Кнопка
+        шлёт текст обычной репликой — номер или «да»/«нет», — так что
+        разбор, владелец и TTL те же, что у набранного ответа."""
+        with self._lock:
+            entry = self._pending.get(str(chat_id))
+            if (not entry or time.time() > entry["expires_at"]
+                    or not self._pending_owner_ok(entry, user_id)):
+                return None
+            action = dict(entry["action"])
+        if action.get("choices"):
+            opts = [{"label": s, "send": str(i)}
+                    for i, s in enumerate(self._choice_labels(action), 1)]
+            return {"kind": "options", "options": opts + [{"role": "no"}]}
+        return {"kind": "yesno", "options": [{"role": "yes"}, {"role": "no"}]}
 
     @classmethod
     def describe_done(cls, action: dict, lang: Optional[str] = None) -> str:
@@ -6724,8 +6816,18 @@ class ComputerControlManager:
                         if act.get("field") else str(act["text"]))
                 return self.resolve_type(body, site, router, chat_id=chat_id)
             if kind == "open":
-                return self.resolve_many([str(act["target"])],
-                                         web_search=True), None
+                target = str(act["target"])
+                found = self.resolve_many([target], web_search=True)
+                if found is None:
+                    # Команда распознана, а сайта нет (поиск пуст/закрыт,
+                    # выдача не сошлась с названием): честный отказ. Раньше
+                    # (None, None) отдавал фразу в обычный разговор, и модель
+                    # сама вписывала маркер с выдуманным адресом (05.10:
+                    # «личная страница Кутузовой НГТУ» → …/kaf/pii/a/ic/view/…)
+                    from app.features import cc_texts
+                    return None, cc_texts.t("open_not_found", self.turn_lang(),
+                                            target=cc_texts.clip(target, 80))
+                return found, None
             if kind == "search":
                 return self.resolve_search(str(act["query"]),
                                            str(act["site"])), None

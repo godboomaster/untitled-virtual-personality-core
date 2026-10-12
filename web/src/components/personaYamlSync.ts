@@ -1,4 +1,4 @@
-import { isMap, isScalar, parseDocument, Scalar, visit } from 'yaml';
+import { isMap, isScalar, parseDocument, Scalar, stringify as stringifyYaml, visit } from 'yaml';
 import type { Document } from 'yaml';
 
 /* Синхронизация формы создания персоны с вставленным/загруженным persona.yaml.
@@ -59,6 +59,15 @@ export const tierSettings: Record<Exclude<IntellectTier, 'none'>, { temperature:
 };
 
 // Транслитерация имени в id (латиница, snake_case)
+/** Строка формы как скаляр YAML: в кавычках, только если иначе не прочтётся —
+ * «Смотритель: маяк» без них был вложенным ключом (YAML не разбирался ни на
+ * ядре, ни на телефоне), «#1» — комментарием, «yes» — булевым (ядро читает
+ * YAML 1.1 — PyYAML, отсюда version). Перевод строки —
+ * пробелом: поля однострочные */
+export function yamlScalar(s: string): string {
+  return stringifyYaml(s.replace(/\s*\n\s*/g, ' '), { lineWidth: 0, version: '1.1' }).trimEnd();
+}
+
 export function transliterate(s: string): string {
   const map: Record<string, string> = {
     а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'yo', ж: 'zh', з: 'z',

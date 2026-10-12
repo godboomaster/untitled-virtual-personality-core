@@ -3,12 +3,17 @@ import { api } from '../api';
 import type { LogEntry, SysMemory } from '../api';
 import { useI18n } from '../i18n';
 import { useApiOnline } from '../apiData';
+import { setDevLogOpen, useDevLogOpen } from '../devMode';
 
 /* Панель логов ядра (режим разработчика). Плавает поверх интерфейса справа
    снизу; в развёрнутом виде опрашивает /api/logs каждые 1.5 с инкрементально
    (по seq) и автопрокручивается к свежим записям. Над панелью — чип загрузки
    памяти/свопа хоста (опрос /api/system/memory каждые 3 с): переполненный
-   своп приводит к фризам хоста, за цифрой нужно следить. */
+   своп приводит к фризам хоста, за цифрой нужно следить.
+   На телефоне (docked) плавающая кнопка и чип закрывали поле ввода и
+   «Отправить»: там панель — полоса между шапкой и разделом (переписка
+   ужимается, ничего не перекрыто), открывает её кнопка LOGS в шапке, память
+   — в заголовке панели. */
 
 const MAX_LOCAL = 500; // сколько записей держим на клиенте
 
@@ -23,10 +28,10 @@ function memLevel(m: SysMemory): 'ok' | 'warn' | 'crit' {
   return 'ok';
 }
 
-export default function DevLogPanel() {
+export default function DevLogPanel({ docked = false }: { docked?: boolean }) {
   const { t } = useI18n();
   const apiOnline = useApiOnline();
-  const [open, setOpen] = useState(false);
+  const open = useDevLogOpen();
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [mem, setMem] = useState<SysMemory | null>(null);
   const lastSeq = useRef(0);
@@ -55,9 +60,11 @@ export default function DevLogPanel() {
     };
   }, [open, apiOnline]);
 
-  // Чип памяти — всегда, пока режим разработчика включён (и свёрнуто, и нет)
+  // Чип памяти — всегда, пока режим разработчика включён (и свёрнуто, и нет);
+  // на телефоне он в заголовке панели — только пока она открыта
+  const memShown = !docked || open;
   useEffect(() => {
-    if (!apiOnline) return;
+    if (!apiOnline || !memShown) return;
     let stop = false;
     const tick = async () => {
       try {
@@ -73,19 +80,19 @@ export default function DevLogPanel() {
       stop = true;
       clearInterval(timer);
     };
-  }, [apiOnline]);
+  }, [apiOnline, memShown]);
 
   // Автопрокрутка к свежим записям
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
   }, [entries, open]);
 
-  if (!apiOnline) return null;
+  if (!apiOnline || (docked && !open)) return null;
 
   const memChip = mem && mem.ok ? (
     <div
       className={`devmem-chip devmem-chip--${memLevel(mem)}`}
-      style={{ bottom: open ? 344 : 54 }}
+      style={docked ? undefined : { bottom: open ? 344 : 54 }}
       title={t('devmem.title', {
         used: mem.mem_used_gb ?? 0, total: mem.mem_total_gb ?? 0,
         avail: mem.mem_available_gb ?? 0,
@@ -100,7 +107,7 @@ export default function DevLogPanel() {
     return (
       <>
         {memChip}
-        <button type="button" className="devlog-fab" onClick={() => setOpen(true)}>
+        <button type="button" className="devlog-fab" onClick={() => setDevLogOpen(true)}>
           LOGS //
         </button>
       </>
@@ -109,15 +116,16 @@ export default function DevLogPanel() {
 
   return (
     <>
-      {memChip}
-      <div className="devlog-panel">
+      {!docked && memChip}
+      <div className={`devlog-panel${docked ? ' devlog-panel--docked' : ''}`}>
       <div className="devlog-head">
         <span>{t('devlog.title')}</span>
         <span className="devlog-head-actions">
+          {docked && memChip}
           <button type="button" className="btn btn--ghost" onClick={() => setEntries([])}>
             {t('devlog.clear')}
           </button>
-          <button type="button" className="btn btn--ghost" onClick={() => setOpen(false)}>
+          <button type="button" className="btn btn--ghost" onClick={() => setDevLogOpen(false)}>
             —
           </button>
         </span>

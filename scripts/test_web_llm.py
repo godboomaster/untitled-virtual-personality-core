@@ -34,6 +34,14 @@ def _mp_quota_worker(base_dir: str, site: str, channel: str, n: int):
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="webllm_data_"))
     ok = 0
+    # Темп отправок, бюджет новых чатов и блокировки аккаунтов — во временной
+    # папке (не в data/ того, кто запускает тест); бюджет проверяет
+    # test_webchat_ban, здесь чаты открываются подряд — без ограничения
+    import app.features.web_llm as _wl_paths
+    _wl_paths._pace_path = lambda: tmp / "webchat_pacing.json"
+    _wl_paths._suspended_path = lambda: tmp / "webchat_suspended.json"
+    os.environ["WEBCHAT_NEW_CHATS_PER_HOUR"] = "0"
+    os.environ["WEBCHAT_NEW_CHATS_PER_DAY"] = "0"
     # Тест не должен зависеть от живой сети: internet_available() — TCP-пробы
     # 1.1.1.1:443/8.8.8.8:53, которые в песочнице/за файрволом молчат, и тогда
     # webchat-ветка роутера и резолв сайтов честно «офлайн» → ложные FAIL

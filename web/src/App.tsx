@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
+import Icon from './components/icons';
 import DevLogPanel from './components/DevLogPanel';
 import { DetroitBackground } from './effects/DetroitBackground';
 import { useI18n, useMockData } from './i18n';
@@ -7,7 +8,8 @@ import { useApiOnline, useCoreHealth } from './apiData';
 import { useInbox, useInboxPolling } from './inboxStore';
 import { ensureNotifyPermission, OPEN_CHAT_EVENT, setUnreadTitle } from './notifications';
 import { requestChatOverview, requestChatPersona } from './chatNavStore';
-import { useDevMode } from './devMode';
+import { setDevLogOpen, useDevLogOpen, useDevMode } from './devMode';
+import { useNarrowScreen } from './useNarrowScreen';
 import Start from './sections/Start';
 import Home from './sections/Home';
 import Chat from './sections/Chat';
@@ -20,6 +22,11 @@ import DialogHost from './components/DialogHost';
 import RoomPipHost from './room/RoomPip';
 import { getInitialTheme } from './useAppTheme';
 import type { AppTheme } from './useAppTheme';
+import { BACK_MENU, useBackHandler } from './backStack';
+import { syncSystemBars } from './nativeBars';
+import { listenBgNotificationTaps, syncBgInbox } from './bgInbox';
+import { syncWakeWord } from './wakeWord';
+import { useOfflineSync } from './offline/state';
 
 export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings';
 
@@ -27,6 +34,9 @@ type Theme = AppTheme;
 
 export default function App() {
   const [section, setSection] = useState<Section>('home');
+  // Узкий экран (телефон): меню разделов — выдвижная панель по кнопке в шапке
+  const [menuOpen, setMenuOpen] = useState(false);
+  useBackHandler(menuOpen, BACK_MENU, () => setMenuOpen(false));
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const { t } = useI18n();
   const { personas } = useMockData();
@@ -36,9 +46,14 @@ export default function App() {
   const coreDown = useCoreHealth() === 'down';
   const personasOnline = personas.filter((p) => p.status !== 'frozen').length;
   const devMode = useDevMode();
+  const devLogOpen = useDevLogOpen();
+  // Телефон: панель логов — полосой под шапкой, кнопка LOGS — в шапке
+  const narrow = useNarrowScreen();
   // Единый поллер фоновых сообщений персон (напоминания, инициативы) —
   // работает на всех экранах, накапливает непрочитанные
   useInboxPolling(apiOnline, personas);
+  // Телефон: ноутбук снова на связи — переписка без него уходит на него
+  useOfflineSync();
   // Присутствие (гейт фона) репортит экран чата — там известно, ЧЕЙ чат
   // открыт; ключ отметки — (персона, чат), см. presence.ts
   const { unread } = useInbox();
@@ -72,10 +87,21 @@ export default function App() {
     return () => window.removeEventListener(OPEN_CHAT_EVENT, openChat);
   }, []);
 
+  // Приложение на телефоне: тап уведомления фоновой службы — чат персоны
+  // (после подписки выше: тап, которым приложение запустили, ждёт в плагине);
+  // ядро ответило — служба перезапускается со свежими адресом и токеном
+  useEffect(() => {
+    syncBgInbox();
+    // «Слушать по имени»: служба получает свежие адрес и токен
+    syncWakeWord();
+    return listenBgNotificationTaps();
+  }, []);
+
   // Применяем тему к <html> и запоминаем выбор
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('vpc-theme', theme);
+    syncSystemBars(theme);
   }, [theme]);
 
   return (
@@ -83,16 +109,40 @@ export default function App() {
       <DetroitBackground />
       <Sidebar
         current={section}
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
         onSelect={(next) => {
           // Повторный клик по «Чат» внутри открытого чата — к странице всех чатов
           if (next === 'chat' && section === 'chat') requestChatOverview();
           setSection(next);
+          setMenuOpen(false);
         }}
       />
       <main className="content">
         <header className="topbar">
+          <button
+            type="button"
+            className="topbar-menu"
+            aria-label={t('topbar.menu')}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(true)}
+          >
+            <Icon name="menu" size={20} />
+            {totalUnread > 0 && <span className="topbar-menu-dot" aria-hidden="true" />}
+          </button>
           <div className="topbar-title">{t(`nav.${section}`)}</div>
           <div className="topbar-right">
+            {/* Без связи логов нет, а место нужно подписи «нет связи» и заголовку */}
+            {devMode && narrow && apiOnline && !coreDown && (
+              <button
+                type="button"
+                className={`topbar-devlog${devLogOpen ? ' topbar-devlog--on' : ''}`}
+                aria-pressed={devLogOpen}
+                onClick={() => setDevLogOpen(!devLogOpen)}
+              >
+                LOGS
+              </button>
+            )}
             <div className="theme-toggle" role="button" aria-label={t('topbar.themeToggle')}>
               <span className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>
                 LIGHT
@@ -114,6 +164,7 @@ export default function App() {
             </div>
           </div>
         </header>
+        {devMode && narrow && <DevLogPanel docked />}
         <div className="content-scroll">
           <div key={section} className="section-enter">
             {section === 'start' && <Start onNavigate={setSection} />}
@@ -126,7 +177,7 @@ export default function App() {
           </div>
         </div>
       </main>
-      {devMode && <DevLogPanel />}
+      {devMode && !narrow && <DevLogPanel />}
       {/* Лайтбокс: клик по контентной картинке — крупный просмотр */}
       <ImageLightbox />
       {/* Подтверждения и сообщения на странице (dialogStore) вместо window.confirm/alert */}

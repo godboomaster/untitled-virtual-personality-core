@@ -28,6 +28,7 @@ from app.core.telegram_sender import TelegramMessageSender
 from app.core.message_pacing import send_delay as _send_delay
 from app.features.file_sender import prepare_response, cleanup_files
 from app.features.reply_context import extract_reply_context
+from app.features import screen_look
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,44 @@ async def _reply_ai(message, text: str):
         cleanup_files(files)
 
     return sent_message_ids
+
+
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+async def _reply_with_files(message, text: str, files: list) -> list:
+    """Ответ + файлы с компьютера ядра («пришли файл X», file_access):
+    документами, первый несёт ответ подписью (лимит подписи — 1024).
+    Файлы — настоящие файлы пользователя: только читаем, не удаляем
+    (не prepare_response/cleanup_files — те стирают временные файлы кода).
+    Возвращает message_id отправленных."""
+    from app.features import file_access
+    ids = []
+    caption = text if text and len(text) <= 1024 else None
+    if text and caption is None:
+        ids += await _reply_ai(message, text)
+    lang = detect_language(text)
+    for i, f in enumerate(files):
+        try:
+            # Чтение — в потоке: файл до 50 МБ не должен держать event loop
+            data = await asyncio.to_thread(_read_bytes, f["path"])
+            sent = await message.reply_document(
+                document=InputFile(data, filename=f["name"]),
+                caption=caption if i == 0 else None)
+            if getattr(sent, "message_id", None):
+                ids.append(sent.message_id)
+        except Exception as e:
+            logger.warning(f"[files] не отправлен {f.get('name')}: {e}")
+            if i == 0 and caption:
+                ids += await _reply_ai(message, text)
+            try:
+                await message.reply_text(file_access.t(
+                    "send_failed", lang, name=f.get("name"), detail=str(e)[:200]))
+            except Exception:
+                pass
+    return ids
 
 
 async def _reply_with_photos(message, text: str, photos: list) -> list:
@@ -308,6 +347,15 @@ def create_handlers(bot: BotInstance) -> dict:
         display_name = get_user_display(user_id)
         logger.info(f"[{persona_name}] /start от {user_id} ({display_name})")
 
+        # /start в личке — новый разговор. «Очистить историю» в клиенте
+        # Telegram бот не видит (Bot API о ней не сообщает), но после неё
+        # клиент показывает кнопку START: переписку чата и тред веб-чата
+        # LLM начинаем заново, иначе бот продолжал бы стёртый разговор
+        if update.effective_chat.type == "private":
+            chat_id = str(update.effective_chat.id)
+            async with bot.user_turn_async(chat_id), _chat_lock(chat_id):
+                await asyncio.to_thread(bot.clear_chat_history, chat_id)
+
         start_greeting = bot.persona.persona_data.get("start_greeting")
         if persona_name == "connor":
             greeting = f"Привет, {display_name}. Я — Коннор, андроид модели RK800.\nОбратись ко мне по имени — и я помогу."
@@ -348,6 +396,7 @@ def create_handlers(bot: BotInstance) -> dict:
             "",
             "🧠 Память",
             "/stats — статистика памяти",
+            "/clear — очистить историю этого чата (разговор с чистого листа)",
             "/reset — сбросить мои факты о тебе",
             "/forget <что> — забыть конкретный факт",
             "/ltm_privacy [smart|strict] — приватность памяти: smart — публичный профиль доступен везде, strict — в каждом чате с нуля",
@@ -443,8 +492,34 @@ def create_handlers(bot: BotInstance) -> dict:
             return
         n = max(1, min(n, 500))
 
-        deleted = bot.stm_pop_last_n(n, chat_id)
+        # Под локом чата: идущий ответ не запомнит тред, сброшенный следом
+        async with bot.user_turn_async(chat_id), _chat_lock(chat_id):
+            deleted = await asyncio.to_thread(bot.stm_pop_last_n, n, chat_id)
         await update.message.reply_text(f"Удалено {deleted} сообщений из STM.")
+
+    async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Очистить историю этого чата: переписка + новый тред веб-чата LLM.
+        # В личке — сам собеседник, в группе — владелец бота или админ чата
+        user_id = str(update.effective_user.id)
+        chat = update.effective_chat
+        chat_id = str(chat.id)
+        if chat.type != "private" and not _is_owner(bot, user_id):
+            try:
+                member = await context.bot.get_chat_member(chat.id, int(user_id))
+                is_admin = member.status in ("creator", "administrator")
+            except Exception as e:
+                logger.debug(f"[{persona_name}] /clear: права в {chat_id} не проверены: {e}")
+                is_admin = False
+            if not is_admin:
+                await update.message.reply_text(
+                    "Очистить историю группы могут только её админы.")
+                return
+        async with bot.user_turn_async(chat_id), _chat_lock(chat_id):
+            n = await asyncio.to_thread(bot.clear_chat_history, chat_id)
+        logger.info(f"[{persona_name}] /clear от {user_id} в {chat_id}")
+        await update.message.reply_text(
+            f"История чата очищена ({n} сообщ.) — разговор начнётся заново.\n"
+            "Факты о тебе остались — их сбрасывает /reset.")
 
     async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Показать последние n сообщений из STM (первое предложение).
@@ -843,6 +918,23 @@ def create_handlers(bot: BotInstance) -> dict:
                         + input_for_log(clean_text, control_mode_active(
                             bot, chat_id), 60))
 
+            # «Посмотри на экран» (app/features/screen_look): снимок экрана
+            # этого компьютера смотрит только локальная модель, персона
+            # отвечает по описанию. Только владельцу — экран его; в режиме
+            # управления «экран» — страница агента, её смотрит сам режим
+            screen_raw = None
+            if (screen_look.is_screen_request(clean_text) and _is_owner(bot, user_id)
+                    and not bot.control_mode_on(chat_id)):
+                await update.message.reply_text("Смотрю на экран...")
+                lang = detect_language(clean_text) or bot.chat_user_language(chat_id)
+                try:
+                    screen_text = await asyncio.to_thread(
+                        screen_look.screen_input, bot._local_router, clean_text, lang)
+                except screen_look.ScreenLookError as e:
+                    await update.message.reply_text(str(e))
+                    return
+                screen_raw, clean_text = clean_text, screen_text
+
             # Вступительная реплика персоны до генерации ответа
             pre_reply_text = bot.persona.persona_data.get("pre_reply_text")
             if pre_reply_text:
@@ -868,7 +960,12 @@ def create_handlers(bot: BotInstance) -> dict:
                         user_id=user_id, chat_id=chat_id,
                         user_name=user_tag if chat_id != user_id else user_name,
                         reply_context=reply_ctx,
-                        reply_to_bot_message_id=reply_to_bot_message_id
+                        reply_to_bot_message_id=reply_to_bot_message_id,
+                        # Подтверждение pending-действия — по тому, что ввёл
+                        # пользователь, а не по описанию экрана
+                        raw_user_text=screen_raw,
+                        # «Открой/пришли файл X» — из Telegram файл присылается
+                        file_delivery="send",
                     )
                 finally:
                     typing_task.cancel()
@@ -882,7 +979,12 @@ def create_handlers(bot: BotInstance) -> dict:
                 # «текст, следом фото»); не влезло в подпись — текст и кадры
                 # отдельно
                 photos = bot.pop_pending_photos(chat_id)
-                sent_ids = await _reply_with_photos(update.message, response, photos)
+                # Файлы с компьютера ядра («пришли файл X») — документами
+                found_files = bot.pop_pending_files(chat_id)
+                if found_files:
+                    sent_ids = await _reply_with_files(update.message, response, found_files)
+                else:
+                    sent_ids = await _reply_with_photos(update.message, response, photos)
                 # Хвост расщеплённого ответа — отдельными сообщениями следом
                 sent_ids += await _send_split_parts(bot, update, context, chat_id)
 
@@ -1194,6 +1296,7 @@ def create_handlers(bot: BotInstance) -> dict:
         "help": help_cmd,
         "stats": stats_cmd,
         "erase": erase_cmd,
+        "clear": clear_cmd,
         "last": last_cmd,
         "reset": reset_cmd,
         "forget": forget_cmd,
@@ -1269,7 +1372,7 @@ def register_handlers(app: Application, bot: BotInstance):
             await handler(update, context)
         return run
 
-    for name in ("start", "help", "stats", "erase", "last", "reset", "forget",
+    for name in ("start", "help", "stats", "erase", "clear", "last", "reset", "forget",
                  "context", "relations", "resetall", "ltm_privacy", "ltm_export",
                  "reset_diary", "files", "reset_files", "ratelimits", "web",
                  "todo", "reminders", "cancel_reminder", "inventory", "remind",

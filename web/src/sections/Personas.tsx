@@ -7,11 +7,14 @@ import { consumePersonaCreateRequest, usePersonaCreateRequest } from '../persona
 import type { PersonaCreatePrefill } from '../personaCreateStore';
 import PersonaCreateModal from '../components/PersonaCreateModal';
 import PersonaYamlModal from '../components/PersonaYamlModal';
+import ShortPromptModal from '../offline/ShortPromptModal';
 import InfoButton from '../components/InfoButton';
 import Icon from '../components/icons';
 import PersonaColorPicker from '../components/PersonaColorPicker';
 import { alertDialog, confirmDialog } from '../dialogStore';
 import { clearPersonaAvatar, fileToAvatarDataUrl, setPersonaAvatar, usePersonaAvatars } from '../avatarStore';
+import { useNarrowScreen } from '../useNarrowScreen';
+import { forgetLocalPersona } from '../offline/personaSync';
 
 export default function Personas() {
   const { t } = useI18n();
@@ -23,6 +26,12 @@ export default function Personas() {
   const [prefill, setPrefill] = useState<PersonaCreatePrefill | undefined>(undefined);
   const [yamlEditId, setYamlEditId] = useState<string | null>(null); // персона в YAML-редакторе
   const [avatarEditId, setAvatarEditId] = useState<string | null>(null); // персона, которой меняем аватар
+  // Краткое описание для модели телефона — посмотреть
+  const [shortFor, setShortFor] = useState<{ id: string; name: string } | null>(null);
+  // Узкий экран: персоны — списком строк, нажатие раскрывает полную карточку
+  // (одну за раз); заголовок раздела уже в верхней полосе
+  const narrow = useNarrowScreen();
+  const [openId, setOpenId] = useState<string | null>(null);
 
   // Загрузка аватара: скрытый file-input один на секцию, id персоны — в state
   const avatarInputRef = useRef<HTMLInputElement>(null);
@@ -90,16 +99,32 @@ export default function Personas() {
       .catch(() => {});
   };
 
+  // Персона, созданная на телефоне без ядра и ещё не перенесённая на него:
+  // на ядре её нет — удаляется только с телефона, вместе с перепиской
+  const removeLocal = async (id: string, name: string) => {
+    const ok = await confirmDialog({
+      title: t('personas.localDeleteTitle', { name }),
+      message: t('personas.localDeleteConfirm'),
+      confirmLabel: t('common.delete'),
+      danger: true,
+    });
+    if (ok) forgetLocalPersona(id);
+  };
+
   return (
     <div className="section">
-      <div className="section-header">
-        <div>
-          <h1 className="section-title">
-            {t('nav.personas')}
-            <InfoButton helpKey="persona.yaml" />
-          </h1>
-          <p className="section-subtitle">{t('personas.subtitle')}</p>
-        </div>
+      <div className={'section-header' + (narrow ? ' personas-head--narrow' : '')}>
+        {narrow ? (
+          <InfoButton helpKey="persona.yaml" />
+        ) : (
+          <div>
+            <h1 className="section-title">
+              {t('nav.personas')}
+              <InfoButton helpKey="persona.yaml" />
+            </h1>
+            <p className="section-subtitle">{t('personas.subtitle')}</p>
+          </div>
+        )}
         <button
           className="btn btn--primary"
           onClick={() => {
@@ -111,11 +136,32 @@ export default function Personas() {
         </button>
       </div>
 
-      <div className="persona-grid">
-        {personas.map((p, i) => (
+      <div className={'persona-grid' + (narrow ? ' persona-grid--list' : '')}>
+        {personas.map((p, i) => {
+          const collapsed = narrow && openId !== p.id;
+          const titleAndStatus = (
+            <>
+              <div className="persona-card-title">
+                <div className="persona-card-name">{p.name}</div>
+                <div className="persona-card-meta">
+                  <span>@{p.id}</span>
+                  {p.lastReply !== '—' && <span>{t('personas.lastReply', { t: p.lastReply })}</span>}
+                </div>
+              </div>
+              <span className={'persona-status' + (p.muted ? ' persona-status--frozen' : '') + (p.local ? ' persona-status--local' : '')}>
+                {p.muted ? <Icon name="snowflake" size={11} /> : <span className="persona-status-dot" />}
+                <span className="persona-status-label">
+                  {p.local ? t('personas.statusLocal') : p.muted ? t('personas.statusFrozen') : t('personas.statusActive')}
+                </span>
+              </span>
+            </>
+          );
+          return (
           <div
             key={p.id}
-            className={'card persona-card stagger-item' + (p.muted ? ' persona-card--muted' : '')}
+            className={
+              'card persona-card stagger-item' + (p.muted ? ' persona-card--muted' : '') + (collapsed ? ' persona-card--collapsed' : '')
+            }
             // --persona — цвет метки персоны из YAML: уголки карточки и буква-аватар
             style={{ animationDelay: `${i * 50}ms`, ...(p.color ? { '--persona': p.color } : {}) } as CSSProperties}
           >
@@ -128,10 +174,12 @@ export default function Personas() {
             <div className="persona-card-head">
               {/* Аватар: своя картинка или буква; клик — загрузить/заменить */}
               <div className="persona-avatar-wrap">
+                {/* Аватар хранит ядро — у персоны с телефона его пока негде хранить */}
                 <button
                   type="button"
                   className="persona-avatar-btn"
-                  title={t('personas.setAvatar')}
+                  title={p.local ? undefined : t('personas.setAvatar')}
+                  disabled={!!p.local}
                   onClick={() => pickAvatar(p.id)}
                 >
                   {avatars[p.id] ? <img src={avatars[p.id]} alt={p.name} /> : <span>{p.name.charAt(0)}</span>}
@@ -139,7 +187,7 @@ export default function Personas() {
                     <Icon name="camera" size={18} />
                   </span>
                 </button>
-                {avatars[p.id] && (
+                {avatars[p.id] && !p.local && (
                   <button
                     type="button"
                     className="persona-avatar-remove"
@@ -155,22 +203,33 @@ export default function Personas() {
                   </button>
                 )}
               </div>
-              <div className="persona-card-title">
-                <div className="persona-card-name">{p.name}</div>
-                <div className="persona-card-meta">
-                  <span>@{p.id}</span>
-                  {p.lastReply !== '—' && <span>{t('personas.lastReply', { t: p.lastReply })}</span>}
-                </div>
-              </div>
-              <span className={'persona-status' + (p.muted ? ' persona-status--frozen' : '')}>
-                {p.muted ? <Icon name="snowflake" size={11} /> : <span className="persona-status-dot" />}
-                {p.muted ? t('personas.statusFrozen') : t('personas.statusActive')}
-              </span>
+              {narrow ? (
+                // Строка списка: имя, @id и статус — кнопка «раскрыть/свернуть»
+                <button
+                  type="button"
+                  className="persona-card-toggle"
+                  aria-expanded={!collapsed}
+                  onClick={() => setOpenId(collapsed ? p.id : null)}
+                >
+                  {titleAndStatus}
+                  <Icon name="chevronDown" size={16} />
+                </button>
+              ) : (
+                titleAndStatus
+              )}
             </div>
 
+            {!collapsed && (
+            <>
             <p className="persona-card-desc" title={p.description}>
               {p.description || t('personas.noDescription')}
             </p>
+
+            {p.local && (
+              <p className={'persona-local-note' + (p.local.status === 'error' ? ' persona-local-note--error' : '')} role="status">
+                {p.local.status === 'error' ? t('personas.localError', { msg: p.local.error ?? '' }) : t('personas.localNote')}
+              </p>
+            )}
 
             <div className="persona-card-block">
               <div className="persona-card-label">
@@ -210,8 +269,19 @@ export default function Personas() {
               </div>
             </div>
 
+            {/* Персона с телефона: правка, цвет, копия и прочее — на ядре, его у неё
+                ещё нет; только удалить с телефона */}
+            {p.local && (
+              <div className="persona-card-actions">
+                <button className="btn btn--ghost persona-edit-btn" onClick={() => removeLocal(p.id, p.name)}>
+                  <Icon name="trash" size={13} />
+                  {t('personas.localDelete')}
+                </button>
+              </div>
+            )}
+
             {/* Действия с персоной — только при живом бэкенде (в мок-режиме нечего менять) */}
-            {online && (
+            {online && !p.local && (
               <div className="persona-card-actions">
                 <button className="btn btn--ghost persona-edit-btn" onClick={() => setYamlEditId(p.id)}>
                   <Icon name="pencil" size={13} />
@@ -219,6 +289,14 @@ export default function Personas() {
                 </button>
                 <div className="persona-icon-actions">
                   <PersonaColorPicker color={p.color} onChange={(c) => setColor(p.id, c)} />
+                  <button
+                    className="persona-icon-btn"
+                    title={t('shortPrompt.open')}
+                    aria-label={t('shortPrompt.open')}
+                    onClick={() => setShortFor({ id: p.id, name: p.name })}
+                  >
+                    <Icon name="dossier" size={15} />
+                  </button>
                   <button
                     className="persona-icon-btn"
                     title={t('personas.duplicate')}
@@ -251,8 +329,11 @@ export default function Personas() {
                 </div>
               </div>
             )}
+            </>
+            )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Скрытый выбор файла для аватара персоны (id — в avatarEditId) */}
@@ -272,12 +353,16 @@ export default function Personas() {
         <PersonaCreateModal
           initial={prefill}
           onClose={() => setCreateOpen(false)}
-          onCreate={() => {
-            refetchPersonas();
+          onCreate={(where) => {
+            // Сохранена на телефоне — уже в списке; перечитка без ядра
+            // увела бы список в демо-данные
+            if (where === 'core') refetchPersonas();
             setCreateOpen(false);
           }}
         />
       )}
+
+      {shortFor && <ShortPromptModal persona={shortFor.id} name={shortFor.name} onClose={() => setShortFor(null)} />}
 
       {/* YAML-редактор существующей персоны (кнопка «Редактировать») */}
       {yamlEditId && (

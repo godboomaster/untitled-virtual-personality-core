@@ -3,9 +3,12 @@
    работают на моковых данных (прототипный режим). */
 
 import { useEffect, useReducer } from 'react';
-import { api, ApiError } from './api';
+import { api, ApiError, isNativeApp } from './api';
 import type { ApiPersona, LivingStateData, PersonaLlmConfig, ProviderInfo } from './api';
 import type { Persona, PersonaFeature } from './mockData';
+import { saveProvidersCopy } from './offline/settingsCopy';
+import { localApiPersona, localPersonas, onLocalPersonasChange } from './offline/localPersonas';
+import type { LocalApiPersona } from './offline/localPersonas';
 
 // Коды фич, известные UI (подписи — fb.* в словарях i18n)
 const KNOWN_FEATURES = new Set<PersonaFeature>([
@@ -29,9 +32,10 @@ function mapFeatures(features: Record<string, unknown>): PersonaFeature[] {
   return out;
 }
 
-function mapPersona(p: ApiPersona): Persona {
+function mapPersona(p: ApiPersona | LocalApiPersona): Persona {
   const muted = p.features?.muted === true;
   return {
+    ...('local' in p ? { local: p.local } : {}),
     id: p.id,
     name: p.name,
     description: p.description,
@@ -55,8 +59,86 @@ function mapPersona(p: ApiPersona): Persona {
 // следующем монтировании потребителя (навигация по секциям) пробуем снова.
 let cache: Persona[] | null = null;
 let failedAt = 0; // время последней неудачной попытки; 0 — не было
+
+// Приложение на телефоне: снимок списка персон — чтобы без ноутбука
+// (web/src/offline) открыть чаты по сохранённым данным
+const PERSONAS_SNAPSHOT_KEY = 'vpc-offline-personas';
+
+function saveSnapshot(list: ApiPersona[]) {
+  if (!isNativeApp()) return;
+  try {
+    localStorage.setItem(PERSONAS_SNAPSHOT_KEY, JSON.stringify(list));
+  } catch {
+    /* хранилище недоступно — без офлайн-запуска */
+  }
+}
+
+function readSnapshot(): ApiPersona[] {
+  try {
+    const list = JSON.parse(localStorage.getItem(PERSONAS_SNAPSHOT_KEY) || '[]') as ApiPersona[];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Запуск без ноутбука: список персон из снимка. false — снимка нет. */
+export function seedOfflinePersonas(): boolean {
+  const list = readSnapshot();
+  if (!list.length && !localPersonas().length) return false;
+  cache = list.map(mapPersona);
+  listeners.forEach((l) => l());
+  return true;
+}
+
+/** Персоны из снимка и созданные на телефоне (id, имя, описание) — для
+ * ответов без ядра. */
+export function offlinePersonaList(): { id: string; name: string; description: string }[] {
+  const out = readSnapshot().map((p) => ({ id: p.id, name: p.name, description: p.description || '' }));
+  const have = new Set(out.map((p) => p.id));
+  for (const p of localPersonas()) if (!have.has(p.id)) out.push({ id: p.id, name: p.name, description: p.description });
+  return out;
+}
+
+export function hasOfflinePersonas(): boolean {
+  try {
+    return !!localStorage.getItem(PERSONAS_SNAPSHOT_KEY) || localPersonas().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Персона только что появилась на ядре (перенос с телефона) — в список и
+ * снимок сразу, не дожидаясь перечитки: иначе на время запроса она пропала
+ * бы из списков, и открытый с ней чат переключился бы на другую. */
+export function upsertCachedPersona(p: ApiPersona) {
+  if (cache === null) return;
+  cache = [...cache.filter((x) => x.id !== p.id), mapPersona(p)];
+  saveSnapshot([...readSnapshot().filter((x) => x.id !== p.id), p]);
+  listeners.forEach((l) => l());
+}
+
+// Персоны, созданные на телефоне без ядра (offline/localPersonas.ts), — в
+// конце списка, пока их нет на ядре. Тот же массив, пока не сменились ни
+// кеш, ни они: потребители держат список в зависимостях эффектов
+let mergedBase: Persona[] | null = null;
+let mergedLocal: unknown = null;
+let merged: Persona[] | null = null;
+
+function withLocal(): Persona[] | null {
+  if (cache === null) return null;
+  const local = localPersonas();
+  if (cache === mergedBase && local === mergedLocal) return merged;
+  const have = new Set(cache.map((p) => p.id));
+  const extra = local.filter((p) => !have.has(p.id)).map((p) => mapPersona(localApiPersona(p)));
+  mergedBase = cache;
+  mergedLocal = local;
+  merged = extra.length ? [...cache, ...extra] : cache;
+  return merged;
+}
 let inflight: Promise<void> | null = null;
 const listeners = new Set<() => void>();
+onLocalPersonasChange(() => listeners.forEach((l) => l()));
 const RETRY_AFTER_MS = 5000; // антифлап-пауза между попытками после неудачи
 
 function ensureFetch(): Promise<void> {
@@ -68,6 +150,7 @@ function ensureFetch(): Promise<void> {
     .then((list) => {
       cache = list.map(mapPersona);
       failedAt = 0;
+      saveSnapshot(list);
     })
     .catch(() => {
       failedAt = Date.now(); // бэкенд недоступен — моковый режим до следующей попытки
@@ -89,7 +172,7 @@ export function useApiPersonas(): Persona[] | null {
       listeners.delete(force);
     };
   }, []);
-  return cache;
+  return withLocal();
 }
 
 // Сбросить кеш и перечитать список (после создания/удаления/дублирования персоны).
@@ -105,10 +188,14 @@ export function refetchPersonas(): Promise<ApiError | null> {
     .getPersonas()
     .then((list) => {
       cache = list.map(mapPersona);
+      saveSnapshot(list);
       return null;
     })
     .catch((e: unknown) => {
-      cache = null;
+      // Телефон без связи с ядром: прежний список остаётся (без ядра он и так
+      // из снимка) — иначе приложение ушло бы в демо-данные посреди работы
+      // без ядра (перечитка после переноса персоны с телефона, offline/personaSync.ts)
+      if (!(isNativeApp() && cache !== null && !(e instanceof ApiError))) cache = null;
       failedAt = Date.now();
       return e instanceof ApiError ? e : new ApiError(0, String(e));
     })
@@ -123,14 +210,19 @@ export function useApiOnline(): boolean {
 // ── Связь с ядром (шапка, подвал сайдбара) ───────────────────────────
 // Список персон грузится один раз, и падение ядра посреди работы без
 // отдельного опроса было не заметно: шапка писала «все системы в норме».
-// /api/health — раз в 15 с, пока вкладка видна; ответ дольше 5 с — нет связи
+// /api/health — раз в 15 с, пока вкладка видна; ответ дольше 5 с — нет связи.
+// «Нет связи» — только после двух неудач подряд (вторая проверка через 3 с):
+// ядро бывает занято секунды (создание персоны при первом открытии чата), а
+// на телефоне «нет связи» включает ответы без ноутбука (web/src/offline)
 
 export type CoreHealth = 'ok' | 'down' | 'unknown';
 
 const HEALTH_POLL_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 5_000;
+const HEALTH_RECHECK_MS = 3_000;
 let health: CoreHealth = 'unknown';
 let healthTimer: number | null = null;
+let healthFails = 0;
 const healthListeners = new Set<() => void>();
 
 function setHealth(next: CoreHealth) {
@@ -145,14 +237,26 @@ function checkHealth() {
   const timer = window.setTimeout(() => ctl.abort(), HEALTH_TIMEOUT_MS);
   api
     .health({ signal: ctl.signal })
-    .then(() => setHealth('ok'))
-    .catch(() => setHealth('down'))
+    .then(() => {
+      healthFails = 0;
+      setHealth('ok');
+    })
+    .catch(() => {
+      healthFails += 1;
+      if (healthFails >= 2 || health === 'down') setHealth('down');
+      else window.setTimeout(checkHealth, HEALTH_RECHECK_MS);
+    })
     .finally(() => window.clearTimeout(timer));
 }
 
 const onHealthVisibility = () => {
   if (!document.hidden) checkHealth();
 };
+
+/** Связь с ядром сейчас — для фоновых задач вне React (offline/personaSync.ts). */
+export function coreHealth(): CoreHealth {
+  return health;
+}
 
 export function useCoreHealth(): CoreHealth {
   const [, force] = useReducer((x: number) => x + 1, 0);
@@ -194,6 +298,8 @@ function ensureProvidersFetch() {
         sites: r.webchat_sites ?? (r.webchat_site ? [r.webchat_site] : []),
         options: r.webchat_options ?? [],
       };
+      // Телефон: копия для досье без связи с ядром
+      saveProvidersCopy(provCache, provWebchat);
     })
     .catch(() => {
       provFailed = true;

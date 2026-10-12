@@ -1,13 +1,94 @@
 /* HTTP-клиент бэкенда (app/api/server.py). Базовый URL — из
-   VITE_API_URL (см. web/.env), по умолчанию локальный сервер.
+   VITE_API_URL (см. web/.env), по умолчанию локальный сервер; адрес,
+   введённый на экране запуска, хранится в localStorage (vpc-api-url) и
+   важнее вшитого. В приложении на телефоне вшитого нет вовсе: ядро живёт на
+   ноутбуке, адрес вводит пользователь.
    Токен (если на бэке задан API_TOKEN) вводится на экране запуска и
    хранится в localStorage под ключом vpc-api-token. */
 
 import type { RoomArtData, RoomArtPatch, RoomFocus, RoomLayout, RoomLayoutPatch, RoomSource, RoomStyle, RoomView } from './room/roomTypes';
+import { getLinkConfig, linkFetch, refusalKey } from './link/client.ts';
+import type { PhoneActionReport } from './phone/notes';
 
-const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000';
-// Адрес бэкенда без схемы — для подписей в UI (экран загрузки)
-export const API_HOST = BASE_URL.replace(/^https?:\/\//, '');
+const BUILD_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000';
+const URL_KEY = 'vpc-api-url';
+
+// Веб внутри приложения Android (Capacitor): мост ставит window.Capacitor
+export function isNativeApp(): boolean {
+  const cap = (window as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+  return Boolean(cap?.isNativePlatform?.());
+}
+
+function storedApiUrl(): string {
+  try {
+    return localStorage.getItem(URL_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+// Адрес ядра; '' — не задан (приложение на телефоне до первого подключения)
+let baseUrl = storedApiUrl() || (isNativeApp() ? '' : BUILD_URL);
+
+export function getApiUrl(): string {
+  return baseUrl;
+}
+
+export function setApiUrl(url: string) {
+  baseUrl = url || (isNativeApp() ? '' : BUILD_URL);
+  try {
+    if (url) localStorage.setItem(URL_KEY, url);
+    else localStorage.removeItem(URL_KEY);
+  } catch {
+    /* хранилище недоступно — адрес проживёт до перезапуска */
+  }
+}
+
+// Адрес бэкенда без схемы — для подписей в UI (экран загрузки);
+// по защищённому каналу — имя ноутбука
+export function apiHost(): string {
+  const link = getLinkConfig();
+  if (link) return `VPC Link · ${link.n}`;
+  return baseUrl.replace(/^https?:\/\//, '');
+}
+
+/** Телефон сопряжён с ноутбуком: API — через защищённый канал (link/client.ts). */
+export function isLinkMode(): boolean {
+  return getLinkConfig() !== null;
+}
+
+// Ноутбук перестал узнавать телефон (отвязали на компьютере) — экран
+// запуска (BootGate) ловит событие и объясняет, что делать
+export const LINK_REVOKED_EVENT = 'vpc-link-revoked';
+
+// Все запросы к API — отсюда: по каналу VPC Link или обычным fetch
+function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  if (!getLinkConfig()) return fetch(`${baseUrl}${path}`, init);
+  return linkFetch(path, init).catch((e: unknown) => {
+    if (refusalKey(e) === 'link.errNotPaired') window.dispatchEvent(new Event(LINK_REVOKED_EVENT));
+    throw e;
+  });
+}
+
+/** Адрес из поля ввода → базовый URL ядра; null — не адрес.
+ * Без схемы: IP, localhost или явный порт — http (ядро в локальной сети),
+ * имя — https (обратный прокси обычно отдаёт ядро по HTTPS). */
+export function normalizeApiUrl(input: string): string | null {
+  let v = input.trim();
+  if (!v) return null;
+  if (!/^https?:\/\//i.test(v)) {
+    const host = v.split('/')[0];
+    const plain = /^(\d{1,3}\.){3}\d{1,3}(:\d+)?$/.test(host) || /^localhost(:\d+)?$/i.test(host) || /:\d+$/.test(host);
+    v = `${plain ? 'http' : 'https'}://${v}`;
+  }
+  try {
+    const u = new URL(v);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return null;
+  }
+}
 
 const TOKEN_KEY = 'vpc-api-token';
 
@@ -39,6 +120,31 @@ function authHeader(): Record<string, string> {
 
 function noteAuthFailure(res: Response) {
   if (res.status === 401) window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+}
+
+// Id этого устройства для очереди фоновых сообщений: у каждого клиента свой
+// курсор, и сообщение получают и ноутбук, и телефон (см. app/api/inbox.py).
+// Фоновая служба приложения на телефоне берёт его же с суффиксом "-bg"
+// (bgInbox.ts) — свой курсор, сообщения веба не забирает
+const CLIENT_KEY = 'vpc-client-id';
+let clientId = '';
+
+export function inboxClientId(): string {
+  if (clientId) return clientId;
+  try {
+    clientId = localStorage.getItem(CLIENT_KEY) ?? '';
+  } catch {
+    /* хранилище недоступно — id проживёт до перезагрузки */
+  }
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(clientId)) {
+    clientId = Array.from({ length: 16 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
+    try {
+      localStorage.setItem(CLIENT_KEY, clientId);
+    } catch {
+      /* см. выше */
+    }
+  }
+  return clientId;
 }
 
 // Пользователь веб-интерфейса — один на всех персон (память у персон изолирована контекстом)
@@ -101,6 +207,16 @@ export interface ApiHistoryMessage {
   timestamp: number | null;
   user_name: string | null;
   sender_id: string | null;
+  files?: SentFile[] | null; // файлы, присланные этим ответом, пока ссылки живы
+}
+
+// Файл с компьютера ядра, присланный в чат («пришли файл X»): url отдаёт его
+// под тем же токеном, пока ссылка жива (сутки, до перезапуска ядра)
+export interface SentFile {
+  id: string;
+  name: string;
+  size: number;
+  url: string;
 }
 
 export interface ApiChatResponse {
@@ -114,6 +230,40 @@ export interface ApiChatResponse {
   control_mode?: boolean; // режим управления после этого сообщения — дебаунс отправки гасится
   images?: string[]; // скриншоты страницы (dataURL) из режима управления
   reply_ts?: number | null; // метка ответа в STM (серверные секунды) — место пузыря в ленте
+  answer_options?: AnswerOptions | null; // кнопки ответа на вопрос режима управления
+  task?: TaskCard | null; // карточка задачи агента (итог хода; дальше — inbox)
+  files?: SentFile[]; // файлы с компьютера ядра («пришли файл X»)
+  reply_stm?: string | null; // текст ответа в истории, если другой (список файлов — заглушкой)
+}
+
+// Карточка задачи агента (TaskAgent.task_card): статус, план заказа с
+// отметками и журнал хода — те же строки, что ушли в чат (фронт прячет
+// их из пузырей, пока карточка видна)
+export type TaskStatus = 'working' | 'ask' | 'confirm' | 'paused' | 'done' | 'payment' | 'cancelled' | 'stopped';
+export interface TaskCard {
+  id: string;
+  goal: string;
+  status: TaskStatus;
+  steps: number;
+  started: number; // unix-секунды сервера — место карточки в ленте
+  updated: number;
+  plan: { text: string; state: 'done' | 'current' | 'todo' }[];
+  log: { text: string; ok: boolean }[];
+}
+
+// Кнопки ответа на вопрос режима управления (BotInstance.cc_answer_options):
+// вариант с подписью шлёт send (номер), вариант с role — «да»/«нет»/«отмена»
+// на языке интерфейса. Выбор уходит обычной репликой — бэкенд разбирает её
+// как набранную, с теми же проверками подтверждений
+export interface AnswerOption {
+  label?: string;
+  send?: string;
+  role?: 'yes' | 'no' | 'cancel';
+}
+export interface AnswerOptions {
+  kind: 'options' | 'yesno' | 'continue';
+  options: AnswerOption[];
+  scope?: 'files'; // список «какой файл?» — кнопки и вне режима управления
 }
 
 // Части «Очистить диалог» (app/api/schemas.py: ClearPart) — в порядке кнопок досье
@@ -152,7 +302,7 @@ export class StreamInterruptedError extends ApiError {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await apiFetch(path, {
     ...init,
     headers: {
       ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
@@ -176,8 +326,127 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// VPC Link: состояние канала до телефона (GET /api/link)
+export interface LinkDevice {
+  id: string;
+  name: string;
+  paired_at: number;
+  last_seen: number;
+  online: 'lan' | 'relay' | null; // через что подключён сейчас
+}
+
+export interface LinkStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  lan: string[];
+  lan_error: string | null;
+  relay: string;
+  relay_connected: boolean;
+  relay_error: string | null;
+  devices: LinkDevice[];
+  pairing_expires: number | null;
+  this_device: string | null; // запрос пришёл с этого телефона
+}
+
+// Персона-кит для ответов без ноутбука (app/api/offline_api.py: build_kit)
+export interface OfflineHistoryLine {
+  role: 'user' | 'assistant';
+  text: string;
+  ts: number;
+  vec?: string; // вектор текста (int8, base64) — в памяти для телефона
+}
+
+// Память персоны для телефона: вся переписка чата и факты (кит версии 3);
+// с векторами из базы ядра — для поиска по смыслу (vectors — их модель)
+export interface OfflineMemoryResponse {
+  persona: string;
+  generated_at: number;
+  history: OfflineHistoryLine[];
+  facts: string[];
+  vectors?: { model: string; dim: number } | null;
+  facts_vec?: string[]; // по порядку facts, '' — вектора нет
+}
+
+// Краткое описание персоны для модели телефона (app/features/short_prompt.py):
+// source — yaml (поле short_prompt персоны) или auto (составила модель);
+// status — ready, pending (составляется), failed (error — почему), none
+export interface ShortPrompt {
+  text: string;
+  source: 'yaml' | 'auto' | '';
+  status: 'ready' | 'pending' | 'failed' | 'none';
+  at: number;
+  chars?: number; // символов в полном характере
+  error?: string;
+}
+
+export interface OfflineKitResponse {
+  version: number;
+  persona: string;
+  name: string;
+  generated_at: number;
+  system: string; // целиком — для облачной модели
+  // short — краткое описание для модели телефона (пусто — ещё не составлено),
+  // rules_local — правила офлайна короче; у ядра до них — нет
+  parts: { character: string; rules: string; style: string; language: string; short?: string; rules_local?: string };
+  short_prompt?: Pick<ShortPrompt, 'source' | 'status' | 'at'>;
+  lang?: string | null; // язык чата — запасной (язык ответа — по текущей реплике)
+  facts: string[];
+  history: OfflineHistoryLine[];
+  // Версия 3: сообщения старше на ноутбуке стёрты (0 — переписки нет); строка
+  // досье и личная память персоны — как в ответе ядра
+  history_first_ts?: number;
+  history_total?: number; // сообщений в памяти для телефона (GET …/offline/memory)
+  dossier?: string;
+  self_memory?: string;
+  // Город для погоды (её телефон берёт у Open-Meteo сам); null — выключено
+  env: { city: string; lat: number; lon: number; codes: Record<string, string> } | null;
+  // Срабатывания напоминаний чата на две недели — будильником телефона
+  reminders: { id: string; ref: string; task: string | null; at: number; recurring: boolean }[];
+  reminders_enabled: boolean;
+  // те же правила, что в промпте ядра (self_memory, recall* — с версии 3)
+  rules: { web: string; env: string; self_memory?: string; recall_head?: string; recall?: string };
+  notes: Record<'set' | 'ask_time' | 'past' | 'recurring' | 'scheduled' | 'extract', string> &
+    Partial<Record<'not_understood' | 'declined', string>>;
+  search_gate: { address_words: string[]; smalltalk: string[]; self_patterns: string[] };
+}
+
 export const api = {
   health: (init?: RequestInit) => request<{ status: string }>('/api/health', init),
+
+  // VPC Link: телефоны, QR-код сопряжения, отвязка
+  getLink: () => request<LinkStatus>('/api/link'),
+  pairLink: () => request<{ uri: string; expires: number; ttl: number }>('/api/link/pair', { method: 'POST' }),
+  cancelPairLink: () => request<{ ok: boolean }>('/api/link/pair', { method: 'DELETE' }),
+  unpairLink: (id: string) =>
+    request<{ ok: boolean }>(`/api/link/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // API_TOKEN ядра для входа по адресу и токену; null — в .env не задан
+  getServerToken: () => request<{ token: string | null }>('/api/token'),
+
+  // Ответы без ноутбука (приложение на телефоне, web/src/offline): персона-кит,
+  // ключи API-провайдеров персоны, приём офлайн-переписки
+  getOfflineKit: (persona: string) =>
+    request<OfflineKitResponse>(
+      `/api/personas/${encodeURIComponent(persona)}/offline/kit?chat_id=${encodeURIComponent(WEB_CHAT_ID)}&user_id=${encodeURIComponent(WEB_USER_ID)}`,
+    ),
+  getShortPrompt: (persona: string) =>
+    request<ShortPrompt>(`/api/personas/${encodeURIComponent(persona)}/offline/short-prompt`),
+  getOfflineMemory: (persona: string) =>
+    request<OfflineMemoryResponse>(
+      `/api/personas/${encodeURIComponent(persona)}/offline/memory?chat_id=${encodeURIComponent(WEB_CHAT_ID)}&user_id=${encodeURIComponent(WEB_USER_ID)}`,
+    ),
+  getOfflineProviders: (persona: string) =>
+    request<{ providers: unknown[] }>(`/api/personas/${encodeURIComponent(persona)}/offline/providers`),
+  offlineReminders: (persona: string, reminders: { id: string; task: string; at: number }[]) =>
+    request<{ created: Record<string, string>; past: string[]; enabled: boolean }>(
+      `/api/personas/${encodeURIComponent(persona)}/offline/reminders`,
+      { method: 'POST', body: JSON.stringify({ user_id: WEB_USER_ID, chat_id: WEB_CHAT_ID, reminders }) },
+    ),
+  offlineImport: (persona: string, messages: { id: string; role: 'user' | 'assistant'; text: string; ts: number; source?: string }[]) =>
+    request<{ imported: number; skipped: number }>(`/api/personas/${encodeURIComponent(persona)}/offline/import`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: WEB_USER_ID, chat_id: WEB_CHAT_ID, messages }),
+    }),
 
   getPersonas: () => request<ApiPersona[]>('/api/personas'),
 
@@ -199,6 +468,14 @@ export const api = {
       `/api/personas/${encodeURIComponent(persona)}/duplicate`,
       { method: 'POST' },
     ),
+
+  // Пауза голосовой активации ядра («Коннор, …», WAKE_LISTEN) на seconds,
+  // 0 — снять: пока открыт голосовой режим чата, голосом занят он
+  holdWake: (seconds: number) =>
+    request<{ held: boolean }>('/api/voice/wake/hold', {
+      method: 'POST',
+      body: JSON.stringify({ seconds }),
+    }),
 
   sendChat: (params: {
     persona: string;
@@ -498,8 +775,8 @@ export const api = {
     ),
 
   getInbox: (persona: string, focused?: boolean) =>
-    request<{ messages: InboxMessage[]; generating?: boolean; last_ts?: number; control_mode?: boolean }>(
-      `/api/personas/${encodeURIComponent(persona)}/inbox?chat_id=${WEB_CHAT_ID}${focused ? '&focused=1' : ''}`,
+    request<{ messages: InboxMessage[]; generating?: boolean; last_ts?: number; control_mode?: boolean; answer_options?: AnswerOptions | null; task?: TaskCard | null }>(
+      `/api/personas/${encodeURIComponent(persona)}/inbox?chat_id=${WEB_CHAT_ID}&client_id=${inboxClientId()}${focused ? '&focused=1' : ''}`,
     ),
 
   // Состояние вкладки чата (видима и в фокусе) — гейт фоновой активности бота
@@ -873,9 +1150,57 @@ export interface PersonaDraft {
 // следующие токены относятся к новому сообщению; reply_ts (до токенов) —
 // серверная метка ответа в STM. Промис резолвится финальным событием done
 // с тем же reply (+ extra_messages).
+// Живые кадры вкладки агента (режим управления): SSE
+// /api/personas/{p}/control/view — JPEG base64 + адрес/заголовок/приватность
+// или смена состояния браузера. Режим погас — {status: 'off'} и конец потока
+export interface ControlViewEvent {
+  frame?: string;
+  url?: string;
+  title?: string;
+  private?: boolean;
+  status?: 'no_browser' | 'no_tab' | 'off';
+}
+
+export async function streamControlView(
+  persona: string,
+  onEvent: (e: ControlViewEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const res = await apiFetch(
+    `/api/personas/${encodeURIComponent(persona)}/control/view?chat_id=${WEB_CHAT_ID}`,
+    { headers: { ...authHeader() }, signal },
+  );
+  if (!res.ok || !res.body) {
+    noteAuthFailure(res);
+    throw new ApiError(res.status, `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buf += decoder.decode(value, { stream: true });
+    const frames = buf.split('\n\n');
+    buf = frames.pop() ?? '';
+    for (const fr of frames) {
+      for (const line of fr.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          onEvent(JSON.parse(line.slice(6)) as ControlViewEvent);
+        } catch {
+          /* битый кадр — пропускаем */
+        }
+      }
+    }
+  }
+}
+
 export async function streamChat(
   // fromSkin — реплика из скина: бэкенд не пускает её в режим управления
-  params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string; fromSkin?: boolean },
+  // imageSource camera — кадр с камеры: ядро отдаёт его только локальной модели
+  // phoneAction — команду уже исполнил телефон (phone/actions.ts): персона отвечает по итогу
+  params: { persona: string; message: string; userId?: string; userName?: string; replyContext?: string; image?: string; imageSource?: 'camera'; fromSkin?: boolean; phoneAction?: PhoneActionReport },
   onToken: (text: string) => void,
   onPartBreak?: () => void,
   onReplyTs?: (ts: number) => void,
@@ -884,7 +1209,7 @@ export async function streamChat(
   // считаем обрывом, чат сверится с историей по last_ts
   let res: Response;
   try {
-    res = await fetch(`${BASE_URL}/api/chat/stream`, {
+    res = await apiFetch('/api/chat/stream', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -898,7 +1223,12 @@ export async function streamChat(
         user_name: params.userName ?? null,
         reply_context: params.replyContext ?? null,
         image: params.image ?? null,
+        ...(params.image && params.imageSource === 'camera' ? { image_source: 'camera' } : {}),
         ...(params.fromSkin ? { from_skin: true } : {}),
+        ...(params.phoneAction ? { phone_action: params.phoneAction } : {}),
+        // Приложение на телефоне: «открой файл X» присылает файл в чат, а не
+        // открывает его на компьютере ядра
+        ...(isNativeApp() ? { client: 'app' } : {}),
       }),
     });
   } catch (e) {
@@ -946,6 +1276,25 @@ export async function streamChat(
     }
   }
   throw new StreamInterruptedError('Стрим оборвался без финального события');
+}
+
+// Файл, присланный в чат (GET /api/files/{id}), — целиком в память: по VPC
+// Link иначе нельзя, а размер ядро ограничивает (50 МБ)
+export async function fetchSentFile(file: SentFile): Promise<Blob> {
+  if (!/^\/api\/files\/[A-Za-z0-9_-]+$/.test(file.url)) throw new ApiError(400, 'bad file url');
+  const res = await apiFetch(file.url, { headers: authHeader() });
+  if (!res.ok) {
+    noteAuthFailure(res);
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch {
+      /* тело не JSON — оставляем HTTP-код */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return res.blob();
 }
 
 // Арт-направление скина (POST /api/skins/direction): сюжет, палитра с ролями,
@@ -1035,7 +1384,7 @@ export async function streamSkinGeneration(
   onStatus?: (status: string, info: { round?: number; direction?: ApiSkinDirection }) => void,
   signal?: AbortSignal,
 ): Promise<ApiSkinGenResult> {
-  const res = await fetch(`${BASE_URL}/api/skins/generate`, {
+  const res = await apiFetch('/api/skins/generate', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1085,6 +1434,8 @@ export interface InboxMessage {
   text: string;
   kind: string; // message | document
   ts: number;
+  // Метка срабатывания напоминания («id@время») — будильник телефона её знает
+  ref?: string;
 }
 
 export interface TodoEntry {

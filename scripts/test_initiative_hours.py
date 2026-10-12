@@ -39,6 +39,9 @@ def main():
     import app.api.server as server_mod
     from app.api import settings_api
 
+    # API_TOKEN из личного .env подхватывается при импорте ядра — без токена
+    server_mod._api_token = ""
+
     tmp = Path(tempfile.mkdtemp(prefix="init_hours_"))
     yml = tmp / "probe.yaml"
     yml.write_text(yaml.safe_dump({

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { Section } from '../App';
 import { useI18n } from '../i18n';
@@ -9,6 +9,10 @@ import type { IconName } from './icons';
 interface SidebarProps {
   current: Section;
   onSelect: (section: Section) => void;
+  // Узкий экран: панель выдвигается поверх контента (open) и закрывается
+  // тапом мимо неё или Esc; на широком экране оба пропа ни на что не влияют
+  open?: boolean;
+  onClose?: () => void;
 }
 
 const navItems: { id: Section; icon: IconName }[] = [
@@ -21,7 +25,7 @@ const navItems: { id: Section; icon: IconName }[] = [
   { id: 'settings', icon: 'settings' },
 ];
 
-export default function Sidebar({ current, onSelect }: SidebarProps) {
+export default function Sidebar({ current, onSelect, open = false, onClose }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const { t } = useI18n();
   const apiOnline = useApiOnline();
@@ -30,8 +34,19 @@ export default function Sidebar({ current, onSelect }: SidebarProps) {
   const coreOk = apiOnline && coreHealth !== 'down';
   const activeIndex = navItems.findIndex((item) => item.id === current);
 
+  useEffect(() => {
+    if (!open || !onClose) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
   return (
-    <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}>
+    <>
+    {open && <div className="sidebar-backdrop" onClick={onClose} aria-hidden="true" />}
+    <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}${open ? ' sidebar--open' : ''}`}>
       <div className="sidebar-logo">
         <span className="sidebar-logo-icon">◉</span>
         <div className="sidebar-logo-text">
@@ -78,5 +93,6 @@ export default function Sidebar({ current, onSelect }: SidebarProps) {
         {collapsed ? '»' : '«'}
       </button>
     </aside>
+    </>
   );
 }

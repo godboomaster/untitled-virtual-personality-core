@@ -67,7 +67,9 @@ colorama==0.4.6 ; (os_name != 'nt' and sys_platform == 'win32') or (os_name == '
     #   tqdm
     #   typer
 cryptography==50.0.2
-    # via pdfminer-six
+    # via
+    #   virtual-persona-core (pyproject.toml)
+    #   pdfminer-six
 ddgs==9.16.0
     # via virtual-persona-core (pyproject.toml)
 deep-translator==1.11.4
@@ -459,7 +461,9 @@ websocket-client==1.9.2
     #   virtual-persona-core (pyproject.toml)
     #   kubernetes
 websockets==17.2
-    # via uvicorn
+    # via
+    #   virtual-persona-core (pyproject.toml)
+    #   uvicorn
 xlrd==2.0.2
     # via markitdown
 xlsxwriter==3.2.9

@@ -8,8 +8,8 @@
      неизвестная часть и пустой список — 422;
   3. backup_info отдаёт список частей последнего снапшота.
 
-Данные и корзина — во временной папке, настоящий data/ не трогается
-(clear_backup._DATA_DIR подменяется: он не смотрит на VPC_DATA_DIR).
+Данные и корзина — во временной папке (VPC_DATA_DIR; корзине она ещё и
+подставлена явно), настоящий data/ не трогается.
 Запуск: python3 -m scripts.test_clear_parts
 """
 
@@ -95,6 +95,9 @@ def test_endpoint(base: Path):
     from app.features import web_llm as wl
 
     clear_backup._DATA_DIR = base  # корзина — во временной папке
+    # Без API_TOKEN: в личном .env он может быть задан (телефон по адресу),
+    # а запросы теста идут без заголовка
+    server_mod._api_token = ""
     bot = FakeBot()
     wiped, collected = [], []
 
@@ -105,8 +108,11 @@ def test_endpoint(base: Path):
     server_mod._pop_initiative_history = lambda b, p, c: (bot.calls.append("init"), [{"m": 1}])[1]
     server_mod._pop_daily_stats = lambda b, p, c: {"count": 2}
     server_mod._pop_last_activity = lambda b, p, c: 123.0
-    wl.collect_chat_urls = lambda ctx: {"deepseek#chat": "https://x"}
+    wl.collect_chat_urls = lambda ctx, dialog=None: (
+        {"deepseek#chat": "https://x"} if dialog is None
+        else {f"deepseek@@{dialog}": "https://y"})
     wl.clear_chat_urls = lambda ctx: bot.calls.append("webchat")
+    wl.clear_dialog_chat_urls = lambda ctx, dialog: bot.calls.append(f"webchat:{dialog}")
     memory_wipe.collect_stores = lambda b, p, c, parts=None: (collected.append(parts), {"todo": "- хлеб"})[1]
     memory_wipe.wipe_stores = lambda b, p, c, parts=None: wiped.append(parts)
 
@@ -134,11 +140,13 @@ def test_endpoint(base: Path):
 
     r = clear(["ltm", "stm"])
     snap = latest()
-    check("parts=[ltm, stm]: стёрты переписка и факты, остальное нет",
-          sorted(bot.calls) == ["ltm", "stm"] and wiped == [{"ltm", "stm"}])
-    check("parts=[ltm, stm]: в корзине переписка и факты, части по порядку",
+    check("parts=[ltm, stm]: стёрты переписка, факты и треды веб-чатов ЭТОГО "
+          "диалога (сайт помнит стёртые ходы), остальное нет",
+          sorted(bot.calls) == ["ltm", "stm", f"webchat:{CK}"] and wiped == [{"ltm", "stm"}])
+    check("parts=[ltm, stm]: в корзине переписка, факты и адреса тредов диалога",
           snap.get("parts") == ["stm", "ltm"] and len(snap.get("stm") or []) == 1
-          and len(snap.get("ltm") or []) == 1 and snap.get("diary") is None)
+          and len(snap.get("ltm") or []) == 1 and snap.get("diary") is None
+          and snap.get("chat_urls") == {f"deepseek@@{CK}": "https://y"})
 
     r = clear(["initiatives", "webchat", "diary"])
     snap = latest()

@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- JavaScriptSandbox (команды телефону голосом) объявлен с Android 8,
+         приложение — с 7: на 7 служба его не трогает (PhoneVoiceJs.isSupported) -->
+    <uses-sdk tools:overrideLibrary="androidx.javascriptengine" />
+
+    <!-- allowBackup=false: в localStorage веба лежит токен ядра — в облачную
+         копию Android он попасть не должен.
+         usesCleartextTraffic: ядро в домашней сети отвечает по http
+         (канал VPC Link шифрует всё сам и http не боится) -->
+    <application
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <!-- Фоновые сообщения персон, пока приложение закрыто: опрос ядра и
+             уведомления. specialUse, а не dataSync: у dataSync на Android 15
+             лимит 6 часов в сутки, а служба держит связь весь день -->
+        <!-- Будильник напоминания: интент только от самого приложения (PendingIntent) -->
+        <receiver
+            android:name=".ReminderReceiver"
+            android:exported="false" />
+        <!-- Перезагрузка/обновление — будильники заново; события только системные -->
+        <receiver
+            android:name=".ReminderBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".BackgroundInboxService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a connection to a self-hosted server owned by the user on the local network and shows messages it sends (reminders, persona messages) while the app is closed; no push service is used" />
+        </service>
+
+        <!-- Голосовая активация по имени: микрофон, пока экран выключен.
+             Запускает только приложение (Android 14+ не даёт из фона) -->
+        <service
+            android:name=".WakeWordService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+        <!-- Gemma на телефоне (LiteRT-LM) на видеоядре; нет библиотек — на процессоре -->
+        <uses-native-library android:name="libvndksupport.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Без ноутбука: модель телефона качается только по Wi-Fi (OfflineLlmPlugin) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Напоминания без ноутбука — будильником телефона (ReminderAlarms): точно ко
+         времени, и заново после перезагрузки. USE_EXACT_ALARM — Android 13+,
+         SCHEDULE_EXACT_ALARM — 12 (там выдаётся по умолчанию) -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Фоновые уведомления (BackgroundInboxService): служба переднего плана,
+         уведомления (Android 13+ спрашивает), процессор не засыпает между опросами -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Камера — только для сканирования QR-кода сопряжения (VPC Link) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Микрофон — голосовой режим чата (распознавание речи телефона) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Слушать по имени (WakeWordService): служба переднего плана с микрофоном -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- Команды телефону (PhoneActionsPlugin): «поставь будильник» / «таймер»
+         системными «Часами» — без SET_ALARM часы интент не примут -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- Голосом при свёрнутом приложении (WakeWordService): Android 10+ даёт
+         службе открыть «Часы» или «открой X» только с правом «Поверх других
+         приложений» — человек включает его сам в настройках -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Android 11+: без этого службы распознавания и озвучки приложению не видны,
+         и isRecognitionAvailable() отвечает «нет»; без IMAGE_CAPTURE Capacitor
+         не находит камеру и кнопка камеры в чате открывает галерею -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <!-- Команды телефону: «Часы» (будильник, таймер, список) и «открой X» —
+             приложения с иконкой на рабочем столе (не все пакеты) -->
+        <intent>
+            <action android:name="android.intent.action.SET_ALARM" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SET_TIMER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SHOW_ALARMS" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+</manifest>

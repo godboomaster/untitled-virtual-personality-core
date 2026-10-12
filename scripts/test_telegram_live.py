@@ -191,6 +191,7 @@ class Recorder:
 def main():
     tmp = tempfile.mkdtemp(prefix="tg_live_")
     os.environ["DATA_DIR"] = tmp
+    os.environ["VPC_DATA_DIR"] = os.environ["DATA_DIR"]  # одна папка данных на всё
     os.environ.setdefault("OWNER_USER_ID", "")
     os.chdir(tmp)
 
@@ -284,7 +285,8 @@ def main():
 
     def fake_impl(user_input, user_id="default", chat_id=None, user_name=None,
                   reply_context=None, reply_to_bot_message_id=None,
-                  on_token=None, raw_user_text=None, from_skin=False):
+                  on_token=None, raw_user_text=None, from_skin=False,
+                  turn_note=None, file_delivery=None):
         note("impl", str(chat_id))
         llm.setdefault("inputs", []).append(
             {"input": user_input, "raw": raw_user_text, "reply_ctx": reply_context,

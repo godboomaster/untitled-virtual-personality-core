@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import { useI18n } from '../i18n';
+import { BACK_OVERLAY, useBackHandler } from '../backStack';
 
 /* Общая обёртка модального окна с формой: оверлей, панель в HUD-стиле,
    шапка с заголовком, подвал «Отмена / Создать». Закрытие — крестик,
@@ -18,7 +19,8 @@ interface FormModalProps {
   submitDisabled?: boolean;
   wide?: boolean; // широкая панель (~560px) для больших форм
   xl?: boolean; // очень широкая панель (~900px), двухпанельные формы
-  onSubmit: () => void;
+  onSubmit?: () => void; // нет — окно только посмотреть: в подвале одна «Закрыть»
+  cancelLabel?: string;
   onClose: () => void;
 }
 
@@ -31,9 +33,11 @@ export default function FormModal({
   wide,
   xl,
   onSubmit,
+  cancelLabel,
   onClose,
 }: FormModalProps) {
   const { t } = useI18n();
+  useBackHandler(true, BACK_OVERLAY, onClose);
   // Закрытие по Esc
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -61,11 +65,13 @@ export default function FormModal({
         <div className="pcreate-body">{children}</div>
         <div className="pcreate-foot">
           <button type="button" className="btn btn--ghost" onClick={onClose}>
-            {t('common.cancel')}
+            {cancelLabel ?? (onSubmit ? t('common.cancel') : t('common.close'))}
           </button>
-          <button type="button" className="btn btn--primary" disabled={submitDisabled} onClick={onSubmit}>
-            {submitLabel ?? t('common.create')}
-          </button>
+          {onSubmit && (
+            <button type="button" className="btn btn--primary" disabled={submitDisabled} onClick={onSubmit}>
+              {submitLabel ?? t('common.create')}
+            </button>
+          )}
         </div>
       </div>
     </div>,
