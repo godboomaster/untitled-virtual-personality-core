@@ -98,6 +98,11 @@ REPORTS = [
     {"kind": "torch", "status": "no_handler", "on": True},
     {"kind": "torch", "status": "busy", "on": True},
     {"kind": "torch", "status": "failed", "on": False},
+    # Голосом при свёрнутом приложении: Android не дал открыть часы/приложение
+    {"kind": "alarm", "status": "background", "hour": 7, "minute": 0},
+    {"kind": "timer", "status": "background", "seconds": 300},
+    {"kind": "open_app", "status": "background", "app": "Telegram"},
+    {"kind": "alarms_list", "status": "background"},
 ]
 
 NOTES_JS = """
@@ -685,6 +690,93 @@ def test_core():
           and action_note(rep) not in msgs[-1]["content"])
 
 
+# ─── G. Бандл для голосовой службы (assets/phone-voice.js) ───
+
+VOICE_JS = r"""
+import vm from 'node:vm';
+import fs from 'node:fs';
+// Голый движок, как JavaScriptSandbox службы: без window и localStorage;
+// микрозадачи — после каждой оценки (как V8 по умолчанию)
+const ctx = vm.createContext({}, { microtaskMode: 'afterEvaluate' });
+vm.runInContext(fs.readFileSync(INPUT.bundle, 'utf8'), ctx);
+const out = [];
+for (const [persona, text] of INPUT.phrases) {
+  vm.runInContext(`vpcPhone.plan(${JSON.stringify(persona)}, ${JSON.stringify(text)}, ['Коннор'], ${INPUT.now}, ${JSON.stringify(INPUT.apps)}); ''`, ctx);
+  out.push(JSON.parse(vm.runInContext('vpcPhone.last', ctx) || 'null'));
+}
+// Без микрозадач после оценки (запасной путь службы): пусто → «ещё не готов»
+const ctx2 = vm.createContext({});
+vm.runInContext(fs.readFileSync(INPUT.bundle, 'utf8'), ctx2);
+vm.runInContext(`vpcPhone.plan('connor', 'включи фонарик', [], ${INPUT.now}, []); ''`, ctx2);
+out.push(vm.runInContext('vpcPhone.last', ctx2));
+console.log(JSON.stringify(out));
+"""
+
+
+def test_voice_bundle():
+    section("G. Команды телефону голосом: бандл для службы")
+    web = ROOT / "web"
+    if not (web / "node_modules" / "vite").is_dir():
+        print("  (пропуск — нет web/node_modules)")
+        return
+    out = Path(tempfile.mkdtemp(prefix="phone_voice_"))
+    # Тот же конфиг, что в npm run phone-voice, но в свою папку — не трогаем сборку
+    r = subprocess.run(["npx", "vite", "build", "--config", "vite.phone-voice.config.ts", "--outDir", str(out)],
+                       cwd=web, capture_output=True, text=True, timeout=180)
+    bundle = out / "phone-voice.js"
+    check("бандл собирается", r.returncode == 0 and bundle.is_file())
+    if not bundle.is_file():
+        print(r.stdout[-2000:], r.stderr[-2000:])
+        return
+    code = bundle.read_text("utf-8")
+    check("бандл самодостаточный (без import/require)", "import " not in code and "require(" not in code)
+    apps = [{"label": "Telegram", "package": "org.telegram.messenger"},
+            {"label": "Настройки", "package": "com.android.settings"}]
+    phrases = [
+        ("connor", "включи фонарик"),
+        ("connor", "Коннор, выключи фонарик"),
+        ("connor", "поставь таймер на пять минут"),
+        ("connor", "поставь будильник"),
+        ("connor", "на семь утра"),
+        ("connor", "открой телеграм"),
+        ("connor", "разбуди меня через 20 минут"),
+        ("connor", "как дела"),
+        ("connor", "покажи будильники"),
+    ]
+    # 21:00 по часам Node (node() запускает его с TZ=Europe/Moscow)
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = int(datetime(2026, 10, 12, 21, 0, tzinfo=ZoneInfo("Europe/Moscow")).timestamp() * 1000)
+    got = node(VOICE_JS, {"bundle": str(bundle), "phrases": phrases, "apps": apps, "now": now})
+    shutil.rmtree(out, ignore_errors=True)
+    if got is None:
+        return
+    *res, unready = got
+    want = [
+        ({"kind": "torch", "status": "ok", "on": True}, [{"op": "torch", "on": True}]),
+        ({"kind": "torch", "status": "ok", "on": False}, [{"op": "torch", "on": False}]),
+        ({"kind": "timer", "status": "ok", "seconds": 300}, [{"op": "setTimer", "seconds": 300, "label": ""}]),
+        ({"kind": "alarm", "status": "ask"}, []),
+        ({"kind": "alarm", "status": "ok", "hour": 7, "minute": 0},
+         [{"op": "setAlarm", "hour": 7, "minute": 0, "days": [], "label": ""}]),
+        ({"kind": "open_app", "status": "ok", "app": "Telegram"},
+         [{"op": "openApp", "package": "org.telegram.messenger"}]),
+        ({"kind": "alarm", "status": "ok", "hour": 21, "minute": 20},
+         [{"op": "setAlarm", "hour": 21, "minute": 20, "days": [], "label": ""}]),
+        None,
+        ({"kind": "alarms_list", "status": "ok"}, [{"op": "showAlarms"}]),
+    ]
+    for (persona, text), g, w in zip(phrases, res, want):
+        if w is None:
+            ok_ = g == {"report": None, "ops": []}
+            check(f"«{text}» — не команда", ok_)
+        else:
+            ok_ = g == {"report": w[0], "ops": w[1]}
+            check(f"«{text}» → {w[0]['kind']}/{w[0]['status']}" + ("" if ok_ else f"\n      получено: {g}"), ok_)
+    check("переспрос «на какое время?» помнится между вызовами (ответ без имени)", res[4]["report"]["hour"] == 7)
+    check("без микрозадач итог ещё не готов — пустая строка, а не прошлый итог", unready == "")
+
+
 def main():
     print("Команды телефону")
     if not shutil.which("node"):
@@ -696,6 +788,8 @@ def main():
         test_match()
         test_actions()
     test_core()
+    if shutil.which("node"):
+        test_voice_bundle()
     print(f"\n{ok - failures}/{ok} OK" + (f", FAIL: {failures}" if failures else ""))
     return 1 if failures else 0
 

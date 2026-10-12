@@ -3,7 +3,7 @@ import { api, apiHost, setApiUrl } from '../api';
 import { useI18n } from '../i18n';
 import { bgInboxStatus, bgNotifyEnabled, retryBgNotifyPermission, setBgNotify, stopBgInbox } from '../bgInbox';
 import type { BgInboxStatus, BgNotifyResult } from '../bgInbox';
-import { forgetWakeServer, setWakeWord, wakeStatus } from '../wakeWord';
+import { forgetWakeServer, openOverlaySettings, setWakeWord, wakeStatus } from '../wakeWord';
 import type { WakeResult, WakeStatus } from '../wakeWord';
 import { getLinkConfig, linkState, onLinkState, reconnectLink, setLinkConfig } from './client.ts';
 
@@ -192,9 +192,15 @@ function WakeWordToggle({ linkMode }: { linkMode: boolean }) {
         .catch(() => {});
     read();
     const timer = window.setInterval(read, 2000);
+    // Вернулись из настроек Android (право «Поверх других») — сразу заново
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') read();
+    };
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       alive = false;
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [linkMode, busy]);
 
@@ -237,6 +243,17 @@ function WakeWordToggle({ linkMode }: { linkMode: boolean }) {
       )}
       {result === 'mic-denied' && <p className="field-hint">{t('settings.wakeMicDenied')}</p>}
       {result === 'error' && <p className="field-hint">{t('settings.wakeFailed')}</p>}
+      {on && status?.overlayAllowed === false && (
+        <div style={{ margin: '8px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span>{t('settings.wakeOverlay')}</span>
+            <button type="button" className="btn btn--ghost btn--chip" onClick={() => void openOverlaySettings().catch(() => {})}>
+              {t('settings.wakeOverlayAllow')}
+            </button>
+          </div>
+          <p className="field-hint">{t('settings.wakeOverlayHint')}</p>
+        </div>
+      )}
       <p className="field-hint">{t('settings.wakeHint')}</p>
     </div>
   );

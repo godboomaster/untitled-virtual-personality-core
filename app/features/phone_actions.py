@@ -58,11 +58,33 @@ def _label(r: dict) -> str:
     return f' labelled "{label}"' if label else ""
 
 
+def _asked(r: dict) -> str:
+    """Что просили — для заметки «не дали из фона»."""
+    kind = r.get("kind")
+    if kind == "alarm":
+        return f"an alarm at {_hm(r)}"
+    if kind == "timer":
+        return f"a timer for {_duration(r.get('seconds'))}"
+    if kind == "open_app":
+        return f'to open "{_clean(r.get("app"))}"'
+    if kind == "torch":
+        return f"to turn the flashlight {'on' if r.get('on') else 'off'}"
+    return "to show the alarms"
+
+
 def action_note(r: dict) -> str:
     """Заметка персоне по итогу команды телефону (поля — PhoneActionReport)."""
     kind = r.get("kind")
     status = r.get("status")
     app = _clean(r.get("app"))
+    if status == "background":
+        # Голосом при свёрнутом приложении: Android не даёт открыть часы или
+        # другое приложение из фона без права «Поверх других приложений»
+        return (f"The user asked by voice for {_asked(r)}, but Android does not let the app open the "
+                "clock or other apps while it is in the background, so nothing was done. "
+                f"{_NOT_DONE} Tell the user to open the app, or to allow it \"Display over other "
+                "apps\" (the app's settings, under listening for a name) so it works with the screen "
+                "off. Do NOT say that it was done.")
     if kind == "alarm":
         hm = _hm(r)
         if status == "ok":

@@ -60,6 +60,9 @@ dependencies {
     // Голосовая активация по имени (WakeWordService): распознаватель
     // sherpa-onnx. AAR в git не лежит — scripts/fetch_wake_model.sh
     implementation files("libs/sherpa-onnx-${sherpaOnnxVersion}.aar")
+    // Команды телефону голосом (PhoneVoiceJs): служба гоняет тот же разбор,
+    // что у чата (web/src/phone, бандл assets/phone-voice.js), в V8 из WebView
+    implementation 'androidx.javascriptengine:javascriptengine:1.1.1'
     testImplementation "junit:junit:$junitVersion"
     // Настоящий org.json для JVM-тестов (в android.jar — заглушки)
     testImplementation 'org.json:json:20240303'

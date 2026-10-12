@@ -550,6 +550,14 @@ it with the screen off. When the phone and the computer hear the same phrase, on
 answers (`voice` in `POST /api/chat`), and while the voice chat mode is open on either, the
 core's own listener pauses.
 
+Phone commands work by voice too — "Connor, turn on the flashlight", "…set a timer for five
+minutes", "…open Telegram": the service runs the same parser as the chat
+(`web/src/phone/actions.ts`, bundled by `npm run phone-voice` into `assets/phone-voice.js` and run
+in a headless JS engine), the phone does the action and the persona answers from the result. The
+flashlight works with the screen off. Alarms, timers and opening apps start other apps' screens,
+which Android allows from the background only with the "Display over other apps" permission —
+the button for it is under "Listen for name"; without it the persona says it couldn't.
+
 On macOS the first start asks for microphone access for the app the core was started from
 (Terminal, iTerm, VS Code or the tray panel). If access was denied, the microphone returns
 pure zeros and the log and `/api/voice/wake` say so: turn the app on in System Settings →

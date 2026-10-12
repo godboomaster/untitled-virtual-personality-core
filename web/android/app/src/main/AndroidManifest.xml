@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- JavaScriptSandbox (команды телефону голосом) объявлен с Android 8,
+         приложение — с 7: на 7 служба его не трогает (PhoneVoiceJs.isSupported) -->
+    <uses-sdk tools:overrideLibrary="androidx.javascriptengine" />
 
     <!-- allowBackup=false: в localStorage веба лежит токен ядра — в облачную
          копию Android он попасть не должен.
@@ -105,6 +110,10 @@
     <!-- Команды телефону (PhoneActionsPlugin): «поставь будильник» / «таймер»
          системными «Часами» — без SET_ALARM часы интент не примут -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- Голосом при свёрнутом приложении (WakeWordService): Android 10+ даёт
+         службе открыть «Часы» или «открой X» только с правом «Поверх других
+         приложений» — человек включает его сам в настройках -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- Android 11+: без этого службы распознавания и озвучки приложению не видны,
          и isRecognitionAvailable() отвечает «нет»; без IMAGE_CAPTURE Capacitor
