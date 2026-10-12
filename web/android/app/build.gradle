@@ -32,7 +32,7 @@ android {
     testOptions {
         unitTests.all {
             // Общие примеры голосовой активации — те же, что у теста ядра
-            systemProperty 'wakeCases', rootProject.file('../../scripts/data/wake_match_cases.json').absolutePath
+            systemProperty 'wakeCases', rootProject.file('../../scripts/fixtures/wake_match_cases.json').absolutePath
         }
     }
     buildTypes {

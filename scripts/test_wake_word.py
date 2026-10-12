@@ -1,7 +1,7 @@
 """Голосовая активация на компьютере ядра: «Коннор, какая погода?».
 
   A. имя в распознанном тексте (app/voice/wake_match): общие примеры
-     scripts/data/wake_match_cases.json (их же гоняет WakeMatchTest.java),
+     scripts/fixtures/wake_match_cases.json (их же гоняет WakeMatchTest.java),
      список имён из /api/personas, кириллица для подсказки распознавателю;
   B. автомат слушателя (app/voice/wake_listener) с поддельными ядром и
      озвучкой: имя с просьбой, имя без просьбы → ожидание, таймаут, ответ
@@ -41,7 +41,7 @@ from app.voice.wake_match import (  # noqa: E402
     match_wake, phonetic_key, to_cyrillic, wake_phrases,
 )
 
-CASES = json.loads((ROOT / "scripts" / "data" / "wake_match_cases.json").read_text("utf-8"))
+CASES = json.loads((ROOT / "scripts" / "fixtures" / "wake_match_cases.json").read_text("utf-8"))
 PHRASES = wake_phrases(CASES["personas"])
 
 ok = 0

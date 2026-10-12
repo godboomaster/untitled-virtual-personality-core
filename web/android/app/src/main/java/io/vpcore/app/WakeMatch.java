@@ -16,7 +16,7 @@ import java.util.regex.Pattern;
 /**
  * Имя персоны в распознанной речи (голосовая активация, «Коннор, …») —
  * тот же алгоритм, что app/voice/wake_match.py на ядре; общие примеры —
- * scripts/data/wake_match_cases.json, их гоняют оба теста (WakeMatchTest).
+ * scripts/fixtures/wake_match_cases.json, их гоняют оба теста (WakeMatchTest).
  *
  * Распознаватель пишет имена на слух: «коннер» вместо «коннор», «родис»
  * вместо «арродес». Поэтому сравнение — по грубому фонетическому ключу

@@ -10,7 +10,7 @@
 будит, «мы вчера с Коннором…» — нет.
 
 Тот же алгоритм — в приложении Android (WakeMatch.java); общие примеры —
-scripts/data/wake_match_cases.json, их гоняют оба теста.
+scripts/fixtures/wake_match_cases.json, их гоняют оба теста.
 """
 from __future__ import annotations
 

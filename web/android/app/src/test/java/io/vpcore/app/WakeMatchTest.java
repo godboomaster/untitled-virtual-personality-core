@@ -17,7 +17,7 @@ import java.util.List;
 
 /**
  * WakeMatch — те же ответы, что app/voice/wake_match.py: общие примеры из
- * scripts/data/wake_match_cases.json (их же гоняет scripts/test_wake_word.py).
+ * scripts/fixtures/wake_match_cases.json (их же гоняет scripts/test_wake_word.py).
  */
 public class WakeMatchTest {
 
@@ -28,7 +28,7 @@ public class WakeMatchTest {
     public static void load() throws Exception {
         // Путь передаёт build.gradle; без него — от папки модуля app
         String path = System.getProperty("wakeCases");
-        File f = path != null ? new File(path) : new File("../../../scripts/data/wake_match_cases.json");
+        File f = path != null ? new File(path) : new File("../../../scripts/fixtures/wake_match_cases.json");
         assertTrue("нет общих примеров: " + f.getAbsolutePath(), f.isFile());
         cases = new JSONObject(new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8));
         phrases = WakeMatch.wakePhrases(cases.getJSONArray("personas"));
