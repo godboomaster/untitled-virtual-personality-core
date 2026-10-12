@@ -2053,6 +2053,110 @@ class BotInstance:
         self._control_mode_off_cleanup(chat_id)
         return self._cc_phrase("cc_mode_off", lang)
 
+    # Сколько ждём ответа на «включить режим и выполнить?»: позже «да» —
+    # уже не про эту команду
+    _CC_OFFER_TTL_SEC = 180
+
+    def _cc_command_text(self, raw_text: Optional[str]) -> str:
+        """Команда из написанного человеком: normalize_command, а реплика
+        целиком в чужой раскладке — сперва перенабрана (до нормализации:
+        та срезала бы по краям «,» и «.» — в чужой раскладке это «б» и «ю»)."""
+        from app.features.cc_typos import layout_command
+        raw = raw_text or ""
+        return normalize_command(layout_command(raw) or raw, self._address_names())
+
+    def _cc_outside_command(self, raw_text: Optional[str]) -> Optional[str]:
+        """Команда браузеру, написанная при выключенном режиме управления,
+        → её текст (нормализованный, опечатка в глаголе исправлена) или
+        None. Только то, чего в обычном разговоре почти не говорят: открыть
+        известный сайт или приложение («открой ютуб»; «открой глаза» — нет),
+        поиск на известном сайте, нажать, пролистать, навести."""
+        cc = self.computer_control
+        text = self._cc_command_text(raw_text)
+        if not text or len(text) > 120 or "\n" in text:
+            return None
+        from app.features.cc_typos import fix_command_verb
+        known = getattr(cc, "is_known_target", None)
+        for cand in (text, fix_command_verb(text)):
+            if not cand:
+                continue
+            scroll = parse_scroll_request(cand)
+            # «стоп» / «хватит» — тоже «листание» (остановка), но вне режима
+            # это обычные слова
+            if (scroll and scroll[0] == "start") or parse_scroll_to_goal(cand) \
+                    or parse_hover_request(cand) or parse_click_request(cand):
+                return cand
+            if not callable(known):
+                continue
+            pair = parse_search_on_site(cand)
+            if pair and known(pair[1]):
+                return cand
+            names = parse_open_many(cand, known=known)
+            if names and all(known(n) for n in names):
+                return cand
+        return None
+
+    def _cc_mode_offer_ask(self, chat_id, user_id, user_name, cmd: str,
+                           lang: Optional[str]) -> str:
+        """Вопрос «Режим управления выключен — включить и выполнить «X»?»;
+        ответ на него ловит _cc_mode_offer_turn следующим ходом."""
+        from app.features import cc_texts
+        question = cc_texts.t("cc_mode_offer", lang, cmd=cc_texts.clip(cmd, 80))
+        offers = getattr(self, "list_offers", None)
+        if offers is not None:
+            offers.begin(chat_id, "cc_mode", cmd, user_id=user_id,
+                         user_name=user_name or "", question=question)
+        logger.info(f"[BotInstance] команда браузеру вне режима управления — "
+                    f"предложено включить (chat {chat_id})")
+        return question
+
+    def _cc_mode_offer_turn(self, offer: dict, raw_text: Optional[str],
+                            user_input: str, user_id, chat_id, user_name,
+                            mode_key: str, lang: Optional[str]) -> Optional[str]:
+        """Ответ на «включить режим управления и выполнить «X»?» → готовый
+        ответ или None (не ответ на вопрос — реплика идёт обычным путём).
+        «Да» — режим включается и та же команда исполняется этим ходом."""
+        if not mode_key or not getattr(self, "computer_control", None) \
+                or not self._cc_allowed(user_id, chat_id):
+            return None
+        asked = float(offer.get("asked_at") or 0)
+        if time.time() - asked > self._CC_OFFER_TTL_SEC \
+                or self._bot_asked_since(chat_id, asked):
+            return None
+        verdict = list_offers.classify_reply("cc_mode", raw_text or "",
+                                             self._address_names())
+        logger.info(f"[BotInstance] ответ на «включить режим управления?» "
+                    f"(chat {chat_id}): {verdict or 'не ответ'}")
+        if verdict not in ("YES", "NO"):
+            return None
+        from app.features import cc_texts
+        prefix = None
+        if verdict == "NO":
+            reply = cc_texts.t("cc_mode_offer_declined", lang)
+        elif not self.control_mode_on(mode_key):
+            # Управление могли выключить в настройках между вопросом и «да» —
+            # тогда ответ переключателя и есть ответ
+            reply = self._control_mode_switch(mode_key, True, lang=lang)
+            if self.control_mode_on(mode_key):
+                prefix = cc_texts.t("cc_mode_on_short", lang)
+        if verdict == "YES" and self.control_mode_on(mode_key):
+            try:
+                self.computer_control.note_requester(chat_id, user_id)
+            except Exception:
+                pass
+            done = self._cc_fast_path(str(offer.get("value") or ""),
+                                      user_input, user_id, chat_id,
+                                      user_name, lang, prefix=prefix)
+            if done is not None:
+                return done
+            reply = "\n".join(x for x in (
+                prefix, cc_texts.t("cc_mode_offer_repeat", lang)) if x)
+        self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+        self.memory.add_message("assistant", reply, user_id, chat_id)
+        if self.proactive and chat_id:
+            self.proactive.record_user_response(chat_id)
+        return reply
+
     def _control_mode_off_cleanup(self, chat_id: str) -> None:
         """Побочки выхода из режима (явного и по простою): браузерный слой,
         подвисшие pending/сценарий/задача агента."""
@@ -2103,6 +2207,14 @@ class BotInstance:
         cc = getattr(self, "computer_control", None)
         if not key or cc is None:
             return None
+        # «Режим управления выключен — включить и выполнить «X»?» (вне режима)
+        offers = getattr(self, "list_offers", None)
+        cur = offers.peek(key) if offers is not None else None
+        if cur and cur.get("kind") == "cc_mode" \
+                and time.time() - float(cur.get("asked_at") or 0) <= self._CC_OFFER_TTL_SEC \
+                and (not user_id or not cur.get("user_id")
+                     or str(cur.get("user_id")) == str(user_id)):
+            return {"kind": "yesno", "options": [{"role": "yes"}, {"role": "no"}]}
         try:
             if not self.control_mode_on(key):
                 return None
@@ -2323,6 +2435,12 @@ class BotInstance:
                         stamp = ("ta", id(aw))
             except Exception:
                 pass
+        offers = getattr(self, "list_offers", None)
+        if stamp is None and offers is not None:
+            # «Включить режим управления и выполнить?» — тоже «да/нет»
+            cur = offers.peek(chat_id)
+            if cur and cur.get("kind") == "cc_mode":
+                stamp = ("offer", cur.get("asked_at"))
         return stamp
 
     def cc_group_confirm_hint(self, text: str) -> str:
@@ -2628,13 +2746,15 @@ class BotInstance:
     # ── Fast-path режима управления: команда → лесенка парсеров ──
 
     def _cc_fast_path(self, cc_text: str, user_input: str, user_id, chat_id,
-                      user_name, turn_lang) -> Optional[str]:
+                      user_name, turn_lang,
+                      prefix: Optional[str] = None) -> Optional[str]:
         """Команда управления из того, что человек НАПИСАЛ (cc_text —
         normalize_command от raw_user_text), а не из составного user_input
         с OCR/файлом: «Нажми Удалить аккаунт» на скриншоте — не команда.
         Составная команда («открой додо и нажми на пепперони фреш») идёт
         шагами (_cc_run_steps). Ответ — строка (история уже записана) или
-        None: не команда, сообщение уходит обычным путём."""
+        None: не команда, сообщение уходит обычным путём. prefix — строка
+        перед ответом («Включил режим управления») — и в истории тоже."""
         if not cc_text:
             return None
         # Секреты команды («введи Kotik2019 в поле пароль», «ivan / K…») —
@@ -2664,9 +2784,11 @@ class BotInstance:
             ta_reply = self._task_agent_turn(
                 user_input, user_id, chat_id, user_name, turn_lang,
                 goal=goal_out[0], feed_text=cc_text)
-            return "\n".join(x for x in (reply, ta_reply) if x)
+            return "\n".join(x for x in (prefix, reply, ta_reply) if x)
         if reply is None:
             return None
+        if prefix:
+            reply = f"{prefix}\n{reply}"
         self.memory.add_message("user", user_input, user_id, chat_id, user_name)
         self.memory.add_message("assistant", reply, user_id, chat_id)
         if self.proactive and chat_id:
@@ -2947,13 +3069,16 @@ class BotInstance:
                 "reply": pv_err or cc_texts.t("page_view_failed", turn_lang)}
 
     def _cc_ladder(self, text: str, chat_id, turn_lang, user_input: str = "",
-                   page_site: Optional[str] = None) -> Optional[dict]:
+                   page_site: Optional[str] = None,
+                   typo_pass: bool = False) -> Optional[dict]:
         """Один шаг команды через лесенку regex-парсеров, последним — LLM-
         ярус. text — нормализованная команда (без OCR/файлов). → None — не
         команда; {"reply", "ok"} — шаг уже обслужен (чтение/отчёт/доскролл/
         отказ резолва); {"action", "direct"} — действие к подтверждению или
         исполнению (direct — без подтверждения: чтение, переключение
-        вкладки). page_site — сайт, открытый прошлым шагом цепочки."""
+        вкладки). page_site — сайт, открытый прошлым шагом цепочки.
+        typo_pass — повтор лесенки с исправленным глаголом (cc_typos): без
+        LLM-яруса и без новой правки."""
         cc = self.computer_control
         cid = str(chat_id or "")
         # «пролистай до X» — своим блоком ДО лесенки клика: внутри неё
@@ -3108,6 +3233,20 @@ class BotInstance:
                 except Exception as e:
                     logger.debug(f"[CompControl] fast-path резолв не удался: {e}")
         tag_origin(cc_action, "fast")
+        # Опечатка в глаголе («откой ютуб», «пролистй вниз») или не та
+        # раскладка: ни один парсер фразу не разобрал — правим первое слово
+        # и проходим лесенку ещё раз, без LLM-яруса. Иначе ход уходил
+        # модели: ответ через секунды, часто «на словах», и команду
+        # набирали заново
+        if cc_action is None and not typo_pass:
+            fixed = self._cc_typo_candidate(text)
+            if fixed:
+                res = self._cc_ladder(fixed, chat_id, turn_lang,
+                                      user_input=user_input,
+                                      page_site=page_site, typo_pass=True)
+                res = self._cc_typo_accept(res, text, fixed)
+                if res is not None:
+                    return res
         # Секрет в самой команде («введи пароль Kotik2019 …»), которую regex
         # не разобрал: в облачный LLM-ярус такой текст не уходит — просим
         # сказать по шаблону, который разбирает regex-путь
@@ -3127,8 +3266,8 @@ class BotInstance:
         # резолверы и тот же confirm/allowlist. Только для фраз, похожих на
         # команду: на «как дела?» лишний вызов модели до основного ответа
         # лишь тормозит. Ошибка резолва — честный отказ
-        if cc_action is None and cc.click and len(text) <= 400 \
-                and looks_like_command(text, turn_lang):
+        if cc_action is None and cc.click and not typo_pass \
+                and len(text) <= 400 and looks_like_command(text, turn_lang):
             try:
                 cc_action, cc_err = cc.resolve_intent_llm(
                     text, self.router, chat_id=cid)
@@ -3181,6 +3320,63 @@ class BotInstance:
                     f"{'задача' if is_goal_task(cc_action) else getattr(cc, '_describe_safe', cc.describe)(cc_action)}")
         return {"action": cc_action,
                 "direct": cc_direct or cc_action.get("kind") == "read"}
+
+    # Действия, которые после правки опечатки исполняются как обычно: открыть,
+    # листать, навести, прочитать, масштаб, вкладки, громкость. Остальное
+    # (клик, ввод, отправка, клавиши, корзина, закрытие, скачивание) — сперва
+    # «да»: в вопросе видно, как бот понял исправленную команду
+    _CC_TYPO_SAFE_KINDS = frozenset({
+        "url", "app", "scroll", "scroll_goal", "scroll_stop", "hover", "read",
+        "zoom", "tab_switch", "page_view", "media_vol"})
+
+    def _cc_typo_candidate(self, text: str) -> Optional[str]:
+        """Команда с исправленным глаголом (cc_typos.fix_command_verb) или
+        None. «Открой X» после правки — только к известной цели (алиас,
+        приложение, домен): по случайному слову («lunch time» → «launch
+        time») поисковик не дёргаем. Команды странице («включи звук») и
+        поиск на известном сайте цели не требуют."""
+        from app.features.cc_typos import OPEN_VERBS, first_verb, fix_command_verb
+        fixed = fix_command_verb(text)
+        if not fixed:
+            return None
+        if first_verb(fixed) in OPEN_VERBS \
+                and self._cc_parse_page_command(fixed) is None:
+            known = getattr(self.computer_control, "is_known_target", None)
+            if not callable(known):
+                return None
+            pair = parse_search_on_site(fixed)
+            if pair:
+                ok = known(pair[1])
+            else:
+                names = parse_open_many(fixed, known=known)
+                ok = bool(names) and all(known(n) for n in names)
+            if not ok:
+                return None
+        return fixed
+
+    def _cc_typo_accept(self, res: Optional[dict], text: str,
+                        fixed: str) -> Optional[dict]:
+        """Итог лесенки по исправленной команде → он же (небезопасное
+        действие — с обязательным «да») или None: правка не помогла, фраза
+        идёт дальше как была (LLM-ярус, обычный диалог)."""
+        if res is None:
+            return None
+        from app.features.cc_privacy import redact_inline
+        action = res.get("action")
+        if isinstance(action, dict):
+            if action.get("via_search"):
+                # Цель нашёл поисковик — правка угадала не то слово
+                return None
+            items = (action.get("items") or []) if action.get("kind") == "multi" \
+                else [action]
+            if not items or any(not isinstance(a, dict)
+                                or a.get("kind") not in self._CC_TYPO_SAFE_KINDS
+                                for a in items):
+                action["force_confirm"] = True
+                res = {**res, "direct": False}
+        logger.info(f"[CompControl] опечатка в команде: '{redact_inline(text, 40)}' "
+                    f"→ '{redact_inline(fixed, 40)}'")
+        return res
 
     @staticmethod
     def _cc_mark_model_url(cc, cc_action, text: str) -> None:
@@ -3370,12 +3566,16 @@ class BotInstance:
             from app.features.file_access import scrub_reply_context
             reply_context = scrub_reply_context(reply_context)
         # Язык пользователя в этом ходе — для изолированных реплик
-        # (CC-результаты, настройка обучения): в них нет истории диалога
+        # (CC-результаты, настройка обучения): в них нет истории диалога.
+        # Команда в чужой раскладке («jnrhjq .ne,») — по перенабранной: по
+        # латинице вышел бы английский
+        from app.features.cc_typos import layout_command
+        _lang_src = layout_command(raw_user_text or "") or raw_user_text
         try:
             turn_lang = detect_dialogue_language(
-                raw_user_text, self.memory.stm.get_last(8, chat_id=chat_id), user_id)
+                _lang_src, self.memory.stm.get_last(8, chat_id=chat_id), user_id)
         except Exception:
-            turn_lang = detect_language(raw_user_text)
+            turn_lang = detect_language(_lang_src)
 
         # Очищаем pending-состояние ЭТОГО чата от предыдущего вызова (атрибуты per-chat:
         # process_message выполняется конкурентно в потоках для разных чатов, и общие
@@ -3532,6 +3732,17 @@ class BotInstance:
                     self.proactive.record_user_response(chat_id)
                 return _cm_reply
 
+        # Ответ на «Режим управления выключен — включить и выполнить «X»?»:
+        # «да» — включаем и исполняем ту же команду, «нет» — коротко, другая
+        # реплика снимает вопрос и идёт обычным путём
+        if list_offer and list_offer.get("kind") == "cc_mode":
+            _co, list_offer = list_offer, None
+            _co_reply = self._cc_mode_offer_turn(
+                _co, raw_user_text, user_input, user_id, chat_id, user_name,
+                cc_mode_key, turn_lang)
+            if _co_reply is not None:
+                return _co_reply
+
         # «почини браузер» — rescue пула H: веб-чаты перезапускаются в
         # видимом Chrome, чтобы пользователь прошёл капчу руками. Тоже
         # только для авторизованных — иначе кто угодно в чате мог бы поднять
@@ -3588,8 +3799,9 @@ class BotInstance:
                 and self.control_mode_on(cc_mode_key)
                 and self._cc_allowed(user_id, chat_id)):
             # Команда для лесенки — нормализованный текст, который человек
-            # написал сам: «Коннор, можешь открыть ютуб?» → «открой ютуб»
-            cc_text = normalize_command(raw_user_text, self._address_names())
+            # написал сам: «Коннор, можешь открыть ютуб?» → «открой ютуб»;
+            # набранное в чужой раскладке («jnrhjq .ne,») — перенабранным
+            cc_text = self._cc_command_text(raw_user_text)
             # Автор хода: им подписывается pending, который создаст этот ход
             # (подтвердить сможет только он)
             try:
@@ -3925,6 +4137,22 @@ class BotInstance:
                             "user expects something that is missing, say the section does not "
                             "show it right now.")
             # не резолвится — обычный путь через LLM
+
+        # Команда браузеру при выключенном режиме управления («открой ютуб»,
+        # «нажми …», «пролистай …») от того, кому режим доступен: сразу и
+        # честно — режим выключен, включить и выполнить? Без этого реплика
+        # уходила модели, та «открывала» на словах, а человек ждал ответа
+        elif (getattr(self, "computer_control", None) and cc_mode_key
+                and self._cc_allowed(user_id, chat_id)):
+            _oc = self._cc_outside_command(raw_user_text)
+            if _oc:
+                _oq = self._cc_mode_offer_ask(chat_id, user_id, user_name,
+                                              _oc, turn_lang)
+                self.memory.add_message("user", user_input, user_id, chat_id, user_name)
+                self.memory.add_message("assistant", _oq, user_id, chat_id)
+                if self.proactive and chat_id:
+                    self.proactive.record_user_response(chat_id)
+                return _oq
 
         # Ответ на переспрос «Записать «X» в список дел?» / «Добавить «X» в
         # инвентарь?»: «да» — делаем без LLM, «нет» — снимаем; другая
@@ -5834,8 +6062,8 @@ class BotInstance:
         короткий отказ; другое — вопрос снят молча. «Да» не наше, если это
         reply на другое сообщение бота или после вопроса бот спросил другое
         (обучение, инициатива)."""
-        if offer is None:
-            return None
+        if offer is None or offer.get("kind") == "cc_mode":
+            return None  # «включить режим управления?» — _cc_mode_offer_turn
         if mode_key and self.control_mode_on(mode_key):
             return None  # в режиме управления дела и инвентарь молчат
         if reply_to_bot_message_id and \

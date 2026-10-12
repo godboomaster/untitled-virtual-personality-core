@@ -15,6 +15,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(OfflineLlmPlugin.class);
         registerPlugin(PhoneActionsPlugin.class);
         registerPlugin(FileSavePlugin.class);
+        registerPlugin(WakeWordPlugin.class);
         super.onCreate(savedInstanceState);
         handleTap(getIntent());
     }
@@ -33,6 +34,9 @@ public class MainActivity extends BridgeActivity {
         // а уже показанные снимаем — их сообщения теперь видно в чате
         BackgroundInboxService.appVisible = true;
         BackgroundInboxService.clearMessageNotifications(this);
+        // Слушать по имени включено, а службы нет (убита системой, телефон
+        // перезагружался): Android 14+ разрешает запустить её только отсюда
+        WakeWordService.startIfEnabled(this);
     }
 
     @Override

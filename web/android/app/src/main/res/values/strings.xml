@@ -16,4 +16,23 @@
     <string name="bg_channel_messages_desc">Reminders and messages from personas while the app is closed</string>
     <string name="bg_test_title">Test</string>
     <string name="bg_test_text">Persona message notifications work</string>
+    <!-- Голосовая активация по имени (WakeWordService) -->
+    <string name="wake_channel">Listen for name</string>
+    <string name="wake_channel_desc">Silent notification while the app listens for a persona\'s name</string>
+    <string name="wake_title">Listening for: %1$s</string>
+    <string name="wake_title_none">Listen for name: no names yet</string>
+    <string name="wake_stop">Turn off</string>
+    <string name="wake_state_idle">Say a name — I\'ll answer</string>
+    <string name="wake_state_loading">Loading speech recognition…</string>
+    <string name="wake_state_listening">Listening…</string>
+    <string name="wake_state_thinking">Thinking…</string>
+    <string name="wake_state_speaking">Speaking…</string>
+    <string name="wake_state_paused">Paused: voice chat in the app</string>
+    <string name="wake_state_no_names">No names: the core is unreachable, will retry</string>
+    <string name="wake_state_mic">No microphone access</string>
+    <string name="wake_state_model">Speech recognition failed to start</string>
+    <string name="wake_say_offline">The core is not responding</string>
+    <string name="wake_say_denied">No access to the core</string>
+    <string name="wake_say_error">The core returned an error</string>
+    <string name="wake_say_empty">No answer</string>
 </resources>

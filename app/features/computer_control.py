@@ -1885,6 +1885,22 @@ def parse_control_mode(text: str) -> Optional[bool]:
     if not text or len(text) > 60:
         return None
     text = _strip_polite(text)
+    exact = _control_mode_exact(text)
+    if exact is not None:
+        return exact
+    # Опечатка («режим урпавления») или не та раскладка («ht;bv
+    # eghfdktybz»): иначе фраза уходила модели, та отвечала «на словах»,
+    # а человек ждал ответа и набирал заново. Засчитывается, только если
+    # исправленную фразу целиком разобрала та же регулярка
+    from app.features.cc_typos import fix_mode_phrase
+    for cand in fix_mode_phrase(text):
+        got = _control_mode_exact(_strip_polite(cand))
+        if got is not None:
+            return got
+    return None
+
+
+def _control_mode_exact(text: str) -> Optional[bool]:
     if _CONTROL_MODE_OFF_RE.match(text) or _CONTROL_MODE_EN_OFF_RE.match(text):
         return False
     if _CONTROL_MODE_ON_RE.match(text) or _CONTROL_MODE_EN_ON_RE.match(text):

@@ -77,14 +77,20 @@ public class NativeSpeechPlugin extends Plugin {
         }
         final String lang = call.getString("lang", "");
         final boolean partial = Boolean.TRUE.equals(call.getBoolean("partialResults", true));
+        // Слушать по имени (WakeWordService) держит микрофон — пусть отпустит:
+        // ждём здесь, в потоке плагина, а не в главном
+        WakeWordService.appListening(true);
+        WakeWordService.awaitMicReleased(600);
         main.post(() -> {
             // Прошлая сессия ещё жива — закрываем её, не дожидаясь колбэков
             closeSession(null, null);
+            WakeWordService.appListening(true);
             final int seq = ++sessionSeq;
             try {
                 recognizer = SpeechRecognizer.createSpeechRecognizer(getContext());
             } catch (Exception e) {
                 recognizer = null;
+                WakeWordService.appListening(false);
                 call.reject("Cannot create speech recognizer: " + e.getMessage(), "unavailable");
                 return;
             }
@@ -141,6 +147,8 @@ public class NativeSpeechPlugin extends Plugin {
     private void closeSession(String errorCode, String errorMessage) {
         boolean wasOpen = sessionOpen;
         sessionOpen = false;
+        // Микрофон свободен — голосовая активация снова слушает (с задержкой)
+        WakeWordService.appListening(false);
         if (recognizer != null) {
             try {
                 recognizer.destroy();
@@ -420,6 +428,7 @@ public class NativeSpeechPlugin extends Plugin {
             j.finished = true;
             if (job == j) job = null;
         }
+        if (job == null) WakeWordService.appSpeaking(false);
         JSObject ret = new JSObject();
         ret.put("status", status);
         j.call.resolve(ret);
@@ -494,6 +503,8 @@ public class NativeSpeechPlugin extends Plugin {
         synchronized (ttsLock) {
             job = j;
         }
+        // Голосовая активация не должна услышать имя в ответе персоны
+        WakeWordService.appSpeaking(true);
         for (int i = 0; i < chunks.size(); i++) {
             int mode = i == 0 ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
             int res = engine.speak(chunks.get(i), mode, null, prefix + i);
@@ -557,6 +568,8 @@ public class NativeSpeechPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         main.removeCallbacksAndMessages(null);
+        WakeWordService.appListening(false);
+        WakeWordService.appSpeaking(false);
         // Распознаватель — только в главном потоке; onDestroy в нём и приходит
         sessionOpen = false;
         if (recognizer != null) {

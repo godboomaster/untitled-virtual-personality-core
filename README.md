@@ -249,6 +249,7 @@ is set, add `https://localhost` to it — that is the app's origin.
 **Building the APK** needs Android Studio (it brings the Android SDK and Java):
 
 ```bash
+scripts/fetch_wake_model.sh   # once: speech recogniser for voice activation (~80 MB, not in git)
 cd web
 npm ci
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"  # macOS
@@ -516,6 +517,44 @@ Turn it on in System Settings → Privacy & Security → Screen & System Audio R
 restart that app. Until the permission is granted, or while Ollama is not running, the chat
 shows what to do instead of a reply.
 
+## Voice activation
+
+Say a persona's name and it answers out loud — "Connor, what's the weather?" — with no
+browser open. The core listens to the computer's microphone; speech is recognised offline
+by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with a small Russian streaming model
+(~28 MB, downloaded from HuggingFace into `data/models/wake-ru` on first start). The names are
+each persona's `features.trigger_words` — personas without them are not voice-addressable.
+Names are matched by sound, so "коннер" still wakes Connor; the name has to come at the
+start of the phrase ("hey Connor, …" works, "we talked to Connor yesterday" does not).
+
+- **Name + request** — "Коннор, поставь будильник на семь" goes straight to the persona.
+- **Name alone** — a short chime, then the next phrase is the request (8 s to start talking).
+- **A reply that ends with a question** — answer within 6 s without the name.
+
+The request goes into the same chat as the web interface, so the exchange shows up there.
+While the persona is speaking the microphone is muted, so it doesn't wake itself up.
+
+Turn it on with `pip install -e ".[voice]"` and `WAKE_LISTEN=1` in `.env` (other settings are
+in `.env.example`), then restart the core. `GET /api/voice/wake` shows whether it's listening,
+which names it knows, what it heard last and any error. By default it takes the laptop's
+built-in microphone rather than the system default: a Bluetooth headset mic would switch the
+headset into call mode. Replies are spoken with `say` on macOS (PowerShell's System.Speech on
+Windows and espeak on Linux — untested).
+
+**On the phone** — Settings → Connection → "Listen for name" (connection by address and
+token, like background notifications). The app listens with the same model and rules, even
+with the screen off, and answers through the phone's speech synthesis; it keeps an ongoing
+notification with an "Off" button. It costs battery. On Honor and other phones with aggressive
+battery saving, set the app's battery usage to manual management, otherwise the system may stop
+it with the screen off. When the phone and the computer hear the same phrase, only one of them
+answers (`voice` in `POST /api/chat`), and while the voice chat mode is open on either, the
+core's own listener pauses.
+
+On macOS the first start asks for microphone access for the app the core was started from
+(Terminal, iTerm, VS Code or the tray panel). If access was denied, the microphone returns
+pure zeros and the log and `/api/voice/wake` say so: turn the app on in System Settings →
+Privacy & Security → Microphone and restart it.
+
 ## Files from the computer
 
 The owner can ask for any file on the computer the core runs on — by name or by what is inside.
@@ -563,6 +602,12 @@ itself off after 30 minutes of inactivity; a bot restart does not reset it.
 
 While the mode is on, reminders, to-dos, inventory and learning stay silent so they don't
 compete with commands.
+
+**Typos.** "enter contorl mode", "opne youtube", "scrol down" and a command typed in the
+wrong keyboard layout are understood right away, without the model. Opening, scrolling and
+hovering run as usual; a corrected click, typing and the rest wait for "yes". With the mode
+off, "open youtube", "click …", "scroll …" get an immediate answer: "Control mode is off —
+turn it on and run it?". "Yes" turns the mode on and runs the command.
 
 **Who can.** Only the owner (`owner` or `OWNER_USER_ID`) and `allowed_users` from the YAML.
 On the web the user is the owner, but commands from a skin are never executed. For everyone

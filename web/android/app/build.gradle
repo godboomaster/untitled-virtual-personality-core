@@ -1,5 +1,8 @@
 apply plugin: 'com.android.application'
 
+// Распознаватель голосовой активации (scripts/fetch_wake_model.sh качает эту версию)
+def sherpaOnnxVersion = '1.13.8'
+
 android {
     namespace = "io.vpcore.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -10,10 +13,26 @@ android {
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Только 64-битные: телефон (arm64-v8a) и эмулятор на Intel (x86_64).
+        // Нативные библиотеки sherpa-onnx и LiteRT-LM для всех ABI раздули бы APK
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    // Модель голосовой активации (assets/wake-ru) не сжимаем: служба при
+    // первом запуске копирует её в файлы приложения — быстрее без распаковки
+    androidResources {
+        noCompress += ['onnx']
+    }
+    testOptions {
+        unitTests.all {
+            // Общие примеры голосовой активации — те же, что у теста ядра
+            systemProperty 'wakeCases', rootProject.file('../../scripts/fixtures/wake_match_cases.json').absolutePath
         }
     }
     buildTypes {
@@ -38,13 +57,30 @@ dependencies {
     implementation project(':capacitor-android')
     // Gemma на телефоне без ноутбука (OfflineLlmPlugin)
     implementation 'com.google.ai.edge.litertlm:litertlm-android:0.18.0'
+    // Голосовая активация по имени (WakeWordService): распознаватель
+    // sherpa-onnx. AAR в git не лежит — scripts/fetch_wake_model.sh
+    implementation files("libs/sherpa-onnx-${sherpaOnnxVersion}.aar")
     testImplementation "junit:junit:$junitVersion"
+    // Настоящий org.json для JVM-тестов (в android.jar — заглушки)
+    testImplementation 'org.json:json:20240303'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
 }
 
 apply from: 'capacitor.build.gradle'
+
+// Нет распознавателя или модели голосовой активации — понятная ошибка сразу,
+// а не «не найден класс» при компиляции или падение службы на телефоне
+def wakeFiles = ["libs/sherpa-onnx-${sherpaOnnxVersion}.aar",
+                 'src/main/assets/wake-ru/encoder.int8.onnx', 'src/main/assets/wake-ru/decoder.int8.onnx',
+                 'src/main/assets/wake-ru/joiner.int8.onnx', 'src/main/assets/wake-ru/tokens.txt',
+                 'src/main/assets/wake-ru/unigram_500.vocab']
+def wakeMissing = wakeFiles.findAll { !file(it).isFile() }
+if (!wakeMissing.isEmpty()) {
+    throw new GradleException("Нет файлов голосовой активации: ${wakeMissing.join(', ')}.\n" +
+            "Скачайте их один раз: scripts/fetch_wake_model.sh (из корня репозитория)")
+}
 
 try {
     def servicesJSON = file('google-services.json')
