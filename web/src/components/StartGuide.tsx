@@ -199,6 +199,35 @@ const TRACKS: Track[] = [
         ],
       },
       { id: 'camera', nav: 'chat' },
+      {
+        id: 'phonecmd',
+        chips: [
+          { code: '[поставь будильник] на 7 по будням' },
+          { code: '[разбуди меня] через 20 минут' },
+          { code: '[таймер] на 10 минут' },
+          { code: '[открой] Telegram' },
+          { code: '[включи фонарик]' },
+        ],
+        chipsEn: [
+          { code: '[set an alarm] for 7 on weekdays' },
+          { code: '[wake me up] in 20 minutes' },
+          { code: '[set a timer] for 10 minutes' },
+          { code: '[open] Telegram' },
+          { code: '[turn on the flashlight]' },
+        ],
+      },
+      // Голосовая активация: распознавание пока только русское — примеры
+      // по-русски и в английской локали
+      {
+        id: 'voice',
+        nav: 'settings',
+        warn: 'guide.features.voiceWarn',
+        chips: [
+          { code: '[Коннор], какая сегодня погода?' },
+          { code: '[Коннор] … поставь будильник на семь' },
+          { code: '[Коннор], включи фонарик' },
+        ],
+      },
       { id: 'control', anchor: 'start-control' },
     ],
     window: 'console — chat — persona',

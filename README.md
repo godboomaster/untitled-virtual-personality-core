@@ -48,6 +48,9 @@ https://github.com/user-attachments/assets/aa87b619-6564-4703-81d8-762ad478f123
 - **Files from the computer.** "Open the file report on physics", "send me the file about the
   tax deduction" — the bot finds the file on the computer the core runs on: the web there opens
   it, the phone app and Telegram get the file itself.
+- **Voice activation.** Say a persona's name — "Connor, what's the weather?" — and it answers
+  out loud: on the computer the core runs on and on the phone, even with the screen off. Phone
+  commands work by voice too: "Connor, turn on the flashlight".
 - **No keys needed.** LLM web chats in the bot's browser or a local model in Ollama.
 - **Add-ons.** Example — Arrodes: a persona that knows a book, with hybrid search over its
   text.
@@ -206,7 +209,8 @@ computer, the phone connects to it: the same chats and history, voice and camera
 mode with the live browser window, persona dossiers and settings. Background messages (reminders, initiative)
 reach every device — the computer and the phone each get their own copy.
 
-**Phone commands.** In the app's chat (typed or spoken): "set an alarm for 7 on weekdays",
+**Phone commands.** In the app's chat (typed or spoken) and by the persona's name
+([Voice activation](#voice-activation)): "set an alarm for 7 on weekdays",
 "wake me up in 20 minutes", "set a timer for 10 minutes", "show my alarms", "open Telegram",
 "turn on the flashlight" — in Russian too. The phone does it itself: alarms and timers go to
 the system Clock app, apps are opened by name. The persona replies based on the result and
@@ -259,8 +263,8 @@ npm run apk
 
 The file is `web/android/app/build/outputs/apk/debug/app-debug.apk`: copy it to the phone
 and install it (allow installing apps from this source), or `adb install` it. On Windows
-the last step is `cd web/android && gradlew assembleDebug` after `npm run build` and
-`npx cap sync android`.
+the last step is `cd web/android && gradlew assembleDebug` after `npm run build`,
+`npm run phone-voice` and `npx cap sync android`.
 
 **Notifications while the app is closed** (connection by address only, for now): Settings →
 Connection → **Notifications when the app is closed**. The app then keeps a small background
@@ -535,8 +539,10 @@ The request goes into the same chat as the web interface, so the exchange shows 
 While the persona is speaking the microphone is muted, so it doesn't wake itself up.
 
 Turn it on with `pip install -e ".[voice]"` and `WAKE_LISTEN=1` in `.env` (other settings are
-in `.env.example`), then restart the core. `GET /api/voice/wake` shows whether it's listening,
-which names it knows, what it heard last and any error. By default it takes the laptop's
+in `.env.example`), then restart the core. Install the extra into the same Python or venv the
+core runs in — otherwise the listener doesn't start, and `GET /api/voice/wake` says so with the
+exact `pip` command. It also shows whether it's listening, which names it knows, what it heard
+last and any error. By default it takes the laptop's
 built-in microphone rather than the system default: a Bluetooth headset mic would switch the
 headset into call mode. Replies are spoken with `say` on macOS (PowerShell's System.Speech on
 Windows and espeak on Linux — untested).
@@ -787,6 +793,7 @@ descriptions are in Swagger: `/docs`.
 | GET | `/api/providers` | providers, keys, the active one |
 | GET, POST, DELETE | `/api/link`, `/api/link/pair`, `/api/link/devices/{id}` | phones over VPC Link: list, pairing QR code, unpairing |
 | GET | `/api/token` | `API_TOKEN` for connecting a phone by address (403 over VPC Link) |
+| GET, POST | `/api/voice/wake`, `/api/voice/wake/hold` | voice activation on the core's computer: is it listening, names, last heard, error; pause while a voice chat is open |
 | GET | `/api/system/status`, `/api/logs` | the bot's browsers; the log — for the panel and developer mode |
 
 ```bash
@@ -890,6 +897,7 @@ Building the database and checks — in the Arrodes README.
 | `app/features/` | modules: reminders, to-dos, learning, initiative, rhythm, search, control mode, browser, web chats, screenshots |
 | `app/api/` | FastAPI: server, settings, security, skins, room |
 | `app/link/` | VPC Link: the encrypted channel to the phone (Noise), the relay |
+| `app/voice/` | voice activation: listening for a persona's name (sherpa-onnx), matching names by sound |
 | `app/personas/` | the built-in test persona (Connor) |
 | `data/personas/` | your personas (outside git) |
 | `web/` | the web interface (React, Vite); `web/android/` — the Android app (Capacitor) |
@@ -902,7 +910,7 @@ The path of one message — filters, memory, search, model, markers, saving — 
 
 ## Tests
 
-Tests are `scripts/test_*.py` scripts (100), without pytest; Arrodes tests are in its own
+Tests are `scripts/test_*.py` scripts (109), without pytest; Arrodes tests are in its own
 repository. Run them from the project root:
 
 ```bash
@@ -921,7 +929,9 @@ tested on, the upper one is the next major version. `requirements.txt` is a lock
 exact versions for all platforms, built by [uv](https://docs.astral.sh/uv/) from
 `pyproject.toml`. To update packages, adjust the ranges, rebuild the lock with the command
 from the header of `requirements.txt` (with `--upgrade` — to the newest versions within the
-ranges) and run the tests.
+ranges) and run the tests. Voice activation on the computer is an optional extra:
+`pip install -e ".[voice]"` (sherpa-onnx, sounddevice) — into the same Python or venv the core
+runs in.
 
 **Web and panel.** Exact versions are in `web/package-lock.json` and
 `desktop/package-lock.json`. `npm ci` installs exactly those; `npm install` may update the
