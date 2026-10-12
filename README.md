@@ -552,10 +552,9 @@ Turn it on with `pip install -e ".[voice]"` and `WAKE_LISTEN=1` in `.env` (other
 in `.env.example`), then restart the core. Install the extra into the same Python or venv the
 core runs in — otherwise the listener doesn't start, and `GET /api/voice/wake` says so with the
 exact `pip` command. It also shows whether it's listening, which names it knows, what it heard
-last and any error. By default it takes the laptop's
-built-in microphone rather than the system default: a Bluetooth headset mic would switch the
-headset into call mode. Replies are spoken with `say` on macOS (PowerShell's System.Speech on
-Windows and espeak on Linux — untested).
+last and any error. By default it takes the laptop's built-in microphone rather than the system
+default: a Bluetooth headset mic would switch the headset into call mode. Replies are spoken
+with `say` on macOS (PowerShell's System.Speech on Windows and espeak on Linux — untested).
 
 **On the phone** — Settings → Connection → "Listen for name" (connection by address and
 token, like background notifications). The app listens with the same model and rules, even
