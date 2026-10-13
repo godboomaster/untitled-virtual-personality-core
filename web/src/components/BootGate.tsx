@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { registerPlugin } from '@capacitor/core';
 import { api, apiHost, AUTH_REQUIRED_EVENT, LINK_REVOKED_EVENT, getApiToken, getApiUrl, isLinkMode, isNativeApp, normalizeApiUrl, setApiToken, setApiUrl } from '../api';
 import { getLinkConfig, pair, parsePairingUri, refusalKey, setLinkConfig } from '../link/client.ts';
 import QrScanner from '../link/QrScanner';
@@ -42,6 +43,7 @@ const SKIP_AFTER_MS = 3000; // когда предложить продолжи�
 // ядро либо отвечает сразу, либо недоступно (ноутбук спит, нет сети)
 const OFFLINE_AFTER_MS = NATIVE ? 10000 : 15000;
 const API_START_CMD = 'python -m app.main api';
+const DEFAULT_API_PORT = 8000;
 const CELLS = 36; // ячеек в LED-строке прогресса
 const DONE_HOLD_MS = 450; // задержка на «всё готово», чтобы шаги успели дорисоваться
 
@@ -49,6 +51,12 @@ const DONE_HOLD_MS = 450; // задержка на «всё готово», чт
 type Stage = 0 | 1 | 2;
 // Запрос токена: need — токена нет, wrong — сохранённый не подошёл
 type Auth = null | 'need' | 'wrong';
+
+// «Найти» в форме адреса: ядро в той же Wi-Fi ищет плагин CoreFinder (Java)
+interface CoreFinderPlugin {
+  find(opts: { port: number }): Promise<{ found: string[]; nets: string[] }>;
+}
+let coreFinder: CoreFinderPlugin | undefined;
 
 function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -68,6 +76,10 @@ export default function BootGate({ children }: { children: ReactNode }) {
   const [server, setServer] = useState(() => NATIVE && !getApiUrl() && !isLinkMode());
   const [urlDraft, setUrlDraft] = useState(() => getApiUrl());
   const [urlBad, setUrlBad] = useState(false);
+  // Поиск ядра в сети: идёт, найденные адреса (несколько — на выбор), итог
+  const [finding, setFinding] = useState(false);
+  const [foundHosts, setFoundHosts] = useState<string[]>([]);
+  const [findMsg, setFindMsg] = useState<string | null>(null);
   // Ядро ответило отказом (403 — удалённый доступ без API_TOKEN и т. п.):
   // в приложении остаёмся на экране и показываем причину
   const [denied, setDenied] = useState<string | null>(null);
@@ -216,6 +228,34 @@ export default function BootGate({ children }: { children: ReactNode }) {
     setStage(0);
     setServer(false);
     setRun((n) => n + 1);
+  };
+
+  const findCore = async () => {
+    // Порт — из набранного адреса, если он там есть
+    const typed = normalizeApiUrl(urlDraft);
+    const port = (typed && Number(new URL(typed).port)) || DEFAULT_API_PORT;
+    setFinding(true);
+    setFoundHosts([]);
+    setFindMsg(null);
+    setUrlBad(false);
+    try {
+      coreFinder ??= registerPlugin<CoreFinderPlugin>('CoreFinder');
+      const { found, nets } = await coreFinder.find({ port });
+      if (found.length === 1) {
+        setUrlDraft(found[0]);
+        setFindMsg(t('boot.findOne', { host: found[0] }));
+      } else if (found.length > 1) {
+        setFoundHosts(found);
+        setFindMsg(t('boot.findMany'));
+      } else {
+        setFindMsg(t('boot.findNone', { net: nets.join(', '), port }));
+      }
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      setFindMsg(code === 'no_wifi' ? t('boot.findNoWifi') : t('boot.findFailed', { err: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setFinding(false);
+    }
   };
 
   const pairWith = async (text: string) => {
@@ -439,7 +479,28 @@ export default function BootGate({ children }: { children: ReactNode }) {
                   setUrlBad(false);
                 }}
               />
+              <button type="button" className="boot-cmd-copy" disabled={finding} onClick={() => void findCore()}>
+                {finding ? t('boot.finding') : t('boot.find')}
+              </button>
             </div>
+            {findMsg && <p className="boot-hint boot-find-hint">{findMsg}</p>}
+            {foundHosts.length > 1 && (
+              <div className="boot-found">
+                {foundHosts.map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    className={`boot-cmd-copy${h === urlDraft ? ' is-active' : ''}`}
+                    onClick={() => {
+                      setUrlDraft(h);
+                      setUrlBad(false);
+                    }}
+                  >
+                    {h}
+                  </button>
+                ))}
+              </div>
+            )}
             <label className="boot-cmd-label" htmlFor="boot-url-token">
               {t('boot.authLabel')}
             </label>

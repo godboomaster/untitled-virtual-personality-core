@@ -449,6 +449,24 @@ html[data-vpc-shell] .detroit-bg {
   scroll-margin-bottom: 14px;
 }
 
+/* «Найти»: итог поиска ядра в сети и адреса на выбор */
+.boot-find-hint {
+  margin-top: 8px;
+}
+.boot-found {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.boot-found .boot-cmd-copy {
+  text-transform: none;
+}
+.boot-found .boot-cmd-copy.is-active {
+  color: var(--term-bright);
+  border-color: var(--term-bright);
+}
+
 /* ===== Каркас ===== */
 
 .app {
