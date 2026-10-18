@@ -199,6 +199,18 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Слушать имя микрофоном панели: настройка панели, иначе WAKE_LISTEN из .env
+    pub fn wake_enabled(&self) -> bool {
+        let g = self.lock();
+        g.cfg.wake_listen.unwrap_or(g.api.wake_listen)
+    }
+
+    pub fn set_wake(&self, on: bool) -> Result<(), String> {
+        let mut cfg = self.config();
+        cfg.wake_listen = Some(on);
+        self.set_config(cfg)
+    }
+
     pub fn summary(&self) -> Summary {
         let g = self.lock();
         Summary { phase: g.backend.phase, responding: g.backend.responding, busy: g.busy }
@@ -278,7 +290,7 @@ impl Supervisor {
         self.stop_kind(Kind::Backend, false);
     }
 
-    fn user_path(&self) -> String {
+    pub fn user_path(&self) -> String {
         if let Some(p) = self.lock().path.clone() {
             return p;
         }
@@ -289,7 +301,7 @@ impl Supervisor {
 
     /// Python из настроек или найденный автоматически (найденный
     /// запоминается: поиск с проверкой импорта небыстрый, а путь виден в настройках)
-    fn resolve_python(&self, repo: &Path) -> Result<PathBuf, String> {
+    pub fn resolve_python(&self, repo: &Path) -> Result<PathBuf, String> {
         let configured = self.config().python.trim().to_string();
         if !configured.is_empty() {
             let p = PathBuf::from(&configured);
@@ -349,7 +361,10 @@ impl Supervisor {
             // Вывод в трубу на Windows иначе в cp1251/cp866 — русские строки
             // лога падали бы с UnicodeEncodeError
             .env("PYTHONUTF8", "1")
-            .env("PYTHONIOENCODING", "utf-8");
+            .env("PYTHONIOENCODING", "utf-8")
+            // Имя слушает панель своим процессом (voice.rs), не ядро: иначе
+            // WAKE_LISTEN=1 из .env открыл бы микрофон второй раз
+            .env("WAKE_LISTEN", "0");
         let label = format!("{} -m app.main api", display_path(&python));
         self.spawn(Kind::Backend, cmd, &label);
     }

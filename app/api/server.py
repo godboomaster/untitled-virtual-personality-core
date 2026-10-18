@@ -23,7 +23,7 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -550,27 +550,47 @@ async def system_memory():
 
 @app.get("/api/voice/wake", dependencies=[Depends(require_auth)])
 async def voice_wake_status():
-    # Голосовая активация на компьютере ядра (WAKE_LISTEN=1): слушает ли,
-    # какие имена, что услышала последним — для проверки перед показом
+    # Голосовая активация на компьютере ядра: слушает ли, какие имена, что
+    # услышала последним. where — кто слушает: панель в трее (отдельный
+    # процесс, сообщает о себе в /report) или само ядро (WAKE_LISTEN=1)
     from app.voice import wake_listener
+    if wake_listener.remote_active():
+        return {"enabled": True, "where": "panel", **wake_listener.remote_status()}
     lst = wake_listener.get_listener()
     if lst is None:
         out = {"enabled": wake_listener.enabled_by_env(), "running": False}
         if wake_listener.start_error():
             out["error"] = wake_listener.start_error()
         return out
-    return {"enabled": True, **lst.status()}
+    return {"enabled": True, "where": "core", **lst.status()}
+
+
+class _QuietWakeReport(logging.Filter):
+    # Слушатель панели сообщает о себе раз в секунду — без строки
+    # access-лога на каждое сообщение (терминал ядра, лог панели)
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/api/voice/wake/report" not in str(record.args)
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietWakeReport())
+
+
+@app.post("/api/voice/wake/report", dependencies=[Depends(require_auth)])
+async def voice_wake_report(status: dict = Body(...)):
+    # Слушатель панели в трее раз в секунду сообщает о себе; пока сообщает,
+    # слушатель ядра молчит. В ответ — сколько секунд молчать ему самому
+    # (пауза голосового чата веба, /hold)
+    from app.voice import wake_listener
+    return {"hold": wake_listener.report_remote(status)}
 
 
 @app.post("/api/voice/wake/hold", dependencies=[Depends(require_auth)])
 async def voice_wake_hold(req: VoiceWakeHold):
-    # Открыт голосовой режим чата: слушатель ядра молчит (seconds, не больше
-    # 120; клиент продлевает), 0 — снова слушать
+    # Открыт голосовой режим чата: слушатель молчит (seconds, не больше
+    # 120; клиент продлевает), 0 — снова слушать. Слушателю панели пауза
+    # уходит в ответе на его /report
     from app.voice import wake_listener
-    lst = wake_listener.get_listener()
-    if lst is not None:
-        lst.hold(req.seconds)
-    return {"held": bool(lst and lst.held)}
+    return {"held": wake_listener.hold_all(req.seconds)}
 
 
 @app.get("/api/system/status", dependencies=[Depends(require_auth)])

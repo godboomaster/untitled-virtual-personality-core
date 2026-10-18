@@ -14,7 +14,11 @@
      голосовая просьба, которую уже взял другой слушатель, — duplicate;
   F. весь цикл слушателя с поддельным микрофоном (sounddevice подменён):
      сценарий из нескольких фраз → просьбы в ядро → озвучка, свой ответ
-     «Коннор, …» из колонок не будит, нули запрета macOS, микрофон пропал.
+     «Коннор, …» из колонок не будит, нули запрета macOS, микрофон пропал;
+  G. слушатель панели в трее (отдельный процесс, main()): сообщает ядру о
+     себе и берёт паузу голосового чата веба, печатает состояние для панели,
+     останавливается по SIGTERM; слушатель ядра уступает ему микрофон;
+     без модулей — код 2 и причина.
 
 Микрофон, LLM и сеть не используются.
 Запуск: PYTHONPATH=. python3 -m scripts.test_wake_word
@@ -600,13 +604,215 @@ def test_core():
         check("снять паузу через API", not lst.held)
         r = c.post("/api/voice/wake/hold", json={"seconds": -1}, headers=hdr)
         check("отрицательная пауза — 422", r.status_code == 422)
+        check("слушатель ядра — where: core", c.get("/api/voice/wake", headers=hdr).json()["where"] == "core")
         wl._listener = None
+
+        # Слушатель панели: сообщает о себе, пауза веба приходит ему в ответе
+        st = {**make().status(), "running": True, "stage": wl.ST_LISTEN, "junk": "x"}
+        r = c.post("/api/voice/wake/report", json=st, headers=hdr)
+        check("report слушателя панели — пауза 0", r.status_code == 200 and r.json() == {"hold": 0})
+        w = c.get("/api/voice/wake", headers=hdr).json()
+        check("GET /api/voice/wake — слушает панель, с именами", w["where"] == "panel" and w["enabled"]
+              and w["running"] and "коннор" in w["names"] and "junk" not in w)
+        r = c.post("/api/voice/wake/hold", json={"seconds": 30}, headers=hdr)
+        check("пауза из веба при слушателе панели — held", r.json() == {"held": True})
+        r = c.post("/api/voice/wake/report", json=st, headers=hdr)
+        check("…и уходит ему в ответе на report", 29 <= r.json()["hold"] <= 30)
+        c.post("/api/voice/wake/hold", json={"seconds": 0}, headers=hdr)
+        r = c.post("/api/voice/wake/report", json=st, headers=hdr)
+        check("снять паузу — в ответе 0", r.json() == {"hold": 0})
+        check("report без тела — 422", c.post("/api/voice/wake/report", headers=hdr).status_code == 422)
+        wl._remote_at -= wl.REMOTE_FRESH_SEC + 1
+        check("панель замолчала — GET снова без слушателя",
+              c.get("/api/voice/wake", headers=hdr).json() == {"enabled": False, "running": False})
+        r = c.post("/api/voice/wake/hold", json={"seconds": 30}, headers=hdr)
+        check("…и пауза никому", r.json() == {"held": False})
+        c.post("/api/voice/wake/hold", json={"seconds": 0}, headers=hdr)
+        wl._remote_at = 0.0
     finally:
         server._chat_turn, server._get_bot = orig
         server._voice_turns.clear()
     src = (ROOT / "app" / "main.py").read_text("utf-8")
     check("run_api поднимает и гасит слушатель",
           "wake_listener.start_with_core(host, port)" in src and "wake_listener.stop_with_core()" in src)
+
+
+# ===== G =====
+
+class FakeCore:
+    """Поддельное ядро по HTTP: имена, report (пауза — hold), chat."""
+
+    def __init__(self):
+        import http.server
+        import threading
+        core = self
+        self.reports = []
+        self.chats = []
+        self.hold = 0.0
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def _json(self, obj):
+                body = json.dumps(obj).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path == "/api/personas":
+                    return self._json(CASES["personas"])
+                self.send_response(404)
+                self.end_headers()
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(n) or b"{}")
+                if self.path == "/api/voice/wake/report":
+                    core.reports.append(data)
+                    return self._json({"hold": core.hold})
+                if self.path == "/api/chat":
+                    core.chats.append(data)
+                    return self._json({"reply": "Готово.", "duplicate": False})
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}"
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+def _wait(cond, sec):
+    t0 = time.time()
+    while not cond() and time.time() - t0 < sec:
+        time.sleep(0.05)
+    return cond()
+
+
+def test_panel():
+    section("G. Слушатель панели в трее")
+    import contextlib
+    import io
+    import logging
+    import signal
+    import threading
+
+    # Без модулей: код 2 (панель не перезапускает) и причина строкой состояния
+    saved = sys.modules.get("sherpa_onnx")
+    sys.modules["sherpa_onnx"] = None
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            rc = wl.main(["--status", "--core", "http://127.0.0.1:9"])
+    finally:
+        if saved is not None:
+            sys.modules["sherpa_onnx"] = saved
+        else:
+            sys.modules.pop("sherpa_onnx", None)
+    lines = [json.loads(l[len(wl.STATUS_PREFIX):]) for l in out.getvalue().splitlines()
+             if l.startswith(wl.STATUS_PREFIX)]
+    check("нет модулей — код 2", rc == wl.EXIT_SETUP)
+    check("…и состояние с причиной для панели", len(lines) == 1 and lines[0]["issue"] == wl.ISSUE_MODULES
+          and "pip install" in lines[0]["error"])
+
+    try:
+        import numpy as np  # noqa: F401
+        import sherpa_onnx  # noqa: F401
+    except Exception:
+        print("  (дальше пропуск — нет sherpa-onnx)")
+        return
+    model = Path(os.getenv("WAKE_MODEL_DIR") or ROOT / "data" / "models" / "wake-ru")
+    if not all((model / f).is_file() for f in wl.MODEL_FILES):
+        print("  (дальше пропуск — нет модели)")
+        return
+    os.environ["WAKE_MODEL_DIR"] = str(model)
+    old_sd = sys.modules.get("sounddevice")
+    core = FakeCore()
+    try:
+        # Слушатель ядра (WAKE_LISTEN=1, ядро из терминала) уступает микрофон
+        # слушателю панели, пока тот сообщает о себе
+        sd = FakeSD()
+        sys.modules["sounddevice"] = sd
+        lst = wl.WakeListener(FakeClient(), voice=FakeVoice())
+        lst.start()
+        check("слушатель ядра открыл микрофон", _wait(lambda: lst.stage == wl.ST_LISTEN and sd.opened == 1, 20))
+        alive = threading.Event()
+        alive.set()
+
+        def reporting():
+            while alive.is_set():
+                wl.report_remote({"running": True, "stage": wl.ST_LISTEN})
+                time.sleep(0.3)
+
+        threading.Thread(target=reporting, daemon=True).start()
+        check("панель сообщила о себе — ядро закрыло микрофон",
+              _wait(lambda: lst.stage == wl.ST_YIELD, 5) and lst.running)
+        opened = sd.opened
+        time.sleep(1.5)
+        check("…и не открывает его, пока панель сообщает", sd.opened == opened)
+        alive.clear()
+        wl._remote_at -= wl.REMOTE_FRESH_SEC + 1
+        check("панель замолчала — ядро снова слушает",
+              _wait(lambda: lst.stage == wl.ST_LISTEN and sd.opened == opened + 1, 10))
+        lst.stop(wait=5)
+        wl._remote_at = 0.0
+
+        # Весь процесс панели: main() с поддельным ядром и микрофоном
+        sd = FakeSD()
+        sys.modules["sounddevice"] = sd
+        out = io.StringIO()
+        old_term = signal.getsignal(signal.SIGTERM)
+
+        def driver():
+            listening = lambda: any(r.get("stage") == wl.ST_LISTEN and r.get("running") for r in core.reports)
+            if _wait(listening, 30):
+                core.hold = 30
+                _wait(lambda: core.reports[-1].get("held") is True, 10)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        threading.Thread(target=driver, daemon=True).start()
+        # Лог процесса — как у панели: всё от INFO
+        records: list[logging.LogRecord] = []
+        catch = logging.Handler(logging.INFO)
+        catch.emit = records.append
+        root = logging.getLogger()
+        old_level = root.level
+        root.addHandler(catch)
+        root.setLevel(logging.INFO)
+        t0 = time.time()
+        try:
+            with contextlib.redirect_stdout(out):
+                rc = wl.main(["--status", "--core", core.url])
+        finally:
+            signal.signal(signal.SIGTERM, old_term)
+            root.removeHandler(catch)
+            root.setLevel(old_level)
+        lines = [json.loads(l[len(wl.STATUS_PREFIX):]) for l in out.getvalue().splitlines()
+                 if l.startswith(wl.STATUS_PREFIX)]
+        check("main(): слушает имена из ядра и сообщает ему о себе", any(
+            r.get("stage") == wl.ST_LISTEN and "коннор" in r.get("names", []) for r in core.reports))
+        check("…пауза веба из ответа ядра дошла до слушателя", any(r.get("held") for r in core.reports))
+        check("…состояние для панели — строками WAKE_STATUS",
+              any(l["stage"] == wl.ST_LISTEN and l["running"] for l in lines)
+              and any(l["held"] for l in lines))
+        check("SIGTERM — код 0, микрофон закрыт, последнее состояние — не слушает",
+              rc == 0 and lines and lines[-1]["running"] is False and time.time() - t0 < 60)
+        check("в чат ничего не ушло (имя не звучало)", core.chats == [])
+        check("отчёты ядру раз в секунду не пишутся в лог",
+              len(core.reports) > 2 and not any(r.name.startswith(("httpx", "httpcore")) for r in records))
+    finally:
+        core.close()
+        if old_sd is not None:
+            sys.modules["sounddevice"] = old_sd
+        else:
+            sys.modules.pop("sounddevice", None)
 
 
 def main():
@@ -616,6 +822,7 @@ def main():
     test_real()
     test_loop()
     test_core()
+    test_panel()
     print(f"\n{ok - failures}/{ok} OK" + (f", FAIL: {failures}" if failures else ""))
     return 1 if failures else 0
 

@@ -23,6 +23,8 @@ const TEXTS: &[(&str, &str, &str)] = &[
     ("start", "Запустить бота", "Start bot"),
     ("stop", "Остановить бота", "Stop bot"),
     ("restart", "Перезапустить", "Restart"),
+    ("wake", "Слушать имя", "Listen for name"),
+    ("tip_wake", "слушает имя", "listening for a name"),
     ("quit", "Выход", "Quit"),
     ("tip_running", "бот работает", "bot is running"),
     ("tip_external", "бот работает (запущен вне панели)", "bot is running (started outside the panel)"),

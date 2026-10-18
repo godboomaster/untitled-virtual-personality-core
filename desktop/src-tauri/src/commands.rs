@@ -5,6 +5,7 @@ use crate::panel;
 use crate::probe::{self, MemView, OllamaView};
 use crate::state::AppState;
 use crate::supervisor::ServiceView;
+use crate::voice::VoiceView;
 use crate::texts::{t, tf};
 use serde::Serialize;
 use serde_json::Value;
@@ -84,6 +85,7 @@ pub struct Snapshot {
     ollama: OllamaView,
     memory: MemView,
     logs: LogBatch,
+    voice: VoiceView,
 }
 
 fn now_secs() -> f64 {
@@ -131,6 +133,7 @@ fn build_snapshot(st: &AppState, cursor: u64) -> Snapshot {
         ollama,
         memory,
         logs,
+        voice: st.voice.view(),
     }
 }
 
@@ -325,6 +328,9 @@ pub fn save_settings(app: AppHandle, state: State<'_, AppState>, config: Config)
     if cfg.web_port == 0 {
         cfg.web_port = Config::default().web_port;
     }
+    // Слушание имени переключают трей и кнопка в панели, не эта форма:
+    // открытая форма не должна вернуть старое значение
+    cfg.wake_listen = state.sup.config().wake_listen;
     state.sup.set_config(cfg)?;
     Ok(settings(&app, &state))
 }
@@ -344,6 +350,13 @@ pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
     al.is_enabled().map_err(|e| e.to_string())
 }
 
+/// Слушать имя микрофоном панели — вкл/выкл (то же, что галочка в трее)
+#[tauri::command]
+pub fn set_wake(state: State<'_, AppState>, enabled: bool) -> Result<VoiceView, String> {
+    state.voice.set_enabled(enabled)?;
+    Ok(state.voice.view())
+}
+
 #[tauri::command]
 pub fn hide_panel(app: AppHandle) {
     panel::hide(&app);
@@ -354,6 +367,7 @@ pub fn quit_app(app: AppHandle) {
     panel::hide(&app);
     let st = app.state::<AppState>().inner().clone();
     std::thread::spawn(move || {
+        st.voice.stop_blocking();
         st.sup.stop_ours_blocking();
         app.exit(0);
     });

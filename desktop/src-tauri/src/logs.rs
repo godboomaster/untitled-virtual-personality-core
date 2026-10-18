@@ -1,4 +1,4 @@
-//! Вывод бэкенда и vite: в файл logs/<имя>-ГГГГ-ММ-ДД.log корня проекта
+//! Вывод бэкенда, vite и слушателя имени: в файл logs/<имя>-ГГГГ-ММ-ДД.log корня проекта
 //! (раньше лог жил только в терминале) и в короткий хвост для панели —
 //! когда бот упал, /api/logs уже некому отдавать, а traceback нужен.
 
@@ -102,6 +102,16 @@ fn strip_ansi(s: &str) -> String {
 
 /// Поток чтения stdout/stderr дочернего процесса построчно в LogSink
 pub fn pump<R: Read + Send + 'static>(src: Option<R>, sink: Arc<Mutex<LogSink>>) {
+    pump_with(src, move |line| {
+        if let Ok(mut s) = sink.lock() {
+            s.line(line);
+        }
+    });
+}
+
+/// То же, но каждую строку разбирает f (слушатель имени шлёт в stdout ещё
+/// и своё состояние — voice.rs)
+pub fn pump_with<R: Read + Send + 'static, F: FnMut(&str) + Send + 'static>(src: Option<R>, mut f: F) {
     let Some(src) = src else { return };
     thread::spawn(move || {
         let mut reader = BufReader::new(src);
@@ -110,12 +120,7 @@ pub fn pump<R: Read + Send + 'static>(src: Option<R>, sink: Arc<Mutex<LogSink>>)
             buf.clear();
             match reader.read_until(b'\n', &mut buf) {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&buf);
-                    if let Ok(mut s) = sink.lock() {
-                        s.line(&text);
-                    }
-                }
+                Ok(_) => f(&String::from_utf8_lossy(&buf)),
             }
         }
     });
@@ -127,7 +132,7 @@ pub fn cleanup(dir: &Path) {
     let limit = Duration::from_secs(KEEP_DAYS * 24 * 3600);
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let ours = (name.starts_with("backend-") || name.starts_with("web-")) && name.ends_with(".log");
+        let ours = ["backend-", "web-", "voice-"].iter().any(|p| name.starts_with(p)) && name.ends_with(".log");
         let old = e
             .metadata()
             .and_then(|m| m.modified())
