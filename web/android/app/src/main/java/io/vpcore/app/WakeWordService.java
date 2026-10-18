@@ -95,6 +95,12 @@ import java.util.concurrent.TimeUnit;
  * — как в чате: тот же разбор (PhoneVoiceJs), исполняет сама служба
  * (PhoneVoiceOps), ядру уходит итог phone_action — персона отвечает по нему.
  *
+ * Ядро недоступно: итог команды телефону служба говорит сама; обычная
+ * реплика — как в чате без связи: приложение на экране — отвечает оно
+ * (облако или модель телефона, плагин WakeWord → initWakeOffline в
+ * web/src/wakeWord.ts), реплика и ответ ложатся в его переписку; свёрнуто
+ * или закрыто — реплика ждёт его открытия (KEY_PENDING).
+ *
  * Android 14+ не даёт запускать службу с микрофоном из фона — её включает
  * приложение (плагин WakeWord) и перезапускает MainActivity, когда
  * приложение снова на экране; при загрузке телефона она не стартует.
@@ -114,6 +120,10 @@ public class WakeWordService extends Service {
     static final String KEY_TOKEN = "token";
     // Последний список персон ядра: ядро недоступно — имена всё равно знаем
     private static final String KEY_PERSONAS = "personas";
+    // Реплики без ядра и без окна приложения — ему, когда его откроют
+    static final String KEY_PENDING = "pending";
+    static final Object PENDING_LOCK = new Object();
+    private static final int PENDING_MAX = 20;
 
     // «Выключить» в шторке и выключение из приложения
     static final String ACTION_STOP = "io.vpcore.app.WAKE_STOP";
@@ -136,6 +146,8 @@ public class WakeWordService extends Service {
     private static final long PERSONAS_RETRY_MS = 60_000L;
     // Ответ модели ядра может идти минуту и дольше
     private static final int CHAT_READ_TIMEOUT_MS = 180_000;
+    // Без ядра: модель телефона отвечает медленнее облака
+    private static final long OFFLINE_ANSWER_MS = 90_000;
     private static final float HOTWORD_SCORE = 2.0f;
     // Голосовой чат приложения отпустил микрофон — забираем не сразу: следующая
     // его сессия обычно начинается сразу после озвучки ответа
@@ -824,6 +836,8 @@ public class WakeWordService extends Service {
             chat.execute(() -> {
                 String say;
                 boolean followUp = false;
+                // Команда телефону — исполнена здесь (и без ядра), ядру только итог
+                JSONObject action = phoneAction(persona, message);
                 try {
                     JSONObject body = new JSONObject()
                             .put("persona", persona)
@@ -835,8 +849,6 @@ public class WakeWordService extends Service {
                             // Голосом: ядро гасит ту же фразу, услышанную и
                             // компьютером, и телефоном (ответ — duplicate)
                             .put("voice", true);
-                    // Команда телефону — исполнена здесь, ядру только итог
-                    JSONObject action = phoneAction(persona, message);
                     if (action != null) body.put("phone_action", action);
                     JSONObject r = new JSONObject(httpPostJson(baseUrl + "/api/chat", body.toString()));
                     if (r.optBoolean("duplicate", false)) {
@@ -866,7 +878,8 @@ public class WakeWordService extends Service {
                 } catch (Exception e) {
                     Log.w(TAG, "ядро недоступно: " + e);
                     lastError = e.getMessage();
-                    say = getString(R.string.wake_say_offline);
+                    say = answerWithoutCore(persona, message, action);
+                    followUp = say.endsWith("?");
                 }
                 final boolean ask = followUp;
                 speak(say, () -> main.postDelayed(() -> {
@@ -886,6 +899,49 @@ public class WakeWordService extends Service {
         }
     }
 
+    /** Ядро недоступно: ответ приложения без него (как на реплику в чате) —
+     * что сказать. Только в потоке chat. */
+    private String answerWithoutCore(String persona, String message, JSONObject action) {
+        // Команда телефону уже исполнена — итог своими словами, сразу
+        if (action != null) return PhoneVoiceOps.say(this, action);
+        // Свёрнутое приложение Android WebView замораживает (JS стоит, пока
+        // его не откроют) — спрашиваем, только когда оно на экране; иначе
+        // реплика ждёт его открытия (takePending), а служба слушает дальше
+        String reply = BackgroundInboxService.appVisible
+                ? WakeWordPlugin.askOffline(persona, message, null, OFFLINE_ANSWER_MS) : null;
+        if (reply == null) {
+            keepForApp(persona, message);
+            return getString(R.string.wake_say_offline_later);
+        }
+        if (WakeWordPlugin.TIMEOUT.equals(reply)) return getString(R.string.wake_say_offline_slow);
+        String say = WakeMatch.forSpeech(reply);
+        if (!say.isEmpty()) return say;
+        // Ответить некому (ни облака, ни модели телефона) — реплика ждёт ядро в чате
+        return getString(R.string.wake_say_offline_queued);
+    }
+
+    private void keepForApp(String persona, String message) {
+        synchronized (PENDING_LOCK) {
+            SharedPreferences p = prefs(this);
+            JSONArray list;
+            try {
+                list = new JSONArray(p.getString(KEY_PENDING, "[]"));
+            } catch (Exception e) {
+                list = new JSONArray();
+            }
+            try {
+                list.put(new JSONObject()
+                        .put("persona", persona)
+                        .put("message", message)
+                        .put("ts", System.currentTimeMillis() / 1000.0));
+            } catch (Exception ignored) {
+                return; // put строк не падает
+            }
+            while (list.length() > PENDING_MAX) list.remove(0);
+            p.edit().putString(KEY_PENDING, list.toString()).apply();
+        }
+    }
+
     /** Реплика — команда телефону? Исполнить и вернуть итог (PhoneActionReport);
      * null — обычная реплика или разбор не удался (уйдёт как текст).
      * Только в потоке chat. */
@@ -902,7 +958,7 @@ public class WakeWordService extends Service {
         if (report == null) return null;
         if (debuggable) Log.i(TAG, "команда телефону: " + plan);
         try {
-            String status = PhoneVoiceOps.run(this, plan.optJSONArray("ops"));
+            String status = PhoneVoiceOps.run(this, plan.optJSONArray("ops"), report);
             if (status != null) report.put("status", status);
         } catch (Throwable e) {
             // Разобрано, но исполнение упало: персона не должна сказать «готово»

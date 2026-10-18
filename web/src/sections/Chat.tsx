@@ -32,17 +32,11 @@ import VoiceChat from '../components/VoiceChat';
 import CameraCapture from '../components/CameraCapture';
 import { downscalePhoto } from '../cameraImage';
 import { OFFLINE_SYNCED_EVENT, useOfflineMode } from '../offline/state';
-import {
-  addOfflineMessage,
-  offlineMessages,
-  removeOfflineMessages,
-  unansweredTail,
-  updateOfflineMessage,
-  useOfflineMessages,
-} from '../offline/store';
+import { offlineMessages, removeOfflineMessages, unansweredTail, useOfflineMessages } from '../offline/store';
 import { getKit, refreshKit } from '../offline/kit';
 import { onLocalPersonaRenamed } from '../offline/localPersonas';
-import { answerOffline, OfflineUnavailable } from '../offline/engine';
+import { OfflineUnavailable } from '../offline/engine';
+import { replyOffline } from '../offline/reply';
 import { warmEmbedder } from '../offline/embed';
 import { OfflineLlm } from '../offline/plugin';
 import type { AlarmItem } from '../offline/plugin';
@@ -1222,27 +1216,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     // ответить некому и реплика ждёт связи
     const action = phone ? await runPhoneCommand(pid, text, [persona.name]) : null;
     const history = messages.map((m) => ({ role: m.role === 'user' ? ('user' as const) : ('assistant' as const), text: m.text, ts: m.ts }));
-    // Прежние реплики без ответа модель увидит в истории — ответ и на них
-    const pending = unansweredTail(offlineMessages(pid));
-    const userMsg = addOfflineMessage(pid, { role: 'user', text, source: 'queued' });
     setWaitingByPersona((prev) => ({ ...prev, [pid]: true }));
     const num = Date.now() * 10 + 7;
     try {
-      const res = await answerOffline(
-        pid,
-        text,
-        history,
-        (chunk) => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: (prev[pid]?.text ?? '') + chunk } })),
-        () => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: '' } })),
-        action ? actionNote(action) : undefined,
-      );
-      for (const m of [...pending, userMsg]) updateOfflineMessage(pid, m.id, { source: res.source });
-      addOfflineMessage(pid, {
-        role: 'assistant',
-        text: res.text,
-        source: res.source,
-        provider: res.provider,
-        ...(res.reminder ? { reminder: { id: res.reminder.id, task: res.reminder.task, at: res.reminder.at } } : {}),
+      const res = await replyOffline(pid, text, history, {
+        onToken: (chunk) => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: (prev[pid]?.text ?? '') + chunk } })),
+        onLocalStart: () => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: '' } })),
+        actionNote: action ? actionNote(action) : undefined,
       });
       setOfflineNote(res.fallback ? t('offline.fallbackNote') : null);
     } catch (e) {

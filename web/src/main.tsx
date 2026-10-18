@@ -7,6 +7,7 @@ import { I18nProvider } from './i18n'
 import BootGate from './components/BootGate'
 import { isNativeApp } from './api'
 import { handleBack } from './backStack'
+import { initWakeOffline } from './wakeWord'
 
 // Приложение на Android: «Назад» закрывает открытое (backStack), а с
 // пустым стеком сворачивает приложение — не выходит из него, чтобы
@@ -18,6 +19,9 @@ if (isNativeApp()) {
     })
   })
 }
+
+// Голосом без ядра (WakeWordService) — ответ приложения, как в чате без связи
+initWakeOffline()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

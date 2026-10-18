@@ -78,9 +78,10 @@ export function actionNote(r: PhoneActionReport): string {
   const { kind, status } = r;
   const app = cleanText(r.app);
   // Голосом при свёрнутом приложении: Android не даёт открыть часы или
-  // другое приложение из фона без права «Поверх других приложений»
+  // другое приложение из фона без права «Поверх других приложений» —
+  // служба показала уведомление, нажатие на которое это сделает
   if (status === 'background') {
-    return `The user asked by voice for ${asked(r)}, but Android does not let the app open the clock or other apps while it is in the background, so nothing was done. ${NOT_DONE} Tell the user to open the app, or to allow it "Display over other apps" (the app's settings, under listening for a name) so it works with the screen off. Do NOT say that it was done.`;
+    return `The user asked by voice for ${asked(r)}, but Android does not let the app open the clock or other apps while it is in the background, so nothing was done yet. A notification has appeared on the phone: tapping it will do it. ${NOT_DONE} Tell the user to tap the notification, or to allow the app "Display over other apps" (the app's settings, under listening for a name) so it works by voice right away. Do NOT say that it was done.`;
   }
   if (kind === 'alarm') {
     const t = hm(r);

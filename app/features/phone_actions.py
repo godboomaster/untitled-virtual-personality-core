@@ -79,12 +79,14 @@ def action_note(r: dict) -> str:
     app = _clean(r.get("app"))
     if status == "background":
         # Голосом при свёрнутом приложении: Android не даёт открыть часы или
-        # другое приложение из фона без права «Поверх других приложений»
+        # другое приложение из фона без права «Поверх других приложений» —
+        # служба показала уведомление, нажатие на которое это сделает
         return (f"The user asked by voice for {_asked(r)}, but Android does not let the app open the "
-                "clock or other apps while it is in the background, so nothing was done. "
-                f"{_NOT_DONE} Tell the user to open the app, or to allow it \"Display over other "
-                "apps\" (the app's settings, under listening for a name) so it works with the screen "
-                "off. Do NOT say that it was done.")
+                "clock or other apps while it is in the background, so nothing was done yet. A "
+                "notification has appeared on the phone: tapping it will do it. "
+                f"{_NOT_DONE} Tell the user to tap the notification, or to allow the app \"Display "
+                "over other apps\" (the app's settings, under listening for a name) so it works by "
+                "voice right away. Do NOT say that it was done.")
     if kind == "alarm":
         hm = _hm(r)
         if status == "ok":

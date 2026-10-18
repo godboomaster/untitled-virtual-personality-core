@@ -18,6 +18,16 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+
 /**
  * Плагин Capacitor «WakeWord»: веб включает и выключает голосовую активацию
  * по имени (WakeWordService) и показывает её состояние.
@@ -28,6 +38,11 @@ import com.getcapacitor.annotation.PermissionCallback;
  * «включено» остаётся), status() → {enabled, running, state, names,
  * lastError, micGranted, overlayAllowed, phoneEngine}, openOverlaySettings() — экран
  * права «Поверх других приложений» (команды телефону голосом из фона).
+ *
+ * Ядро недоступно — служба просит ответа приложение: событие offlineAsk
+ * {id, persona, message, action?} → offlineReply({id, text}) (пустой text —
+ * ответить некому). takePending() → {items} — реплики, услышанные, пока окна
+ * приложения не было.
  */
 @CapacitorPlugin(
         name = "WakeWord",
@@ -37,6 +52,75 @@ import com.getcapacitor.annotation.PermissionCallback;
         }
 )
 public class WakeWordPlugin extends Plugin {
+
+    /** askOffline: приложение не ответило за отведённое время. */
+    static final String TIMEOUT = "\u0000timeout";
+
+    // Плагин окна приложения (окна нет — null) и ждущие ответа вопросы службы
+    private static volatile WakeWordPlugin active;
+    private static final Map<String, BlockingQueue<String>> asks = new ConcurrentHashMap<>();
+
+    @Override
+    public void load() {
+        active = this;
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        if (active == this) active = null;
+    }
+
+    /** Из службы, не из главного потока: ответ приложения без ядра. null —
+     * окна приложения нет (или оно не слушает), "" — ответить некому,
+     * TIMEOUT — не дождались, иначе текст ответа. */
+    static String askOffline(String persona, String message, JSONObject action, long timeoutMs) {
+        WakeWordPlugin p = active;
+        if (p == null || !p.hasListeners("offlineAsk")) return null;
+        String id = UUID.randomUUID().toString();
+        BlockingQueue<String> q = new ArrayBlockingQueue<>(1);
+        asks.put(id, q);
+        try {
+            JSObject data = new JSObject();
+            data.put("id", id);
+            data.put("persona", persona);
+            data.put("message", message);
+            if (action != null) data.put("action", JSObject.fromJSONObject(action));
+            p.notifyListeners("offlineAsk", data);
+            String r = q.poll(timeoutMs, TimeUnit.MILLISECONDS);
+            return r == null ? TIMEOUT : r;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return TIMEOUT;
+        } catch (Exception e) {
+            return null;
+        } finally {
+            asks.remove(id);
+        }
+    }
+
+    @PluginMethod
+    public void offlineReply(PluginCall call) {
+        BlockingQueue<String> q = asks.get(call.getString("id", ""));
+        if (q != null) q.offer(call.getString("text", ""));
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void takePending(PluginCall call) {
+        JSONArray list;
+        synchronized (WakeWordService.PENDING_LOCK) {
+            SharedPreferences p = WakeWordService.prefs(getContext());
+            try {
+                list = new JSONArray(p.getString(WakeWordService.KEY_PENDING, "[]"));
+            } catch (Exception e) {
+                list = new JSONArray();
+            }
+            p.edit().remove(WakeWordService.KEY_PENDING).apply();
+        }
+        JSObject ret = new JSObject();
+        ret.put("items", list);
+        call.resolve(ret);
+    }
 
     private boolean saveConnection(PluginCall call) {
         String baseUrl = call.getString("baseUrl", "");
