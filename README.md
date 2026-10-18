@@ -808,7 +808,8 @@ descriptions are in Swagger: `/docs`.
 | POST | `/api/chat`, `/api/chat/stream` | a message to a persona; with streaming (SSE) |
 | GET | `/api/chat/history` | chat history |
 | POST | `/api/chat/clear` | erase the persona's memory (a copy is kept for 7 days) |
-| GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative |
+| GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative; "typing" and messages from other devices the persona is answering now (`pending`) |
+| GET | `/api/changes` | which personas changed (generation, history, background message); with `since`, `epoch` and `wait` it waits for a change — the web then polls their inbox at once |
 | GET | `/api/inbox` | new background messages of all personas — for the app's notification service; with `wait` it waits up to `wait` seconds for a message |
 | GET | `/api/personas/{p}/state` | the persona's state and its life feed |
 | GET | `/api/providers` | providers, keys, the active one |

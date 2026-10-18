@@ -493,6 +493,8 @@ export const api = {
         chat_id: WEB_CHAT_ID,
         user_name: params.userName ?? null,
         reply_context: params.replyContext ?? null,
+        // Пока ответа нет, реплику показывают другие устройства, а не это
+        client_id: inboxClientId(),
       }),
     }),
 
@@ -774,9 +776,19 @@ export const api = {
       { method: 'PUT', body: JSON.stringify(patch) },
     ),
 
+  // pending — реплики, которые персона сейчас обрабатывает, отправленные с
+  // других устройств (в историю они лягут вместе с ответом)
   getInbox: (persona: string, focused?: boolean) =>
-    request<{ messages: InboxMessage[]; generating?: boolean; last_ts?: number; control_mode?: boolean; answer_options?: AnswerOptions | null; task?: TaskCard | null }>(
+    request<{ messages: InboxMessage[]; generating?: boolean; pending?: PendingReply[]; last_ts?: number; control_mode?: boolean; answer_options?: AnswerOptions | null; task?: TaskCard | null }>(
       `/api/personas/${encodeURIComponent(persona)}/inbox?chat_id=${WEB_CHAT_ID}&client_id=${inboxClientId()}${focused ? '&focused=1' : ''}`,
+    ),
+
+  // Долгий опрос: у каких персон что-то изменилось после номера since
+  // (app/api/chat_events). personas null — опросить всех; без since — сразу
+  waitChanges: (since: number | null, epoch: string, wait: number, signal: AbortSignal) =>
+    request<{ version: number; epoch: string; personas: string[] | null }>(
+      `/api/changes?${since == null ? '' : `since=${since}&epoch=${encodeURIComponent(epoch)}&wait=${wait}`}`,
+      { signal },
     ),
 
   // Состояние вкладки чата (видима и в фокусе) — гейт фоновой активности бота
@@ -1229,6 +1241,8 @@ export async function streamChat(
         // Приложение на телефоне: «открой файл X» присылает файл в чат, а не
         // открывает его на компьютере ядра
         ...(isNativeApp() ? { client: 'app' } : {}),
+        // См. sendChat: реплику до ответа показывают другие устройства
+        client_id: inboxClientId(),
       }),
     });
   } catch (e) {
@@ -1436,6 +1450,13 @@ export interface InboxMessage {
   ts: number;
   // Метка срабатывания напоминания («id@время») — будильник телефона её знает
   ref?: string;
+}
+
+// Реплика с другого устройства, на которую персона сейчас отвечает
+export interface PendingReply {
+  text: string;
+  ts: number;
+  image?: boolean; // с картинкой
 }
 
 export interface TodoEntry {
