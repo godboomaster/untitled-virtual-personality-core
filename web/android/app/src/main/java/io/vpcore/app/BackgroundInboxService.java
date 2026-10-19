@@ -134,6 +134,8 @@ public class BackgroundInboxService extends Service {
     private static final int GEMMA_WAIT_SEC = 25;
     private static final int GEMMA_READ_TIMEOUT_MS = (GEMMA_WAIT_SEC + 15) * 1000;
     private static final long GEMMA_IDLE_MS = 30_000;
+    // Модель телефона занята ответом — заглянуть снова через столько
+    private static final long GEMMA_BUSY_MS = 2_000;
     private static final long GEMMA_RETRY_MS = 5_000;
     // Блокировка сна на задачу: загрузка модели 10–20 с + ответ
     private static final long GEMMA_WAKE_MS = 3 * 60_000L;
@@ -627,6 +629,11 @@ public class BackgroundInboxService extends Service {
                     Thread.sleep(GEMMA_IDLE_MS);
                     continue;
                 }
+                // Модель считает (своя или соседа) — задача встала бы за ответом
+                if (gemma.busy()) {
+                    Thread.sleep(GEMMA_BUSY_MS);
+                    continue;
+                }
                 String tok = p.getString(KEY_TOKEN, "");
                 String worker = gemmaWorkerId(p.getString(KEY_CLIENT_ID, ""));
                 JSONObject r = gemmaNext(url, tok, worker, gemma);
@@ -672,7 +679,7 @@ public class BackgroundInboxService extends Service {
                 + "&wait=" + GEMMA_WAIT_SEC
                 + "&backend=" + URLEncoder.encode(backend == null ? "" : backend, "UTF-8")
                 + "&loaded=" + gemma.loaded()
-                + "&name=" + URLEncoder.encode(Build.MODEL == null ? "Android" : Build.MODEL, "UTF-8");
+                + "&name=" + URLEncoder.encode(deviceName(), "UTF-8");
         HttpURLConnection c = (HttpURLConnection) new URL(url + "/api/phone-llm/next" + q).openConnection();
         gemmaCurrent = c;
         try {
@@ -690,6 +697,12 @@ public class BackgroundInboxService extends Service {
         }
     }
 
+    // Имя телефона для ядра: не длиннее 64 (иначе 422 на каждый опрос)
+    private static String deviceName() {
+        String n = Build.MODEL == null || Build.MODEL.trim().isEmpty() ? "Android" : Build.MODEL.trim();
+        return n.length() > 64 ? n.substring(0, 64) : n;
+    }
+
     private void runGemmaJob(String url, String tok, String worker, PhoneGemma gemma, JSONObject job) {
         String id = job.optString("id", "");
         if ("warm".equals(job.optString("kind"))) {
@@ -701,6 +714,9 @@ public class BackgroundInboxService extends Service {
             return;
         }
         long t0 = SystemClock.elapsedRealtime();
+        // Срок от ядра — сколько оно ещё ждёт; по часам телефона, не ядра
+        long ttl = job.optLong("ttl_ms", 0L);
+        long deadline = ttl > 0 ? System.currentTimeMillis() + ttl : 0L;
         JSONObject res = new JSONObject();
         try {
             res.put("worker", worker);
@@ -709,7 +725,7 @@ public class BackgroundInboxService extends Service {
                 JSONArray history = job.optJSONArray("history");
                 PhoneGemma.Reply r = gemma.chat(job.optString("system", ""),
                         history == null ? new JSONArray() : history, job.optString("text", ""),
-                        job.optInt("max_tokens", 100), job.optDouble("temperature", 0.0), 0.95, null);
+                        job.optInt("max_tokens", 100), job.optDouble("temperature", 0.0), 0.95, null, deadline);
                 res.put("text", r.text);
                 res.put("backend", r.backend);
             } catch (Exception e) {

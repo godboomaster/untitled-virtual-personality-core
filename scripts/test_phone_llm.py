@@ -310,6 +310,8 @@ def test_edges():
     with Phone(answer=lambda job: "MAIN") as ph:
         check("вызов без задачи (основной ответ при откате) — телефону",
               r.is_available() and r.get_response([{"role": "user", "content": "hi"}]) == "MAIN")
+        check("задача роутера приходит телефону со сроком (ttl_ms ≤ таймаута вызова)",
+              ph.jobs and 0 < ph.jobs[-1].get("ttl_ms", 0) <= r.timeout * 1000)
         check("OCR — только Ollama: без неё недоступен, хоть телефон и на связи",
               not r.is_available(task="ocr"))
         n = len(ph.jobs)
@@ -348,13 +350,20 @@ def test_edges():
         box = []
         threading.Timer(0.2, lambda: box.append(
             pl._enqueue("chat", system="", history=[], text="q", max_tokens=5,
-                        temperature=0.0, task="book_search"))).start()
+                        temperature=0.0, task="book_search", deadline=time.time() + 15))).start()
         got = loop.run_until_complete(pl.next_job("phone1", 5, {}, gone=gone))
         job = box[0] if box else {}
         check("задача пришла ушедшему телефону — обратно в очередь",
               got is None and list(pl._queue) == [job] and job["taken"] is None)
         got = loop.run_until_complete(pl.next_job("phone2", 1, {}))
         check("её берёт следующий телефон", got is not None and got["id"] == job["id"])
+        check("у задачи срок: сколько ядро ещё ждёт (ttl_ms)",
+              0 < got.get("ttl_ms", 0) <= 15000)
+        reset()
+        late = pl._enqueue("chat", system="", history=[], text="q", max_tokens=5,
+                           temperature=0.0, task="book_search", deadline=time.time() - 1)
+        check("просроченная задача телефону не отдаётся", pl._take("phone1") is None
+              and late["id"] in pl._jobs)
     finally:
         loop.close()
         reset()

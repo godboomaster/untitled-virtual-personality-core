@@ -327,6 +327,8 @@ public class OfflineLlmPlugin extends Plugin {
             ret.put("peer", s.peer != null ? s.peer : JSONObject.NULL);
             ret.put("own", s.own);
             ret.put("peerReason", s.peerReason != null ? s.peerReason : JSONObject.NULL);
+            // Модель считает (здесь или у соседа) — воркеры задач ядра ждут
+            ret.put("busy", s.available && gemma().busy());
             ret.put("unmetered", unmetered());
             ret.put("freeBytes", modelDir().getUsableSpace());
             call.resolve(ret);
@@ -597,6 +599,8 @@ public class OfflineLlmPlugin extends Plugin {
         final int maxTokens = call.getInt("maxTokens", 400);
         final double temperature = call.getDouble("temperature", 0.8);
         final double topP = call.getDouble("topP", 0.95);
+        // Задача ядра: не начинать после этого времени (System.currentTimeMillis)
+        final Long deadline = call.getLong("deadline", 0L);
         // Генерации идут по одной в потоке модели; здесь — только ждём ответ
         io.execute(() -> {
             try {
@@ -605,7 +609,7 @@ public class OfflineLlmPlugin extends Plugin {
                     ev.put("requestId", requestId);
                     ev.put("text", chunk);
                     notifyListeners("localToken", ev);
-                });
+                }, deadline == null ? 0L : deadline);
                 JSObject ret = new JSObject();
                 ret.put("text", r.text);
                 ret.put("backend", r.backend);

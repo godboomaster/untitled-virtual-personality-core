@@ -1141,6 +1141,7 @@ export interface PhoneLlmJob {
   max_tokens?: number;
   temperature?: number;
   task?: string;
+  ttl_ms?: number; // сколько ядро ещё ждёт ответ — срок по часам телефона
 }
 
 // Свежая проверка локальной Ollama (GET /api/providers/local/status)

@@ -163,7 +163,7 @@ def chat(messages: list, max_tokens: int = 100, temperature: float = 0.0,
         return None
     job = _enqueue("chat", system=system, history=history, text=text,
                    max_tokens=int(max_tokens), temperature=float(temperature),
-                   task=task or "")
+                   task=task or "", deadline=time.time() + timeout)
     t0 = time.time()
     if not job["done"].wait(timeout):
         _drop(job)
@@ -196,9 +196,14 @@ def warm() -> None:
 def _public(job: dict) -> dict:
     out = {"id": job["id"], "kind": job["kind"]}
     if job["kind"] == "chat":
+        # ttl_ms — сколько вызывающий ещё ждёт: телефон считает срок по своим
+        # часам и не начинает задачу, простоявшую за длинным ответом его
+        # модели дольше (ответ всё равно выброшен бы)
         out.update(system=job["system"], history=job["history"], text=job["text"],
                    max_tokens=job["max_tokens"], temperature=job["temperature"],
                    task=job["task"])
+        if job.get("deadline"):
+            out["ttl_ms"] = max(0, int((job["deadline"] - time.time()) * 1000))
     return out
 
 
@@ -222,6 +227,8 @@ def _take(worker_id: str) -> Optional[dict]:
             job = _queue.popleft()
             if job["id"] not in _jobs:
                 continue  # снята вызывающим
+            if job.get("deadline") and now >= job["deadline"]:
+                continue  # вызывающий уже не ждёт — снимет сам
             if job["kind"] == "warm":
                 # Отчёта о прогреве никто не ждёт; залежавшийся — уже не к вопросу
                 _jobs.pop(job["id"], None)

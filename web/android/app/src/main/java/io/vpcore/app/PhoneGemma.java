@@ -133,6 +133,9 @@ final class PhoneGemma {
     private final java.util.Set<String> cancelledTags = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private volatile long cancelledAt = 0;
     private volatile boolean viaPeer = false;
+    // Ответы в работе или в очереди этого процесса: свои, через соседа и для
+    // соседа (PhoneGemmaService) — busy() для воркеров задач ядра
+    private final java.util.concurrent.atomic.AtomicInteger inFlight = new java.util.concurrent.atomic.AtomicInteger();
     private ScheduledFuture<?> idleUnload;
 
     private PhoneGemma(Context app) {
@@ -210,7 +213,20 @@ final class PhoneGemma {
         b.putLong("size", dl ? f.length() : 0);
         b.putBoolean("loaded", engine != null);
         b.putString("backend", engineBackend);
+        b.putBoolean("busy", inFlight.get() > 0);
         return b;
+    }
+
+    /**
+     * Модель считает или ответ ждёт очереди — здесь или у соседа, который
+     * считает за это приложение. Воркеры задач ядра тогда не берут новых:
+     * задача встала бы за длинным ответом и пропала по таймауту ядра. Про
+     * соседа — свежий вопрос ему (не с главного потока), только если он
+     * сейчас и считает (status() перед этим).
+     */
+    boolean busy() {
+        if (inFlight.get() > 0) return true;
+        return viaPeer && peer.status(true).busy;
     }
 
     /**
@@ -452,9 +468,12 @@ final class PhoneGemma {
     }
 
     private Reply chatLocked(String system, JSONArray history, String text, int maxTokens,
-                             double temperature, double topP, Tokens tokens, String tag) throws Exception {
+                             double temperature, double topP, Tokens tokens, String tag,
+                             long deadline) throws Exception {
         // Сосед прервал ответ, пока тот ждал очереди, — не начинать
         if (tag != null && cancelledTags.remove(tag)) return new Reply("", engineBackend);
+        // Задача ядра простояла в очереди дольше, чем ядро ждёт ответ, — не считать впустую
+        if (deadline > 0 && System.currentTimeMillis() > deadline) throw new IOException("expired");
         if (idleUnload != null) idleUnload.cancel(false);
         cancelledAt = 0;
         currentTag = tag;
@@ -509,10 +528,26 @@ final class PhoneGemma {
     /** Ответ модели (своей или соседа — status()); генерации ставятся в очередь и идут по одной. */
     Reply chat(String system, JSONArray history, String text, int maxTokens,
                double temperature, double topP, Tokens tokens) throws Exception {
+        return chat(system, history, text, maxTokens, temperature, topP, tokens, 0L);
+    }
+
+    /** deadline — System.currentTimeMillis(), после которого не начинать (задача ядра); 0 — без срока. */
+    Reply chat(String system, JSONArray history, String text, int maxTokens,
+               double temperature, double topP, Tokens tokens, long deadline) throws Exception {
+        inFlight.incrementAndGet();
+        try {
+            return chatRouted(system, history, text, maxTokens, temperature, topP, tokens, deadline);
+        } finally {
+            inFlight.decrementAndGet();
+        }
+    }
+
+    private Reply chatRouted(String system, JSONArray history, String text, int maxTokens,
+                             double temperature, double topP, Tokens tokens, long deadline) throws Exception {
         Status s = status();
         if ("peer".equals(s.via)) {
             try {
-                return peer.chat(system, history, text, maxTokens, temperature, topP, tokens);
+                return peer.chat(system, history, text, maxTokens, temperature, topP, tokens, deadline);
             } catch (PhoneGemmaPeer.Unavailable e) {
                 // Слова уже пошли — заново своей моделью не начать
                 peerFailed(e, !e.started);
@@ -522,13 +557,19 @@ final class PhoneGemma {
             // Своей нет, а сосед, у которого она может быть, не отозвался
             throw new IOException("peer_unavailable (" + peer.packageName() + ": " + s.peerReason + ")");
         }
-        return chatOwn(system, history, text, maxTokens, temperature, topP, tokens, null);
+        return chatOwn(system, history, text, maxTokens, temperature, topP, tokens, null, deadline);
     }
 
     /** Ответ своей моделью; tag — метка ответа соседа (PhoneGemmaService), null — этого приложения. */
     Reply chatOwn(String system, JSONArray history, String text, int maxTokens,
-                  double temperature, double topP, Tokens tokens, String tag) throws Exception {
-        return await(llm.submit(() -> chatLocked(system, history, text, maxTokens, temperature, topP, tokens, tag)));
+                  double temperature, double topP, Tokens tokens, String tag, long deadline) throws Exception {
+        inFlight.incrementAndGet();
+        try {
+            return await(llm.submit(() -> chatLocked(system, history, text, maxTokens, temperature, topP,
+                    tokens, tag, deadline)));
+        } finally {
+            inFlight.decrementAndGet();
+        }
     }
 
     /** Загрузить модель заранее (вопрос придёт следом, загрузка — 10–20 с). */

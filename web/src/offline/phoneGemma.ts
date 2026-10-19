@@ -22,6 +22,7 @@ const WAIT_SEC = 25;
 const IDLE_MS = 30_000; // Gemma на ноутбуке или модели нет
 const RETRY_MS = 5_000; // ядро не ответило
 const HIDDEN_MS = 5_000; // приложение свёрнуто — проверить, не вернулось ли
+const BUSY_MS = 2_000; // модель считает ответ — задача встала бы за ним
 
 // Имя телефона для настроек ядра: модель из User-Agent WebView
 function deviceName(): string {
@@ -31,6 +32,8 @@ function deviceName(): string {
 
 async function runJob(worker: string, job: PhoneLlmJob): Promise<void> {
   const t0 = performance.now();
+  // Срок — по часам телефона: модель может быть занята, и задача ждёт очереди
+  const deadline = job.ttl_ms ? Date.now() + job.ttl_ms : undefined;
   if (job.kind === 'warm') {
     // Только загрузить модель: вопрос придёт следом, а загрузка — 10–20 с.
     // Отчёта ядро не ждёт
@@ -47,6 +50,7 @@ async function runJob(worker: string, job: PhoneLlmJob): Promise<void> {
       text: job.text ?? '',
       maxTokens: job.max_tokens,
       temperature: job.temperature,
+      deadline,
     });
     result = { text: r.text, backend: r.backend };
   } catch (e) {
@@ -88,6 +92,10 @@ export function usePhoneGemma(): void {
           // modelStatus у соседнего приложения отвечает до ~13 с — за это
           // время могло свернуться, а visibilitychange уже не придёт
           if (document.visibilityState !== 'visible') continue;
+          if (st.busy) {
+            await sleep(BUSY_MS);
+            continue;
+          }
           // Свернулось посреди опроса — опрос прервать: ядро не отдаст задачу
           // тому, кто уже не слушает. Свёрнутому WebView ответы плагинов
           // приходят, только когда приложение вернётся на экран

@@ -106,14 +106,21 @@ final class PhoneGemmaPeer {
         final long size;
         final boolean loaded;
         final String backend;
+        final boolean busy; // сосед считает ответ (свой или чужой) — PhoneGemma.busy()
 
         Status(boolean reachable, String reason, boolean downloaded, long size, boolean loaded, String backend) {
+            this(reachable, reason, downloaded, size, loaded, backend, false);
+        }
+
+        Status(boolean reachable, String reason, boolean downloaded, long size, boolean loaded, String backend,
+               boolean busy) {
             this.reachable = reachable;
             this.reason = reason;
             this.downloaded = downloaded;
             this.size = size;
             this.loaded = loaded;
             this.backend = backend;
+            this.busy = busy;
         }
 
         boolean serves() {
@@ -417,7 +424,8 @@ final class PhoneGemmaPeer {
             Bundle b = request(MSG_STATUS, new Bundle(), null, STATUS_TIMEOUT_MS, HOLD_STATUS_MS);
             boolean dl = b != null && b.getBoolean("downloaded", false);
             s = new Status(true, dl ? null : "no_model", dl, b == null ? 0 : b.getLong("size", 0),
-                    b != null && b.getBoolean("loaded", false), b == null ? null : b.getString("backend"));
+                    b != null && b.getBoolean("loaded", false), b == null ? null : b.getString("backend"),
+                    b != null && b.getBoolean("busy", false));
         } catch (Unavailable e) {
             s = new Status(false, e.reason, false, 0, false, null);
         } catch (InterruptedException e) {
@@ -450,8 +458,9 @@ final class PhoneGemmaPeer {
     }
 
     PhoneGemma.Reply chat(String system, JSONArray history, String text, int maxTokens,
-                          double temperature, double topP, PhoneGemma.Tokens tokens) throws Exception {
+                          double temperature, double topP, PhoneGemma.Tokens tokens, long deadline) throws Exception {
         Bundle d = new Bundle();
+        d.putLong("deadline", deadline);
         d.putString("system", system);
         d.putString("history", history == null ? "[]" : history.toString());
         d.putString("text", text);

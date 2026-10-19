@@ -29,6 +29,7 @@ export interface ModelStatus {
   peer?: string | null;
   own?: boolean; // своя модель скачана
   peerReason?: string | null; // почему не сосед: no_model | unreachable | not_installed | …
+  busy?: boolean; // модель считает ответ (здесь или у соседа) — задачи ядра ждут
 }
 
 // Модель векторов (поиск по смыслу): файлы в dir, считает их WebView (embed.ts)
@@ -80,6 +81,7 @@ interface OfflineLlmPlugin {
     maxTokens?: number;
     temperature?: number;
     topP?: number;
+    deadline?: number; // Date.now(), после которого не начинать (задача ядра) — ошибка expired
   }): Promise<{ text: string; backend: string }>;
   stopLocal(): Promise<void>;
   embedStatus(): Promise<EmbedStatus>;

@@ -122,6 +122,7 @@ public class PhoneGemmaService extends Service {
                 final int maxTokens = d.getInt("maxTokens", 400);
                 final double temperature = d.getDouble("temperature", 0.8);
                 final double topP = d.getDouble("topP", 0.95);
+                final long deadline = d.getLong("deadline", 0L);
                 live.add(tag);
                 work.execute(() -> {
                     try {
@@ -131,7 +132,7 @@ public class PhoneGemmaService extends Service {
                                     b.putString("text", chunk);
                                     // Соседа нет (умер, отвязался) — считать дальше некому
                                     if (!send(reply, PhoneGemmaPeer.MSG_TOKEN, id, b)) gemma.markCancelled(tag);
-                                }, tag);
+                                }, tag, deadline);
                         Bundle b = new Bundle();
                         b.putString("text", r.text);
                         b.putString("backend", r.backend);
