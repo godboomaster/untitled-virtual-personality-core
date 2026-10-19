@@ -30,4 +30,29 @@
     <string name="wake_say_denied">Нет доступа к ядру</string>
     <string name="wake_say_error">Ядро ответило ошибкой</string>
     <string name="wake_say_empty">Ответа нет</string>
+    <!-- Голосом без ядра: что сказать самой службе (PhoneVoiceOps.say, WakeWordService) -->
+    <string name="wake_say_offline_later">Ядро не отвечает. Отвечу, когда откроете приложение</string>
+    <string name="wake_say_offline_queued">Ядро не отвечает, а без него ответить некому. Реплика ждёт в чате</string>
+    <string name="wake_say_offline_slow">Ответ будет в чате</string>
+    <string name="wake_act_open_ok">Открываю %1$s</string>
+    <string name="wake_act_alarm_ok">Будильник на %1$s поставлен</string>
+    <string name="wake_act_timer_ok">Таймер запущен</string>
+    <string name="wake_act_alarms_ok">Открываю будильники</string>
+    <string name="wake_act_torch_on">Фонарик включён</string>
+    <string name="wake_act_torch_off">Фонарик выключен</string>
+    <string name="wake_act_ask_alarm">На какое время?</string>
+    <string name="wake_act_ask_timer">На сколько?</string>
+    <string name="wake_act_background">Из фона не открыть. Нажмите на уведомление</string>
+    <string name="wake_act_not_found">Такого приложения нет</string>
+    <string name="wake_act_ambiguous">Нашлось несколько: %1$s. Какое открыть?</string>
+    <string name="wake_act_no_handler">На телефоне нет приложения для этого</string>
+    <string name="wake_act_unsupported_date">Часы ставят будильник только на ближайшее время или по дням недели</string>
+    <string name="wake_act_busy">Камера занята, фонарик не включить</string>
+    <string name="wake_act_failed">Не получилось</string>
+    <!-- Голосом из фона: экран откроется нажатием на уведомление -->
+    <string name="wake_tap_text">Android не даёт открыть из фона — нажмите здесь</string>
+    <string name="wake_tap_open">Открыть %1$s</string>
+    <string name="wake_tap_alarm">Поставить будильник на %1$s</string>
+    <string name="wake_tap_timer">Запустить таймер</string>
+    <string name="wake_tap_alarms">Открыть будильники</string>
 </resources>

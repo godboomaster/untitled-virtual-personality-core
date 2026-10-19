@@ -74,6 +74,24 @@ def _unique_ms() -> int:
         return _last_id_ms
 
 
+# Кто узнаёт о новой реплике в истории: (контекст, ключ чата) → None. API
+# будит по нему открытый веб (app/api/chat_events), чтобы другое устройство
+# сразу перечитало переписку. Зовётся из потока, который пишет историю
+_stm_write_hooks: list = []
+
+
+def on_stm_write(fn) -> None:
+    _stm_write_hooks.append(fn)
+
+
+def _notify_stm_write(context: str, chat_key: str) -> None:
+    for fn in list(_stm_write_hooks):
+        try:
+            fn(context, chat_key)
+        except Exception as e:
+            logger.debug(f"[STM] слушатель записи: {e}")
+
+
 # summarize_user: консолидация отменена, потому что факты пользователя
 # поменяли за время её LLM-вызова (forget, правка) — попытку не теряем
 SUMMARY_CONFLICT = -2
@@ -320,6 +338,7 @@ class ShortTermMemory:
         if timestamp is None:
             buf.append(entry)
             self._stamp_last_message(filter_id, entry["timestamp"])
+            _notify_stm_write(self.context, filter_id)
             return
         entry["timestamp"] = saved
         with self._lock:
@@ -327,6 +346,7 @@ class ShortTermMemory:
             buf.clear()
             buf.extend(items[-buf.maxlen:] if buf.maxlen else items)
         self._stamp_last_message(filter_id, saved, only_newer=True)
+        _notify_stm_write(self.context, filter_id)
 
     def _stamp_last_message(self, chat_key: str, ts: float, only_newer: bool = False):
         """Метка времени последнего сообщения чата на диске

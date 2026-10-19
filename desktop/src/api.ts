@@ -42,6 +42,30 @@ export interface LogBatch {
   entries: LogEntry[];
 }
 
+export type VoicePhase = 'off' | 'starting' | 'running' | 'stopping' | 'failed';
+
+/* Состояние слушателя имени — WakeListener.status() (app/voice/wake_listener.py) */
+export interface WakeStatus {
+  running: boolean;
+  state: string;
+  persona: string | null;
+  held: boolean;
+  stage: string;
+  names: string[];
+  error: string;
+  issue: string;
+  lastHeard: string;
+}
+
+export interface VoiceView {
+  enabled: boolean;
+  phase: VoicePhase;
+  pid: number | null;
+  status: WakeStatus | null;
+  error: string | null;
+  logFile: string;
+}
+
 export interface Snapshot {
   backend: ServiceView;
   web: ServiceView;
@@ -53,6 +77,7 @@ export interface Snapshot {
   ollama: { up: boolean; models: { name: string; sizeGb: number }[] };
   memory: { freePercent: number; usedGb: number; totalGb: number; swapUsedGb: number };
   logs: LogBatch;
+  voice: VoiceView;
 }
 
 export interface Config {
@@ -63,6 +88,8 @@ export interface Config {
   webPort: number;
   startOnLaunch: boolean;
   autoRestart: boolean;
+  /** null — как WAKE_LISTEN в .env; переключается кнопкой и в трее */
+  wakeListen: boolean | null;
 }
 
 export interface Settings {
@@ -85,6 +112,7 @@ export const api = {
   saveSettings: (config: Config) => invoke<Settings>('save_settings', { config }),
   detectPython: (repoDir: string) => invoke<string>('detect_python', { repoDir }),
   setAutostart: (enabled: boolean) => invoke<boolean>('set_autostart', { enabled }),
+  setWake: (enabled: boolean) => invoke<VoiceView>('set_wake', { enabled }),
   hidePanel: () => invoke<void>('hide_panel'),
   quit: () => invoke<void>('quit'),
 };

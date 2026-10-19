@@ -82,6 +82,10 @@ def inbox_push(persona: str, chat_id: str, text: str, kind: str = "message",
             loop.call_soon_threadsafe(event.set)
         except RuntimeError:
             pass  # loop уже закрыт — ядро останавливается
+    # Открытый веб узнаёт о сообщении сразу, а не на тике опроса. Импорт
+    # здесь: chat_events сам импортирует этот модуль
+    from app.api import chat_events
+    chat_events.bump(persona)
 
 
 def _forget_stale_clients(now: float) -> None:

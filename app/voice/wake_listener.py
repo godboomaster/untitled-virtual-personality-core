@@ -1,8 +1,13 @@
 """Голосовая активация на компьютере ядра: «Коннор, какая погода?» — и
 персона отвечает голосом, без открытого веба.
 
-Микрофон слушается постоянно (WAKE_LISTEN=1 в .env), речь распознаётся
-офлайн: потоковая модель sherpa-onnx (малая русская, ~28 МБ, качается
+Где слушать. Есть панель в трее (desktop/) — слушает она: этот модуль
+отдельным процессом панели (main(), python -m app.voice.wake_listener
+--status), микрофон принадлежит панели, ядро для этого не нужно. Без
+панели — в процессе ядра (WAKE_LISTEN=1 в .env, start_with_core); такой
+слушатель уступает микрофон слушателю панели, пока тот о себе сообщает.
+
+Микрофон слушается постоянно, речь распознаётся офлайн: потоковая модель sherpa-onnx (малая русская, ~28 МБ, качается
 с HuggingFace при первом запуске в data/models/wake-ru). Имя ищет
 app/voice/wake_match. Реплика уходит в ядро тем же путём, что из веба
 (POST /api/chat, чат web_user) — обмен виден в открытом чате; ответ
@@ -19,6 +24,7 @@ app/voice/wake_match. Реплика уходит в ядро тем же пут
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -59,10 +65,16 @@ HOLD_MAX_SEC = 120.0
 ZERO_CHECK_SEC = 3
 NO_MIC_ACCESS = ("микрофон отдаёт ровные нули — похоже, macOS не дала доступ: "
                  "Системные настройки → Конфиденциальность и безопасность → Микрофон → "
-                 "включите приложение, из которого запущено ядро (Терминал, панель), "
-                 "и перезапустите ядро")
+                 "включите приложение, которое слушает (панель Virtual Persona или "
+                 "Терминал, если ядро запущено из него)")
 
 IDLE, AWAIT, BUSY = "idle", "await", "busy"
+# Этап слушателя (status()["stage"]): грузит распознаватель, ждёт имена от
+# ядра, слушает, микрофон недоступен (повтор), уступил микрофон панели
+ST_MODEL, ST_NAMES, ST_LISTEN, ST_MIC, ST_YIELD = "model", "names", "listening", "mic", "yielded"
+# Что не так (status()["issue"]) — панель переводит это сама; текст — в error
+ISSUE_MIC_ACCESS, ISSUE_MIC, ISSUE_CORE, ISSUE_MODULES, ISSUE_FAILED = (
+    "mic_access", "mic", "core", "modules", "failed")
 
 
 def enabled_by_env() -> bool:
@@ -270,6 +282,15 @@ class CoreClient:
         parts = [data.get("reply") or ""] + [m for m in data.get("extra_messages") or [] if isinstance(m, str)]
         return " ".join(p.strip() for p in parts if p and p.strip())
 
+    def report(self, status: dict) -> float:
+        """Слушатель панели → ядро: своё состояние. Ответ — сколько секунд ещё
+        молчать (открыт голосовой чат веба)."""
+        import httpx
+        r = httpx.post(f"{self.base_url}/api/voice/wake/report", headers=self._headers(),
+                       timeout=3, json=status)
+        r.raise_for_status()
+        return float(r.json().get("hold") or 0)
+
 
 def _error_phrase(e: Exception) -> str:
     import httpx
@@ -295,6 +316,8 @@ class WakeListener:
         self.state = IDLE
         self.persona: Optional[str] = None
         self.error = ""
+        self.issue = ""
+        self.stage = ST_MODEL
         self.phrases: list[WakePhrase] = []
         self.last_heard = ""
         self._deadline = 0.0
@@ -342,10 +365,16 @@ class WakeListener:
     def status(self) -> dict:
         return {
             "running": self.running, "state": self.state, "persona": self.persona,
-            "held": self.held,
+            "held": self.held, "stage": self.stage,
             "names": [p.phrase for p in self.phrases], "error": self.error,
-            "last_heard": self.last_heard,
+            "issue": self.issue, "last_heard": self.last_heard,
         }
+
+    def _fail(self, issue: str, text: str) -> None:
+        self.issue, self.error = issue, text[:300]
+
+    def _ok(self) -> None:
+        self.issue, self.error = "", ""
 
     # --- имена ---
 
@@ -434,10 +463,11 @@ class WakeListener:
                 if not self._stop.is_set():
                     self.voice.speak(reply)
                 asks_back = reply.rstrip().endswith("?")
-            self.error = ""
+            if self.issue == ISSUE_CORE:
+                self._ok()
         except Exception as e:
             logger.warning(f"[Wake] Ответ не получен: {e}")
-            self.error = str(e)[:200]
+            self._fail(ISSUE_CORE, str(e)[:200])
             _chime("error")
             if not self._stop.is_set():
                 self.voice.speak(_error_phrase(e))
@@ -482,14 +512,16 @@ class WakeListener:
         try:
             self._loop()
         except Exception as e:
-            self.error = str(e)[:300]
+            self._fail(ISSUE_FAILED, str(e))
             logger.error(f"[Wake] Слушатель остановлен: {e}")
 
     def _loop(self) -> None:
+        self.stage = ST_MODEL
         d = model_dir()
         ensure_model(d)
         recognizer = make_recognizer(d)
         # Ядро поднимается вместе со слушателем — ждём, пока ответит
+        self.stage = ST_NAMES
         while not self._stop.is_set() and not self.phrases:
             self.refresh_phrases(force=True)
             if not self.phrases:
@@ -498,12 +530,22 @@ class WakeListener:
         # Микрофон пропал (наушники отключились, устройство сменилось) —
         # открываем заново: слушатель живёт, пока живо ядро
         while not self._stop.is_set():
+            if remote_active():
+                # Слушает панель: свой микрофон закрыт, пока она о себе сообщает
+                if self.stage != ST_YIELD:
+                    logger.info("[Wake] Имя слушает панель в трее — микрофон ядра закрыт")
+                self.stage = ST_YIELD
+                self._stop.wait(1)
+                continue
             try:
                 self._listen(dec)
             except Exception as e:
-                self.error = f"микрофон: {e}"[:300]
+                self.stage = ST_MIC
+                self._fail(ISSUE_MIC, f"микрофон: {e}")
                 logger.warning(f"[Wake] Микрофон недоступен ({e}) — повтор через 5 с")
             self.state, self.persona = IDLE, None
+            if remote_active():
+                continue
             self._stop.wait(5)
 
     def _listen(self, dec: Decoder) -> None:
@@ -519,13 +561,17 @@ class WakeListener:
         with sd.InputStream(device=device, channels=1, samplerate=rate, dtype="float32",
                             blocksize=rate // 10, callback=self._on_audio):
             logger.info(f"[Wake] Микрофон: {info['name']} ({rate} Гц)")
-            self.error = ""
+            self.stage = ST_LISTEN
+            if self.issue in (ISSUE_MIC, ISSUE_FAILED):
+                self._ok()
             last = time.monotonic()
             # Ровные нули — не тишина комнаты (в ней всегда шум), а запрет
-            # macOS на микрофон для приложения, из которого запущено ядро
+            # macOS на микрофон для приложения, которое слушает
             heard = 0.0
             fed = 0
             while not self._stop.is_set():
+                if remote_active():
+                    return
                 if self.refresh_phrases():
                     dec.renew(self.phrases)
                 try:
@@ -542,10 +588,14 @@ class WakeListener:
                     fed += len(chunk)
                     heard = max(heard, float(abs(chunk).max()) if len(chunk) else 0.0)
                     if fed >= ZERO_CHECK_SEC * rate and heard == 0.0:
-                        self.error = NO_MIC_ACCESS
-                        logger.warning(f"[Wake] {NO_MIC_ACCESS}")
-                    elif heard > 0.0 and self.error == NO_MIC_ACCESS:
-                        self.error = ""
+                        if self.issue != ISSUE_MIC_ACCESS:
+                            logger.warning(f"[Wake] {NO_MIC_ACCESS}")
+                        self._fail(ISSUE_MIC_ACCESS, NO_MIC_ACCESS)
+                        # Микрофон — заново через 5 с: доступ, выданный в
+                        # «Системных настройках», подхватится без перезапуска
+                        return
+                    elif heard > 0.0 and self.issue == ISSUE_MIC_ACCESS:
+                        self._ok()
                 self.process(dec, rate, chunk)
                 last = time.monotonic()
 
@@ -583,25 +633,33 @@ def start_error() -> str:
     return _start_error
 
 
+def create_listener(base_url: str, token: str = "") -> tuple[Optional[WakeListener], str]:
+    """Слушатель с ядром по адресу base_url. Нет модулей распознавания или
+    микрофона в этом Python — (None, причина с командой установки)."""
+    try:
+        import sherpa_onnx  # noqa: F401
+        import sounddevice  # noqa: F401
+    except Exception as e:
+        # Частый случай — Python не тот, в который ставились модули (другой venv)
+        return None, (f"нет модулей в этом Python ({e}): {sys.executable} -m pip install "
+                      f"\"sherpa-onnx>=1.13.8\" sounddevice")
+    only = [p for p in (os.getenv("WAKE_PERSONAS") or "").split(",") if p.strip()] or None
+    return WakeListener(CoreClient(base_url, token), only=only), ""
+
+
 def start_with_core(host: str, port: int) -> Optional[WakeListener]:
     """Поднять слушатель в фоне процесса ядра (WAKE_LISTEN=1). Не мешает
     запуску: нет модулей или микрофона — предупреждение в лог."""
     global _listener, _start_error
     if not enabled_by_env():
         return None
-    try:
-        import sherpa_onnx  # noqa: F401
-        import sounddevice  # noqa: F401
-    except Exception as e:
-        # Частый случай — ядро запущено из другого venv, чем ставились модули
-        _start_error = (f"нет модулей в этом Python ({e}): {sys.executable} -m pip install "
-                        f"\"sherpa-onnx>=1.13.8\" sounddevice")
-        logger.warning(f"[Wake] Голосовая активация выключена — {_start_error}")
-        return None
     if host in ("", "0.0.0.0", "::", "localhost"):
         host = "127.0.0.1"
-    only = [p for p in (os.getenv("WAKE_PERSONAS") or "").split(",") if p.strip()] or None
-    _listener = WakeListener(CoreClient(f"http://{host}:{port}", os.getenv("API_TOKEN") or ""), only=only)
+    lst, _start_error = create_listener(f"http://{host}:{port}", os.getenv("API_TOKEN") or "")
+    if lst is None:
+        logger.warning(f"[Wake] Голосовая активация выключена — {_start_error}")
+        return None
+    _listener = lst
     _listener.start()
     return _listener
 
@@ -620,22 +678,136 @@ def stop_with_core() -> None:
         _listener.stop(wait=STOP_WAIT_SEC)
 
 
-def main() -> None:
-    """Отдельно от ядра: python -m app.voice.wake_listener (ядро уже запущено)."""
+# ===== Слушатель панели: что о нём знает ядро =====
+# Слушатель панели раз в REPORT_SEC сообщает ядру своё состояние (POST
+# /api/voice/wake/report). Пока сообщения свежие, слушатель ядра молчит,
+# GET /api/voice/wake показывает слушатель панели, а пауза голосового чата
+# веба (POST /api/voice/wake/hold) уходит ему в ответе на сообщение.
+
+REPORT_SEC = 1.0
+REMOTE_FRESH_SEC = 5.0
+_REMOTE_KEYS = ("running", "state", "persona", "held", "stage", "names", "error", "issue", "last_heard")
+_remote: dict = {}
+_remote_at = 0.0
+_remote_hold_until = 0.0
+
+
+def report_remote(status: dict) -> float:
+    """Сообщение слушателя панели. → сколько секунд ему ещё молчать."""
+    global _remote, _remote_at
+    _remote = {k: status[k] for k in _REMOTE_KEYS if k in status}
+    _remote_at = time.monotonic()
+    return round(max(0.0, _remote_hold_until - time.monotonic()), 1)
+
+
+def remote_active() -> bool:
+    return _remote_at > 0 and time.monotonic() - _remote_at < REMOTE_FRESH_SEC
+
+
+def remote_status() -> dict:
+    return dict(_remote)
+
+
+def hold_all(seconds: float) -> bool:
+    """Пауза из веба (голосовой чат открыт): слушателю ядра — сразу,
+    слушателю панели — в ответе на его сообщение. True — есть кому молчать."""
+    global _remote_hold_until
+    _remote_hold_until = time.monotonic() + max(0.0, min(float(seconds), HOLD_MAX_SEC))
+    held = False
+    if _listener is not None:
+        _listener.hold(seconds)
+        held = _listener.held
+    return held or (seconds > 0 and remote_active())
+
+
+# ===== Отдельный процесс (панель в трее) =====
+
+STATUS_PREFIX = "WAKE_STATUS "
+# Код выхода «нет модулей»: перезапуск не поможет, панель его не повторяет
+EXIT_SETUP = 2
+STATUS_EVERY_SEC = 10.0
+
+
+def _report_loop(lst: WakeListener, stop: threading.Event) -> None:
+    """Сообщать ядру о себе и брать у него паузу голосового чата веба."""
+    import httpx
+    while not stop.is_set():
+        try:
+            hold = lst.client.report(lst.status())
+            if hold > 0 or lst.held:
+                lst.hold(hold)
+        except httpx.HTTPStatusError:
+            pass  # ядро старее слушателя (нет /report) — слушаем без паузы
+        except Exception:
+            pass  # ядро не запущено — пауза истечёт сама
+        stop.wait(REPORT_SEC)
+
+
+def _print_status(st: dict) -> None:
+    print(STATUS_PREFIX + json.dumps(st, ensure_ascii=False), flush=True)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Слушатель отдельно от ядра — так его держит панель в трее:
+    python -m app.voice.wake_listener [--core URL] [--status]."""
+    import argparse
+    import signal
     from app.core.envfile import load_env_file
+    ap = argparse.ArgumentParser(prog="python -m app.voice.wake_listener",
+                                 description="Голосовая активация: слушать имя персоны отдельно от ядра")
+    ap.add_argument("--core", help="адрес API ядра (по умолчанию — из API_HOST и API_PORT)")
+    ap.add_argument("--status", action="store_true",
+                    help=f"печатать состояние строками «{STATUS_PREFIX}{{json}}» (для панели)")
+    args = ap.parse_args(argv)
     load_env_file(".env")
     load_env_file(".env.config")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    os.environ.setdefault("WAKE_LISTEN", "1")
-    lst = start_with_core(os.getenv("API_HOST", "127.0.0.1"), int(os.getenv("API_PORT", "8000")))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    # Отчёт ядру — раз в секунду: без этого каждый запрос строкой в логе
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    base = args.core
+    if not base:
+        host = os.getenv("API_HOST", "127.0.0.1")
+        if host in ("", "0.0.0.0", "::", "localhost"):
+            host = "127.0.0.1"
+        base = f"http://{host}:{os.getenv('API_PORT', '8000')}"
+    lst, err = create_listener(base, os.getenv("API_TOKEN") or "")
     if lst is None:
-        sys.exit(1)
+        logger.error(f"[Wake] Голосовая активация не запущена — {err}")
+        if args.status:
+            _print_status({"running": False, "stage": ST_MODEL, "error": err, "issue": ISSUE_MODULES})
+        return EXIT_SETUP
+    stop = threading.Event()
+    # Панель останавливает слушатель SIGTERM-ом: закрыть микрофон штатно
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    lst.start()
+    threading.Thread(target=_report_loop, args=(lst, stop), name="wake-report", daemon=True).start()
+    logger.info(f"[Wake] Слушатель запущен отдельно от ядра, ядро — {base}")
+    # Панель упала или её убили — не держать микрофон сиротой (unix: сирота
+    # переходит к launchd/init, getppid меняется)
+    parent = os.getppid()
+    last: Optional[dict] = None
+    last_at = 0.0
     try:
-        while lst.running:
-            time.sleep(0.5)
+        while lst.running and not stop.is_set():
+            if args.status and sys.platform != "win32" and os.getppid() != parent:
+                logger.warning("[Wake] Панель закрылась — слушатель выходит")
+                stop.set()
+                break
+            st = lst.status()
+            if args.status and (st != last or time.monotonic() - last_at > STATUS_EVERY_SEC):
+                _print_status(st)
+                last, last_at = st, time.monotonic()
+            stop.wait(0.3)
     except KeyboardInterrupt:
-        lst.stop()
+        pass
+    failed = not stop.is_set() and not lst.running
+    lst.stop(wait=STOP_WAIT_SEC)
+    stop.set()
+    if args.status:
+        _print_status(lst.status())
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

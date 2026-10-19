@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Ядро, запущенное панелью, слушает микрофон (голосовая активация,
-       WAKE_LISTEN=1): доступ macOS спрашивает от имени панели, а без этой
+  <!-- Панель слушает имя персоны своим процессом (голосовая активация,
+       src/voice.rs): доступ macOS спрашивает от имени панели, а без этой
        строки молча отдаёт тишину -->
   <key>NSMicrophoneUsageDescription</key>
-  <string>Voice activation: the core listens for a persona's name ("Connor, …") when WAKE_LISTEN=1.</string>
+  <string>Voice activation: the panel listens for a persona's name ("Connor, …") and the persona answers out loud.</string>
 </dict>
 </plist>

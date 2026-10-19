@@ -94,7 +94,8 @@ enter a model — a provider without a model is not used. The same can be set in
 `python -m app.main connor` or `python -m app.main all`.
 
 **The tray panel** (macOS and Windows) starts, restarts and stops the backend and the web,
-shows their status and a live log. Build instructions — in
+shows their status and a live log, and listens for persona names with its own microphone
+([Voice activation](#voice-activation)). Build instructions — in
 [desktop/README.md](desktop/README.md).
 
 **Docker** — `docker compose up -d --build`, details in the [Docker](#docker) section.
@@ -534,7 +535,8 @@ shows what to do instead of a reply.
 ## Voice activation
 
 Say a persona's name and it answers out loud — "Connor, what's the weather?" — with no
-browser open. The core listens to the computer's microphone; speech is recognised offline
+browser open. On the computer the tray panel listens: "Listen for name" in its menu or window
+(details below). Speech is recognised offline
 by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with a small Russian streaming model
 (~28 MB, downloaded from HuggingFace into `data/models/wake-ru` on first start). The names are
 each persona's `features.trigger_words` — personas without them are not voice-addressable.
@@ -548,11 +550,19 @@ start of the phrase ("hey Connor, …" works, "we talked to Connor yesterday" do
 The request goes into the same chat as the web interface, so the exchange shows up there.
 While the persona is speaking the microphone is muted, so it doesn't wake itself up.
 
-Turn it on with `pip install -e ".[voice]"` and `WAKE_LISTEN=1` in `.env` (other settings are
-in `.env.example`), then restart the core. Install the extra into the same Python or venv the
-core runs in — otherwise the listener doesn't start, and `GET /api/voice/wake` says so with the
-exact `pip` command. It also shows whether it's listening, which names it knows, what it heard
-last and any error. By default it takes the laptop's built-in microphone rather than the system
+**On the computer** you need `pip install -e ".[voice]"` in the Python or venv the core runs in.
+Then turn on "Listen for name" in the tray panel's menu or in its window. The panel runs the
+listener as its own process (`python -m app.voice.wake_listener`), so the microphone belongs to
+the panel. It listens whether or not the bot is running; the bot is only needed for the answer.
+The panel shows the state: listening and to which names, waiting for the bot, no microphone
+access, or which `pip` command to run. If the panel hasn't been switched yet, it follows
+`WAKE_LISTEN=1` in `.env`.
+
+Without the panel, the core can listen itself: `WAKE_LISTEN=1` in `.env` (other settings are in
+`.env.example`), then restart the core. A core started by the panel doesn't listen — the panel
+does. A core started from a terminal hands the microphone over to the panel's listener while that
+one is running. `GET /api/voice/wake` shows who is listening (`where`: `panel` or `core`), the
+names, what was heard last and any error. By default it takes the laptop's built-in microphone rather than the system
 default: a Bluetooth headset mic would switch the headset into call mode. Replies are spoken
 with `say` on macOS (PowerShell's System.Speech on Windows and espeak on Linux — untested).
 
@@ -563,7 +573,7 @@ notification with an "Off" button. It costs battery. On Honor and other phones w
 battery saving, set the app's battery usage to manual management, otherwise the system may stop
 it with the screen off. When the phone and the computer hear the same phrase, only one of them
 answers (`voice` in `POST /api/chat`), and while the voice chat mode is open on either, the
-core's own listener pauses.
+computer's listener pauses.
 
 Phone commands work by voice too — "Connor, turn on the flashlight", "…set a timer for five
 minutes", "…open Telegram": the service runs the same parser as the chat
@@ -573,10 +583,12 @@ flashlight works with the screen off. Alarms, timers and opening apps start othe
 which Android allows from the background only with the "Display over other apps" permission —
 the button for it is under "Listen for name"; without it the persona says it couldn't.
 
-On macOS the first start asks for microphone access for the app the core was started from
-(Terminal, iTerm, VS Code or the tray panel). If access was denied, the microphone returns
-pure zeros and the log and `/api/voice/wake` say so: turn the app on in System Settings →
-Privacy & Security → Microphone and restart it.
+On macOS the first start asks for microphone access for the app that listens: the tray panel
+("Virtual Persona"), or the terminal the core was started from when the core listens itself.
+If access was denied, the microphone returns pure zeros and the panel, the log and
+`/api/voice/wake` say so: turn the app on in System Settings → Privacy & Security →
+Microphone. The listener reopens the microphone every few seconds and picks the permission up
+on its own.
 
 ## Files from the computer
 
@@ -796,13 +808,14 @@ descriptions are in Swagger: `/docs`.
 | POST | `/api/chat`, `/api/chat/stream` | a message to a persona; with streaming (SSE) |
 | GET | `/api/chat/history` | chat history |
 | POST | `/api/chat/clear` | erase the persona's memory (a copy is kept for 7 days) |
-| GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative |
+| GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative; "typing" and messages from other devices the persona is answering now (`pending`) |
+| GET | `/api/changes` | which personas changed (generation, history, background message); with `since`, `epoch` and `wait` it waits for a change — the web then polls their inbox at once |
 | GET | `/api/inbox` | new background messages of all personas — for the app's notification service; with `wait` it waits up to `wait` seconds for a message |
 | GET | `/api/personas/{p}/state` | the persona's state and its life feed |
 | GET | `/api/providers` | providers, keys, the active one |
 | GET, POST, DELETE | `/api/link`, `/api/link/pair`, `/api/link/devices/{id}` | phones over VPC Link: list, pairing QR code, unpairing |
 | GET | `/api/token` | `API_TOKEN` for connecting a phone by address (403 over VPC Link) |
-| GET, POST | `/api/voice/wake`, `/api/voice/wake/hold` | voice activation on the core's computer: is it listening, names, last heard, error; pause while a voice chat is open |
+| GET, POST | `/api/voice/wake`, `/api/voice/wake/hold`, `/api/voice/wake/report` | voice activation on the core's computer: who is listening (the panel or the core), names, last heard, error; pause while a voice chat is open; the panel's listener reports itself once a second |
 | GET | `/api/system/status`, `/api/logs` | the bot's browsers; the log — for the panel and developer mode |
 
 ```bash

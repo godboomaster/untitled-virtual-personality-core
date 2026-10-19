@@ -6,7 +6,7 @@ import type { AnswerOption, ApiHistoryMessage, ClearPart, InitiativeData, Person
 import { refetchPersonaLlm, useApiOnline, useApiPersonaLlm, useApiProviders, usePersonaLivingState } from '../apiData';
 import { alertDialog, confirmDialog } from '../dialogStore';
 import {
-  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setAnswerOptions, setControlMode, setFastPoll, setGenerating, setTaskCard, touchActivity, useInbox,
+  getServerLastTs, latestActivePersona, markRead, pollInboxNow, pruneInbox, setAnswerOptions, setControlMode, setFastPoll, setGenerating, setTaskCard, settlePending, touchActivity, useInbox,
 } from '../inboxStore';
 import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
@@ -32,17 +32,11 @@ import VoiceChat from '../components/VoiceChat';
 import CameraCapture from '../components/CameraCapture';
 import { downscalePhoto } from '../cameraImage';
 import { OFFLINE_SYNCED_EVENT, useOfflineMode } from '../offline/state';
-import {
-  addOfflineMessage,
-  offlineMessages,
-  removeOfflineMessages,
-  unansweredTail,
-  updateOfflineMessage,
-  useOfflineMessages,
-} from '../offline/store';
+import { offlineMessages, removeOfflineMessages, unansweredTail, useOfflineMessages } from '../offline/store';
 import { getKit, refreshKit } from '../offline/kit';
 import { onLocalPersonaRenamed } from '../offline/localPersonas';
-import { answerOffline, OfflineUnavailable } from '../offline/engine';
+import { OfflineUnavailable } from '../offline/engine';
+import { replyOffline } from '../offline/reply';
 import { warmEmbedder } from '../offline/embed';
 import { OfflineLlm } from '../offline/plugin';
 import type { AlarmItem } from '../offline/plugin';
@@ -495,6 +489,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       .then((msgs) => {
         setHistoryByPersona((prev) => ({ ...prev, [id]: msgs.map(toChatMessage) }));
         pruneInbox(id, new Set(msgs.map((m) => m.content)));
+        settlePending(id);
         dropRecovered(id, msgs);
         if (dropLocal) {
           setSentByPersona((prev) => ({
@@ -508,7 +503,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
 
   // Фоновые сообщения (напоминания, инициативы) прилетают в глобальный
   // inbox-стор (поллер в App); здесь только гасим непрочитанные открытой персоны
-  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode, answerOptions, taskCards } = useInbox();
+  const { messages: inboxMessages, unread, generating, lastTs, serverLastTs, controlMode, answerOptions, taskCards, pending: pendingByPersona } = useInbox();
   useEffect(() => {
     markRead(persona.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -738,6 +733,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         setHistoryFailed((prev) => ({ ...prev, [id]: false }));
         // Инициатива/напоминание пишется и в STM, и в inbox — вычищаем дубли из стора
         pruneInbox(id, new Set(msgs.map((m) => m.content)));
+        settlePending(id);
         dropRecovered(id, msgs);
       })
       .catch(() => {
@@ -901,6 +897,21 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   const sentVisible = (sentByPersona[persona.id] ?? []).filter(
     (m) => !baseMessages.some((h) => h.text === (m.stmText ?? m.text) && (h.ts ?? 0) + TS_EPS >= (m.ts ?? 0)),
   );
+  // Реплики с другого устройства, на которые персона сейчас отвечает: в
+  // историю они лягут вместе с ответом, а видны — сразу. Уже попавшие в
+  // историю (та же реплика не раньше отправки) отсекаем
+  const pendingChat: ChatMessage[] = apiOnline
+    ? (pendingByPersona[persona.id] ?? [])
+        .filter((p) => !baseMessages.some((h) => h.role === 'user' && h.text === p.text && (h.ts ?? 0) + TS_EPS >= p.ts))
+        .map((p) => ({
+          id: Math.round(p.ts * 1000) * 10 + 9,
+          role: 'user' as const,
+          text: p.text || t('chat.attachment'),
+          time: new Date(p.ts * 1000).toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' }),
+          ts: p.ts,
+          status: 'sent' as const,
+        }))
+    : [];
   // Лента смешанная (история STM + локальные реплики сессии + inbox):
   // при простом склеивании инициатива из inbox встала бы ПОСЛЕ свежего
   // сообщения пользователя — сортируем по реальному времени (стабильная
@@ -944,7 +955,7 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         return twin ? { ...h, files: twin.files } : h;
       })
     : baseMessages;
-  const messages = [...baseWithFiles, ...sentVisible, ...inboxChat, ...offlineChat].sort(
+  const messages = [...baseWithFiles, ...sentVisible, ...pendingChat, ...inboxChat, ...offlineChat].sort(
     (a, b) => (a.ts ?? 0) - (b.ts ?? 0),
   );
   // ── Окно видимых сообщений и скролл ──
@@ -1222,27 +1233,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
     // ответить некому и реплика ждёт связи
     const action = phone ? await runPhoneCommand(pid, text, [persona.name]) : null;
     const history = messages.map((m) => ({ role: m.role === 'user' ? ('user' as const) : ('assistant' as const), text: m.text, ts: m.ts }));
-    // Прежние реплики без ответа модель увидит в истории — ответ и на них
-    const pending = unansweredTail(offlineMessages(pid));
-    const userMsg = addOfflineMessage(pid, { role: 'user', text, source: 'queued' });
     setWaitingByPersona((prev) => ({ ...prev, [pid]: true }));
     const num = Date.now() * 10 + 7;
     try {
-      const res = await answerOffline(
-        pid,
-        text,
-        history,
-        (chunk) => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: (prev[pid]?.text ?? '') + chunk } })),
-        () => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: '' } })),
-        action ? actionNote(action) : undefined,
-      );
-      for (const m of [...pending, userMsg]) updateOfflineMessage(pid, m.id, { source: res.source });
-      addOfflineMessage(pid, {
-        role: 'assistant',
-        text: res.text,
-        source: res.source,
-        provider: res.provider,
-        ...(res.reminder ? { reminder: { id: res.reminder.id, task: res.reminder.task, at: res.reminder.at } } : {}),
+      const res = await replyOffline(pid, text, history, {
+        onToken: (chunk) => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: (prev[pid]?.text ?? '') + chunk } })),
+        onLocalStart: () => setOfflineDraft((prev) => ({ ...prev, [pid]: { num, text: '' } })),
+        actionNote: action ? actionNote(action) : undefined,
       });
       setOfflineNote(res.fallback ? t('offline.fallbackNote') : null);
     } catch (e) {

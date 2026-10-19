@@ -23,12 +23,12 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.api import runtime
+from app.api import chat_events, runtime
 from app.api.runtime import chat_lock, get_persona_info, list_personas
 from app.core.router import NoProvidersError
 from app.api.security import (BodySizeLimit, LOOPBACK_HOSTS, LOOPBACK_ORIGIN_RE,
@@ -84,6 +84,7 @@ from app.core.message_pacing import send_delay
 from app.core.config import Config
 from app.core.paths import data_dir
 from app.core.presence import web_context, web_presence
+from app.core import memory as _memory_mod
 from app.core import timeutil
 from app.features.calendar_manager import get_calendar
 
@@ -209,21 +210,70 @@ if (_api_host not in LOOPBACK_HOSTS or _extra_hosts - LOOPBACK_HOSTS) and not _a
 # лок) не должны гасить флаг друг другу — первый завершившийся снимал бы его,
 # пока второй ещё в работе.
 _generating: dict[str, int] = {}
+# Реплики пользователя, которые сейчас в обработке: "persona:chat_key" →
+# [{text, ts, client, image}]. В историю реплика ложится не сразу: ждёт лока
+# чата за предыдущей, а часть путей process_message пишет её вместе с
+# ответом. Другое устройство (телефон, когда писали с компьютера) должно
+# показать её сразу: inbox отдаёт их всем клиентам, кроме отправившего
+# (client — его client_id)
+_pending_user: dict[str, list[dict]] = {}
 # Сильные ссылки на фоновые задачи генерации: event loop держит задачи только
 # слабо, «осиротевшую» после разрыва соединения задачу мог бы собрать GC
 _detached_generations: set[asyncio.Task] = set()
 
 
-def _generating_enter(key: str) -> None:
+def _key_persona(key: str) -> str:
+    return key.split(":", 1)[0]
+
+
+def _generating_enter(key: str, pending: dict | None = None) -> None:
     _generating[key] = _generating.get(key, 0) + 1
+    if pending is not None:
+        _pending_user.setdefault(key, []).append(pending)
+    # Открытый веб на других устройствах узнаёт о ходе сразу (chat_events)
+    chat_events.bump(_key_persona(key))
 
 
-def _generating_exit(key: str) -> None:
+def _generating_exit(key: str, pending: dict | None = None) -> None:
     n = _generating.get(key, 0) - 1
     if n > 0:
         _generating[key] = n
     else:
         _generating.pop(key, None)
+    if pending is not None:
+        rest = [p for p in _pending_user.get(key, ()) if p is not pending]
+        if rest:
+            _pending_user[key] = rest
+        else:
+            _pending_user.pop(key, None)
+    chat_events.bump(_key_persona(key))
+
+
+def _pending_entry(req: ChatRequest) -> dict | None:
+    """Реплика хода для других устройств, пока ответа нет (_pending_user).
+    Слэш-команды не показываем: в историю они не ложатся."""
+    text = (req.message or "").strip()
+    if text.startswith("/") or not (text or req.image):
+        return None
+    return {"text": text, "ts": time.time(), "client": req.client_id or "",
+            "image": bool(req.image)}
+
+
+def _pending_public(key: str, client_id: str) -> list[dict]:
+    # Чужие реплики в обработке: свою отправивший клиент и так показывает
+    return [{"text": p["text"], "ts": p["ts"], **({"image": True} if p["image"] else {})}
+            for p in _pending_user.get(key, ())
+            if not (client_id and p["client"] == client_id)]
+
+
+def _on_stm_write(context: str, chat_key: str) -> None:
+    # Реплика легла в историю веб-персоны (контекст api_<персона>) — открытый
+    # веб перечитает переписку, не дожидаясь тика опроса
+    if context.startswith("api_"):
+        chat_events.bump(context[4:])
+
+
+_memory_mod.on_stm_write(_on_stm_write)
 
 
 def _log_detached_failure(task: asyncio.Task) -> None:
@@ -261,7 +311,7 @@ def _cc_turn_exit(bot, token) -> None:
             pass
 
 
-async def _run_generation(gen_key: str, fn, on_done=None):
+async def _run_generation(gen_key: str, fn, on_done=None, pending: dict | None = None):
     """Генерация ответа, которую не отменяет разрыв соединения клиента.
 
     fn — синхронная тяжёлая часть (process_message), идёт в потоке пула;
@@ -274,14 +324,16 @@ async def _run_generation(gen_key: str, fn, on_done=None):
 
     Флаг ставится до ожидания лока: сообщение, вставшее в очередь за
     предыдущим, тоже показывает «печатает». on_done — когда поток реально
-    закончил (снять регистрацию идущей команды режима управления)."""
+    закончил (снять регистрацию идущей команды режима управления).
+    pending — реплика хода для других устройств (_pending_entry): видна им
+    с этого момента и до записи ответа в историю."""
     async def _job():
-        _generating_enter(gen_key)
+        _generating_enter(gen_key, pending)
         try:
             async with chat_lock(gen_key):
                 return await asyncio.to_thread(fn)
         finally:
-            _generating_exit(gen_key)
+            _generating_exit(gen_key, pending)
             if on_done is not None:
                 on_done()
 
@@ -550,27 +602,47 @@ async def system_memory():
 
 @app.get("/api/voice/wake", dependencies=[Depends(require_auth)])
 async def voice_wake_status():
-    # Голосовая активация на компьютере ядра (WAKE_LISTEN=1): слушает ли,
-    # какие имена, что услышала последним — для проверки перед показом
+    # Голосовая активация на компьютере ядра: слушает ли, какие имена, что
+    # услышала последним. where — кто слушает: панель в трее (отдельный
+    # процесс, сообщает о себе в /report) или само ядро (WAKE_LISTEN=1)
     from app.voice import wake_listener
+    if wake_listener.remote_active():
+        return {"enabled": True, "where": "panel", **wake_listener.remote_status()}
     lst = wake_listener.get_listener()
     if lst is None:
         out = {"enabled": wake_listener.enabled_by_env(), "running": False}
         if wake_listener.start_error():
             out["error"] = wake_listener.start_error()
         return out
-    return {"enabled": True, **lst.status()}
+    return {"enabled": True, "where": "core", **lst.status()}
+
+
+class _QuietWakeReport(logging.Filter):
+    # Слушатель панели сообщает о себе раз в секунду — без строки
+    # access-лога на каждое сообщение (терминал ядра, лог панели)
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/api/voice/wake/report" not in str(record.args)
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietWakeReport())
+
+
+@app.post("/api/voice/wake/report", dependencies=[Depends(require_auth)])
+async def voice_wake_report(status: dict = Body(...)):
+    # Слушатель панели в трее раз в секунду сообщает о себе; пока сообщает,
+    # слушатель ядра молчит. В ответ — сколько секунд молчать ему самому
+    # (пауза голосового чата веба, /hold)
+    from app.voice import wake_listener
+    return {"hold": wake_listener.report_remote(status)}
 
 
 @app.post("/api/voice/wake/hold", dependencies=[Depends(require_auth)])
 async def voice_wake_hold(req: VoiceWakeHold):
-    # Открыт голосовой режим чата: слушатель ядра молчит (seconds, не больше
-    # 120; клиент продлевает), 0 — снова слушать
+    # Открыт голосовой режим чата: слушатель молчит (seconds, не больше
+    # 120; клиент продлевает), 0 — снова слушать. Слушателю панели пауза
+    # уходит в ответе на его /report
     from app.voice import wake_listener
-    lst = wake_listener.get_listener()
-    if lst is not None:
-        lst.hold(req.seconds)
-    return {"held": bool(lst and lst.held)}
+    return {"held": wake_listener.hold_all(req.seconds)}
 
 
 @app.get("/api/system/status", dependencies=[Depends(require_auth)])
@@ -982,7 +1054,8 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
     # сообщения одного чата сериализуются, разные чаты и персоны идут
     # параллельно; разрыв соединения генерацию не обрывает
     reply, provider, model, extra, question_kind, files = await _run_generation(
-        lock_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token))
+        lock_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token),
+        pending=_pending_entry(req))
     return ChatResponse(
         reply=reply,
         extra_messages=extra,
@@ -1468,7 +1541,8 @@ async def chat_stream(req: ChatRequest, request: Request):
         try:
             (reply, split_rest, extra, question_kind, images,
              provider, model, reply_ts, files, reply_stm) = await _run_generation(
-                gen_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token))
+                gen_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token),
+                pending=_pending_entry(req))
         except HTTPException as e:
             # Отказ нашего же кода до генерации (картинку, камеру или экран
             # не посмотреть: нет разрешения на запись экрана, Ollama не
@@ -2628,6 +2702,8 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     # generating — идёт ли сейчас генерация ответа в этом чате (фронт
     # показывает «печатает» даже после перезагрузки страницы).
     generating = f"{persona}:{chat_id}" in _generating
+    # Реплики в обработке, отправленные с других устройств, — до ответа
+    pending = _pending_public(f"{persona}:{chat_id}", client_id)
     # Метка последнего сообщения чата (STM штампует её на каждое сообщение) —
     # фронт сортирует по ней список персон по свежести переписки. inbox —
     # часто опрашиваемый эндпоинт (поллинг фронта): синхронное чтение файла
@@ -2647,9 +2723,9 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     except Exception:
         pools = {}
     if bot is None:
-        return {"messages": [], "generating": generating, "last_ts": last_ts,
-                "control_mode": False, "answer_options": None, "task": None,
-                "webchat_quarantine": quarantine, "browser_pools": pools}
+        return {"messages": [], "generating": generating, "pending": pending,
+                "last_ts": last_ts, "control_mode": False, "answer_options": None,
+                "task": None, "webchat_quarantine": quarantine, "browser_pools": pools}
     # Поллинг инбокса = пользователь открыл веб: сигнал присутствия для rhythm
     # (дёшев, с внутренним троттлингом — триггер утреннего приветствия)
     try:
@@ -2670,7 +2746,7 @@ async def inbox(persona: PersonaIdPath, chat_id: str = "web_user", focused: bool
     # обновляет её на месте — шаги, статус, план
     task = bot.cc_task_card(chat_id, chat_id)
     return {"messages": inbox_pop(persona, chat_id, client_id), "generating": generating,
-            "last_ts": last_ts, "control_mode": control_mode,
+            "pending": pending, "last_ts": last_ts, "control_mode": control_mode,
             "answer_options": answer_options, "task": task,
             "webchat_quarantine": quarantine, "browser_pools": pools}
 
@@ -2704,6 +2780,23 @@ async def inbox_all(request: Request,
     items, cursor = await inbox_mod.inbox_wait(chat_id, client_id, start, wait,
                                                gone=request.is_disconnected)
     return {"messages": await _inbox_named(items), "cursor": cursor, "epoch": inbox_mod.EPOCH}
+
+
+@app.get("/api/changes", dependencies=[Depends(require_auth)])
+async def changes(request: Request,
+                  since: int | None = Query(None, ge=0),
+                  epoch: str | None = Query(None, max_length=32),
+                  wait: float = Query(0, ge=0)):
+    # Долгий опрос открытого веба: у каких персон что-то изменилось после
+    # номера since — началась или кончилась генерация, реплика легла в
+    # историю, пришло фоновое сообщение (app/api/chat_events). Пусто — ждём
+    # до wait секунд (не больше chat_events.MAX_WAIT_SEC). personas: null —
+    # номер не из этого запуска ядра или слишком старый: опросить всех.
+    # Первый запрос — без since: сразу, чтобы получить номер
+    start = since if epoch == chat_events.EPOCH else None
+    version, names = await chat_events.wait_changes(start, wait if start is not None else 0,
+                                                    gone=request.is_disconnected)
+    return {"version": version, "epoch": chat_events.EPOCH, "personas": names}
 
 
 async def _inbox_named(items: list[dict]) -> list[dict]:

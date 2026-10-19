@@ -29,7 +29,7 @@ export default function ChatOverview({ onOpen, flipFrom }: Props) {
   const { personas, chatByPersona } = useMockData();
   const apiOnline = useApiOnline();
   const avatars = usePersonaAvatars();
-  const { messages, unread, generating, lastTs, controlMode } = useInbox();
+  const { messages, unread, generating, lastTs, serverLastTs, controlMode, pending } = useInbox();
   const [home, setHome] = useState<HomeOverview | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const flipping = useRef(flipFrom !== null);
@@ -61,6 +61,23 @@ export default function ChatOverview({ onOpen, flipFrom }: Props) {
     };
   }, [apiOnline]);
 
+  // В истории какой-то персоны новая реплика (опрос inbox узнаёт о ней
+  // сразу, см. useInboxPolling) — сводку перечитываем, не дожидаясь тика
+  const newestTs = Math.max(0, ...Object.values(serverLastTs));
+  const seenTs = useRef(newestTs);
+  useEffect(() => {
+    if (!apiOnline || newestTs <= seenTs.current) return;
+    seenTs.current = newestTs;
+    let alive = true;
+    api
+      .getHome()
+      .then((o) => alive && setHome(o))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [apiOnline, newestTs]);
+
   // Возврат из чата: карточки выезжают из строк списка на свои места.
   // Один раз на монтирование (StrictMode повторяет эффект — см. ChatRoom)
   const flipPlayed = useRef(false);
@@ -88,6 +105,11 @@ export default function ChatOverview({ onOpen, flipFrom }: Props) {
   const preview = (id: string): { text: string; you: boolean; ts: number | null; time?: string } | null => {
     const inboxLast = messages[id]?.[messages[id].length - 1];
     const srv = home?.personas[id]?.last_message ?? local?.get(id) ?? null;
+    // Реплика с другого устройства, на которую персона сейчас отвечает
+    const sentLast = pending[id]?.filter((p) => !p.gone).pop();
+    if (sentLast && (!srv || sentLast.ts > srv.ts) && (!inboxLast || sentLast.ts > inboxLast.ts)) {
+      return { text: sentLast.text || t('chat.attachment'), you: true, ts: sentLast.ts };
+    }
     if (inboxLast && (!srv || inboxLast.ts > srv.ts)) return { text: inboxLast.text, you: false, ts: inboxLast.ts };
     if (srv) return { text: srv.text, you: srv.role === 'user', ts: srv.ts };
     if (!apiOnline) {

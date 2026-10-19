@@ -62,6 +62,9 @@ class ChatRequest(BaseModel):
     # Просьба с голосовой активации («Коннор, …»): одну фразу могли услышать
     # и компьютер ядра, и телефон — вторая копия получит duplicate
     voice: bool = False
+    # Id устройства (тот же client_id, что у опроса inbox): пока ответа нет,
+    # реплику показывают другие устройства, а это — и так показывает свою
+    client_id: Optional[str] = Field(None, max_length=64, pattern=r"^[A-Za-z0-9_-]*$")
 
 
 class VoiceWakeHold(BaseModel):

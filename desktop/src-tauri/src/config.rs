@@ -21,6 +21,9 @@ pub struct Config {
     pub start_on_launch: bool,
     /// Перезапускать бота после падения (не больше 3 раз за 10 минут)
     pub auto_restart: bool,
+    /// Слушать имя персоны микрофоном панели (voice.rs); не задано —
+    /// как WAKE_LISTEN в .env проекта
+    pub wake_listen: Option<bool>,
 }
 
 impl Default for Config {
@@ -33,6 +36,7 @@ impl Default for Config {
             web_port: 5173,
             start_on_launch: true,
             auto_restart: true,
+            wake_listen: None,
         }
     }
 }
@@ -78,6 +82,8 @@ pub struct ApiEnv {
     pub port: u16,
     pub token: Option<String>,
     pub ollama: String,
+    /// WAKE_LISTEN=1 — слушать имя на этом компьютере (без панели — само ядро)
+    pub wake_listen: bool,
 }
 
 impl ApiEnv {
@@ -99,7 +105,9 @@ impl ApiEnv {
             .map(|u| u.trim().trim_end_matches('/').to_string())
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| "http://localhost:11434".into());
-        ApiEnv { base: format!("http://{host}:{port}"), port, token, ollama }
+        let wake_listen =
+            matches!(get("WAKE_LISTEN").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on");
+        ApiEnv { base: format!("http://{host}:{port}"), port, token, ollama, wake_listen }
     }
 }
 

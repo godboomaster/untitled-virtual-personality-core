@@ -35,4 +35,29 @@
     <string name="wake_say_denied">No access to the core</string>
     <string name="wake_say_error">The core returned an error</string>
     <string name="wake_say_empty">No answer</string>
+    <!-- By voice without the core: what the service says itself (PhoneVoiceOps.say, WakeWordService) -->
+    <string name="wake_say_offline_later">The core is not responding. I\'ll answer when you open the app</string>
+    <string name="wake_say_offline_queued">The core is not responding and nothing else can answer. The message is waiting in the chat</string>
+    <string name="wake_say_offline_slow">The answer will be in the chat</string>
+    <string name="wake_act_open_ok">Opening %1$s</string>
+    <string name="wake_act_alarm_ok">Alarm set for %1$s</string>
+    <string name="wake_act_timer_ok">Timer started</string>
+    <string name="wake_act_alarms_ok">Opening the alarms</string>
+    <string name="wake_act_torch_on">Flashlight on</string>
+    <string name="wake_act_torch_off">Flashlight off</string>
+    <string name="wake_act_ask_alarm">For what time?</string>
+    <string name="wake_act_ask_timer">For how long?</string>
+    <string name="wake_act_background">Can\'t open it from the background. Tap the notification</string>
+    <string name="wake_act_not_found">No such app</string>
+    <string name="wake_act_ambiguous">Several apps match: %1$s. Which one?</string>
+    <string name="wake_act_no_handler">The phone has no app for that</string>
+    <string name="wake_act_unsupported_date">The clock can only set the nearest time or repeat on weekdays</string>
+    <string name="wake_act_busy">The camera is busy, can\'t turn on the flashlight</string>
+    <string name="wake_act_failed">That didn\'t work</string>
+    <!-- By voice from the background: the screen opens from a notification tap -->
+    <string name="wake_tap_text">Android won\'t open it from the background — tap here</string>
+    <string name="wake_tap_open">Open %1$s</string>
+    <string name="wake_tap_alarm">Set an alarm for %1$s</string>
+    <string name="wake_tap_timer">Start the timer</string>
+    <string name="wake_tap_alarms">Open the alarms</string>
 </resources>

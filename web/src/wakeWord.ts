@@ -1,5 +1,12 @@
 import { registerPlugin } from '@capacitor/core';
-import { getApiToken, getApiUrl, isLinkMode, isNativeApp } from './api';
+import type { PluginListenerHandle } from '@capacitor/core';
+import { api, getApiToken, getApiUrl, isLinkMode, isNativeApp } from './api';
+import { getKit } from './offline/kit';
+import type { HistoryLine } from './offline/prompt';
+import { replyOffline } from './offline/reply';
+import { addOfflineMessage, offlineMessages } from './offline/store';
+import { actionNote } from './phone/notes';
+import type { PhoneActionReport } from './phone/notes';
 
 /* Приложение на Android: «Слушать по имени» — скажите имя персоны
    («Коннор, какая погода?»), и она ответит голосом, даже при выключенном
@@ -11,7 +18,11 @@ import { getApiToken, getApiUrl, isLinkMode, isNativeApp } from './api';
    Только для подключения по адресу и токену (как фоновые уведомления):
    по каналу VPC Link служба ходить не умеет. Выбор «включено» хранит сама
    служба (его можно снять и кнопкой «Выключить» в шторке); при запуске
-   приложения ей передаются свежие адрес и токен. */
+   приложения ей передаются свежие адрес и токен.
+
+   Ядро не ответило — служба спрашивает приложение (initWakeOffline): ответ
+   без ядра, как на реплику в чате без связи (облако или модель телефона),
+   реплика и ответ — в переписке на телефоне; служба озвучивает ответ. */
 
 export type WakeState =
   | 'off'
@@ -48,6 +59,24 @@ interface WakeWordPlugin {
   configure(opts: { baseUrl: string; token: string }): Promise<void>;
   status(): Promise<WakeStatus>;
   openOverlaySettings(): Promise<void>;
+  offlineReply(opts: { id: string; text: string }): Promise<void>;
+  takePending(): Promise<{ items: PendingVoice[] }>;
+  addListener(event: 'offlineAsk', fn: (e: OfflineAsk) => void): Promise<PluginListenerHandle>;
+}
+
+// Голосом, а ядро не ответило: ответить без него
+interface OfflineAsk {
+  id: string;
+  persona: string;
+  message: string;
+  action?: PhoneActionReport; // команда телефону уже исполнена службой
+}
+
+// Услышано, пока окна приложения не было
+interface PendingVoice {
+  persona: string;
+  message: string;
+  ts: number;
 }
 
 const WakeWord = registerPlugin<WakeWordPlugin>('WakeWord');
@@ -103,4 +132,55 @@ export function syncWakeWord() {
 export function forgetWakeServer() {
   if (!isNativeApp()) return;
   void WakeWord.configure({ baseUrl: '', token: '' }).catch(() => {});
+}
+
+// История для ответа без ядра: хвост переписки из кита и переписка на телефоне
+function voiceHistory(persona: string): HistoryLine[] {
+  const kit = (getKit(persona)?.history ?? []).map((h) => ({
+    role: h.role === 'user' ? ('user' as const) : ('assistant' as const),
+    text: h.text,
+    ts: h.ts,
+  }));
+  return [...kit, ...offlineMessages(persona).map((m) => ({ role: m.role, text: m.text, ts: m.ts }))];
+}
+
+/** Ответ без ядра на реплику голосом; '' — ответить некому (реплика ждёт в очереди). */
+async function voiceReply(persona: string, text: string, action?: PhoneActionReport): Promise<string> {
+  try {
+    const res = await replyOffline(persona, text, voiceHistory(persona), { actionNote: action ? actionNote(action) : undefined });
+    return res.text;
+  } catch {
+    return '';
+  }
+}
+
+/** Запуск приложения: служба голоса без ядра спрашивает ответ у него, а
+ * услышанное, пока окна не было, — в переписку: ядро на связи — ответит
+ * оно (чат отправит очередь), нет — ответ без него. */
+export function initWakeOffline() {
+  if (!isNativeApp()) return;
+  void WakeWord.addListener('offlineAsk', (e) => {
+    void voiceReply(e.persona, e.message, e.action).then((text) => WakeWord.offlineReply({ id: e.id, text }));
+  }).catch(() => {});
+  // При запуске и каждый раз, когда приложение снова на экране
+  const takePending = () => void WakeWord.takePending()
+    .then(async ({ items }) => {
+      if (!items.length) return;
+      const core = await api.health({ signal: AbortSignal.timeout(5000) }).then(
+        () => true,
+        () => false,
+      );
+      const byPersona = new Map<string, PendingVoice[]>();
+      for (const it of items) byPersona.set(it.persona, [...(byPersona.get(it.persona) ?? []), it]);
+      for (const [persona, list] of byPersona) {
+        const last = core ? null : list[list.length - 1];
+        for (const it of list) if (it !== last) addOfflineMessage(persona, { role: 'user', text: it.message, source: 'queued' });
+        if (last) await voiceReply(persona, last.message);
+      }
+    })
+    .catch(() => {});
+  takePending();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') takePending();
+  });
 }

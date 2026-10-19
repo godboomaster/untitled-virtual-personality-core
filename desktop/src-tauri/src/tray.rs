@@ -1,11 +1,14 @@
-//! Значок в трее: цвет — состояние бота, меню — основные действия.
+//! Значок в трее: цвет — состояние бота, меню — основные действия и
+//! «Слушать имя» (голосовая активация микрофоном панели, voice.rs).
 
 use crate::panel;
 use crate::state::AppState;
 use crate::supervisor::{Phase, Summary};
 use crate::texts::{t, Lang};
+use crate::voice::VoiceSummary;
+use std::sync::Mutex;
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
 
@@ -16,6 +19,9 @@ pub struct Tray {
     icon: TrayIcon<Wry>,
     toggle: MenuItem<Wry>,
     restart: MenuItem<Wry>,
+    wake: CheckMenuItem<Wry>,
+    /// Последнее от монитора бота и от слушателя — подсказка значка из обоих
+    last: Mutex<(Option<Summary>, Option<VoiceSummary>)>,
     lang: Lang,
 }
 
@@ -29,6 +35,7 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
     let web = item("open_web", "open_web")?;
     let toggle = item("toggle", "start")?;
     let restart = item("restart", "restart")?;
+    let wake = CheckMenuItem::with_id(app, "wake", t(lang, "wake"), true, false, None::<&str>)?;
     let quit = item("quit", "quit")?;
     let menu = Menu::with_items(
         app,
@@ -38,6 +45,8 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
             &PredefinedMenuItem::separator(app)?,
             &toggle,
             &restart,
+            &PredefinedMenuItem::separator(app)?,
+            &wake,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -60,6 +69,10 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
                 }
             }
             "restart" => app.state::<AppState>().sup.restart(),
+            "wake" => {
+                let st = app.state::<AppState>();
+                let _ = st.voice.set_enabled(!st.sup.wake_enabled());
+            }
             "quit" => crate::commands::quit_app(app.clone()),
             _ => {}
         })
@@ -75,25 +88,44 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
             }
         })
         .build(app)?;
-    Ok(Tray { icon, toggle, restart, lang })
+    Ok(Tray { icon, toggle, restart, wake, last: Mutex::new((None, None)), lang })
 }
 
 impl Tray {
     pub fn refresh(&self, s: Summary) {
         let _ = self.icon.set_icon(Some(status_icon(s.phase, s.responding)));
-        let key = match s.phase {
-            Phase::Running | Phase::External if !s.responding => "tip_no_answer",
-            Phase::Running => "tip_running",
-            Phase::External => "tip_external",
-            Phase::Starting => "tip_starting",
-            Phase::Stopping => "tip_stopping",
-            Phase::Stopped => "tip_stopped",
-            Phase::Crashed => "tip_crashed",
-        };
-        let _ = self.icon.set_tooltip(Some(format!("Virtual Persona — {}", t(self.lang, key))));
         let _ = self.toggle.set_text(t(self.lang, if is_up(s.phase) { "stop" } else { "start" }));
         let _ = self.toggle.set_enabled(!s.busy);
         let _ = self.restart.set_enabled(!s.busy);
+        self.last.lock().unwrap_or_else(|e| e.into_inner()).0 = Some(s);
+        self.update_tooltip();
+    }
+
+    pub fn refresh_voice(&self, v: VoiceSummary) {
+        let _ = self.wake.set_checked(v.enabled);
+        self.last.lock().unwrap_or_else(|e| e.into_inner()).1 = Some(v);
+        self.update_tooltip();
+    }
+
+    fn update_tooltip(&self) {
+        let (s, v) = *self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let key = match s {
+            Some(s) => match s.phase {
+                Phase::Running | Phase::External if !s.responding => "tip_no_answer",
+                Phase::Running => "tip_running",
+                Phase::External => "tip_external",
+                Phase::Starting => "tip_starting",
+                Phase::Stopping => "tip_stopping",
+                Phase::Stopped => "tip_stopped",
+                Phase::Crashed => "tip_crashed",
+            },
+            None => "tip_stopped",
+        };
+        let mut tip = format!("Virtual Persona — {}", t(self.lang, key));
+        if v.is_some_and(|v| v.listening) {
+            tip = format!("{tip} · {}", t(self.lang, "tip_wake"));
+        }
+        let _ = self.icon.set_tooltip(Some(tip));
     }
 }
 

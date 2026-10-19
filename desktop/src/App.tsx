@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { api, isUp, type LogEntry, type Phase, type Snapshot } from './api';
+import { api, isUp, type LogEntry, type Phase, type Snapshot, type VoiceView } from './api';
 import { duration, t, type TextKey } from './i18n';
 import SettingsView from './SettingsView';
 
@@ -276,6 +276,80 @@ function BrowserBlock({ snap }: { snap: Snapshot }) {
   );
 }
 
+function voiceTone(v: VoiceView): Tone {
+  const st = v.status;
+  if (!v.enabled) return 'off';
+  if (v.phase === 'failed' || st?.issue === 'mic_access' || st?.issue === 'modules') return 'bad';
+  if (v.phase === 'running' && st?.running && st.stage === 'listening' && !st.held && st.names.length > 0) return 'ok';
+  return 'warn';
+}
+
+function voiceText(v: VoiceView): string {
+  const st = v.status;
+  if (!v.enabled) return v.phase === 'stopping' ? t('voiceStopping') : t('voiceOff');
+  if (v.phase === 'failed') return t('voiceFailed');
+  if (v.phase === 'stopping') return t('voiceStopping');
+  if (!st || v.phase === 'starting') return t('voiceStarting');
+  if (st.stage === 'model') return t('voiceModel');
+  if (st.stage === 'names') return t('voiceNames');
+  if (st.issue === 'mic_access') return t('voiceNoAccess');
+  if (st.stage === 'mic') return t('voiceMicRetry');
+  if (st.held) return t('voiceHeld');
+  if (st.state === 'busy') return t('voiceBusy', { persona: st.persona ?? '' });
+  if (st.state === 'await') return t('voiceAwait', { persona: st.persona ?? '' });
+  if (st.names.length === 0) return t('voiceNoNames');
+  return t('voiceListening');
+}
+
+/* Под строкой состояния: на какие имена отзывается и что услышал последним */
+function voiceDetails(v: VoiceView): string | null {
+  const st = v.status;
+  if (!v.enabled || !st || v.phase === 'failed') return null;
+  if (st.stage === 'names') return t('voiceNamesHint');
+  if (st.names.length === 0) return st.stage === 'listening' ? t('voiceNoNamesHint') : null;
+  const parts = [t('voiceNames2', { names: st.names.join(', ') })];
+  if (st.lastHeard) parts.push(t('voiceLastHeard', { text: st.lastHeard }));
+  return parts.join(' · ');
+}
+
+/* Ошибка слушателя: доступ к микрофону и модули — своими словами панели,
+   остальное — как есть (выход процесса, сбой ответа бота) */
+function voiceError(v: VoiceView): string | null {
+  if (!v.enabled) return null;
+  const st = v.status;
+  if (st?.issue === 'mic_access') return t('voiceMicAccess');
+  if (st?.issue === 'modules') {
+    const cmd = st.error.split(': ').slice(1).join(': ') || st.error;
+    return t('voiceModules', { cmd });
+  }
+  return v.error ?? (st?.error || null);
+}
+
+function VoiceBlock({ snap, onAction }: { snap: Snapshot; onAction: (f: () => Promise<void>) => void }) {
+  const v = snap.voice;
+  const error = voiceError(v);
+  const busy = v.phase === 'stopping';
+  const details = voiceDetails(v);
+  const toggle = () =>
+    onAction(async () => {
+      await api.setWake(!v.enabled);
+    });
+  return (
+    <section className="block">
+      <h2>{t('voice')}</h2>
+      <Row label={t('voiceMic')} tone={voiceTone(v)} value={voiceText(v)} />
+      {details && <div className="hint">{details}</div>}
+      {error && <div className="error">{error}</div>}
+      <div className="btn-row">
+        <button className={v.enabled ? 'btn' : 'btn btn-primary'} disabled={busy} onClick={toggle}>
+          {v.enabled ? t('voiceTurnOff') : t('voiceOn')}
+        </button>
+      </div>
+      {!v.enabled && <div className="hint">{t('voiceHint')}</div>}
+    </section>
+  );
+}
+
 function levelClass(level: string): string {
   if (level === 'ERROR' || level === 'CRITICAL') return 'lv-error';
   if (level === 'WARNING') return 'lv-warn';
@@ -355,6 +429,7 @@ export default function App() {
       {snap && (
         <div className="scroll">
           <Services snap={snap} />
+          <VoiceBlock snap={snap} onAction={onAction} />
           <QuarantineBlock snap={snap} />
           <BrowserBlock snap={snap} />
           <LogBlock snap={snap} logs={logs} />

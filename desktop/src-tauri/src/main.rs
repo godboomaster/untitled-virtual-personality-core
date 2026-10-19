@@ -1,6 +1,7 @@
 //! Панель Virtual Persona: значок в трее и окно-панель. Запускает бэкенд
 //! бота (python -m app.main api) и веб-интерфейс (vite из web/), следит за
-//! ними и показывает состояние браузеров бота, Ollama и памяти.
+//! ними и показывает состояние браузеров бота, Ollama и памяти. Слушает
+//! имя персоны своим микрофоном (голосовая активация, voice.rs).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -14,6 +15,7 @@ mod state;
 mod supervisor;
 mod texts;
 mod tray;
+mod voice;
 
 use state::AppState;
 use std::sync::{Arc, Mutex};
@@ -40,15 +42,21 @@ fn main() {
             let cfg = config::load(&config_path);
             let start_now = cfg.start_on_launch;
             let sup = supervisor::Supervisor::new(cfg, config_path, fallback_logs, lang);
+            let voice = voice::Voice::new(sup.clone(), lang);
             app.manage(AppState {
                 sup: sup.clone(),
+                voice: voice.clone(),
                 sys: Arc::new(Mutex::new(sysinfo::System::new())),
                 hidden_at: Arc::new(Mutex::new(None)),
                 lang,
             });
 
-            let tray = tray::build(app.handle(), lang)?;
+            let tray = Arc::new(tray::build(app.handle(), lang)?);
+            let t2 = tray.clone();
             sup.spawn_monitor(move |summary| tray.refresh(summary));
+            // Слушание имени — с запуском панели, если включено (не ждёт бота:
+            // имена слушатель возьмёт, когда ядро ответит)
+            voice.spawn_monitor(move |v| t2.refresh_voice(v));
             if start_now {
                 sup.start();
             }
@@ -78,6 +86,7 @@ fn main() {
             commands::save_settings,
             commands::detect_python,
             commands::set_autostart,
+            commands::set_wake,
             commands::hide_panel,
             commands::quit,
         ])
