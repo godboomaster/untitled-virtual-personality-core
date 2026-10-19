@@ -224,7 +224,7 @@ const collapseTask = (task: string | null) => (task ?? '').replace(/\s+/g, ' ').
 
 /** Обращения к персоне в начале фразы («Коннор, напомни…») — срезать из задачи. */
 function names(kit: OfflineKit): string[] {
-  return [...new Set([kit.name, kit.persona, 'коннор', 'жабка', 'arrodes', 'connor', 'арродес'].filter(Boolean).map((n) => n.toLowerCase()))];
+  return [...new Set([kit.name, kit.persona, ...(kit.names ?? [])].filter(Boolean).map((n) => n.toLowerCase()))];
 }
 
 const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;

@@ -17,10 +17,10 @@ function rx(src: string, flags = 'iu'): RegExp {
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// Имена бота для обрезки обращения в начале фразы — как _DEFAULT_TRIGGER_NAMES
-const DEFAULT_TRIGGER_NAMES = ['коннор', 'жабка', 'arrodes', 'connor', 'арродес'];
+// Обращение в начале фразы срезается по именам персоны (names); их нет — (?!), не срезается
 
-const namesAlt = (names?: string[]) => (names?.length ? names : DEFAULT_TRIGGER_NAMES).map(esc).join('|');
+const namesAlt = (names?: string[]) =>
+  [...new Set((names ?? []).filter(Boolean))].sort((a, b) => b.length - a.length).map(esc).join('|') || '(?!)';
 
 const RU_WORD_NUMBERS: Record<string, number> = {
   ноль: 0, одну: 1, один: 1, одно: 1, две: 2, два: 2,

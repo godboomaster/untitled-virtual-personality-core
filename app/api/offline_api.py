@@ -128,6 +128,13 @@ def _persona_name(bot, persona_id: str) -> str:
     return str(data.get("name") or persona_id)
 
 
+def _address_names(bot) -> list[str]:
+    try:
+        return bot._reminder_names()
+    except Exception:
+        return []  # заготовка бота без имён — телефон возьмёт имя и id персоны
+
+
 def build_kit(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
     """Персона-кит для ответов без ноутбука (секретов в нём нет)."""
     key = bot.stm_key(chat_id, user_id)
@@ -212,6 +219,8 @@ def build_kit(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
         "version": KIT_VERSION,
         "persona": persona_id,
         "name": _persona_name(bot, persona_id),
+        # Обращения к персоне — срезать из текста напоминания на телефоне
+        "names": _address_names(bot),
         "generated_at": time.time(),
         # Целиком — для облачной модели; части — чтобы телефон собрал
         # короче для своей модели (меньше фактов — быстрее первое слово)

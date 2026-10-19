@@ -40,16 +40,15 @@ logger = logging.getLogger(__name__)
 _DEFERRED = "deferred"
 _CANCELLED = "cancelled"
 
-# Имена бота для обрезки обращения в начале фразы («коннор, напомни…»).
-# Если персона не передала свои trigger_words — используем этот список
-# (текущее поведение до введения персон-специфичных имён).
-_DEFAULT_TRIGGER_NAMES = ("коннор", "жабка", "arrodes", "connor", "арродес")
+# Обращение в начале фразы («коннор, напомни…») срезается по именам
+# персоны (trigger_words, id и имя — бот передаёт свои).
 
 
 def _trigger_names_alt(trigger_words: Optional[List[str]]) -> str:
-    # Имена для regex-альтернации |, экранированные под re.
-    names = trigger_words if trigger_words else _DEFAULT_TRIGGER_NAMES
-    return "|".join(re.escape(w) for w in names)
+    # Имена для regex-альтернации |, экранированные под re; длинные — первыми.
+    # Имён нет — (?!): обращение не срезается
+    names = sorted({w for w in trigger_words or () if w}, key=len, reverse=True)
+    return "|".join(re.escape(w) for w in names) or "(?!)"
 
 
 # ─── Парсинг запроса ──────────────────────────────────────

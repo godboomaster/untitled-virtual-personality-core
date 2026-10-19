@@ -384,6 +384,7 @@ export interface OfflineKitResponse {
   version: number;
   persona: string;
   name: string;
+  names?: string[]; // обращения к персоне (trigger_words, id, имя) — срезать из напоминания
   generated_at: number;
   system: string; // целиком — для облачной модели
   // short — краткое описание для модели телефона (пусто — ещё не составлено),

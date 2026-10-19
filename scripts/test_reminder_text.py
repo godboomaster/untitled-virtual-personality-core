@@ -60,6 +60,10 @@ def make_bot():
         get_chat_topic=lambda c: None,
     )
     bot._postpone_handled_context = MethodType(BotInstance._postpone_handled_context, bot)
+    # Имена персоны для разбора («Коннор, напомни…») — как у бота
+    bot.trigger_words = {"коннор", "connor"}
+    bot._address_names = MethodType(BotInstance._address_names, bot)
+    bot._reminder_names = MethodType(BotInstance._reminder_names, bot)
     return bot
 
 

@@ -1237,6 +1237,11 @@ class BotInstance:
             ddg_search=lambda q: self._search_web(q, *search_args[1:],
                                                   fetch_pages=False))
 
+    def _reminder_names(self) -> list:
+        # Обращения к персоне для разбора напоминаний и дел: «Лира, напомни…»
+        # — без имени в тексте напоминания
+        return sorted({str(n).strip().lower() for n in self._address_names() if str(n).strip()})
+
     def _address_names(self) -> set:
         # Как к персоне обращаются: trigger_words + id + имя из YAML.
         # getattr — бот мог быть собран без __init__ (тестовые заготовки)
@@ -4747,7 +4752,7 @@ class BotInstance:
                     todo_seen = self.todo_manager.get_tasks(chat_id)
                     todo_context = self.todo_manager.get_list(chat_id) or "The todo list is empty."
                 elif "todo_add" in _fired_intents:
-                    extracted_task = extract_task(user_input)
+                    extracted_task = extract_task(user_input, self._reminder_names())
                     if extracted_task:
                         extracted_task = self._reformulate_task(extracted_task)
                     todo_seen = self.todo_manager.get_tasks(chat_id)
@@ -5252,8 +5257,8 @@ class BotInstance:
         # бралось из неё, а текст — старый
         fresh_full = False
         if pending_task and ("напом" in low or re.search(r"\bremind", low)):
-            _rec = parse_recurring(user_input)
-            _parsed = parse_reminder(user_input)
+            _rec = parse_recurring(user_input, self._reminder_names())
+            _parsed = parse_reminder(user_input, self._reminder_names())
             fresh_full = bool((_rec and _rec[0]) or (_parsed and _parsed[0]))
 
         # Ответ на «какое именно напоминание отменить?»
@@ -5313,9 +5318,9 @@ class BotInstance:
                 p_rel = bool(shift.get("relative_to_trigger"))
             if p_delay is None and p_abs is None:
                 # Ответ вида «через 10 минут» / «в 18:00» / голое «18:30»
-                parsed_shift = parse_reminder("напомни " + user_input)
+                parsed_shift = parse_reminder("напомни " + user_input, self._reminder_names())
                 if not parsed_shift:
-                    parsed_shift = parse_reminder("напомни в " + user_input)
+                    parsed_shift = parse_reminder("напомни в " + user_input, self._reminder_names())
                 if parsed_shift:
                     _, p_delay = parsed_shift
                 else:
@@ -5394,7 +5399,7 @@ class BotInstance:
                 return reminder_context, True
             # Пытаемся вытащить время из ответа пользователя.
             # Сначала — повторяющееся расписание («каждый день в 12»).
-            rec_pending = parse_recurring("напомни " + user_input)
+            rec_pending = parse_recurring("напомни " + user_input, self._reminder_names())
             rem_delay = None
             if rec_pending:
                 rec_task, rec_schedule = rec_pending
@@ -5415,11 +5420,11 @@ class BotInstance:
                 is_reminder_request = True
                 parsed_pending = None
             else:
-                parsed_pending = parse_reminder("напомни " + user_input)
+                parsed_pending = parse_reminder("напомни " + user_input, self._reminder_names())
                 if not parsed_pending:
                     # Голый час («8», «18:30») — тот же фолбэк с предлогом,
                     # что и в ветке переноса напоминания
-                    parsed_pending = parse_reminder("напомни в " + user_input)
+                    parsed_pending = parse_reminder("напомни в " + user_input, self._reminder_names())
             if not is_reminder_request and parsed_pending:
                 _, rem_delay = parsed_pending
             if rem_delay is None and not is_reminder_request:
@@ -5493,7 +5498,7 @@ class BotInstance:
                     user_id=user_id,
                 )
             # Сначала — повторяющееся расписание («каждый день в 9», «по пятницам в 18:00»)
-            rec = parse_recurring(user_input) if not postpone else None
+            rec = parse_recurring(user_input, self._reminder_names()) if not postpone else None
             if rec:
                 rem_task, rec_schedule = rec
                 if rem_task:
@@ -5510,7 +5515,7 @@ class BotInstance:
                     f"The reminder is already scheduled — just confirm this in your own style, briefly."
                 )
             elif not postpone:
-                parsed = parse_reminder(user_input)
+                parsed = parse_reminder(user_input, self._reminder_names())
                 logger.info(f"[Reminder] parse_reminder({user_input[:60]!r}) -> {parsed}")
                 if parsed:
                     rem_task, rem_delay = parsed
@@ -6922,7 +6927,7 @@ class BotInstance:
             if not args:
                 return "Использование: /remind <что напомнить> [через N ...]"
             # Повторяющееся расписание («каждый день в 9», «по пятницам в 18»)
-            rec = parse_recurring("напомни " + args)
+            rec = parse_recurring("напомни " + args, self._reminder_names())
             if rec:
                 rem_task, rec_schedule = rec
                 if rem_task:
@@ -6935,7 +6940,7 @@ class BotInstance:
                 )
                 task_display = f" «{rem_task}»" if rem_task else ""
                 return f"Хорошо, буду напоминать{task_display} — {format_schedule(rec_schedule, 'ru')}."
-            parsed = parse_reminder("напомни " + args)
+            parsed = parse_reminder("напомни " + args, self._reminder_names())
             if parsed:
                 rem_task, rem_delay = parsed
                 if rem_task:
