@@ -318,6 +318,65 @@ def test_addressee():
     os.environ.pop("HIST_SPECIAL_ID", None)
 
 
+def test_web_modes():
+    section("6. Веб-режим: смертный зеркала, адресат по чату, режимы персоны")
+    os.environ["HIST_SPECIAL_ID"] = "777"
+    from app.core.persona import PersonaLayer, addressee_note, persona_prompt
+    p = _persona()
+    p.web_single_user = True
+    check("веб: собеседник по умолчанию (web_user, пусто) — особый",
+          p.special_user("web_user") is not None and p.special_user("") is not None)
+    check("веб: id особого — особый, смертный зеркала (mirror_user) — обычный",
+          p.special_user("777") is not None and p.special_user("mirror_user") is None)
+    sys_ = p.prepare_messages("hi", user_id="mirror_user", user_name="Смертный")[0]["content"]
+    check("веб: смертному — заметка обычного", "regular user" in sys_ and "your special user." not in sys_)
+    p.speaker_of = {"arrodes_mirror_master": "777", "arrodes_mirror": "mirror_user"}.get
+    check("веб: инициатива в чат Мастера — нота особому (по тому, кто писал в чат)",
+          "WHO RECEIVES THIS MESSAGE" in addressee_note(p, "arrodes_mirror_master"))
+    check("веб: в чат смертного — без ноты", addressee_note(p, "arrodes_mirror") == "")
+    p.web_single_user = False
+    check("не веб: адресат — сам чат, кто писал — не смотрим",
+          addressee_note(p, "arrodes_mirror_master") == "")
+
+    tmp = Path(tempfile.mkdtemp(prefix="persona_modes_"))
+    (tmp / "hp.yaml").write_text("system_prompt: ОБЩИЙ\nspecial_users:\n- id: ${HIST_SPECIAL_ID}\n"
+                                 "  aliases: [Клейн]\n", encoding="utf-8")
+    (tmp / "hp_modes").mkdir()
+    (tmp / "hp_modes" / "master.yaml").write_text("system_prompt: МАСТЕРУ\nshort_prompt: КОРОТКО МАСТЕРУ\n",
+                                                  encoding="utf-8")
+    (tmp / "hp_modes" / "mortal.yaml").write_text("system_prompt: СМЕРТНОМУ\n", encoding="utf-8")
+    find = lambda n: tmp / f"{n}.yaml" if (tmp / f"{n}.yaml").exists() else None
+    with mock.patch("app.core.persona.persona_dirs", lambda: [tmp]), \
+            mock.patch("app.core.persona.find_persona_file", find), \
+            mock.patch("app.api.runtime.persona_dirs", lambda: [tmp]):
+        hp = PersonaLayer("hp")
+        hp.web_single_user = True
+        check("режимы прочитаны из hp_modes/", set(hp.modes) == {"master", "mortal"})
+        sys_m = hp.prepare_messages("hi", user_id="777")[0]["content"]
+        sys_r = hp.prepare_messages("hi", user_id="mirror_user")[0]["content"]
+        check("ответ: Мастеру — его файл, смертному — свой",
+              sys_m.startswith("МАСТЕРУ") and sys_r.startswith("СМЕРТНОМУ") and "ОБЩИЙ" not in sys_m + sys_r)
+        hp.speaker_of = {"chat_m": "777"}.get
+        check("сообщение в чат Мастера — промпт его режима, в чужой — смертного",
+              persona_prompt(hp, "chat_m") == "МАСТЕРУ" and persona_prompt(hp, "chat_x") == "СМЕРТНОМУ")
+        check("заглушка персоны без режимов — общий промпт",
+              persona_prompt(SimpleNamespace(system_prompt="X"), "chat_m") == "X")
+        from app.api.runtime import list_personas
+        check("папка режимов — не персона", list_personas() == ["hp"])
+        from app.features import short_prompt
+        bot = SimpleNamespace(persona=hp, context="persona_modes_ctx")
+        check("краткое описание Мастеру — из поля short_prompt его файла",
+              short_prompt.get_short_prompt(bot, start=False, mode="master")["text"] == "КОРОТКО МАСТЕРУ")
+        st = short_prompt.get_short_prompt(bot, start=False, mode="mortal")
+        check("смертному — по характеру его режима", st["chars"] == len("СМЕРТНОМУ") and not st["text"])
+        (tmp / "hp_modes" / "mortal.yaml").unlink()
+        hp2 = PersonaLayer("hp")
+        hp2.web_single_user = True
+        check("файла режима нет — общий промпт",
+              hp2.prompt_for(user_id="mirror_user") == "ОБЩИЙ" and hp2.prompt_for(user_id="777") == "МАСТЕРУ")
+    os.environ.pop("HIST_SPECIAL_ID", None)
+
+
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="hist_identity_"))
     os.environ["VPC_DATA_DIR"] = str(tmp)
@@ -326,6 +385,7 @@ def main():
     test_tg_commands()
     test_identity_note()
     test_addressee()
+    test_web_modes()
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0
 

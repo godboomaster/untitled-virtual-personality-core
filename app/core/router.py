@@ -310,7 +310,7 @@ class ModelRouter:
                 local = get_local_router()
             except Exception:
                 local = None
-            if local and local.is_available():
+            if local and (local.is_available() or local.answers_on_phone()):
                 self.active_provider = "local"
                 self._last_provider = "local"
                 self._last_local_model = local.model

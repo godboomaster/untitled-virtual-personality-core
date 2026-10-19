@@ -813,6 +813,23 @@ export const api = {
   getLocalStatus: () =>
     request<LocalStatus>('/api/providers/local/status'),
 
+  // Gemma телефона (app/core/phone_llm): долгий опрос задачи и её ответ
+  phoneLlmNext: (q: { worker: string; wait: number; backend: string; loaded: boolean; name: string }, signal: AbortSignal) =>
+    request<{ job: PhoneLlmJob | null; enabled: boolean }>(
+      `/api/phone-llm/next?worker=${encodeURIComponent(q.worker)}&wait=${q.wait}` +
+        `&backend=${encodeURIComponent(q.backend)}&loaded=${q.loaded}&name=${encodeURIComponent(q.name)}`,
+      { signal },
+    ),
+
+  phoneLlmResult: (r: { worker: string; id: string; text?: string; error?: string; backend?: string; ms?: number; release?: boolean }) =>
+    request<{ ok: boolean }>('/api/phone-llm/result', { method: 'POST', body: JSON.stringify(r) }),
+
+  setGemmaDevice: (device: GemmaDevice) =>
+    request<{ ok: boolean; device: GemmaDevice; phone: PhoneGemmaStatus }>('/api/providers/local/device', {
+      method: 'PUT',
+      body: JSON.stringify({ device }),
+    }),
+
   // Веб-чаты как провайдеры без API-ключей: список сайтов в порядке
   // перебора (ключи из webchat_options), [] — выключить
   setWebchat: (sites: string[]) =>
@@ -1094,6 +1111,36 @@ export interface ProviderInfo {
   model: string;
   active: boolean;
   local: boolean;
+  device?: GemmaDevice; // строка Ollama: где работает Gemma
+  phone?: PhoneGemmaStatus; // строка Ollama: телефон с Gemma
+}
+
+// Где работает Gemma локальных задач: Ollama на ноутбуке или приложение на телефоне
+export type GemmaDevice = 'pc' | 'phone';
+
+export interface PhoneGemmaStatus {
+  device: GemmaDevice;
+  online: boolean; // телефон опрашивает ядро
+  worker: {
+    name: string;
+    backend: string; // 'gpu' | 'cpu' | '' (модель ещё не загружалась)
+    loaded: boolean;
+    seen_sec: number;
+    online: boolean;
+  } | null; // телефон ещё ни разу не приходил
+  pending: number;
+}
+
+// Задача Gemma телефона: прогрев (только загрузить модель) или служебный вызов
+export interface PhoneLlmJob {
+  id: string;
+  kind: 'chat' | 'warm';
+  system?: string;
+  history?: { role: 'user' | 'assistant'; content: string }[];
+  text?: string;
+  max_tokens?: number;
+  temperature?: number;
+  task?: string;
 }
 
 // Свежая проверка локальной Ollama (GET /api/providers/local/status)
@@ -1103,7 +1150,9 @@ export interface LocalStatus {
   model: string; // настроенная модель (OLLAMA_MODEL)
   model_present: boolean; // установлена ли она
   models: string[]; // что установлено
-  available: boolean; // server && model_present
+  available: boolean; // server && model_present; Gemma на телефоне — телефон на связи
+  device?: GemmaDevice;
+  phone?: PhoneGemmaStatus;
 }
 
 // Служебная задача персоны и её текущий (resolved) движок

@@ -736,15 +736,16 @@ class PrivateRouter:
                      max_tokens: int = 100, top_p: float = 0.9,
                      timeout: float = 60.0, **_kw) -> Optional[str]:
         try:
-            from app.core.local_router import get_local_router
+            from app.core.local_router import PRIVATE_TASK, get_local_router
             local = get_local_router()
             base = getattr(local, "_base", local)
-            backend, _sites = base._resolve_task(None, None)
-            if backend != "ollama" or not local.is_available():
+            backend, _sites = base._resolve_task(PRIVATE_TASK, None)
+            # PRIVATE_TASK — Ollama компьютера и при Gemma на телефоне
+            if backend != "ollama" or not local.is_available(task=PRIVATE_TASK):
                 return None
             return local.get_response(messages, temperature=temperature,
                                       max_tokens=max_tokens, top_p=top_p,
-                                      timeout=timeout)
+                                      timeout=timeout, task=PRIVATE_TASK)
         except Exception as e:
             logger.debug(f"[CCPrivacy] локальная модель недоступна: {e}")
             return None

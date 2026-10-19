@@ -13,7 +13,7 @@ export interface ChatMsg {
 }
 
 export interface ModelStatus {
-  downloaded: boolean;
+  downloaded: boolean; // считать есть чем: своя модель или соседнего приложения
   size: number;
   partial: number; // байт недокачанного файла
   downloading: boolean;
@@ -23,6 +23,12 @@ export interface ModelStatus {
   backend: string | null; // gpu | cpu — на чём загружена
   unmetered: boolean; // сеть сейчас безлимитная (Wi-Fi)
   freeBytes: number;
+  // Модель одна на два приложения (ядра и Арродеса, PhoneGemmaPeer.java):
+  // own — своя, peer — модель соседа (его пакет в peer), он и считает
+  via?: 'own' | 'peer' | null;
+  peer?: string | null;
+  own?: boolean; // своя модель скачана
+  peerReason?: string | null; // почему не сосед: no_model | unreachable | not_installed | …
 }
 
 // Модель векторов (поиск по смыслу): файлы в dir, считает их WebView (embed.ts)

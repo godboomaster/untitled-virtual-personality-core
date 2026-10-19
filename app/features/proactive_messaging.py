@@ -37,7 +37,7 @@ from app.core.language import (
     detect_dialogue_language, detect_language, initiative_language_note, language_name,
     user_language_line)
 from app.core.paths import data_dir
-from app.core.persona import addressee_note
+from app.core.persona import addressee_note, persona_prompt
 from app.core.presence import web_presence
 from app.core.retention import CHAT_RETENTION_DAYS, RetentionTimer, prune_stale
 from app.features.chat_dossier import ChatDossier
@@ -875,8 +875,8 @@ class ProactiveMessaging:
             if not context_parts:
                 return None
 
-            persona_prompt = (self.persona.system_prompt.strip()
-                              + addressee_note(self.persona, chat_id))
+            persona_text = (persona_prompt(self.persona, chat_id).strip()
+                            + addressee_note(self.persona, chat_id))
 
             # Язык рефлексии: явный детект по репликам пользователя из STM
             # (в контексте могут быть блоки на другом языке — не даём им
@@ -890,7 +890,7 @@ class ProactiveMessaging:
                 lang_rule = user_language_line(None) + " "
 
             system_prompt = (
-                f"{persona_prompt}\n\n"
+                f"{persona_text}\n\n"
                 f"---\n"
                 f"You are writing a short thought (1-2 sentences) in first person. "
                 f"This is your personal reflection, not a question to the user. "
@@ -952,10 +952,11 @@ class ProactiveMessaging:
         # Контекст для саморефлексии: системный промпт персоны, self_memory, досье чата
         parts = []
 
-        # Системный промпт персоны (полностью — характер, стиль речи, детали)
-        persona_prompt = self.persona.system_prompt.strip()
-        if persona_prompt:
-            parts.append(persona_prompt)
+        # Системный промпт персоны (полностью — характер, стиль речи, детали;
+        # режим собеседника чата, если у персоны он есть)
+        persona_text = persona_prompt(self.persona, chat_id).strip()
+        if persona_text:
+            parts.append(persona_text)
 
         # Self-memory (эпизодическая память бота)
         if self.self_memory:
@@ -1363,8 +1364,8 @@ class ProactiveMessaging:
             type_desc = INITIATIVE_TYPE_DESCRIPTIONS.get(initiative_type, "")
             type_instruction = f"\nType of this initiative: {initiative_type.value}. {type_desc}\n"
 
-        persona_prompt = (self.persona.system_prompt.strip()
-                          + addressee_note(self.persona, chat_id))
+        persona_text = (persona_prompt(self.persona, chat_id).strip()
+                        + addressee_note(self.persona, chat_id))
 
         # Язык инициативы: явный детект по репликам пользователя — надёжнее,
         # чем просить модель угадать его по контексту (в контексте могут быть
@@ -1379,7 +1380,7 @@ class ProactiveMessaging:
             rule_lang = f"7. {user_language_line(None)}\n"
 
         system_prompt = (
-            f"{persona_prompt}\n\n"
+            f"{persona_text}\n\n"
             f"---\n"
             f"You are analyzing your memory and deciding whether to message the user first.\n\n"
             f"This is your INNER SELF-REFLECTION. You are thinking to yourself.\n"

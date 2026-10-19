@@ -75,6 +75,13 @@ import java.util.concurrent.TimeUnit;
  *
  * Адрес, токен и clientId лежат в SharedPreferences: служба переживает
  * выгрузку приложения и перезапуск системой (START_STICKY).
+ *
+ * Задачи Gemma ядра (app/core/phone_llm, «Ключи и модели» → Ollama → «на
+ * телефоне»): пока приложение свёрнуто или закрыто, служба вторым долгим
+ * опросом (GET /api/phone-llm/next) забирает служебный вызов, считает его
+ * Gemma телефона (PhoneGemma) и отвечает POST /api/phone-llm/result. Пока
+ * приложение на экране, задачи считает веб (offline/phoneGemma.ts). Модели
+ * нет или Gemma выбрана на ноутбуке — спрашивает раз в GEMMA_IDLE_MS.
  */
 public class BackgroundInboxService extends Service {
 
@@ -85,6 +92,8 @@ public class BackgroundInboxService extends Service {
     static final String KEY_BASE_URL = "baseUrl";
     static final String KEY_TOKEN = "token";
     static final String KEY_CLIENT_ID = "clientId";
+    // Чьи сообщения показывать: JSON-массив id персон, пустой — всех
+    static final String KEY_PERSONAS = "personas";
     // Курсор долгого опроса и id запуска ядра, к которому он относится
     static final String KEY_CURSOR = "cursor";
     static final String KEY_EPOCH = "epoch";
@@ -120,6 +129,15 @@ public class BackgroundInboxService extends Service {
     // Блокировка сна на разбор ответа или обычный опрос: соединение 10 с + чтение 15 с + запас
     private static final long WAKE_MS = 40_000;
 
+    // Задачи Gemma ядра: ожидание на ядре (там предел — MAX_WAIT_SEC в
+    // app/core/phone_llm.py), таймаут чтения с запасом, пауза без дела и после сбоя
+    private static final int GEMMA_WAIT_SEC = 25;
+    private static final int GEMMA_READ_TIMEOUT_MS = (GEMMA_WAIT_SEC + 15) * 1000;
+    private static final long GEMMA_IDLE_MS = 30_000;
+    private static final long GEMMA_RETRY_MS = 5_000;
+    // Блокировка сна на задачу: загрузка модели 10–20 с + ответ
+    private static final long GEMMA_WAKE_MS = 3 * 60_000L;
+
     // Приложение на экране (MainActivity onResume/onPause) — уведомлений не показываем
     static volatile boolean appVisible = false;
 
@@ -134,6 +152,12 @@ public class BackgroundInboxService extends Service {
     private ScheduledExecutorService executor;
     private ScheduledFuture<?> next;
     private PowerManager.WakeLock wakeLock;
+    // Задачи Gemma ядра — свой поток и своя блокировка сна: генерация не
+    // держит опрос сообщений, а опрос — генерацию
+    private ScheduledExecutorService gemmaExecutor;
+    private volatile boolean gemmaStarted = false;
+    private volatile HttpURLConnection gemmaCurrent;
+    private PowerManager.WakeLock gemmaWake;
     private AlarmManager alarms;
     private PendingIntent alarmIntent;
     private BroadcastReceiver alarmReceiver;
@@ -227,7 +251,10 @@ public class BackgroundInboxService extends Service {
         if (pm != null) {
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vpc:background-inbox");
             wakeLock.setReferenceCounted(false);
+            gemmaWake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vpc:phone-gemma");
+            gemmaWake.setReferenceCounted(false);
         }
+        gemmaExecutor = Executors.newSingleThreadScheduledExecutor();
         // Уснувший телефон будит будильник. Рассылка — приёмнику, а не
         // запуск службы: пока идёт onReceive, AlarmManager держит процессор,
         // и мы успеваем взять свою блокировку
@@ -329,6 +356,12 @@ public class BackgroundInboxService extends Service {
             backoffMs = POLL_MS;
             schedule(0);
         });
+        if (!gemmaStarted) {
+            gemmaStarted = true;
+            gemmaExecutor.execute(this::gemmaLoop);
+        } else {
+            abortGemma(); // новые адрес и токен — со следующего опроса
+        }
         return START_STICKY;
     }
 
@@ -370,8 +403,15 @@ public class BackgroundInboxService extends Service {
             }
         }
         if (executor != null) executor.shutdownNow();
+        if (gemmaExecutor != null) gemmaExecutor.shutdownNow();
         abortCurrent();
+        abortGemma();
         releaseAwake();
+        try {
+            if (gemmaWake != null && gemmaWake.isHeld()) gemmaWake.release();
+        } catch (RuntimeException ignored) {
+            // тайм-аут уже снял блокировку
+        }
         super.onDestroy();
     }
 
@@ -462,7 +502,7 @@ public class BackgroundInboxService extends Service {
                     String ref = m.optString("ref", "");
                     boolean shownByPhone = ReminderAlarms.wasFired(this, ref);
                     ReminderAlarms.markDelivered(this, ref);
-                    if (!appVisible && !shownByPhone) showMessage(m);
+                    if (!appVisible && !shownByPhone && personaShown(m)) showMessage(m);
                 }
                 // Курсор — после показа: если процесс умрёт посередине, ответ
                 // придёт ещё раз (повтор уведомления лучше пропажи)
@@ -486,6 +526,21 @@ public class BackgroundInboxService extends Service {
             }
         } finally {
             if (!keepAwake) releaseAwake();
+        }
+    }
+
+    /** Сообщение персоны, чьи сообщения это приложение показывает. */
+    private boolean personaShown(JSONObject m) {
+        try {
+            JSONArray only = new JSONArray(prefs(this).getString(KEY_PERSONAS, "[]"));
+            if (only.length() == 0) return true;
+            String persona = m.optString("persona", "");
+            for (int i = 0; i < only.length(); i++) {
+                if (persona.equals(only.optString(i))) return true;
+            }
+            return false;
+        } catch (Exception e) {
+            return true;
         }
     }
 
@@ -536,6 +591,154 @@ public class BackgroundInboxService extends Service {
         } finally {
             waiting = false;
             current = null;
+            c.disconnect();
+        }
+    }
+
+    // ── Задачи Gemma ядра ─────────────────────────────────────────────
+
+    private void abortGemma() {
+        HttpURLConnection c = gemmaCurrent;
+        if (c != null) new Thread(c::disconnect).start();
+    }
+
+    private void holdGemmaAwake(long ms) {
+        if (gemmaWake != null) gemmaWake.acquire(ms);
+    }
+
+    private void releaseGemmaAwake() {
+        try {
+            if (gemmaWake != null && gemmaWake.isHeld()) gemmaWake.release();
+        } catch (RuntimeException ignored) {
+            // тайм-аут уже снял блокировку
+        }
+    }
+
+    /** Поток задач Gemma: долгий опрос ядра, задача — модели телефона, ответ — ядру. */
+    private void gemmaLoop() {
+        long backoff = GEMMA_RETRY_MS;
+        while (!destroyed) {
+            try {
+                SharedPreferences p = prefs(this);
+                String url = p.getString(KEY_BASE_URL, "").replaceAll("/+$", "");
+                PhoneGemma gemma = PhoneGemma.get(this);
+                // На экране задачи считает веб; модели нет — считать нечем
+                if (appVisible || url.isEmpty() || !gemma.downloaded()) {
+                    Thread.sleep(GEMMA_IDLE_MS);
+                    continue;
+                }
+                String tok = p.getString(KEY_TOKEN, "");
+                String worker = gemmaWorkerId(p.getString(KEY_CLIENT_ID, ""));
+                JSONObject r = gemmaNext(url, tok, worker, gemma);
+                if (destroyed) return;
+                JSONObject job = r.optJSONObject("job");
+                if (job != null) {
+                    holdGemmaAwake(GEMMA_WAKE_MS);
+                    try {
+                        runGemmaJob(url, tok, worker, gemma, job);
+                    } finally {
+                        releaseGemmaAwake();
+                    }
+                } else if (!r.optBoolean("enabled", false)) {
+                    Thread.sleep(GEMMA_IDLE_MS);
+                }
+                backoff = GEMMA_RETRY_MS;
+            } catch (InterruptedException e) {
+                return; // служба остановлена
+            } catch (Exception e) {
+                if (destroyed) return;
+                Log.i(TAG, "задачи Gemma: " + e.getMessage());
+                try {
+                    // Ядро старой версии без маршрута — не дёргать его зря
+                    Thread.sleep("HTTP 404".equals(e.getMessage()) ? 10 * 60_000L : backoff);
+                } catch (InterruptedException ie) {
+                    return;
+                }
+                backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+            }
+        }
+    }
+
+    // id телефона на ядре: [A-Za-z0-9_-], не длиннее 64
+    private static String gemmaWorkerId(String clientId) {
+        String id = clientId.replaceAll("[^A-Za-z0-9_-]", "");
+        if (id.isEmpty()) id = "phone";
+        return (id.length() > 50 ? id.substring(0, 50) : id) + "-gemma-bg";
+    }
+
+    private JSONObject gemmaNext(String url, String tok, String worker, PhoneGemma gemma) throws Exception {
+        String backend = gemma.backend();
+        String q = "?worker=" + URLEncoder.encode(worker, "UTF-8")
+                + "&wait=" + GEMMA_WAIT_SEC
+                + "&backend=" + URLEncoder.encode(backend == null ? "" : backend, "UTF-8")
+                + "&loaded=" + gemma.loaded()
+                + "&name=" + URLEncoder.encode(Build.MODEL == null ? "Android" : Build.MODEL, "UTF-8");
+        HttpURLConnection c = (HttpURLConnection) new URL(url + "/api/phone-llm/next" + q).openConnection();
+        gemmaCurrent = c;
+        try {
+            c.setConnectTimeout(10_000);
+            c.setReadTimeout(GEMMA_READ_TIMEOUT_MS);
+            c.setUseCaches(false);
+            c.setRequestProperty("Accept", "application/json");
+            if (!tok.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + tok);
+            int code = c.getResponseCode();
+            if (code != 200) throw new Exception("HTTP " + code);
+            return new JSONObject(readAll(c.getInputStream()));
+        } finally {
+            gemmaCurrent = null;
+            c.disconnect();
+        }
+    }
+
+    private void runGemmaJob(String url, String tok, String worker, PhoneGemma gemma, JSONObject job) {
+        String id = job.optString("id", "");
+        if ("warm".equals(job.optString("kind"))) {
+            try {
+                gemma.warm(); // отчёта о прогреве ядро не ждёт
+            } catch (Exception e) {
+                Log.i(TAG, "Gemma не загрузилась: " + e.getMessage());
+            }
+            return;
+        }
+        long t0 = SystemClock.elapsedRealtime();
+        JSONObject res = new JSONObject();
+        try {
+            res.put("worker", worker);
+            res.put("id", id);
+            try {
+                JSONArray history = job.optJSONArray("history");
+                PhoneGemma.Reply r = gemma.chat(job.optString("system", ""),
+                        history == null ? new JSONArray() : history, job.optString("text", ""),
+                        job.optInt("max_tokens", 100), job.optDouble("temperature", 0.0), 0.95, null);
+                res.put("text", r.text);
+                res.put("backend", r.backend);
+            } catch (Exception e) {
+                String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                res.put("error", msg.length() > 500 ? msg.substring(0, 500) : msg);
+            }
+            res.put("ms", SystemClock.elapsedRealtime() - t0);
+            postGemmaResult(url, tok, res);
+        } catch (Exception e) {
+            Log.i(TAG, "ответ Gemma не отправлен: " + e.getMessage());
+        }
+    }
+
+    private void postGemmaResult(String url, String tok, JSONObject res) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url + "/api/phone-llm/result").openConnection();
+        try {
+            c.setConnectTimeout(10_000);
+            c.setReadTimeout(15_000);
+            c.setDoOutput(true);
+            c.setRequestMethod("POST");
+            c.setRequestProperty("Content-Type", "application/json");
+            if (!tok.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + tok);
+            try (java.io.OutputStream out = c.getOutputStream()) {
+                out.write(res.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            int code = c.getResponseCode();
+            if (code != 200) throw new Exception("HTTP " + code);
+            readAll(c.getInputStream());
+        } finally {
             c.disconnect();
         }
     }

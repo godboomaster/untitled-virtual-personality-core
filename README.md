@@ -121,6 +121,7 @@ with a chosen and downloaded model. There are no default models — a human pick
 | `WEBCHAT_SITES` | web chats in order, e.g. `deepseek,qwen` |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | local model: address (`http://localhost:11434`) and model, e.g. `gemma4:e2b` |
 | `LOCAL_LLM_BACKEND` | who does the internal work (classification, extraction): `ollama` or `webchat` |
+| `LOCAL_LLM_DEVICE` | where the Ollama work runs: `pc` (default) or `phone` — the phone app's Gemma takes the reply-path tasks and the main reply when it falls back to the local model; background tasks, images and private pages stay on the computer's Ollama |
 | `LTM_MODEL_PROVIDER` | a separate provider for fact extraction; empty — the persona's chain |
 | `API_HOST`, `API_PORT` | backend address: `127.0.0.1:8000` |
 | `API_TOKEN` | API password; the web asks for it on sign-in. Empty — no password, but only for requests through `localhost` |
@@ -387,6 +388,7 @@ Without `features` a persona keeps conversation and memory. Top-level keys:
 | `settings` | `temperature`, `max_tokens`, `top_p`, `split_messages` (reply in several messages) |
 | `stm_size` | size of the recent message buffer; `STM_SIZE` from `.env.config` by default |
 | `special_users` | special people: `id` (`${VARIABLE}` works), `aliases`, `greeting`, `behavior` |
+| `short_prompt` | a short card for the phone's Gemma; without it the core writes one itself |
 | `intellect` | intelligence tier — see below |
 | `conversation_style` | how often a reply ends with a question — see below |
 | `llm` | the persona's models — see [Models](#models) |
@@ -394,6 +396,15 @@ Without `features` a persona keeps conversation and memory. Top-level keys:
 | `room` | things, a pet and places in the persona's room |
 | `start_greeting`, `pre_reply_text` | Telegram: the `/start` text (`{name}` — the person's name); a phrase before a long reply |
 | `max_docs`, `max_file_size_mb` | uploaded file limits: 3 documents, 10 MB |
+
+Modes by speaker — files next to the persona's YAML, in a `<persona>_modes/` folder:
+`master.yaml` for a special person (`special_users`), `mortal.yaml` for everyone else. Each has
+its own `system_prompt` (and optionally `short_prompt`) used instead of the common one — in
+replies, reminders, proactive and daily-rhythm messages and in the phone's replies without the
+core. No file
+for a mode — the common `system_prompt`. On the web the default speaker (`web_user`, the
+core's app) is the special person; an explicit other `user_id` is matched against
+`special_users`.
 
 Modules in `features`:
 
@@ -810,6 +821,7 @@ descriptions are in Swagger: `/docs`.
 | POST | `/api/chat/clear` | erase the persona's memory (a copy is kept for 7 days) |
 | GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative; "typing" and messages from other devices the persona is answering now (`pending`) |
 | GET | `/api/changes` | which personas changed (generation, history, background message); with `since`, `epoch` and `wait` it waits for a change — the web then polls their inbox at once |
+| GET | `/api/phone-llm/next` | the phone waits for a Gemma job (`LOCAL_LLM_DEVICE=phone`); the answer goes back via `POST /api/phone-llm/result` |
 | GET | `/api/inbox` | new background messages of all personas — for the app's notification service; with `wait` it waits up to `wait` seconds for a message |
 | GET | `/api/personas/{p}/state` | the persona's state and its life feed |
 | GET | `/api/providers` | providers, keys, the active one |

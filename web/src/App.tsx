@@ -25,6 +25,7 @@ import type { AppTheme } from './useAppTheme';
 import { BACK_MENU, useBackHandler } from './backStack';
 import { syncSystemBars } from './nativeBars';
 import { listenBgNotificationTaps, syncBgInbox } from './bgInbox';
+import { usePhoneGemma } from './offline/phoneGemma';
 import { syncWakeWord } from './wakeWord';
 import { useOfflineSync } from './offline/state';
 
@@ -54,6 +55,8 @@ export default function App() {
   useInboxPolling(apiOnline, personas);
   // Телефон: ноутбук снова на связи — переписка без него уходит на него
   useOfflineSync();
+  // Телефон: Gemma считает служебные задачи ядра, если её выбрали на телефоне
+  usePhoneGemma();
   // Присутствие (гейт фона) репортит экран чата — там известно, ЧЕЙ чат
   // открыт; ключ отметки — (персона, чат), см. presence.ts
   const { unread } = useInbox();

@@ -279,13 +279,17 @@ def run_api():
     # Запускает FastAPI-сервер для веб-фронта и десктоп-приложения.
     import uvicorn
     from app.api import inbox
+    from app.core import phone_llm
     host = os.getenv("API_HOST", "127.0.0.1")
     port = int(os.getenv("API_PORT", "8000"))
     # Server вместо uvicorn.run — ради should_exit: при остановке uvicorn
     # ждёт незавершённые запросы, и долгий опрос фоновой службы телефона
-    # (GET /api/inbox?wait=…) держал бы Ctrl+C до конца ожидания
+    # (GET /api/inbox?wait=…, GET /api/phone-llm/next?wait=…) держал бы
+    # Ctrl+C до конца ожидания
     server = uvicorn.Server(uvicorn.Config("app.api.server:app", host=host, port=port))
     inbox.set_stop_check(lambda: server.should_exit)
+    phone_llm.set_stop_check(lambda: server.should_exit)
+    phone_llm.serve()
     # Голосовая активация («Коннор, …») — WAKE_LISTEN=1: микрофон компьютера
     # слушается в фоне, просьбы идут в это же API (app/voice/wake_listener)
     from app.voice import wake_listener

@@ -19,17 +19,6 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import com.google.ai.edge.litertlm.Backend;
-import com.google.ai.edge.litertlm.Content;
-import com.google.ai.edge.litertlm.Contents;
-import com.google.ai.edge.litertlm.Conversation;
-import com.google.ai.edge.litertlm.ConversationConfig;
-import com.google.ai.edge.litertlm.Engine;
-import com.google.ai.edge.litertlm.EngineConfig;
-import com.google.ai.edge.litertlm.Message;
-import com.google.ai.edge.litertlm.MessageCallback;
-import com.google.ai.edge.litertlm.SamplerConfig;
-import com.google.ai.edge.litertlm.ThinkingConfig;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -46,14 +35,8 @@ import java.net.URL;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -72,7 +55,10 @@ import javax.crypto.spec.GCMParameterSpec;
  * Телефон: Gemma 4 E2B (LiteRT-LM, файл .litertlm ~2,6 ГБ). Загрузка с
  * докачкой (по умолчанию только по безлимитной сети), генерация с потоковой
  * выдачей (события localToken), прерывание, выгрузка из памяти после простоя.
- * Сначала видеоядро, не вышло — процессор.
+ * Сначала видеоядро, не вышло — процессор. Сама модель — PhoneGemma, одна на
+ * процесс: её же считает фоновая служба (задачи Gemma ядра). И одна на два
+ * приложения: модель есть у соседа (приложение ядра ↔ Арродес) — считает
+ * он, modelStatus говорит via: "peer" (PhoneGemmaPeer).
  *
  * JS: setProviders({persona, providers}), providersInfo({persona}) →
  * {names}, clearProviders({persona?}), cloudChat({persona, messages,
@@ -101,33 +87,7 @@ public class OfflineLlmPlugin extends Plugin {
     private static final String PREFS = "vpc_offline";
     private static final String KS_ALIAS = "vpc_offline_secrets";
     private static final String PROV_PREFIX = "prov:";
-    // Видеоядро на этом телефоне не годится (не загрузилось или не считает) — сразу процессор
-    private static final String KEY_GPU_BAD = "gpu_bad";
-
-    static final String MODEL_URL =
-            "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm";
-    private static final String MODEL_FILE = "gemma-4-E2B-it.litertlm";
-    // Начало любого файла .litertlm: недокачанный или чужой файл не берём
-    private static final byte[] MODEL_MAGIC = "LITERTLM".getBytes(StandardCharsets.US_ASCII);
-    // Простоя столько — модель выгружается (≈1,7 ГБ памяти на процессоре)
-    private static final long IDLE_UNLOAD_MS = 5 * 60_000L;
-    private static final int MAX_CONTEXT_TOKENS = 4096;
-    // Ответ модели телефона дольше — прерывается; после «стоп» ждём не дольше
-    private static final long LOCAL_TIMEOUT_MS = 4 * 60_000L;
-    private static final long CANCEL_GRACE_MS = 5_000L;
-    // На видеоядре за столько нет первого слова — видеоядро зависло (на
-    // эмуляторе без OpenCL оно уходит в медленную эмуляцию): дальше процессор
-    private static final long GPU_FIRST_TOKEN_MS = 60_000L;
-
     private final ExecutorService io = Executors.newCachedThreadPool();
-    // Модель — строго по одному: загрузка, генерация, выгрузка не пересекаются
-    private final ScheduledExecutorService llm = Executors.newSingleThreadScheduledExecutor();
-
-    private volatile Engine engine;
-    private volatile String engineBackend;
-    private volatile Conversation current;
-    private volatile long cancelledAt = 0;
-    private ScheduledFuture<?> idleUnload;
 
     private volatile boolean downloading = false;
     private volatile boolean cancelDownload = false;
@@ -322,31 +282,15 @@ public class OfflineLlmPlugin extends Plugin {
     // ── Модель на телефоне: файл ────────────────────────────────────────
 
     private File modelDir() {
-        File base = getContext().getExternalFilesDir(null);
-        if (base == null) base = getContext().getFilesDir();
-        File dir = new File(base, "models");
-        //noinspection ResultOfMethodCallIgnored
-        dir.mkdirs();
-        return dir;
+        return PhoneGemma.modelDir(getContext());
     }
 
     private File modelFile() {
-        return new File(modelDir(), MODEL_FILE);
+        return PhoneGemma.modelFile(getContext());
     }
 
     private static boolean hasModelMagic(File f) {
-        byte[] head = new byte[MODEL_MAGIC.length];
-        try (InputStream in = new java.io.FileInputStream(f)) {
-            int n = 0;
-            while (n < head.length) {
-                int r = in.read(head, n, head.length - n);
-                if (r < 0) return false;
-                n += r;
-            }
-            return java.util.Arrays.equals(head, MODEL_MAGIC);
-        } catch (IOException e) {
-            return false;
-        }
+        return PhoneGemma.hasModelMagic(f);
     }
 
     private boolean unmetered() {
@@ -362,27 +306,36 @@ public class OfflineLlmPlugin extends Plugin {
         }
     }
 
+    /** Модель — своя или соседнего приложения (PhoneGemma.status): downloaded — считать есть чем;
+     * via "own" | "peer" | null, peer — пакет, чья модель считает, own — своя скачана,
+     * peerReason — почему не сосед. Соседа спрашивают по связи — не в потоке плагинов. */
     @PluginMethod
     public void modelStatus(PluginCall call) {
-        File f = modelFile();
-        File part = new File(modelDir(), MODEL_FILE + ".part");
-        JSObject ret = new JSObject();
-        ret.put("downloaded", f.exists() && hasModelMagic(f));
-        ret.put("size", f.exists() ? f.length() : 0);
-        ret.put("partial", part.exists() ? part.length() : 0);
-        ret.put("downloading", downloading);
-        ret.put("bytes", downloadBytes);
-        ret.put("total", downloadTotal);
-        ret.put("loaded", engine != null);
-        ret.put("backend", engineBackend);
-        ret.put("unmetered", unmetered());
-        ret.put("freeBytes", modelDir().getUsableSpace());
-        call.resolve(ret);
+        io.execute(() -> {
+            File part = new File(modelDir(), PhoneGemma.MODEL_FILE + ".part");
+            PhoneGemma.Status s = gemma().status();
+            JSObject ret = new JSObject();
+            ret.put("downloaded", s.available);
+            ret.put("size", s.size);
+            ret.put("partial", part.exists() ? part.length() : 0);
+            ret.put("downloading", downloading);
+            ret.put("bytes", downloadBytes);
+            ret.put("total", downloadTotal);
+            ret.put("loaded", s.loaded);
+            ret.put("backend", s.backend);
+            ret.put("via", s.via != null ? s.via : JSONObject.NULL);
+            ret.put("peer", s.peer != null ? s.peer : JSONObject.NULL);
+            ret.put("own", s.own);
+            ret.put("peerReason", s.peerReason != null ? s.peerReason : JSONObject.NULL);
+            ret.put("unmetered", unmetered());
+            ret.put("freeBytes", modelDir().getUsableSpace());
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void downloadModel(PluginCall call) {
-        final String url = call.getString("url", MODEL_URL);
+        final String url = call.getString("url", PhoneGemma.MODEL_URL);
         boolean allowMetered = Boolean.TRUE.equals(call.getBoolean("allowMetered", false));
         if (downloading) {
             call.resolve();
@@ -411,7 +364,7 @@ public class OfflineLlmPlugin extends Plugin {
 
     /** Докачка в .part (Range), затем переименование: битого файла модели не бывает. */
     private void download(String url) throws Exception {
-        File part = new File(modelDir(), MODEL_FILE + ".part");
+        File part = new File(modelDir(), PhoneGemma.MODEL_FILE + ".part");
         ModelDownload.fetch(url, part, new ModelDownload.Progress() {
             long lastEvent = 0;
 
@@ -459,13 +412,12 @@ public class OfflineLlmPlugin extends Plugin {
     @PluginMethod
     public void deleteModel(PluginCall call) {
         cancelDownload = true;
-        llm.execute(() -> {
-            closeEngine();
-            prefs().edit().remove(KEY_GPU_BAD).apply(); // новая модель — попробовать видеоядро снова
-            //noinspection ResultOfMethodCallIgnored
-            modelFile().delete();
-            //noinspection ResultOfMethodCallIgnored
-            new File(modelDir(), MODEL_FILE + ".part").delete();
+        io.execute(() -> {
+            try {
+                gemma().deleteModel(); // и видеоядро новой модели — пробовать снова
+            } catch (Exception e) {
+                Log.w(TAG, "модель не удалилась", e);
+            }
             call.resolve();
         });
     }
@@ -630,199 +582,10 @@ public class OfflineLlmPlugin extends Plugin {
         });
     }
 
-    // ── Модель на телефоне: генерация ───────────────────────────────────
+    // ── Модель на телефоне: генерация (PhoneGemma — общая с фоновой службой) ──
 
-    private void closeEngine() {
-        Conversation conv = current;
-        current = null;
-        if (conv != null) {
-            try {
-                conv.close();
-            } catch (Exception ignored) {
-                // уже закрыт
-            }
-        }
-        Engine e = engine;
-        engine = null;
-        engineBackend = null;
-        if (e != null) {
-            try {
-                e.close();
-            } catch (Exception ex) {
-                Log.w(TAG, "модель не закрылась", ex);
-            }
-        }
-    }
-
-    /** Загрузить модель (в потоке llm): сначала видеоядро, не вышло — процессор. */
-    private Engine ensureEngine() throws Exception {
-        if (engine != null) return engine;
-        File f = modelFile();
-        if (!f.exists()) throw new IOException("model_missing");
-        if (!hasModelMagic(f)) {
-            // Испорченный файл — удалить, чтобы в настройках можно было скачать заново
-            //noinspection ResultOfMethodCallIgnored
-            f.delete();
-            throw new IOException("model_broken");
-        }
-        String cache = getContext().getCacheDir().getAbsolutePath();
-        if (!prefs().getBoolean(KEY_GPU_BAD, false) && !isEmulator()) {
-            try {
-                Engine e = new Engine(new EngineConfig(f.getAbsolutePath(), new Backend.GPU(), null, null,
-                        MAX_CONTEXT_TOKENS, null, cache));
-                e.initialize();
-                engine = e;
-                engineBackend = "gpu";
-                return e;
-            } catch (Throwable t) {
-                Log.i(TAG, "видеоядро не подошло, загружаю на процессоре: " + t);
-                prefs().edit().putBoolean(KEY_GPU_BAD, true).apply();
-            }
-        }
-        Engine e = new Engine(new EngineConfig(f.getAbsolutePath(), new Backend.CPU(), null, null,
-                MAX_CONTEXT_TOKENS, null, cache));
-        e.initialize();
-        engine = e;
-        engineBackend = "cpu";
-        return e;
-    }
-
-    /** Эмулятор: видеоядро там программное — модель на нём не считает. */
-    private static boolean isEmulator() {
-        String hw = Build.HARDWARE == null ? "" : Build.HARDWARE;
-        String fp = Build.FINGERPRINT == null ? "" : Build.FINGERPRINT;
-        return hw.contains("ranchu") || hw.contains("goldfish") || fp.startsWith("generic")
-                || fp.contains("emulator") || fp.contains("sdk_gphone");
-    }
-
-    private void scheduleIdleUnload() {
-        if (idleUnload != null) idleUnload.cancel(false);
-        idleUnload = llm.schedule(this::closeEngine, IDLE_UNLOAD_MS, TimeUnit.MILLISECONDS);
-    }
-
-    private static String textOf(Message m) {
-        StringBuilder sb = new StringBuilder();
-        if (m == null || m.getContents() == null) return "";
-        for (Content c : m.getContents().getContents()) {
-            if (c instanceof Content.Text) sb.append(((Content.Text) c).getText());
-        }
-        return sb.toString();
-    }
-
-    /** Один ответ модели (в потоке llm): поток слов — событиями localToken.
-     * Ошибка без единого слова — исключение; прерванный ответ — то, что успело. */
-    private String generate(Engine e, String requestId, String system, JSArray history, String text,
-                            int maxTokens, double temperature, double topP) throws Exception {
-        final boolean gpu = "gpu".equals(engineBackend);
-        boolean stalled = false;
-        List<Message> initial = new ArrayList<>();
-        for (int i = 0; i < history.length(); i++) {
-            JSONObject m = history.optJSONObject(i);
-            if (m == null) continue;
-            String body = m.optString("content", "");
-            if (body.isEmpty()) continue;
-            initial.add("user".equals(m.optString("role"))
-                    ? Message.Companion.user(body) : Message.Companion.model(body));
-        }
-        Conversation conv = e.createConversation(new ConversationConfig(
-                Contents.Companion.of(system), initial, Collections.emptyList(),
-                new SamplerConfig(40, topP, temperature, 0), false, Collections.emptyList(),
-                Collections.emptyMap(), null, false, maxTokens, new ThinkingConfig(false)));
-        current = conv;
-        try {
-            final StringBuilder out = new StringBuilder();
-            final Object done = new Object();
-            final Throwable[] failure = new Throwable[1];
-            final boolean[] finished = new boolean[1];
-            conv.sendMessageAsync(text, new MessageCallback() {
-                @Override
-                public void onMessage(Message message) {
-                    String chunk = textOf(message);
-                    if (chunk.isEmpty()) return;
-                    out.append(chunk);
-                    JSObject ev = new JSObject();
-                    ev.put("requestId", requestId);
-                    ev.put("text", chunk);
-                    notifyListeners("localToken", ev);
-                }
-
-                @Override
-                public void onDone() {
-                    synchronized (done) {
-                        finished[0] = true;
-                        done.notifyAll();
-                    }
-                }
-
-                @Override
-                public void onError(Throwable t) {
-                    synchronized (done) {
-                        failure[0] = t;
-                        finished[0] = true;
-                        done.notifyAll();
-                    }
-                }
-            }, Collections.emptyMap(), null, null, null, null, null, null);
-            // Обычно конец приходит в onDone/onError; страховка — если после
-            // прерывания или по таймауту библиотека промолчит, не висеть
-            final long started = System.currentTimeMillis();
-            long stalledAt = 0;
-            synchronized (done) {
-                while (!finished[0]) {
-                    done.wait(500);
-                    long now = System.currentTimeMillis();
-                    if (gpu && stalledAt == 0 && cancelledAt == 0 && out.length() == 0
-                            && now - started > GPU_FIRST_TOKEN_MS) {
-                        stalledAt = now;
-                        // Прерывание ждёт, пока видеоядро досчитает шаг, — не здесь
-                        inBackground(conv::cancelProcess);
-                    }
-                    if (stalledAt > 0 && now - stalledAt > CANCEL_GRACE_MS) break;
-                    if (now - started > LOCAL_TIMEOUT_MS && cancelledAt == 0) {
-                        cancelledAt = now;
-                        try {
-                            conv.cancelProcess();
-                        } catch (Exception ignored) {
-                            // уже закончил
-                        }
-                    }
-                    if (cancelledAt > 0 && now - cancelledAt > CANCEL_GRACE_MS) break;
-                }
-            }
-            if (stalledAt > 0 && out.length() == 0) {
-                stalled = true;
-                throw new IOException("gpu_stalled");
-            }
-            if (failure[0] != null && out.length() == 0) throw new IOException(String.valueOf(failure[0].getMessage()));
-            return out.toString();
-        } finally {
-            current = null;
-            if (stalled) {
-                inBackground(conv::close); // зависший диалог закрывается, когда отпустит
-            } else {
-                try {
-                    conv.close();
-                } catch (Exception ignored) {
-                    // уже закрыт
-                }
-            }
-        }
-    }
-
-    /** Действие с моделью, которое может надолго заблокироваться (прерывание
-     * или закрытие на зависшем видеоядре), — в отдельном потоке. */
-    private static void inBackground(ThrowingRunnable r) {
-        new Thread(() -> {
-            try {
-                r.run();
-            } catch (Throwable ignored) {
-                // уже закрыт/закончил
-            }
-        }, "vpc-llm-release").start();
-    }
-
-    private interface ThrowingRunnable {
-        void run() throws Exception;
+    private PhoneGemma gemma() {
+        return PhoneGemma.get(getContext());
     }
 
     @PluginMethod
@@ -834,61 +597,43 @@ public class OfflineLlmPlugin extends Plugin {
         final int maxTokens = call.getInt("maxTokens", 400);
         final double temperature = call.getDouble("temperature", 0.8);
         final double topP = call.getDouble("topP", 0.95);
-        llm.execute(() -> {
-            if (idleUnload != null) idleUnload.cancel(false);
-            cancelledAt = 0;
+        // Генерации идут по одной в потоке модели; здесь — только ждём ответ
+        io.execute(() -> {
             try {
-                String out;
-                try {
-                    out = generate(ensureEngine(), requestId, system, history, text, maxTokens, temperature, topP);
-                } catch (Throwable first) {
-                    String m = String.valueOf(first.getMessage());
-                    if (!"gpu".equals(engineBackend) || cancelledAt > 0
-                            || "model_missing".equals(m) || "model_broken".equals(m)) throw first;
-                    // На видеоядре модель загрузилась, но не считает (нет OpenCL
-                    // и т. п.): дальше — процессор, и телефон это запоминает
-                    Log.w(TAG, "видеоядро не считает, перехожу на процессор: " + first);
-                    prefs().edit().putBoolean(KEY_GPU_BAD, true).apply();
-                    // Модель на видеоядре может висеть в его шаге — закрыть её в фоне,
-                    // не дожидаясь, и загрузить на процессоре
-                    final Engine stuck = engine;
-                    engine = null;
-                    engineBackend = null;
-                    if (stuck != null) inBackground(stuck::close);
-                    out = generate(ensureEngine(), requestId, system, history, text, maxTokens, temperature, topP);
-                }
+                PhoneGemma.Reply r = gemma().chat(system, history, text, maxTokens, temperature, topP, chunk -> {
+                    JSObject ev = new JSObject();
+                    ev.put("requestId", requestId);
+                    ev.put("text", chunk);
+                    notifyListeners("localToken", ev);
+                });
                 JSObject ret = new JSObject();
-                ret.put("text", out);
-                ret.put("backend", engineBackend);
+                ret.put("text", r.text);
+                ret.put("backend", r.backend);
                 call.resolve(ret);
             } catch (Throwable t) {
                 String msg = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+                // peer_unavailable — модель в соседнем приложении, а оно не отозвалось
                 call.reject("Модель на телефоне не ответила: " + msg,
-                        "model_missing".equals(msg) || "model_broken".equals(msg) ? msg : "failed");
-            } finally {
-                scheduleIdleUnload();
+                        "model_missing".equals(msg) || "model_broken".equals(msg) ? msg
+                                : msg.startsWith("peer_unavailable") ? "peer_unavailable" : "failed");
             }
         });
     }
 
     @PluginMethod
     public void stopLocal(PluginCall call) {
-        Conversation conv = current;
-        if (conv != null) {
-            cancelledAt = System.currentTimeMillis();
-            try {
-                conv.cancelProcess();
-            } catch (Exception ignored) {
-                // уже закончил
-            }
-        }
+        gemma().stop();
         call.resolve();
     }
 
     @PluginMethod
     public void unloadModel(PluginCall call) {
-        llm.execute(() -> {
-            closeEngine();
+        io.execute(() -> {
+            try {
+                gemma().unload();
+            } catch (Exception e) {
+                Log.w(TAG, "модель не выгрузилась", e);
+            }
             call.resolve();
         });
     }
@@ -1073,6 +818,7 @@ public class OfflineLlmPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         cancelDownload = true;
-        llm.execute(this::closeEngine);
+        // Модель не выгружаем: её может считать фоновая служба (задачи Gemma
+        // ядра), а без дела она выгрузится сама после простоя (PhoneGemma)
     }
 }

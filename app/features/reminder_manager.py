@@ -25,7 +25,7 @@ from typing import Optional, List, Dict
 from app.core import timeutil
 from app.core.dialog_scope import scoped_by
 from app.core.paths import data_dir
-from app.core.persona import addressee_note
+from app.core.persona import addressee_note, persona_prompt
 from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import (detect_language, detect_dialogue_language, language_name,
                                persona_language, user_language_line)
@@ -2105,8 +2105,8 @@ class ReminderManager:
                                 user_id: str = None) -> Optional[str]:
         # Генерирует текст напоминания через LLM в характере персоны. Синхронный вызов.
         assert self._router and self._persona  # проверяется в _fire перед вызовом
-        persona_prompt = (self._persona.system_prompt.strip()
-                          + addressee_note(self._persona, chat_id, user_id))
+        persona_text = (persona_prompt(self._persona, chat_id, user_id).strip()
+                        + addressee_note(self._persona, chat_id, user_id))
         # Текущее mood/energy персоны: лёгкий фоновый контекст, не директива
         living_block = ""
         if self._living and chat_id:
@@ -2134,7 +2134,7 @@ class ReminderManager:
 
         messages = [
             {"role": "system", "content": (
-                f"{persona_prompt}\n\n"
+                f"{persona_text}\n\n"
                 "---\n"
                 "You are reminding the user about something at their request. "
                 "Write a short reminder (1-2 sentences) in your character. "

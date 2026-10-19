@@ -44,7 +44,7 @@ from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import user_language_line
 from app.core.paths import data_dir
 from app.core.persona import (ENV_RULE, SELF_MEMORY_RULE, STM_RELEVANT_HEAD, STM_RELEVANT_RULE,
-                              WEB_SOURCE_PRIORITY)
+                              WEB_SOURCE_PRIORITY, persona_prompt)
 from app.core.st_embedder import ST_MODEL_NAME
 from app.features import short_prompt
 
@@ -132,7 +132,13 @@ def build_kit(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
     """Персона-кит для ответов без ноутбука (секретов в нём нет)."""
     key = bot.stm_key(chat_id, user_id)
     persona = getattr(bot, "persona", None)
-    character = (getattr(persona, "system_prompt", "") or "").strip()
+    # Характер — режима собеседника (Великий Мастер / смертный), если у
+    # персоны есть файлы режимов, иначе общий
+    character = persona_prompt(persona, chat_id=chat_id, user_id=user_id).strip()
+    try:
+        mode = persona.mode_for(user_id=user_id, chat_id=chat_id) if persona is not None else None
+    except Exception:
+        mode = None
 
     try:
         facts = bot.memory.ltm.get_all_facts(user_id=user_id, chat_id=key)
@@ -169,6 +175,16 @@ def build_kit(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
         dossier = bot._get_dossier_context_line(chat_id, user_id) or ""
     except Exception as e:
         logger.debug(f"[Offline] {persona_id}: строка досье недоступна: {e}")
+    # Кто пишет — особый собеседник (тон, обращение, правила) или обычный, как в
+    # ответе ядра; без этого без ядра персона говорила бы с особым как со всеми.
+    # Вместе с досье: его берут и облако, и Gemma телефона
+    try:
+        who = (bot.persona._get_special_user_note(user_id) or "").strip()
+    except Exception as e:
+        who = ""
+        logger.debug(f"[Offline] {persona_id}: строка «кто пишет» недоступна: {e}")
+    if who:
+        dossier = f"{who}\n\n{dossier}" if dossier else who
     self_memory = ""
     if getattr(bot, "self_memory", None) is not None:
         try:
@@ -179,7 +195,7 @@ def build_kit(bot, persona_id: str, chat_id: str, user_id: str) -> dict:
     # Краткое описание для модели телефона; нет — начнёт составляться в фоне,
     # а телефон пока обойдётся началом полного характера
     try:
-        short = short_prompt.get_short_prompt(bot)
+        short = short_prompt.get_short_prompt(bot, mode=mode)
     except Exception as e:
         logger.warning(f"[Offline] {persona_id}: краткое описание недоступно: {e}")
         short = {"text": "", "source": "", "status": "failed", "at": 0, "error": str(e)[:200]}

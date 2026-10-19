@@ -109,6 +109,11 @@ import java.util.concurrent.TimeUnit;
  *
  * Связь — только по адресу и токену (как у фоновых уведомлений): канал VPC
  * Link живёт в вебе, а не в Java.
+ *
+ * Приложение одной персоны (Арродес) сужает службу через плагин: только её
+ * имена и её чат (KEY_ONLY_PERSONA, KEY_CHAT_ID…); пока окно на экране,
+ * вопрос задаёт оно само (KEY_APP_ASKS, WakeWordPlugin.EVENT_VOICE), а служба
+ * произносит ответ. Без этих настроек — как в приложении ядра.
  */
 public class WakeWordService extends Service {
 
@@ -124,6 +129,14 @@ public class WakeWordService extends Service {
     static final String KEY_PENDING = "pending";
     static final Object PENDING_LOCK = new Object();
     private static final int PENDING_MAX = 20;
+    // Приложение одной персоны (Арродес): только её имена, её чат; пока окно
+    // на экране, вопрос задаёт оно само (WakeWordPlugin.EVENT_VOICE). Пусто —
+    // все персоны и чат web_user, как у приложения ядра
+    static final String KEY_ONLY_PERSONA = "persona";
+    static final String KEY_CHAT_ID = "chatId";
+    static final String KEY_USER_ID = "userId";
+    static final String KEY_USER_NAME = "userName";
+    static final String KEY_APP_ASKS = "appAsks";
 
     // «Выключить» в шторке и выключение из приложения
     static final String ACTION_STOP = "io.vpcore.app.WAKE_STOP";
@@ -195,6 +208,11 @@ public class WakeWordService extends Service {
     // Настройки (меняются в onStartCommand)
     private volatile String baseUrl = "";
     private volatile String token = "";
+    private volatile String onlyPersona = "";
+    private volatile String chatId = "web_user";
+    private volatile String userId = "web_user";
+    private volatile String userName = "";
+    private volatile boolean appAsks = false;
 
     // Имена и горячие слова — снимки, заменяются целиком
     private volatile List<WakeMatch.Phrase> phrases = Collections.emptyList();
@@ -405,12 +423,20 @@ public class WakeWordService extends Service {
         }
         baseUrl = url.replaceAll("/+$", "");
         token = p.getString(KEY_TOKEN, "");
+        String only = p.getString(KEY_ONLY_PERSONA, "");
+        boolean refilter = !only.equals(onlyPersona);
+        onlyPersona = only;
+        chatId = orDefault(p.getString(KEY_CHAT_ID, ""), "web_user");
+        userId = orDefault(p.getString(KEY_USER_ID, ""), "web_user");
+        userName = p.getString(KEY_USER_NAME, "");
+        appAsks = p.getBoolean(KEY_APP_ASKS, false);
         running = true;
         lastError = null;
         if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
         boolean first = audioThread == null;
         if (first) setState("loading");
-        if (phrases.isEmpty()) applyPersonas(p.getString(KEY_PERSONAS, ""), false);
+        // Персона сменилась — имена из сохранённого списка заново, не дожидаясь ядра
+        if (phrases.isEmpty() || refilter) applyPersonas(p.getString(KEY_PERSONAS, ""), false);
         // Имена — сразу (новый адрес или токен), дальше раз в 10 минут; одна
         // цепочка обновлений, сколько бы раз службу ни перезапускали
         net.execute(() -> {
@@ -511,7 +537,7 @@ public class WakeWordService extends Service {
     private void applyPersonas(String json, boolean save) {
         if (json == null || json.isEmpty()) return;
         try {
-            JSONArray arr = new JSONArray(json);
+            JSONArray arr = ofPersona(new JSONArray(json), onlyPersona);
             List<WakeMatch.Phrase> list = WakeMatch.wakePhrases(arr);
             phrases = Collections.unmodifiableList(list);
             hotwords = WakeMatch.hotwords(list, HOTWORD_SCORE);
@@ -524,6 +550,21 @@ public class WakeWordService extends Service {
         } catch (Exception e) {
             Log.w(TAG, "список персон не разобран", e);
         }
+    }
+
+    // Приложение одной персоны (KEY_ONLY_PERSONA) — только она; пусто — все
+    private static JSONArray ofPersona(JSONArray all, String id) {
+        if (id == null || id.isEmpty()) return all;
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject p = all.optJSONObject(i);
+            if (p != null && id.equals(String.valueOf(p.opt("id")))) out.put(p);
+        }
+        return out;
+    }
+
+    private static String orDefault(String s, String fallback) {
+        return s == null || s.isEmpty() ? fallback : s;
     }
 
     // Имя персоны и её trigger_words — чтобы разбор команды срезал обращение
@@ -838,17 +879,32 @@ public class WakeWordService extends Service {
                 boolean followUp = false;
                 // Команда телефону — исполнена здесь (и без ядра), ядру только итог
                 JSONObject action = phoneAction(persona, message);
-                try {
+                // appAsks, окно на экране: вопрос задаёт приложение (Арродес — на
+                // своей странице, будто набранный), служба только произносит ответ
+                String fromApp = appAsks && BackgroundInboxService.appVisible
+                        ? WakeWordPlugin.askApp(WakeWordPlugin.EVENT_VOICE, persona, message, action,
+                                CHAT_READ_TIMEOUT_MS)
+                        : null;
+                if (fromApp != null && !fromApp.isEmpty()) {
+                    if (WakeWordPlugin.TIMEOUT.equals(fromApp)) {
+                        say = getString(R.string.wake_say_offline_slow);
+                    } else {
+                        say = WakeMatch.forSpeech(fromApp);
+                        followUp = say.endsWith("?");
+                    }
+                    Log.i(TAG, "← ответ приложения " + say.length() + " симв." + (followUp ? ", вопрос" : ""));
+                } else try {
                     JSONObject body = new JSONObject()
                             .put("persona", persona)
                             .put("message", message)
                             // Тот же чат, что у приложения: ответ виден и в ленте
-                            .put("user_id", "web_user")
-                            .put("chat_id", "web_user")
+                            .put("user_id", userId)
+                            .put("chat_id", chatId)
                             .put("client", "app")
                             // Голосом: ядро гасит ту же фразу, услышанную и
                             // компьютером, и телефоном (ответ — duplicate)
                             .put("voice", true);
+                    if (!userName.isEmpty()) body.put("user_name", userName);
                     if (action != null) body.put("phone_action", action);
                     JSONObject r = new JSONObject(httpPostJson(baseUrl + "/api/chat", body.toString()));
                     if (r.optBoolean("duplicate", false)) {

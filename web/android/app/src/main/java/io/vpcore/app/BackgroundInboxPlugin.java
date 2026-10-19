@@ -5,6 +5,7 @@ import android.os.Build;
 
 import androidx.core.app.NotificationManagerCompat;
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -19,7 +20,7 @@ import com.getcapacitor.annotation.PermissionCallback;
  * службу уведомлений (BackgroundInboxService) и узнаёт, по какому
  * уведомлению открыли приложение.
  *
- * JS: start({baseUrl, token, clientId}), stop(), status() →
+ * JS: start({baseUrl, token, clientId, personas?}), stop(), status() →
  * {running, lastOk, lastError}, requestNotificationPermission() →
  * {granted}, testNotification() → {shown, problem}, getLaunchPersona() →
  * {persona}; событие notificationTap {persona}.
@@ -81,6 +82,9 @@ public class BackgroundInboxPlugin extends Plugin {
         String baseUrl = call.getString("baseUrl", "");
         String token = call.getString("token", "");
         String clientId = call.getString("clientId", "");
+        // Чьи сообщения показывать (отдельное приложение персоны — только её);
+        // без списка — всех
+        JSArray personas = call.getArray("personas", new JSArray());
         if (baseUrl == null || !baseUrl.matches("(?i)^https?://.+")) {
             call.reject("baseUrl: нужен адрес http(s)://…");
             return;
@@ -94,6 +98,7 @@ public class BackgroundInboxPlugin extends Plugin {
                 .putString(BackgroundInboxService.KEY_BASE_URL, baseUrl)
                 .putString(BackgroundInboxService.KEY_TOKEN, token == null ? "" : token)
                 .putString(BackgroundInboxService.KEY_CLIENT_ID, clientId)
+                .putString(BackgroundInboxService.KEY_PERSONAS, personas.toString())
                 .apply();
         try {
             BackgroundInboxService.start(getContext());

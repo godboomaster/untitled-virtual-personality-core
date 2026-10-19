@@ -957,6 +957,9 @@ class BotInstance:
             context=context,
             main_router=self.router
         )
+        # Кому пишет персона, когда известен только чат (веб/API: чат — не
+        # собеседник) — app/core/persona.py: addressee_id
+        self.persona.speaker_of = self._chat_speaker
         # Секреты ввода и текст приватных страниц режима управления — в
         # историю маской (см. _cc_hist_install)
         self._cc_hist_install()
@@ -2649,6 +2652,18 @@ class BotInstance:
                 if gate is None:
                     gate = self.turn_gate = ChatTurnGate()
         return gate
+
+    def _chat_speaker(self, chat_id) -> Optional[str]:
+        """Кто последним писал в чат: sender_id реплики пользователя в STM;
+        None — не знаем."""
+        try:
+            messages = self.memory.stm.get_messages(chat_id=str(chat_id))
+        except Exception:
+            return None
+        for m in reversed(messages or []):
+            if m.get("role") == "user" and m.get("sender_id"):
+                return str(m["sender_id"])
+        return None
 
     @staticmethod
     def stm_key(chat_id, user_id) -> str:

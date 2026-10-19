@@ -496,6 +496,27 @@ def _all_archives(roots: list[Path]) -> set[Path]:
     return {p for r in roots for p in r.iterdir() if ".archived-" in p.name}
 
 
+def test_modes_dir(roots: list[Path]):
+    section("C2. папка режимов <id>_modes при смене id и удалении")
+    from app.api import settings_api as sa
+
+    pd = sa._PERSONAS_DIR
+    calendar = SimpleNamespace(list_entries=lambda: [], update_entry=lambda *a, **k: None)
+    (pd / "md_a.yaml").write_text("id: md_a\nname: M\nsystem_prompt: hi\n", encoding="utf-8")
+    (pd / "md_a_modes").mkdir()
+    (pd / "md_a_modes" / "master.yaml").write_text("system_prompt: master\n", encoding="utf-8")
+    with mock.patch("app.features.calendar_manager.get_calendar", lambda: calendar):
+        r = sa.rename_persona("md_a", "md_b")
+    check("смена id — режимы переехали под новый id",
+          r["ok"] and (pd / "md_b_modes" / "master.yaml").read_text(encoding="utf-8") == "system_prompt: master\n"
+          and not (pd / "md_a_modes").exists())
+    r = sa.delete_persona("md_b")
+    arch = sorted(pd.glob("md_b_modes.archived-*"))
+    check("удаление — режимы в архиве, новой персоне с тем же id не достанутся",
+          r["ok"] and not (pd / "md_b_modes").exists() and len(arch) == 1
+          and (arch[0] / "master.yaml").is_file())
+
+
 def test_api_prefix(roots: list[Path]):
     section("F. id с префиксом api_ — служебный (Telegram-папка api_X = веб-память X)")
     from app.api import settings_api as sa
@@ -698,6 +719,7 @@ def main():
         test_yaml_live(tmp)
         test_create_over_leftover(roots)
         test_rename_over_leftover(roots)
+        test_modes_dir(roots)
         test_api_prefix(roots)
         test_chroma_release(roots)
         test_endpoint(roots)

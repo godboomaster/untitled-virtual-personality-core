@@ -63,6 +63,8 @@ from app.api.schemas import (
     PersonaYamlUpdate,
     PresenceRequest,
     ProviderKeyRequest,
+    LocalDeviceRequest,
+    PhoneLlmResult,
     ProviderModelRequest,
     PersonaLocalTasksUpdate,
     ReminderAddRequest,
@@ -1234,7 +1236,7 @@ def _prepare_image_input(bot, message: str, image_b64: str,
             raise HTTPException(status_code=503, detail=str(e))
         return (f"{question}\n\n" if question else "") + screen_look.CAMERA_NOTE + desc
     ocr = bot.describe_image(image_bytes, question, lang)
-    if not ocr and getattr(bot, "_local_router", None) and bot._local_router.is_available():
+    if not ocr and getattr(bot, "_local_router", None) and bot._local_router.is_available(task="ocr"):
         ocr = bot._local_router.ocr_image(image_bytes, question, lang)
     if not ocr:
         raise HTTPException(status_code=503, detail="Ни одна vision-модель недоступна — не могу посмотреть картинку")
@@ -3039,6 +3041,45 @@ async def provider_test_webchat(req: WebchatRequest):
     # Долго (сайт может думать до ~90с) — в потоке, роутер не блокируем
     from app.api import settings_api
     return await asyncio.to_thread(settings_api.test_webchat, req.site)
+
+
+@app.put("/api/providers/local/device", dependencies=[Depends(require_auth)])
+async def provider_set_local_device(req: LocalDeviceRequest):
+    # Где работает Gemma локальных задач: на ноутбуке (Ollama) или на телефоне
+    from app.api import settings_api
+    result = await asyncio.to_thread(settings_api.set_local_device, req.device)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["detail"])
+    return result
+
+
+@app.get("/api/phone-llm/next", dependencies=[Depends(require_auth)])
+async def phone_llm_next(request: Request,
+                         worker: str = Query(..., min_length=1, max_length=64,
+                                             pattern=r"^[A-Za-z0-9_-]+$"),
+                         wait: float = Query(0, ge=0),
+                         backend: str | None = Query(None, max_length=16),
+                         loaded: bool | None = Query(None),
+                         name: str | None = Query(None, max_length=64)):
+    # Gemma на телефоне (app/core/phone_llm): приложение долгим опросом
+    # забирает служебную задачу, считает её своей моделью и отвечает
+    # POST /api/phone-llm/result. enabled: false — Gemma выбрана на ноутбуке,
+    # телефону ждать нечего (спросит реже), но на связи его видно в настройках
+    from app.core import phone_llm
+    job = await phone_llm.next_job(worker, wait,
+                                   {"backend": backend, "loaded": loaded, "name": name},
+                                   gone=request.is_disconnected)
+    return {"job": job, "enabled": phone_llm.device() == "phone"}
+
+
+@app.post("/api/phone-llm/result", dependencies=[Depends(require_auth)])
+async def phone_llm_result(req: PhoneLlmResult):
+    # ok: false — вызывающий не дождался, ответ выброшен
+    from app.core import phone_llm
+    if req.release:
+        return {"ok": phone_llm.release(req.worker, req.id)}
+    return {"ok": phone_llm.complete(req.worker, req.id, text=req.text, error=req.error,
+                                     backend=req.backend, ms=req.ms)}
 
 
 @app.get("/api/personas/{persona}/local-tasks", dependencies=[Depends(require_auth)])
