@@ -1175,7 +1175,7 @@ def create_handlers(bot: BotInstance) -> dict:
                     logger.error(f"[{persona_name}] describe_image: {e}", exc_info=True)
                     ocr_text = None
                 if not ocr_text:
-                    if not bot._local_router or not bot._local_router.is_available():
+                    if not bot._local_router or not bot._local_router.is_available(task="ocr"):
                         await update.message.reply_text(
                             "Сейчас не могу обработать изображение — ни одна vision-модель недоступна."
                         )

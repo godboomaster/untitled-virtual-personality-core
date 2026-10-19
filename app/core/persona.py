@@ -39,7 +39,7 @@ def addressee_note(persona, chat_id=None, user_id=None) -> str:
     get = getattr(persona, "special_user", None)
     if not callable(get):
         return ""
-    uid = user_id if user_id not in (None, "") else chat_id
+    uid = addressee_id(persona, chat_id, user_id)
     try:
         su = get(uid)
         who = persona._who_special(su) if isinstance(su, dict) else ""
@@ -51,6 +51,47 @@ def addressee_note(persona, chat_id=None, user_id=None) -> str:
             "Write to them exactly as your persona instructions say for the "
             "special user (tone, forms of address, rules), not as to a regular user.")
 
+
+def addressee_id(persona, chat_id=None, user_id=None):
+    """Кому пишет персона: user_id, иначе chat_id. В однопользовательском
+    веб-режиме чат — не собеседник (зеркало Арродеса: чат Великого Мастера и
+    чат смертного), там адресат — кто последним писал в этот чат (speaker_of
+    от BotInstance)."""
+    if user_id not in (None, ""):
+        return user_id
+    who = getattr(persona, "speaker_of", None)
+    if chat_id not in (None, "") and getattr(persona, "web_single_user", False) is True and callable(who):
+        try:
+            sid = who(chat_id)
+        except Exception:
+            sid = None
+        if sid:
+            return sid
+    return chat_id
+
+
+def persona_prompt(persona, chat_id=None, user_id=None) -> str:
+    """system_prompt персоны для этого собеседника: режим (master/mortal),
+    если у персоны есть его файл, иначе общий. Заглушки без prompt_for — общий."""
+    get = getattr(persona, "prompt_for", None)
+    if callable(get):
+        try:
+            return str(get(user_id=user_id, chat_id=chat_id) or "")
+        except Exception:
+            pass
+    return str(getattr(persona, "system_prompt", "") or "")
+
+
+# Собеседник веба по умолчанию: от него пишет приложение ядра
+WEB_DEFAULT_USER = "web_user"
+
+# Режимы персоны по собеседнику — файлы <персона>_modes/<режим>.yaml рядом с
+# YAML персоны (в любой папке персон, как она сама): master — особому
+# собеседнику (special_users), mortal — остальным. В файле свой
+# system_prompt (и, если надо, short_prompt — краткое описание для Gemma
+# телефона) вместо общего; файла режима нет — общий. Папка не YAML верхнего
+# уровня — в список персон не попадает
+PERSONA_MODES = ("master", "mortal")
 
 # Как часто заглядывать в YAML за свежей заморозкой (features.muted)
 _MUTED_RECHECK_SEC = 5.0
@@ -91,6 +132,21 @@ STM_RELEVANT_RULE = (
 )
 
 
+
+def special_entries(persona_data: Dict) -> List[Dict]:
+    """special_users YAML персоны с раскрытым id (${ENV_VAR}); записи без id
+    не действуют. Отдельно от Persona — её читают и настройки API."""
+    out = []
+    for su in (persona_data or {}).get("special_users") or []:
+        if not isinstance(su, dict):
+            continue
+        su_id = str(su.get("id", "") or "").strip()
+        if su_id.startswith("${") and su_id.endswith("}"):
+            su_id = os.getenv(su_id[2:-1], "").strip()
+        if su_id:
+            out.append(dict(su, id=su_id))
+    return out
+
 class PersonaLayer:
     def __init__(self, persona_name: str = "connor"):
         self.persona_name = persona_name
@@ -99,10 +155,14 @@ class PersonaLayer:
         self._muted_checked_at = float("-inf")
         self.persona_data = self._load_persona(persona_name)
         self.system_prompt = self.persona_data.get("system_prompt", "")
+        self.modes = self._load_modes(persona_name)
         self.settings = self.persona_data.get("settings", {})
-        # Однопользовательский режим (веб/API): единственный собеседник —
-        # это и есть особый пользователь/владелец (выставляет API-реестр)
+        # Однопользовательский режим (веб/API): собеседник по умолчанию
+        # (web_user) — особый пользователь/владелец (выставляет API-реестр)
         self.web_single_user = False
+        # chat_id → кто последним писал в чат (BotInstance, по STM): адресат
+        # сообщений, что персона пишет сама, когда известен только чат
+        self.speaker_of = None
 
     def get_settings(self) -> dict:
         # Значения по умолчанию, если не указаны в yaml
@@ -216,27 +276,54 @@ class PersonaLayer:
     # говорила с ним как с обычным
 
     def _special_entries(self) -> List[Dict]:
-        # special_users с раскрытым id (${ENV_VAR}); записи без id не действуют
-        out = []
-        for su in self.persona_data.get("special_users") or []:
-            if not isinstance(su, dict):
-                continue
-            su_id = str(su.get("id", "") or "").strip()
-            if su_id.startswith("${") and su_id.endswith("}"):
-                su_id = os.getenv(su_id[2:-1], "").strip()
-            if su_id:
-                out.append(dict(su, id=su_id))
-        return out
+        return special_entries(self.persona_data)
 
     def special_user(self, user_id) -> Optional[Dict]:
         """Запись special_users для user_id; None — обычный собеседник.
-        Однопользовательский веб-режим: единственный собеседник — он и есть
-        особый пользователь (первый из списка)."""
+        Однопользовательский веб-режим: собеседник по умолчанию (web_user —
+        приложение ядра) — особый пользователь (первый из списка); другой
+        явный id — по списку: зеркало Арродеса спрашивает от id Великого
+        Мастера или от смертного mirror_user, и смертный — обычный."""
         entries = self._special_entries()
-        if self.web_single_user:
-            return entries[0] if entries else None
         uid = str(user_id or "")
-        return next((e for e in entries if uid and e["id"] == uid), None)
+        match = next((e for e in entries if uid and e["id"] == uid), None)
+        if match or not self.web_single_user:
+            return match
+        return entries[0] if entries and uid in ("", WEB_DEFAULT_USER) else None
+
+    def _load_modes(self, name: str) -> Dict[str, Dict]:
+        """Файлы режимов <name>_modes/<режим>.yaml — каждый из первой папки
+        персон, где он есть. Без system_prompt — режима нет."""
+        modes: Dict[str, Dict] = {}
+        for mode in PERSONA_MODES:
+            for d in persona_dirs():
+                path = d / f"{name}_modes" / f"{mode}.yaml"
+                if not path.is_file():
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = yaml.safe_load(f)
+                except Exception as e:
+                    print(f"Режим «{mode}» персоны '{name}' не прочитан ({path}): {e}")
+                    break
+                if isinstance(data, dict) and str(data.get("system_prompt") or "").strip():
+                    modes[mode] = data
+                break
+        return modes
+
+    def mode_for(self, user_id=None, chat_id=None) -> Optional[str]:
+        """Режим собеседника (адресат — как addressee_note): master — особый
+        пользователь, mortal — остальные; None — файла этого режима у персоны
+        нет, говорит общим system_prompt."""
+        if not getattr(self, "modes", None):
+            return None
+        mode = "master" if self.special_user(addressee_id(self, chat_id, user_id)) else "mortal"
+        return mode if mode in self.modes else None
+
+    def prompt_for(self, user_id=None, chat_id=None) -> str:
+        """system_prompt для этого собеседника: файла его режима, иначе общий."""
+        mode = self.mode_for(user_id, chat_id)
+        return str(self.modes[mode]["system_prompt"]) if mode else self.system_prompt
 
     @staticmethod
     def _special_names(su: Dict) -> List[str]:
@@ -487,7 +574,7 @@ Use the information from the uploaded files in your answer if the user mentions 
         ) or ""
 
         messages = [
-            {"role": "system", "content": self.system_prompt + context_block + env_note + timestamps_note + todo_note + reminder_note + learning_note + inventory_note + inventory_events_note + computer_control_note + special_note + conv_style_note + language_note},
+            {"role": "system", "content": self.prompt_for(user_id) + context_block + env_note + timestamps_note + todo_note + reminder_note + learning_note + inventory_note + inventory_events_note + computer_control_note + special_note + conv_style_note + language_note},
         ]
 
         # Определяем, является ли текущее сообщение от именованного пользователя (групповой чат)
@@ -532,5 +619,6 @@ Use the information from the uploaded files in your answer if the user mentions 
         self.persona_name = persona_name
         self.persona_data = self._load_persona(persona_name)
         self.system_prompt = self.persona_data.get("system_prompt", "")
+        self.modes = self._load_modes(persona_name)
         self.settings = self.persona_data.get("settings", {})
         return True

@@ -287,8 +287,7 @@ let provFailed = false;
 let provInflight = false;
 const provListeners = new Set<() => void>();
 
-function ensureProvidersFetch() {
-  if (provCache !== null || provFailed || provInflight) return;
+function fetchProviders(keepOnFail: boolean) {
   provInflight = true;
   api
     .getProviders()
@@ -302,12 +301,25 @@ function ensureProvidersFetch() {
       saveProvidersCopy(provCache, provWebchat);
     })
     .catch(() => {
-      provFailed = true;
+      if (!keepOnFail) provFailed = true;
     })
     .finally(() => {
       provInflight = false;
       provListeners.forEach((l) => l());
     });
+}
+
+function ensureProvidersFetch() {
+  if (provCache !== null || provFailed || provInflight) return;
+  fetchProviders(false);
+}
+
+// Перечитать, не сбрасывая кеш: список не мигает, а сбой оставляет прежний.
+// Настройки открыты — место Gemma и телефон могли смениться с другого
+// устройства (веб на телефоне, «Дело» Арродеса)
+export function refreshProviders() {
+  if (provInflight) return;
+  fetchProviders(true);
 }
 
 // Сбросить кеш и перечитать (после добавления ключа/смены активного)

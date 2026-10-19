@@ -290,6 +290,28 @@ def main():
           "(None), не двигаем другое напоминание вместо него",
           result_missing is None)
 
+    # Обращение к персоне срезается по её именам, а не по чужим из кода
+    from app.features.reminder_manager import parse_reminder, parse_recurring
+    from app.features.todo_manager import extract_task
+    import types
+    from app.bot_instance import BotInstance
+    names = ["лира", "lira"]
+    r = parse_reminder("Лира, напомни завтра в 9 утра купить хлеб", names)
+    check("своё имя персоны — срезано из напоминания", r is not None and r[0] == "купить хлеб")
+    r = parse_reminder("Коннор, напомни завтра в 9 утра купить хлеб", names)
+    check("чужое имя (не этой персоны) — не срезается", r is not None and r[0].lower().startswith("коннор"))
+    r = parse_reminder("Лира, напомни завтра в 9 утра купить хлеб")
+    check("имён нет — текст как есть, без чужого списка", r is not None and r[0].startswith("Лира"))
+    rec = parse_recurring("лира, напоминай каждый день в 8 утра зарядка", names)
+    check("повтор: своё имя срезано", rec is not None and "лира" not in rec[0].lower())
+    check("дело: своё имя срезано", extract_task("Лира, запиши в дела купить молоко", names) == "купить молоко")
+    bot = BotInstance.__new__(BotInstance)
+    bot.trigger_words = {"лирочка"}
+    bot.persona_name = "lira"
+    bot.persona = types.SimpleNamespace(persona_data={"name": "Лира"})
+    check("бот передаёт trigger_words, id и имя персоны",
+          bot._reminder_names() == ["lira", "лира", "лирочка"])
+
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0
 

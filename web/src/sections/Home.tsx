@@ -198,7 +198,7 @@ export default function Home({ onNavigate }: HomeProps) {
   // Строки журнала системы для терминального блока
   const logLines: React.ReactNode[] = [
     <> &gt; CORE.BOOT &nbsp;v0.1.0 &nbsp;&nbsp;// <b>OK</b></>,
-    <> &gt; PERSONA.LOAD &nbsp;connor · arrodes · verso +3 &nbsp;&nbsp;// <b>{t('home.logPersonaLoad', { n: personas.length })}</b></>,
+    <> &gt; PERSONA.LOAD &nbsp;{personas.slice(0, 3).map((p) => p.id).join(' · ')}{personas.length > 3 ? ` +${personas.length - 3}` : ''} &nbsp;&nbsp;// <b>{t('home.logPersonaLoad', { n: personas.length })}</b></>,
     <> &gt; LTM.SYNC &nbsp;{t('home.logLtm', { n: totalLtmFacts })} &nbsp;&nbsp;// <b>OK</b></>,
     <> &gt; STM.BUFFER &nbsp;{t('home.logStm')} &nbsp;&nbsp;// <b>OK</b></>,
     <> &gt; DIARY.WRITE &nbsp;{t('home.logDiary')} &nbsp;&nbsp;// <b>OK</b></>,

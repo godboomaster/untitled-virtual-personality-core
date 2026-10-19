@@ -8,8 +8,8 @@ import { testNativeNotification } from '../bgInbox';
 import LinkSettings from '../link/LinkSettings';
 import OfflineCard from '../offline/OfflineCard';
 import PhoneCheckCard from '../phone/PhoneCheckCard';
-import type { LocalStatus, LocationConfig, TimezoneConfig } from '../api';
-import { refetchProviders, useApiOnline, useApiProviders, useApiWebchat } from '../apiData';
+import type { GemmaDevice, LocalStatus, LocationConfig, TimezoneConfig } from '../api';
+import { refetchProviders, refreshProviders, useApiOnline, useApiProviders, useApiWebchat } from '../apiData';
 import { useDevMode, setDevMode } from '../devMode';
 import {
   notificationsEnabled,
@@ -98,8 +98,38 @@ export default function ApiKeys() {
 
   // Единый вид списка: реальные провайдеры с бэкенда или моки
   const providers = apiOnline && apiProviders
-    ? apiProviders.map((p) => ({ id: p.id, name: p.name, keySet: p.key_set, local: p.local, keys: p.keys, model: p.model }))
-    : llmProviders.map((p) => ({ id: p.id, name: p.name, keySet: p.keySet, local: p.local, keys: [] as string[], model: p.model }));
+    ? apiProviders.map((p) => ({ id: p.id, name: p.name, keySet: p.key_set, local: p.local, keys: p.keys, model: p.model, device: p.device, phone: p.phone }))
+    : llmProviders.map((p) => ({ id: p.id, name: p.name, keySet: p.keySet, local: p.local, keys: [] as string[], model: p.model, device: undefined, phone: undefined }));
+
+  // Место Gemma — общее для всех устройств (хранится в ядре): сменили на
+  // другом — пока экран открыт, перечитываем; заодно свежий статус телефона
+  useEffect(() => {
+    if (!apiOnline) return;
+    const tick = () => {
+      if (document.visibilityState === 'visible') refreshProviders();
+    };
+    const timer = setInterval(tick, 15000);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [apiOnline]);
+
+  // Где работает Gemma локальных задач: Ollama на ноутбуке или телефон с
+  // моделью в приложении (ядро отдаёт ему задачи, пока он на связи)
+  const [gemmaSaving, setGemmaSaving] = useState(false);
+  const setGemmaDevice = (device: GemmaDevice) => {
+    setGemmaSaving(true);
+    api
+      .setGemmaDevice(device)
+      .then(() => {
+        setLocalStatus(null); // проверка относилась к прежнему месту
+        refetchProviders();
+      })
+      .catch(() => {})
+      .finally(() => setGemmaSaving(false));
+  };
 
   const save = (id: string) => {
     const value = (draft[id] ?? '').trim();
@@ -521,11 +551,13 @@ export default function ApiKeys() {
             // Строка локальной модели при живом бэкенде: статус доступности вместо формы ключа
             const localRow = p.local && apiOnline;
             const localAvailable = localStatus ? localStatus.available : p.keySet;
+            const onPhone = p.device === 'phone';
+            const phone = p.phone ?? localStatus?.phone; // список перечитывается — он свежее
             return (
               <li key={p.id} className="apikey-row">
                 <div className="apikey-main">
                   <span className="provider-name">{p.name}</span>
-                  {localRow && p.model && <span className="provider-model">{p.model}</span>}
+                  {localRow && p.model && !onPhone && <span className="provider-model">{p.model}</span>}
                   {p.local ? (
                     localRow ? (
                       <span className={`badge ${localAvailable ? 'badge--success' : 'badge--muted'}`}>
@@ -546,16 +578,33 @@ export default function ApiKeys() {
                   )}
                 </div>
                 {localRow ? (
-                  <div className="apikey-form">
-                    <button
-                      type="button"
-                      className="btn btn--ghost"
-                      disabled={localChecking}
-                      onClick={checkLocal}
-                    >
-                      {localChecking ? '…' : t('settings.checkAvailability')}
-                    </button>
-                  </div>
+                  <>
+                    <div className="apikey-form">
+                      <button
+                        type="button"
+                        className="btn btn--ghost"
+                        disabled={localChecking}
+                        onClick={checkLocal}
+                      >
+                        {localChecking ? '…' : t('settings.checkAvailability')}
+                      </button>
+                    </div>
+                    {/* Где работает Gemma — своя строка, как модель у провайдеров */}
+                    <div className="apikey-model">
+                      <span className="apikey-model-label">{t('settings.gemmaWhere')}</span>
+                      {(['pc', 'phone'] as GemmaDevice[]).map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          className={`btn ${(p.device ?? 'pc') === d ? 'btn--primary' : 'btn--ghost'}`}
+                          disabled={gemmaSaving || (p.device ?? 'pc') === d}
+                          onClick={() => setGemmaDevice(d)}
+                        >
+                          {t(d === 'pc' ? 'settings.gemmaPc' : 'settings.gemmaPhone')}
+                        </button>
+                      ))}
+                    </div>
+                  </>
                 ) : (
                   <div className="apikey-form">
                     <input
@@ -587,7 +636,7 @@ export default function ApiKeys() {
                 )}
                 {/* Модель провайдера — общая для всех персон (у персоны может быть
                     своя: досье → «Модели провайдеров»). Ollama — тоже здесь */}
-                {apiOnline && (
+                {apiOnline && !(p.local && onPhone) && (
                   <div className="apikey-model">
                     <span className="apikey-model-label">{t('apikeys.model')}</span>
                     <input
@@ -617,7 +666,24 @@ export default function ApiKeys() {
                   </div>
                 )}
                 {/* Детали неудачной проверки локальной модели: что не так и как исправить */}
-                {localRow && localStatus && !localStatus.available && (
+                {/* Телефон с Gemma: на связи ли, чем считает; на ноутбуке — подсказка, что можно перенести */}
+                {localRow && onPhone && (
+                  <div className="field-hint provider-local-detail">
+                    {phone?.online && phone.worker
+                      ? t('settings.gemmaPhoneOnline', {
+                          name: phone.worker.name || '—',
+                          backend: phone.worker.backend === 'gpu' ? t('settings.gemmaGpu')
+                            : phone.worker.backend === 'cpu' ? t('settings.gemmaCpu') : '',
+                        })
+                      : phone?.worker ? t('settings.gemmaPhoneOffline') : t('settings.gemmaPhoneNever')}
+                  </div>
+                )}
+                {localRow && !onPhone && phone?.online && phone.worker && (
+                  <div className="field-hint provider-local-detail">
+                    {t('settings.gemmaPhoneCanMove', { name: phone.worker.name || '—' })}
+                  </div>
+                )}
+                {localRow && !onPhone && localStatus && !localStatus.available && (
                   <div className="field-hint provider-local-detail">
                     {!localStatus.server
                       ? t('settings.localServerDown', { url: localStatus.url })

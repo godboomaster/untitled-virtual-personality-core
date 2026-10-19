@@ -43,6 +43,14 @@ import java.util.concurrent.TimeUnit;
  * {id, persona, message, action?} → offlineReply({id, text}) (пустой text —
  * ответить некому). takePending() → {items} — реплики, услышанные, пока окна
  * приложения не было.
+ *
+ * Приложение одной персоны (Арродес, dev.arrodes.app) передаёт в start и
+ * configure ещё: persona — откликаться только на её имена; chatId, userId,
+ * userName — в чей чат идут реплики (по умолчанию web_user, как у приложения
+ * ядра); appAsks — пока окно на экране, вопрос задаёт само приложение
+ * (событие voiceAsk {id, persona, message, action?} → offlineReply({id,
+ * text}): text — что произнести, пустой — приложение не взялось, и служба
+ * спросит ядро сама). Не переданы — как было.
  */
 @CapacitorPlugin(
         name = "WakeWord",
@@ -55,6 +63,10 @@ public class WakeWordPlugin extends Plugin {
 
     /** askOffline: приложение не ответило за отведённое время. */
     static final String TIMEOUT = "\u0000timeout";
+    // Вопросы службы приложению: ядро недоступно — ответ без него;
+    // appAsks — вопрос, пока окно на экране, задаёт само приложение
+    static final String EVENT_OFFLINE = "offlineAsk";
+    static final String EVENT_VOICE = "voiceAsk";
 
     // Плагин окна приложения (окна нет — null) и ждущие ответа вопросы службы
     private static volatile WakeWordPlugin active;
@@ -74,8 +86,14 @@ public class WakeWordPlugin extends Plugin {
      * окна приложения нет (или оно не слушает), "" — ответить некому,
      * TIMEOUT — не дождались, иначе текст ответа. */
     static String askOffline(String persona, String message, JSONObject action, long timeoutMs) {
+        return askApp(EVENT_OFFLINE, persona, message, action, timeoutMs);
+    }
+
+    /** То же для любого вопроса службы (EVENT_OFFLINE, EVENT_VOICE): null —
+     * окна нет или оно это событие не слушает, TIMEOUT — не дождались. */
+    static String askApp(String event, String persona, String message, JSONObject action, long timeoutMs) {
         WakeWordPlugin p = active;
-        if (p == null || !p.hasListeners("offlineAsk")) return null;
+        if (p == null || !p.hasListeners(event)) return null;
         String id = UUID.randomUUID().toString();
         BlockingQueue<String> q = new ArrayBlockingQueue<>(1);
         asks.put(id, q);
@@ -85,7 +103,7 @@ public class WakeWordPlugin extends Plugin {
             data.put("persona", persona);
             data.put("message", message);
             if (action != null) data.put("action", JSObject.fromJSONObject(action));
-            p.notifyListeners("offlineAsk", data);
+            p.notifyListeners(event, data);
             String r = q.poll(timeoutMs, TimeUnit.MILLISECONDS);
             return r == null ? TIMEOUT : r;
         } catch (InterruptedException e) {
@@ -129,10 +147,21 @@ public class WakeWordPlugin extends Plugin {
             call.reject("baseUrl: нужен адрес http(s)://…", "no-address");
             return false;
         }
-        WakeWordService.prefs(getContext()).edit()
+        SharedPreferences.Editor e = WakeWordService.prefs(getContext()).edit()
                 .putString(WakeWordService.KEY_BASE_URL, baseUrl)
-                .putString(WakeWordService.KEY_TOKEN, token == null ? "" : token)
-                .apply();
+                .putString(WakeWordService.KEY_TOKEN, token == null ? "" : token);
+        // Приложение одной персоны: её имена и её чат (не переданы — прежние)
+        JSObject d = call.getData();
+        for (String k : new String[] {WakeWordService.KEY_ONLY_PERSONA, WakeWordService.KEY_CHAT_ID,
+                WakeWordService.KEY_USER_ID, WakeWordService.KEY_USER_NAME}) {
+            if (!d.has(k)) continue;
+            Object v = d.opt(k);
+            e.putString(k, v instanceof String ? ((String) v).trim() : "");
+        }
+        if (d.has(WakeWordService.KEY_APP_ASKS)) {
+            e.putBoolean(WakeWordService.KEY_APP_ASKS, d.optBoolean(WakeWordService.KEY_APP_ASKS, false));
+        }
+        e.apply();
         return true;
     }
 

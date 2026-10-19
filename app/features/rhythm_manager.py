@@ -34,7 +34,7 @@ from app.core.atomic_io import atomic_write_json, load_json_safe
 from app.core.language import (detect_dialogue_language, language_name,
                                 persona_language, user_language_line)
 from app.core.paths import data_dir
-from app.core.persona import addressee_note
+from app.core.persona import addressee_note, persona_prompt
 from app.features.env_context import _WMO_DESC, fetch_forecast, is_precip_code, load_location
 from app.core import startup_quiet
 
@@ -425,8 +425,8 @@ class RhythmManager:
         # Текст в характере персоны через LLM (синхронный вызов).
         if not (self._router and self._persona):
             return None
-        persona_prompt = (self._persona.system_prompt.strip()
-                          + addressee_note(self._persona, chat_id))
+        persona_text = (persona_prompt(self._persona, chat_id).strip()
+                        + addressee_note(self._persona, chat_id))
         if kind == "morning":
             user_content = f"Current time: {facts}. Greet the user."
         elif kind == "night":
@@ -437,7 +437,7 @@ class RhythmManager:
         code = {"Russian": "ru", "English": "en"}.get(lang)
         messages = [
             {"role": "system", "content": (
-                f"{persona_prompt}\n\n---\n{_TASK_PROMPTS[kind]} "
+                f"{persona_text}\n\n---\n{_TASK_PROMPTS[kind]} "
                 "Do NOT use markdown. Do NOT write meta-notes.\n"
                 f"{user_language_line(code)}"
             )},

@@ -84,7 +84,8 @@ PHRASES = [
     "напомни в 25",
     "напомни через 40 дней",
     "напомни через 5 секунд",
-    "Арродес, напомни в 9 утра медитация",
+    "Лира, напомни в 9 утра медитация",
+    "Нова, напомни через час полить цветы",
     "напомни каждый день в 9 пить воду",
     "напоминай по пятницам в 18 убраться",
     "remind me every monday at 9 to plan the week",
@@ -113,6 +114,10 @@ PHRASES = [
     "напомни 9 утра",
 ]
 
+# Обращения к персоне — как их передаёт бот (_reminder_names) и набор телефона (kit.names);
+# «Нова» не в списке — её имя в тексте остаётся у обоих
+NAMES = ["коннор", "connor", "жабка", "лира"]
+
 # Ответы на «когда напомнить?» и посторонние реплики
 REPLIES = ["не надо", "нет, спасибо", "в 8", "завтра утром", "через час", "ок", "18:30",
            "never mind", "at 5", "хорошо", "передумал", "давай в пятницу", "1"]
@@ -122,7 +127,7 @@ import * as rp from %s;
 const input = JSON.parse(%s);
 const now = new Date(...input.now.map((v, i) => i === 1 ? v - 1 : v));
 const out = {
-  parse: input.phrases.map((t) => rp.parseReminder(t, undefined, now)),
+  parse: input.phrases.map((t) => rp.parseReminder(t, input.names, now)),
   recurring: input.phrases.map((t) => rp.isRecurringAsk(t)),
   create: input.phrases.map((t) => rp.isReminderCreateRequest(t)),
   decline: input.replies.map((t) => rp.isPendingDecline(t)),
@@ -144,7 +149,7 @@ def main():
 
     src = ROOT / "web" / "src" / "offline" / "remparse.ts"
     code = NODE_CODE % (json.dumps(src.as_uri()),
-                        json.dumps(json.dumps({"now": list(NOW), "phrases": PHRASES, "replies": REPLIES},
+                        json.dumps(json.dumps({"now": list(NOW), "phrases": PHRASES, "replies": REPLIES, "names": NAMES},
                                               ensure_ascii=False)))
     env = {**os.environ, "TZ": "Europe/Moscow"}
     res = subprocess.run(["node", "--input-type=module", "-e", code],
@@ -156,7 +161,7 @@ def main():
 
     print("\n— parse_reminder")
     for phrase, have in zip(PHRASES, got["parse"]):
-        want = rm.parse_reminder(phrase)
+        want = rm.parse_reminder(phrase, NAMES)
         if want is None or have is None:
             same = want is None and have is None
         else:

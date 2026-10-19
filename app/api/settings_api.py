@@ -38,6 +38,7 @@ from app.core.config import (
 )
 from app.core.addons import CORE_PERSONAS_DIR, persona_dirs, user_personas_dir
 from app.core.paths import data_dir
+from app.core.persona import special_entries
 
 logger = logging.getLogger(__name__)
 
@@ -124,15 +125,18 @@ def list_providers() -> dict:
         local_available = local.is_available()
     except Exception:
         pass
+    from app.core import phone_llm
     providers.append({
         "id": "local",
         "name": "Ollama",
-        "key_set": local_available,
+        "key_set": local_available,  # с Gemma на телефоне — телефон на связи
         "keys_count": 0,
         "keys": [],
         "model": local_model,  # то же имя, что читает LocalLLMRouter
         "active": active == "local",
         "local": True,
+        "device": phone_llm.device(),  # где работает Gemma: "pc" | "phone"
+        "phone": phone_llm.status(),
     })
     # Веб-чаты как провайдеры без ключей: включённые сайты (env, порядок =
     # порядок перебора) и доступные адаптеры
@@ -262,14 +266,31 @@ def local_status() -> dict:
     available = server and present
     r._available = available
     r._last_check = _time.time()
+    from app.core import phone_llm
+    phone = phone_llm.status()
     return {
         "server": server,
         "url": r.base_url,
         "model": r.model,
         "model_present": present,
         "models": models,
-        "available": available,
+        # С Gemma на телефоне локальные задачи доступны, пока он на связи
+        "available": phone["online"] if phone["device"] == "phone" else available,
+        "device": phone["device"],
+        "phone": phone,
     }
+
+
+def set_local_device(device: str) -> dict:
+    """Где работает Gemma локальных задач: «pc» — Ollama на ноутбуке,
+    «phone» — Gemma в приложении на телефоне (app/core/phone_llm). .env +
+    рантайм: роутер читает выбор на каждом вызове."""
+    from app.core import phone_llm
+    device = (device or "").strip().lower()
+    if device not in phone_llm.DEVICES:
+        return {"ok": False, "detail": f"Неизвестное устройство: {device}"}
+    _persist_env(phone_llm.DEVICE_ENV, device)
+    return {"ok": True, "device": device, "phone": phone_llm.status()}
 
 
 def set_provider_model(provider: str, model: str) -> dict:
@@ -1001,6 +1022,11 @@ def get_persona_config(persona: str) -> dict | None:
             # лимиты веб-чатов: {сайт: {enabled, per_hour}}; нет сайта — дефолт 40/ч
             "webchat_limits": llm.get("webchat_limits") or {},
         },
+        # Особые собеседники с раскрытым id: от чьего имени спрашивает
+        # отдельное приложение персоны (у зеркала Арродеса на ПК id берётся
+        # из .env, телефону .env не виден)
+        "special_users": [{"id": su["id"], "aliases": [str(a) for a in su.get("aliases") or []]}
+                          for su in special_entries(data)],
     }
 
 
@@ -1329,6 +1355,13 @@ def delete_persona(persona: str) -> dict:
             "Можно заморозить или сделать копию")}
     registry.evict(persona)
     path.unlink()
+    modes = _modes_dir(path, persona)
+    if modes.is_dir():
+        # Режимы — часть описания персоны: новая под тем же id их не подхватит
+        try:
+            _archive_paths([modes])
+        except Exception:
+            logger.exception("[api] Удаление персоны: папка режимов не убрана в архив")
     rest = _persona_yaml_path(persona)
     reset = rest is not None and rest.is_file()
     if not reset:
@@ -1339,6 +1372,28 @@ def delete_persona(persona: str) -> dict:
             logger.exception("[api] Удаление персоны: назначение скина не снято")
     logger.info(f"[api] {'Сброшена к встроенной' if reset else 'Удалена'} персона {persona}")
     return {"ok": True, "reset": reset}
+
+
+def _modes_dir(yaml_path: Path, persona: str) -> Path:
+    # Режимы персоны (master.yaml/mortal.yaml) — папка <id>_modes рядом с её
+    # YAML (PersonaLayer._load_modes)
+    return yaml_path.parent / f"{persona}_modes"
+
+
+def _carry_modes(src_path: Path, persona: str, dest_path: Path, new_id: str) -> None:
+    """Смена id: папка режимов — под новый id. У встроенной персоны —
+    копия (её файлы — часть проекта), у своей — перенос."""
+    src, dst = _modes_dir(src_path, persona), _modes_dir(dest_path, new_id)
+    if not src.is_dir():
+        return
+    if dst.exists():
+        logger.warning(f"[api] Смена id: {dst} уже есть — режимы не перенесены")
+        return
+    if _is_builtin_path(src_path):
+        import shutil
+        shutil.copytree(src, dst)
+    else:
+        src.rename(dst)
 
 
 def _set_top_field(text: str, key: str, line: str, after: str | None = None) -> str:
@@ -1702,6 +1757,11 @@ def rename_persona(persona: str, new_id: str, memory: str | None = None) -> dict
             return {"ok": False, "status": 500, "detail": f"Не удалось сменить id: {e}"}
 
     # Дальше — некритичные ссылки на id: сбой не откатывает переименование
+    try:
+        _carry_modes(src_path, persona, dest_path, new_id)
+    except Exception:
+        logger.exception("[api] Смена id: папка режимов не перенесена")
+
     try:
         from app.features.calendar_manager import get_calendar
         cal = get_calendar()

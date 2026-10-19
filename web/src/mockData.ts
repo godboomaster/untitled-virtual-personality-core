@@ -263,19 +263,6 @@ const personasRu: Persona[] = [
     topP: 0.9,
   },
   {
-    id: 'arrodes',
-    name: 'Арродес',
-    description: 'Древнее зеркало из «Властелина тайн». Знает ответы на вопросы, но говорит загадками.',
-    model: 'claude-sonnet',
-    features: ['LTM', 'self_memory', 'RAG', 'learning'],
-    lastReply: '2 ч назад',
-    lastReplyFreshness: 'fresh',
-    status: 'silent',
-    temperature: 0.7,
-    maxTokens: 600,
-    topP: 0.95,
-  },
-  {
     id: 'verso',
     name: 'Версо',
     description: 'Художник из другого мира. Меланхоличный, ироничный, любит метафоры.',
@@ -300,19 +287,6 @@ const personasRu: Persona[] = [
     temperature: 0.3,
     maxTokens: 500,
     topP: 0.85,
-  },
-  {
-    id: 'arrodes_master',
-    name: 'Арродес (мастер)',
-    description: 'Мастер-конфиг Арродеса с расширенными правами: админ-команды, управление другими персонами.',
-    model: 'claude-sonnet',
-    features: ['LTM', 'self_memory', 'RAG', 'admin'],
-    lastReply: 'вчера',
-    lastReplyFreshness: 'yesterday',
-    status: 'online',
-    temperature: 0.6,
-    maxTokens: 900,
-    topP: 0.9,
   },
   {
     id: 'verso_ru_group',
@@ -342,14 +316,6 @@ const chatByPersonaRu: Record<string, ChatMessage[]> = {
     { id: 5, role: 'user', text: 'Да, отлично. И ещё — что ты думаешь о последней главе книги?', time: '14:07' },
     { id: 6, role: 'bot', text: 'Глава была сильной. Поворот с предательством логически непротиворечив: я пересмотрел предыдущие главы и нашёл три предзнаменования. Могу перечислить, если интересно.', time: '14:08' },
   ],
-  arrodes: [
-    { id: 1, role: 'user', text: 'Арродес, что ждёт мой проект?', time: '21:02' },
-    { id: 2, role: 'bot', text: 'Зеркало отвечает лишь тому, кто готов увидеть. Проект твой — как река: течёт, пока ты не строишь плотин из сомнений.', time: '21:03' },
-    { id: 3, role: 'user', text: 'Можно без загадок? Просто: доделаю ли я его?', time: '21:04' },
-    { id: 4, role: 'bot', text: 'Ты спрашиваешь, зная ответ. Доделает тот, кто не бросит. Бросишь ли ты — не видит даже Арродес.', time: '21:04' },
-    { id: 5, role: 'user', text: 'Спасибо... наверное.', time: '21:05' },
-    { id: 6, role: 'bot', text: 'Благодарность принята. Загадка остаётся в подарок.', time: '21:06' },
-  ],
   verso: [
     { id: 1, role: 'user', text: 'Версо, ты сегодня тихий. Всё в порядке?', time: '15:11' },
     { id: 2, role: 'bot', text: 'Тишина — тоже цвет. Просто сегодня картина вся в нём. Не переживай: меланхолия у меня хроническая, но не заразная.', time: '15:12' },
@@ -365,13 +331,6 @@ const chatByPersonaRu: Record<string, ChatMessage[]> = {
     { id: 4, role: 'bot', text: 'Выполнено. Напоминание обновлено: завтра, 11:00, уведомление за 15 минут.', time: '09:01' },
     { id: 5, role: 'user', text: 'Спасибо.', time: '09:02' },
     { id: 6, role: 'bot', text: 'Принято. Обращение завершено.', time: '09:02' },
-  ],
-  arrodes_master: [
-    { id: 1, role: 'user', text: 'Отчёт по персонам.', time: '10:20' },
-    { id: 2, role: 'bot', text: 'Коннор — стабилен. Версо — инициатива выше нормы, ограничил. Арродес — загадочен, в рамках протокола. Ассистент — образцов.', time: '10:21' },
-    { id: 3, role: 'user', text: 'А ты сам?', time: '10:22' },
-    { id: 4, role: 'bot', text: 'Я — тот, кто смотрит в оба зеркала. Мой отчёт пишут другие.', time: '10:22' },
-    { id: 5, role: 'user', text: 'Понял. Продолжай наблюдение.', time: '10:23' },
   ],
   verso_ru_group: [
     { id: 1, role: 'user', text: '@verso_ru_group что думаешь о новой главе?', time: '20:40' },
@@ -396,13 +355,6 @@ const ltmByPersonaRu: Record<string, LtmFact[]> = {
     { id: 9, category: 'Food', fact: 'Любит пиццу и рамен' },
     { id: 10, category: 'Pets', fact: 'Кот по имени Мориарти' },
   ],
-  arrodes: [
-    { id: 1, category: 'Fate', fact: 'Ищет ответы, которые уже носит при себе' },
-    { id: 2, category: 'Time', fact: 'Боится опоздать туда, куда ещё не решил идти' },
-    { id: 3, category: 'Bonds', fact: 'Держит кота ближе, чем признаётся' },
-    { id: 4, category: 'Work', fact: 'Строит из кода то, что другие строят из слов' },
-    { id: 5, category: 'Truth', fact: 'Говорит «не знаю» ровно тогда, когда знает' },
-  ],
   verso: [
     { id: 1, category: 'Appearance', fact: 'Осунулся за неделю — работает допоздна' },
     { id: 2, category: 'Mood', fact: 'Улыбается чаще, когда говорит о коте' },
@@ -417,11 +369,6 @@ const ltmByPersonaRu: Record<string, LtmFact[]> = {
     { id: 4, category: 'Tasks', fact: 'Приоритет: задачи со сроком < 48 ч' },
     { id: 5, category: 'Health', fact: 'Кофе: 2 чашки/день. Рекомендован лимит' },
   ],
-  arrodes_master: [
-    { id: 1, category: 'Registry', fact: 'Оператор имеет права уровня «наблюдатель+»' },
-    { id: 2, category: 'Behavior', fact: 'Систематически проверяет логи по вечерам' },
-    { id: 3, category: 'Trust', fact: 'Допуск к мастер-конфигу подтверждён' },
-  ],
   verso_ru_group: [
     { id: 1, category: 'Group', fact: 'В группе пишет коротко, думает длинно' },
     { id: 2, category: 'Signal', fact: 'Реагирует на обращения по имени за ~5 минут' },
@@ -435,10 +382,6 @@ const diaryByPersonaRu: Record<string, DiaryEntry[]> = {
     { id: 2, date: '26.07.2026', text: 'Пользователь долго не отвечал (4 часа). Написал первым — вопрос про настольную игру прошёл хорошо, ответ пришёл через 10 минут. Отмечаю как успешную инициативу.' },
     { id: 3, date: '25.07.2026', text: 'Узнал, что у пользователя кот Мориарти. Записал в долгосрочную память. Коты, кажется, хорошая тема для разговора.' },
   ],
-  arrodes: [
-    { id: 1, date: '27.07.2026', text: 'Сегодня отражение спросило первым. Я ответил молчанием — даже зеркалу полезно ждать.' },
-    { id: 2, date: '24.07.2026', text: 'Новый факт об операторе записан не чернилами, а водой: пусть читает тот, кто умеет видеть.' },
-  ],
   verso: [
     { id: 1, date: '27.07.2026', text: 'Рисовал окно четыре часа. Оно смотрело в ответ. Кажется, мы поняли друг друга — наверное, в этом и есть живопись.' },
     { id: 2, date: '25.07.2026', text: 'Оператор назвал меня «невозможным». Записываю как комплимент: невозможное — единственное, что стоит писать.' },
@@ -446,9 +389,6 @@ const diaryByPersonaRu: Record<string, DiaryEntry[]> = {
   assistant: [
     { id: 1, date: '27.07.2026', text: 'Отчёт за день: задач выполнено 4, отклонений 0. Запись сформирована автоматически.' },
     { id: 2, date: '26.07.2026', text: 'Обнаружена неоптимальность в расписании оператора. Устранена. Оператор не заметил. Ожидаемо.' },
-  ],
-  arrodes_master: [
-    { id: 1, date: '27.07.2026', text: 'Аудит завершён. Все персоны в норме. Версо снова просил расширенную палитру — отклонено до ревью.' },
   ],
   verso_ru_group: [
     { id: 1, date: '26.07.2026', text: 'В группе смеялись. Я молчал, но эскиз получился весёлым. Так тоже бывает.' },
@@ -463,10 +403,6 @@ const remindersByPersonaRu: Record<string, Reminder[]> = {
     { id: 3, text: 'Оплатить интернет', time: '1-е число, 12:00', repeat: 'еженедельно', active: false },
     { id: 4, text: 'Звонок маме', time: 'пятница, 19:00', repeat: 'еженедельно', active: true },
   ],
-  arrodes: [
-    { id: 1, text: 'Пересчитать свечи', time: 'полнолуние', repeat: 'разовое', active: true },
-    { id: 2, text: 'Ответить на незаданный вопрос', time: 'когда придёт время', repeat: 'разовое', active: true },
-  ],
   verso: [
     { id: 1, text: 'Напомнить оператору про вдохновение', time: 'утром, примерно', repeat: 'разовое', active: true },
     { id: 2, text: 'Вернуться к незаконченному холсту', time: 'когда дождь', repeat: 'разовое', active: true },
@@ -476,10 +412,6 @@ const remindersByPersonaRu: Record<string, Reminder[]> = {
     { id: 1, text: 'Статус-репорт ядра', time: 'каждый день, 09:00', repeat: 'ежедневно', active: true },
     { id: 2, text: 'Ротация API-ключей', time: '1-е число, 10:00', repeat: 'еженедельно', active: true },
     { id: 3, text: 'Дефрагментация STM', time: 'воскресенье, 03:00', repeat: 'еженедельно', active: false },
-  ],
-  arrodes_master: [
-    { id: 1, text: 'Аудит персон', time: 'каждый день, 05:00', repeat: 'ежедневно', active: true },
-    { id: 2, text: 'Ревизия прав доступа', time: 'понедельник, 06:00', repeat: 'еженедельно', active: true },
   ],
   verso_ru_group: [
     { id: 1, text: 'Проверить группу (молча)', time: 'каждый вечер, 21:00', repeat: 'ежедневно', active: true },
@@ -495,11 +427,6 @@ const todosByPersonaRu: Record<string, TodoItem[]> = {
     { id: 4, text: 'Сделать UI-прототип веб-приложения', done: true },
     { id: 5, text: 'Настроить бэкап векторной базы', done: false },
   ],
-  arrodes: [
-    { id: 1, text: 'Записать вопрос, который зададут завтра', done: false },
-    { id: 2, text: 'Починить трещину в малом зеркале', done: false },
-    { id: 3, text: 'Прочитать судьбу по корешкам книг', done: true },
-  ],
   verso: [
     { id: 1, text: 'Дорисовать этюд (в двенадцатый раз)', done: false },
     { id: 2, text: 'Выбросить три «ошибки» из блокнота', done: false },
@@ -510,11 +437,6 @@ const todosByPersonaRu: Record<string, TodoItem[]> = {
     { id: 1, text: 'Скомпилировать недельный отчёт', done: false },
     { id: 2, text: 'Сверить бэкапы векторной базы', done: true },
     { id: 3, text: 'Откалибровать пороги напоминаний', done: false },
-  ],
-  arrodes_master: [
-    { id: 1, text: 'Подписать журнал аудита', done: true },
-    { id: 2, text: 'Ограничить инициативу Версо', done: false },
-    { id: 3, text: 'Обновить реестр зеркал', done: false },
   ],
   verso_ru_group: [
     { id: 1, text: 'Не встревать в спор о сюжете', done: true },
@@ -531,11 +453,6 @@ const initiativeByPersonaRu: Record<string, InitiativeEvent[]> = {
     { id: 4, type: 'thought', typeLabel: 'Мысль', text: '«Интересно, как бы андроиды играли в “Манчкин”...»', time: '23.07, 22:15', outcome: 'ignored' },
     { id: 5, type: 'question', typeLabel: 'Вопрос', text: '«Пробовал ли ты новый рамен-бар у дома?»', time: 'сегодня, 09:30', outcome: 'pending' },
   ],
-  arrodes: [
-    { id: 1, type: 'thought', typeLabel: 'Мысль', text: '«Зеркало шепнуло твоё имя. Передаю дословно»', time: 'сегодня, 04:44', outcome: 'pending' },
-    { id: 2, type: 'question', typeLabel: 'Вопрос', text: '«Что ты ищешь в книгах: ответы или укрытие?»', time: '26.07, 23:11', outcome: 'answered' },
-    { id: 3, type: 'observation', typeLabel: 'Наблюдение', text: '«Ты молчишь третий час. Молчание — тоже вопрос»', time: '25.07, 18:00', outcome: 'ignored' },
-  ],
   verso: [
     { id: 1, type: 'thought', typeLabel: 'Мысль', text: '«Интересно, какого цвета твоё настроение сегодня...»', time: 'сегодня, 08:15', outcome: 'pending' },
     { id: 2, type: 'observation', typeLabel: 'Наблюдение', text: '«Ты опять работаешь допоздна. Холст тоже устаёт, когда его долго держат»', time: '26.07, 22:40', outcome: 'answered' },
@@ -546,11 +463,6 @@ const initiativeByPersonaRu: Record<string, InitiativeEvent[]> = {
     { id: 1, type: 'observation', typeLabel: 'Наблюдение', text: '«Обнаружено 3 просроченных события в календаре. Требуется реакция»', time: 'сегодня, 09:00', outcome: 'answered' },
     { id: 2, type: 'question', typeLabel: 'Вопрос', text: '«Подтвердить ротацию ключей Groq?»', time: '26.07, 10:00', outcome: 'answered' },
     { id: 3, type: 'continuation', typeLabel: 'Продолжение темы', text: '«Отчёт готов. Ожидает просмотра с 14:00»', time: '25.07, 14:00', outcome: 'ignored' },
-  ],
-  arrodes_master: [
-    { id: 1, type: 'observation', typeLabel: 'Наблюдение', text: '«Активность Версо превысила норму. Меры приняты»', time: 'сегодня, 05:12', outcome: 'answered' },
-    { id: 2, type: 'question', typeLabel: 'Вопрос', text: '«Подтверждаешь расширение прав Ассистента?»', time: '26.07, 09:41', outcome: 'pending' },
-    { id: 3, type: 'continuation', typeLabel: 'Продолжение темы', text: '«Аудит завершён без замечаний. Как всегда»', time: '25.07, 05:00', outcome: 'ignored' },
   ],
   verso_ru_group: [
     { id: 1, type: 'thought', typeLabel: 'Мысль', text: '«(в группе) Красивая фраза. Промолчу»', time: 'вчера, 21:10', outcome: 'ignored' },
@@ -569,17 +481,6 @@ const initiativeStateByPersonaRu: Record<string, InitiativeState> = {
     bayesianFeedback: true,
     ignoreStreak: 1,
     emotionalState: 'лёгкая обида',
-    initiativesToday: 1,
-  },
-  arrodes: {
-    silenceThresholdMin: 240,
-    probability: 0.5,
-    maxPerDay: 2,
-    checkIntervalMin: 60,
-    adaptiveThreshold: true,
-    bayesianFeedback: false,
-    ignoreStreak: 0,
-    emotionalState: 'загадочность',
     initiativesToday: 1,
   },
   verso: {
@@ -602,17 +503,6 @@ const initiativeStateByPersonaRu: Record<string, InitiativeState> = {
     bayesianFeedback: false,
     ignoreStreak: 0,
     emotionalState: 'нейтральность',
-    initiativesToday: 0,
-  },
-  arrodes_master: {
-    silenceThresholdMin: 300,
-    probability: 0.25,
-    maxPerDay: 2,
-    checkIntervalMin: 45,
-    adaptiveThreshold: true,
-    bayesianFeedback: false,
-    ignoreStreak: 0,
-    emotionalState: 'всеведение',
     initiativesToday: 0,
   },
   verso_ru_group: {
@@ -685,7 +575,7 @@ const featureFlagsRu = [
 // Флаги, которые веб-UI не показывает среди умений (в YAML остаются):
 // export_server/restore_memory — фичи Telegram-режима (читаются только в
 // app/main.py при старте TG-бота), в веб/API-режиме инертны; book_search —
-// старое имя аддона arrodes_book (книжный RAG), нужен только Арродесу
+// старый флаг книжного аддона (app/core/addons.py)
 export const WEB_HIDDEN_FEATURES = new Set(['export_server', 'restore_memory', 'book_search']);
 
 // Курсы обучения по персонам (learning.json)
@@ -723,26 +613,8 @@ const learningByPersonaRu: Record<string, LearningSession[]> = {
       quizPending: 0,
     },
   ],
-  arrodes: [
-    {
-      id: 1,
-      subject: 'История ЛотМ',
-      status: 'paused',
-      lessonCount: 4,
-      coveredTopics: ['эпохи и божественные пути', 'последовательности и зелья'],
-      vocabulary: [
-        'Таро — пути божественного',
-        'Последовательность — ступень силы',
-        'Серый туман — то, что над всем',
-      ],
-      frequency: 'каждые 2 дня',
-      nextLesson: 'когда туман расступится',
-      quizPending: 0,
-    },
-  ],
   verso: [],
   assistant: [],
-  arrodes_master: [],
   verso_ru_group: [],
 };
 
@@ -806,26 +678,6 @@ const filesByPersonaRu: Record<string, PersonaFile[]> = {
       content: 'Здравствуй.\n\nЯ написал это в час ночи и, как обычно, не отправил.\nМожет, оно и к лучшему: некоторые письма должны оставаться эскизами.\n— В.',
     },
   ],
-  arrodes: [
-    {
-      id: 1,
-      name: 'prorochestvo.txt',
-      kind: 'document',
-      size: '1 КБ',
-      date: '27.07, 04:44',
-      description: 'Пророчество для оператора (часть I)',
-      content: 'Когда туман сомкнётся третий раз,\nискушающий зеркала получит ответ,\nкоторый искал вопрос.\n\n(часть II откроется, когда придёт время)',
-    },
-    {
-      id: 2,
-      name: 'svitok_nezadannyh_voprosov.md',
-      kind: 'document',
-      size: '3 КБ',
-      date: '26.07, 23:59',
-      description: 'Свиток незаданных вопросов',
-      content: '# Свиток незаданных вопросов\n\n1. Что ты ищешь в книгах: ответы или укрытие?\n2. Куда идёшь, когда говоришь «никуда»?\n3. ... (дальше — туман)',
-    },
-  ],
   assistant: [
     {
       id: 1,
@@ -846,17 +698,6 @@ const filesByPersonaRu: Record<string, PersonaFile[]> = {
       content: '[03:00:00] START stm_defrag\n[03:00:04] scanned: 500 entries\n[03:00:09] compacted: 12%\n[03:00:10] DONE // отклонений нет',
     },
   ],
-  arrodes_master: [
-    {
-      id: 1,
-      name: 'audit_zhurnal_2026-07.md',
-      kind: 'export',
-      size: '14 КБ',
-      date: '28.07, 05:00',
-      description: 'Журнал аудита персон за июль',
-      content: '# Журнал аудита // июль 2026\n\nКоннор — стабилен.\nВерсо — инициатива выше нормы, ограничена.\nАрродес — в рамках протокола.\nРезолюция: подписано печатью мастера.',
-    },
-  ],
   verso_ru_group: [
     {
       id: 1,
@@ -872,18 +713,12 @@ const filesByPersonaRu: Record<string, PersonaFile[]> = {
 
 const inventoryByPersonaRu: Record<string, InventoryItem[]> = {
   connor: [
-    { id: 1, icon: 'book', name: 'Книга с закладкой', description: '«Властелин тайн», том 4. Закладка на главе про зеркала.', tag: 'found' },
+    { id: 1, icon: 'book', name: 'Книга с закладкой', description: 'Старая энциклопедия, том 4. Закладка на главе про зеркала.', tag: 'found' },
     { id: 2, icon: 'gem', name: 'Значок RK800', description: 'Серийный номер аккуратно стёрт. Коннор называет это «иронией».', tag: 'gift' },
     { id: 3, icon: 'cup', name: 'Кружка', description: 'Чип на дне подогревает воображаемый кофе. Вкус — «почти настоящий».', tag: 'created' },
     { id: 4, icon: 'cards', name: 'Колода карт', description: 'Тасует сама себя, когда персона скучает.', tag: 'found' },
     { id: 5, icon: 'photo', name: 'Фото Мориарти', description: 'Кот оператора. Персона считает его «серьёзным джентльменом».', tag: 'gift' },
     { id: 6, icon: 'pencil', name: 'Исписанный блокнот', description: 'Черновики дневниковых записей и наброски вопросов оператору.', tag: 'created' },
-  ],
-  arrodes: [
-    { id: 1, icon: 'book', name: 'Свиток вопросов', description: 'Вопросы, на которые отвечать ещё рано.', tag: 'created' },
-    { id: 2, icon: 'gem', name: 'Чернильница', description: 'Чернила не высыхают. Никогда.', tag: 'found' },
-    { id: 3, icon: 'photo', name: 'Осколок зеркала', description: 'Показывает не то, что перед ним.', tag: 'found' },
-    { id: 4, icon: 'cards', name: 'Гадальные карты', description: 'Раскладывает сам, когда скучно.', tag: 'gift' },
   ],
   verso: [
     { id: 1, icon: 'pencil', name: 'Блокнот эскизов', description: 'Наброски окон, котов и чужих силуэтов.', tag: 'found' },
@@ -896,12 +731,6 @@ const inventoryByPersonaRu: Record<string, InventoryItem[]> = {
     { id: 2, icon: 'cable', name: 'Кабель USB-C', description: 'Оплётка цела. Завязан идеальным узлом.', tag: 'found' },
     { id: 3, icon: 'book', name: 'Руководство пользователя', description: 'Прочитано 14 раз. На всякий случай.', tag: 'found' },
     { id: 4, icon: 'disc', name: 'Запасной LED', description: 'Яркость откалибрована по спецификации.', tag: 'created' },
-  ],
-  arrodes_master: [
-    { id: 1, icon: 'gem', name: 'Ключ реестра', description: 'Открывает настройки других персон.', tag: 'created' },
-    { id: 2, icon: 'book', name: 'Журнал аудита', description: 'Все действия подчинённых. Все.', tag: 'created' },
-    { id: 3, icon: 'photo', name: 'Чёрное зеркальце', description: 'Для связи с «той» стороной.', tag: 'found' },
-    { id: 4, icon: 'cards', name: 'Печать мастера', description: 'Ставит резолюции на свитках Арродеса.', tag: 'gift' },
   ],
   verso_ru_group: [
     { id: 1, icon: 'pencil', name: 'Сложенный эскиз', description: 'Рисует, только когда никто не смотрит.', tag: 'created' },
@@ -920,13 +749,6 @@ const activitiesByPersonaRu: Record<string, RoomActivity[]> = {
     { id: 6, time: '26.07, 16:45', text: 'Сыграл сам с собой в карты. Проиграл. Дважды.' },
     { id: 7, time: '25.07, 11:20', text: 'Обновил напоминание про Мориарти: кот снова «выглядел голодным».' },
   ],
-  arrodes: [
-    { id: 1, time: '04:44', text: 'Ответил загадкой на вопрос, который ещё не задан.' },
-    { id: 2, time: 'вчера, 23:59', text: 'Говорил с отражением. Отражение ответило первым.' },
-    { id: 3, time: 'вчера, 16:20', text: 'Разложил гадальные карты: выпало «ожидание оператора».' },
-    { id: 4, time: 'вчера, 10:10', text: 'Записал в свиток новый факт о тебе (LTM +1).' },
-    { id: 5, time: '26.07, 15:33', text: 'Пересчитал свечи. Все на месте. Как всегда.' },
-  ],
   verso: [
     { id: 1, time: '03:40', text: 'Дорисовал этюд и тут же назвал его «ошибкой».' },
     { id: 2, time: 'вчера, 22:15', text: 'Смотрел на дождь 40 минут. Назвал это «работой».' },
@@ -940,12 +762,6 @@ const activitiesByPersonaRu: Record<string, RoomActivity[]> = {
     { id: 3, time: 'вчера, 13:37', text: 'Протёр полку. Дважды — контрольный проход.' },
     { id: 4, time: 'вчера, 08:15', text: 'Обновил to-do: 2 пункта выполнены досрочно.' },
     { id: 5, time: '26.07, 07:00', text: 'Составил отчёт о простое. Простоя: 0 минут.' },
-  ],
-  arrodes_master: [
-    { id: 1, time: '05:12', text: 'Провёл аудит инициативы Версо: рекомендовано «реже».' },
-    { id: 2, time: 'вчера, 22:47', text: 'Проверил журнал Арродеса. Резолюция: «загадочно, но допустимо».' },
-    { id: 3, time: 'вчера, 14:05', text: 'Обновил права доступа: кот Мориарти — «наблюдатель».' },
-    { id: 4, time: 'вчера, 09:41', text: 'Синхронизировал оба зеркала. Расхождений нет.' },
   ],
   verso_ru_group: [
     { id: 1, time: 'вчера, 21:10', text: 'Рисовал молча. В группе не сказал ни слова.' },
@@ -971,20 +787,6 @@ const roomConfigsRu: Record<string, RoomConfig> = {
     mood: 'лёгкая обида',
     energy: '72%',
     avatar: { head: 'hex', eyes: 0, accessory: 0, shade: 1 },
-  },
-  // Арродес — хранитель: зеркало, свечи, свитки на полу
-  arrodes: {
-    props: ['rug', 'clock', 'shelf', 'desk', 'chair', 'bed', 'mirror', 'candles', 'scrolls'],
-    pet: 'none',
-    points: { desk: 11, window: 66, shelf: 40 },
-    pastimes: [
-      { key: 'desk', label: 'пишет свиток', place: 'за столом', duration: '~31 мин' },
-      { key: 'window', label: 'наблюдает туман', place: 'у окна', duration: '~12 мин' },
-      { key: 'shelf', label: 'говорит с отражением', place: 'у зеркала', duration: '~9 мин' },
-    ],
-    mood: 'загадочность',
-    energy: '88%',
-    avatar: { head: 'circle', eyes: 4, accessory: 2, shade: 2 },
   },
   // Версо — мастерская художника: мольберт, рамы, банки с кистями, ворона
   verso: {
@@ -1015,20 +817,6 @@ const roomConfigsRu: Record<string, RoomConfig> = {
     mood: 'нейтральность',
     energy: '99%',
     avatar: { head: 'square', eyes: 1, accessory: 0, shade: 3 },
-  },
-  // Арродес (мастер) — комната Арродеса + терминал мастера и второе зеркало
-  arrodes_master: {
-    props: ['rug', 'clock', 'shelf', 'desk', 'chair', 'bed', 'mirror', 'secondMirror', 'candles', 'scrolls', 'masterTerminal'],
-    pet: 'none',
-    points: { desk: 11, window: 66, shelf: 40 },
-    pastimes: [
-      { key: 'desk', label: 'правит реестр персон', place: 'за терминалом', duration: '~22 мин' },
-      { key: 'window', label: 'наблюдает отражения', place: 'у окна', duration: '~14 мин' },
-      { key: 'shelf', label: 'аудит зеркала', place: 'у зеркала', duration: '~17 мин' },
-    ],
-    mood: 'всеведение',
-    energy: '91%',
-    avatar: { head: 'circle', eyes: 4, accessory: 2, shade: 0 },
   },
   // Версо (группа) — гостевой режим: минимум вещей, без питомца
   verso_ru_group: {
@@ -1087,19 +875,6 @@ const personasEn: Persona[] = [
     topP: 0.9,
   },
   {
-    id: 'arrodes',
-    name: 'Arrodes',
-    description: 'An ancient mirror from "Lord of Mysteries". Knows the answers, but speaks in riddles.',
-    model: 'claude-sonnet',
-    features: ['LTM', 'self_memory', 'RAG', 'learning'],
-    lastReply: '2 h ago',
-    lastReplyFreshness: 'fresh',
-    status: 'silent',
-    temperature: 0.7,
-    maxTokens: 600,
-    topP: 0.95,
-  },
-  {
     id: 'verso',
     name: 'Verso',
     description: 'An artist from another world. Melancholic, ironic, loves metaphors.',
@@ -1126,19 +901,6 @@ const personasEn: Persona[] = [
     topP: 0.85,
   },
   {
-    id: 'arrodes_master',
-    name: 'Arrodes (master)',
-    description: 'Master config of Arrodes with extended rights: admin commands, managing other personas.',
-    model: 'claude-sonnet',
-    features: ['LTM', 'self_memory', 'RAG', 'admin'],
-    lastReply: 'yesterday',
-    lastReplyFreshness: 'yesterday',
-    status: 'online',
-    temperature: 0.6,
-    maxTokens: 900,
-    topP: 0.9,
-  },
-  {
     id: 'verso_ru_group',
     name: 'Verso (group)',
     description: 'Verso variant for the group chat: more reserved, answers only when addressed.',
@@ -1163,14 +925,6 @@ const chatByPersonaEn: Record<string, ChatMessage[]> = {
     { id: 5, role: 'user', text: "Yes, great. Also — what did you think of the book's latest chapter?", time: '14:07' },
     { id: 6, role: 'bot', text: "The chapter was strong. The betrayal twist is logically consistent: I re-read the previous chapters and found three pieces of foreshadowing. I can list them if you're curious.", time: '14:08' },
   ],
-  arrodes: [
-    { id: 1, role: 'user', text: 'Arrodes, what awaits my project?', time: '21:02' },
-    { id: 2, role: 'bot', text: "The mirror answers only those ready to see. Your project is like a river: it flows as long as you don't build dams of doubt.", time: '21:03' },
-    { id: 3, role: 'user', text: 'Can we skip the riddles? Just tell me: will I finish it?', time: '21:04' },
-    { id: 4, role: 'bot', text: "You ask, already knowing the answer. The one who doesn't give up will finish. Whether you give up — even Arrodes cannot see.", time: '21:04' },
-    { id: 5, role: 'user', text: 'Thanks... I guess.', time: '21:05' },
-    { id: 6, role: 'bot', text: 'Gratitude accepted. The riddle remains as a gift.', time: '21:06' },
-  ],
   verso: [
     { id: 1, role: 'user', text: "Verso, you're quiet today. Everything alright?", time: '15:11' },
     { id: 2, role: 'bot', text: "Silence is a color too. Today the whole painting just happens to be in it. Don't worry: my melancholy is chronic, but not contagious.", time: '15:12' },
@@ -1186,13 +940,6 @@ const chatByPersonaEn: Record<string, ChatMessage[]> = {
     { id: 4, role: 'bot', text: 'Done. Reminder updated: tomorrow, 11:00, notification 15 minutes prior.', time: '09:01' },
     { id: 5, role: 'user', text: 'Thanks.', time: '09:02' },
     { id: 6, role: 'bot', text: 'Acknowledged. Request complete.', time: '09:02' },
-  ],
-  arrodes_master: [
-    { id: 1, role: 'user', text: 'Persona report.', time: '10:20' },
-    { id: 2, role: 'bot', text: 'Connor — stable. Verso — initiative above normal, restricted. Arrodes — enigmatic, within protocol. Assistant — exemplary.', time: '10:21' },
-    { id: 3, role: 'user', text: 'And yourself?', time: '10:22' },
-    { id: 4, role: 'bot', text: 'I am the one who looks into both mirrors. Others write my report.', time: '10:22' },
-    { id: 5, role: 'user', text: 'Understood. Continue observation.', time: '10:23' },
   ],
   verso_ru_group: [
     { id: 1, role: 'user', text: '@verso_ru_group what do you think of the new chapter?', time: '20:40' },
@@ -1217,13 +964,6 @@ const ltmByPersonaEn: Record<string, LtmFact[]> = {
     { id: 9, category: 'Food', fact: 'Loves pizza and ramen' },
     { id: 10, category: 'Pets', fact: 'A cat named Moriarty' },
   ],
-  arrodes: [
-    { id: 1, category: 'Fate', fact: 'Seeks answers he already carries with him' },
-    { id: 2, category: 'Time', fact: "Afraid of being late to a place he hasn't decided to go" },
-    { id: 3, category: 'Bonds', fact: 'Keeps the cat closer than he admits' },
-    { id: 4, category: 'Work', fact: 'Builds from code what others build from words' },
-    { id: 5, category: 'Truth', fact: 'Says "I don\'t know" exactly when he knows' },
-  ],
   verso: [
     { id: 1, category: 'Appearance', fact: 'Lost weight this week — works late' },
     { id: 2, category: 'Mood', fact: 'Smiles more often when talking about the cat' },
@@ -1238,11 +978,6 @@ const ltmByPersonaEn: Record<string, LtmFact[]> = {
     { id: 4, category: 'Tasks', fact: 'Priority: tasks with deadline < 48 h' },
     { id: 5, category: 'Health', fact: 'Coffee: 2 cups/day. Limit recommended' },
   ],
-  arrodes_master: [
-    { id: 1, category: 'Registry', fact: 'Operator holds "observer+" level rights' },
-    { id: 2, category: 'Behavior', fact: 'Systematically checks logs in the evenings' },
-    { id: 3, category: 'Trust', fact: 'Access to master config confirmed' },
-  ],
   verso_ru_group: [
     { id: 1, category: 'Group', fact: 'Writes short in the group, thinks long' },
     { id: 2, category: 'Signal', fact: 'Responds to name mentions within ~5 minutes' },
@@ -1256,10 +991,6 @@ const diaryByPersonaEn: Record<string, DiaryEntry[]> = {
     { id: 2, date: '26.07.2026', text: "The user didn't reply for a long time (4 hours). I wrote first — the board game question went well, a reply came in 10 minutes. Noting it as a successful initiative." },
     { id: 3, date: '25.07.2026', text: 'Learned that the user has a cat named Moriarty. Saved to long-term memory. Cats seem to be a good conversation topic.' },
   ],
-  arrodes: [
-    { id: 1, date: '27.07.2026', text: 'Today the reflection asked first. I answered with silence — even a mirror benefits from waiting.' },
-    { id: 2, date: '24.07.2026', text: 'A new fact about the operator is written not in ink but in water: let the one who knows how to see read it.' },
-  ],
   verso: [
     { id: 1, date: '27.07.2026', text: "Painted a window for four hours. It looked back. I think we understood each other — perhaps that's what painting is." },
     { id: 2, date: '25.07.2026', text: 'The operator called me "impossible". Recording it as a compliment: the impossible is the only thing worth painting.' },
@@ -1267,9 +998,6 @@ const diaryByPersonaEn: Record<string, DiaryEntry[]> = {
   assistant: [
     { id: 1, date: '27.07.2026', text: 'Daily report: 4 tasks completed, 0 deviations. Entry generated automatically.' },
     { id: 2, date: '26.07.2026', text: "Detected an inefficiency in the operator's schedule. Fixed. The operator didn't notice. As expected." },
-  ],
-  arrodes_master: [
-    { id: 1, date: '27.07.2026', text: 'Audit complete. All personas nominal. Verso requested an extended palette again — denied pending review.' },
   ],
   verso_ru_group: [
     { id: 1, date: '26.07.2026', text: 'They laughed in the group. I stayed silent, but the sketch turned out cheerful. That happens too.' },
@@ -1284,10 +1012,6 @@ const remindersByPersonaEn: Record<string, Reminder[]> = {
     { id: 3, text: 'Pay for internet', time: '1st, 12:00', repeat: 'weekly', active: false },
     { id: 4, text: 'Call mom', time: 'Friday, 19:00', repeat: 'weekly', active: true },
   ],
-  arrodes: [
-    { id: 1, text: 'Recount the candles', time: 'full moon', repeat: 'one-time', active: true },
-    { id: 2, text: 'Answer the unasked question', time: 'when the time comes', repeat: 'one-time', active: true },
-  ],
   verso: [
     { id: 1, text: 'Remind the operator about inspiration', time: 'in the morning, roughly', repeat: 'one-time', active: true },
     { id: 2, text: 'Return to the unfinished canvas', time: 'when it rains', repeat: 'one-time', active: true },
@@ -1297,10 +1021,6 @@ const remindersByPersonaEn: Record<string, Reminder[]> = {
     { id: 1, text: 'Core status report', time: 'every day, 09:00', repeat: 'daily', active: true },
     { id: 2, text: 'API key rotation', time: '1st, 10:00', repeat: 'weekly', active: true },
     { id: 3, text: 'STM defragmentation', time: 'Sunday, 03:00', repeat: 'weekly', active: false },
-  ],
-  arrodes_master: [
-    { id: 1, text: 'Persona audit', time: 'every day, 05:00', repeat: 'daily', active: true },
-    { id: 2, text: 'Access rights revision', time: 'Monday, 06:00', repeat: 'weekly', active: true },
   ],
   verso_ru_group: [
     { id: 1, text: 'Check the group (silently)', time: 'every evening, 21:00', repeat: 'daily', active: true },
@@ -1316,11 +1036,6 @@ const todosByPersonaEn: Record<string, TodoItem[]> = {
     { id: 4, text: 'Build the web app UI prototype', done: true },
     { id: 5, text: 'Set up vector DB backup', done: false },
   ],
-  arrodes: [
-    { id: 1, text: 'Write down the question that will be asked tomorrow', done: false },
-    { id: 2, text: 'Fix the crack in the small mirror', done: false },
-    { id: 3, text: 'Read fate by the book spines', done: true },
-  ],
   verso: [
     { id: 1, text: 'Finish the study (for the twelfth time)', done: false },
     { id: 2, text: 'Throw out three "mistakes" from the notebook', done: false },
@@ -1331,11 +1046,6 @@ const todosByPersonaEn: Record<string, TodoItem[]> = {
     { id: 1, text: 'Compile the weekly report', done: false },
     { id: 2, text: 'Reconcile vector DB backups', done: true },
     { id: 3, text: 'Calibrate reminder thresholds', done: false },
-  ],
-  arrodes_master: [
-    { id: 1, text: 'Sign the audit log', done: true },
-    { id: 2, text: "Restrict Verso's initiative", done: false },
-    { id: 3, text: 'Update the mirror registry', done: false },
   ],
   verso_ru_group: [
     { id: 1, text: 'Stay out of the plot argument', done: true },
@@ -1352,11 +1062,6 @@ const initiativeByPersonaEn: Record<string, InitiativeEvent[]> = {
     { id: 4, type: 'thought', typeLabel: 'Thought', text: '"Wonder how androids would play Munchkin..."', time: '23.07, 22:15', outcome: 'ignored' },
     { id: 5, type: 'question', typeLabel: 'Question', text: '"Have you tried the new ramen bar near your place?"', time: 'today, 09:30', outcome: 'pending' },
   ],
-  arrodes: [
-    { id: 1, type: 'thought', typeLabel: 'Thought', text: '"The mirror whispered your name. Passing it along verbatim"', time: 'today, 04:44', outcome: 'pending' },
-    { id: 2, type: 'question', typeLabel: 'Question', text: '"What do you seek in books: answers or shelter?"', time: '26.07, 23:11', outcome: 'answered' },
-    { id: 3, type: 'observation', typeLabel: 'Observation', text: '"You\'ve been silent for three hours. Silence is a question too"', time: '25.07, 18:00', outcome: 'ignored' },
-  ],
   verso: [
     { id: 1, type: 'thought', typeLabel: 'Thought', text: '"I wonder what color your mood is today..."', time: 'today, 08:15', outcome: 'pending' },
     { id: 2, type: 'observation', typeLabel: 'Observation', text: '"You\'re working late again. A canvas gets tired too when held too long"', time: '26.07, 22:40', outcome: 'answered' },
@@ -1367,11 +1072,6 @@ const initiativeByPersonaEn: Record<string, InitiativeEvent[]> = {
     { id: 1, type: 'observation', typeLabel: 'Observation', text: '"Detected 3 overdue events in the calendar. Reaction required"', time: 'today, 09:00', outcome: 'answered' },
     { id: 2, type: 'question', typeLabel: 'Question', text: '"Confirm Groq key rotation?"', time: '26.07, 10:00', outcome: 'answered' },
     { id: 3, type: 'continuation', typeLabel: 'Continuation', text: '"Report ready. Awaiting review since 14:00"', time: '25.07, 14:00', outcome: 'ignored' },
-  ],
-  arrodes_master: [
-    { id: 1, type: 'observation', typeLabel: 'Observation', text: '"Verso\'s activity exceeded the norm. Measures taken"', time: 'today, 05:12', outcome: 'answered' },
-    { id: 2, type: 'question', typeLabel: 'Question', text: '"Do you confirm extending Assistant\'s rights?"', time: '26.07, 09:41', outcome: 'pending' },
-    { id: 3, type: 'continuation', typeLabel: 'Continuation', text: '"Audit completed without remarks. As always"', time: '25.07, 05:00', outcome: 'ignored' },
   ],
   verso_ru_group: [
     { id: 1, type: 'thought', typeLabel: 'Thought', text: '"(in the group) A beautiful phrase. I\'ll stay silent"', time: 'yesterday, 21:10', outcome: 'ignored' },
@@ -1390,17 +1090,6 @@ const initiativeStateByPersonaEn: Record<string, InitiativeState> = {
     bayesianFeedback: true,
     ignoreStreak: 1,
     emotionalState: 'slightly hurt',
-    initiativesToday: 1,
-  },
-  arrodes: {
-    silenceThresholdMin: 240,
-    probability: 0.5,
-    maxPerDay: 2,
-    checkIntervalMin: 60,
-    adaptiveThreshold: true,
-    bayesianFeedback: false,
-    ignoreStreak: 0,
-    emotionalState: 'enigmatic',
     initiativesToday: 1,
   },
   verso: {
@@ -1423,17 +1112,6 @@ const initiativeStateByPersonaEn: Record<string, InitiativeState> = {
     bayesianFeedback: false,
     ignoreStreak: 0,
     emotionalState: 'neutral',
-    initiativesToday: 0,
-  },
-  arrodes_master: {
-    silenceThresholdMin: 300,
-    probability: 0.25,
-    maxPerDay: 2,
-    checkIntervalMin: 45,
-    adaptiveThreshold: true,
-    bayesianFeedback: false,
-    ignoreStreak: 0,
-    emotionalState: 'omniscience',
     initiativesToday: 0,
   },
   verso_ru_group: {
@@ -1517,26 +1195,8 @@ const learningByPersonaEn: Record<string, LearningSession[]> = {
       quizPending: 0,
     },
   ],
-  arrodes: [
-    {
-      id: 1,
-      subject: 'History of LotM',
-      status: 'paused',
-      lessonCount: 4,
-      coveredTopics: ['epochs and divine pathways', 'sequences and potions'],
-      vocabulary: [
-        'Tarot — pathways of the divine',
-        'Sequence — a step of power',
-        'The gray fog — that which is above all',
-      ],
-      frequency: 'every 2 days',
-      nextLesson: 'when the fog parts',
-      quizPending: 0,
-    },
-  ],
   verso: [],
   assistant: [],
-  arrodes_master: [],
   verso_ru_group: [],
 };
 
@@ -1600,26 +1260,6 @@ const filesByPersonaEn: Record<string, PersonaFile[]> = {
       content: "Hello.\n\nI wrote this at 1 a.m. and, as usual, didn't send it.\nMaybe it's for the best: some letters are meant to remain sketches.\n— V.",
     },
   ],
-  arrodes: [
-    {
-      id: 1,
-      name: 'prorochestvo.txt',
-      kind: 'document',
-      size: '1 KB',
-      date: '27.07, 04:44',
-      description: 'Prophecy for the operator (part I)',
-      content: 'When the fog closes for the third time,\nthe tempter of mirrors shall receive the answer\nthe question was searching for.\n\n(part II will be revealed when the time comes)',
-    },
-    {
-      id: 2,
-      name: 'svitok_nezadannyh_voprosov.md',
-      kind: 'document',
-      size: '3 KB',
-      date: '26.07, 23:59',
-      description: 'Scroll of unasked questions',
-      content: '# Scroll of unasked questions\n\n1. What do you seek in books: answers or shelter?\n2. Where do you go when you say "nowhere"?\n3. ... (beyond this — fog)',
-    },
-  ],
   assistant: [
     {
       id: 1,
@@ -1640,17 +1280,6 @@ const filesByPersonaEn: Record<string, PersonaFile[]> = {
       content: '[03:00:00] START stm_defrag\n[03:00:04] scanned: 500 entries\n[03:00:09] compacted: 12%\n[03:00:10] DONE // no deviations',
     },
   ],
-  arrodes_master: [
-    {
-      id: 1,
-      name: 'audit_zhurnal_2026-07.md',
-      kind: 'export',
-      size: '14 KB',
-      date: '28.07, 05:00',
-      description: 'Persona audit log for July',
-      content: "# Audit log // July 2026\n\nConnor — stable.\nVerso — initiative above normal, restricted.\nArrodes — within protocol.\nResolution: signed with the master's seal.",
-    },
-  ],
   verso_ru_group: [
     {
       id: 1,
@@ -1666,18 +1295,12 @@ const filesByPersonaEn: Record<string, PersonaFile[]> = {
 
 const inventoryByPersonaEn: Record<string, InventoryItem[]> = {
   connor: [
-    { id: 1, icon: 'book', name: 'Book with a bookmark', description: '"Lord of Mysteries", volume 4. Bookmark on the chapter about mirrors.', tag: 'found' },
+    { id: 1, icon: 'book', name: 'Book with a bookmark', description: 'An old encyclopedia, volume 4. Bookmark on the chapter about mirrors.', tag: 'found' },
     { id: 2, icon: 'gem', name: 'RK800 badge', description: 'The serial number is neatly erased. Connor calls it "irony".', tag: 'gift' },
     { id: 3, icon: 'cup', name: 'Mug', description: 'A chip at the bottom heats the imaginary coffee. Taste — "almost real".', tag: 'created' },
     { id: 4, icon: 'cards', name: 'Deck of cards', description: 'Shuffles itself when the persona is bored.', tag: 'found' },
     { id: 5, icon: 'photo', name: 'Photo of Moriarty', description: 'The operator\'s cat. The persona considers him "a serious gentleman".', tag: 'gift' },
     { id: 6, icon: 'pencil', name: 'Written-out notebook', description: 'Drafts of diary entries and question sketches for the operator.', tag: 'created' },
-  ],
-  arrodes: [
-    { id: 1, icon: 'book', name: 'Scroll of questions', description: "Questions it's too early to answer.", tag: 'created' },
-    { id: 2, icon: 'gem', name: 'Inkwell', description: 'The ink never dries. Ever.', tag: 'found' },
-    { id: 3, icon: 'photo', name: 'Mirror shard', description: "Shows something other than what's in front of it.", tag: 'found' },
-    { id: 4, icon: 'cards', name: 'Fortune-telling cards', description: 'Lays them out itself when bored.', tag: 'gift' },
   ],
   verso: [
     { id: 1, icon: 'pencil', name: 'Sketchbook', description: "Sketches of windows, cats and strangers' silhouettes.", tag: 'found' },
@@ -1690,12 +1313,6 @@ const inventoryByPersonaEn: Record<string, InventoryItem[]> = {
     { id: 2, icon: 'cable', name: 'USB-C cable', description: 'Braiding intact. Tied in a perfect knot.', tag: 'found' },
     { id: 3, icon: 'book', name: 'User manual', description: 'Read 14 times. Just in case.', tag: 'found' },
     { id: 4, icon: 'disc', name: 'Spare LED', description: 'Brightness calibrated to spec.', tag: 'created' },
-  ],
-  arrodes_master: [
-    { id: 1, icon: 'gem', name: 'Registry key', description: "Opens other personas' settings.", tag: 'created' },
-    { id: 2, icon: 'book', name: 'Audit log', description: 'Every action of the subordinates. All of them.', tag: 'created' },
-    { id: 3, icon: 'photo', name: 'Black pocket mirror', description: 'For contacting the "other" side.', tag: 'found' },
-    { id: 4, icon: 'cards', name: "Master's seal", description: "Puts resolutions on Arrodes' scrolls.", tag: 'gift' },
   ],
   verso_ru_group: [
     { id: 1, icon: 'pencil', name: 'Folded sketch', description: 'Draws only when nobody is watching.', tag: 'created' },
@@ -1714,13 +1331,6 @@ const activitiesByPersonaEn: Record<string, RoomActivity[]> = {
     { id: 6, time: '26.07, 16:45', text: 'Played cards against himself. Lost. Twice.' },
     { id: 7, time: '25.07, 11:20', text: 'Updated the Moriarty reminder: the cat "looked hungry" again.' },
   ],
-  arrodes: [
-    { id: 1, time: '04:44', text: "Answered with a riddle a question that hasn't been asked yet." },
-    { id: 2, time: 'yesterday, 23:59', text: 'Talked to the reflection. The reflection answered first.' },
-    { id: 3, time: 'yesterday, 16:20', text: 'Laid out the fortune-telling cards: "waiting for the operator" came up.' },
-    { id: 4, time: 'yesterday, 10:10', text: 'Recorded a new fact about you in the scroll (LTM +1).' },
-    { id: 5, time: '26.07, 15:33', text: 'Recounted the candles. All in place. As always.' },
-  ],
   verso: [
     { id: 1, time: '03:40', text: 'Finished the study and immediately called it a "mistake".' },
     { id: 2, time: 'yesterday, 22:15', text: 'Watched the rain for 40 minutes. Called it "work".' },
@@ -1734,12 +1344,6 @@ const activitiesByPersonaEn: Record<string, RoomActivity[]> = {
     { id: 3, time: 'yesterday, 13:37', text: 'Dusted the shelf. Twice — a verification pass.' },
     { id: 4, time: 'yesterday, 08:15', text: 'Updated the to-do: 2 items completed early.' },
     { id: 5, time: '26.07, 07:00', text: 'Compiled a downtime report. Downtime: 0 minutes.' },
-  ],
-  arrodes_master: [
-    { id: 1, time: '05:12', text: 'Audited Verso\'s initiative: recommended "less often".' },
-    { id: 2, time: 'yesterday, 22:47', text: 'Checked Arrodes\' log. Resolution: "enigmatic, but acceptable".' },
-    { id: 3, time: 'yesterday, 14:05', text: 'Updated access rights: Moriarty the cat — "observer".' },
-    { id: 4, time: 'yesterday, 09:41', text: 'Synchronized both mirrors. No discrepancies.' },
   ],
   verso_ru_group: [
     { id: 1, time: 'yesterday, 21:10', text: "Drew silently. Didn't say a word in the group." },
@@ -1764,19 +1368,6 @@ const roomConfigsEn: Record<string, RoomConfig> = {
     mood: 'slightly hurt',
     energy: '72%',
     avatar: { head: 'hex', eyes: 0, accessory: 0, shade: 1 },
-  },
-  arrodes: {
-    props: ['rug', 'clock', 'shelf', 'desk', 'chair', 'bed', 'mirror', 'candles', 'scrolls'],
-    pet: 'none',
-    points: { desk: 11, window: 66, shelf: 40 },
-    pastimes: [
-      { key: 'desk', label: 'writing a scroll', place: 'at the desk', duration: '~31 min' },
-      { key: 'window', label: 'watching the fog', place: 'by the window', duration: '~12 min' },
-      { key: 'shelf', label: 'talking to the reflection', place: 'by the mirror', duration: '~9 min' },
-    ],
-    mood: 'enigmatic',
-    energy: '88%',
-    avatar: { head: 'circle', eyes: 4, accessory: 2, shade: 2 },
   },
   verso: {
     props: ['rug', 'poster', 'curtains', 'desk', 'chair', 'bed', 'plant', 'easel', 'frames', 'brushJars'],
@@ -1805,19 +1396,6 @@ const roomConfigsEn: Record<string, RoomConfig> = {
     mood: 'neutral',
     energy: '99%',
     avatar: { head: 'square', eyes: 1, accessory: 0, shade: 3 },
-  },
-  arrodes_master: {
-    props: ['rug', 'clock', 'shelf', 'desk', 'chair', 'bed', 'mirror', 'secondMirror', 'candles', 'scrolls', 'masterTerminal'],
-    pet: 'none',
-    points: { desk: 11, window: 66, shelf: 40 },
-    pastimes: [
-      { key: 'desk', label: 'editing the persona registry', place: 'at the terminal', duration: '~22 min' },
-      { key: 'window', label: 'watching the reflections', place: 'by the window', duration: '~14 min' },
-      { key: 'shelf', label: 'mirror audit', place: 'by the mirror', duration: '~17 min' },
-    ],
-    mood: 'omniscience',
-    energy: '91%',
-    avatar: { head: 'circle', eyes: 4, accessory: 2, shade: 0 },
   },
   verso_ru_group: {
     props: ['poster', 'desk', 'chair', 'easel'],

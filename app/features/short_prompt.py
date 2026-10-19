@@ -13,6 +13,9 @@
 кладёт в data/<контекст>/short_prompt.json вместе с хэшем характера:
 поменялся характер — карточка составится заново. Своё описание можно
 задать в YAML персоны полем short_prompt — тогда модель не зовётся.
+У персоны с режимами (<персона>_modes/master.yaml, mortal.yaml —
+app/core/persona.py) карточка у каждого режима своя: по его характеру, в
+short_prompt.<режим>.json (или поле short_prompt файла режима).
 Составление — в фоне, по одной персоне за раз: пока карточки нет, телефон
 обходится началом полного характера.
 """
@@ -22,8 +25,10 @@ import logging
 import re
 import threading
 import time
+from typing import Optional
 
 from app.core.atomic_io import atomic_write_json, load_json_safe
+from app.core.dialog_scope import dialog_scope
 from app.core.language import language_name, persona_language
 from app.core.paths import data_dir
 
@@ -64,20 +69,27 @@ _state_lock = threading.Lock()
 _running: set[str] = set()      # контексты, для которых карточка составляется
 
 
-def _file(context: str):
-    return data_dir() / context / "short_prompt.json"
+def _file(context: str, mode: str = ""):
+    return data_dir() / context / (f"short_prompt.{mode}.json" if mode else "short_prompt.json")
 
 
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _character(bot) -> str:
+def _mode_data(bot, mode: str) -> dict:
+    modes = getattr(getattr(bot, "persona", None), "modes", None) or {}
+    return (modes.get(mode) or {}) if mode else {}
+
+
+def _character(bot, mode: str = "") -> str:
+    if mode:
+        return str(_mode_data(bot, mode).get("system_prompt") or "").strip()
     return str(getattr(getattr(bot, "persona", None), "system_prompt", "") or "").strip()
 
 
-def _own(bot) -> str:
-    data = getattr(getattr(bot, "persona", None), "persona_data", None) or {}
+def _own(bot, mode: str = "") -> str:
+    data = _mode_data(bot, mode) if mode else getattr(getattr(bot, "persona", None), "persona_data", None) or {}
     return str(data.get("short_prompt") or "").strip()
 
 
@@ -96,32 +108,36 @@ def clean_card(text: str) -> str:
     return text if len(text) >= CARD_MIN else ""
 
 
-def get_short_prompt(bot, start: bool = True) -> dict:
+def get_short_prompt(bot, start: bool = True, mode: Optional[str] = None) -> dict:
     """Краткое описание персоны для модели телефона →
     {text, source: 'yaml' | 'auto' | '', status, at, chars}:
     status — ready, pending (составляется), failed (не вышло, error — почему),
-    none (характера нет). start — не готово, так начать составлять в фоне."""
-    character = _character(bot)
+    none (характера нет). start — не готово, так начать составлять в фоне.
+    mode — режим собеседника (persona.mode_for): карточка по его характеру;
+    режима у персоны нет — общая."""
+    mode = mode if mode and _character(bot, mode) else ""
+    character = _character(bot, mode)
     chars = len(character)
-    own = _own(bot)
+    own = _own(bot, mode)
     if own:
         return {"text": own, "source": "yaml", "status": "ready", "at": 0, "chars": chars}
     if not character:
         return {"text": "", "source": "", "status": "none", "at": 0, "chars": 0}
     context = bot.context
+    job = f"{context}:{mode}" if mode else context
     digest = _hash(character)
-    saved = load_json_safe(_file(context), {}, label="ShortPrompt")
+    saved = load_json_safe(_file(context, mode), {}, label="ShortPrompt")
     if not isinstance(saved, dict):
         saved = {}
     if saved.get("hash") == digest and saved.get("text"):
         return {"text": saved["text"], "source": "auto", "status": "ready",
                 "at": float(saved.get("at") or 0), "chars": chars}
     with _state_lock:
-        running = context in _running
+        running = job in _running
     failed = saved.get("failed_hash") == digest
     retry = not failed or time.time() - float(saved.get("failed_at") or 0) >= RETRY_AFTER_SEC
     if start and not running and retry:
-        _start(bot, context, character, digest)
+        _start(bot, context, character, digest, mode)
         running = True
     out = {"text": "", "source": "", "status": "pending" if running else "failed",
            "at": 0, "chars": chars}
@@ -130,17 +146,19 @@ def get_short_prompt(bot, start: bool = True) -> dict:
     return out
 
 
-def _start(bot, context: str, character: str, digest: str) -> None:
+def _start(bot, context: str, character: str, digest: str, mode: str = "") -> None:
+    job = f"{context}:{mode}" if mode else context
     with _state_lock:
-        if context in _running:
+        if job in _running:
             return
-        _running.add(context)
-    threading.Thread(target=_generate, args=(bot, context, character, digest),
-                     name=f"short-prompt-{context}", daemon=True).start()
+        _running.add(job)
+    threading.Thread(target=_generate, args=(bot, context, character, digest, mode),
+                     name=f"short-prompt-{job}", daemon=True).start()
 
 
-def _generate(bot, context: str, character: str, digest: str) -> None:
-    path = _file(context)
+def _generate(bot, context: str, character: str, digest: str, mode: str = "") -> None:
+    path = _file(context, mode)
+    job = f"{context}:{mode}" if mode else context
     try:
         with _gen_lock:
             name = language_name(persona_language(character))
@@ -154,10 +172,13 @@ def _generate(bot, context: str, character: str, digest: str) -> None:
             error = ""
             try:
                 # Без локальной модели: Ollama на ноутбуке рядом с ботом тяжела,
-                # а маленькая модель сама плохо сожмёт характер
-                answer = bot.router.get_response(
-                    messages, temperature=0.4, max_tokens=1200, top_p=0.9,
-                    exclude_provider="local", timeout=180.0, webchat_channel="side")
+                # а маленькая модель сама плохо сожмёт характер. Свой тред
+                # веб-чата у каждой карточки: в общем сайт помнит прошлые ходы,
+                # и карточка режима смешалась бы с общей или с другим режимом
+                with dialog_scope(f"short-prompt:{mode or 'persona'}"):
+                    answer = bot.router.get_response(
+                        messages, temperature=0.4, max_tokens=1200, top_p=0.9,
+                        exclude_provider="local", timeout=180.0, webchat_channel="side")
             except Exception as e:
                 error = str(e)[:200]
             card = clean_card(answer or "")
@@ -166,16 +187,16 @@ def _generate(bot, context: str, character: str, digest: str) -> None:
                 saved = {}
             if card:
                 saved = {"hash": digest, "text": card, "at": time.time()}
-                logger.info(f"[ShortPrompt] {context}: краткое описание составлено "
+                logger.info(f"[ShortPrompt] {job}: краткое описание составлено "
                             f"({len(card)} из {len(character)} символов)")
             else:
                 error = error or ("модель не ответила" if not answer else "ответ модели не подошёл")
                 saved.update({"failed_hash": digest, "failed_at": time.time(), "error": error})
-                logger.warning(f"[ShortPrompt] {context}: краткое описание не составлено — {error}")
+                logger.warning(f"[ShortPrompt] {job}: краткое описание не составлено — {error}")
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(path, saved)
     except Exception as e:
-        logger.warning(f"[ShortPrompt] {context}: ошибка составления: {e}")
+        logger.warning(f"[ShortPrompt] {job}: ошибка составления: {e}")
     finally:
         with _state_lock:
-            _running.discard(context)
+            _running.discard(job)

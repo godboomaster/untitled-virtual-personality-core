@@ -240,9 +240,12 @@ export default function OfflineCard() {
   let line = t('offline.model.none');
   if (status?.downloading) line = t('offline.model.downloading', { got: gb(status.bytes), total: gb(status.total || MODEL_BYTES) });
   else if (status?.downloaded) {
-    line = t('offline.model.ready', { size: gb(status.size) });
+    // Модель одна на телефон: своей нет, а в приложении Арродеса есть — считает оно
+    line = status.via === 'peer' ? t('offline.model.peer', { size: gb(status.size) }) : t('offline.model.ready', { size: gb(status.size) });
     if (status.loaded) line += ` · ${t('offline.model.loaded', { backend: (status.backend ?? '').toUpperCase() })}`;
   } else if (status && status.partial > 0) line = t('offline.model.partial', { got: gb(status.partial) });
+  // Удалить можно только свою (модель Арродеса — его)
+  const own = status ? (status.own ?? status.downloaded) : false;
 
   const lowSpace = status && !status.downloaded && status.freeBytes > 0 && status.freeBytes < MODEL_BYTES - status.partial + 3e8;
 
@@ -264,7 +267,7 @@ export default function OfflineCard() {
               {t('offline.model.cancel')}
             </button>
           )}
-          {status?.downloaded && (
+          {own && (
             <button type="button" className="btn btn--ghost btn--chip" onClick={() => void remove()}>
               {t('offline.model.delete')}
             </button>

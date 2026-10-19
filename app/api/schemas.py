@@ -333,6 +333,22 @@ class WebchatRequest(BaseModel):
     site: str | None = None  # legacy: один сайт веб-чата; ""/off — выкл
 
 
+class LocalDeviceRequest(BaseModel):
+    device: str  # где работает Gemma локальных задач: "pc" | "phone"
+
+
+class PhoneLlmResult(BaseModel):
+    # Ответ Gemma телефона на задачу из GET /api/phone-llm/next
+    worker: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    id: str = Field(min_length=1, max_length=32)
+    text: str | None = Field(None, max_length=20000)
+    error: str | None = Field(None, max_length=500)
+    backend: str | None = Field(None, max_length=16)  # "gpu" | "cpu"
+    ms: float | None = None
+    # Не начата — вернуть в очередь другому исполнителю (приложение свернулось)
+    release: bool = False
+
+
 class PersonaLocalTasksUpdate(BaseModel):
     # Движки служебных задач персоны (llm.local_tasks): одна задача и/или
     # веб-чат фоновых задач

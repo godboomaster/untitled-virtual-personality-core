@@ -170,6 +170,11 @@ def test_kit():
                            "recall_head": STM_RELEVANT_HEAD, "recall": STM_RELEVANT_RULE})
     check("строка досье — как в ответе ядра (чат и собеседник)",
           kit["dossier"].startswith("Known about the user") and ("dossier", "web_user", "web_user") in bot.calls)
+    bot.persona._get_special_user_note = lambda uid: "\n\nWHO IS WRITING TO YOU NOW: special" if uid == "web_user" else None
+    kit_who = offline_api.build_kit(bot, "connor", "web_user", "web_user")
+    del bot.persona._get_special_user_note
+    check("кто пишет (особый собеседник) — перед досье, как в ответе ядра",
+          kit_who["dossier"].startswith("WHO IS WRITING TO YOU NOW: special\n\nKnown about the user"))
     check("личная память персоны — блок ядра", kit["self_memory"].startswith("[PERSONAL MEMORY"))
     notes = kit["notes"]
     check("заметки о напоминаниях — без экранирования {{ }}, с подстановками",

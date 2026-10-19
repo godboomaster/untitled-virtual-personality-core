@@ -77,6 +77,14 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+        <!-- Gemma одна на два приложения (ядра и Арродеса): у кого модель, тот
+             и считает для соседа (PhoneGemmaPeer). Открыта, чтобы сосед мог
+             привязаться; запросы служба принимает только от приложения с той же
+             подписью (checkSignatures) — выпускные сборки обоих подписывать
+             одним ключом -->
+        <service
+            android:name=".PhoneGemmaService"
+            android:exported="true" />
         <!-- Gemma на телефоне (LiteRT-LM) на видеоядре; нет библиотек — на процессоре -->
         <uses-native-library android:name="libvndksupport.so" android:required="false" />
         <uses-native-library android:name="libOpenCL.so" android:required="false" />
@@ -119,6 +127,9 @@
          и isRecognitionAvailable() отвечает «нет»; без IMAGE_CAPTURE Capacitor
          не находит камеру и кнопка камеры в чате открывает галерею -->
     <queries>
+        <!-- Соседнее приложение с Gemma (PhoneGemmaPeer): ядра ↔ Арродес -->
+        <package android:name="io.vpcore.app" />
+        <package android:name="dev.arrodes.app" />
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>

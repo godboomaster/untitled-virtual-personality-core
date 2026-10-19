@@ -16,6 +16,18 @@ side). Веб-чаты не ответили — мягкий откат на Ol
 выбор движков: get_local_router(context) — вид роутера, привязанный к
 персоне (bind_persona). Без привязки — дефолт LOCAL_LLM_BACKEND из env
 (ollama) для всех задач.
+
+Где работает Gemma движка «ollama» — общая настройка LOCAL_LLM_DEVICE: «pc»
+— Ollama на ноутбуке, «phone» — Gemma в приложении на телефоне
+(app/core/phone_llm). На телефон идут только задачи на пути ответа: фоновые
+(BACKGROUND_TASKS) остаются за Ollama ноутбука — их длинные промпты
+(состояние, мир, дневник) телефон не считал за 15 с, а очередь его одна, и
+подзапросы книжного поиска стояли за ними (замер 19.10). Вызов без задачи
+(основной ответ персоны при откате на локальную модель) — тоже телефону.
+За Ollama остаются задачи только для Ollama (OCR: телефону картинку не
+отдаём) и приватные страницы режима управления (PRIVATE_TASK: их текст не
+уходит с компьютера). Телефон приходит только в процесс API — в процессе
+Telegram-ботов всё идёт Ollama, как при «pc».
 """
 
 import logging
@@ -26,6 +38,7 @@ from typing import Optional
 
 import httpx
 
+from app.core import phone_llm
 from app.core.config import OLLAMA_MODEL
 from app.core.language import detect_language, user_language_line
 
@@ -64,6 +77,10 @@ LOCAL_TASKS: dict[str, bool] = {
 # (шаг опроса POLL_SEC × STABLE_POLLS). offline_summary формально на пути
 # ответа (контекст первой реплики после отсутствия ≥12 ч), но редкий — в фоне
 # по выбору: лишние секунды раз в полдня дешевле, чем держать Gemma.
+# Вызов приватной страницы режима управления (cc_privacy.PrivateRouter): не
+# задача настроек, а метка — при Gemma на телефоне он остаётся за Ollama
+PRIVATE_TASK = "private_page"
+
 BACKGROUND_TASKS: set[str] = {
     "self_memory", "state_engine", "world_engine", "offline_summary",
     "proactive_prefilter", "dossier", "dialogue_harvest",
@@ -218,6 +235,19 @@ class LocalLLMRouter:
             )
 
     # ── движки задач: выбор на персону ──
+
+    @staticmethod
+    def _on_phone(task: Optional[str]) -> bool:
+        # Gemma на телефоне — только задачам на пути ответа (см. docstring модуля)
+        return (phone_llm.device() == "phone" and phone_llm.served()
+                and task not in BACKGROUND_TASKS and task != PRIVATE_TASK
+                and not LOCAL_TASKS.get(task))
+
+    def answers_on_phone(self) -> bool:
+        """Основной ответ при откате на локальную модель идёт телефону: ядро
+        без облака и веб-чатов не отказывает, даже если телефон ещё не
+        пришёл (ModelRouter)."""
+        return self._on_phone(None)
 
     def _default_backend(self) -> str:
         # Движок задач без привязки к персоне: LOCAL_LLM_BACKEND (дефолт ollama).
@@ -404,6 +434,8 @@ class LocalLLMRouter:
         backend, _sites = self._resolve_task(task, persona)
         if backend == "webchat":
             return True
+        if self._on_phone(task):
+            return phone_llm.online()
         if self._available:
             return True
         # Ollama могла стартовать после бота — пере-проверяем не чаще раза в 30 сек
@@ -476,6 +508,11 @@ class LocalLLMRouter:
                 f"[LocalLLM] Веб-чаты задачи «{task or 'default'}» "
                 f"({', '.join(sites)}) не ответили — пробуем Ollama, если доступна")
 
+        if self._on_phone(task):
+            return phone_llm.chat(messages, max_tokens=max_tokens,
+                                  temperature=temperature,
+                                  timeout=timeout or self.timeout, task=task)
+
         if not self._available:
             return None
 
@@ -525,6 +562,32 @@ class LocalLLMRouter:
         except Exception as e:
             logger.warning(f"[LocalLLM] Ошибка запроса: {e}")
             return None
+
+    def warm(self, task: Optional[str] = None,
+             persona: Optional[str] = None) -> None:
+        """Загрузить Gemma задачи заранее, без ожидания: вызов пойдёт к ней
+        через доли секунды, а загрузка на телефоне — 10–20 с, у Ollama после
+        простоя — пара секунд. Веб-чату прогрев не нужен."""
+        backend, _sites = self._resolve_task(task, persona)
+        if backend == "webchat":
+            return
+        if self._on_phone(task):
+            phone_llm.warm()
+            return
+        if not self._available:
+            return
+
+        def _load():
+            # Запрос без промпта только загружает модель
+            try:
+                self._client.post(f"{self.base_url}/api/generate", timeout=30.0, json={
+                    "model": self.model,
+                    "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "2m"),
+                    "options": {"num_ctx": int(os.getenv("OLLAMA_NUM_CTX", "8192"))}})
+            except Exception as e:
+                logger.debug(f"[LocalLLM] Прогрев Ollama не удался: {e}")
+
+        threading.Thread(target=_load, daemon=True, name="ollama-warm").start()
 
     def classify(
         self,
@@ -655,7 +718,7 @@ _local_router_lock = threading.Lock()
 
 class PersonaLocalRouter:
     """Вид общего локального роутера, привязанный к персоне: те же методы
-    задач (is_available/get_response/classify), движок — из её настроек
+    задач (is_available/get_response/classify/warm), движок — из её настроек
     (bind_persona). Остальное (model, base_url, ocr_image, _available…)
     читается у общего роутера."""
 
@@ -676,6 +739,9 @@ class PersonaLocalRouter:
     def classify(self, *args, **kwargs) -> Optional[str]:
         kwargs.setdefault("persona", self.context)
         return self._base.classify(*args, **kwargs)
+
+    def warm(self, task: Optional[str] = None) -> None:
+        self._base.warm(task=task, persona=self.context)
 
 
 def get_local_router(context: Optional[str] = None):
