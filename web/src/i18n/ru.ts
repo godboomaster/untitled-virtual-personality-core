@@ -956,7 +956,7 @@ const ru: Record<string, string> = {
   'offline.model.partial': 'скачано {got} из 2,6 ГБ — можно продолжить',
   'offline.model.downloading': 'скачивается: {got} из {total} ГБ',
   'offline.model.ready': 'скачана, {size} ГБ',
-  'offline.model.peer': 'в приложении Арродеса, {size} ГБ — приложение пользуется ею оттуда, вторая копия не нужна',
+  'offline.model.peer': 'в другом приложении на этом телефоне, {size} ГБ — приложение пользуется ею оттуда, вторая копия не нужна',
   'offline.model.loaded': 'в памяти, {backend}',
   'offline.model.download': 'Скачать по Wi-Fi',
   'offline.model.resume': 'Продолжить загрузку',

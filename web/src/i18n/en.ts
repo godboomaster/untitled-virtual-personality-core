@@ -956,7 +956,7 @@ const en = {
   'offline.model.partial': '{got} of 2.6 GB downloaded — can be resumed',
   'offline.model.downloading': 'downloading: {got} of {total} GB',
   'offline.model.ready': 'downloaded, {size} GB',
-  'offline.model.peer': 'in the Arrodes app, {size} GB — this app uses it from there, no second copy needed',
+  'offline.model.peer': 'in another app on this phone, {size} GB — this app uses it from there, no second copy needed',
   'offline.model.loaded': 'in memory, {backend}',
   'offline.model.download': 'Download over Wi-Fi',
   'offline.model.resume': 'Resume download',
