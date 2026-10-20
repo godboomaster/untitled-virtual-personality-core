@@ -214,6 +214,9 @@ _SEARCH_KIND = "task_search"
 # Приватная страница в облачном промпте: строки истории/итог — заглушкой
 _PRIVATE_STEP = "(a step on a private page — details hidden)"
 _PRIVATE_QUESTION = "(a question asked on a private page — hidden)"
+# Ответ на такой вопрос — тоже заглушкой: стенд 20.10 — адрес и имя, данные
+# на /checkout, уходили облаку в промпте /delivery открытым текстом
+_PRIVATE_ANSWER = "(an answer on a private page — hidden)"
 _PRIVATE_RESULT = ("ended; details not kept — the run visited a private page "
                    "(sign-in, payment, account or messages)")
 # Итоги прогона, которые пишет сам код (не отчёт модели)
@@ -520,17 +523,37 @@ def _qa_short(q, a) -> str:
 def _qa_lines(qa, qpriv=frozenset()) -> List[str]:
     """Вопросы и ответы прогона для промпта: последние QA_SHOWN пар (раньше —
     только число: что они решили, держит бриф), со списком вариантов — только
-    последние QA_FULL. qpriv — номера пар с приватной страницы (заглушкой)."""
+    последние QA_FULL. qpriv — номера пар с приватной страницы: вопрос и
+    ответ заглушкой (облачный промпт; локальной модели qpriv пуст)."""
     pairs = list(enumerate(qa))
     skipped = max(0, len(pairs) - QA_SHOWN)
     pairs = pairs[skipped:]
     lines = [f"- ({skipped} earlier questions — what they settled is in the "
              "brief)"] if skipped else []
     for k, (i, (q, a)) in enumerate(pairs):
-        q = _PRIVATE_QUESTION if i in qpriv else q
+        if i in qpriv:
+            # Стенд 20.10: вопрос с /checkout скрыт, а ответ («ул. Тестовая,
+            # 1, кв. 2») уходил облаку как есть
+            q, a = _PRIVATE_QUESTION, _PRIVATE_ANSWER
         lines.append(_qa_text(q, a) if k >= len(pairs) - QA_FULL
                      else _qa_short(q, a))
     return lines
+
+
+def _rec_qa_private(rec: dict) -> set:
+    """Номера пар записи памяти задач, ответ на которые дан на приватной
+    странице: пометка qa_private (_remember) и старые записи без неё — их
+    вопрос сохранён заглушкой _PRIVATE_QUESTION, значит и ответ оттуда."""
+    if not isinstance(rec, dict):
+        return set()
+    marks = rec.get("qa_private")
+    out = {i for i in (marks if isinstance(marks, list) else ())
+           if isinstance(i, int) and not isinstance(i, bool)}
+    for i, pair in enumerate(rec.get("qa") or ()):
+        if isinstance(pair, (list, tuple)) and pair \
+                and pair[0] == _PRIVATE_QUESTION:
+            out.add(i)
+    return out
 
 
 def _hist_short(line: str) -> str:
@@ -1049,12 +1072,20 @@ def _apply_brief(brief: dict, ch, src: str = "user") -> bool:
                           if not _same_item(it["name"], name)]
     for x in _lst(ch.get("exclude")):
         x = " ".join(str(x).split())[:60]
+        if x.startswith(_PRIVATE_SLOT[:7]):
+            continue  # заглушку облачного вида модель вернула как значение
         if x and not any(_same_item(x, e) for e in brief["exclude"]):
             brief["exclude"].append(x)
+            if src == "private":
+                # Отказ, названный на приватной странице («убери подарок для
+                # Маши» из корзины), — облаку заглушкой, как позиция
+                brief.setdefault("exclude_private", []).append(x)
         brief["items"] = [it for it in brief["items"]
                           if not _same_item(it["name"], x)]
     for it in _lst(ch.get("items")):
-        if not isinstance(it, dict) or not str(it.get("name") or "").strip():
+        if not isinstance(it, dict) or not str(it.get("name") or "").strip() \
+                or str(it["name"]).strip().startswith(_PRIVATE_SLOT[:7]):
+            # Заглушка позиции с приватной страницы — не новый товар
             continue
         name = " ".join(str(it["name"]).split())[:80]
         cur = next((b for b in brief["items"] if _same_item(b["name"], name)),
@@ -1084,9 +1115,13 @@ _PRIVATE_SLOT = "(hidden — given on a private page)"
 
 
 def _brief_view(brief: Optional[dict], local: bool = False) -> Optional[dict]:
-    # Бриф для облачного промпта: слоты с приватной страницы — заглушкой
-    if local or not brief:
+    # Бриф для облачного промпта: слоты с приватной страницы — заглушкой.
+    # Пометка исключений (exclude_private) — служебная, ни одной модели
+    if not brief:
         return brief
+    if local:
+        return ({k: v for k, v in brief.items() if k != "exclude_private"}
+                if "exclude_private" in brief else brief)
     out = json.loads(json.dumps(brief, ensure_ascii=False))
     for k in _BRIEF_KEYS:
         v = out.get(k)
@@ -1095,6 +1130,10 @@ def _brief_view(brief: Optional[dict], local: bool = False) -> Optional[dict]:
     out["items"] = [dict(it, name=_PRIVATE_SLOT, size=None, options=[])
                     if it.get("src") == "private" else it
                     for it in out.get("items") or ()]
+    hid = set(out.pop("exclude_private", None) or ())
+    ex = list(out.get("exclude") or ())
+    if hid and any(x in hid for x in ex):
+        out["exclude"] = [x for x in ex if x not in hid] + [_PRIVATE_SLOT]
     return out
 
 
@@ -1964,6 +2003,23 @@ class TaskAgent:
             out.extend(command_secret_values(a))
         return [v for v in dict.fromkeys(out) if len(v) >= 3]
 
+    @staticmethod
+    def _private_answers(run: dict) -> List[str]:
+        # Ответы на вопросы с приватной страницы (qa_private) — целиком и
+        # частями через запятую («ул. Тестовая, 1, кв. 2» → «ул. Тестовая»):
+        # не ушли ли они в поисковый запрос. Короткое («да», «1», «кв. 2»)
+        # — не значение: так помечалась бы любая выдача
+        qa = run.get("qa") or ()
+        out: List[str] = []
+        for i in sorted(run.get("qa_private") or ()):
+            if not 0 <= i < len(qa):
+                continue
+            a = " ".join(str(qa[i][1] or "").split())
+            for v in [a] + [x.strip() for x in re.split(r"[,;]", a)]:
+                if len(v) >= 6 and v not in out:
+                    out.append(v)
+        return out
+
     def _hidden(self, run: dict, chat_id=None) -> dict:
         """Значения, скрытые от модели агента (облако видит промпт): ответы
         человека-секреты (_secret_answer, значение после «пароль …»),
@@ -2342,15 +2398,23 @@ class TaskAgent:
         # предлагаются (_past_tasks)
         ok = (run.get("outcome") in ("done", "payment")
               and not run.get("cancel") and result not in _SYSTEM_RESULTS)
+        qpriv = {i for i in run.get("qa_private") or ()
+                 if 0 <= i < len(run["qa"])}
         rec = {"ts": int(time.time()),
                "goal": _redact(run["goal"], secrets)[:MEMORY_TEXT_MAX],
                "sites": sites, "ok": ok,
-               "qa": [[_PRIVATE_QUESTION if i in (run.get("qa_private") or ())
+               "qa": [[_PRIVATE_QUESTION if i in qpriv
                        else _redact(q, secrets)[:MEMORY_TEXT_MAX],
                        mask(a) if _secret_answer(q, a)
                        else _redact(a, secrets)[:MEMORY_TEXT_MAX]]
                       for i, (q, a) in enumerate(run["qa"])],
                "result": _redact(result, secrets)[:MEMORY_TEXT_MAX]}
+        if qpriv:
+            # Ответ на вопрос с приватной страницы — в файле как есть (он
+            # локальный, локальной модели на оформлении он нужен), но с
+            # пометкой: облаку в следующих задачах — заглушкой (_past_line).
+            # Стенд 20.10: адрес с /checkout в промпте /delivery
+            rec["qa_private"] = sorted(qpriv)
         if run.get("site_names"):
             # Названия сайтов человека («додо пицца» → dodopizza.ru) — весь
             # словарь в последней записи: старые записи вытесняются
@@ -3191,6 +3255,11 @@ class TaskAgent:
             if verdict != "YES":
                 run["qa"].append(("(the user added while the task was paused)",
                                   msg))
+                if run.get("page_private"):
+                    # Пауза на приватной странице (передача человеку на
+                    # оформлении): приписка — как ответ оттуда, облаку
+                    # заглушкой (стенд 20.10: адрес с /checkout в /delivery)
+                    run.setdefault("qa_private", set()).add(len(run["qa"]) - 1)
             if time.time() - float(aw.get("ts") or 0) > CONTINUE_TTL_SEC:
                 # «да» спустя CONTINUE_TTL_SEC: не возобновляем вслепую, а
                 # спрашиваем заново со свежим сроком
@@ -3205,6 +3274,8 @@ class TaskAgent:
             # Прогон не ждал ответа (например, упал посреди хода) — считаем
             # сообщение уточнением к задаче
             run["qa"].append(("(the user added)", msg))
+            if run.get("page_private"):
+                run.setdefault("qa_private", set()).add(len(run["qa"]) - 1)
         return self._drive(run, chat_id, router, notify)
 
     # ── Цикл ───────────────────────────────────────────────
@@ -4339,9 +4410,11 @@ class TaskAgent:
             "You are an autopilot operating a web browser on behalf of the "
             f"user. The user's goal: \"{run['goal']}\"."]
         if run.get("past"):
+            # Ответы прошлых задач с приватной страницы — облаку заглушкой,
+            # локальной модели (снова на оформлении) — как есть
             parts.append(
                 "The user's earlier tasks on the same topic (newest first):\n"
-                + "\n".join(self._past_line(r) for r in run["past"]))
+                + "\n".join(self._past_line(r, local) for r in run["past"]))
         if run["qa"]:
             qpriv = set() if local else (run.get("qa_private") or set())
             parts.append(
@@ -4381,7 +4454,12 @@ class TaskAgent:
                 f"{first + i}. {h}" for i, h in enumerate(hist)))
         if obs["search"]:
             srch = obs["search"]
-            if run["steps"] - run.get("search_at", run["steps"]) \
+            if srch.get("private") and not local:
+                parts.append(
+                    "An earlier web search used data the user gave on a "
+                    "private page: its query and results are hidden — "
+                    "search again if you need them.")
+            elif run["steps"] - run.get("search_at", run["steps"]) \
                     > SEARCH_SHOWN_STEPS:
                 # Сайт давно выбран, а выдача — 2–3 тыс. символов в каждом
                 # шаге; понадобится снова — поиск повторяется (без LLM)
@@ -4453,7 +4531,9 @@ class TaskAgent:
                 f"{_PRIVATE_STEP} → {short}")
 
     @staticmethod
-    def _past_line(rec: dict) -> str:
+    def _past_line(rec: dict, local: bool = False) -> str:
+        # local — строка уходит локальной модели (приватная страница):
+        # ответы с приватной страницы как есть; облаку — заглушкой
         when = time.strftime("%Y-%m-%d", time.localtime(rec.get("ts") or 0))
         from app.features.computer_control import command_secret_values
         goal = str(rec.get("goal") or "")
@@ -4461,9 +4541,14 @@ class TaskAgent:
                 f"\"{_redact(goal, command_secret_values(goal))}\"")
         if rec.get("sites"):
             line += "; sites: " + ", ".join(rec["sites"])
-        for q, a in rec.get("qa") or []:
-            # Записи до маски в _remember: ответ-секрет — маской и здесь
-            if _secret_answer(q, a):
+        qpriv = set() if local else _rec_qa_private(rec)
+        for i, (q, a) in enumerate(rec.get("qa") or []):
+            if i in qpriv:
+                # Стенд 20.10: «ул. Тестовая, 1, кв. 2» и «имя Тест» с
+                # /checkout прошлой задачи — в промпте /delivery следующей
+                q, a = _PRIVATE_QUESTION, _PRIVATE_ANSWER
+            elif _secret_answer(q, a):
+                # Записи до маски в _remember: ответ-секрет — маской и здесь
                 a = mask(a)
             else:
                 a = _redact(a, command_secret_values(str(a or "")))
@@ -4511,6 +4596,12 @@ class TaskAgent:
             self._record(run, line, "no results")
         else:
             run["search"] = {"query": safe_q, "results": results}
+            if contains_value(query, self._private_answers(run)):
+                # В запросе ответ с приватной страницы (запрос писала
+                # локальная модель на оформлении: «ул. Тестовая, 1 индекс»)
+                # — ни запрос, ни выдача облаку не показываются (_prompt,
+                # _site_which)
+                run["search"]["private"] = True
             # С какого шага выдача в промпте (SEARCH_SHOWN_STEPS)
             run["search_at"] = run["steps"]
             # Адреса из выдачи — «виденные» до конца прогона (_site_grounded):
@@ -6168,9 +6259,12 @@ class TaskAgent:
             return ("progress", None)
         run["site_which_asked"] = True
         # Вопрос — по выдаче поиска, не по текущей странице: промпт — как
-        # облачный (без приватного брифа и ответов), вопрос не приватный
+        # облачный (без приватного брифа и ответов), вопрос не приватный.
+        # Выдача по запросу с ответом с приватной страницы — только
+        # локальной модели, и вопрос по ней приватный (_do_search)
+        spriv = bool((run.get("search") or {}).get("private"))
         qs = self._pre_questions(
-            run, {},
+            run, {"private": True} if spriv else {},
             step=("open a website for the task (you were about to open "
                   f"\"{redact_inline(target)}\")"),
             page="Web search results:\n" + "\n".join(
@@ -6198,10 +6292,10 @@ class TaskAgent:
         # выбранный сайт открывает код (_feed_busy)
         heads = [ln for ln in q.splitlines()
                  if "?" in ln and not _OPTION_LINE_RE.match(ln)]
-        run["awaiting"] = {"kind": "ask", "question": q, "private": False,
+        run["awaiting"] = {"kind": "ask", "question": q, "private": spriv,
                            **({"pick": "site", "site_open": target}
                               if len(heads) == 1 else {})}
-        self._audit_note(run, chat_id, "task_ask", q)
+        self._audit_note(run, chat_id, "task_ask", q, spriv)
         return ("pause", q)
 
     @staticmethod
