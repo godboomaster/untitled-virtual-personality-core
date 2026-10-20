@@ -1353,8 +1353,11 @@ def _item_label(it: dict) -> str:
     """Подпись элемента для модели. Текст без единого слова (цена, счётчик,
     глиф) — с aria/title в скобках: кнопка корзины в шапке магазина
     подписана «4 0 8 ₽», а «Корзина - 408 ₽» есть только в aria-label, и
-    модель не находила, как перейти в корзину."""
-    text = " ".join(str(it.get("text") or "").split())
+    модель не находила, как перейти в корзину. Кнопка, в которую снимок
+    свёл её обёртку (поле wrap, _merge_card_wraps), — с текстом обёртки:
+    «от 459 ₽ Выбрать», а не «Выбрать» (стенд 20.10); text — подпись для
+    сверки с узлом при клике (_action_label) — прежний."""
+    text = " ".join(str(it.get("wrap") or it.get("text") or "").split())
     extra = " ".join(str(it.get("aria") or it.get("title") or "").split())
     if not text:
         return extra
@@ -4121,9 +4124,11 @@ class TaskAgent:
             return
         for it in items:
             # cn — название карточки: оно на странице, хоть и не в подписи
-            # («от 459 ₽ Выбрать» — «Пепперони»)
+            # («от 459 ₽ Выбрать» — «Пепперони»); wrap — текст обёртки,
+            # сведённой в кнопку (_merge_card_wraps)
             seen.update(_option_words(" ".join(
-                str(it.get(k) or "") for k in ("text", "aria", "title", "cn"))))
+                str(it.get(k) or "")
+                for k in ("text", "wrap", "aria", "title", "cn"))))
         if text:
             seen.update(_option_words(str(text)[:PAGE_TEXT_MAX * 2]))
 
@@ -4426,7 +4431,10 @@ class TaskAgent:
             public[i] += note
 
     @staticmethod
-    def _elem_line(n: int, it: dict) -> str:
+    def _elem_line(n: int, it: dict, names=()) -> str:
+        """Строка элемента в промпте модели шагов. names — названия
+        карточек (cn) всего списка: блок с названием другой карточки — не
+        блок этой."""
         from app.features.computer_control import _cand_line
         lab = _item_label(it)
         ctx = " ".join(str(it.get("ctx") or "").split())
@@ -4440,7 +4448,17 @@ class TaskAgent:
             lab = f"{lab} (block: {cn})"
         elif cn and not " ".join(_GLYPH_TOKEN_RE.sub(" ", ctx).split()) \
                 .casefold().startswith(cn.casefold()):
-            ctx = f"{cn} · {ctx}" if ctx else cn
+            # Блок с названием другой карточки — раздел из коротких карточек
+            # (ctx — крупнейший предок до 400 символов): его начало — первая
+            # карточка раздела, у «Выбрать» сока — «Напитки Кола … от 119 ₽»
+            # (стенд 20.10: чужая цена и ~45 символов на строку). Тогда —
+            # только название
+            # Своё название — не чужое: «Кола» в «Кола Зеро …»
+            low = f" {ctx.casefold()} ".replace(cn.casefold(), " ")
+            other = any(o and o.casefold() != cn.casefold() and re.search(
+                r"(?<!\w)" + re.escape(o.casefold()) + r"(?!\w)", low)
+                for o in names)
+            ctx = cn if other or not ctx else f"{cn} · {ctx}"
         line = _cand_line(n, dict(it, text=lab, ctx=ctx), lab_max=LABEL_MAX)
         if it.get("ed"):
             line += " — input field"
@@ -4548,8 +4566,10 @@ class TaskAgent:
             # {{secretN}} не трогаем (ответ «Пепперони» превращал в
             # плейсхолдер и пункт каталога «Пепперони от 459 ₽»)
             elem_part = len(parts)
+            names = {_card_name(it) for it in obs["shown"]} - {""}
             parts.append(head + "\n" + "\n".join(
-                self._elem_line(n, it) for n, it in enumerate(obs["shown"], 1)))
+                self._elem_line(n, it, names)
+                for n, it in enumerate(obs["shown"], 1)))
             if obs["text"]:
                 parts.append("Page text:\n---\n" + obs["text"] + "\n---")
         if hidden:

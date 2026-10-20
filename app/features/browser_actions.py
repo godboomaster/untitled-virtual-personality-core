@@ -4826,7 +4826,10 @@ def _dedup_snapshot_items(items: List[dict], page_url: str = "") -> List[dict]:
        унаследован от карточки, а клик покрывает сам контрол. Разные
        href — разные цели, не дедупим.
     Оба правила проверяются на каждую пару независимо, иначе совпадение по
-    одному из них при далёких rect'ах помешало бы проверить другое."""
+    одному из них при далёких rect'ах помешало бы проверить другое.
+    После них — 3) обёртка единственной кнопки карточки (фрагмент, чей
+    текст — подпись кнопки плюс цена/описание) уходит в кнопку
+    (_merge_card_wraps)."""
     page_key = _link_key(page_url) if page_url else None
     lks = [_snap_link_key(it.get("href"), page_key) for it in items]
     labs = [" ".join(_snap_label(it).lower().split()) for it in items]
@@ -4852,11 +4855,101 @@ def _dedup_snapshot_items(items: List[dict], page_url: str = "") -> List[dict]:
                 kept[kept.index(dup_j)] = i
         elif _snap_label_quality(it) > _snap_label_quality(items[dup_j]):
             kept[kept.index(dup_j)] = i
-    if len(kept) < len(items):
-        logger.debug(f"[BrowserActions] Дедуп снапшота: "
-                     f"{len(items)} → {len(kept)} элементов")
     # Победитель занимал слот проигравшего — возвращаем DOM-порядок
-    return [items[i] for i in sorted(kept)]
+    out = _merge_card_wraps([items[i] for i in sorted(kept)])
+    if len(out) < len(items):
+        logger.debug(f"[BrowserActions] Дедуп снапшота: "
+                     f"{len(items)} → {len(out)} элементов")
+    return out
+
+
+def _rect_within(inner: dict, outer: dict) -> bool:
+    """inner лежит в outer: ≥80% площади inner — внутри (как «содержит» в
+    _rects_close, но в одну сторону)."""
+    ax, ay = float(inner.get("x") or 0), float(inner.get("y") or 0)
+    aw, ah = float(inner.get("w") or 0), float(inner.get("h") or 0)
+    bx, by = float(outer.get("x") or 0), float(outer.get("y") or 0)
+    bw, bh = float(outer.get("w") or 0), float(outer.get("h") or 0)
+    ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+    return aw * ah > 0 and ix * iy >= 0.8 * aw * ah
+
+
+def _merge_card_wraps(items: List[dict]) -> List[dict]:
+    """Обёртка кнопки карточки — не вторая строка, а подпись кнопки. Стенд
+    20.10: у каждой карточки каталога в снимке были «[div] от 459 ₽
+    Выбрать» (подвал карточки, pointer унаследован от карточки) и «[button]
+    Выбрать» внутри него; правило 2 их не сводит (текст не равен), ключа
+    ссылки у обоих нет — после названий карточек (cn) снимок каталога
+    вырос на 18 строк. Фрагмент (_snap_frag) уходит в кнопку, если весь его
+    текст — подпись этой кнопки (отдельным словом) плюс остальное (цена,
+    описание, название), и кнопка — его: лежит внутри (_rect_within), в
+    той же обёртке-фрагменте (span цены внутри подвала) или в той же
+    карточке вне окна (тот же cn рядом: текст фрагмента поднят от
+    предка-карточки, «0,5 л» → «Вода негазированная 0,5 л 79 ₽ Выбрать»,
+    см. svc в pdiv-проходе; в окне cn — заголовок окна у всех, не
+    карточка). Человек нажал бы кнопку, клик по ней и остаётся; текст
+    фрагмента — в поле wrap кнопки (подпись для модели, _item_label агента
+    задач), её text — для сверки с узлом при клике — прежний. Не сводим:
+    в обёртке ещё контрол (иконка «В избранное», поле, «−» рядом с «+»)
+    или в её тексте подписи двух контролов карточки («Выбрать» и «В
+    избранное», ссылка товара и «В корзину») — действия разные; ссылка
+    (href) — сама цель, не фрагмент."""
+    frags = [_snap_frag(it) for it in items]
+    labs = [" ".join(_snap_label(it).lower().split()) for it in items]
+    cns = [" ".join(str(it.get("cn") or "").casefold().split()) for it in items]
+    ctrls = [j for j, it in enumerate(items)
+             if not frags[j] and not it.get("ed") and labs[j]]
+    # Контролы (и поля) внутри каждого фрагмента
+    inner: Dict[int, List[int]] = {
+        i: [j for j, it in enumerate(items) if not frags[j]
+            and _rect_within(it, items[i])]
+        for i in range(len(items)) if frags[i]}
+    absorbed: Dict[int, List[int]] = {}
+    for i, f in enumerate(items):
+        if not frags[i] or not labs[i] or len(inner[i]) > 1:
+            continue  # больше одного контрола внутри — действия разные
+        # Обёртки этого фрагмента: их контролы — той же карточки
+        near = set(inner[i])
+        for w in inner:
+            if w != i and _rect_within(f, items[w]):
+                near.update(inner[w])
+        # Кнопка — в том же слое и не перекрыта, когда обёртка открыта
+        # (иначе строка карточки пропала бы с обёрткой: _active_layer)
+        cands = [
+            j for j in ctrls
+            if labs[j] != labs[i]
+            and bool(items[j].get("md")) == bool(f.get("md"))
+            and bool(items[j].get("sc", 1)) == bool(f.get("sc", 1))
+            and bool(items[j].get("cov")) <= bool(f.get("cov"))
+            and re.search(r"(?<!\w)" + re.escape(labs[j]) + r"(?!\w)",
+                          labs[i])
+            and (j in near or (cns[i] and cns[i] == cns[j]
+                               and not f.get("md")
+                               and _rects_close(f, items[j])))]
+        if len(cands) != 1 or (inner[i] and inner[i] != cands):
+            continue
+        absorbed.setdefault(cands[0], []).append(i)
+    if not absorbed:
+        return items
+    drop = {i for v in absorbed.values() for i in v}
+    out = []
+    for j, it in enumerate(items):
+        if j in drop:
+            continue
+        pos = j
+        if j in absorbed:
+            # Подпись — самый полный из текстов обёрток: «Вода
+            # негазированная 0,5 л 79 ₽ Выбрать», а не «79 ₽ Выбрать»
+            texts = [" ".join(str(items[i].get("text") or "").split())
+                     for i in absorbed[j]]
+            it = dict(it, wrap=max(texts, key=len))
+            # Место в списке — первой обёртки: карточки каталога (pdiv-
+            # проход идёт раньше основного) остаются впереди баннеров и
+            # шапки, как были, — порядок показа и списка кодом прежний
+            pos = min([j] + absorbed[j])
+        out.append((pos, it))
+    return [it for _p, it in sorted(out, key=lambda x: x[0])]
 
 
 # ── DOM-снапшот и агентный клик («нажми X») ──────────────
@@ -5838,7 +5931,9 @@ def _parse_snapshot(raw: str) -> Tuple[str, List[dict]]:
     # фрагмент-спан, повторяющий соседний контрол): иначе список для LLM
     # забит фрагментами одной карточки. idx не перенумеровываем — метки
     # data-vpc-idx на странице соответствуют оставшимся элементам. Адрес —
-    # чтобы якоря разделов этой страницы не слились (_snap_link_key)
+    # чтобы якоря разделов этой страницы не слились (_snap_link_key).
+    # Обёртка кнопки карточки («от 459 ₽ Выбрать») уходит в кнопку — поле
+    # wrap (_merge_card_wraps)
     items = _dedup_snapshot_items(items, url)
     if not items:
         raise BrowserUnavailable("на странице нет кликабельных элементов")

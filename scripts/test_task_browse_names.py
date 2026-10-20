@@ -471,7 +471,9 @@ def engine_checks():
               and any(x.startswith("Пицца Тест") for x in labs), labs)
 
         def cn_of(text, after=None):
-            hits = [i for i in items if i["text"] == text
+            # Подвал карточки «от 459 ₽ Выбрать» сведён в кнопку «Выбрать»
+            # (поле wrap, _merge_card_wraps) — ищем и по нему
+            hits = [i for i in items if (i.get("wrap") or i["text"]) == text
                     and (after is None or after in i["ctx"])]
             return [i.get("cn") for i in hits]
 
