@@ -960,10 +960,15 @@ def main():
     cc = FormCC()
     agent = TaskAgent(cc)
     router = ScriptedRouter([{"action": "open", "target": "https://other.test/"}])
-    agent.start("s2", "открой other.test и найди скидки", router, user_id="A")
-    check("домен из слов человека — без «NOT opened»",
+    r_s2 = agent.start("s2", "открой other.test и найди скидки", router,
+                       user_id="A")
+    # Адрес назвал человек — его выбор: и без «да» (стенд 20.10, вызов 33;
+    # раньше здесь ждали «Делаю?»)
+    check("домен из слов человека — без «NOT opened» и без «Делаю?»",
           not any("NOT opened" in p for p in router.prompts[1:])
-          and agent._runs["s2"]["awaiting"]["kind"] == "confirm")
+          and "Делаю?" not in r_s2
+          and [a.get("value") for a in cc.executed
+               if a.get("kind") == "url"] == ["https://other.test/"])
     from app.features.task_agent import _site_hosts
     check("адреса в тексте: сайты да; почта, файлы, числа — нет",
           _site_hosts("dodo.ru, https://www.dominos.ru/menu, a@b.ru, "
@@ -3235,9 +3240,10 @@ def main():
         cc = real_cc({DODO: [{"idx": 1, "tag": "a", "role": "link",
                               "text": "Пиццы"}]})
         agent = TaskAgent(cc, memory_path=mem_live.parent / "w1.json")
+        # После голого выбора сайт открывает код — второго open модели нет
+        # (test_task_step_replay)
         router = ScriptedRouter([
             {"action": "search", "query": "заказать пиццу доставка"},
-            {"action": "open", "target": DODO},
             {"action": "open", "target": DODO},
             {"action": "fail", "message": "стоп"}])
         r = agent.start("w1", "закажи пиццу", router, user_id="A")
@@ -3472,9 +3478,9 @@ def main():
         check("review: вопрос о городе со словом «магазин» — не выбор сайта: "
               "перед открытием вопрос с выдачей",
               "На каком сайте это сделать?" in r and not cc.dispatched)
-        # Ответ на вопрос «где?» привязан к адресу
+        # Ответ на вопрос «где?» привязан к адресу: выбранный открывает код,
+        # первый результат модели — не открыт
         router = ScriptedRouter([{"action": "open", "target": DODO},
-                                 {"action": "open", "target": PJ},
                                  {"action": "fail", "message": "стоп"}])
         r = agent.feed("v1", "папа джонс", router, user_id="A")
         check("review: ответ «папа джонс» — первый результат (Додо) не открыт, "
@@ -3649,8 +3655,8 @@ def main():
             {"action": "search", "query": "пицца"},
             {"action": "open", "target": DODO}])
         agent.start("n1", "закажи пиццу", router, user_id="A")
+        # «dodopizza.ru» — голый выбор: Додо открывает код
         router = ScriptedRouter([
-            {"action": "open", "target": DODO},
             {"action": "ask", "question": "Додо не доставляет на твой адрес. "
                                           "Заказать на papajohns.ru?"},
             {"action": "open", "target": PJ},
@@ -3985,8 +3991,10 @@ def main():
         agent.slot_router = BRouter("- Пиццы\n- Комбо", summary, slots=[
             {}, {"items": [{"name": "Пиццы"}]}])
         agent.start("br5", "закажи пиццу на pizza.test", router, user_id="A")
-        r = agent.feed("br5", "пиццы", router, user_id="A")
-        check("разделы: «пиццы» (разбор записал как позицию) — раздел; "
+        # «пиццу» — не название раздела дословно: разбор моделью (точное
+        # «пиццы» разбирается без неё и в позиции не попадает)
+        r = agent.feed("br5", "пиццу", router, user_id="A")
+        check("разделы: «пиццу» (разбор записал как позицию) — раздел; "
               "больше 10 позиций — коротко от модели",
               r.endswith(summary) and [d.get("idx") for d in cc.dispatched
                                        if d.get("kind") == "click"] == [1])
@@ -4225,8 +4233,9 @@ def main():
               "pizza.test:»", "На pizza.test:\n- Пепперони от 349 ₽" in r
               and "Гавайская" not in r)
         # Живой 00:16: ссылки разделов Додо стояли в начале списка, а модель
-        # разделов не назвала — показан обзор всей страницы. Запас —
-        # заголовки разделов по разметке с такой же подписью на странице
+        # разделов не назвала — показан обзор всей страницы. Теперь разметка
+        # первой: заголовки разделов с такой же подписью на странице, и
+        # модель о разделах не спрашивают вовсе (что бы она ни ответила)
         _ba.section_names = lambda *a, **k: ["Пиццы", "Комбо", "Соусы"]
         try:
             for reply in ("NONE", "Разделы: пиццы, комбо и напитки."):
@@ -4236,12 +4245,14 @@ def main():
                 rt = ScriptedRouter([{"action": "fail", "message": "стоп"}])
                 r = agent.start("s16", "закажи пиццу на pizza.test", rt,
                                 user_id="A")
-                check(f"живой 00:16 («{reply[:12]}»): модель разделов не "
-                      "назвала — разделы по разметке, только те, что есть "
-                      "на странице",
+                check(f"живой 00:16 («{reply[:12]}»): разделы по разметке, "
+                      "только те, что есть на странице; модель разделов не "
+                      "звалась",
                       "На pizza.test есть разделы:\n- Пиццы\n- Комбо\nЧто "
                       "посмотрим?" in r and "Соусы" not in r
-                      and not rt.prompts)
+                      and not rt.prompts
+                      and not any("sections of the site's catalog" in p
+                                  for p in agent.slot_router.prompts))
         finally:
             _ba.section_names = lambda *a, **k: None
         # Тест gemma 01.10: ответ «Пиццы» при разделах «Пиццы» и «Римские
@@ -4439,12 +4450,14 @@ def main():
             url=H, clicks={1: PZ, 10: PP, 41: PZ2, 4: DR, 20: CW, 42: DR2,
                            7: DRW})
         agent = TaskAgent(cc, memory_path=mem_live.parent / "pl1.json")
+        # Разбор ответов моделью — цель, «добавь какой-нибудь напиток»,
+        # «колу»; «пиццы» (раздел), «пепперони» (товар из показа) и «нет»
+        # на «что-нибудь ещё?» — без модели (_brief_fast)
         agent.slot_router = PlanRouter(
             "- Пиццы\n- Комбо\n- Закуски\n- Напитки",
             ["- Пепперони — от 349 ₽\n- Сырная — от 279 ₽\nКакую?",
              "- Кола 0,5 л — от 135 ₽\n- Морс — от 99 ₽\nКакой напиток?"],
-            [{}, {}, {"items": [{"name": "Пепперони"}]}, {"kinds": ["напиток"]},
-             {"items": [{"name": "Кола 0,5 л"}]}, {}])
+            [{}, {"kinds": ["напиток"]}, {"items": [{"name": "Кола 0,5 л"}]}])
         router = ScriptedRouter([
             {"action": "click", "n": 1, "label": "Пепперони от 349 ₽"},
             {"action": "click", "n": 1, "label": "В корзину за 349 ₽"},

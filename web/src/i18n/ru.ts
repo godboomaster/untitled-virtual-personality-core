@@ -380,6 +380,7 @@ const ru: Record<string, string> = {
   'task.plan': 'План',
   'task.log': 'Ход',
   'task.steps': 'шагов: {n}',
+  'task.calls': 'запросов к модели: {n}',
   'task.more': 'ещё {n} ↑',
   'task.less': 'свернуть',
   'task.st.working': 'Работаю',

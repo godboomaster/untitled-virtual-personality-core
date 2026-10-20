@@ -245,6 +245,7 @@ export interface TaskCard {
   goal: string;
   status: TaskStatus;
   steps: number;
+  calls?: number; // вызовов модели за задачу; старое ядро поле не шлёт
   started: number; // unix-секунды сервера — место карточки в ленте
   updated: number;
   plan: { text: string; state: 'done' | 'current' | 'todo' }[];

@@ -50,7 +50,9 @@ _SENSITIVE_FIELD_RE = re.compile(
     r"pass(?:word|wd|code|phrase)?|pwd|парол\w*|pin|пин(?:-?код)?|"
     r"code|код[аеуы]?|кодом|otp|2fa|mfa|totp|sms|смс|one[- ]?time|верификац\w*|"
     r"card|карт[аыуе]?|cvv2?|cvc2?|cc-?\w*|security code|expir\w*|срок действия|"
-    r"e-?mail|почт\w*|mail|phone|tel|телефон\w*|mobile|моб\w*|"
+    # «почти» — не почта (вопрос агента без контактов — _CONTACT_Q_RE)
+    r"e-?mail|почт(?!и(?![^\W\d_]))\w*|mail|phone|tel|телефон\w*|"
+    r"mobile|моб\w*|"
     r"login|логин\w*|username|user ?name|пользовател\w*|account|аккаунт\w*|"
     r"passport|паспорт\w*|снилс|инн|ssn|secret|секрет\w*|token|токен\w*|"
     r"iban|bic|бик|счёт|счет"
@@ -147,6 +149,9 @@ def redact_inline(text, limit: Optional[int] = None) -> str:
         if i % 2:
             chunks[i] = scrub_url(ch)
             continue
+        # Паспорт/СНИЛС/ИНН по подписи рядом («серия 4510 номер 123456» —
+        # группы короче телефона)
+        ch = mask_id_docs(ch)
         ch = _EMAIL_RE.sub(lambda m: mask(m.group(0)), ch)
         ch = _CARD_RE.sub(lambda m: mask(m.group(0))
                           if _digits(m.group(0)) >= 13 else m.group(0), ch)
@@ -165,9 +170,10 @@ def redact_inline(text, limit: Optional[int] = None) -> str:
 def typed_is_sensitive(text, label=None, flagged: bool = False) -> bool:
     """Введённый текст — секрет: поле помечено чувствительным (флаг sn
     снапшота: password/email/tel/autocomplete), подпись поля говорит о
-    пароле/коде/карте/почте/телефоне/логине, или значение само похоже на
-    секрет."""
-    return bool(flagged) or is_sensitive_label(label) or looks_secret(text)
+    пароле/коде/карте/почте/телефоне/логине, значение само похоже на
+    секрет или это номер документа («4510» в поле «Серия»)."""
+    return (bool(flagged) or is_sensitive_label(label) or looks_secret(text)
+            or bool(id_doc_values(text, label)))
 
 
 def redact_typed(text, label=None, flagged: bool = False) -> str:
@@ -198,6 +204,183 @@ def mask_values(text, values: Iterable[str]) -> str:
         rx = re.compile(r"(?<!\w)" + re.escape(v) + r"(?!\w)", re.IGNORECASE)
         s = rx.sub(lambda _m, _v=v: mask(_v), s)
     return s
+
+
+# ── Документы: паспорт, СНИЛС, ИНН ───────────────────────
+
+# Правило пользователя: паспорт и СНИЛС не хранятся и не уходят никаким
+# моделям — ни облачным, ни локальной; модель видит только заглушку
+# ({{secretN}} агента задач, маску ***(N)). ИНН — так же. Номер узнаётся по
+# подписи рядом: 10 цифр без «паспорт» — скорее телефон, «номер заказа
+# 4510123456» — не паспорт, «сумма 4510» — не серия.
+#
+# Группа цифр: «4510 123456», «45 10 123456», «4510 № 123456», «123-456»,
+# «123-456-789 01». Цифры внутри слова, даты «01.02.2015», «+7 …», «-100…»
+# и дроби группой не считаются
+_DOC_NUM_RE = r"(?<![\w.,/+\-])\d(?:\d|[ \u00a0]?[-‐–][ \u00a0]?(?=\d)" \
+              r"|[ \u00a0](?=\d)|[ \u00a0]?№[ \u00a0]?(?=\d))*(?!\w)" \
+              r"(?![.,/\-‐–]\d)"
+_DOC_TOKEN_RE = re.compile(r"(?P<num>" + _DOC_NUM_RE + r")|[^\W\d_]+|№")
+# Подписи рядом с номером: какой это документ. «other» — подпись чего-то
+# другого (телефон, заказ, сумма, код из смс): номер после неё не документ,
+# даже если «паспорт» был словом раньше
+_DOC_LABELS = (
+    ("series", re.compile(r"сери(?:я|и|ю|ей)|series", re.IGNORECASE)),
+    ("passport", re.compile(r"(?:загран)?паспорт\w*|passport\w*|выдан[аоы]?|"
+                            r"issued", re.IGNORECASE)),
+    ("code", re.compile(r"подразделени\w*", re.IGNORECASE)),
+    ("number", re.compile(r"номер\w*|number|no|nr|num|№", re.IGNORECASE)),
+    ("snils", re.compile(r"снилс\w*|snils", re.IGNORECASE)),
+    ("inn", re.compile(r"инн", re.IGNORECASE)),
+    ("other", re.compile(
+        r"телефон\w*|тел|phone\w*|tel|моб\w*|mobile|карт\w*|card\w*|"
+        r"заказ\w*|order\w*|сч[её]т\w*|account\w*|сумм\w*|руб\w*|цен\w*|"
+        r"price\w*|стоим\w*|артикул\w*|sku|трек\w*|track\w*|индекс\w*|zip|"
+        r"почт\w*|e?mail|код|кода|коду|кодом|code|смс|sms|пин|pin|cvv|cvc|"
+        r"квартир\w*|кв|дом\w*|д|ул|улиц\w*|договор\w*|contract\w*|полис\w*|"
+        r"policy|чек\w*|рейс\w*|flight|билет\w*|ticket\w*|isbn|id|imei|vin|"
+        r"серийн\w*|serial|лицев\w*|инвентарн\w*", re.IGNORECASE)),
+)
+_DOC_WEAK = "number"
+# Сколько слов/групп цифр назад искать подпись: «паспорт у меня такой:
+# 4510 123456», «серия 4510 номер 123456»
+_DOC_WINDOW = 6
+# И вперёд, если перед номером подписи нет: «4510 123456 — мой паспорт»,
+# «введи 4510 в поле серия»
+_DOC_AFTER = 3
+# Формы групп цифр (длины групп) у каждого документа
+_DOC_SHAPES = {
+    "series": {(2, 2), (4,), (2, 2, 6), (4, 6), (10,)},
+    "passport": {(2, 2, 6), (4, 6), (10,), (6,), (2, 7), (9,)},
+    "code": {(3, 3), (6,)},
+    "snils": {(3, 3, 3, 2), (9, 2), (11,)},
+    "inn": {(10,), (12,)},
+}
+# СНИЛС в своей записи «123-456-789 01» — документ и без подписи: так не
+# пишут ни телефон, ни сумму
+_SNILS_FMT_RE = re.compile(
+    r"(?<![\w\-])\d{3}-\d{3}-\d{3}[ \u00a0-]\d{2}(?![\w\-])")
+# Есть ли в тексте подпись документа вообще (быстрый выход для обычного
+# текста: страница, лог, ответ «пепперони»)
+_DOC_ANY_RE = re.compile(
+    r"(?<![^\W\d_])(?:сери(?:я|и|ю|ей)|series|(?:загран)?паспорт\w*|"
+    r"passport\w*|выдан[аоы]?|issued|подразделени\w*|снилс\w*|snils|инн)"
+    r"(?![^\W\d_])", re.IGNORECASE)
+# Паспорт назван: дата выдачи — тоже его данные
+_DOC_HINT_RE = re.compile(
+    r"(?<![^\W\d_])(?:(?:загран)?паспорт\w*|passport\w*|сери(?:я|и|ю|ей)|"
+    r"series)(?![^\W\d_])", re.IGNORECASE)
+_DOC_ISSUE_RE = re.compile(
+    r"(?<![^\W\d_])(?:выдан[аоы]?|выдач\w*|issued|issue)(?![^\W\d_])",
+    re.IGNORECASE)
+_DOC_DATE_RE = re.compile(
+    r"(?<![\d.])\d{1,2}[./]\d{1,2}[./](?:\d{4}|\d{2})(?![\d.])")
+# «выдан 01.02.2015», «выдан ОВД Тестовый 01.02.2015», «дата выдачи: …»
+_DOC_ISSUE_DATE_RE = re.compile(
+    r"(?<![^\W\d_])(?:выдан[аоы]?|выдач\w*|issued(?:\s+on)?|date\s+of\s+issue)"
+    r"[^\d\n]{0,80}?(\d{1,2}[./]\d{1,2}[./](?:\d{4}|\d{2}))(?![\d.])",
+    re.IGNORECASE)
+
+
+def _doc_label(word: str) -> str:
+    for kind, rx in _DOC_LABELS:
+        if rx.fullmatch(word):
+            return kind
+    return "word"
+
+
+def _doc_tokens(s: str) -> List[Tuple[str, str]]:
+    # (вид, текст): «num» — группа цифр, иначе вид подписи или «word»
+    out: List[Tuple[str, str]] = []
+    for m in _DOC_TOKEN_RE.finditer(s):
+        if m.group("num") is not None:
+            out.append(("num", m.group(0)))
+        else:
+            out.append((_doc_label(m.group(0)), m.group(0)))
+    return out
+
+
+def _doc_ctx_kinds(context: str) -> set:
+    """Виды документа, о которых говорит подпись поля или вопрос агента
+    («Серия и номер?» — паспорт; «Номер?» без документа — ничего)."""
+    kinds = {k for k, _t in _doc_tokens(context)}
+    out = kinds & set(_DOC_SHAPES)
+    if _DOC_WEAK in kinds and out & {"series", "passport"}:
+        out.add("passport")
+    return out
+
+
+def _doc_kind(toks: List[Tuple[str, str]], i: int, ctx_kinds: set):
+    """Вид документа группы цифр toks[i]: ближайшая подпись перед ней (в
+    окне _DOC_WINDOW), «номер» — смотреть дальше назад («серия 4510 номер
+    123456»), подпись другого («телефон», «заказ») — не документ. Подписи
+    перед нет — несколько слов после («4510 123456 — паспорт», «введи 4510
+    в поле серия»), затем контекст. → вид, "ctx" (решает контекст) или
+    None."""
+    weak = False
+    for j in range(i - 1, max(-1, i - 1 - _DOC_WINDOW), -1):
+        k = toks[j][0]
+        if k in ("word", "num"):
+            continue
+        if k == "other":
+            return None
+        if k == _DOC_WEAK:
+            weak = True
+            continue
+        if weak and k == "series":
+            return "passport"  # номер после серии — номер паспорта
+        return k
+    if weak:
+        return "passport" if ctx_kinds & {"series", "passport"} else None
+    for j in range(i + 1, min(len(toks), i + 1 + _DOC_AFTER)):
+        k = toks[j][0]
+        if k in ("word", _DOC_WEAK):
+            continue
+        if k in ("other", "num"):
+            break
+        return k
+    return "ctx" if ctx_kinds else None
+
+
+def id_doc_values(text, context=None) -> List[str]:
+    """Номера документов в тексте — паспорт РФ (серия, номер, код
+    подразделения, дата выдачи), загранпаспорт, СНИЛС, ИНН — как они
+    записаны (для маски/заглушки отдельным словом). context — подпись поля
+    или вопрос, на который это ответ: «4510» в поле «Серия», «4510 123456»
+    на «Серия и номер?». Без подписи рядом номер — не документ (телефон,
+    сумма, номер заказа), кроме СНИЛС в его записи «123-456-789 01»."""
+    s = "" if text is None else str(text)
+    if not s or not any(ch.isdigit() for ch in s):
+        return []
+    ctx = "" if context is None else str(context)
+    out: List[str] = [m.group(0) for m in _SNILS_FMT_RE.finditer(s)]
+    if _DOC_ANY_RE.search(s) or (ctx and _DOC_ANY_RE.search(ctx)):
+        ctx_kinds = _doc_ctx_kinds(ctx) if ctx else set()
+        toks = _doc_tokens(s)
+        for i, (k, val) in enumerate(toks):
+            if k != "num":
+                continue
+            kind = _doc_kind(toks, i, ctx_kinds)
+            if kind is None:
+                continue
+            shape = tuple(len(g) for g in re.findall(r"\d+", val))
+            kinds = ctx_kinds if kind == "ctx" else {kind}
+            if any(shape in _DOC_SHAPES.get(x, ()) for x in kinds):
+                out.append(val)
+        hint = _DOC_HINT_RE.search(s) or (ctx and _DOC_HINT_RE.search(ctx))
+        if hint:
+            out += [m.group(1) for m in _DOC_ISSUE_DATE_RE.finditer(s)]
+            if ctx and _DOC_ISSUE_RE.search(ctx) and _DOC_HINT_RE.search(ctx):
+                # «Дата выдачи паспорта?» → «01.02.2015»
+                out += [m.group(0) for m in _DOC_DATE_RE.finditer(s)]
+    return [v for v in dict.fromkeys(x.strip() for x in out) if v]
+
+
+def mask_id_docs(text, context=None) -> str:
+    """Номера документов (id_doc_values) в тексте — маской ***(N)."""
+    s = "" if text is None else str(text)
+    vals = id_doc_values(s, context)
+    return mask_values(s, vals) if vals else s
 
 
 # ── Секрет в тексте команды ──────────────────────────────
@@ -252,9 +435,12 @@ def _cred_pairs(s: str) -> List[str]:
 
 def command_has_secret(text: str) -> bool:
     """Команда содержит секрет пользователя (пароль/код/PIN …, пара
-    «логин / пароль») — её текст нельзя отдавать облачному LLM-ярусу."""
+    «логин / пароль», номер паспорта/СНИЛС) — её текст нельзя отдавать
+    облачному LLM-ярусу."""
     s = str(text or "")
-    if _cred_pairs(s):
+    if _cred_pairs(s) or id_doc_values(s):
+        # Паспорт/СНИЛС в команде — тоже: такие данные не уходят никакой
+        # модели, даже на разбор фразы
         return True
     if not _CMD_SECRET_WORD_RE.search(s):
         return False
@@ -271,9 +457,11 @@ def command_has_secret(text: str) -> bool:
 def command_secret_values(text: str) -> List[str]:
     """Вероятные значения секрета в команде — для маски истории: слова с
     цифрой/похожие на секрет, слово сразу после «пароль/код/…» и правая
-    часть пары «логин / пароль»."""
+    часть пары «логин / пароль», номера документов (паспорт, СНИЛС, ИНН —
+    id_doc_values)."""
     s = str(text or "")
     out: List[str] = list(_cred_pairs(s))
+    out += [v for v in id_doc_values(s) if v not in out]
     if not _CMD_SECRET_WORD_RE.search(s):
         return out
     toks = [t.strip(".!?…:()") for t in _CMD_TOKEN_RE.findall(s)]
@@ -375,6 +563,8 @@ _SECRET_PARAM_PARTS = frozenset({
     "hash", "login", "user", "username", "credential", "credentials",
     "csrf", "xsrf", "saml", "samlrequest", "samlresponse", "assertion",
     "refresh", "access", "id_token", "authuser", "card", "pin", "cvv",
+    # документы: паспорт, СНИЛС, ИНН
+    "passport", "snils", "inn",
 })
 _SECRET_PARAM_SUBSTR = ("token", "passw", "secret", "session", "signature",
                         "auth", "ticket", "otp", "csrf", "apikey", "api_key",

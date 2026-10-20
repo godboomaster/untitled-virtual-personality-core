@@ -58,15 +58,15 @@ _T = {
         "en": "Control mode doesn't work from a skin: the skin itself could "
               "have sent the command. Click \"Standard view\" above the skin "
               "and repeat the command there."},
-    # Секрет в команде, которую regex не разобрал: в облачный LLM-разбор
-    # такую фразу не отдаём
+    # Секрет в команде, которую regex не разобрал (пароль, код, номер
+    # паспорта/СНИЛС): в облачный LLM-разбор такую фразу не отдаём
     "secret_rephrase": {
-        "ru": "В команде есть пароль или код — такую фразу я не отдаю "
-              "модели на разбор. Скажи строго так: «введи <значение> в поле "
-              "<название поля>».",
-        "en": "Your command contains a password or code, so I won't send it "
-              "to the model for parsing. Say it exactly like this: \"type "
-              "<value> into field <field name>\"."},
+        "ru": "В команде есть пароль, код или номер документа — такую фразу "
+              "я не отдаю модели на разбор. Скажи строго так: «введи "
+              "<значение> в поле <название поля>».",
+        "en": "Your command contains a password, code or document number, so "
+              "I won't send it to the model for parsing. Say it exactly like "
+              "this: \"type <value> into field <field name>\"."},
     "task_busy": {"ru": "Ещё работаю над задачей — подожди или скажи «отмена».",
                   "en": "Still working on the task — wait or say \"cancel\"."},
     "stopped_by_user": {"ru": "остановлено по просьбе пользователя",
@@ -300,6 +300,15 @@ _T = {
     "task_fact_address": {"ru": "адрес: {value}", "en": "address: {value}"},
     "task_fact_time": {"ru": "время: {value}", "en": "time: {value}"},
     "task_fact_payment": {"ru": "оплата: {value}", "en": "payment: {value}"},
+    # Сводка заказа при передаче оплаты (_handoff_summary): факты кода
+    "task_handoff_order": {"ru": "Заказ на {site}: {what}.",
+                           "en": "The order on {site}: {what}."},
+    "task_handoff_order_any": {"ru": "В заказе: {what}.",
+                               "en": "In the order: {what}."},
+    "task_fact_missing": {"ru": "не положил в корзину: {items}",
+                          "en": "not in the cart: {items}"},
+    "task_fact_to_pay": {"ru": "к оплате {total}", "en": "to pay: {total}"},
+    "task_fact_phone": {"ru": "телефон: {value}", "en": "phone: {value}"},
     "task_fact_unknown": {"ru": "состав и сумму со страницы прочитать не "
                                 "удалось — проверь на экране",
                           "en": "couldn't read the items and total from the "
@@ -737,6 +746,9 @@ _EN_PHRASES = {
                       "solved — stopping. I left the browser as it is."),
     "task_continue": ("I've done {steps} steps already and the task isn't "
                       "finished. Continue? (\"yes\" / \"cancel\")"),
+    "task_continue_calls": ("The task has taken {calls} model requests "
+                            "already and isn't finished. Continue? (\"yes\" "
+                            "/ \"cancel\")"),
     "task_private_handoff": (
         "This is a private page (cart, checkout, sign-in, payment or an "
         "account) — I don't send its contents to an external model, and "

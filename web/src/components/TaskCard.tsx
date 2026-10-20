@@ -3,7 +3,8 @@ import type { TaskCard as TaskCardData } from '../api';
 import { useI18n } from '../i18n';
 
 /* Карточка задачи агента в ленте чата (режим управления): цель, статус,
-   план заказа с отметками и журнал хода. Обновляется на месте поллингом
+   план заказа с отметками и журнал хода (с числом шагов и запросов к
+   модели). Обновляется на месте поллингом
    inbox, пока агент работает; итог висит ещё полчаса (CARD_TTL_SEC). */
 
 const LOG_TAIL = 6; // строк журнала в свёрнутом виде
@@ -51,6 +52,7 @@ export default function TaskCard({ card }: { card: TaskCardData }) {
           <div className="task-card-sec">
             {t('task.log')}
             <span className="task-card-steps">{t('task.steps', { n: card.steps })}</span>
+            {card.calls != null && <span className="task-card-steps">{t('task.calls', { n: card.calls })}</span>}
             {card.log.length > LOG_TAIL && (
               <button type="button" className="task-card-more" onClick={() => setOpen((v) => !v)}>
                 {open ? t('task.less') : t('task.more', { n: hidden })}

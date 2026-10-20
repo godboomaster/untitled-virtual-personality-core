@@ -6,10 +6,11 @@
 
 Маской уходят: известные секреты чатов (cc_privacy.KnownSecrets — пароль,
 данный ответом агенту/слоту сценария), значения после «пароль/код/PIN …»
-(command_secret_values), email/телефоны/карты/токены и секретные параметры
-URL. Точечная маска в строке лога забывается на новом пути — фильтр ловит
-любой. Правила чисел мягче redact_inline: id чатов Telegram (-100…),
-user_id и метки времени в логе остаются читаемыми.
+(command_secret_values), номера паспорта/СНИЛС/ИНН по подписи рядом
+(cc_privacy.id_doc_values), email/телефоны/карты/токены и секретные
+параметры URL. Точечная маска в строке лога забывается на новом пути —
+фильтр ловит любой. Правила чисел мягче redact_inline: id чатов Telegram
+(-100…), user_id и метки времени в логе остаются читаемыми.
 """
 
 import logging
@@ -20,7 +21,8 @@ from typing import Iterable, Optional
 from app.features.cc_privacy import (_CMD_SECRET_FILLER, _CMD_SECRET_VERB_RE,
                                      _CMD_SECRET_WORD_RE, _EMAIL_RE,
                                      _looks_token, command_secret_values,
-                                     known_secret_values, mask, scrub_url)
+                                     known_secret_values, mask, mask_id_docs,
+                                     scrub_url)
 
 _URL_SPLIT_RE = re.compile(r"(https?://[^\s\"'<>«»]+)")
 # Карта: 13–19 цифр (группы через пробел/дефис), первая 2–6, сходится Луна.
@@ -179,6 +181,10 @@ def redact_log(text) -> str:
         if i % 2:
             chunks[i] = scrub_url(ch)
             continue
+        # Паспорт/СНИЛС/ИНН по подписи рядом («паспорт 4510 123456»,
+        # «серия 4510 номер 123456»): телефонные правила их не ловят
+        if any(c.isdigit() for c in ch):
+            ch = mask_id_docs(ch)
         ch = _cmd_mask(ch)
         ch = _KV_SECRET_RE.sub(
             lambda m: m.group(0) if "***(" in m.group(2)
