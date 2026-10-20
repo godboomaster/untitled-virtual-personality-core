@@ -2454,12 +2454,14 @@ class WebChatLLM:
         # Инстанс выбыл из кэша роутера (retire): вкладка закрывается по
         # завершении идущего/любого следующего вызова
         self._retired = False
-        # Повторяемые блоки промпта (sticky_scope): сколько сообщений ушло в
-        # тред вкладки с последней навигации и когда какой блок ушёл в него
-        # целиком ({sha1 текста: (номер сообщения, ts)}). Навигация, новая
-        # вкладка, перезагрузка — тред мог смениться, счёт с нуля
+        # Повторяемые блоки промпта (sticky_scope): сколько сообщений и
+        # символов (отправленное и ответы) ушло в тред вкладки с последней
+        # навигации и когда какой блок ушёл в него целиком ({sha1 текста:
+        # (номер сообщения, символов треда после него, ts)}). Навигация,
+        # новая вкладка, перезагрузка — тред мог смениться, счёт с нуля
         self._thread_sends = 0
-        self._sticky_seen: Dict[str, Tuple[int, float]] = {}
+        self._thread_chars = 0
+        self._sticky_seen: Dict[str, Tuple[int, int, float]] = {}
 
     # ── состояние: квота, адрес постоянного чата ──
     # Файл общий для всех сайтов контекста: {"sites": {site: {...}}}
@@ -2908,6 +2910,7 @@ class WebChatLLM:
         # Вкладка уходит на другую страницу (навигация, новая вкладка,
         # перезагрузка): тред мог смениться — блоки снова уходят целиком
         self._thread_sends = 0
+        self._thread_chars = 0
         self._sticky_seen.clear()
 
     @staticmethod
@@ -2916,12 +2919,15 @@ class WebChatLLM:
 
     def _block_fresh(self, block) -> bool:
         # Тред этой вкладки получил блок целиком не дальше window сообщений
-        # назад и не дольше STICKY_MAX_AGE_SEC
+        # и span символов назад (span 0 — только сообщения) и не дольше
+        # STICKY_MAX_AGE_SEC
         rec = self._sticky_seen.get(self._block_key(block))
         if not rec:
             return False
-        sent_at, ts = rec
+        sent_at, chars_at, ts = rec
         return (0 < self._thread_sends - sent_at <= block.window
+                and (not block.span
+                     or self._thread_chars - chars_at <= block.span)
                 and time.time() - ts < STICKY_MAX_AGE_SEC)
 
     def _sticky_text(self, prompt: str, blocks) -> Tuple[str, list]:
@@ -2937,14 +2943,17 @@ class WebChatLLM:
                 full.append(b)
         return text, full
 
-    def _sticky_sent(self, full_blocks):
-        # Сообщение ушло в тред: номер следующего и отметка блоков, ушедших
-        # целиком
+    def _sticky_sent(self, text: str, full_blocks):
+        # Сообщение ушло в тред: номер следующего, символы треда и отметка
+        # блоков, ушедших целиком (расстояние до них — с конца этого
+        # сообщения)
         idx = self._thread_sends
         self._thread_sends += 1
+        self._thread_chars += len(text)
         now = time.time()
         for b in full_blocks:
-            self._sticky_seen[self._block_key(b)] = (idx, now)
+            self._sticky_seen[self._block_key(b)] = (idx, self._thread_chars,
+                                                     now)
 
     def _sticky_prime(self, blocks, temperature: float, max_tokens: int,
                       top_p: float, timeout: float) -> bool:
@@ -2962,8 +2971,8 @@ class WebChatLLM:
         # Праймер — последнее сообщение треда (номер _thread_sends - 1)
         now = time.time()
         for b in blocks:
-            self._sticky_seen[self._block_key(b)] = (self._thread_sends - 1,
-                                                     now)
+            self._sticky_seen[self._block_key(b)] = (
+                self._thread_sends - 1, self._thread_chars, now)
         logger.info(f"[WebChat] {self.site}#{self.channel}: правила ушли "
                     f"отдельным сообщением ({len(text)} симв.)")
         return True
@@ -3838,7 +3847,7 @@ class WebChatLLM:
                                                   self.adapter["input"])
                 marker = self._send_verified(ba, host, tab_id, text,
                                              wait_upload=bool(image_bytes))
-                self._sticky_sent(full)
+                self._sticky_sent(text, full)
                 if len(text) < len(prompt):
                     logger.info(f"[WebChat] {self.site}#{self.channel}: "
                                 f"отправлено {len(text)} симв. из "
@@ -3971,6 +3980,8 @@ class WebChatLLM:
             break
         if answer:
             logger.info(f"[WebChat] {self.site}: ответ {len(answer)} симв.")
+            # Ответ — тоже текст треда между блоком и следующим вопросом
+            self._thread_chars += len(answer)
             self._save_context_cookies(ba)
         return answer
 

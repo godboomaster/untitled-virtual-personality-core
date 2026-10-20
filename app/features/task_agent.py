@@ -1986,8 +1986,17 @@ _STEP_RULES_REF = ("- (The full list of rules is in my earlier message in "
 _STEP_PAGE_REF = ("Current page and its numbered elements: unchanged — "
                   "exactly as in my latest message in this chat that lists "
                   "them (use the same numbers n).")
-# Сколько сообщений треда правила и страница остаются «свежими»
-STICKY_RULES_WINDOW = 5
+# Сколько треда правила и страница остаются «свежими». Правила — по
+# символам треда после их полной отправки (отправленное и ответы, вместе с
+# короткими вызовами канала): окно в 5 сообщений в run3 №10 отправило их
+# целиком снова, хотя 4 из 7 сообщений после них — бриф и вопросы о
+# странице по ~2 тыс. Граница в символах заодно короче худшего случая
+# старого окна (5 шагов по ~10 тыс.): правила, ≤30 тыс. после них и шаг
+# помещаются и в тесный контекст бесплатных тарифов (~16 тыс. токенов).
+# Окно в сообщениях — запас против десятков коротких. Страница — по
+# сообщениям: ссылка ведёт на «последнее сообщение со списком»
+STICKY_RULES_SPAN = 30000
+STICKY_RULES_WINDOW = 12
 STICKY_PAGE_WINDOW = 2
 
 
@@ -2250,7 +2259,8 @@ class TaskAgent:
         постоянный тред веб-чата, получивший их недавно, видит ссылку."""
         from app.core.sticky_scope import StickyBlock
         blocks = [StickyBlock(_STEP_RULES, _STEP_RULES_REF,
-                              STICKY_RULES_WINDOW, primable=True)]
+                              STICKY_RULES_WINDOW, primable=True,
+                              span=STICKY_RULES_SPAN)]
         if run.get("page_block"):
             blocks.append(StickyBlock(run["page_block"], _STEP_PAGE_REF,
                                       STICKY_PAGE_WINDOW))
