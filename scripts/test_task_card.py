@@ -7,6 +7,9 @@
   done, cancelled) ещё CARD_TTL_SEC, потом карточки нет;
 * план заказа человеку: магазин → позиции → «что-нибудь ещё?» → корзина →
   оформление, текущий шаг один; не заказ — без плана; отмена — без текущего;
+* подпись магазина одна на весь прогон: «Пицца Тест (pizzatest.ru)», когда
+  название об этом адресе (словарь названий, транслит), иначе адрес;
+  название с приватной страницы — не в плане; та же подпись — модели;
 * цель без секретов (пароль из ответа на вопрос прогона);
 * очистка диалога снимает карточку; чтение протухшего прогона его не снимает.
 
@@ -114,6 +117,51 @@ agent._runs["c"] = run_dict(goal="найди расписание электри
 check("не заказ — без плана", agent.task_card("c")["plan"] == [])
 agent._runs["c"] = run_dict(goal="order a pizza", lang="en")
 check("план по-английски", agent.task_card("c")["plan"][0]["text"] == "choose the shop")
+
+print("Подпись магазина в плане")
+# Стенд 21.10 (run3, сценарий 3): «магазин: Пицца Тест», а с первым
+# добавлением в корзину — «магазин: pizzatest.ru»
+
+
+def shop(**kw):
+    agent._runs["c"] = run_dict(**kw)
+    return agent.task_card("c")["plan"][0]["text"]
+
+
+named = {"site": {"value": "Пицца Тест", "src": "user"}, "items": []}
+bound = {"пицца тест": "pizzatest.ru"}
+check("название без адреса — названием",
+      shop(brief=named) == "магазин: Пицца Тест", shop(brief=named))
+check("адрес названия известен (словарь) — «название (адрес)»",
+      shop(brief=named, site_names=bound)
+      == "магазин: Пицца Тест (pizzatest.ru)")
+check("корзина выросла на том же сайте — подпись та же (не «pizzatest.ru»)",
+      shop(brief=named, site_names=bound, cart_host="www.pizzatest.ru")
+      == "магазин: Пицца Тест (pizzatest.ru)")
+check("название сверено с адресом транслитом, словаря нет — та же подпись",
+      shop(brief=named, cart_host="pizzatest.ru")
+      == "магазин: Пицца Тест (pizzatest.ru)")
+check("название — о другом сайте (словарь), корзина на pizzatest.ru — только "
+      "адрес", shop(brief=named, site_names={"пицца тест": "dodopizza.ru"},
+                    cart_host="pizzatest.ru") == "магазин: pizzatest.ru")
+check("название не похоже на адрес — только адрес",
+      shop(brief={"site": {"value": "Якитория", "src": "user"}},
+           site_ok="pizzatest.ru") == "магазин: pizzatest.ru")
+check("сайт брифа адресом — хост без «https://»",
+      shop(brief={"site": {"value": "https://www.pizzatest.ru/",
+                           "src": "user"}})
+      == "магазин: pizzatest.ru")
+hidden = shop(brief={"site": {"value": "Пицца Тест", "src": "private"}},
+              site_names=bound, cart_host="pizzatest.ru")
+check("название с приватной страницы — не в плане, только адрес",
+      hidden == "магазин: pizzatest.ru", hidden)
+check("план по-английски — та же подпись",
+      shop(brief=named, site_names=bound, lang="en")
+      == "shop: Пицца Тест (pizzatest.ru)")
+check("план модели — та же подпись",
+      "the shop: Пицца Тест (pizzatest.ru)" in "\n".join(
+          agent._plan_lines(run_dict(brief=named, site_names=bound,
+                                     cart_host="pizzatest.ru"))))
 
 print("Журнал, секреты, отмена, очистка")
 r = run_dict()

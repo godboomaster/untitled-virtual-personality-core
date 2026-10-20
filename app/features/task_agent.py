@@ -2796,6 +2796,35 @@ class TaskAgent:
                 "plan": self._plan_view(run, status),
                 "log": [dict(x) for x in run.get("ui_log") or ()]}
 
+    def _shop_label(self, run: dict, brief: dict) -> Optional[str]:
+        """Магазин в плане (человеку и модели): «Пицца Тест (pizzatest.ru)».
+        Адрес — где выросла корзина, подтверждённый или выбранный сайт, иначе
+        адрес из брифа или словаря названий; название — из брифа, если оно
+        об этом адресе (словарь названий, алиас, транслит), иначе только
+        адрес. Стенд 21.10 (run3, сценарий 3): план показывал «магазин:
+        Пицца Тест», а с первым добавлением в корзину — «pizzatest.ru».
+        brief — уже облачный вид: слот с приватной страницы — заглушка, к
+        адресу её не приписываем. Хост на приватность не проверяем: у
+        магазина приватна страница оформления, и подпись сменилась бы на
+        ней."""
+        val = " ".join(str((brief.get("site") or {}).get("value") or "")
+                       .split())
+        hosts = _site_hosts(val)
+        name = "" if hosts else val
+        hidden = name == _PRIVATE_SLOT
+        known = self._name_host(run, name) if name and not hidden else None
+        host = str(run.get("cart_host") or run.get("site_ok")
+                   or next(iter(run.get("site_pick") or ()), None)
+                   or next(iter(hosts), None) or known or "")
+        host = host.lower().removeprefix("www.")
+        if not host:
+            return name or None
+        if hidden or not name or not (
+                _host_in(host, [known]) if known else _name_fits_host(
+                    name, host, getattr(self.cc, "sites", None))):
+            return host
+        return f"{name} ({host})"
+
     def _plan_view(self, run: dict, status: str) -> List[dict]:
         """План заказа человеку (что _plan_lines даёт модели, но словами для
         чата): магазин → позиции в корзину → «что-нибудь ещё?» → проверка
@@ -2808,9 +2837,7 @@ class TaskAgent:
         adds = run.get("cart_adds") or []
         items = brief.get("items") or []
         steps: List[Tuple[bool, str]] = []
-        site = (run.get("cart_host") or run.get("site_ok")
-                or next(iter(run.get("site_pick") or ()), None)
-                or ((brief.get("site") or {}).get("value")))
+        site = self._shop_label(run, brief)
         steps.append((bool(site), (f"shop: {site}" if en else f"магазин: {site}")
                       if site else ("choose the shop" if en else "выбрать магазин")))
         if not items and not adds and not run.get("kinds"):
@@ -5354,9 +5381,7 @@ class TaskAgent:
         adds = run.get("cart_adds") or []
         items = brief.get("items") or []
         steps: List[Tuple[bool, str]] = []
-        site = (run.get("cart_host") or run.get("site_ok")
-                or next(iter(run.get("site_pick") or ()), None)
-                or ((brief.get("site") or {}).get("value")))
+        site = self._shop_label(run, brief)
         steps.append((bool(site), f"the shop: {site}" if site else
                       "the shop — the system asks the user where to order"))
         if not items and not adds and not run.get("kinds"):
