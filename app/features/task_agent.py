@@ -34,7 +34,9 @@
   * оплата — граница: клик по платёжному элементу (тот же _is_payment, что
     режет сценарии) не исполняется, прогон завершается передачей человеку;
   * бюджет хода — после MAX_STEPS_PER_TURN шагов / TURN_TIME_BUDGET_SEC
-    спрашиваем «продолжать?» (ход process_message не должен висеть вечно).
+    спрашиваем «продолжать?» (ход process_message не должен висеть вечно);
+    после MAX_CALLS_PER_TURN вызовов модели с последнего «да» — тоже
+    (каждый вызов — сообщение в веб-чат с аккаунта пользователя).
 
 Память задач: по концу прогона (готово, оплата, отмена, провал) в
 task_memory.json чата пишутся цель, сайты, ответы пользователя и итог.
@@ -49,6 +51,7 @@ task_memory.json чата пишутся цель, сайты, ответы по
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -64,6 +67,12 @@ logger = logging.getLogger(__name__)
 # — «продолжать?», чтобы чат не висел минутами без ответа
 MAX_STEPS_PER_TURN = 12
 TURN_TIME_BUDGET_SEC = 240
+# Вызовов модели за ход — от старта задачи или «да» на «продолжать?» до
+# следующего «продолжать?» (разбор ответов человека между ними — тоже в
+# счёт): дальше — «продолжать?». Каждый вызов — сообщение в веб-чат, а
+# долгий поток автоматики с одного аккаунта — риск бана. Переопределяется
+# TASK_MAX_CALLS_PER_TURN в .env, 0 — без потолка (_calls_cap)
+MAX_CALLS_PER_TURN = 30
 # Потолок шагов на всю задачу: дальше честный стоп, а не бесконечный прогон
 MAX_TOTAL_STEPS = 40
 # Задача закончилась (итог/вопрос в отчёте модели), а человек отвечает «да»/
@@ -1343,13 +1352,37 @@ def _open_needs_confirm(cc, run: dict, a: dict, target: str = "") -> bool:
     return not (callable(known) and known(url))
 
 
-def _steps_ru(n: int) -> str:
-    # «1 шаг», «4 шага», «12 шагов»
+def _num_ru(n: int, one: str, few: str, many: str) -> str:
+    # Число со словом в нужной форме: «1 шаг», «4 шага», «12 шагов»
     if n % 10 == 1 and n % 100 != 11:
-        return f"{n} шаг"
+        return f"{n} {one}"
     if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return f"{n} шага"
-    return f"{n} шагов"
+        return f"{n} {few}"
+    return f"{n} {many}"
+
+
+def _steps_ru(n: int) -> str:
+    return _num_ru(n, "шаг", "шага", "шагов")
+
+
+def _calls_ru(n: int) -> str:
+    # «21 запрос», «32 запроса», «30 запросов»
+    return _num_ru(n, "запрос", "запроса", "запросов")
+
+
+def _calls_cap() -> int:
+    # Потолок вызовов модели за ход: TASK_MAX_CALLS_PER_TURN из окружения на
+    # момент вызова (.env читается при старте приложения, позже импорта
+    # модуля), иначе MAX_CALLS_PER_TURN; 0 — без потолка
+    raw = (os.getenv("TASK_MAX_CALLS_PER_TURN") or "").strip()
+    if not raw:
+        return max(0, int(MAX_CALLS_PER_TURN))
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning(f"[TaskAgent] TASK_MAX_CALLS_PER_TURN={raw!r} — не "
+                       f"число, беру {MAX_CALLS_PER_TURN}")
+        return max(0, int(MAX_CALLS_PER_TURN))
 
 
 def web_search_links(query: str, engine: str = "google"
@@ -1719,6 +1752,12 @@ class TaskAgent:
             by = run.setdefault("traffic_by", {})
             by[prov] = by.get(prov, 0) + 1
         return resp
+
+    @staticmethod
+    def _calls(run: dict) -> int:
+        # Вызовов модели за задачу (счёт _ask_llm). Значения — копией:
+        # карточку читает поток веба, пока ход дописывает в счёт новый вид
+        return sum(c for c, _ in list((run.get("traffic") or {}).values()))
 
     def _sticky_for(self, run: dict) -> list:
         """Повторяемые блоки шага: правила (_STEP_RULES) и страница —
@@ -2112,6 +2151,8 @@ class TaskAgent:
                                          + self._secrets(run, chat_id)))[:120]
         return {"id": run.get("id"), "goal": goal, "status": status,
                 "steps": int(run.get("steps") or 0),
+                # Вызовов модели за всю задачу (шаги, бриф, вопросы, разделы)
+                "calls": self._calls(run),
                 "started": run.get("started") or run.get("touched"),
                 "updated": run.get("touched"),
                 "plan": self._plan_view(run, status),
@@ -2738,6 +2779,9 @@ class TaskAgent:
                 return self._phrase(
                     "task_continue_expired",
                     "Пауза затянулась. Продолжать задачу? («да» / «отмена»)")
+            # Человек велел продолжать — новый ход: потолок вызовов модели
+            # (_drive) считается с этой отметки
+            run["calls_mark"] = self._calls(run)
         else:
             # Прогон не ждал ответа (например, упал посреди хода) — считаем
             # сообщение уточнением к задаче
@@ -2789,6 +2833,23 @@ class TaskAgent:
                         f"Сделал уже {_steps_ru(run['steps'])}, задача ещё не "
                         "закончена. Продолжать? («да» / «отмена»)",
                         steps=run["steps"]))
+                    break
+                cap = _calls_cap()
+                calls = self._calls(run)
+                used = calls - run.get("calls_mark", 0)
+                if cap and used >= cap:
+                    # Потолок вызовов модели за ход (с начала задачи или
+                    # последнего «да» на «продолжать?», _feed_busy): шаг
+                    # может стоить нескольких вызовов, а поток автоматики с
+                    # аккаунта веб-чата — риск бана. Дальше — только с «да»
+                    logger.info(f"[TaskAgent] {used} вызовов модели за ход "
+                                f"(потолок {cap}) — спрашиваю «продолжать?»")
+                    run["awaiting"] = self._await_continue(run)
+                    final = ("pause", self._phrase(
+                        "task_continue_calls",
+                        f"Задача заняла уже {_calls_ru(calls)} к модели и ещё "
+                        "не закончена. Продолжать? («да» / «отмена»)",
+                        calls=calls))
                     break
                 outcome = self._step(run, chat_id, router)
                 turn_steps += 1
@@ -5913,8 +5974,9 @@ class TaskAgent:
 
     @staticmethod
     def _await_continue(run: dict) -> dict:
-        # «продолжать?» (бюджет хода, модель недоступна, передача человеку
-        # с приватной страницы) — те же ts/user_id, что у подтверждения
+        # «продолжать?» (бюджет хода — шаги, время, вызовы модели; модель
+        # недоступна; передача человеку с приватной страницы) — те же
+        # ts/user_id, что у подтверждения
         return {"kind": "continue", "ts": time.time(),
                 "user_id": run.get("turn_user")}
 

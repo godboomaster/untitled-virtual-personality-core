@@ -737,6 +737,9 @@ _EN_PHRASES = {
                       "solved — stopping. I left the browser as it is."),
     "task_continue": ("I've done {steps} steps already and the task isn't "
                       "finished. Continue? (\"yes\" / \"cancel\")"),
+    "task_continue_calls": ("The task has taken {calls} model requests "
+                            "already and isn't finished. Continue? (\"yes\" "
+                            "/ \"cancel\")"),
     "task_private_handoff": (
         "This is a private page (cart, checkout, sign-in, payment or an "
         "account) — I don't send its contents to an external model, and "

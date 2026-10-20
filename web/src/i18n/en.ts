@@ -380,6 +380,7 @@ const en = {
   'task.plan': 'Plan',
   'task.log': 'Steps',
   'task.steps': 'steps: {n}',
+  'task.calls': 'model requests: {n}',
   'task.more': '{n} more ↑',
   'task.less': 'collapse',
   'task.st.working': 'Working',
