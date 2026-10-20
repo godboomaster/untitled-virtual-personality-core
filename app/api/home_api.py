@@ -197,6 +197,11 @@ def persona_overview(persona: str, config: dict, chat_id: str = "web_user") -> d
                 active_reminders.append(r)
     next_reminder = min(active_reminders, key=lambda r: r["trigger_at"], default=None)
 
+    # Заметки пользователя (блок «Заметки» на главной): число — для меток
+    # персон, сами заметки блок грузит сам (GET /api/personas/{p}/notes)
+    notes_on = features.get("notes", True) is not False
+    notes = _load_json(persona, "notes/notes.json") if notes_on else None
+
     stats = _load_json(persona, "proactive_stats.json")
     today = datetime.now().strftime("%Y-%m-%d")
     chat_stats = stats.get(chat_id) if isinstance(stats, dict) else None
@@ -215,6 +220,8 @@ def persona_overview(persona: str, config: dict, chat_id: str = "web_user") -> d
         "initiatives_max": (int(proactive_cfg.get("max_daily_initiatives") or 0)
                             if proactive_cfg.get("enabled") else 0),
         "ltm_facts": _ltm_count(persona),
+        "notes_enabled": notes_on,
+        "notes_count": len(notes) if isinstance(notes, list) else 0,
     }
 
 

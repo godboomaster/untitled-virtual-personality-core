@@ -414,6 +414,13 @@ def create_handlers(bot: BotInstance) -> dict:
                 "/todo — список дел чата",
                 "Или просто: «запиши …», «надо сделать …», «готово, вычеркни N».",
             ]
+        if bot.notes is not None:
+            lines += [
+                "",
+                "🗒 Заметки",
+                "/notes — мои заметки",
+                "Или просто: «запиши в заметки …», «что у меня в заметках?», «удали заметку N».",
+            ]
         if bot.reminder_manager:
             lines += [
                 "",
@@ -651,6 +658,10 @@ def create_handlers(bot: BotInstance) -> dict:
         todo_list = bot.todo_manager.get_list(chat_id, lang=lang)
         empty = "The todo list is empty." if lang == "en" else "Список дел пуст."
         await update.message.reply_text(todo_list or empty)
+
+    async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(bot.notes_list_text(
+            str(update.effective_user.id), str(update.effective_chat.id)))
 
     async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bot.reminder_manager:
@@ -1311,6 +1322,7 @@ def create_handlers(bot: BotInstance) -> dict:
         "ratelimits": ratelimits_cmd,
         "web": web_cmd if bot._web_search_enabled else None,
         "todo": todo_cmd if bot.todo_manager else None,
+        "notes": notes_cmd if bot.notes is not None else None,
         "reminders": reminders_cmd if bot.reminder_manager else None,
         "cancel_reminder": cancel_reminder_cmd if bot.reminder_manager else None,
         "inventory": inventory_cmd if bot.inventory_manager else None,
@@ -1375,7 +1387,7 @@ def register_handlers(app: Application, bot: BotInstance):
     for name in ("start", "help", "stats", "erase", "clear", "last", "reset", "forget",
                  "context", "relations", "resetall", "ltm_privacy", "ltm_export",
                  "reset_diary", "files", "reset_files", "ratelimits", "web",
-                 "todo", "reminders", "cancel_reminder", "inventory", "remind",
+                 "todo", "notes", "reminders", "cancel_reminder", "inventory", "remind",
                  "add_todo", "add_inventory", "learn", "stop_learning"):
         if h.get(name):
             app.add_handler(CommandHandler(name, _gated(h[name]), filters=_NEW))

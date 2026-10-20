@@ -409,6 +409,7 @@ class PersonaLayer:
                          reply_context: Optional[str] = None,
                          stm_relevant: Optional[str] = None,
                          todo_context: Optional[str] = None,
+                         notes_context: Optional[str] = None,
                          reminder_context: Optional[str] = None,
                          inventory_context: Optional[str] = None,
                          inventory_events: Optional[List[str]] = None,
@@ -492,6 +493,10 @@ Use the information from the uploaded files in your answer if the user mentions 
                 f"Current todo list:\n{todo_context}\n"
             )
 
+        # Заметки пользователя: итог записи/удаления или сами заметки
+        # (готовый блок вместе с правилами — app/features/user_notes.py)
+        notes_note = f"\n\n{notes_context}\n" if notes_context else ""
+
         # Reminder-контекст: напоминание уже запланировано — просто подтверди
         reminder_note = ""
         if reminder_context:
@@ -574,7 +579,7 @@ Use the information from the uploaded files in your answer if the user mentions 
         ) or ""
 
         messages = [
-            {"role": "system", "content": self.prompt_for(user_id) + context_block + env_note + timestamps_note + todo_note + reminder_note + learning_note + inventory_note + inventory_events_note + computer_control_note + special_note + conv_style_note + language_note},
+            {"role": "system", "content": self.prompt_for(user_id) + context_block + env_note + timestamps_note + todo_note + notes_note + reminder_note + learning_note + inventory_note + inventory_events_note + computer_control_note + special_note + conv_style_note + language_note},
         ]
 
         # Определяем, является ли текущее сообщение от именованного пользователя (групповой чат)

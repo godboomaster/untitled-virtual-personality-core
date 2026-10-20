@@ -44,6 +44,8 @@ from app.features.reminder_manager import (
     looks_like_time_attempt,
 )
 from app.features.learning_manager import LearningManager, parse_frequency, classify_continue_answer
+from app.features import user_notes
+from app.features.user_notes import UserNotes
 from app.features.learning_intent import extract_subject
 from app.features.inventory_manager import (
     InventoryManager,
@@ -872,6 +874,10 @@ class BotInstance:
             self.inventory_manager = InventoryManager(context=self.context)
             logger.info(f"  [{persona_name}] Inventory manager включён")
 
+        # Заметки пользователя («запиши в заметки …») — одна книжка на
+        # персону, общая для веба и Telegram; есть у всех, notes: false гасит
+        self.notes: Optional[UserNotes] = self._make_notes(self.features, persona_name)
+
         # Computer control (только если computer_control): открытие сайтов/
         # приложений/именованных задач на компьютере пользователя (уровень 1).
         # Режим выключен: false/отсутствует, пустой dict или enabled: false
@@ -1204,7 +1210,34 @@ class BotInstance:
             self.inventory_manager = None
             logger.info(f"  [{self.persona_name}] Inventory manager выключен (live)")
         result["inventory"] = self.inventory_manager is not None
+
+        if self.features.get("notes", True) is not False:
+            if getattr(self, "notes", None) is None:
+                self.notes = BotInstance._make_notes(
+                    self.features, getattr(self, "persona_name", ""))
+        else:
+            self.notes = None
+        result["notes"] = self.notes is not None
         return result
+
+    def notes_list_text(self, user_id, chat_id=None) -> str:
+        """/notes в Telegram и веб-чате: заметки собеседника списком."""
+        lang = self.chat_user_language(chat_id) if chat_id else None
+        if self.notes is None:
+            return "Notes are off for this persona." if lang == "en" \
+                else "Заметки у этой персоны выключены."
+        return user_notes.render_list(
+            self.notes.visible(user_id, self.is_owner(user_id)), lang)
+
+    @staticmethod
+    def _make_notes(features: dict, persona_name: str) -> Optional[UserNotes]:
+        if features.get("notes", True) is False:
+            return None
+        try:
+            return UserNotes(persona_name)
+        except ValueError:
+            # id персоны не годится для пути (тестовые заготовки)
+            return None
 
     # Trigger logic
 
@@ -1999,13 +2032,14 @@ class BotInstance:
                      or is_todo_request(t) or is_todo_done_request(t)
                      or is_todo_list_request(t)
                      or is_inventory_add_request(t)
-                     or is_inventory_remove_request(t))
+                     or is_inventory_remove_request(t)
+                     or user_notes.is_command(t))
         except Exception:
             asked = "напом" in low
         if not asked:
             return None
-        return ("Control mode is on in this chat, so reminders, the todo list "
-                "and the inventory are paused. The user's request was NOT "
+        return ("Control mode is on in this chat, so reminders, the todo list, "
+                "notes and the inventory are paused. The user's request was NOT "
                 "saved and nothing was scheduled. Say so honestly and briefly, "
                 "in your own style: to use it, the user should first exit "
                 "control mode (\"выйди из режима управления\" / \"exit control "
@@ -4220,6 +4254,17 @@ class BotInstance:
         history_for_rewrite = self.memory.stm.get_last(_REWRITE_HISTORY, chat_id=chat_id)
         logger.info(f"[BotInstance] history_for_rewrite: {len(history_for_rewrite)} messages")
 
+        # Заметки («запиши в заметки …», «что у меня в заметках?») — по
+        # написанному человеком; запись/удаление и блок промпта — ниже, с
+        # остальными фичами (_notes_turn). В режиме управления молчат, как дела.
+        # notes_explicit — просьба именно про заметки: дела, инвентарь,
+        # напоминания, обучение, правило и веб-поиск её не перехватывают
+        notes_req = None
+        if getattr(self, "notes", None) is not None \
+                and not (chat_id and self.control_mode_on(chat_id)):
+            notes_req = user_notes.parse_request(raw_user_text, self._address_names())
+        notes_explicit = bool(notes_req and notes_req.kind != "ask")
+
         # Серия подряд идущих ответов бота с финальным вопросом (conversation_style):
         # по истории ДО текущего сообщения; ниже решает, нужна ли регенерация
         from app.features.conversation_style import count_question_streak
@@ -4285,7 +4330,9 @@ class BotInstance:
                 and page_section_note is None
                 # Команда телефону (будильник, «открой приложение») — не
                 # вопрос к интернету
-                and not turn_note):
+                and not turn_note
+                # «Запиши в заметки рецепт …» — не вопрос к интернету
+                and not notes_explicit):
             # Собираем контекст персоны для QueryEnhancer
             persona_context = self._get_persona_context_for_search()
             # Берём последние 6 сообщений для контекста
@@ -4373,7 +4420,9 @@ class BotInstance:
             # Исправления → правила: пользователь поправляет бота — формулируем
             # правило локальной LLM и сохраняем; оно запинится в промпт ниже.
             # «Запомни сценарий …» вне режима управления — не правило (см. выше)
-            if _looks_like_correction(user_input, typed_h) and not scenario_outside_mode:
+            # «Запомни в заметках …» — заметка, не правило
+            if _looks_like_correction(user_input, typed_h) and not scenario_outside_mode \
+                    and not notes_explicit:
                 rule = self._extract_rule_from_correction(user_input)
                 if rule:
                     self.memory.ltm.save_facts(
@@ -4454,7 +4503,7 @@ class BotInstance:
             # Напоминания: ответы на висящие вопросы, отмена/список текстом,
             # новая просьба — см. _reminder_turn
             if self.reminder_manager and chat_id \
-                    and not self.control_mode_on(chat_id):
+                    and not self.control_mode_on(chat_id) and not notes_explicit:
                 reminder_context, is_reminder_request = self._reminder_turn(
                     user_input, chat_id, user_id, user_name, reply_to_bot_message_id)
 
@@ -4473,6 +4522,7 @@ class BotInstance:
                 # фейковый урок через parse_frequency("5 минут")=300с.
                 explicit_other_feature = (
                     is_reminder_request
+                    or notes_explicit
                     or is_inventory_add_request(user_input)
                     or is_inventory_remove_request(user_input)
                     or is_todo_request(user_input)
@@ -4712,7 +4762,7 @@ class BotInstance:
             # Какие эвристики фич сработали на этом сообщении
             _fired_intents = set()
             if self.todo_manager and chat_id \
-                    and not self.control_mode_on(chat_id):
+                    and not self.control_mode_on(chat_id) and not notes_explicit:
                 if is_todo_done_request(user_input):
                     _fired_intents.add("todo_remove")
                 elif is_todo_list_request(user_input):
@@ -4720,7 +4770,7 @@ class BotInstance:
                 elif is_todo_request(user_input):
                     _fired_intents.add("todo_add")
             if (self.inventory_manager and not is_reminder_request
-                    and not self.control_mode_on(chat_id)):
+                    and not self.control_mode_on(chat_id) and not notes_explicit):
                 if is_inventory_add_request(user_input):
                     _fired_intents.add("inventory_add")
                 elif is_inventory_remove_request(user_input):
@@ -4758,6 +4808,14 @@ class BotInstance:
                     todo_seen = self.todo_manager.get_tasks(chat_id)
                     current_todo = self.todo_manager.get_list(chat_id)
                     todo_context = current_todo or "The todo list is empty."
+
+            # Заметки: запись/удаление — сразу, модели — итог или сами
+            # заметки (вопрос по ним); список — сообщением вслед за ответом
+            notes_context = None
+            if notes_req is not None:
+                notes_context = self._notes_turn(
+                    notes_req, chat_id, user_id, user_name, reply_context,
+                    history_for_rewrite, turn_lang)
 
             # Inventory-контекст: вещи бота
             # (пропускаем если это напоминание — чтобы LLM не добавил мусор в инвентарь)
@@ -4887,6 +4945,7 @@ class BotInstance:
                 has_files=has_files, self_memory_block=self_memory_block,
                 reply_context=reply_context, stm_relevant=stm_relevant_text,
                 todo_context=todo_context,
+                notes_context=notes_context,
                 reminder_context=reminder_context,
                 inventory_context=inventory_context,
                 inventory_events=inventory_events,
@@ -6142,6 +6201,70 @@ class BotInstance:
             return list_offers.text("done_inventory_remove", lang, v=name)
         # Фичу выключили, пока висел вопрос, — обычный путь
         return None
+
+    def _notes_turn(self, req, chat_id, user_id, user_name, reply_context,
+                    history, lang: Optional[str]) -> Optional[str]:
+        """Просьба про заметки → блок для промпта. Запись и удаление — здесь
+        же, кодом; «покажи заметки» — список в бакет досылки после ответа.
+        Собеседник видит и удаляет только свои заметки (UserNotes.visible)."""
+        notes = self.notes
+        if notes is None:
+            return None
+        owner = self.is_owner(user_id)
+        list_lang = lang if lang in ("ru", "en") else "ru"
+        try:
+            if req.kind == "add":
+                text = req.text
+                if req.ref or not text:
+                    # «Запиши это в заметки» — текст цитаты (ответ на
+                    # сообщение) или последнего ответа персоны
+                    text = self._notes_quoted_text(reply_context, history,
+                                                   last_reply=req.ref)
+                if not text:
+                    return user_notes.prompt_nothing_to_save()
+                note = notes.add(text, author_id=user_id or "", author_name=user_name or "",
+                                 owner=owner, source="chat")
+                if note is None:
+                    return user_notes.prompt_full()
+                return user_notes.prompt_saved(note["text"])
+            visible = notes.visible(user_id, owner)
+            if req.kind == "delete":
+                picked = user_notes.resolve_delete(req, visible)
+                if not picked:
+                    return user_notes.prompt_delete_unclear(visible)
+                removed = notes.remove(n["id"] for n in picked)
+                if not removed:
+                    return user_notes.prompt_delete_unclear(notes.visible(user_id, owner))
+                return user_notes.prompt_deleted(removed, len(visible) - len(removed))
+            if req.kind == "show":
+                if visible:
+                    self._pending_lists(chat_id).append(
+                        user_notes.render_list(visible, list_lang))
+                return user_notes.prompt_show(visible)
+            return user_notes.prompt_ask(visible)
+        except Exception:
+            logger.exception("[Notes] сбой хода заметок")
+            return None
+
+    @staticmethod
+    def _notes_quoted_text(reply_context, history, last_reply: bool) -> str:
+        """Текст для «запиши это в заметки»: цитата (в Telegram — «[Имя]:
+        текст», обрезана до 500 — полный берём из истории, если нашёлся),
+        иначе при last_reply — последний ответ персоны."""
+        msgs = [m for m in history or () if isinstance(m, dict) and m.get("content")]
+        if reply_context:
+            quoted = re.sub(r"^\[[^\]\n]{0,80}\]:\s*", "", str(reply_context)).strip()
+            head = quoted[:120]
+            if head:
+                for m in reversed(msgs):
+                    if str(m["content"]).startswith(head):
+                        return str(m["content"]).strip()
+            return quoted
+        if last_reply:
+            for m in reversed(msgs):
+                if m.get("role") == "assistant":
+                    return str(m["content"]).strip()
+        return ""
 
     def _process_todo_marker(
         self, response: str, chat_id: str, user_name: str,

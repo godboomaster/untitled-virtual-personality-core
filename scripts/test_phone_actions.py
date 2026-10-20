@@ -678,7 +678,8 @@ def test_core():
     bsrc = (ROOT / "app" / "bot_instance.py").read_text(encoding="utf-8")
     check("заметка — в системный блок (addon_blocks) и в light-режиме",
           "if turn_note:\n                addon_blocks.append(turn_note)" in bsrc)
-    check("ход с заметкой — без веб-поиска", "and not turn_note):" in bsrc)
+    check("ход с заметкой — без веб-поиска",
+          "# вопрос к интернету\n                and not turn_note\n" in bsrc)
 
     # Заметка в системном блоке промпта персоны
     from app.core.persona import PersonaLayer

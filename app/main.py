@@ -129,6 +129,8 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
     if bot_instance.todo_manager:
         commands.append(("todo", "Мой список дел"))
         commands.append(("add_todo", "Добавить дело: /add_todo <текст>"))
+    if bot_instance.notes is not None:
+        commands.append(("notes", "Мои заметки"))
     if bot_instance.inventory_manager:
         commands.append(("inventory", "Инвентарь бота"))
         commands.append(("add_inventory", "Дать предмет: /add_inventory <название>"))

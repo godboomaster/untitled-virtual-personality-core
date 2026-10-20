@@ -50,6 +50,7 @@ from app.api.schemas import (
     InitiativeUpdate,
     InventoryAddRequest,
     LearningStartRequest,
+    NoteRequest,
     LocationRequest,
     TimezoneRequest,
     MemoryStats,
@@ -1305,6 +1306,7 @@ _SLASH_HELP = (
     "/remind <что> [через N / в HH:MM] — напомнить\n"
     "/web — вкл/выкл веб-поиск\n"
     "/todo — список дел · /add_todo <задача>\n"
+    "/notes — мои заметки\n"
     "/reminders — активные напоминания · /cancel_reminder N\n"
     "/inventory — инвентарь · /add_inventory <предмет>[: описание]\n"
     "/files — загруженные файлы\n"
@@ -1342,6 +1344,9 @@ def _try_slash_command(bot, req: ChatRequest) -> tuple[str, bool] | None:
         lang = bot.chat_user_language(chat_id)
         empty = "The todo list is empty." if lang == "en" else "Список дел пуст."
         return (bot.todo_manager.get_list(chat_id, lang=lang) or empty), False
+
+    if cmd == "notes":
+        return bot.notes_list_text(req.user_id, chat_id), False
 
     if cmd == "reminders":
         if not bot.reminder_manager:
@@ -2407,6 +2412,67 @@ async def inventory_remove(persona: PersonaIdPath, name: str):
         raise HTTPException(status_code=400, detail="У этой персоны нет инвентаря (inventory: false)")
     result = await asyncio.to_thread(bot.inventory_manager.remove_item, name)
     return {"result": result}
+
+
+# ── Заметки пользователя (блок на главной) ────────────────────────────
+# Одна книжка на персону — файл data/api_<p>/notes/notes.json, его же пишет
+# бот из чата (и Telegram-процесс): BotInstance не поднимается. Главная —
+# интерфейс владельца: видны все заметки персоны.
+
+def _notes_for(persona: str):
+    from app.features.user_notes import UserNotes
+    info = get_persona_info(persona)
+    if not info:
+        raise HTTPException(status_code=404, detail=f"Персона '{persona}' не найдена")
+    if (info.get("features") or {}).get("notes", True) is False:
+        raise HTTPException(status_code=400, detail="У этой персоны заметки выключены (notes: false)")
+    return UserNotes(persona)
+
+
+def _note_out(n: dict) -> dict:
+    return {k: n.get(k) for k in ("id", "text", "created_at", "updated_at",
+                                  "author_name", "owner", "source")}
+
+
+@app.get("/api/personas/{persona}/notes", dependencies=[Depends(require_auth)])
+async def notes_list(persona: PersonaIdPath):
+    notes = await asyncio.to_thread(_notes_for, persona)
+    items = await asyncio.to_thread(notes.all)
+    return {"items": [_note_out(n) for n in reversed(items)]}
+
+
+@app.post("/api/personas/{persona}/notes", dependencies=[Depends(require_auth)])
+async def notes_add(persona: PersonaIdPath, req: NoteRequest):
+    notes = await asyncio.to_thread(_notes_for, persona)
+    note = await asyncio.to_thread(
+        lambda: notes.add(req.text, author_id="web_user", owner=True, source="home"))
+    if note is None:
+        raise HTTPException(status_code=400, detail="Пустая заметка или заметок слишком много")
+    return {"note": _note_out(note)}
+
+
+@app.patch("/api/personas/{persona}/notes/{note_id}", dependencies=[Depends(require_auth)])
+async def notes_update(persona: PersonaIdPath, note_id: str, req: NoteRequest):
+    from app.features.user_notes import valid_note_id
+    if not valid_note_id(note_id):
+        raise HTTPException(status_code=404, detail="Заметка не найдена")
+    notes = await asyncio.to_thread(_notes_for, persona)
+    note = await asyncio.to_thread(notes.update, note_id, req.text)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Заметка не найдена")
+    return {"note": _note_out(note)}
+
+
+@app.delete("/api/personas/{persona}/notes/{note_id}", dependencies=[Depends(require_auth)])
+async def notes_delete(persona: PersonaIdPath, note_id: str):
+    from app.features.user_notes import valid_note_id
+    if not valid_note_id(note_id):
+        raise HTTPException(status_code=404, detail="Заметка не найдена")
+    notes = await asyncio.to_thread(_notes_for, persona)
+    removed = await asyncio.to_thread(notes.remove, [note_id])
+    if not removed:
+        raise HTTPException(status_code=404, detail="Заметка не найдена")
+    return {"ok": True}
 
 
 # ── Обучение ──────────────────────────────────────────────────────────

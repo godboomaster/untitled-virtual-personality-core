@@ -38,7 +38,8 @@ https://github.com/user-attachments/assets/aa87b619-6564-4703-81d8-762ad478f123
   assistant's wall of text; a forest spirit answers with a gesture. This is set by the tier:
   `primitive`, `normal`, `bot`.
 - **Household.** Reminders ("tomorrow at 12", "every Friday at 6 pm"), a to-do list,
-  inventory, courses with quizzes, web search.
+  notes ("add to my notes …", "what's in my notes?" — each persona keeps its own, shown on
+  the home page), inventory, courses with quizzes, web search.
 - **Control mode.** On the owner's command the bot opens sites and apps, searches on sites,
   clicks buttons, types text, reads pages, carries out multi-step tasks ("order a pizza")
   and replays recorded scenarios. Actions are confirmed.
@@ -173,6 +174,7 @@ that arrived while the bot was off are skipped.
 | `/ltm_privacy [smart\|strict]`, `/ltm_export` | what to remember about you; your facts as a file in a private chat |
 | `/web` | web search in this chat on/off (`web_search`) |
 | `/todo`, `/add_todo` | to-do list (`todo`) |
+| `/notes` | your notes (`notes`) |
 | `/remind`, `/reminders`, `/cancel_reminder` | reminders (`reminder`) |
 | `/inventory`, `/add_inventory` | inventory (`inventory`) |
 | `/learn <topic>`, `/stop_learning` | a learning course (`learning`) |
@@ -417,6 +419,7 @@ Modules in `features`:
 | `file_upload` | document upload (docx, pdf, pptx, xlsx and more) with full-text search |
 | `self_memory` | the persona's diary: conversation episodes and notes |
 | `todo`, `reminder`, `inventory` | to-dos, reminders, inventory |
+| `notes` | the user's notes: on unless `notes: false` |
 | `learning` | "teach me X" courses; as a dict — `quiz_every`, lesson intervals |
 | `proactive` | initiative — see below |
 | `rhythm` | morning greeting, "time to sleep", weather |

@@ -8905,6 +8905,178 @@ html[data-theme='dark'] .input::-webkit-calendar-picker-indicator {
   margin-bottom: 10px;
 }
 
+/* ===== Заметки пользователя (блок на главной) ===== */
+.notes {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  padding: 14px 16px 12px;
+}
+.notes-personas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.notes-persona {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-panel-2);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.notes-persona:hover {
+  background: var(--accent-soft);
+}
+.notes-persona--on {
+  border-color: var(--note-color, var(--accent));
+  background: var(--accent-soft);
+}
+.notes-persona-avatar {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--note-color, var(--accent-dim));
+  color: var(--bg-panel);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.notes-persona-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.notes-persona-name {
+  text-transform: uppercase;
+}
+.notes-persona-count {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.notes-add {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.notes-input {
+  resize: vertical;
+  min-height: 42px;
+  font-family: inherit;
+  line-height: 1.45;
+}
+.notes-error {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--danger);
+}
+.notes-empty {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: 12px 0 4px;
+}
+.notes-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  max-height: 520px;
+  overflow-y: auto;
+}
+.note {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.note:last-child {
+  border-bottom: none;
+}
+.note-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.note-text--clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.note-more {
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.note-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.note-time,
+.note-author {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.note-source {
+  padding: 1px 6px;
+}
+.note-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.note-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.note-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+.notes-hint {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border-soft);
+  padding-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+@media (max-width: 560px) {
+  .notes {
+    padding: 12px 12px 10px;
+  }
+  .notes-add {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 @media (max-width: 720px) {
   .cal-day {
     min-height: 56px;

@@ -309,6 +309,11 @@ class InventoryAddRequest(BaseModel):
     source: str = "web"
 
 
+class NoteRequest(BaseModel):
+    # Новая заметка или правка текста (блок «Заметки» на главной)
+    text: str = Field(min_length=1, max_length=4000)
+
+
 class LearningStartRequest(BaseModel):
     subject: str
     interval_seconds: float = 86400

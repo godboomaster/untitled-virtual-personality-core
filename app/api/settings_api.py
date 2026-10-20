@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # Флаги features, применяемые к живому боту без рестарта сервера
 _LIVE_FEATURE_KEYS = {
     "proactive", "muted", "light_context", "computer_control",
-    "reminder", "todo", "inventory", "rhythm", "life",
+    "reminder", "todo", "inventory", "rhythm", "life", "notes",
 }
 
 # Ключи верхнего уровня YAML, которые BotInstance читает только при создании

@@ -7,6 +7,7 @@ import { requestChatPersona } from '../chatNavStore';
 import { useInbox } from '../inboxStore';
 import { usePersonaAvatars } from '../avatarStore';
 import CalendarWidget from '../components/CalendarWidget';
+import NotesWidget from '../components/NotesWidget';
 import { api } from '../api';
 import type { HomeOverview } from '../api';
 import { useApiOnline, useCoreHealth } from '../apiData';
@@ -194,6 +195,17 @@ export default function Home({ onNavigate }: HomeProps) {
       .slice(0, 2);
     return [...initRows, ...diaryRows, ...reminderRows];
   }, [live, mock, overview, personas, initiativeByPersona, diaryByPersona, remindersByPersona]);
+
+  // Блок «Заметки»: персоны, у которых они не выключены (notes: false), и
+  // число заметок каждой из сводки
+  const notesPersonas = useMemo(
+    () => (live ? personas.filter((p) => overview.personas[p.id]?.notes_enabled !== false) : personas),
+    [live, overview, personas],
+  );
+  const notesCounts = useMemo(
+    () => (live ? Object.fromEntries(personas.map((p) => [p.id, overview.personas[p.id]?.notes_count ?? 0])) : undefined),
+    [live, overview, personas],
+  );
 
   // Строки журнала системы для терминального блока
   const logLines: React.ReactNode[] = [
@@ -430,11 +442,20 @@ export default function Home({ onNavigate }: HomeProps) {
         </div>
       </div>
 
+      {/* Заметки пользователя: своя книжка у каждой персоны */}
+      <div>
+        <div className="home-block-head">
+          <span className="home-block-title">{t('notes.title')}</span>
+          <span className="home-block-num">04 / NOTES</span>
+        </div>
+        <NotesWidget personas={notesPersonas} live={live} mock={mock} noLink={noLink} counts={notesCounts} />
+      </div>
+
       {/* Общий календарь всех персон */}
       <div>
         <div className="home-block-head">
           <span className="home-block-title">{t('calendar.title')}</span>
-          <span className="home-block-num">04 / PLAN</span>
+          <span className="home-block-num">05 / PLAN</span>
         </div>
         <CalendarWidget />
       </div>
@@ -443,7 +464,7 @@ export default function Home({ onNavigate }: HomeProps) {
       <div>
         <div className="home-block-head">
           <span className="home-block-title">{t('home.modulesTitle')}</span>
-          <span className="home-block-num">05 / MODULES</span>
+          <span className="home-block-num">06 / MODULES</span>
         </div>
         <div className="home-dossier-grid">
           {modules.map((m) => (
@@ -464,7 +485,7 @@ export default function Home({ onNavigate }: HomeProps) {
       <div>
         <div className="home-block-head">
           <span className="home-block-title">{t('home.syslogTitle')}</span>
-          <span className="home-block-num">06 / SYSLOG</span>
+          <span className="home-block-num">07 / SYSLOG</span>
         </div>
         <div className="home-term bracketed">
           <div className="corner tl" />

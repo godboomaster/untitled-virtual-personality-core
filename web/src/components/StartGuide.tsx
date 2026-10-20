@@ -276,6 +276,7 @@ const TRACKS: Track[] = [
           { code: 'guide.codeCancelReminder', i18n: true, hint: 'guide.cmdCancelReminder' },
           { code: '/todo', hint: 'guide.cmdTodo' },
           { code: 'guide.codeAddTodo', i18n: true, hint: 'guide.cmdAddTodo' },
+          { code: '/notes', hint: 'guide.cmdNotes' },
           { code: '/inventory', hint: 'guide.cmdInventory' },
           { code: 'guide.codeAddInventory', i18n: true, hint: 'guide.cmdAddInventory' },
           { code: 'guide.codeLearn', i18n: true, hint: 'guide.cmdLearn' },

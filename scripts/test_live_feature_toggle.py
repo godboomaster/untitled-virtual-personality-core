@@ -51,15 +51,16 @@ def main():
     )
 
     res = bi.BotInstance.sync_feature_managers(bot)
+    # Заметки есть у всех персон без флага (notes: false гасит)
     check("все выключены: менеджеров нет",
-          res == {"reminder": False, "todo": False, "inventory": False}
+          res == {"reminder": False, "todo": False, "inventory": False, "notes": True}
           and bot.reminder_manager is None and bot.todo_manager is None
           and bot.inventory_manager is None)
 
     bot.features = {"reminder": True, "todo": True, "inventory": True}
     res = bi.BotInstance.sync_feature_managers(bot)
     check("включение: все три менеджера созданы",
-          res == {"reminder": True, "todo": True, "inventory": True}
+          res == {"reminder": True, "todo": True, "inventory": True, "notes": True}
           and isinstance(bot.reminder_manager, ReminderManager)
           and isinstance(bot.todo_manager, TodoManager)
           and isinstance(bot.inventory_manager, InventoryManager))
@@ -69,10 +70,21 @@ def main():
     bot.features = {"reminder": False, "todo": False, "inventory": False}
     res = bi.BotInstance.sync_feature_managers(bot)
     check("выключение: менеджеры остановлены и убраны",
-          res == {"reminder": False, "todo": False, "inventory": False}
+          res == {"reminder": False, "todo": False, "inventory": False, "notes": True}
           and bot.reminder_manager is None and bot.todo_manager is None
           and bot.inventory_manager is None
           and stopped._running is False)
+
+    # Заметки: notes: false — книжки нет, снова включили — есть
+    notes_before = bot.notes
+    bot.features = {"notes": False}
+    res = bi.BotInstance.sync_feature_managers(bot)
+    check("notes: false — заметок нет", res["notes"] is False and bot.notes is None)
+    bot.features = {"notes": True}
+    res = bi.BotInstance.sync_feature_managers(bot)
+    check("notes снова включены — книжка той же персоны",
+          res["notes"] is True and bot.notes is not None and notes_before is not None
+          and bot.notes.path == notes_before.path)
 
     # Повторный sync без изменений — идемпотентен, объекты не пересоздаются
     bot.features = {"reminder": True, "todo": True, "inventory": True}

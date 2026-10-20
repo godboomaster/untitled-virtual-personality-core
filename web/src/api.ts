@@ -595,6 +595,28 @@ export const api = {
       { method: 'DELETE' },
     ),
 
+  // Заметки пользователя (блок на главной): книжка персоны, свежие сверху
+  getNotes: (persona: string) =>
+    request<{ items: NoteEntry[] }>(`/api/personas/${encodeURIComponent(persona)}/notes`),
+
+  addNote: (persona: string, text: string) =>
+    request<{ note: NoteEntry }>(`/api/personas/${encodeURIComponent(persona)}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+
+  updateNote: (persona: string, id: string, text: string) =>
+    request<{ note: NoteEntry }>(
+      `/api/personas/${encodeURIComponent(persona)}/notes/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: JSON.stringify({ text }) },
+    ),
+
+  deleteNote: (persona: string, id: string) =>
+    request<{ ok: boolean }>(
+      `/api/personas/${encodeURIComponent(persona)}/notes/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+
   getReminders: (persona: string) =>
     request<{ items: ReminderEntry[] }>(
       `/api/personas/${encodeURIComponent(persona)}/reminders?chat_id=${WEB_CHAT_ID}`,
@@ -1598,6 +1620,20 @@ export interface HomePersonaOverview {
   initiatives_today: number;
   initiatives_max: number;
   ltm_facts: number;
+  // Заметки: у старых серверов полей нет
+  notes_enabled?: boolean;
+  notes_count?: number;
+}
+
+// Заметка пользователя («запиши в заметки …» в чате или блок на главной)
+export interface NoteEntry {
+  id: string;
+  text: string;
+  created_at: number; // unix-секунды
+  updated_at: number | null;
+  author_name: string;
+  owner: boolean; // записал владелец (в чате или здесь); иначе — другой собеседник
+  source: 'chat' | 'home';
 }
 
 export interface HomeOverview {
