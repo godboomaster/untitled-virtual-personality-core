@@ -42,7 +42,9 @@ https://github.com/user-attachments/assets/aa87b619-6564-4703-81d8-762ad478f123
   the home page), inventory, courses with quizzes, web search.
 - **Control mode.** On the owner's command the bot opens sites and apps, searches on sites,
   clicks buttons, types text, reads pages, carries out multi-step tasks ("order a pizza")
-  and replays recorded scenarios. Actions are confirmed.
+  and replays recorded scenarios. Actions are confirmed. Task steps spare your web chat
+  accounts: when a site fails, they go to sites without an account (duck.ai, Google AI Mode
+  signed out) or to the one that has rested longest, not to the main one.
 - **Screen and camera.** "Look at my screen" — the persona looks at the computer's screen;
   the camera button in the chat — at a photo from the phone or a webcam. Only the local
   model in Ollama sees the picture; the persona gets its description.
