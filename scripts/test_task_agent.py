@@ -4278,9 +4278,14 @@ def main():
         r = agent.start("gm1", "закажи пиццу на pizza.test", ScriptedRouter(
             [{"action": "fail", "message": "стоп"}]), user_id="A")
         run_g = agent._runs.get("gm1") or {}
+        bg = run_g.get("browse") or {}
+        # Вид из цели — раздел сайта с ним открыт и показан кодом (вопрос о
+        # разделах не нужен: test_task_sections_retry)
         check("gemma 01.10: позиция «пицца» из цели — вид, не товар: бриф "
-              "пуст, вопрос о разделах на месте",
-              "На pizza.test есть разделы:" in r
+              "пуст, выбор из каталога на месте (раздел «Пиццы» по виду)",
+              "Нажал «Пиццы»" in r and bg.get("kind") == "пицца"
+              and bg.get("section") == "Пиццы"
+              and bg.get("stage") == "presented"
               and not (run_g.get("brief") or {}).get("items"))
         agent.slot_router = SlotRouter([{"items": [
             {"name": "Пицца Пепперони"}, {"name": "суши"}]}])

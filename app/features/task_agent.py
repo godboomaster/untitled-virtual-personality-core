@@ -122,6 +122,10 @@ PRE_PAGE_LINES = 60
 # (сколько, цены, виды с примерами); «покажи все» — не длиннее этого
 SECTION_LIST_MAX = 10
 SECTION_ALL_MAX = 40
+# Разделы на служебной странице сайта (доставка, контакты — вкладка от
+# прошлой задачи): столько раз попытка откладывается до другой страницы того
+# же сайта (первый раз — главная кодом), дальше — модель шагов, без разделов
+SECTIONS_RETRY_MAX = 2
 # Промежуточные сообщения о ходе — пачкой не чаще раза в N секунд
 NOTIFY_EVERY_SEC = 20
 # Эффект действия для модели: сколько появившихся/пропавших подписей показать
@@ -1149,6 +1153,20 @@ _NOT_PRODUCT_RE = re.compile(r"доставк|акци|скидк|бесплат
 _SERVICE_LINK_RE = re.compile(
     r"(?<![^\W\d_])(?:контакты|приложени[ея]|ваканси\w*|карьера|contacts|"
     r"contact\s+us|apps?|jobs?|careers?)(?![^\W\d_])", re.IGNORECASE)
+# Путь служебной страницы сайта — каталога на ней нет (_service_page):
+# доставка, контакты, о компании, помощь, вакансии, правила, акции,
+# приложение, вход, новости, отзывы. Словом пути: «/info/delivery-terms»,
+# «/o-nas» — да; «/apple», «/helpful» — нет
+_SERVICE_PATH_RE = re.compile(
+    r"(?<![^\W\d_])(?:deliver\w*|shipping|dostavk\w*|доставк\w*|contacts?|"
+    r"kontakt\w*|контакт\w*|about|o-nas|o-kompanii|о-нас|о-компании|company|"
+    r"faq|help|support|pomoshch?\w*|помощ\w*|vacanc\w*|vakansi\w*|ваканси\w*|"
+    r"jobs?|careers?|privacy|polic(?:y|ies)|terms|oferta|оферт\w*|rules|"
+    r"pravila|правила|cookies?|legal|allergen\w*|аллерген\w*|promo\w*|"
+    r"akci\w*|aktsi\w*|акци\w*|apps?|download|prilozheni\w*|приложени\w*|"
+    r"login|sign-?in|sign-?up|register|auth|account|profile|cabinet|kabinet|"
+    r"lk|news|novosti|новости|blog|press|reviews?|otzyv\w*|отзыв\w*)"
+    r"(?![^\W\d_])", re.IGNORECASE)
 # «Покажи все» — весь раздел списком
 _SHOW_ALL_RE = re.compile(r"(?:покажи|перечисли|список|дай)\s+(?:вс[её]|все\s+"
                           r"варианты|целиком|полностью)|вс[её]\s+варианты|"
@@ -3416,7 +3434,16 @@ class TaskAgent:
                                  last["brief"], src="memory")
             # Цель — тоже ответ: «закажи пепперони 30 см на додо» заполняет
             # слоты
-            self._update_brief(run, "(the task goal)", goal)
+            ch = self._update_brief(run, "(the task goal)", goal)
+            kinds = [" ".join(str(k).split())[:40] for k in (
+                ch.get("kinds") if isinstance(ch, dict)
+                and isinstance(ch.get("kinds"), list) else ())
+                if str(k).strip()]
+            if kinds and not (run.get("brief") or {}).get("items"):
+                # «Закажи напиток»: вид без позиции — его раздел сайта
+                # («Напитки») откроет и покажет код (_browse_sections), без
+                # вопроса о разделах. Раньше вид из цели терялся (run3 21.10)
+                run["browse"] = {"kind": kinds[0]}
         except Exception as e:
             # Бриф — подсказка, не условие: сбой не должен оставить прогон
             # «занятым» навсегда (busy снимает только _drive)
@@ -6185,8 +6212,11 @@ class TaskAgent:
         до SECTION_LIST_MAX позиций — список целиком, больше — коротко
         (сколько, цены, виды с примерами; «покажи все» — список). Разделы —
         по разметке страницы, не нашлось двух — модель по странице
-        (_pre_llm); показ раздела — модель, когда — код. Модели нет или
-        разделов на странице не нашлось — как раньше, решает модель шагов.
+        (_pre_llm); служебная страница сайта (доставка, контакты) — без
+        модели: главная кодом, попытка — на следующей странице. Вид из цели
+        («закажи напиток») с разделом сайта — сразу этот раздел. Показ
+        раздела — модель, когда — код. Модели нет или разделов на странице
+        не нашлось — как раньше, решает модель шагов.
         → пауза/ход или None."""
         b = run.setdefault("browse", {})
         if b.get("stage") == "done" and b.get("again") and not b.get("closed"):
@@ -6231,7 +6261,8 @@ class TaskAgent:
             # там, куда пришёл агент, а не на вкладке новостей человека
             return None
         if stage is None:
-            return self._browse_sections(run, chat_id, obs, b, host)
+            return self._browse_sections(run, chat_id, obs, b, host,
+                                         router=router)
         if stage == "chosen":
             if b.get("again") and any(it.get("md") for it in obs["shown"]):
                 # Просьба после «что-нибудь ещё?», а открыто окно товара
@@ -6265,21 +6296,39 @@ class TaskAgent:
         return ("pause", q)
 
     def _browse_sections(self, run: dict, chat_id, obs: dict, b: dict,
-                         host: str) -> Optional[Tuple[str, str]]:
+                         host: str, router=None
+                         ) -> Optional[Tuple[str, Optional[str]]]:
         # Разделы — подписи этой страницы: заголовки разделов по разметке,
         # иначе названные моделью; открытое окно (город, cookie) сначала
         # решит модель
         if any(it.get("md") for it in obs["shown"]):
             return None
-        # Одна попытка: при первом приходе на сайт. Разделов не нашлось —
-        # дальше модель шагов, вопрос посреди выбора товара не нужен
-        b["stage"] = "done"
+        if b.get("retry_url") and b["retry_url"] == obs.get("url"):
+            # Попытка отложена до другой страницы сайта (_browse_later)
+            return None
         if self.slot_router is None:
+            b["stage"] = "done"
             return None  # модели разбора нет — как раньше, без разделов
         # Разметка первой: два годных раздела — модель не зовём (вызов
         # веб-чата на каждый заход в магазин — риск бана аккаунта). Её NONE
         # «цели каталог не нужен» решает код до разделов (_browse_step)
         marked = self._markup_sections(obs)
+        if len(marked) < 2 and self._service_page(obs):
+            # Служебная страница сайта без товаров (доставка, контакты —
+            # вкладка от прошлой задачи): разделов на ней нет, модель о них
+            # не спрашиваем (run3 21.10: NONE на /delivery, и разделов
+            # больше не было — меню перечисляла модель шагов). Главная того
+            # же сайта — кодом, раз; дальше — следующая страница сайта
+            if not self._browse_later(b, obs):
+                b["stage"] = "done"
+                return None
+            if router is not None and not b.get("home"):
+                b["home"] = True
+                return self._browse_home(run, chat_id, router, obs)
+            return None
+        # Одна попытка на странице с товарами или на главной: разделов не
+        # нашлось — дальше модель шагов, вопрос посреди выбора не нужен
+        b["stage"] = "done"
         opts, src = list(marked), "по разметке"
         if len(opts) < 2:
             labels = [_item_label(it)[:LABEL_MAX] for it in obs["shown"]
@@ -6354,6 +6403,74 @@ class TaskAgent:
                 self._item_text(x) for x in past["brief"]["items"][:3]))
         b.update(stage="asked", sections=opts[:10], sections_q=q)
         return self._browse_ask(run, chat_id, b, q, {"pick": "section"})
+
+    @staticmethod
+    def _service_page(obs: dict) -> bool:
+        """Служебная страница сайта: путь — доставка, контакты, о компании,
+        правила, акции… (_SERVICE_PATH_RE), и на ней ни одной позиции с
+        названием и ценой. Главная, страница с товарами, адрес без
+        служебного слова («/menu», «/catalog») — нет: там разделы решают
+        разметка и модель, как раньше (лучше вызов, чем мимо каталога)."""
+        from urllib.parse import unquote
+        try:
+            path = unquote(urlsplit(str(obs.get("url") or "")).path)
+        except ValueError:
+            return False
+        if not path.strip("/") or not _SERVICE_PATH_RE.search(path):
+            return False
+        # Позиция — подпись с названием и ценой; корзина и доставка с ценой
+        # («Корзина 459 ₽», «Доставка 149 ₽») — не товар
+        return not any(
+            _PRICE_RE.search(x) and _has_name(x)
+            and not _CART_WORD_RE.search(x) and not _NOT_PRODUCT_RE.search(x)
+            for x in (_show_label(it) for it in obs.get("shown") or ()
+                      if not it.get("ed")))
+
+    @staticmethod
+    def _browse_later(b: dict, obs: dict) -> bool:
+        """Разделы — позже, на другой странице того же сайта (на этой их
+        нет: _service_page); та же страница снова — без попытки. Не больше
+        SECTIONS_RETRY_MAX раз за выбор. → отложено ли (False — лимит:
+        дальше модель шагов, как после NONE)."""
+        n = int(b.get("tries") or 0)
+        if n >= SECTIONS_RETRY_MAX:
+            return False
+        b.update(tries=n + 1, retry_url=str(obs.get("url") or ""))
+        return True
+
+    def _browse_home(self, run: dict, chat_id, router, obs: dict
+                     ) -> Optional[Tuple[str, Optional[str]]]:
+        """Главная сайта со служебной страницы — кодом, без вызова модели:
+        тот же хост, путь «/» (адрес не от модели и без данных; гейт
+        execute — как у любого шага), новой вкладкой агента, как open.
+        Разделы — следующим наблюдением (_browse_sections). Адрес не
+        разрешён — None: попытка ждёт другой страницы, ход за моделью."""
+        try:
+            parts = urlsplit(str(obs.get("url") or ""))
+            port = f":{parts.port}" if parts.port else ""
+        except ValueError:
+            return None
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return None
+        home = f"{parts.scheme}://{parts.hostname}{port}/"
+        try:
+            a = self.cc.resolve_url(home)
+        except Exception as e:
+            logger.debug(f"[TaskAgent] главная сайта не разрешена: {e}")
+            a = None
+        if not a:
+            return None
+        a["origin"] = "task"
+        run["steps"] += 1
+        kind, text = self._execute(
+            run, chat_id, router, a, f"open the home page \"{home}\" (by the "
+            "system: no catalog on the previous page)")
+        if kind == "progress" and text and _last_line(run).endswith("→ ok"):
+            site = parts.hostname.removeprefix("www.")
+            logger.info(f"[TaskAgent] разделы: служебная страница — открыл "
+                        f"главную {site}")
+            return ("progress", self._t("task_sections_home", site=site))
+        return (kind, text)
 
     @staticmethod
     def _markup_sections(obs: dict) -> List[str]:

@@ -338,6 +338,11 @@ _T = {
                       "en": "On {site}:\n{items}\nWhat shall I order?"},
     "task_section_rest": {"ru": "- и ещё {n} — скажи «покажи все»",
                           "en": "- and {n} more — say \"show all\""},
+    # Задача началась на служебной странице сайта (доставка, контакты) —
+    # разделы ищем на главной
+    "task_sections_home": {"ru": "Здесь товаров нет — открыл главную {site}.",
+                           "en": "No products on this page — opened the "
+                                 "{site} home page."},
     # Магазин открыт кликом, сайт не выбран — до первого действия на нём
     "task_site_here": {"ru": "Заказываем здесь — на {site}? (да / другой "
                              "сайт)",
