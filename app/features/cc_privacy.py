@@ -50,7 +50,9 @@ _SENSITIVE_FIELD_RE = re.compile(
     r"pass(?:word|wd|code|phrase)?|pwd|парол\w*|pin|пин(?:-?код)?|"
     r"code|код[аеуы]?|кодом|otp|2fa|mfa|totp|sms|смс|one[- ]?time|верификац\w*|"
     r"card|карт[аыуе]?|cvv2?|cvc2?|cc-?\w*|security code|expir\w*|срок действия|"
-    r"e-?mail|почт\w*|mail|phone|tel|телефон\w*|mobile|моб\w*|"
+    # «почти» — не почта (вопрос агента без контактов — _CONTACT_Q_RE)
+    r"e-?mail|почт(?!и(?![^\W\d_]))\w*|mail|phone|tel|телефон\w*|"
+    r"mobile|моб\w*|"
     r"login|логин\w*|username|user ?name|пользовател\w*|account|аккаунт\w*|"
     r"passport|паспорт\w*|снилс|инн|ssn|secret|секрет\w*|token|токен\w*|"
     r"iban|bic|бик|счёт|счет"

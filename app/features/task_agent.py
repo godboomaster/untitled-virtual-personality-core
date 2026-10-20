@@ -353,6 +353,15 @@ def _goal_stems(text: str) -> set:
     return {stem(w) for w in words if len(w) >= 3} - _GOAL_STOP_STEMS
 
 
+def _mask_numbers(text) -> str:
+    # Значение человеку в чат: email и длинные числа (телефон, карта) —
+    # маской ***(n), остальное как есть
+    text = _EMAIL_RE.sub(lambda m: mask(m.group()), str(text or ""))
+    return _DIGITS_RE.sub(
+        lambda m: mask(m.group())
+        if sum(c.isdigit() for c in m.group()) >= 7 else m.group(), text)
+
+
 def _redact(text: str, secrets=()) -> str:
     # Память задач/прошлые задачи: известные секреты — маской, затем email и
     # длинные числа (телефон, карта) — [hidden]
@@ -374,7 +383,10 @@ _DATA_QUESTION_RE = re.compile(
     r"cvv2?|cvc2?|срок\s+действия|expir\w*|кодов\w*\s+слов\w*|"
     r"контрольн\w*\s+(?:вопрос|слов)\w*|security\s+(?:question|answer)|"
     r"credentials?|sign[- ]?in|log[- ]?in|log\s+on|username|логин\w*|"
-    r"вход\w*|войти|войд\w*|авториз\w*|учётн\w*|учетн\w*|"
+    # Вход — существительное и «входить/войдите», не «входит/входят в
+    # комбо» и не «войдёт в коробку»: вопрос о составе не вопрос о входе
+    r"вход(?:а|е|у|ом|ы|ов|ить|ите)?|войти|войд(?:у|ём|ем|ите|я)|"
+    r"авториз\w*|учётн\w*|учетн\w*|"
     r"данны[ехм]\s+(?:для\s+)?(?:входа|авторизации|доступа|учётной|учетной)|"
     r"ключ\w*\s+(?:доступа|api)|api[- ]?key|токен\w*|token|"
     r"contrase[ñn]a\w*|clave|usuario|"
@@ -584,12 +596,11 @@ def _question_lines(resp) -> Optional[List[str]]:
         if not body:
             continue
         if "?" in body:
-            # Пароли/коды, контакты, оплата — не этот вопрос: их спрашивает
-            # сама система, а текст страницы мог подсунуть такой вопрос
-            skip = bool(_DATA_QUESTION_RE.search(body)
-                        or _CONTACT_Q_RE.search(body)
-                        or _PAY_Q_RE.search(body))
-            if skip:
+            # Пароли/коды, контакты, оплата — не эти вопросы (только они, не
+            # вся строка); варианты под строкой — её последнего вопроса
+            body, skip = _drop_system_qs(body)
+            if "?" not in body:
+                skip = True
                 continue
             if n_q >= PRE_QUESTIONS_MAX:
                 break
@@ -600,9 +611,57 @@ def _question_lines(resp) -> Optional[List[str]]:
     return out
 
 
-# Вопрос об оплате/карте (не для вопросов перед шагом)
-_PAY_Q_RE = re.compile(r"оплат|(?<![^\W\d_])карт(?:а|ой|у|ы|очк\w*)(?![^\W\d_])|"
-                       r"payment|\bpay\b|\bcard\b|cvv|cvc", re.IGNORECASE)
+# Вопрос об оплате/карте (не для вопросов перед шагом). Корень — с начала
+# слова: «за доплату» — платная добавка, а не оплата (стенд 20.10, run2,
+# вызов 8: «Тесто: …? … Добавить что-то за доплату: …?» выпадала целиком,
+# о тесте не спросили); «предоплата», «заплатить», «платёж» — оплата.
+# Так же «pay extra» — о добавке
+_PAY_Q_RE = re.compile(
+    r"(?<![^\W\d_])(?:(?:пред)?опла[тч]\w*|плат[её]ж\w*|"
+    r"(?:за|у)?плат(?:ить|ите|им|ишь|ят|я|или|ил|ила)(?![^\W\d_])|"
+    r"карт(?:а|ой|у|ы|очк\w*)(?![^\W\d_]))|"
+    r"payment|\bpay\b(?!\s+(?:extra|more)\b)|\bcard\b|\bcv[vc]2?\b",
+    re.IGNORECASE)
+# Вопрос строки — кусок до своего «?», хвост после последнего «?» —
+# пояснение к нему
+_Q_PART_RE = re.compile(r"[^?]*\?+|[^?]+")
+# Конец фразы внутри куска: «.!…» после слова от 3 букв и заглавная дальше
+# («…традиционное. Оплатить…»), не сокращение («ул. Тестовая», «д. 5»)
+_SENT_END_RE = re.compile(r"(?<=[^\W\d_]{3}[.!…])\s+(?=[A-ZА-ЯЁ])")
+
+
+def _system_q(text) -> bool:
+    # Пароли/коды, контакты, оплата — их спрашивает сама система
+    return any(r.search(text) for r in (_DATA_QUESTION_RE, _CONTACT_Q_RE,
+                                        _PAY_Q_RE))
+
+
+def _drop_system_qs(body: str) -> Tuple[str, bool]:
+    """Строка ответа модели без вопросов о паролях/кодах, контактах и
+    оплате: их спрашивает сама система, а текст страницы мог подсунуть
+    такой вопрос. Выпадает только вопрос-нарушитель, соседи остаются:
+    «Тесто: …? Сейчас выбрано традиционное. Оплатить картой?» → вопрос о
+    тесте с пояснением. Первая фраза после «?» — пояснение того вопроса
+    («Сейчас выбрано …»): остаётся и выпадает вместе с ним. → (что
+    осталось; выпал ли последний вопрос строки — варианты «- …» под
+    строкой его)"""
+    out: List[str] = []
+    dropped = False
+    for i, part in enumerate(_Q_PART_RE.findall(body)):
+        note, rest = "", part
+        if "?" not in part:
+            note, rest = part, ""
+        elif i:
+            cut = _SENT_END_RE.search(part)
+            if cut:
+                note, rest = part[:cut.start()], part[cut.start():]
+        if note and not dropped and not _system_q(note):
+            out.append(note)
+        if rest:
+            dropped = _system_q(rest)
+            if not dropped:
+                out.append(rest)
+    return " ".join(" ".join(out).split()), dropped
 
 
 def _is_where_q(q) -> bool:
@@ -1537,10 +1596,12 @@ def _secret_answer(q, a) -> bool:
     return len(s.split()) == 1 and _pw_shaped(s)
 
 
-# Контакты в вопросе («адрес и телефон», «почта») — ответ прячется по кускам
+# Контакты в вопросе («адрес и телефон», «почта») — ответ прячется по кускам.
+# «Почти» — не почта: «Почти всё выбрано — соус?» выпадал из вопросов
 _CONTACT_Q_RE = re.compile(
-    r"(?<![^\W\d_])(?:e-?mail|почт\w*|mail|phone|tel|телефон\w*|mobile|"
-    r"моб\w*|адрес\w*|address\w*)(?![^\W\d_])", re.IGNORECASE)
+    r"(?<![^\W\d_])(?:e-?mail|почт(?!и(?![^\W\d_]))\w*|mail|phone|tel|"
+    r"телефон\w*|mobile|моб\w*|адрес\w*|address\w*)(?![^\W\d_])",
+    re.IGNORECASE)
 
 
 def _answer_in_question(q, a) -> bool:
@@ -5211,19 +5272,8 @@ class TaskAgent:
         (иначе оно ушло бы в заказ молча). Ответ — _more_answer."""
         run["more_asked"] = True
         run["more_n"] = len(run.get("cart_adds") or ())
-        # Состав — что задача реально положила (cart_adds), с размером и
-        # добавками из брифа; заказанное, но не добавленное — отдельно
         brief_items = (run.get("brief") or {}).get("items") or []
-        keys = []
-        for x in run.get("cart_adds") or ():
-            if not any(_same_item(x["key"], k) for k in keys):
-                keys.append(x["key"])
-        what = []
-        for k in keys:
-            b = next((b for b in brief_items if _same_item(b["name"], k)), None)
-            what.append(self._item_text(b) if b else k)
-        missing = [self._item_text(b) for b in brief_items
-                   if not any(_same_item(b["name"], k) for k in keys)]
+        what, missing = self._added_items(run)
         pre = self._cart_pre(run)
         extra = self._t("task_more_pre", pre=self._cart_str(pre),
                         cart=self._cart_str((run.get("page_state") or {})
@@ -5242,6 +5292,23 @@ class TaskAgent:
                            "more": True, **({} if extra else {"pick": "more"})}
         self._audit_note(run, chat_id, "task_ask", q, private)
         return ("pause", q)
+
+    def _added_items(self, run: dict) -> Tuple[List[str], List[str]]:
+        # Состав — что задача реально положила (cart_adds), с размером и
+        # добавками из брифа; заказанное, но не добавленное — отдельно
+        brief_items = (run.get("brief") or {}).get("items") or []
+        keys = []
+        for x in run.get("cart_adds") or ():
+            if not any(_same_item(x["key"], k) for k in keys):
+                keys.append(x["key"])
+        what = []
+        for k in keys:
+            b = next((b for b in brief_items if _same_item(b["name"], k)),
+                     None)
+            what.append(self._item_text(b) if b else k)
+        missing = [self._item_text(b) for b in brief_items
+                   if not any(_same_item(b["name"], k) for k in keys)]
+        return what, missing
 
     @staticmethod
     def _product_key(item: dict, obs: dict) -> str:
@@ -6759,10 +6826,73 @@ class TaskAgent:
         # Граница оплаты: прогон кончается передачей человеку. Для памяти
         # «как в прошлый раз» — успешный исход (заказ собран, платит человек)
         run["outcome"] = "payment"
-        return ("finish", self._phrase(
+        text = self._phrase(
             "task_payment_handoff",
             f"Дошёл до оплаты («{label}») — дальше сам: платить за "
-            "тебя не буду. Браузер открыт на этом шаге.", label=label))
+            "тебя не буду. Браузер открыт на этом шаге.", label=label)
+        summary = self._handoff_summary(run, label)
+        return ("finish", text + (f"\n{summary}" if summary else ""))
+
+    def _handoff_summary(self, run: dict, label: str) -> Optional[str]:
+        """Что в заказе — к передаче оплаты, фактами кода: сайт, что задача
+        положила в корзину (размер и добавки — из брифа), что не положила,
+        лежавшее до задачи, сумма с платёжной кнопки (иначе корзина шапки),
+        адрес/время/оплата из брифа, телефон маской. Стенд 20.10: в run1
+        done модели на /checkout нёс сводку («пепперони 30 см и кола 0,5 л,
+        к оплате 867 ₽»), в run2 тот же done стал передачей оплаты
+        (_done_at_payment), и человек получил одно «Дошёл до оплаты» — без
+        состава и суммы. Отчёт модели не берём: в нём бывает лишнее и
+        выдуманное. Цель не заказ или о составе сказать нечего — None."""
+        if not _ORDER_GOAL_RE.search(run.get("goal") or ""):
+            return None
+        what, missing = self._added_items(run)
+        pre = self._cart_pre(run)
+        cart = self._cart_str((run.get("page_state") or {}).get("cart"))
+        if not (what or missing or pre or cart):
+            # Сумма с кнопки и так в строке передачи
+            return None
+        parts = []
+        if what:
+            parts.append(", ".join(what))
+        if missing:
+            parts.append(self._t("task_fact_missing",
+                                 items=", ".join(missing)))
+        if pre:
+            # Лежавшее в корзине до задачи — в том же заказе
+            parts.append(self._t("task_fact_pre"))
+        price = _ADDON_PRICE_RE.search(str(label or ""))
+        if price:
+            parts.append(self._t("task_fact_to_pay", total=" ".join(
+                price.group().lstrip("+ ").split())))
+        elif cart:
+            parts.append(self._t("task_fact_cart", cart=cart))
+        brief = run.get("brief") or {}
+        group = self._group(run.get("chat_id"))
+        private = False
+        for k in ("address", "time", "payment", "phone"):
+            slot = brief.get(k) or {}
+            if not slot.get("value"):
+                continue
+            if slot.get("src") == "private":
+                if group:
+                    # В группе значения с приватной страницы не цитируем
+                    # (как вопрос о коммите)
+                    continue
+                private = True
+            # Ответ человеку в его же чат: адрес — как есть, телефон —
+            # маской, номер карты/телефона внутри значения — маской
+            v = self._unhide(run, slot["value"])
+            v = mask(v) if k == "phone" else _mask_numbers(v)
+            parts.append(self._t(f"task_fact_{k}", value=v))
+        host = str(run.get("page_host") or "").removeprefix("www.")
+        text = (self._t("task_handoff_order", site=host, what="; ".join(parts))
+                if host else
+                self._t("task_handoff_order_any", what="; ".join(parts)))
+        if private:
+            # Адрес/телефон из ответа на приватной странице — в историю бота
+            # заглушкой (как вопрос о коммите)
+            self._note_private(run, text)
+        return text
 
     def _done_at_payment(self, run: dict, chat_id, obs: dict,
                          nf: Optional[str] = None
