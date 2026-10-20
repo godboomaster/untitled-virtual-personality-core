@@ -483,6 +483,120 @@ def _is_payment(text: str) -> bool:
     return bool(_PAYMENT_RE.search(s))
 
 
+# ── Справочная ссылка про оплату ──
+# «Доставка и оплата» в подвале почти каждого магазина — заголовок справочной
+# страницы, а не платёжный шаг (стенд 20.10: агент нажал её на /checkout,
+# ответил «Дошёл до оплаты» и снял задачу). Не оплата — только ссылка с такой
+# подписью ЦЕЛИКОМ и адресом на этот же сайт, не на оформление/оплату/шлюз.
+# Закрытый список, а не смягчение _PAYMENT_RE: «Оплата», «Перейти к оплате»,
+# «Способ оплаты: картой» сюда не попадают
+_PAY_INFO_TITLE_RE = re.compile(
+    r"доставка\s*(?:и|&|/)\s*оплата|оплата\s*(?:и|&|/)\s*доставка|"
+    r"(?:способы|условия)\s+оплаты(?:\s+и\s+доставки)?|"
+    r"условия\s+доставки\s+и\s+оплаты|"
+    r"информация\s+об\s+оплате(?:\s+и\s+доставке)?|"
+    r"(?:delivery|shipping)\s*(?:&|and|/)\s*payments?|"
+    r"payments?\s*(?:&|and|/)\s*(?:delivery|shipping)|"
+    r"payment\s+(?:methods?|information)", re.IGNORECASE)
+# Адрес ведёт в корзину/оформление/оплату — подстрокой, с запасом в сторону
+# «оплата» (/onepagecheckout, /order/pay, ?step=billing). «pay» — кроме
+# «payment(s)»: это и справочное /payment-methods (решает правило ниже)
+_PAY_INFO_HREF_BAD_RE = re.compile(
+    r"checkout|check-out|cart|basket|korzin|корзин|order|zakaz|заказ|"
+    r"oformlen|оформлен|oformit|оформить|kassa|kasse|billing|invoice|"
+    r"gateway|transaction|purchase|wallet|card|"
+    r"(?<![a-z])(?:buy|acs|3ds|sbp)(?![a-z])|сбп|pay(?!ments?(?![a-z]))",
+    re.IGNORECASE)
+# «Оплата» в адресе (/oplata, /payment-step) — справочная, только если рядом
+# слово справки: /dostavka-i-oplata, /payment-methods, /info/oplata. Голое
+# /payment — платёжная страница (так и на стенде)
+_PAY_INFO_HREF_PAY_RE = re.compile(
+    r"payment|oplat|оплат|platezh|платеж|платёж", re.IGNORECASE)
+_PAY_INFO_HREF_REF_RE = re.compile(
+    r"deliver|dostav|достав|shipping|method|sposob|способ|uslovi|услови|"
+    r"condition|terms|rules|pravil|правил|"
+    r"(?:^|[/\s])(?:info|information|help|faq|support|about|pages|spravka|"
+    r"справка|pokupatelyam|покупателям|customers?|buyers?)(?=[/\s.]|$)",
+    re.IGNORECASE)
+
+
+def _pay_info_label(text) -> bool:
+    """Подпись целиком — заголовок справочной страницы про оплату."""
+    s = " ".join(_risk_text(text).lower().replace("ё", "е").split())
+    return bool(_PAY_INFO_TITLE_RE.fullmatch(re.sub(r"^\W+|\W+$", "", s)))
+
+
+def _pay_info_href(href, host) -> bool:
+    """Адрес справочной ссылки: http(s) этого же сайта (поддомен — тоже), не
+    приватная страница (вход/корзина/оформление/оплата/банк — тот же словарь,
+    что прячет страницу от облака) и не шаг оформления/оплаты."""
+    from urllib.parse import unquote, urlsplit
+    from app.features.cc_privacy import is_private_page
+    s = str(href or "").strip()
+    try:
+        p = urlsplit(s)
+        h = (p.hostname or "").lower().removeprefix("www.")
+    except ValueError:
+        return False
+    if p.scheme not in ("http", "https") or not h:
+        return False  # javascript:, пустой href — что сделает, не видно
+    g = str(host or "").strip().lower().split(":")[0].removeprefix("www.")
+    if not g or not (h == g or h.endswith("." + g) or g.endswith("." + h)):
+        return False  # другой сайт: платёжный шлюз, банк
+    if is_private_page(s):
+        return False
+    route = unquote(f"{p.path} {p.query} {p.fragment}")
+    if _PAY_INFO_HREF_BAD_RE.search(route):
+        return False
+    return not (_PAY_INFO_HREF_PAY_RE.search(route)
+                and not _PAY_INFO_HREF_REF_RE.search(route))
+
+
+def link_facts(item: Optional[dict]) -> Optional[dict]:
+    """Факты ссылки из снимка (tag/role/href) для payment_info_link — только
+    у элемента с адресом и подписью справочной страницы про оплату: прочие
+    действия не меняются."""
+    if not isinstance(item, dict) or not isinstance(item.get("href"), str) \
+            or not item["href"].strip():
+        return None
+    if not any(_pay_info_label(item.get(k)) for k in ("text", "aria", "title")):
+        return None
+    return {"tag": str(item.get("tag") or "")[:16],
+            "role": str(item.get("role") or "")[:24],
+            "href": item["href"].strip()[:500]}
+
+
+def payment_info_link(action: Optional[dict]) -> bool:
+    """Клик по справочной ссылке про оплату («Доставка и оплата»), а не
+    платёжный шаг: в действии факты ссылки (link_facts), элемент — ссылка
+    (a[href] / role=link, не кнопка и не поле), каждая подпись — заголовок
+    справочной страницы целиком или вовсе не про оплату, адрес — этот же
+    сайт и не оформление/оплата/шлюз (_pay_info_href). Фактов нет (шаг
+    сценария, фраза человека) или хоть один не сошёлся — оплата."""
+    if not isinstance(action, dict) or action.get("kind") != "click" \
+            or action.get("point"):
+        return False
+    link = action.get("link")
+    if not isinstance(link, dict):
+        return False
+    tag = str(link.get("tag") or "").lower()
+    role = str(link.get("role") or "").strip().lower()
+    if not ((tag == "a" and role in ("", "link", "menuitem"))
+            or role == "link"):
+        # <a role=button>, <button>, поле — кнопка действия: «Доставка и
+        # оплата» шагом оформления
+        return False
+    labels = [str(action.get(k) or "") for k in ("element", "aria", "title")]
+    titled = False
+    for s in (x for x in labels if x.strip() and not x.startswith("#")):
+        if _pay_info_label(s):
+            titled = True
+        elif _is_payment(s) or _label_purchase(s):
+            # «Доставка и оплата» с aria «Оплатить заказ» — оплата
+            return False
+    return titled and _pay_info_href(link.get("href"), action.get("host"))
+
+
 def config_enabled(cfg) -> bool:
     """Включён ли режим по значению features.computer_control.
 
@@ -5573,7 +5687,10 @@ class ComputerControlManager:
         labels = [s for s in labels if s.strip() and not s.startswith("#")]
         if not labels:
             return None
-        if any(_is_payment(s) for s in labels):
+        if any(_is_payment(s) for s in labels) \
+                and not payment_info_link(action):
+            # Справочная ссылка «Доставка и оплата» (факты ссылки в действии
+            # кладут резолвер и агент) — не оплата, остальное — оплата
             return "payment"
         if (_MONEY_HOST_RE.search(str(action.get("host") or ""))
                 and any(_BARE_TRANSFER_RE.match(s) for s in labels)):
@@ -5730,6 +5847,9 @@ class ComputerControlManager:
             v = " ".join(str(it.get(k) or "").split())
             if v:
                 probe[dst] = v[:80]
+        link = link_facts(it)
+        if link:
+            probe["link"] = link  # «Доставка и оплата» ссылкой — не оплата
         reason = self.risky_label(probe)
         m = meta if isinstance(meta, dict) else {}
         if not reason and m.get("force_confirm"):
@@ -9158,11 +9278,16 @@ class ComputerControlManager:
     @staticmethod
     def _with_labels(act: dict, item: Optional[dict]) -> dict:
         """aria/title элемента — в действие: у иконки без текста element
-        = «#idx», и risky_label без них не видел «Оплатить»/«Удалить»."""
+        = «#idx», и risky_label без них не видел «Оплатить»/«Удалить».
+        Справочная ссылка «Доставка и оплата» — и факты ссылки (link_facts):
+        по ним risky_label отличает её от оплаты."""
         for k in ("aria", "title"):
             v = " ".join(str((item or {}).get(k) or "").split())
             if v:
                 act[k] = v[:80]
+        link = link_facts(item)
+        if link:
+            act["link"] = link
         return act
 
     @_in_chat

@@ -33,6 +33,7 @@
     её нет — пауза, дальше человек;
   * оплата — граница: клик по платёжному элементу (тот же _is_payment, что
     режет сценарии) не исполняется, прогон завершается передачей человеку;
+    справочная ссылка «Доставка и оплата» — не оплата (payment_info_link);
   * бюджет хода — после MAX_STEPS_PER_TURN шагов / TURN_TIME_BUDGET_SEC
     спрашиваем «продолжать?» (ход process_message не должен висеть вечно);
     после MAX_CALLS_PER_TURN вызовов модели с последнего «да» — тоже
@@ -4352,7 +4353,8 @@ class TaskAgent:
     def _do_element(self, run: dict, chat_id, router, act: dict, item: dict,
                     obs: dict) -> Tuple[str, Optional[str]]:
         from app.features.computer_control import _destructive_label_classes
-        from app.features.computer_control import _is_payment
+        from app.features.computer_control import (_is_payment, link_facts,
+                                                   payment_info_link)
         label = _action_label(item)
         # Товар «В корзину» — к любому вопросу «да/нет» об этом элементе
         # (корзина, submit на оформлении): подтверждённое добавление
@@ -4427,6 +4429,13 @@ class TaskAgent:
                     "select what they chose"))
                 return ("progress", None)
             a = dict(base, kind="click", choose={"path": "task_agent"})
+            link = link_facts(item)
+            if link:
+                # Справочная ссылка «Доставка и оплата» — факты ссылки в
+                # действие: по ним граница оплаты ниже и гейт execute
+                # (risky_label) отличают её от оплаты (стенд 20.10: ссылка
+                # подвала на /checkout сняла задачу «Дошёл до оплаты»)
+                a["link"] = link
             # Переход к оформлению («К оформлению заказа») — не коммит: «да»
             # спрашивается один раз, на сам заказ (гейт — так же)
             from app.features.computer_control import checkout_step_label
@@ -4440,7 +4449,8 @@ class TaskAgent:
             # удаление/выход — поверх выбора модели
             risk = None if step else ComputerControlManager.risky_label(a)
             commit = bool(_COMMIT_RE.search(label)) and not step
-            pay = _is_payment(label) and not step
+            pay = (_is_payment(label) and not step
+                   and not payment_info_link(a))
             dialog = None
             if not risk and not step:
                 # «ОК»/«Да»/«Продолжить» — смысл в тексте окна/блока вокруг:

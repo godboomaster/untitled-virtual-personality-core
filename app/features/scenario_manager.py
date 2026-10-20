@@ -1237,6 +1237,13 @@ class ScenarioManager:
         for k in ("aria", "title"):
             if item.get(k):
                 act[k] = str(item[k])[:80]
+        from app.features.computer_control import (link_facts,
+                                                   payment_info_link)
+        link = link_facts(item)
+        if link:
+            # Справочная ссылка «Доставка и оплата» — не оплата (по фактам
+            # ссылки живой страницы; у записанного шага их нет — отрезается)
+            act["link"] = link
         if tab_id is not None:
             act["tab_id"] = tab_id
         # Элемент выбрала модель по подписям живой страницы (недоверенный
@@ -1246,7 +1253,8 @@ class ScenarioManager:
         from app.features.computer_control import ComputerControlManager
         hay = " ".join(str(item.get(k) or "") for k in ("text", "aria", "title"))
         risk = ComputerControlManager.risky_label(act) or (
-            "payment" if _is_payment(hay) else None)
+            "payment" if _is_payment(hay) and not payment_info_link(act)
+            else None)
         # Подпись в лог — тем же правилом, что у резолвера: на приватной
         # странице только номер (лог виден в /api/logs)
         lbl_fn = getattr(self.cc, "_label_for_log", None)

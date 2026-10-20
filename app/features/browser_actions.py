@@ -10623,11 +10623,29 @@ _READ_LAST_JS = (
     "return last?'|'+last:'';})()"
 )
 
+# Основной контейнер страницы для чтения: видимый непустой main/[role=main]
+# (из нескольких — с самым длинным текстом: внешний, а не вложенный), иначе
+# такой же article, иначе body. Первый попавшийся querySelector брал и
+# скрытый пустой <article>, а на body не откатывался (стенд 20.10: read на
+# странице условий доставки — «на странице нет текста»). display:contents
+# — без своих рамок, но виден
+_MAIN_BOX_JS = (
+    "function vpcMainBox(){"
+    "function len(e){var s=getComputedStyle(e);"
+    "if(s.display==='none'||s.visibility==='hidden'"
+    "||(!e.getClientRects().length&&s.display!=='contents'))return 0;"
+    "return (e.innerText||'').trim().length;}"
+    "function best(q){var l=document.querySelectorAll(q),b=null,bn=0;"
+    "for(var i=0;i<l.length;i++){var n=len(l[i]);if(n>bn){b=l[i];bn=n;}}"
+    "return b;}"
+    "return best('main,[role=main]')||best('article')||document.body;}"
+)
+
 _READ_PAGE_JS = (
     # IIFE — как у _SNAPSHOT_JS: голый топ-левел «var e» падает с SyntaxError
     # на страницах, где сайт сам объявил «let e» (минифицированные бандлы)
-    "(function(){"
-    "var e=document.querySelector('main,article,[role=main]')||document.body;"
+    "(function(){" + _MAIN_BOX_JS +
+    "var e=vpcMainBox();"
     "return (e?(e.innerText||''):'').replace(/\\n{3,}/g,'\\n\\n').trim()"
     ".slice(0,3000);"
     "})()"
@@ -10635,10 +10653,11 @@ _READ_PAGE_JS = (
 
 
 # Чтение для агента задач: верхнее открытое окно/шторка (корзина, окно
-# товара — они вне main и перекрывают его), иначе main/article/body; длинный
-# текст — начало и конец (итог корзины/заказа внизу страницы)
+# товара — они вне main и перекрывают его), иначе main/article/body
+# (_MAIN_BOX_JS); длинный текст — начало и конец (итог корзины/заказа внизу
+# страницы)
 _READ_TASK_JS = (
-    "(function(){"
+    "(function(){" + _MAIN_BOX_JS +
     "function vis(e){var s=getComputedStyle(e),r=e.getBoundingClientRect();"
     "return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'"
     "&&r.width>200&&r.height>150;}"
@@ -10664,7 +10683,7 @@ _READ_TASK_JS = (
     "if(!e){c=tops('[class*=drawer],[class*=Drawer],[class*=cart],"
     "[class*=Cart],[class*=basket],[class*=modal],[class*=Modal],"
     "[class*=popup]').filter(fl);if(c.length)e=c[c.length-1];}"
-    "if(!e)e=document.querySelector('main,article,[role=main]')||document.body;"
+    "if(!e)e=vpcMainBox();"
     "var t=(e?(e.innerText||''):'').replace(/\\n{3,}/g,'\\n\\n').trim();"
     "if(t.length>6000)t=t.slice(0,4200)+'\\n…\\n'+t.slice(-1600);"
     "return t;})()"
