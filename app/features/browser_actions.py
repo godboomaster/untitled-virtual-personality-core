@@ -9515,14 +9515,136 @@ def _raw_tab(tab_id: int) -> dict:
         return dict(tab)
 
 
-def _raw_open(url: str, pool: str = _POOL_V) -> int:
+# ── Отдельные контексты Chrome пула H (как окно инкогнито) ──
+# Веб-чат без аккаунта (google_anon — AI Mode без входа) живёт в своём
+# контексте браузера пула H: куки профиля бота (вход в Google) туда не
+# попадают, а его куки — в профиль. Контекст живёт, пока жив Chrome, и общий
+# для процессов бота (Chrome пула H один): его id и куки — в файле
+# data/webchat_contexts/<ключ>.json. После перезапуска Chrome (rescue,
+# падение) новый контекст получает куки из файла до первой навигации —
+# пройденная проверка и NID не теряются, а свежая сессия на каждый вызов
+# выглядела бы как бот. Куки входа (SID, *PSID …) в файл не пишутся
+# никогда: они вернули бы вход и связали бы запросы с аккаунтом.
+_CTX_LOCK = threading.Lock()
+_CTX_IDS: Dict[str, str] = {}
+_ACCOUNT_COOKIE_RE = re.compile(
+    r"^(?:SID|HSID|SSID|APISID|SAPISID|LSID|OSID|SIDCC)$|PSID", re.IGNORECASE)
+# Поля CookieParam для Storage.setCookies (getCookies отдаёт и служебные)
+_COOKIE_PARAM_KEYS = ("name", "value", "domain", "path", "secure", "httpOnly",
+                      "sameSite", "expires", "priority", "sourceScheme",
+                      "sourcePort")
+
+
+def _ctx_path(key: str):
+    from pathlib import Path
+    from app.core.paths import data_dir
+    safe = re.sub(r"[^a-z0-9_-]", "_", str(key).lower())[:40] or "ctx"
+    return Path(data_dir()) / "webchat_contexts" / f"{safe}.json"
+
+
+def _ctx_cookies_clean(cookies) -> List[dict]:
+    # Куки для файла и setCookies: без кук входа, без сессионных и
+    # разделённых (partitionKey), только поля CookieParam
+    out = []
+    for c in cookies or []:
+        if not isinstance(c, dict) or not c.get("name") or "value" not in c:
+            continue
+        if _ACCOUNT_COOKIE_RE.search(str(c["name"])):
+            continue
+        if c.get("session") or c.get("partitionKey") \
+                or float(c.get("expires") or -1) <= 0:
+            continue
+        out.append({k: c[k] for k in _COOKIE_PARAM_KEYS if k in c})
+    return out
+
+
+def pool_h_context(key: str) -> str:
+    """browserContextId контекста key в Chrome пула H: живой (этого или
+    другого процесса бота) — он, иначе новый с куками из файла."""
+    from app.core.atomic_io import atomic_write_json, file_lock, load_json_safe
+    path = _ctx_path(key)
+    with _CTX_LOCK:
+        live = set(_raw_call("Target.getBrowserContexts", {}, pool=_POOL_H)
+                   .get("browserContextIds") or [])
+        cid = _CTX_IDS.get(key)
+        if cid in live:
+            return cid
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with file_lock(path):
+            st = load_json_safe(path, default={}, label="BrowserActions")
+            st = st if isinstance(st, dict) else {}
+            if st.get("context") in live:
+                _CTX_IDS[key] = st["context"]
+                return st["context"]
+            cid = _raw_call("Target.createBrowserContext",
+                            {"disposeOnDetach": False},
+                            pool=_POOL_H)["browserContextId"]
+            cookies = _ctx_cookies_clean(st.get("cookies"))
+            if cookies:
+                try:
+                    _raw_call("Storage.setCookies",
+                              {"cookies": cookies, "browserContextId": cid},
+                              pool=_POOL_H)
+                except Exception as e:
+                    logger.info(f"[BrowserActions] Пул H: куки контекста "
+                                f"«{key}» не восстановлены: {e}")
+                    cookies = []
+            st["context"] = cid
+            atomic_write_json(path, st)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        _CTX_IDS[key] = cid
+    logger.info(f"[BrowserActions] Пул H: отдельный контекст «{key}» создан"
+                + (f", куки восстановлены ({len(cookies)})" if cookies
+                   else ""))
+    return cid
+
+
+def save_context_cookies(key: str) -> int:
+    """Куки контекста key → файл (без кук входа). → сколько записано; -1 —
+    контекста нет или Chrome не ответил. Нашлись куки входа (в контексте
+    кто-то вошёл) — пишется без них, в лог — предупреждение."""
+    from app.core.atomic_io import atomic_write_json, file_lock, load_json_safe
+    cid = _CTX_IDS.get(key)
+    if not cid:
+        return -1
+    try:
+        raw = _raw_call("Storage.getCookies", {"browserContextId": cid},
+                        pool=_POOL_H).get("cookies") or []
+    except Exception as e:
+        logger.debug(f"[BrowserActions] куки контекста «{key}»: {e}")
+        return -1
+    if any(_ACCOUNT_COOKIE_RE.search(str(c.get("name") or "")) for c in raw):
+        logger.warning(f"[BrowserActions] в контексте «{key}» появились куки "
+                       "входа в аккаунт — в файл они не попадут")
+    keep = _ctx_cookies_clean(raw)
+    path = _ctx_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock(path):
+        st = load_json_safe(path, default={}, label="BrowserActions")
+        st = st if isinstance(st, dict) else {}
+        st.update(context=cid, cookies=keep, saved=time.time())
+        atomic_write_json(path, st)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return len(keep)
+
+
+def _raw_open(url: str, pool: str = _POOL_V,
+              context: Optional[str] = None) -> int:
     """Фоновая вкладка: createTarget(background:true) + flat-сессия → tab_id.
     pool — в каком Chrome открывать (H — headless веб-чаты, V — headed).
     Пул H: вкладка создаётся АКТИВНОЙ в ОТДЕЛЬНОМ виртуальном окне
     (background:False + newWindow:True) — иначе headless-страница рождается
     скрытой: rAF не тикает, React-лента чата не рендерится, и отправленное
     сообщение не появляется в ленте. В пуле V (headed) —
-    background:True: фокус/окно пользователя не трогаем."""
+    background:True: фокус/окно пользователя не трогаем.
+    context — ключ отдельного контекста пула H (pool_h_context): вкладка без
+    кук профиля бота."""
     if pool == _POOL_H and _pool_h_mode_stale():
         # Rescue окончен, а Chrome H всё ещё видимый: смену режима проверяет
         # только _ensure_pool_h_browser, а он зовётся лишь при ПОДКЛЮЧЕНИИ —
@@ -9534,11 +9656,14 @@ def _raw_open(url: str, pool: str = _POOL_V) -> int:
         logger.info("[BrowserActions] Пул H: rescue окончен, Chrome ещё "
                     "видимый — возврат в штатный режим")
         _reset_raw_pool(_POOL_H)
+    if context and pool != _POOL_H:
+        raise BrowserUnavailable("отдельный контекст — только в пуле H")
     if pool == _POOL_H:
-        tid = _raw_call("Target.createTarget",
-                        {"url": "about:blank", "background": False,
-                         "newWindow": True},
-                        pool=pool)["targetId"]
+        params = {"url": "about:blank", "background": False,
+                  "newWindow": True}
+        if context:
+            params["browserContextId"] = pool_h_context(context)
+        tid = _raw_call("Target.createTarget", params, pool=pool)["targetId"]
     else:
         tid = _raw_call("Target.createTarget",
                         {"url": "about:blank", "background": True},
@@ -10296,7 +10421,7 @@ def _open_page_gateway_retry(worker, ctx, url: str):
 
 
 def open_new_tab(url: str, background: bool = False, pool: str = _POOL_V,
-                 focus: bool = False) -> int:
+                 focus: bool = False, context: Optional[str] = None) -> int:
     """Новая вкладка с url → стабильный id для адресации следующих команд
     («на этой странице …»). CDP: id из реестра воркера; macOS fallback:
     AppleScript-id (Chrome) или наш реестр по URL (Safari).
@@ -10314,7 +10439,19 @@ def open_new_tab(url: str, background: bool = False, pool: str = _POOL_V,
     AppleScript-фолбэка для background нет намеренно: открытая им вкладка
     неуправляема (JS/ввод недоступны) и веб-чат всё равно упадёт — лучше
     сразу понятная ошибка, чем мусорная вкладка. Safari:
-    фоновых вкладок нет — открываем обычную видимую."""
+    фоновых вкладок нет — открываем обычную видимую.
+    context — отдельный контекст пула H (pool_h_context, веб-чат без
+    аккаунта): только фоновая вкладка пула H — ни пула V, ни видимой вкладки
+    (там профиль со входом), ни окна на экране в rescue: иначе отказ."""
+    if context:
+        if pool_h_rescue_active():
+            raise BrowserUnavailable("браузер бота в видимом режиме (rescue)")
+        try:
+            return _raw_open(url, pool=_POOL_H, context=context)
+        except BrowserUnavailable:
+            raise
+        except Exception as e:
+            raise BrowserUnavailable(f"отдельный контекст пула H: {e}")
     if background:
         # Бэкенд выбираем БЕЗ запуска пула V: _select_backend(tab_op=False)
         # поднимает headed Chrome, а вкладкам пула H это не нужно — лишний

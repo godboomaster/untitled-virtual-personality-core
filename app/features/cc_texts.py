@@ -416,6 +416,14 @@ _T = {
               "«отмена»)",
         "en": "The model isn't answering right now — continue later? "
               "(\"yes\" / \"cancel\")"},
+    "task_llm_exhausted": {
+        "ru": "Модели сейчас не отвечают: веб-чаты на лимите или недоступны. "
+              "Остановился на этом шаге, браузер оставил как есть. "
+              "«продолжай» — попробовать снова, «стоп» — бросить задачу.",
+        "en": "The models aren't answering right now: the web chats are "
+              "rate-limited or unavailable. I stopped at this step and left "
+              "the browser as it is. Say \"continue\" to try again or "
+              "\"stop\" to drop the task."},
     "task_llm_invalid": {
         "ru": "Модель так и не выдала понятного действия — останавливаю "
               "задачу.",

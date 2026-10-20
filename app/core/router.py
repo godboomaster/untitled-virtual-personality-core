@@ -98,6 +98,11 @@ _net_ok: bool | None = None
 _net_checked = 0.0
 _net_refresh_done: threading.Event | None = None  # идёт фоновая проба
 
+# Запасной веб-чат автоматики держится за задачей (pace_scope key), пока
+# сам не откажет, но не дольше этого (задача ждёт человека — потом можно
+# выбрать заново, кто дольше отдыхал)
+AUTO_HELD_TTL_SEC = 1800.0
+
 # Сколько пользовательский (main) вызов веб-чата ждёт лок занятого чата,
 # прежде чем уйти в burst (разовый свежий чат): секунды. Дольше ждать —
 # значит задерживать ответ пользователю из-за чужой генерации.
@@ -533,6 +538,11 @@ class ModelRouter:
             else:
                 provider_order = [p for p in provider_order if p != exclude_provider]
 
+        # Автоматика (цикл агента задач, app/core/pace_scope): назначенный или
+        # основной веб-чат не ответил — не обычная цепочка, а _auto_fallback
+        from app.core.pace_scope import is_automated
+        auto = is_automated()
+
         # Провайдер по назначению (реплики персоны в режиме управления /
         # решения режима управления): сначала он, цепочка ниже — fallback.
         # Не дублируем, если он же исключён.
@@ -543,6 +553,11 @@ class ModelRouter:
                                        busy_out=busy, user_path=user_path)
             if answer:
                 return answer
+            if auto:
+                return self._auto_fallback(
+                    messages, temperature, max_tokens, top_p, timeout,
+                    webchat_channel, tried=self._sites_of(force_provider),
+                    skip_api=(force_provider,))
             logger.info(f"[Router] назначенный провайдер {force_provider} "
                         "не ответил — обычная цепочка")
 
@@ -584,6 +599,10 @@ class ModelRouter:
                                            busy_out=busy, user_path=user_path)
                 if answer:
                     return answer
+                if auto:
+                    return self._auto_fallback(
+                        messages, temperature, max_tokens, top_p, timeout,
+                        webchat_channel, tried=set(sites))
                 logger.error("Веб-чат (основной провайдер) не ответил, идём по цепочке...")
 
         # Основной провайдер — локальная модель (глобально или закреплена за
@@ -1053,6 +1072,121 @@ class ModelRouter:
                     return answer
                 if site not in still:
                     pending.remove(site)
+        return None
+
+    def _sites_of(self, provider) -> set:
+        # Сайты веб-чата провайдера-токена: 'webchat:<сайт>' — он, 'webchat'
+        # — все включённые, остальное (API, local) — ни одного
+        if provider == "webchat":
+            return set(self.webchat_sites)
+        if isinstance(provider, str) and provider.startswith("webchat:"):
+            return {provider.split(":", 1)[1]}
+        return set()
+
+    def _auto_candidates(self, messages, tried=(), snap=None) -> list:
+        """Запасные веб-чаты автоматики в порядке попыток (см.
+        _auto_fallback): сайт, выбранный за этой задачей; дальше сначала без
+        аккаунта, потом с аккаунтом — кто дольше всех без отправок. Мимо:
+        уже пробованные, исключённые персоной, на карантине (капча, лимит,
+        разлогин, блокировка), без места в часовом потолке автоматики и
+        сайты с мягким лимитом поля, куда промпт целиком не влезает (google:
+        отправка длиннее — «content wasn't generated», то есть отправка
+        впустую). Жёсткий лимит (duck.ai) проверяет сам веб-чат ДО отправки
+        — с учётом правил, которые его тред уже видел. Сайты видимого
+        Chrome (пул V: chatgpt, claude) — тоже мимо: окно на экране посреди
+        задачи и самый злой антибот."""
+        from app.core.pace_scope import automation_key
+        from app.features import web_llm as wl
+        sites = [t.split(":", 1)[1] for t in self._webchat_tokens()]
+        # Сайты без аккаунта годятся любой персоне (им нечего терять, кроме
+        # временного лимита по IP) — и без записи в её списке веб-чатов
+        sites += [s for s, ad in wl.ADAPTERS.items()
+                  if isinstance(ad, dict) and ad.get("account") is False
+                  and s not in sites and not self._is_excluded(f"webchat:{s}")]
+        plen = len(wl.WebChatLLM._join_messages(messages))
+        snap = wl.pace_snapshot() if snap is None else snap
+        out = []
+        for site in sites:
+            if site in tried or site not in wl.ADAPTERS:
+                continue
+            ad = wl.ADAPTERS[site]
+            cap = ad.get("max_input")
+            if cap and not ad.get("max_input_strict") and plen > cap:
+                continue
+            pool = self._webchat_pool_for(site) or (
+                "v" if site in wl.HEADED_DEFAULT_SITES else "h")
+            if pool == "v" and not ad.get("browser_context"):
+                continue
+            if wl.site_quarantined(site) or not wl.pace_room(site, snap):
+                continue
+            out.append(site)
+        # Держать прошлый — только пока сам не отказал: сайт, на который
+        # задача уже ушла, видел правила шага (повторяемые блоки — ссылкой)
+        key = automation_key()
+        held = (self.__dict__.get("_auto_held") or {}).get(key) if key else None
+        if held and time.time() - held[1] > AUTO_HELD_TTL_SEC:
+            held = None
+        out.sort(key=lambda s: (s != (held or ("",))[0],
+                                wl.site_has_account(s),
+                                float((snap.get(s) or {}).get("last") or 0)))
+        return out
+
+    def _auto_fallback(self, messages, temperature: float, max_tokens: int,
+                       top_p: float, timeout: float, channel: str,
+                       tried=(), skip_api=()) -> str | None:
+        """Назначенный (или основной) веб-чат автоматики — цикла агента
+        задач — не ответил. Обычная цепочка здесь не годится: первым в ней
+        стоит основной веб-чат персоны, сайт с аккаунтом пользователя (01.10
+        так шаги агента ушли из duck.ai в deepseek, и аккаунт заблокировали
+        на 3 дня). Порядок — _auto_candidates (задача держится за выбранным
+        сайтом), затем облачные API с ключами в порядке цепочки персоны.
+        Локальной модели — нет: промпт шага (до ~18 тыс. символов) рядом с
+        браузерами вешает ноутбук, а слабая модель путает действия.
+        Человека не спрашиваем и не ждём; None — ответить некому (агент
+        останавливается с сообщением)."""
+        from app.core.pace_scope import automation_key
+        from app.features import web_llm as wl
+        tried = set(tried)
+        key = automation_key()
+        held = self.__dict__.setdefault("_auto_held", {})
+        snap = wl.pace_snapshot()
+        for site in self._auto_candidates(messages, tried, snap):
+            tried.add(site)
+            last = float((snap.get(site) or {}).get("last") or 0)
+            rest = (f"без отправок {int((time.time() - last) / 60)} мин"
+                    if last else "ещё не было отправок")
+            logger.info(f"[Router] автоматика: запасной веб-чат {site} "
+                        f"({'с аккаунтом' if wl.site_has_account(site) else 'без аккаунта'}, "
+                        f"{rest})")
+            answer = self._try_webchat(messages, temperature, max_tokens,
+                                       top_p, timeout, [site], channel)
+            if answer:
+                if key:
+                    now = time.time()
+                    # Снимок: прогоны других чатов пишут сюда же из своих
+                    # потоков
+                    for k in [k for k, (_, ts) in list(held.items())
+                              if now - ts > AUTO_HELD_TTL_SEC]:
+                        held.pop(k, None)
+                    held[key] = (site, now)
+                return answer
+            if key and (held.get(key) or ("",))[0] == site:
+                held.pop(key, None)
+        for provider in self._get_full_order():
+            if provider not in self.available or provider in skip_api:
+                continue
+            if not self.model_for(provider):
+                _warn_no_model(provider)
+                continue
+            logger.info(f"[Router] автоматика: веб-чаты не ответили — API "
+                        f"{provider}")
+            answer = self._call_with_keys(provider, self.available[provider],
+                                          messages, temperature, max_tokens,
+                                          top_p, timeout)
+            if answer:
+                return answer
+        logger.warning("[Router] автоматика: ответить некому — назначенный, "
+                       "запасные веб-чаты и API не ответили или на лимите")
         return None
 
     def _call_forced(self, provider: str, messages, temperature: float,

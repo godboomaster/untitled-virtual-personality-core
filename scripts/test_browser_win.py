@@ -584,7 +584,8 @@ def fake_raw_call(method, params=None, session_id=None, pool="v", tab_id=None,
     return chrome(method, params, session_id)
 
 
-def fake_open_new_tab(url, background=False, pool="v", focus=False):
+def fake_open_new_tab(url, background=False, pool="v", focus=False,
+                      context=None):
     # Как штатный: работа уходит в поток воркера (имя — как у настоящего)
     box = {}
 

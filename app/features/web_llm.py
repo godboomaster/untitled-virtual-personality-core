@@ -307,7 +307,7 @@ _STATELESS_CHANNELS = frozenset({"cc", "cc_gen", "burst", "probe", "search",
 # открыл в deepseek 60 новых чатов за ~50 минут, и аккаунт заблокировали на
 # 3 дня. Там у каждого канала — один постоянный чат, как у main; новый —
 # только если сохранённый недоступен (удалён, переполнен, не принял ввод)
-_FRESH_THREAD_SITES = frozenset({"google"})
+_FRESH_THREAD_SITES = frozenset({"google", "google_anon"})
 
 # Каналы коротких «системных» вызовов на пользовательском пути: пол
 # таймаута ANSWER_TIMEOUT_SEC (150с для длинных дневников) к ним не
@@ -365,10 +365,23 @@ def _bg_site_queue(site: str) -> threading.Lock:
 # Счёт — в data/webchat_pacing.json под межпроцессным локом. Слот
 # резервируется под локом, а ждём уже без него: соседние вызовы получают
 # следующие слоты, а не стоят в очереди за спящим.
+# Сайт с аккаунтом пользователя (site_has_account) — потолок ниже,
+# WEBCHAT_AUTO_PER_HOUR_ACCOUNT: блокировка там — потеря аккаунта на дни
+# (deepseek 01.10 и 07.10), а у сайта без аккаунта (duck.ai) — временный
+# лимит по IP.
 AUTO_GAP_SEC = 20.0
 AUTO_JITTER_SEC = 10.0
 AUTO_PER_HOUR = 60
+AUTO_PER_HOUR_ACCOUNT = 20
 _PACE_AUTO_CHANNELS = frozenset({"side", "proactive", "cc_gen"})
+
+
+def site_has_account(site: str) -> bool:
+    """Сайт работает от аккаунта пользователя (вход в профиле браузера
+    бота): его блокировка — потеря аккаунта, а не временный лимит по IP.
+    Без пометки адаптера ("account": False) — с аккаунтом."""
+    ad = ADAPTERS.get(site)
+    return not (isinstance(ad, dict) and ad.get("account") is False)
 
 
 def _pace_setting(name: str, default, cast):
@@ -388,6 +401,50 @@ def _pace_path() -> Path:
     return data_dir() / "webchat_pacing.json"
 
 
+def pace_cap(site: str) -> int:
+    """Часовой потолок автоматики на сайте (0 и меньше — без потолка).
+    WEBCHAT_AUTO_PER_HOUR=0 снимает и потолок сайтов с аккаунтом."""
+    cap = _pace_setting("WEBCHAT_AUTO_PER_HOUR", AUTO_PER_HOUR, int)
+    if cap > 0 and site_has_account(site):
+        acap = _pace_setting("WEBCHAT_AUTO_PER_HOUR_ACCOUNT",
+                             AUTO_PER_HOUR_ACCOUNT, int)
+        if acap > 0:
+            cap = min(cap, acap)
+    return cap
+
+
+def pace_snapshot() -> Dict[str, dict]:
+    """Темп сайтов без резерва слота: {сайт: {"last": время последней
+    отправки, "auto_hour": автоматических за час}} — выбор запасного
+    веб-чата автоматики (router._auto_fallback). Сбой файла — {}."""
+    now = time.time()
+    try:
+        st = load_json_safe(_pace_path(), default={}, label="WebChat")
+    except Exception:
+        return {}
+    out: Dict[str, dict] = {}
+    for site, rec in (st.items() if isinstance(st, dict) else ()):
+        if not isinstance(rec, dict):
+            continue
+        try:
+            last = float(rec.get("last") or 0)
+        except (TypeError, ValueError):
+            last = 0.0
+        hour = [t for t in rec.get("auto") or []
+                if isinstance(t, (int, float)) and now - float(t) < 3600]
+        out[site] = {"last": last, "auto_hour": len(hour)}
+    return out
+
+
+def pace_room(site: str, snap: Optional[Dict[str, dict]] = None) -> bool:
+    """В часовом потолке автоматики на сайте есть место (без резерва)."""
+    cap = pace_cap(site)
+    if cap <= 0:
+        return True
+    rec = (pace_snapshot() if snap is None else snap).get(site) or {}
+    return int(rec.get("auto_hour") or 0) < cap
+
+
 def pace_reserve(site: str, channel: str) -> Optional[float]:
     """Слот отправки на сайт → сколько секунд подождать перед ней (0 —
     сразу) или None — часовой потолок автоматики на сайте исчерпан.
@@ -396,7 +453,7 @@ def pace_reserve(site: str, channel: str) -> Optional[float]:
     gap = max(0.0, _pace_setting("WEBCHAT_AUTO_GAP_SEC", AUTO_GAP_SEC, float))
     jitter = max(0.0, _pace_setting("WEBCHAT_AUTO_JITTER_SEC",
                                     AUTO_JITTER_SEC, float))
-    cap = _pace_setting("WEBCHAT_AUTO_PER_HOUR", AUTO_PER_HOUR, int)
+    cap = pace_cap(site)
     path = _pace_path()
     now = time.time()
     try:
@@ -2217,6 +2274,9 @@ ADAPTERS = {
         # его профилем — пропускает (замер 01.10). Адрес у чата один
         # (duck.ai/) — постоянный чат держит вкладка, а не chat_url
         "host": "duck.ai",
+        # Без аккаунта: запасной автоматики в первую очередь, потолок
+        # автоматики — общий (site_has_account)
+        "account": False,
         "home": "https://duck.ai/",
         "input": "textarea[name=user-prompt]",
         "input_goal": ["поле ввода сообщения", "ask anything",
@@ -2248,6 +2308,29 @@ ADAPTERS = {
         "enter_text": True,
     },
 }
+
+# Google AI Mode без входа: те же страница и селекторы, что у «google», но
+# в отдельном контексте Chrome пула H (browser_actions.pool_h_context) —
+# без кук профиля бота, где выполнен вход в Google. Аккаунту ничего не
+# грозит; остаётся лимит по IP — он общий с поиском бота и Google в
+# браузере человека, поэтому капча здесь не прокликивается и окна для
+# человека (rescue) не поднимает: долгий карантин (_challenge_check).
+# Проба 17.10: ответ за 3 с, без капчи; кнопка «Войти» на странице — не
+# разлогин (signed_out). Картинки без входа не проверены.
+ADAPTERS["google_anon"] = {
+    **ADAPTERS["google"],
+    "account": False,
+    "browser_context": "google_anon",
+    "signed_out": True,
+    "images": False,
+}
+# Сайты с агрессивным антиботом: по умолчанию — видимый Chrome (пул V)
+HEADED_DEFAULT_SITES = ("chatgpt", "claude")
+# Капча на сайте без входа (signed_out): снимается сроком, не человеком
+SIGNED_OUT_CHALLENGE_TTL_SEC = 6 * 3600.0
+# Куки отдельного контекста — в файл после ответа, не чаще раза в N секунд
+CONTEXT_COOKIES_SAVE_SEC = 300.0
+_CTX_COOKIES_SAVED: Dict[str, float] = {}
 
 
 def extract_json(text: str):
@@ -2307,18 +2390,26 @@ class WebChatLLM:
         # фоновая работа без окна), V — headed (агрессивный антибот: chatgpt,
         # claude). Роутер передаёт из llm.webchat_mode персоны; без конфига —
         # дефолт по известной агрессивности сайта
-        if browser_pool in ("h", "v"):
+        if self.adapter.get("browser_context"):
+            # Отдельный контекст есть только в пуле H: в пуле V — профиль
+            # со входом, и сайт «без аккаунта» пошёл бы от аккаунта
+            self.browser_pool = "h"
+        elif browser_pool in ("h", "v"):
             self.browser_pool = browser_pool
         else:
-            self.browser_pool = "v" if site in ("chatgpt", "claude") else "h"
+            self.browser_pool = "v" if site in HEADED_DEFAULT_SITES else "h"
         # Канал: у побочных задач ("side") свой чат и своя квота — фоновая
         # активность не замусоривает контекст основной беседы.
         # Стейтless-каналы (_STATELESS_CHANNELS, "cc") на поисковике
         # (_FRESH_THREAD_SITES): чат не переиспользуется и не запоминается —
         # голый промпт без истории. На чат-сайтах — постоянный чат канала
         self.channel = (channel or "main").strip() or "main"
-        self.stateless = self.channel in _STATELESS_CHANNELS \
-            and site in _FRESH_THREAD_SITES
+        # Без входа (google_anon) у треда нет адреса (mtid не выдаётся): адрес
+        # с q= открыл бы прошлый вопрос заново — каждый вызов с home, как у
+        # поиска
+        self.stateless = (self.channel in _STATELESS_CHANNELS
+                          and site in _FRESH_THREAD_SITES) \
+            or bool(self.adapter.get("signed_out"))
         self._state_key = site if self.channel == "main" \
             else f"{site}#{self.channel}"
         # Лимит вызовов в час (None — без лимита; дефолт).
@@ -2662,7 +2753,8 @@ class WebChatLLM:
             signs.append(f"адрес {urlsplit(url).path or url}")
         if data.get("pwd"):
             signs.append("поле пароля")
-        if data.get("btn"):
+        if data.get("btn") and not self.adapter.get("signed_out"):
+            # Сайт без входа (google_anon) всегда показывает «Войти»
             signs.append("кнопка входа")
         if signs:
             return "login", "страница входа: " + ", ".join(signs)
@@ -2673,6 +2765,13 @@ class WebChatLLM:
         # quarantine_site по уже карантиненному сайту лишь продлевает срок)
         self._send_fail_streak = 0
         _LOGIN_PROBE_AT[self.site] = time.time()
+        if self.adapter.get("signed_out"):
+            # Сайт без входа вдруг требует вход: входить не нужно (смысл —
+            # без аккаунта), окно для человека не поднимаем — пауза сроком
+            quarantine_site(self.site, f"сайт без входа просит вход ({label})",
+                            ttl=LOGIN_QUARANTINE_TTL_SEC, kind="refused",
+                            pool=self.browser_pool)
+            return
         reason = (label if "возраст" in label
                   else f"бот разлогинен ({label})")
         quarantine_site(self.site, reason, ttl=LOGIN_QUARANTINE_TTL_SEC,
@@ -2777,6 +2876,15 @@ class WebChatLLM:
                 except Exception:
                     pass
             return False
+        if self.adapter.get("signed_out"):
+            # Без входа капча — подозрение на IP (общий с поиском бота и
+            # Google человека): не прокликиваем и rescue не поднимаем —
+            # сайт молчит долгим карантином
+            quarantine_site(self.site, f"{label}: Google просит проверку на "
+                            "запросах без входа — не обхожу, пауза",
+                            ttl=SIGNED_OUT_CHALLENGE_TTL_SEC, kind="ratelimit",
+                            pool=self.browser_pool)
+            return True
         logger.info(f"[WebChat] {self.site}: антибот-челлендж ({label}) — "
                     "одна автопопытка")
         try:
@@ -2873,6 +2981,13 @@ class WebChatLLM:
             logger.debug(f"[WebChat] {self.site}: вкладка #{tab_id} не "
                          f"закрылась ({why}): {e}")
 
+    def _open_tab(self, ba, url: str) -> int:
+        # Служебная вкладка сайта; у сайта без входа — в его отдельном
+        # контексте пула H (без кук профиля со входом)
+        ctx = self.adapter.get("browser_context")
+        return ba.open_new_tab(url, background=True, pool=self.browser_pool,
+                               **({"context": ctx} if ctx else {}))
+
     def _ensure_chat(self, fresh: bool = False) -> Optional[int]:
         """Служебная вкладка сайта на «нашем» чате (сохранённый chat_url;
         fresh=True — принудительно home, т.е. новый чат). Навигация — только
@@ -2912,8 +3027,7 @@ class WebChatLLM:
                     # жить в браузере пула)
                     self._drop_tab(ba, f"замена вкладки: {str(e)[:60]}")
             self._new_thread()
-            self._tab_id = ba.open_new_tab(target, background=True,
-                                           pool=self.browser_pool)
+            self._tab_id = self._open_tab(ba, target)
             self._tab_dialog = dialog
             self._remember_tab_snap(ba, self._tab_id)
             time.sleep(FRESH_CHAT_SETTLE_SEC)
@@ -3454,8 +3568,7 @@ class WebChatLLM:
                     except Exception as e:
                         self._drop_tab(ba, f"замена вкладки: {str(e)[:60]}")
                 if self._tab_id is None:
-                    self._tab_id = ba.open_new_tab(url, background=True,
-                                                   pool=self.browser_pool)
+                    self._tab_id = self._open_tab(ba, url)
                     self._remember_tab_snap(ba, self._tab_id)
                 if self._challenge_check(ba, self._tab_id):
                     return None
@@ -3858,7 +3971,23 @@ class WebChatLLM:
             break
         if answer:
             logger.info(f"[WebChat] {self.site}: ответ {len(answer)} симв.")
+            self._save_context_cookies(ba)
         return answer
+
+    def _save_context_cookies(self, ba):
+        # Отдельный контекст (google_anon): куки — в файл после ответа, не
+        # чаще CONTEXT_COOKIES_SAVE_SEC (пережить перезапуск Chrome)
+        key = self.adapter.get("browser_context")
+        if not key:
+            return
+        now = time.time()
+        if now - _CTX_COOKIES_SAVED.get(key, 0.0) < CONTEXT_COOKIES_SAVE_SEC:
+            return
+        _CTX_COOKIES_SAVED[key] = now
+        try:
+            ba.save_context_cookies(key)
+        except Exception as e:
+            logger.debug(f"[WebChat] {self.site}: куки контекста: {e}")
 
     @staticmethod
     def _join_messages(messages: list) -> str:

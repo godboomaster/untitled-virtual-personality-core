@@ -758,8 +758,8 @@ Several keys of one provider are rotated, starting with the last working one.
 ### Web chats
 
 The prompt goes into a chat on the site, and the answer is read from the page. Sites:
-`deepseek`, `qwen`, `claude`, `zai`, `chatgpt`, `kimi`, `google` (AI Mode), `duckai` (no
-account).
+`deepseek`, `qwen`, `claude`, `zai`, `chatgpt`, `kimi`, `google` (AI Mode), `google_anon`
+(AI Mode signed out, in a separate context of the bot's browser), `duckai` (no account).
 
 ```env
 WEBCHAT_SITES=deepseek,qwen
@@ -782,11 +782,23 @@ a site suspends the account, the bot recognizes it and stays away until the susp
 An answer takes 10–60 seconds, without streaming. Sites don't welcome automation.
 
 Automation — task agent steps and background work — writes to a site no more than once
-every 20–30 seconds and no more than 60 messages an hour. The count is shared by all
-personas, because they use the same account. Replies to your own messages don't wait.
-Configured in `.env`: `WEBCHAT_AUTO_GAP_SEC`, `WEBCHAT_AUTO_JITTER_SEC`,
-`WEBCHAT_AUTO_PER_HOUR`. A chat that has already seen the task agent's rules and an unchanged
-page gets a short reference to them instead of the full text.
+every 20–30 seconds and no more than 60 messages an hour, and no more than 20 to a site with
+your account (all except `duckai` and `google_anon`). The count is shared by all personas,
+because they use the same account. Replies to your own messages don't wait. Configured in
+`.env`: `WEBCHAT_AUTO_GAP_SEC`, `WEBCHAT_AUTO_JITTER_SEC`, `WEBCHAT_AUTO_PER_HOUR`,
+`WEBCHAT_AUTO_PER_HOUR_ACCOUNT`. A chat that has already seen the task agent's rules and an
+unchanged page gets a short reference to them instead of the full text.
+
+If the task agent's site (`cc_provider`) or the main web chat doesn't answer, the step does
+not fall through the usual chain to a site with your account. Sites without an account go
+first, then the site with an account that has gone longest without a message. Sites in
+quarantine, at the hourly limit, excluded by the persona, sites of the visible browser
+(`chatgpt`, `claude`) and those the prompt doesn't fit are skipped. The chosen site stays with
+the task to the end; after that come API providers with keys. If nobody answers, the task
+stops and waits for "continue".
+
+`google_anon` never clicks through a captcha or opens a window to solve it: the site just goes
+quiet for 6 hours. Its cookies (without sign-in cookies) are kept in `data/webchat_contexts/`.
 
 ### Local model
 

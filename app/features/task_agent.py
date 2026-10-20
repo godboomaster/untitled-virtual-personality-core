@@ -1701,13 +1701,16 @@ class TaskAgent:
         счётом: сколько вызовов какого вида и сколько символов промпта —
         итог в лог по концу задачи (_log_traffic). sticky — повторяемые
         блоки промпта (app/core/sticky_scope). Вызовы цикла — автоматика:
-        веб-чат держит паузу между ними (app/core/pace_scope)."""
+        веб-чат держит паузу между ними, а при сбое назначенного роутер
+        берёт запасной веб-чат и держит его за этим прогоном
+        (app/core/pace_scope)."""
         from app.core.pace_scope import automated_calls
         from app.core.sticky_scope import sticky_blocks
         rec = run.setdefault("traffic", {}).setdefault(kind, [0, 0])
         rec[0] += 1
         rec[1] += len(prompt)
-        with sticky_blocks(*sticky), automated_calls():
+        key = f"task:{self.context}:{run.get('id') or id(run)}"
+        with sticky_blocks(*sticky), automated_calls(key):
             resp = llm.get_response(
                 [{"role": "user", "content": prompt}], webchat_channel="cc",
                 force_provider=getattr(llm, "cc_provider", None), **kw)
@@ -2876,6 +2879,14 @@ class TaskAgent:
                 logger.info(f"[TaskAgent] LLM недоступна: {e}")
                 run["awaiting"] = self._await_continue(run)
                 return ("pause", self._t("task_llm_down"))
+            if resp is None and not private:
+                # Ответить некому: назначенный веб-чат, запасные (роутер,
+                # _auto_fallback) и API — на карантине, на часовом потолке или
+                # не ответили. Повтор того же промпта — ещё один круг по тем
+                # же сайтам
+                logger.info("[TaskAgent] модели не ответили — пауза")
+                run["awaiting"] = self._await_continue(run)
+                return ("pause", self._t("task_llm_exhausted"))
             if private and resp is None:
                 # Локальной модели нет — страницу в облако не отдаём: пауза,
                 # дальше человек. «да» — продолжить, когда уйдёт с неё

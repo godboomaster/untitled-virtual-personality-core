@@ -1219,7 +1219,7 @@ def _hint_for(url: str) -> str:
 
 
 def _open_new_tab_win(url: str, background: bool = False, pool: str = _POOL_V,
-                      focus: bool = False) -> int:
+                      focus: bool = False, context: Optional[str] = None) -> int:
     """Метка маршрута: «агент» — фоновая служебная вкладка (её фолбэк в
     воркер) или шаг задачи агента; иначе «пользователь» (команда режима
     управления). Сама логика открытия — штатная."""
@@ -1231,7 +1231,8 @@ def _open_new_tab_win(url: str, background: bool = False, pool: str = _POOL_V,
         except Exception as e:
             _note_fail("метка маршрута вкладки", e)
     try:
-        return _ORIG["open_new_tab"](url, background=background, pool=pool, focus=focus)
+        return _ORIG["open_new_tab"](url, background=background, pool=pool,
+                                     focus=focus, context=context)
     finally:
         if token is not None:
             _pop_hint(url, token)
@@ -2032,7 +2033,8 @@ class _SubprocessProxy:
 _MODULE_PATCHES: Dict[str, Tuple[Tuple[str, ...], Callable]] = {
     "_raw_call": (("method", "params", "session_id", "pool", "tab_id",
                    "timeout", "_retried"), _raw_call_win),
-    "open_new_tab": (("url", "background", "pool", "focus"), _open_new_tab_win),
+    "open_new_tab": (("url", "background", "pool", "focus", "context"),
+                     _open_new_tab_win),
     "set_control_mode": (("chat_id", "on"), _set_control_mode_win),
     "_hide_pool_window": (("pid",), _hide_pool_window_win),
     "_focus_browser_tab": (("url",), _focus_browser_tab_win),
