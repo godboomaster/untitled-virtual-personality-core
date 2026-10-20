@@ -1832,6 +1832,10 @@ class BotInstance:
         Вне хода (фоновые сообщения) — только известные секреты."""
         if not isinstance(content, str) or not content:
             return content
+        # Паспорт/СНИЛС/ИНН — в историю никогда (правило пользователя): здесь
+        # единая точка записи STM для всех режимов, до раннего выхода без масок
+        from app.features.cc_privacy import mask_id_docs
+        content = mask_id_docs(content)
         key = self.stm_key(chat_id, user_id)
         known = self._cc_hist_vault().values(key)
         frame = self._get_turn_gate().current_frame(key)
@@ -4220,6 +4224,14 @@ class BotInstance:
             if self.proactive and chat_id:
                 self.proactive.record_user_response(chat_id)
             return offer_reply
+
+        # Дальше — обычный чат: заметки, переписчик запроса, поиск, модель
+        # персоны, STM/LTM. Номер паспорта/СНИЛС/ИНН ни одной модели не
+        # уходит — маской ***(N); режим управления с ним сюда не доходит
+        # (command_has_secret раньше)
+        from app.features.cc_privacy import mask_id_docs
+        user_input = mask_id_docs(user_input)
+        raw_user_text = mask_id_docs(raw_user_text)
 
         # Английским эвристикам (правило, «call me X») — написанное без
         # обращения в начале: в веб-чате имя не срезано («connor call me

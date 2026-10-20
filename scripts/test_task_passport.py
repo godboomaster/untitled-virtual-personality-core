@@ -588,6 +588,27 @@ def bot_checks(check):
           r and "введи" in str(r) and not leaked(r), f"{r}")
     check("бот: фраза в STM — маской", not leaked(hist(b)), hist(b)[:300])
 
+    # Единая точка записи STM — и вне хода (фоновая запись без кадра
+    # маскировки): номер документа маской, остальной текст как был
+    b = mkbot()
+    rec = b._cc_hist_redact("user", f"мой паспорт {PASS}, запомни", "u", "c")
+    check("бот: запись истории вне хода — паспорт маской",
+          not leaked(rec) and rec.startswith("мой паспорт ***(")
+          and rec.endswith(", запомни"), f"{rec}")
+
+    # Обычный чат (не режим управления): ввод маскируется до заметок,
+    # переписчика, поиска и модели персоны — после веток режима управления
+    # (там своё: command_has_secret), до первой эвристики обычного чата
+    import inspect
+    src = inspect.getsource(BotInstance._process_message_impl)
+    at_mask = src.find("user_input = mask_id_docs(user_input)")
+    at_raw = src.find("raw_user_text = mask_id_docs(raw_user_text)")
+    at_chat = src.find("typed_h = self._strip_address(raw_user_text)")
+    at_cc = src.find("if (self.computer_control and cc_mode_key")
+    check("бот: обычный чат — ввод маской до эвристик и модели персоны",
+          0 <= at_cc < at_mask < at_chat and 0 <= at_raw < at_chat,
+          f"cc={at_cc} mask={at_mask} raw={at_raw} chat={at_chat}")
+
 
 if __name__ == "__main__":
     sys.exit(1 if main() else 0)
