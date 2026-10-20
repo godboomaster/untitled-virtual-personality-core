@@ -17,6 +17,8 @@ _drop_system_qs, _question_lines, _handoff_summary, _payment_handoff).
   и добавками из брифа, сумма с кнопки, адрес, телефон маской), а не с
   отчётом модели: и из done на оформлении, и на границе оплаты кода; ru и
   en; статус карточки — payment, память — успешный исход;
+* варианты позиции («традиционное») — в скобках без «+»: сводка оплаты,
+  «В корзине: …», состав подтверждения, план человеку (ru, en) и модели;
 * маски: телефон, номер карты в слоте оплаты, email; в группе значения с
   приватной страницы не цитируются, в личке — заметка в историю бота
   заглушкой; цель не заказ — без сводки;
@@ -243,7 +245,7 @@ def main():
     cc, ag, r, notes = at_checkout("h1", [{"action": "done",
                                            "message": model_msg}])
     lines = r.splitlines()
-    want_ru = ("Заказ на pizzatest.test: пепперони 30 см (+ традиционное "
+    want_ru = ("Заказ на pizzatest.test: пепперони 30 см (традиционное "
                "тесто), кола 0,5 л; к оплате 867 ₽; адрес: ул. Тестовая, 1, "
                "кв. 2; телефон: ***(16).")
     check("done на оформлении: «Дошёл до оплаты», под ним сводка кодом",
@@ -274,7 +276,7 @@ def main():
     _cc, ag_en, r_en, _n = at_checkout("h3", [{"action": "done",
                                                "message": model_msg}],
                                        lang="en")
-    want_en = ("The order on pizzatest.test: пепперони 30 см (+ традиционное "
+    want_en = ("The order on pizzatest.test: пепперони 30 см (традиционное "
                "тесто), кола 0,5 л; to pay: 867 ₽; address: ул. Тестовая, 1, "
                "кв. 2; phone: ***(16).")
     check("en: передача и сводка по-английски (названия — как у человека)",
@@ -353,6 +355,52 @@ def main():
     check("сумма с кнопки «Pay $12.50» — целиком",
           "к оплате $12.50" in (ag._handoff_summary(run_of(), "Pay $12.50")
                                 or ""))
+
+    # ── 3б. Варианты позиции — нейтрально, без «+» ──
+    # Стенд 21.10 (run3): «пепперони 30 см (+ традиционное)» в сводке
+    # оплаты, плане и «В корзине: …» читалось как платная добавка, хотя
+    # это выбранное тесто
+    print("варианты позиции:")
+    opt_brief = {"items": [
+        {"name": "пепперони", "size": "30 см", "options": ["традиционное"],
+         "qty": 1},
+        {"name": "кола", "size": "0,5 л", "options": [], "qty": 1},
+        {"name": "терияки", "options": ["тонкое", "моцарелла"], "qty": 2}]}
+    opt_adds = [{"key": "Пепперони", "verified": True},
+                {"key": "Кола", "verified": True}]
+    check("позиция: варианты в скобках без «+», количество после",
+          TaskAgent._item_text(opt_brief["items"][2])
+          == "терияки (тонкое, моцарелла) ×2"
+          and TaskAgent._item_text(opt_brief["items"][0])
+          == "пепперони 30 см (традиционное)")
+    s = ag._handoff_summary(run_of(brief=opt_brief, cart_adds=opt_adds),
+                            "Оплатить 867 ₽")
+    check("сводка оплаты: «пепперони 30 см (традиционное), кола 0,5 л», "
+          "недостающее — так же",
+          s and s.startswith("Заказ на pizzatest.test: пепперони 30 см "
+                             "(традиционное), кола 0,5 л;")
+          and "не положил в корзину: терияки (тонкое, моцарелла) ×2" in s
+          and "(+" not in s, s)
+    what, _missing = ag._added_items(run_of(brief=opt_brief,
+                                            cart_adds=opt_adds))
+    check("«В корзине: …» и состав подтверждения — та же запись",
+          what == ["пепперони 30 см (традиционное)", "кола 0,5 л"]
+          and ag._order_items(run_of(brief=opt_brief))[0]
+          == "пепперони 30 см (традиционное)", f"{what}")
+    for lang, want in (("ru", "положить «пепперони 30 см (традиционное)» в "
+                              "корзину"),
+                       ("en", "put “пепперони 30 см (традиционное)” in the "
+                              "cart")):
+        texts = [p["text"] for p in ag._plan_view(
+            run_of(brief=opt_brief, cart_adds=opt_adds, lang=lang),
+            "working")]
+        check(f"план человеку ({lang}): «{want}», «+» нигде",
+              want in texts and not any("(+" in t for t in texts), texts)
+    lines = ag._plan_lines(run_of(brief=opt_brief, cart_adds=opt_adds,
+                                  lang="ru"))
+    check("план модели: put \"пепперони 30 см (традиционное)\" into the cart",
+          any('put "пепперони 30 см (традиционное)" into the cart' in x
+              for x in lines) and not any("(+" in x for x in lines), lines)
 
     # ── 4. Ключи текстов сводки ──
     print("ключи текстов:")
