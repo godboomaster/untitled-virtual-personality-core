@@ -6353,8 +6353,11 @@ def section_items(host_part: Optional[str], name: str,
 
 # Названия разделов меню/каталога по разметке — только чтение: заголовки,
 # у чьего блока (как в _SECTION_ITEMS_JS) не меньше двух позиций с ценой.
-# Запасной источник, когда модель разделов не назвала (живой 00:16: ссылки
-# разделов Додо стояли в начале списка, а показан обзор всей страницы)
+# Раздел — один из ровни: у заголовка есть такой же (того же уровня) вне его
+# блока; без ровни блоком выходила вся страница со всеми ценами — h1 товара
+# или категории, одинокий h4 подвала («Контакты»). Первый источник разделов
+# агента задач, до модели (живой 00:16: ссылки разделов Додо стояли в начале
+# списка, а модель разделов не назвала)
 _SECTION_NAMES_JS = (
     "(function(){"
     "function nm(s){return (s||'').replace(/\\s+/g,' ').trim();}"
@@ -6368,12 +6371,12 @@ _SECTION_NAMES_JS = (
     "if(h.closest('a,button,nav,[role=tab],[role=navigation],[role=link]'))continue;"
     "if(pinned(h))continue;"
     "var sel=h.getAttribute('role')==='heading'?'[role=heading]':h.tagName.toLowerCase();"
-    "var box=null,p=h.parentElement;"
-    "while(p&&p!==document.body){var others=p.querySelectorAll(sel),hit=false;"
+    "var box=null,peer=false,p=h.parentElement;"
+    "while(p&&p!==document.body){var others=p.querySelectorAll(sel);"
     "for(var j=0;j<others.length;j++){if(others[j]!==h&&nm(others[j].innerText)"
-    "&&!others[j].closest('a,button,nav')){hit=true;break;}}"
-    "if(hit)break;box=p;p=p.parentElement;}"
-    "if(!box)continue;"
+    "&&!others[j].closest('a,button,nav')){peer=true;break;}}"
+    "if(peer)break;box=p;p=p.parentElement;}"
+    "if(!box||!peer)continue;"
     "var cand=box.querySelectorAll('a[href],button,[role=button],[role=link],article,li,div,span');"
     "var taken=[];"
     "for(j=0;j<cand.length&&taken.length<2;j++){var e=cand[j],inside=false;"

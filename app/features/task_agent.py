@@ -887,6 +887,12 @@ _PICK_FILLER = frozenset({
 # Подпись с ценой, но не товар: акции, доставка
 _NOT_PRODUCT_RE = re.compile(r"доставк|акци|скидк|бесплатн|промокод|delivery|"
                              r"promo|discount|free", re.IGNORECASE)
+# Служебная ссылка, не раздел каталога (список промпта разделов): контакты,
+# приложение, вакансии; вход — _DATA_QUESTION_RE, корзина — _CART_WORD_RE,
+# доставка и акции — _NOT_PRODUCT_RE. Словом: «Контактные линзы» — раздел
+_SERVICE_LINK_RE = re.compile(
+    r"(?<![^\W\d_])(?:контакты|приложени[ея]|ваканси\w*|карьера|contacts|"
+    r"contact\s+us|apps?|jobs?|careers?)(?![^\W\d_])", re.IGNORECASE)
 # «Покажи все» — весь раздел списком
 _SHOW_ALL_RE = re.compile(r"(?:покажи|перечисли|список|дай)\s+(?:вс[её]|все\s+"
                           r"варианты|целиком|полностью)|вс[её]\s+варианты|"
@@ -899,6 +905,10 @@ _SEARCH_HOST_RE = re.compile(r"(?:^|\.)(?:google|yandex|ya|bing|duckduckgo|"
 _AS_IS_RE = re.compile(r"как\s+есть|как\s+(?:выбран|стоит)|остав(?:ь|ляй|ить|"
                        r"ляем)|без\s+изменени|as\s+(?:it\s+)?is|as\s+selected|"
                        r"keep\s+(?:it|as)|no\s+changes?", re.IGNORECASE)
+# Цель «оформи как есть» — собранное не трогать, выбор из каталога не нужен
+# (_AS_IS_RE для цели широк: «доставь», «поставь» ⊃ «оставь»)
+_AS_IS_GOAL_RE = re.compile(r"как\s+есть|(?<![^\W\d_])as\s+(?:it\s+)?is"
+                            r"(?![^\W\d_])", re.IGNORECASE)
 # Клик, меняющий корзину без счётчика на экране (шторка: «−», «+», «Удалить»)
 _CART_EDIT_RE = re.compile(r"^[+−–-]$|удал|убра|очист|remove|delete|clear",
                            re.IGNORECASE)
@@ -1284,6 +1294,12 @@ def _label_fits(want: str, have: str) -> bool:
     want, have = want.casefold(), have.casefold()
     return bool(want and have) and (want in have or (len(have) >= 3
                                                      and have in want))
+
+
+def _section_label_ok(s: str) -> bool:
+    # Подпись раздела, а не цена, корзина или вход
+    return bool(s) and not _PRICE_RE.search(s) \
+        and not _CART_WORD_RE.search(s) and not _DATA_QUESTION_RE.search(s)
 
 
 def _is_option_choice(q, a) -> bool:
@@ -5086,10 +5102,11 @@ class TaskAgent:
         пиццу», «закажи поесть»): до хода модели — разделы сайта («Пиццы,
         Комбо, Закуски, Напитки — что посмотрим?»), затем выбранный раздел:
         до SECTION_LIST_MAX позиций — список целиком, больше — коротко
-        (сколько, цены, виды с примерами; «покажи все» — список). Что
-        показать, решает модель по странице (_pre_llm), когда — код. Модели
-        нет или разделов на странице не нашлось — как раньше, решает модель
-        шагов. → пауза/ход или None."""
+        (сколько, цены, виды с примерами; «покажи все» — список). Разделы —
+        по разметке страницы, не нашлось двух — модель по странице
+        (_pre_llm); показ раздела — модель, когда — код. Модели нет или
+        разделов на странице не нашлось — как раньше, решает модель шагов.
+        → пауза/ход или None."""
         b = run.setdefault("browse", {})
         if b.get("stage") == "done" and b.get("again") and not b.get("closed"):
             # Выбор по просьбе после «что-нибудь ещё?» закончен — вид снят с
@@ -5107,9 +5124,12 @@ class TaskAgent:
         goal = run.get("goal") or ""
         if not b.get("again") and (
                 (run.get("brief") or {}).get("items") or run.get("cart_adds")
-                or not _BUY_GOAL_RE.search(goal) or _CART_WORD_RE.search(goal)):
+                or not _BUY_GOAL_RE.search(goal) or _CART_WORD_RE.search(goal)
+                or _AS_IS_GOAL_RE.search(goal)):
             # Товар назван (цель, ответ), уже в корзине или цель — оформить
-            # собранную корзину: разделы ни к чему
+            # собранную корзину («как есть»): разделы ни к чему. Это NONE
+            # модели «цели каталог не нужен» — решает код: при разделах по
+            # разметке модель не спрашивают
             b["stage"] = "done"
             return None
         host = str(obs.get("host") or "").removeprefix("www.")
@@ -5165,73 +5185,70 @@ class TaskAgent:
 
     def _browse_sections(self, run: dict, chat_id, obs: dict, b: dict,
                          host: str) -> Optional[Tuple[str, str]]:
-        # Разделы — подписи этой страницы, которые модель назвала разделами
-        # каталога/меню; открытое окно (город, cookie) сначала решит модель
+        # Разделы — подписи этой страницы: заголовки разделов по разметке,
+        # иначе названные моделью; открытое окно (город, cookie) сначала
+        # решит модель
         if any(it.get("md") for it in obs["shown"]):
             return None
         # Одна попытка: при первом приходе на сайт. Разделов не нашлось —
         # дальше модель шагов, вопрос посреди выбора товара не нужен
         b["stage"] = "done"
-        labels = [_item_label(it)[:LABEL_MAX] for it in obs["shown"]
-                  if not it.get("ed") and _item_label(it).strip()]
-        text = self._pre_llm(
-            run, obs,
-            step=(f"show the user what {host} offers: the user has not said "
-                  "what exactly to order" + (
-                      f" (they want to add: {b['kind']})" if b.get("kind")
-                      else " next" if b.get("again") else "")),
-            page=("The page " + scrub_url(obs.get("url") or "")
-                  + " — clickable elements, labels as the site shows them:\n"
-                  + "\n".join(f"- {x}" for x in labels[:PRE_PAGE_LINES])),
-            task=("\nWhich sections of the site's catalog or menu are on this "
-                  "page? List the main sections exactly as their labels above "
-                  "(like «Pizza», «Combos», «Snacks», «Drinks»), each on its own "
-                  "line starting with \"- \", up to 10, without prices; not "
-                  "single products and not service links (sign-in, cart, "
-                  "contacts, delivery terms, promotions, the app, jobs). If "
-                  "the page has no such sections, or the goal does not need "
-                  "choosing from the catalog (e.g. check out the cart as it "
-                  "is), reply NONE.\n"))
-        if text is None:
-            return None  # модели нет — как раньше
-        opts: List[str] = []
-        for line in _option_texts(text):
-            want = line.split(" — ")[0].strip(" «»\"")
-            hit = next((_item_label(it) for it in obs["shown"]
-                        if _item_label(it).strip().casefold()
-                        == want.casefold()), None) or next(
-                (_item_label(it) for it in obs["shown"]
-                 if _label_fits(want, _item_label(it))
-                 and len(_item_label(it)) <= 40), None)
-            hit = " ".join(str(hit or "").split())[:40]
-            # Только подписи страницы; вход/корзина/цены — не разделы
-            if hit and hit not in opts and not _PRICE_RE.search(hit) \
-                    and not _CART_WORD_RE.search(hit) \
-                    and not _DATA_QUESTION_RE.search(hit):
-                opts.append(hit)
+        if self.slot_router is None:
+            return None  # модели разбора нет — как раньше, без разделов
+        # Разметка первой: два годных раздела — модель не зовём (вызов
+        # веб-чата на каждый заход в магазин — риск бана аккаунта). Её NONE
+        # «цели каталог не нужен» решает код до разделов (_browse_step)
+        marked = self._markup_sections(obs)
+        opts, src = list(marked), "по разметке"
         if len(opts) < 2:
-            # Модель разделов не назвала (NONE, не тот формат, подписи не со
-            # страницы) — живой 00:16: ссылки разделов Додо стояли в начале
-            # списка, а показан обзор всей страницы. Запас — заголовки
-            # разделов по разметке (блок с позициями с ценой; только
-            # чтение), у которых на странице есть такая же подпись
-            logger.info("[TaskAgent] разделы: модель не назвала («"
-                        + redact_inline(text, 200) + "») — по разметке")
-            try:
-                from app.features import browser_actions as _ba
-                heads = _ba.section_names(obs["host"], obs["tab_id"]) or []
-            except Exception as e:
-                logger.debug(f"[TaskAgent] разделы по разметке: {e}")
-                heads = []
-            labs = [" ".join(_item_label(it).split())[:40]
-                    for it in obs["shown"] if not it.get("ed")]
-            for h in heads:
-                key = " ".join(str(h).split())[:40].casefold()
-                hit = next((x for x in labs if x.casefold() == key), "")
-                if hit and hit not in opts and not _PRICE_RE.search(hit) \
-                        and not _CART_WORD_RE.search(hit) \
-                        and not _DATA_QUESTION_RE.search(hit):
+            labels = [_item_label(it)[:LABEL_MAX] for it in obs["shown"]
+                      if not it.get("ed") and _item_label(it).strip()]
+            text = self._pre_llm(
+                run, obs,
+                step=(f"show the user what {host} offers: the user has not "
+                      "said what exactly to order" + (
+                          f" (they want to add: {b['kind']})" if b.get("kind")
+                          else " next" if b.get("again") else "")),
+                page=("The page " + scrub_url(obs.get("url") or "")
+                      + " — clickable elements, labels as the site shows "
+                      "them:\n"
+                      + "\n".join(f"- {x}" for x in labels[:PRE_PAGE_LINES])),
+                task=("\nWhich sections of the site's catalog or menu are on "
+                      "this page? List the main sections exactly as their "
+                      "labels above (like «Pizza», «Combos», «Snacks», "
+                      "«Drinks»), each on its own line starting with \"- \", "
+                      "up to 10, without prices; not single products and not "
+                      "service links (sign-in, cart, contacts, delivery "
+                      "terms, promotions, the app, jobs). If the page has no "
+                      "such sections, or the goal does not need choosing from "
+                      "the catalog (e.g. check out the cart as it is), reply "
+                      "NONE.\n"))
+            if text is None:
+                return None  # сбой вызова — как раньше
+            opts, src = [], "от модели"
+            for line in _option_texts(text):
+                want = line.split(" — ")[0].strip(" «»\"")
+                hit = next((_item_label(it) for it in obs["shown"]
+                            if _item_label(it).strip().casefold()
+                            == want.casefold()), None) or next(
+                    (_item_label(it) for it in obs["shown"]
+                     if _label_fits(want, _item_label(it))
+                     and len(_item_label(it)) <= 40), None)
+                hit = " ".join(str(hit or "").split())[:40]
+                # Только подписи страницы; вход/корзина/цены — не разделы
+                if hit and hit not in opts and _section_label_ok(hit):
                     opts.append(hit)
+            if len(opts) < 2:
+                # NONE, не тот формат, подписи не со страницы: один раздел
+                # по разметке — к названному моделью (как было запасом)
+                logger.info("[TaskAgent] разделы: модель не назвала («"
+                            + redact_inline(text, 200) + "»)")
+                extra = [x for x in marked if x not in opts]
+                if extra:
+                    opts, src = opts + extra, src + " и по разметке"
+        logger.info(f"[TaskAgent] разделы {src}: {len(opts)}"
+                    + (" — «" + redact_inline(", ".join(opts[:10]), 200) + "»"
+                       if opts else ""))
         if len(opts) < 2:
             # Чётких разделов нет (одна категория, лента товаров) — показать
             # саму страницу тем же правилом: до 10 списком, больше коротко
@@ -5256,6 +5273,58 @@ class TaskAgent:
                 self._item_text(x) for x in past["brief"]["items"][:3]))
         b.update(stage="asked", sections=opts[:10], sections_q=q)
         return self._browse_ask(run, chat_id, b, q, {"pick": "section"})
+
+    @staticmethod
+    def _markup_sections(obs: dict) -> List[str]:
+        """Разделы по разметке (_SECTION_NAMES_JS: заголовок с ровней, в
+        блоке ≥2 позиций с ценой), у которых на странице есть такая же
+        подпись — ссылка/вкладка раздела; только чтение. Без служебных
+        (вход, корзина, контакты, доставка, акции, приложение, вакансии —
+        как в промпте модели). [] — разметка не годится, решит модель:
+        лучше вызов, чем плохой список человеку."""
+        try:
+            from app.features import browser_actions as _ba
+            heads = _ba.section_names(obs["host"], obs["tab_id"]) or []
+        except Exception as e:
+            logger.debug(f"[TaskAgent] разделы по разметке: {e}")
+            return []
+
+        def lab(it) -> str:
+            return " ".join(_item_label(it).split())[:40]
+
+        def ok(s: str) -> bool:
+            return _section_label_ok(s) and not _NOT_PRODUCT_RE.search(s) \
+                and not _SERVICE_LINK_RE.search(s)
+        shown = [it for it in obs.get("shown") or () if not it.get("ed")]
+        opts: List[str] = []
+        ctx: Dict[str, str] = {}
+        for h in heads:
+            key = " ".join(str(h).split())[:40].casefold()
+            # Видимая подпись первой — её нажмёт _browse_open
+            its = sorted((it for it in shown if lab(it).casefold() == key),
+                         key=lambda it: it.get("vp") is False)
+            hit = lab(its[0]) if its else ""
+            if hit and hit not in opts and ok(hit):
+                opts.append(hit)
+                ctx[hit] = " ".join(str(its[0].get("ctx") or "").split())
+        ctxs = [c for c in ctx.values() if c]
+        if len(opts) < 2 or not ctxs:
+            return opts
+        # Подписи разделов — одна панель (общий ctx снимка: меню, вкладки);
+        # каждая в своём блоке — карточки (товары), а не панель разделов
+        panel = max(ctxs, key=ctxs.count)
+        if ctxs.count(panel) < 2:
+            return []
+        opts = [o for o in opts if ctx[o] in (panel, "")]
+        # Соседей по панели без своего блока с ценами больше, чем найденных,
+        # — список неполон: каталог по страницам или блоки ещё не отрисованы
+        # (на главной лишь «Новинки» и «Хиты», а в меню десяток разделов)
+        have = {o.casefold() for o in opts}
+        rest = {lab(it) for it in shown
+                if " ".join(str(it.get("ctx") or "").split()) == panel
+                and lab(it).casefold() not in have and ok(lab(it))
+                and re.search(r"[^\W\d_]{3,}", lab(it))}
+        return [] if len(rest) > len(opts) else opts
 
     def _browse_answer(self, run: dict, msg: str) -> None:
         """Ответ на вопрос о разделах/показ раздела: товар назван — дальше
