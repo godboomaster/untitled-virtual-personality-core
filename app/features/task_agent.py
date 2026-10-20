@@ -1266,6 +1266,59 @@ def _item_label(it: dict) -> str:
     return text
 
 
+# Кнопка карточки товара — не название: «от 459 ₽ Выбрать», «Купить за
+# 300 ₽», «Add to cart $5»; с предлогами цены («за», «from»)
+_CARD_BUTTON_RE = re.compile(
+    r"(?<![^\W\d_])(?:выбрать|в\s+корзину|купить|заказать|добавить|подробнее|"
+    r"select|choose|add(?:\s+to\s+(?:cart|bag|basket))?|buy(?:\s+now)?|"
+    r"order|details)(?![^\W\d_])", re.IGNORECASE)
+_PRICE_WORD_RE = re.compile(r"(?<![^\W\d_])(?:от|до|за|всего|from|for|only)"
+                            r"(?![^\W\d_])", re.IGNORECASE)
+# Токен из одних знаков — глиф кнопки, не слово: «×» закрытия окна, «✕», «←»
+_GLYPH_TOKEN_RE = re.compile(r"(?<!\S)[^\w\s]+(?!\S)")
+
+
+def _has_name(lab) -> bool:
+    """В подписи есть слово названия — кроме цены, её предлога и кнопки
+    карточки. «от 459 ₽ Выбрать» — нет: «Выбрать» раньше сходило за
+    название, и человеку ушёл список цен без названий (стенд 20.10)."""
+    rest = _PRICE_RE.sub(" ", str(lab or ""))
+    rest = _PRICE_WORD_RE.sub(" ", _CARD_BUTTON_RE.sub(" ", rest))
+    return bool(re.search(r"[^\W\d_]{3,}", rest))
+
+
+def _card_name(it: dict) -> str:
+    """Название товара из блока его карточки — поле cn снимка
+    (_CARD_NAME_FN_JS: заголовок карточки или подпись её картинки; в окне
+    товара — заголовок окна): у подписи без названия («от 459 ₽ Выбрать»)
+    название пиццы на сайте не кликабельно и в снимок не попадает. Цена,
+    кнопка, корзина, акция вместо названия — ""."""
+    s = " ".join(_GLYPH_TOKEN_RE.sub(" ", str(it.get("cn") or "")).split())
+    s = s.strip(" ,.;:·•*«»\"'—–-")
+    if not s or len(s) > 60 or _PRICE_RE.search(s) or _CART_WORD_RE.search(s) \
+            or _NOT_PRODUCT_RE.search(s) or not _has_name(s):
+        return ""
+    return s
+
+
+def _show_label(it: dict) -> str:
+    """Подпись элемента в показе каталога: подпись-цена без названия
+    («от 459 ₽ Выбрать») — с названием из блока карточки: «Пепперони — от
+    459 ₽» (как вариант «название — цена»: _option_item возьмёт название
+    без цены). Названия нет и в блоке — подпись как есть (товаром её
+    _products не посчитает); кнопка корзины («В корзину · 599 ₽») и
+    остальное — как есть."""
+    lab = " ".join(_item_label(it).split())[:LABEL_MAX]
+    if not _PRICE_RE.search(lab) or _has_name(lab) \
+            or _ADD_TO_CART_RE.search(lab) or _CART_WORD_RE.search(lab):
+        return lab
+    name = _card_name(it)
+    if not name:
+        return lab
+    price = " ".join(_CARD_BUTTON_RE.sub(" ", lab).split()).strip(" ,.;:·•—–-")
+    return f"{name} — {price}"[:LABEL_MAX]
+
+
 def _label_of(it: dict) -> str:
     return _item_label(it).casefold()
 
@@ -1287,7 +1340,11 @@ def _pick_shown(items: List[dict]) -> List[dict]:
     seen, uniq = set(), []
     for it in items:
         lab = _label_of(it)
-        key = (lab, " ".join(str(it.get("ctx") or "").split()).casefold())
+        # Название карточки (cn) — тоже в ключе: «от 119 ₽ Выбрать» колы и
+        # колы зеро в одном блоке раздела (стенд 20.10: ctx — весь раздел
+        # «Напитки») — разные товары, а не куски одной карточки
+        key = (lab, " ".join(str(it.get("ctx") or "").split()).casefold(),
+               str(it.get("cn") or "").casefold())
         # «+»/«−»/«×» у соседних позиций короткой корзины — один ctx на всех,
         # но это разные кнопки: подпись без слов не схлопываем
         if lab and key in seen and re.search(r"[^\W\d_]{2,}", lab):
@@ -3931,8 +3988,10 @@ class TaskAgent:
         if len(seen) >= SEEN_WORDS_MAX:
             return
         for it in items:
+            # cn — название карточки: оно на странице, хоть и не в подписи
+            # («от 459 ₽ Выбрать» — «Пепперони»)
             seen.update(_option_words(" ".join(
-                str(it.get(k) or "") for k in ("text", "aria", "title"))))
+                str(it.get(k) or "") for k in ("text", "aria", "title", "cn"))))
         if text:
             seen.update(_option_words(str(text)[:PAGE_TEXT_MAX * 2]))
 
@@ -4237,7 +4296,20 @@ class TaskAgent:
     @staticmethod
     def _elem_line(n: int, it: dict) -> str:
         from app.features.computer_control import _cand_line
-        line = _cand_line(n, dict(it, text=_item_label(it)), lab_max=LABEL_MAX)
+        lab = _item_label(it)
+        ctx = " ".join(str(it.get("ctx") or "").split())
+        # Подпись без названия («Выбрать», «от 119 ₽ Выбрать») — с названием
+        # карточки (cn): стенд 20.10 — у всех напитков блок один (раздел
+        # «Напитки Кола…»), «Выбрать» колы и колы зеро не различить.
+        # Короткой подписи блок допишет _cand_line — название в его начало
+        # (уже там — не повторяем), длинной — сами
+        cn = "" if _has_name(lab) else _card_name(it)
+        if cn and len(lab) > 15:
+            lab = f"{lab} (block: {cn})"
+        elif cn and not " ".join(_GLYPH_TOKEN_RE.sub(" ", ctx).split()) \
+                .casefold().startswith(cn.casefold()):
+            ctx = f"{cn} · {ctx}" if ctx else cn
+        line = _cand_line(n, dict(it, text=lab, ctx=ctx), lab_max=LABEL_MAX)
         if it.get("ed"):
             line += " — input field"
         if it.get("vp") is False:
@@ -5085,7 +5157,8 @@ class TaskAgent:
         """Товар кнопки «В корзину» (C2): название из начала блока-карточки/
         окна товара (ctx) без подписи самой кнопки и цен, иначе путь адреса,
         иначе подпись. «Пепперони 30 см, традиционное тесто …» →
-        «Пепперони»."""
+        «Пепперони». Ключ — и название товара в вопросе о нём человеку
+        (_item_questions)."""
         ctx = " ".join(str(item.get("ctx") or "").split())
         lab = " ".join(str(item.get("text") or "").split())
         if lab:
@@ -5093,7 +5166,21 @@ class TaskAgent:
         # Название — начало блока до размера/веса/запятой: «Пепперони 30 см,
         # традиционное тесто» → «Пепперони» (опции — не другой товар)
         name = re.split(r"\d|,|\s[·—–|]\s", _PRICE_RE.sub(" ", ctx), maxsplit=1)[0]
-        name = " ".join(name.split()).strip(" ,.;·—-")
+        # Без кнопки закрытия окна — она в окне первая: стенд 20.10 — «Перед
+        # тем как положить «× Пепперони» в корзину»; глифы («×», «✕») и
+        # слово «Закрыть» у кнопки с текстом
+        name = " ".join(_GLYPH_TOKEN_RE.sub(" ", name).split()).strip(" ,.;·—-")
+        name = re.sub(r"^(?:закрыть|close)\s+", "", name, flags=re.IGNORECASE)
+        # Заголовок карточки/окна (cn) — название без описания: «Кола
+        # Газированный напиток» (стенд 20.10) → «Кола». Карточка каталога —
+        # по разметке (её заголовок), а блок бывает целым разделом («Напитки
+        # Кола … Кола Зеро …» — у всех напитков одно начало); окно — только
+        # если заголовок есть в начале блока: чужой заголовок окна
+        # («Добавить по вкусу») ключ не подменит
+        cn = _card_name(item)
+        if cn and (not item.get("md")
+                   or f" {cn.casefold()} " in f" {name.casefold()} "):
+            return cn[:48]
         if re.search(r"[^\W\d_]{3,}", name):
             return name[:48]
         try:
@@ -5726,8 +5813,8 @@ class TaskAgent:
         # нему — адрес и подписи снимка те же. Раздел открыт, раз клик
         # прошёл (_browse_open); элементы вокруг раздела — первыми
         near = [it for it in found or ()]
-        seen_labels = {_item_label(it) for it in near}
-        items = near + [it for it in items if _item_label(it) not in seen_labels]
+        seen_labels = {_show_label(it) for it in near}
+        items = near + [it for it in items if _show_label(it) not in seen_labels]
         # Раздел на той же странице (адрес не сменился): выше по странице —
         # все прошлые разделы. Видимое после прокрутки к разделу — первым;
         # список кодом — только из видимого. Живой 22:49: «Напитки» Додо
@@ -5739,16 +5826,35 @@ class TaskAgent:
             items.sort(key=lambda it: it.get("vp") is not True)
 
         def _products(its) -> List[str]:
-            # Позиции — подписи с ценой и названием; не корзина, не акции
-            labs = [" ".join(_item_label(it).split())[:LABEL_MAX] for it in its
-                    if not it.get("ed") and _item_label(it).strip()]
+            # Позиции — подписи с ценой и названием; не корзина, не акции.
+            # Название — в подписи или из блока карточки (_show_label):
+            # стенд 20.10 — человеку ушло «- от 459 ₽ Выбрать» ×10 («Выбрать»
+            # сходило за название), а название пиццы — некликабельный
+            # заголовок карточки. Названия нет и там — не строка товара
+            rows = []  # (подпись показа, своя ли, ключ карточки)
+            for it in its:
+                if it.get("ed") or not _item_label(it).strip():
+                    continue
+                x = _show_label(it)
+                own = x == " ".join(_item_label(it).split())[:LABEL_MAX]
+                rows.append((x, own, (str(it.get("cn") or "").casefold(), " ".join(
+                    str(it.get("ctx") or "").split()))))
+            # Одна карточка — одна строка: «79 ₽ Выбрать» воды при её же
+            # подписи с названием «Вода негазированная 0,5 л 79 ₽ Выбрать»
+            # (стенд 20.10) — не вторая строка «Вода негазированная — 79 ₽»
+            named = [(k, x) for x, own, k in rows
+                     if own and k[0] and _same_item(k[0], x)]
+            labs = [x for x, own, k in rows if own or not any(
+                k == k2 and _price_nums(x) <= _price_nums(y)
+                for k2, y in named)]
             return list(dict.fromkeys(
-                x for x in labs if _PRICE_RE.search(x)
-                and re.search(r"[^\W\d_]{3,}", _PRICE_RE.sub(" ", x))
+                x for x in labs if _PRICE_RE.search(x) and _has_name(x)
                 and not _CART_WORD_RE.search(x)
                 and not _ADD_TO_CART_RE.search(x)
                 and not _NOT_PRODUCT_RE.search(x)))
-        labels = [" ".join(_item_label(it).split())[:LABEL_MAX] for it in items
+        # Подписи для модели — те же, с названиями карточек: и её обзор
+        # сверяется с ними (_ungrounded_options по словам labels)
+        labels = [_show_label(it) for it in items
                   if not it.get("ed") and _item_label(it).strip()]
         # Раздел по разметке — точнее всего: только его позиции (видимость и
         # порядок страницы уже не важны)
@@ -5756,8 +5862,8 @@ class TaskAgent:
         by_markup = len(products) >= 2
         if by_markup:
             labels, vp_known = products, False
-        onscreen = {" ".join(_item_label(it).split())[:LABEL_MAX]
-                    for it in items if it.get("vp") is True} if vp_known else set()
+        onscreen = {_show_label(it) for it in items
+                    if it.get("vp") is True} if vp_known else set()
         # Позиции у самого раздела — точнее, чем вся лента меню
         if not by_markup:
             products = _products(near)
@@ -6218,7 +6324,11 @@ class TaskAgent:
                 and not run.get("kinds") \
                 or not _BUY_GOAL_RE.search(run.get("goal") or ""):
             return False
+        # Подпись-цена без названия — с названием карточки («Пепперони — от
+        # 459 ₽»): «пепперони» человека — названный товар, а не «Выбрать»
         lab = " ".join(_item_label(item).split())
+        if not _has_name(lab):
+            lab = _show_label(item)
         if item.get("md") or item.get("ed") or item.get("on") in (0, 1) \
                 or self._is_cart_add_item(item) or not _PRICE_RE.search(lab) \
                 or _CART_WORD_RE.search(lab) or _NOT_PRODUCT_RE.search(lab) \

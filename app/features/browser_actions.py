@@ -4670,6 +4670,29 @@ def _link_key(href: str) -> Optional[str]:
         return href.lower()
 
 
+# Фрагмент-«пустышка» у JS-кнопок (href="#", "#!", "#/"): не якорь раздела
+_PLACEHOLDER_FRAG_RE = re.compile(r"!?/?")
+
+
+def _snap_link_key(href: str, page_key: Optional[str]) -> Optional[str]:
+    """Ключ ссылки для дедупа снапшота: _link_key, но якорь ЭТОЙ ЖЕ страницы
+    с непустым фрагментом — своя цель. Стенд 20.10: ссылки разделов
+    одностраничного меню (/#pizza, /#combo…) _link_key сводил к одному «/»,
+    дедуп сливал их между собой и с логотипом — подписей разделов в снимке
+    не оставалось, и разделы по разметке давали 0. Пустышка («#», «#!» у
+    JS-кнопок) и ссылка на другую страницу — как раньше (_link_key):
+    заголовок карточки и «#отзывы» той же карточки — одна цель. page_key —
+    _link_key адреса страницы (None — адрес неизвестен, всё как в
+    _link_key)."""
+    lk = _link_key(href)
+    if lk is None or page_key is None or lk != page_key:
+        return lk
+    frag = str(href or "").partition("#")[2].strip()
+    if _PLACEHOLDER_FRAG_RE.fullmatch(frag):
+        return lk
+    return f"{lk}#{frag.lower()}"
+
+
 def _card_text_key(it: dict) -> Optional[str]:
     """Ключ текста для дедупа: нормализованная подпись от 12 символов
     (короткие «Войти»/«OK» — слишком общие, их не дедупим)."""
@@ -4784,7 +4807,7 @@ def _snap_label_quality(it: dict) -> Tuple[int, int, float]:
             float(it.get("w") or 0) * float(it.get("h") or 0))
 
 
-def _dedup_snapshot_items(items: List[dict]) -> List[dict]:
+def _dedup_snapshot_items(items: List[dict], page_url: str = "") -> List[dict]:
     """Схлопывание дублей одной карточки в текстовом снапшоте: на странице
     с лентой карточек (например видеохостинга) одна карточка часто даёт
     несколько строк списка для LLM — ссылка-превью с бейджем длительности,
@@ -4793,7 +4816,9 @@ def _dedup_snapshot_items(items: List[dict]) -> List[dict]:
     дубли href в другом конце страницы (пагинация сверху и снизу) не
     трогаем.
     1) ссылки с одинаковым ключом href — остаётся одна, с более
-       информативной подписью (_snap_label_quality);
+       информативной подписью (_snap_label_quality); якоря этой же
+       страницы (page_url) с разными фрагментами — разные цели
+       (_snap_link_key: разделы меню «/#pizza», «/#combo» и логотип «/»);
     2) фрагмент (_snap_frag: span/div/li/p без href и интерактивной
        роли) с тем же текстом (от 3 символов, сравнение — общим _texts_dup:
        равенство или префикс после обрезанного «…»), что у рядом стоящего
@@ -4802,7 +4827,8 @@ def _dedup_snapshot_items(items: List[dict]) -> List[dict]:
        href — разные цели, не дедупим.
     Оба правила проверяются на каждую пару независимо, иначе совпадение по
     одному из них при далёких rect'ах помешало бы проверить другое."""
-    lks = [_link_key(it.get("href")) for it in items]
+    page_key = _link_key(page_url) if page_url else None
+    lks = [_snap_link_key(it.get("href"), page_key) for it in items]
     labs = [" ".join(_snap_label(it).lower().split()) for it in items]
     frags = [_snap_frag(it) for it in items]
     kept: List[int] = []
@@ -5060,13 +5086,76 @@ def _mark_find_js(idx: int, var: str = "el") -> str:
             + var + "=vpcE;break;}}")
 
 
+# Название карточки товара для элемента снимка (поле cn): подпись-цена без
+# названия («от 459 ₽ Выбрать») — товар по ней не назвать, а название пиццы
+# на сайте не кликабельно (стенд 20.10: заголовок h3 карточки, в снимок не
+# попадает; так и на настоящих сайтах). ctx — сплошной текст блока
+# «Пепперони Пикантная пепперони, моцарелла…», где кончается название, по
+# нему не понять. Карточка — ближайший предок-повтор (у родителя есть ровня
+# того же тега и класса: карточки сетки каталога; li/article/tr — и без
+# класса); выше неё и выше предка, где есть ещё такой же элемент, как этот
+# (соседняя карточка, «−» рядом с «+» в корзине), не идём — иначе название
+# раздела («Пицца»: блоки разделов — тоже ровня) или подзаголовок шторки
+# («Добавить к заказу?») сошли бы за название товара. Название — старший
+# заголовок карточки (его собственный текст, без бейджа-потомка «Новинка»),
+# иначе подпись картинки (alt), если это строка текста карточки. Окно
+# товара (vpcMd) — старший заголовок окна («В корзину · 599 ₽» →
+# «Пепперони»). Нет — пусто: строкой товара такую подпись не считаем.
+# Только чтение; vpcMd — из того же снимка
+_CARD_NAME_FN_JS = (
+    "function vpcCn(e){try{"
+    "var nz=function(s){return (s||'').replace(/\\s+/g,' ').trim();};"
+    "var cls=function(x){return typeof x.className==='string'?x.className:'';};"
+    "var hx=function(h){var own='',all=[];"
+    "for(var c=h.firstChild;c;c=c.nextSibling){"
+    "if(c.nodeType===3){own+=c.nodeValue;all.push(c.nodeValue);}"
+    "else if(c.nodeType===1&&getComputedStyle(c).display!=='none')"
+    "all.push(c.innerText||'');}"
+    "own=nz(own);return (/\\p{L}{3}/u.test(own)?own:nz(all.join(' ')))"
+    ".slice(0,80);};"
+    "var top=function(b){var hs=b.querySelectorAll("
+    "'h1,h2,h3,h4,h5,h6,[role=heading]'),bh=null,bl=9;"
+    "for(var k=0;k<hs.length;k++){var h=hs[k];"
+    "if(h.contains(e)||e.contains(h))continue;"
+    "var lv=/^H[1-6]$/.test(h.tagName)?+h.tagName.charAt(1):"
+    "(+h.getAttribute('aria-level')||2);"
+    "if(lv<bl){bh=h;bl=lv;}}return bh?hx(bh):'';};"
+    # Сотни элементов того же тега — давно выше карточки (и перебор на
+    # тяжёлой странице дорог); ровню ищем у соседей (до трёх с каждой
+    # стороны: карточки сетки идут подряд, между ними бывает баннер)
+    "var ec=cls(e),c=e,d=0,q,s;"
+    "while(c&&c!==document.body&&c.parentElement&&d<8){"
+    "if(c!==e){var lk=c.getElementsByTagName(e.tagName),many=lk.length>300;"
+    "for(var j=0;j<lk.length&&!many;j++){if(lk[j]!==e&&!e.contains(lk[j])"
+    "&&cls(lk[j])===ec)many=true;}if(many)return '';}"
+    "var cl=cls(c);"
+    "if(cl||/^(LI|ARTICLE|TR)$/.test(c.tagName)){var rep=false;"
+    "for(s=c.previousElementSibling,q=0;s&&q<3&&!rep;"
+    "s=s.previousElementSibling,q++)rep=s.tagName===c.tagName&&cls(s)===cl;"
+    "for(s=c.nextElementSibling,q=0;s&&q<3&&!rep;"
+    "s=s.nextElementSibling,q++)rep=s.tagName===c.tagName&&cls(s)===cl;"
+    "if(rep){var n=top(c);if(n)return n;"
+    "var ls=(c.innerText||'').split('\\n').map(nz),"
+    "im=c.querySelectorAll('img[alt]');"
+    "for(var k2=0;k2<im.length;k2++){var al=nz(im[k2].getAttribute('alt'));"
+    "if(al.length>=3&&ls.indexOf(al)>=0)return al.slice(0,80);}"
+    "return '';}}"
+    "c=c.parentElement;d++;}"
+    "if(vpcMd(e)){var p=e.parentElement;d=0;"
+    "while(p&&p!==document.body&&d<6){var n2=top(p);if(n2)return n2;"
+    "p=p.parentElement;d++;}}"
+    "return '';}catch(x){return '';}}"
+)
+
+
 # Однострочный JS (только одинарные кавычки — через AppleScript идёт как есть):
 # помечает видимые кликабельные элементы атрибутом data-vpc-idx (номера — от
 # __BASE__, блок сквозного пространства; бюджеты проходов тоже от базы) и возвращает
-# JSON {url, items:[{idx,tag,role,text,ctx,aria,title,tid,href,w,h,x,y,vp,ed,
-# md,dd,sf,ext,sc,cov,q,sn}]}: vp — во вьюпорте, md — в модалке, dd — в
-# открытом списке, sf — виджет выбора, ext — внешняя ссылка, sc — активный
-# слой при найденном бэкдропе, cov — перекрыт чужим слоем (см. vpcCov).
+# JSON {url, items:[{idx,tag,role,text,ctx,cn,aria,title,tid,href,w,h,x,y,vp,
+# ed,md,dd,sf,ext,sc,cov,q,sn}]}: cn — название карточки товара
+# (_CARD_NAME_FN_JS), vp — во вьюпорте, md — в модалке, dd — в открытом
+# списке, sf — виджет выбора, ext — внешняя ссылка, sc — активный слой при
+# найденном бэкдропе, cov — перекрыт чужим слоем (см. vpcCov).
 # Помимо текста собираем aria-label/title/alt/placeholder и роль —
 # подписи есть даже у иконок без текста. Видимость — по реальному рендеру:
 # размер rect + getComputedStyle (display/visibility/opacity), vp — во вьюпорте.
@@ -5091,7 +5180,7 @@ _SNAPSHOT_JS = (
     # против нашего «var inner» убивает снапшот целиком (Identifier 'inner'
     # has already been declared)
     "(function(){"
-    + _VPC_ON_JS +
+    + _VPC_ON_JS + _CARD_NAME_FN_JS +
     "var sel='a[href],button,[role=button],input[type=button],input[type=submit],summary,[role=link],"
     "[role=tab],[role=option],[role=menuitem],[role=switch]';"
     # Поля ввода — тоже элементы снапшота (флаг ed): команда «введи X в поле Y»
@@ -5316,6 +5405,8 @@ _SNAPSHOT_JS = (
     # ссылок футера («состав» на странице товара). sc — активный слой поверх
     # затемнённого фона (текстовый выбор и vision-рамки режутся до него)
     "md:vpcMd(e),dd:vpcDd(e),sf:vpcSf(e),ext:vpcExt(e),sc:vpcSc(e),cov:vpcCov(e),"
+    # Название карточки товара (_CARD_NAME_FN_JS); у поля ввода не нужно
+    "cn:ed?'':vpcCn(e),"
     # Состояние переключателя (_VPC_ON_JS): 1/0/-1
     "on:vpcOn(e),"
     # Кнопка отправки формы (submit/image у формы), принадлежность к форме,
@@ -5712,6 +5803,9 @@ def _parse_snapshot(raw: str) -> Tuple[str, List[dict]]:
                 "role": str(it.get("role") or ""),
                 "text": str(it.get("text") or ""),
                 "ctx": str(it.get("ctx") or ""),
+                # Название карточки товара (_CARD_NAME_FN_JS): подпись-цена
+                # без названия («от 459 ₽ Выбрать») — товар из её блока
+                "cn": str(it.get("cn") or ""),
                 "aria": str(it.get("aria") or ""),
                 "title": str(it.get("title") or ""),
                 # data-testid — крюк безтекстовых иконок (бургер платформы)
@@ -5743,8 +5837,9 @@ def _parse_snapshot(raw: str) -> Tuple[str, List[dict]]:
     # Дедуп дублей одной карточки (несколько a[href] на одну ссылку;
     # фрагмент-спан, повторяющий соседний контрол): иначе список для LLM
     # забит фрагментами одной карточки. idx не перенумеровываем — метки
-    # data-vpc-idx на странице соответствуют оставшимся элементам
-    items = _dedup_snapshot_items(items)
+    # data-vpc-idx на странице соответствуют оставшимся элементам. Адрес —
+    # чтобы якоря разделов этой страницы не слились (_snap_link_key)
+    items = _dedup_snapshot_items(items, url)
     if not items:
         raise BrowserUnavailable("на странице нет кликабельных элементов")
     return url, items
@@ -5980,7 +6075,7 @@ def snapshot_elements(host_part: Optional[str] = None,
 # (_mark_base): потребителю не нужно знать, какой снапшот пометил элемент.
 _GOAL_SNAPSHOT_JS = (
     "(function(goal){"
-    + _VPC_NORM_JS + _VPC_ON_JS +
+    + _VPC_NORM_JS + _VPC_ON_JS + _CARD_NAME_FN_JS +
     "var sel='a[href],button,[role=button],input[type=button],input[type=submit],"
     "summary,[role=link],[role=tab],[role=option],[role=menuitem],[role=switch]';"
     "document.querySelectorAll('[data-vpc-gidx]').forEach(function(e){"
@@ -6063,6 +6158,8 @@ _GOAL_SNAPSHOT_JS = (
     ".replace(/\\s+/g,' ').trim().slice(0,80),"
     "href:e.href||'',w:Math.round(b.width),h:Math.round(b.height),ed:0,"
     "md:vpcMd(e),dd:vpcDd(e),sf:vpcSf(e),ext:vpcExt(e),cov:vpcCov(e),"
+    # Название карточки товара — как в _SNAPSHOT_JS (_CARD_NAME_FN_JS)
+    "cn:vpcCn(e),"
     "on:vpcOn(e),x:Math.round(b.left),"
     # Неактивность и отправка формы — как у общего снимка (агент по ним
     # решает «да»; найденное через find — те же правила)
@@ -6267,6 +6364,7 @@ def snapshot_for_goal(host_part: Optional[str], goal: str,
                 "role": str(it.get("role") or ""),
                 "text": str(it.get("text") or ""),
                 "ctx": str(it.get("ctx") or ""),
+                "cn": str(it.get("cn") or ""),
                 "aria": str(it.get("aria") or ""),
                 "title": str(it.get("title") or ""),
                 "tid": str(it.get("tid") or ""),
