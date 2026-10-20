@@ -345,9 +345,12 @@ def main():
             ("без лука", {}), ("да", {}), ("давай", {}),
             ("как есть, две штуки", {"items": [{"name": "Пепперони",
                                                "qty": 2}]}),
-            ("традиционное", {"items": [{"name": "Пепперони",
-                                         "options": ["тонкое тесто"]}]}),
-            ("как есть", {"address": "Ленина 5"})):
+            # Разбор модели вразрез с выбранным — ход модели. Голое
+            # «традиционное» и «как есть» теперь разбирает код (_gate_fast,
+            # test_task_brief_fast_more): к модели — ответы с припиской
+            ("оставь традиционное", {"items": [{"name": "Пепперони",
+                                                "options": ["тонкое тесто"]}]}),
+            ("любое", {"address": "Ленина 5"})):
         cc, ag, rt, q, r, n = gate(f"m-{ans}-{len(ch)}", ans, ch)
         check(f"«{ans}» (разбор {json.dumps(ch, ensure_ascii=False)[:40]}) — "
               "что-то меняет или сомнение: ход модели, кодом не нажато",
@@ -373,10 +376,14 @@ def main():
             {"idx": 3, "tag": "button", "role": "radio", "text": "1 л",
              "md": 1, "on": 0, "ctx": cctx}]
     cgoal = "закажи колу на pizzatest.test"
+    # «0,5»/«0.5» разбирает код (_gate_fast: 0,5 л) — клик кодом; разбор
+    # модели вразрез с ответом («0,5, как есть» → 1 л) — ход модели
     for ans, ch, by_code in (
             ("0,5", {"items": [{"name": "кола", "size": "0,5 л"}]}, True),
             ("1 л", {"items": [{"name": "кола", "size": "1 л"}]}, False),
-            ("0.5", {"items": [{"name": "кола", "size": "1 л"}]}, False)):
+            ("0.5", {"items": [{"name": "кола", "size": "0,5 л"}]}, True),
+            ("0,5, как есть", {"items": [{"name": "кола", "size": "1 л"}]},
+             False)):
         cc = real_cc({SHOP: [dict(x) for x in cola], ADDED: added}, url=SHOP,
                      clicks={1: ADDED}, base_dir=tmp)
         ag = agent(cc, SlotRouter({cgoal: {"site": "pizzatest.test", "items": [

@@ -1159,8 +1159,11 @@ _SEARCH_HOST_RE = re.compile(r"(?:^|\.)(?:google|yandex|ya|bing|duckduckgo|"
                              r"yahoo|ecosia|startpage)\.", re.IGNORECASE)
 # Ответ «оставь как выбрано» на вопрос о товаре
 _AS_IS_RE = re.compile(r"как\s+есть|как\s+(?:выбран|стоит)|остав(?:ь|ляй|ить|"
-                       r"ляем)|без\s+изменени|as\s+(?:it\s+)?is|as\s+selected|"
-                       r"keep\s+(?:it|as)|no\s+changes?", re.IGNORECASE)
+                       r"ляем)|без\s+изменени|так\s+и\s+клад|клад(?:и|ите)\s+"
+                       r"так|пусть\s+(?:будет\s+)?так|(?:ничего\s+)?не\s+"
+                       r"меняй|as\s+(?:it\s+)?is|as\s+selected|keep\s+(?:it|"
+                       r"as)|leave\s+it|don'?t\s+change|no\s+changes?",
+                       re.IGNORECASE)
 # Цель «оформи как есть» — собранное не трогать, выбор из каталога не нужен
 # (_AS_IS_RE для цели широк: «доставь», «поставь» ⊃ «оставь»)
 _AS_IS_GOAL_RE = re.compile(r"как\s+есть|(?<![^\W\d_])as\s+(?:it\s+)?is"
@@ -1398,6 +1401,94 @@ def _price_nums(text) -> set:
     # Числа подписи: «1 208 ₽» → {"1208"} (как в _section_text_ok)
     return {x.replace(" ", "").replace("\u00a0", "")
             for x in re.findall(r"\d[\d \u00a0]*\d|\d", str(text or ""))}
+
+
+def _offer_words(s) -> List[str]:
+    # Слова названия в подписи/варианте — без цены, её предлога и кнопки
+    # карточки («Кола — от 119 ₽ Выбрать» → кола, «from $1.19 Select» — ничего)
+    return _option_words(_PRICE_WORD_RE.sub(" ", _CARD_BUTTON_RE.sub(
+        " ", _PRICE_RE.sub(" ", str(s or "")))))
+
+
+def _offer_product(opt, products) -> Optional[str]:
+    """Товар страницы (products — подписи товаров снимка), который называет
+    вариант вопроса «название — цена»: то же название (_same_item) и числа
+    варианта (цена, объём) — среди чисел подписи. Подходят несколько («Кола»
+    ~ «Кола Зеро» при одной цене) — те, у кого слов названия столько же;
+    одно название и объём у всех оставшихся — одна карточка двумя подписями
+    («Кола от 119 ₽» и «Кола — от 119 ₽»). Иначе None: товар ли это, а не
+    вид («Мясные — …»), размер или адрес, код не уверен."""
+    name = re.split(r"\s+[—–-]\s+", str(opt or ""), maxsplit=1)[0]
+    words, nums = _offer_words(name), _price_nums(opt)
+    if not words or not nums:
+        return None
+    hits = [p for p in products if nums <= _price_nums(p)
+            and _same_item(" ".join(words), " ".join(_offer_words(p)))]
+    if len(hits) > 1:
+        hits = [p for p in hits
+                if len(set(_offer_words(p))) == len(set(words))]
+    same = {(frozenset(_offer_words(p)), frozenset(re.findall(
+        r"\d+(?:[.,]\d+)?", _PRICE_RE.sub(" ", p)))) for p in hits}
+    return hits[0] if hits and len(same) == 1 else None
+
+
+# Вопрос модели о замене/удалении: «Пепперони закончилась — что взять
+# вместо?», «Что убрать из корзины?» — выбор там и отказ от прежнего
+# (remove_items/exclude), его разбирает модель
+_SWAP_Q_RE = re.compile(r"вместо|замен|убра|удал|законч|в\s+наличии|"
+                        r"instead|replac|substitut|remove|delete|in\s+stock|"
+                        r"unavailable|sold\s+out", re.IGNORECASE)
+# Опция-мера в окне товара: «0,5 л», «500 мл», «300 г», «12″» — размер
+# позиции (к _SIZE_RE: «30 см», «Маленькая», «Large»), как и «S/M/XL»
+_MEASURE_RE = re.compile(
+    r"(?<![\d.,])\d+(?:[.,]\d+)?\s*(?:см|cm|мм|mm|л|l|литр\w*|мл|ml|г|гр|g|"
+    r"кг|kg|oz|″|\"|дюйм\w*|inch\w*)(?![^\W\d_])|^\s*(?:x{0,3}s|m|x{0,3}l|"
+    r"\d?xl)\s*$", re.IGNORECASE)
+
+
+def _choice_toks(s) -> List[str]:
+    # Слова и числа ответа/подписи: «0.5 л» → ["0,5", "л"] (как в
+    # _answer_keeps: десятичная точка — запятой)
+    return [t.replace(".", ",") for t in re.findall(
+        r"\d+(?:[.,]\d+)?|[^\W\d_]+", str(s or "").casefold())]
+
+
+def _tok_same(a: str, b: str) -> bool:
+    # Число — ровно, слово — с общим началом (_same_word)
+    return a == b if a[0].isdigit() or b[0].isdigit() else _same_word(a, b)
+
+
+def _opt_value(lab) -> Tuple[Optional[str], str]:
+    """Переключатель окна товара → (слот позиции, значение): мера/размер —
+    ("size", «0,5 л»), вариант словами — ("options", «Тонкое»); цена
+    добавки — мимо («Моцарелла 79 ₽» → «Моцарелла»). Прочие числа («6
+    шт», «2 соуса») — (None, …): что это, решает модель."""
+    v = " ".join(_ADDON_PRICE_RE.sub(" ", str(lab or "")).split()).strip(
+        " ,.;:·•—–-+")
+    if _SIZE_RE.search(v) or _MEASURE_RE.search(v):
+        return "size", v[:40]
+    if re.search(r"\d", v) or not re.search(r"[^\W\d_]{3,}", v):
+        return None, v
+    return "options", v[:40]
+
+
+def _opt_mentioned(lab, q) -> bool:
+    """Переключатель назван в вопросе о товаре: все его числа есть в
+    вопросе («25 см» — в «25, 30 или 35 см?»), без чисел — все слова
+    (служебные «тесто», «размер» — мимо)."""
+    toks = [t for t in _choice_toks(_ADDON_PRICE_RE.sub(" ", str(lab or "")))
+            if t not in _KEEP_WORDS]
+    qt = _choice_toks(q)
+    need = [t for t in toks if t[0].isdigit()] or toks
+    return bool(need) and all(any(_tok_same(t, v) for v in qt) for t in need)
+
+
+def _same_size(a, b) -> bool:
+    # Один размер: «30 см» ~ «Средняя 30 см» (числа), «большая» ~ «Большая
+    # 35 см» (слова, когда чисел нет у одного)
+    na = {t for t in _choice_toks(a) if t[0].isdigit()}
+    nb = {t for t in _choice_toks(b) if t[0].isdigit()}
+    return na == nb if na and nb else _same_item(a, b)
 
 
 def _first_json(resp) -> Optional[dict]:
@@ -2469,15 +2560,18 @@ class TaskAgent:
     def _brief_fast(self, run: dict, aw: dict, answer, names=()
                     ) -> Optional[Tuple[str, dict]]:
         """Разбор ответа без модели: вопрос сформировал код (aw["pick"],
-        site_offer), а ответ — голый точный выбор из предложенного (номер,
+        site_offer) или вопрос модели шагов с вариантами-товарами страницы
+        (_ask_pick), а ответ — голый точный выбор из предложенного (номер,
         «да»/«нет», название варианта целиком). Изменение брифа тогда
         однозначно: сайт варианта, позиция из списка раздела, «ничего» (раздел,
-        «больше ничего»). → (вид вопроса для лога, изменения — как вернула бы
-        модель) или None — разбор модели: сложный ответ («пепперони, но 30
-        см», «да, но большую»), неточный выбор, свободный текст, вопрос
-        модели (что в её вариантах — позиция, размер или адрес, код не знает).
-        Значения берутся только из вариантов вопроса; скрытое (_hidden) в
-        них — к модели: она увидит {{secretN}}, как раньше."""
+        «больше ничего»), «как есть» или вариант окна на вопросы о товаре
+        перед «В корзину» (_gate_fast). → (вид вопроса для лога, изменения —
+        как вернула бы модель) или None — разбор модели: сложный ответ
+        («пепперони, но 30 см», «да, но большую»), неточный выбор, свободный
+        текст, вопрос модели без пометки (что в её вариантах — позиция,
+        размер или адрес, код не знает). Значения берутся только из вариантов
+        вопроса; скрытое (_hidden) в них — к модели: она увидит {{secretN}},
+        как раньше."""
         q = str(aw.get("question") or "")
         s = self._command_text(answer, names).strip(" .!…")
         if aw.get("kind") != "ask" or not q or not s or "?" in s:
@@ -2502,6 +2596,8 @@ class TaskAgent:
                               and _words_only(s, _MORE_NO_WORDS)):
                 return "что-нибудь ещё", {}
             return None
+        if pick == "gate":
+            return self._gate_fast(run, aw, s)
         opts = _option_texts(q)
         if pick == "site":
             # «На каком сайте?» с вариантами из выдачи: выбранный сайт тем же
@@ -2536,10 +2632,12 @@ class TaskAgent:
             return ("выбор раздела", {}) if opt in secs else None
         if pick != "item":
             return None
-        # Позиция из показа раздела: вариант — товар страницы (подпись с
-        # ценой). Список кодом — подписи как есть; текст модели — каждый
-        # вариант «название — цена» ровно одного товара страницы, иначе это
-        # обзор видов («Мясные: …») или чужое — разбор модели
+        # Позиция из показа раздела или из вопроса модели шагов (offer):
+        # вариант — товар страницы (подпись с ценой). Список кодом — подписи
+        # как есть; текст модели — каждый вариант «название — цена» — один
+        # товар страницы (_offer_product), иначе это обзор видов («Мясные:
+        # …») или чужое — разбор модели. Позиция — название варианта без
+        # цифр («Морс 0,5 л» — позиция или размер? — модели)
         products = [" ".join(str(x).split()) for x in aw.get("items") or ()]
         name = _option_item(opt)
         if not name:
@@ -2547,15 +2645,8 @@ class TaskAgent:
         if aw.get("listed"):
             if opt not in products:
                 return None
-        else:
-            def _grounded(o) -> bool:
-                nm, nums = _option_item(o), _price_nums(o)
-                return bool(nm and nums) and sum(
-                    1 for p in products
-                    if _same_item(nm, _option_item(p) or "")
-                    and nums <= _price_nums(p)) == 1
-            if not all(_grounded(o) for o in opts):
-                return None
+        elif not all(_offer_product(o, products) for o in opts):
+            return None
         brief = run.get("brief") or {}
         if any(_same_item(name, it["name"]) for it in brief.get("items") or ()):
             # Уже в брифе: ещё одна такая же (qty) или та же — решит модель
@@ -2565,7 +2656,8 @@ class TaskAgent:
             return None  # «Пицца» — вид, не позиция (как в _update_brief)
         if self._fast_hidden(run, name):
             return None
-        return "выбор позиции", {"items": [{"name": name}]}
+        return ("выбор позиции" + (" (вопрос модели)" if aw.get("offer")
+                                   else ""), {"items": [{"name": name}]})
 
     def _fast_hidden(self, run: dict, value: str) -> bool:
         # Значение из варианта несёт скрытое ({{secretN}}): модели оно ушло
@@ -2574,6 +2666,129 @@ class TaskAgent:
         return bool(_SECRET_SLOT_RE.search(v)) or any(
             h and str(h).casefold() in v
             for h in self._hidden(run, run.get("chat_id")))
+
+    def _ask_pick(self, run: dict, q, obs: dict, more: bool = False) -> dict:
+        """Пометка вопроса модели шагов с вариантами строками «- …» для
+        разбора ответа без модели (_brief_fast): задача — покупка, каждый
+        вариант — товар страницы (_offer_product: название и числа подписи
+        снимка) → выбор позиции; все варианты — разделы магазина
+        (_browse_sections) → выбор раздела, бриф как был. Иначе {} — разбор
+        модели: в вариантах адрес, время, способ получения, размер, магазин,
+        вид — что это для брифа, код не знает. Вопрос с отрицанием или о
+        замене («вместо …», «что убрать?», «нет в наличии») — модели: там
+        выбор и отказ от прежнего; открыто окно товара — варианты бывают его
+        добавками, а не товарами. Стенд 21.10 (вызов 31): «2» на «Какой
+        напиток? - Кола — от 119 ₽ - Кола Зеро — …» разбирала модель."""
+        q = str(q or "")
+        opts = _option_texts(q)
+        if len(opts) < 2 or obs.get("private") or obs.get("error"):
+            return {}
+        secs = (run.get("browse") or {}).get("sections") or ()
+        if secs and not more and all(o in secs for o in opts):
+            # С «что-нибудь ещё?» раздел — вид просьбы (kinds) для
+            # _more_answer: его вынимает модель
+            return {"pick": "section"}
+        shown = obs.get("shown") or ()
+        head = _question_head(q)
+        if not _BUY_GOAL_RE.search(run.get("goal") or "") \
+                or _NEG_RE.search(head) or _SWAP_Q_RE.search(head) \
+                or any(it.get("md") for it in shown):
+            return {}
+        # Товары снимка — подписи с ценой и названием (у подписи-цены —
+        # название карточки, _show_label), не корзина, не акции, не
+        # переключатели
+        products = list(dict.fromkeys(
+            x for x in (_show_label(it) for it in shown
+                        if not it.get("ed") and it.get("on") not in (0, 1))
+            if _PRICE_RE.search(x) and _has_name(x)
+            and not _CART_WORD_RE.search(x) and not _ADD_TO_CART_RE.search(x)
+            and not _NOT_PRODUCT_RE.search(x)))
+        if not all(_offer_product(o, products) for o in opts):
+            return {}
+        return {"pick": "item", "offer": True, "items": products}
+
+    def _gate_pick(self, run: dict, item: dict, obs: dict) -> dict:
+        """Пометка вопросов о товаре перед «В корзину» для разбора ответа без
+        модели (_gate_fast): позиция брифа этого товара и переключатели окна
+        (подпись, выбран ли) — те же, что сверяет _answer_keeps. Позиции в
+        брифе нет или она не этот товар — {} (разбор модели)."""
+        bi = self._brief_item(run, item)
+        if not bi or not _same_item(bi["name"], self._product_key(item, obs)):
+            return {}
+        opts = [[" ".join(_item_label(it).split())[:LABEL_MAX], it["on"]]
+                for it in obs.get("shown") or ()
+                if it is not item and it.get("on") in (0, 1)
+                and not it.get("ed") and (it.get("md") or not item.get("md"))]
+        return {"pick": "gate", "gate": {"name": bi["name"], "opts": opts}}
+
+    def _gate_fast(self, run: dict, aw: dict, s: str
+                   ) -> Optional[Tuple[str, dict]]:
+        """Ответ на вопросы о товаре перед «В корзину» (_cart_add_gate) без
+        модели. «Как есть»/«оставь»/«так и клади»/«as is» — позиция как
+        выбрано: выбранные переключатели окна, о которых спрашивал вопрос
+        («Сейчас выбрано 0,5 л» — по снимку, не по тексту модели), — в
+        размер/опции позиции, если там пусто. Голый вариант окна, названный
+        в вопросе, ровно один («0,5» ↔ «0,5 л», «тонкое», «большую») — в
+        размер или опции. Стенд 21.10 (вызовы 13 и 35): «0,5» и «как есть»
+        разбирала модель. Остальное — None, разбор модели: многосоставное
+        («традиционное, без добавок», «тонкое и бекон»), отрицание, вопрос
+        («а есть без лука?» — отсечён в _brief_fast), количество, номер при
+        вариантах списком, вариант, которого в окне нет или подходят
+        несколько, вариант непонятного вида («6 шт»), опция при уже
+        названных опциях (может заменять одну из них), «как есть» при
+        названном человеком другом размере."""
+        g = aw.get("gate") or {}
+        q = str(aw.get("question") or "")
+        bi = next((it for it in (run.get("brief") or {}).get("items") or ()
+                   if it.get("name") == g.get("name")), None)
+        if bi is None:
+            return None
+        low = " ".join(str(s or "").split()).casefold()
+        opts = [(str(lab), on) for lab, on in g.get("opts") or ()]
+        ment = [(lab, on) for lab, on in opts if _opt_mentioned(lab, q)]
+        have = list(bi.get("options") or ())
+        rest, k = re.subn(r"(?<![^\W\d_])(?:" + _AS_IS_RE.pattern
+                          + r")[^\W\d_]*", " ", low, flags=re.IGNORECASE)
+        upd = {}
+        if k:
+            if _NEG_RE.search(rest) or any(
+                    t not in _KEEP_WORDS for t in re.findall(r"\w+", rest)):
+                return None  # «как есть, но тонкое», «оставь, 2 штуки»
+            sel = [_opt_value(lab) for lab, on in ment if on == 1]
+            sizes = [v for slot, v in sel if slot == "size"]
+            if len(sizes) == 1:
+                if not bi.get("size"):
+                    upd["size"] = sizes[0]
+                elif not _same_size(bi["size"], sizes[0]):
+                    return None  # человек называл другой размер
+            new = [v for slot, v in sel if slot == "options"]
+            if new and not have:
+                upd["options"] = new
+            what = "вопрос о товаре: как есть"
+        else:
+            want = [t for t in _choice_toks(low) if t not in _KEEP_WORDS]
+            if not want or _NEG_RE.search(low) \
+                    or (low.isdigit() and _option_texts(q)):
+                return None
+            hits = [(lab, on) for lab, on in opts if all(
+                any(_tok_same(t, v) for v in _choice_toks(
+                    _ADDON_PRICE_RE.sub(" ", lab))) for t in want)]
+            if len(hits) != 1 or hits[0] not in ment:
+                return None
+            slot, v = _opt_value(hits[0][0])
+            if slot == "size":
+                upd["size"] = v
+            elif slot != "options" or (have and not any(
+                    _same_item(v, o) for o in have)):
+                return None
+            elif not have:
+                upd["options"] = [v]
+            what = "вопрос о товаре: вариант"
+        vals = [upd.get("size")] + list(upd.get("options") or ())
+        if any(self._fast_hidden(run, v) for v in vals if v):
+            return None
+        return what, ({"items": [dict({"name": bi["name"]}, **upd)]}
+                      if upd else {})
 
     def _unhide(self, run: dict, text) -> str:
         # {{secretN}} → настоящее значение: только здесь, в момент ввода
@@ -4125,9 +4340,12 @@ class TaskAgent:
                 # (до новых добавлений), ответ — как на вопрос кода
                 run["more_asked"] = True
                 run["more_n"] = len(run.get("cart_adds") or ())
+            # Варианты — товары страницы или разделы: голый выбор из них
+            # разбирается без модели (_ask_pick → _brief_fast)
             run["awaiting"] = {"kind": "ask", "question": act["question"],
                                "private": bool(obs.get("private")),
-                               "more": more}
+                               "more": more,
+                               **self._ask_pick(run, q_, obs, more)}
             self._audit_note(run, chat_id, "task_ask", act["question"],
                              bool(obs.get("private")))
             return ("pause", act["question"])
@@ -4138,7 +4356,8 @@ class TaskAgent:
             if bounce:
                 return bounce
             run["awaiting"] = {"kind": "ask", "question": act["message"],
-                               "private": bool(obs.get("private"))}
+                               "private": bool(obs.get("private")),
+                               **self._ask_pick(run, act["message"], obs)}
             return ("pause", act["message"])
         if kind == "done":
             nf = self._not_finished(run, obs)
@@ -5695,8 +5914,11 @@ class TaskAgent:
         q = self._item_questions(run, item, obs)
         if q:
             private = bool(obs.get("private"))
+            # «Как есть» и голый вариант окна разбираются без модели
+            # (_gate_pick → _gate_fast)
             run["awaiting"] = {"kind": "ask", "question": q,
-                               "private": private}
+                               "private": private,
+                               **self._gate_pick(run, item, obs)}
             if act and not private:
                 # Отложенный клик: ответ, который выбор не меняет, — код
                 # нажмёт сам, без круга к модели (_replay_step)
