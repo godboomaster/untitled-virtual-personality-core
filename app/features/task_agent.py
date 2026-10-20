@@ -202,8 +202,9 @@ from app.features.computer_control import (  # noqa: E402
 # Отмена задачи — то же правило, что «стоп» бота до лока хода
 _CANCEL_RE = STOP_CMD_RE
 from app.features.cc_privacy import (  # noqa: E402
-    PrivateRouter, contains_value, is_masked, is_sensitive_label,
-    looks_secret, mask, mask_values, redact_inline, redact_typed, scrub_url)
+    PrivateRouter, contains_value, id_doc_values, is_masked,
+    is_sensitive_label, looks_secret, mask, mask_values, redact_inline,
+    redact_typed, scrub_url)
 # Клавиши, которые могут отправить форму/сообщение: Enter — submit, Tab —
 # уводит фокус на кнопку/следующее поле, Space — нажимает кнопку в фокусе.
 # Строже _RISK_SAFE_KEYS в needs_confirm: там Space безопасен (play/pause по
@@ -363,13 +364,37 @@ def _mask_numbers(text) -> str:
 
 
 def _redact(text: str, secrets=()) -> str:
-    # Память задач/прошлые задачи: известные секреты — маской, затем email и
-    # длинные числа (телефон, карта) — [hidden]
-    text = mask_values(" ".join(str(text or "").split()), secrets)
+    # Память задач/прошлые задачи: известные секреты и номера документов
+    # (паспорт, СНИЛС — «серия 4510 номер 123456» короче телефона) —
+    # маской, затем email и длинные числа (телефон, карта) — [hidden]
+    text = " ".join(str(text or "").split())
+    text = mask_values(text, list(secrets or ()) + id_doc_values(text))
     text = _EMAIL_RE.sub("[hidden]", text)
     return _DIGITS_RE.sub(
         lambda m: "[hidden]" if sum(c.isdigit() for c in m.group()) >= 7
         else m.group(), text)
+
+
+def _mem_no_docs(data: dict) -> None:
+    """Номера документов (паспорт, СНИЛС, ИНН) — маской во всех записях
+    памяти задач перед записью на диск: и в записях, легших до распознавания
+    документов, и в восстановленных из корзины очистки."""
+    def _clean(text, ctx=None):
+        if not isinstance(text, str):
+            return text
+        vals = id_doc_values(text, ctx)
+        return mask_values(text, vals) if vals else text
+    for recs in (data or {}).values():
+        for rec in recs if isinstance(recs, list) else ():
+            if not isinstance(rec, dict):
+                continue
+            for k in ("goal", "result"):
+                if k in rec:
+                    rec[k] = _clean(rec[k])
+            if isinstance(rec.get("qa"), list):
+                rec["qa"] = [[_clean(p[0]), _clean(p[1], p[0])]
+                             if isinstance(p, (list, tuple)) and len(p) == 2
+                             else p for p in rec["qa"]]
 
 
 # Вопрос агента просит пароль/код/логин — ответ на него секрет целиком
@@ -793,14 +818,15 @@ def _words_in(a, b) -> bool:
     return bool(wa) and all(any(_same_word(x, y) for y in wb) for x in wa)
 
 
-def _elem_hidden(hidden: dict) -> dict:
+def _elem_hidden(hidden: dict, docs=()) -> dict:
     # Подписи страницы — только секретоподобные значения (телефон, почта,
-    # карта, пароль формы пароля): «Маргарита»-ответ на вопрос о пароле не
-    # прячет пункт каталога, а показанные страницей телефон/логин человека
-    # облако не видит
+    # карта, пароль формы пароля, номера документов docs — серия «4510»
+    # короче телефона): «Маргарита»-ответ на вопрос о пароле не прячет пункт
+    # каталога, а показанные страницей телефон/логин человека облако не видит
+    docs = set(docs or ())
     return {v: ph for v, ph in hidden.items()
             if looks_secret(v) or _pw_shaped(v) or "@" in v
-            or sum(c.isdigit() for c in v) >= 5}
+            or sum(c.isdigit() for c in v) >= 5 or v in docs}
 
 
 # Кнопка добавления в корзину: «В корзину за 408 ₽», «Добавить в корзину»,
@@ -1584,6 +1610,12 @@ def _secret_answer(q, a) -> bool:
         return False
     if looks_secret(s):
         return True
+    docs = id_doc_values(s, q)
+    if docs and not re.search(r"[^\W\d_]{2,}", mask_values(s, docs)):
+        # Голый номер документа на вопрос о нём («4510» на «Серия?») —
+        # весь ответ. С подписями («серия 4510 номер 123456») — по кускам
+        # (_answer_secrets): модели нужно, что серия, а что номер
+        return True
     if _CANCEL_RE.match(s) or classify_confirmation(s) != "UNKNOWN" \
             or _is_option_choice(q, s):
         return False
@@ -1616,14 +1648,16 @@ def _answer_in_question(q, a) -> bool:
         any(_same_word(w, v) for v in qwords) for w in words)
 
 
-def _answer_secrets(a) -> List[str]:
-    """Секретоподобные куски обычного ответа — каждый отдельно: email и
-    номер из 7+ цифр с пробелами/скобками/дефисами (телефон, карта). Адрес
-    вокруг них модель видит: «Ленина 5, {{secret1}}»."""
+def _answer_secrets(a, q=None) -> List[str]:
+    """Секретоподобные куски обычного ответа — каждый отдельно: email,
+    номер из 7+ цифр с пробелами/скобками/дефисами (телефон, карта) и номера
+    документов по подписи в ответе или в вопросе q (паспорт, СНИЛС, ИНН).
+    Адрес вокруг них модель видит: «Ленина 5, {{secret1}}»."""
     s = str(a or "")
     out = [m.group(0) for m in _EMAIL_RE.finditer(s)]
     out += [m.group(0).strip() for m in _DIGITS_RE.finditer(s)
             if sum(c.isdigit() for c in m.group(0)) >= 7]
+    out += id_doc_values(s, q)
     return out
 
 
@@ -2013,13 +2047,28 @@ class TaskAgent:
         fn = getattr(self.cc, "_audit", None)
         if not callable(fn):
             return
+        # Скрытое от модели ({{secretN}}: паспорт, пароль из ответа) — маской
+        # и здесь: аудит лежит на диске
         value = (mask(text) if private
-                 else redact_inline(" ".join(str(text or "").split()), 160))
+                 else redact_inline(mask_values(
+                     " ".join(str(text or "").split()),
+                     list(run.get("hidden") or ())), 160))
         try:
             fn(str(chat_id), {"kind": kind, "value": value, "origin": "task",
                               "task_run": run.get("id")}, True, "")
         except Exception as e:
             logger.debug(f"[TaskAgent] аудит шага не записан: {e}")
+
+    @staticmethod
+    def _goal_safe(run: dict, limit: int, extra=()) -> str:
+        """Цель для лога и реплик (чат → STM): без паролей/токенов/контактов
+        и номеров документов (паспорт, СНИЛС). Маска — до обрезки: край
+        лимита иначе разрезал бы номер, и обрубок ушёл бы мимо маски."""
+        from app.features.computer_control import command_secret_values
+        goal = " ".join(str(run.get("goal") or "").split())
+        known = (command_secret_values(goal) + list(run.get("hidden") or ())
+                 + list(extra or ()))
+        return redact_inline(mask_values(goal, known))[:limit]
 
     def _group(self, chat_id) -> bool:
         # Групповой чат (хук бота): текст приватной страницы там видят все
@@ -2091,13 +2140,23 @@ class TaskAgent:
         {{secretN}}}, номера стабильны на весь прогон (run["hidden"])."""
         from app.features.computer_control import command_secret_values
         hidden = run.setdefault("hidden", {})
+        docs = run.setdefault("doc_values", set())
         vals = list(self._secrets(run, chat_id, whole=False))
+        # Слова человека вне вопросов агента («нет, впиши серию 4510 …» на
+        # «да/нет» — строкой истории шага): секреты по кускам, как в ответе
+        for said in run.get("said") or ():
+            said = " ".join(str(said or "").split())
+            docs.update(id_doc_values(said))
+            vals.extend(_answer_secrets(said))
         for q, a in run.get("qa") or ():
             a = " ".join(str(a or "").split())
             if _secret_answer(q, a):
                 vals.append(a)
             choice = _is_option_choice(q, a)
-            vals.extend(_answer_secrets(a))
+            # Паспорт/СНИЛС по подписи в ответе или в вопросе («Серия и
+            # номер?» → «4510 123456») — и по кускам, и в список документов
+            docs.update(id_doc_values(a, q))
+            vals.extend(_answer_secrets(a, q))
             for raw in re.findall(r"[^\s«»\"'“”„`,;]+", a):
                 tok = raw.strip(".!?…:()")
                 if len(tok) >= 3 and looks_secret(tok):
@@ -2105,11 +2164,15 @@ class TaskAgent:
                 elif not choice and _pw_shaped(raw):
                     # «ivan / Kotik2019!» — слово формы пароля с «!»
                     vals.append(raw.strip("«»\"'“”(),.;:…"))
-        # Секрет в цели («войди с паролем …»); домены цели (2gis.ru) — не
-        # секрет: модель должна видеть, какой сайт открыть
-        vals.extend(v for v in command_secret_values(run.get("goal") or "")
+        # Секрет в цели («войди с паролем …», «впиши паспорт 4510 123456»);
+        # домены цели (2gis.ru) — не секрет: модель должна видеть, какой
+        # сайт открыть
+        goal = run.get("goal") or ""
+        docs.update(id_doc_values(goal))
+        vals.extend(v for v in command_secret_values(goal)
                     if not re.fullmatch(r"(?:https?://)?[\w-]+(?:\.[\w-]+)*"
                                         r"\.[A-Za-zА-Яа-яёЁ]{2,6}(?:/\S*)?", v))
+        vals.extend(docs)
         for v in vals:
             v = str(v or "").strip()
             if len(v) >= 3 and not is_masked(v) and v not in hidden \
@@ -2130,6 +2193,7 @@ class TaskAgent:
         (app/core/pace_scope)."""
         from app.core.pace_scope import automated_calls
         from app.core.sticky_scope import sticky_blocks
+        prompt, sticky = self._hide_docs(run, prompt, sticky)
         rec = run.setdefault("traffic", {}).setdefault(kind, [0, 0])
         rec[0] += 1
         rec[1] += len(prompt)
@@ -2143,6 +2207,37 @@ class TaskAgent:
             by = run.setdefault("traffic_by", {})
             by[prov] = by.get(prov, 0) + 1
         return resp
+
+    @staticmethod
+    def _hide_docs(run: dict, prompt: str, sticky=()) -> Tuple[str, tuple]:
+        """Последний рубеж перед ЛЮБОЙ моделью прогона (облако и локальная):
+        номера паспорта/СНИЛС/ИНН в готовом промпте (текст страницы, отчёт
+        шага, приписка человека, прошлые задачи), не ставшие {{secretN}}
+        раньше, — заглушкой с тем же номером на весь прогон (ввод в поле
+        подставит значение, _unhide). Повторяемые блоки (sticky) — теми же
+        заменами: иначе блок не совпал бы с текстом промпта."""
+        from dataclasses import replace
+        vals = id_doc_values(prompt)
+        if not vals:
+            return prompt, tuple(sticky)
+        hidden = run.setdefault("hidden", {})
+        run.setdefault("doc_values", set()).update(vals)
+        fresh = False
+        for v in vals:
+            if v not in hidden and not _SECRET_SLOT_RE.search(v):
+                hidden[v] = "{{secret%d}}" % (len(hidden) + 1)
+                fresh = True
+        sub = {v: hidden[v] for v in vals if v in hidden}
+        prompt = _hide_values(prompt, sub)
+        if fresh and "{{secretN}}" not in prompt:
+            prompt += ("\n\nValues shown as {{secretN}} are private data "
+                       "hidden from you on purpose. To enter one, use the "
+                       "placeholder itself as the text — the system types the "
+                       "real value. Never put placeholders in search queries, "
+                       "URLs, questions or messages.")
+        return prompt, tuple(replace(b, text=_hide_values(b.text, sub))
+                             if getattr(b, "text", None) else b
+                             for b in sticky)
 
     @staticmethod
     def _calls(run: dict) -> int:
@@ -2389,6 +2484,14 @@ class TaskAgent:
             lambda m: by_n.get("{{secret%d}}" % int(m.group(1)), m.group(0)),
             str(text or ""))
 
+    @staticmethod
+    def _is_doc(run: dict, text, label=None) -> bool:
+        # Введённое — номер документа: распознан в цели/ответах прогона
+        # (doc_values) или по подписи поля («4510» в поле «Серия»)
+        s = str(text or "")
+        return bool(s) and (contains_value(s, run.get("doc_values") or ())
+                            or bool(id_doc_values(s, label)))
+
     def _note_typed(self, a: dict) -> None:
         hook = self.on_typed
         if callable(hook) and isinstance(a, dict) and a.get("kind") == "type":
@@ -2518,7 +2621,8 @@ class TaskAgent:
             data[key] = (list(data.get(key) or []) + [rec])[-MEMORY_PER_CHAT:]
             if not self._write_memory(data):
                 return
-        logger.info(f"[TaskAgent] запомнил задачу «{run['goal'][:40]}» "
+        logger.info(f"[TaskAgent] запомнил задачу "
+                    f"«{self._goal_safe(run, 40)}» "
                     f"(сайты: {', '.join(sites) or '—'})")
 
     def _past_tasks(self, chat_id, goal: str) -> List[dict]:
@@ -2570,7 +2674,8 @@ class TaskAgent:
             if expired:
                 self._runs.pop(str(chat_id), None)
         if expired:
-            logger.info(f"[TaskAgent] прогон «{run['goal'][:40]}» снят по TTL")
+            logger.info(f"[TaskAgent] прогон «{self._goal_safe(run, 40)}» "
+                        "снят по TTL")
             self._remember(chat_id, run, "abandoned: the user did not reply")
             return False
         return run is not None
@@ -2603,13 +2708,15 @@ class TaskAgent:
                                "prev": prev, "ts": time.time(),
                                "user_id": run.get("turn_user")}
             run["touched"] = time.time()
-        goal = run["goal"][:80]
-        # Команда цитируется в вопросе (он уходит в чат и STM) — без
-        # паролей/токенов/контактов («задача: войди, пароль Kotik2019!»)
+        # Цель и команда цитируются в вопросе (он уходит в чат и STM) — без
+        # паролей/токенов/контактов и документов («задача: войди, пароль
+        # Kotik2019!», «впиши паспорт 4510 123456»)
         from app.features.computer_control import command_secret_values
+        secrets = self._secrets(run, chat_id)
+        goal = self._goal_safe(run, 80, secrets)
         cmd = redact_inline(mask_values(" ".join(str(text).split()),
                                         command_secret_values(str(text))
-                                        + self._secrets(run, chat_id)))[:80]
+                                        + secrets))[:80]
         return self._phrase(
             "task_switch",
             f"Сейчас идёт задача «{goal}». Бросить её и выполнить «{cmd}»? "
@@ -2667,12 +2774,9 @@ class TaskAgent:
             status = ("working" if run.get("busy") or not kind else
                       "paused" if kind == "continue" else
                       "ask" if kind == "ask" else "confirm")
-        # Цель цитируется человеку — без паролей/токенов/контактов, как в
-        # вопросе «бросить задачу?»
-        from app.features.computer_control import command_secret_values
-        goal = " ".join(str(run.get("goal") or "").split())
-        goal = redact_inline(mask_values(goal, command_secret_values(goal)
-                                         + self._secrets(run, chat_id)))[:120]
+        # Цель цитируется человеку — без паролей/токенов/контактов и
+        # документов, как в вопросе «бросить задачу?»
+        goal = self._goal_safe(run, 120, self._secrets(run, chat_id))
         return {"id": run.get("id"), "goal": goal, "status": status,
                 "steps": int(run.get("steps") or 0),
                 # Вызовов модели за всю задачу (шаги, бриф, вопросы, разделы)
@@ -2799,7 +2903,7 @@ class TaskAgent:
                 run["cancel"] = True
             else:
                 self._runs.pop(str(chat_id), None)
-        logger.info(f"[TaskAgent] прогон «{run['goal'][:40]}» отменён")
+        logger.info(f"[TaskAgent] прогон «{self._goal_safe(run, 40)}» отменён")
         if not busy:
             self._remember(chat_id, run, "cancelled by the user")
             self._keep_card(chat_id, run, "cancelled")
@@ -2829,8 +2933,8 @@ class TaskAgent:
             if removed is not None:
                 self._write_memory(data)
         if run is not None:
-            logger.info(f"[TaskAgent] прогон «{run['goal'][:40]}» снят "
-                        "очисткой диалога")
+            logger.info(f"[TaskAgent] прогон «{self._goal_safe(run, 40)}» "
+                        "снят очисткой диалога")
         return list(removed or [])
 
     def restore_memory(self, chat_id, records: List[dict]) -> None:
@@ -2852,6 +2956,7 @@ class TaskAgent:
         # друг другу)
         import os
         import tempfile
+        _mem_no_docs(data)
         tmp = None
         try:
             self._memory_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2924,7 +3029,8 @@ class TaskAgent:
         with self._lock:
             self._runs[str(chat_id)] = run
             self.__dict__.setdefault("_finished", {}).pop(str(chat_id), None)
-        logger.info(f"[TaskAgent] старт: «{goal[:60]}» (chat {chat_id})")
+        logger.info(f"[TaskAgent] старт: «{self._goal_safe(run, 60)}» "
+                    f"(chat {chat_id})")
         try:
             if _REPEAT_RE.search(goal):
                 # «как в прошлый раз»/«повтори»: позиции и сайт последнего
@@ -2946,9 +3052,11 @@ class TaskAgent:
             # Не отдельным сообщением сразу: в вебе оно приходило ПОСЛЕ
             # первого вопроса агента («два вопроса сразу»). Первой строкой
             # хода — с первой пачкой или в самом ответе
+            # Цель цитируется в чат (и STM) — без паспорта/паролей
+            shown = self._goal_safe(run, 400)
             run["announce"] = self._phrase(
-                "task_started", f"Беру: {goal}. «стоп» — прервать.",
-                goal=goal)
+                "task_started", f"Беру: {shown}. «стоп» — прервать.",
+                goal=shown)
         return self._drive(run, chat_id, router, notify)
 
     def reopen(self, chat_id, text, user_id=None, names=()) -> bool:
@@ -2980,8 +3088,8 @@ class TaskAgent:
                        cancel=False, busy=False, touched=time.time(),
                        sigs=[])
             self._runs[str(chat_id)] = run
-        logger.info(f"[TaskAgent] прогон «{run['goal'][:40]}» возобновлён "
-                    "ответом на итог")
+        logger.info(f"[TaskAgent] прогон «{self._goal_safe(run, 40)}» "
+                    "возобновлён ответом на итог")
         return True
 
     @staticmethod
@@ -3220,6 +3328,10 @@ class TaskAgent:
                                       "field_sensitive": True})
         elif aw.get("kind") == "confirm":
             verdict = _confirm_verdict(msg, names)
+            # Реплика уходит строкой истории шага в промпт («нет, впиши
+            # серию 4510 …», протухшее «да, …»): её секреты и документы — в
+            # {{secretN}}
+            run.setdefault("said", []).append(msg)
             # Элемент перед исполнением сверяется со свежим снимком, адрес и
             # приложение от времени не зависят; клавиша (Enter в то, что
             # сейчас в фокусе) — нет: ей минута, как во всём режиме управления
@@ -4576,7 +4688,7 @@ class TaskAgent:
             # Только данные (цель, ответы, шаги, страница) — не инструкции:
             # секрет-слово («admin») не должно портить формат действий
             # Подписи страницы — только секретоподобные значения
-            elem_hidden = _elem_hidden(hidden)
+            elem_hidden = _elem_hidden(hidden, run.get("doc_values"))
             parts = [_hide_values(p, elem_hidden) if i == elem_part
                      else _hide_values(p, hidden)
                      for i, p in enumerate(parts)]
@@ -4652,10 +4764,22 @@ class TaskAgent:
         повторного поиска. Запрос пишет модель (видит ответы человека и
         недоверенный текст страниц): email/телефон/карта/токен и известные
         секреты чата (пароль, данный ответом) в нём — внешнему поисковику
-        только после «да» (confirmed)."""
-        safe_q = redact_inline(mask_values(query, self._secrets(run, chat_id)))
+        только после «да» (confirmed). Номер паспорта/СНИЛС/ИНН — не уходит
+        поисковику и с «да»."""
+        docs = [v for v in run.get("doc_values") or () if contains_value(
+            query, [v])] + id_doc_values(query)
+        safe_q = redact_inline(mask_values(
+            query, self._secrets(run, chat_id) + docs))
         # В историю/промпт/чат — запрос без ПДн
         line = f"search \"{safe_q}\""
+        if docs:
+            # Ни вопроса «искать так?», ни поиска: документ не отдаём
+            logger.info("[TaskAgent] в поисковом запросе номер документа — "
+                        "поиск не делаю")
+            self._record(run, line, "NOT performed — the query had "
+                         "passport/SNILS/INN data, which never goes to a "
+                         "search engine; search without it")
+            return ("progress", None)
         if safe_q != query and not confirmed:
             logger.info("[TaskAgent] в поисковом запросе ПДн — спрашиваю")
             a = {"kind": _SEARCH_KIND, "query": query}
@@ -5631,7 +5755,8 @@ class TaskAgent:
                      + "\n".join(qa) + "\n")
         head += f"Next step: {step}.\n"
         prompt = (_hide_values(head, hidden)
-                  + _hide_values(page, _elem_hidden(hidden))
+                  + _hide_values(page, _elem_hidden(hidden,
+                                                    run.get("doc_values")))
                   + _hide_values(task + user_language_line(run.get("lang")),
                                  hidden))
         try:
@@ -6206,7 +6331,7 @@ class TaskAgent:
         # Название — пара слов («додо пицца»), не фраза ответа: длинное в
         # память задач (уходит в облачные промпты) не кладём
         if not key or len(key.split()) > 5 or not host or "." not in host \
-                or _site_hosts(name) \
+                or _site_hosts(name) or id_doc_values(name) \
                 or self._page_private(f"https://{host}/", host):
             return
         names = run.setdefault("site_names", {})
@@ -7138,8 +7263,15 @@ class TaskAgent:
             pass
         if not ok:
             return ("progress", None)
+        shown_a = a
+        if a.get("kind") == "type" and self._is_doc(run, a.get("text"),
+                                                    a.get("element")):
+            # Номер паспорта/СНИЛС в строке хода (чат, карточка задачи) —
+            # маской: значение было только в поле страницы
+            shown_a = dict(a, text=mask(a.get("text")))
         try:
-            done = self.cc.describe_done(a, lang=self._lang())
+            done = self.cc.describe_done(shown_a, lang=self._lang())
         except TypeError:
-            done = self.cc.describe_done(a)  # фейковый cc тестов без lang=
+            # фейковый cc тестов без lang=
+            done = self.cc.describe_done(shown_a)
         return ("progress", done[:1].upper() + done[1:] + ".")

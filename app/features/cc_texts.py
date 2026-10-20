@@ -58,15 +58,15 @@ _T = {
         "en": "Control mode doesn't work from a skin: the skin itself could "
               "have sent the command. Click \"Standard view\" above the skin "
               "and repeat the command there."},
-    # Секрет в команде, которую regex не разобрал: в облачный LLM-разбор
-    # такую фразу не отдаём
+    # Секрет в команде, которую regex не разобрал (пароль, код, номер
+    # паспорта/СНИЛС): в облачный LLM-разбор такую фразу не отдаём
     "secret_rephrase": {
-        "ru": "В команде есть пароль или код — такую фразу я не отдаю "
-              "модели на разбор. Скажи строго так: «введи <значение> в поле "
-              "<название поля>».",
-        "en": "Your command contains a password or code, so I won't send it "
-              "to the model for parsing. Say it exactly like this: \"type "
-              "<value> into field <field name>\"."},
+        "ru": "В команде есть пароль, код или номер документа — такую фразу "
+              "я не отдаю модели на разбор. Скажи строго так: «введи "
+              "<значение> в поле <название поля>».",
+        "en": "Your command contains a password, code or document number, so "
+              "I won't send it to the model for parsing. Say it exactly like "
+              "this: \"type <value> into field <field name>\"."},
     "task_busy": {"ru": "Ещё работаю над задачей — подожди или скажи «отмена».",
                   "en": "Still working on the task — wait or say \"cancel\"."},
     "stopped_by_user": {"ru": "остановлено по просьбе пользователя",
