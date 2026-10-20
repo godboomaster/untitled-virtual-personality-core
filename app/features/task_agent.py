@@ -1037,6 +1037,81 @@ def _brief_lines(brief: Optional[dict], local: bool = False) -> List[str]:
     return out
 
 
+# ── Разбор ответа без модели: выбор из того, что предложил код ──
+# Каждый ответ человека — вызов веб-чата (риск бана аккаунтов). Когда вопрос
+# сформировал код (сайт, разделы, список раздела, «что-нибудь ещё?»), а
+# ответ — голый выбор, изменение брифа код знает сам (_brief_fast)
+
+# Служебные слова ответа-выбора: «давай пиццы», «мне вторую», «на додо»
+_ANSWER_FILLER = _PICK_FILLER | frozenset({
+    "да", "ага", "ок", "ok", "yes", "вот", "этот", "эту", "эта", "это", "на",
+    "в", "во", "беру", "возьму", "выбираю", "хочется", "пожалуйста", "плиз",
+    "lets", "take", "want", "pick", "i", "ll"})
+# Голый отказ на «что-нибудь ещё?»: «нет», «нет, спасибо», «всё», «больше
+# ничего», «оформляй». «Нет, но убери колу» — уже просьба (разбор модели)
+_MORE_NO_WORDS = frozenset({
+    "нет", "неа", "не", "надо", "нужно", "ничего", "больше", "всё", "все",
+    "это", "хватит", "достаточно", "оформляй", "оформляем", "оформи",
+    "оформить", "спасибо", "спс", "пожалуйста", "ну", "давай", "no", "nope",
+    "nothing", "more", "else", "that", "thats", "s", "all", "it", "done",
+    "thanks", "thank", "you", "please"})
+# Голое «нет/другой сайт» на «заказываем здесь — на X?»
+_SITE_NO_WORDS = frozenset({
+    "нет", "неа", "не", "надо", "другой", "другом", "другое", "другую",
+    "сайт", "сайте", "здесь", "тут", "там", "на", "давай", "лучше", "спасибо",
+    "no", "nope", "another", "other", "site", "one", "elsewhere", "thanks"})
+_SITE_NO_RE = re.compile(r"друг(?:ой|ом)|не\s+(?:здесь|там|тут)|another|"
+                         r"elsewhere", re.IGNORECASE)
+# Предлог цены в подписи товара: «Пепперони от 459 ₽» → «Пепперони»
+_PRICE_TAIL_RE = re.compile(r"(?:\s+(?:от|до|за|всего|from|for|only))+\s*$",
+                            re.IGNORECASE)
+
+
+def _words_only(a, words) -> bool:
+    # Все слова ответа — из набора (голое «нет», «больше ничего»)
+    toks = re.findall(r"\w+", str(a or "").casefold())
+    return bool(toks) and all(t in words for t in toks)
+
+
+def _bare_choice(a, opt, extra=frozenset()) -> bool:
+    """Ответ — только выбор варианта opt, без своего: номер, или каждое
+    слово ответа есть в варианте (с общим началом, как _same_word) либо
+    служебное («давай», «мне»), числа — из варианта, отрицания нет.
+    «Пепперони, но 30 см и без лука» с названием варианта внутри — не голый
+    выбор: размер и «без лука» разбирает модель."""
+    s = " ".join(str(a or "").split()).casefold().strip(" .!…")
+    if s.isdigit():
+        return True
+    if not s or _NEG_RE.search(s):
+        return False
+    have = re.findall(r"\w+", str(opt or "").casefold())
+    return all(t in _ANSWER_FILLER or t in extra
+               or any(t == v if t.isdigit() else _same_word(t, v)
+                      for v in have)
+               for t in re.findall(r"\w+", s))
+
+
+def _option_item(opt) -> Optional[str]:
+    """Позиция из варианта-товара: название до « — цена», без цены и её
+    предлога. В названии остались цифры (размер, объём, «2 пиццы»), знак
+    валюты или перечисление — None: что тут позиция, а что её размер,
+    решает модель («Кола 0,5 л» — позиция или размер?)."""
+    name = re.split(r"\s+[—–-]\s+", str(opt or ""), maxsplit=1)[0]
+    name = _PRICE_RE.sub(" ", _ADDON_PRICE_RE.sub(" ", name))
+    name = _PRICE_TAIL_RE.sub("", " ".join(name.split()))
+    name = name.strip(" ,.;:·•*«»\"'")
+    if not re.search(r"[^\W\d_]{3,}", name) \
+            or re.search(r"[\d,;:()/+&₽$€£]", name):
+        return None
+    return name[:80]
+
+
+def _price_nums(text) -> set:
+    # Числа подписи: «1 208 ₽» → {"1208"} (как в _section_text_ok)
+    return {x.replace(" ", "").replace("\u00a0", "")
+            for x in re.findall(r"\d[\d \u00a0]*\d|\d", str(text or ""))}
+
+
 def _first_json(resp) -> Optional[dict]:
     # Первый JSON-объект ответа модели (рассуждение <think> — мимо)
     s = _THINK_RE.sub(" ", str(resp or ""))
@@ -1786,17 +1861,31 @@ class TaskAgent:
                     "сокращения повторов" + (f"; ответили: {by}" if by else ""))
 
     def _update_brief(self, run: dict, question, answer,
-                      private: bool = False) -> dict:
+                      private: bool = False, aw: Optional[dict] = None,
+                      names=()) -> dict:
         """Разбор ответа по слотам брифа — отдельный маленький вызов LLM:
         вопрос, ответ и бриф → JSON изменений слотов, которые код кладёт в
         бриф (_apply_brief). Секреты ответа — {{secretN}}; вопрос с
         приватной страницы — только локальной модели. Сбой — бриф как был.
         → изменения разбора ({} — нет): «kinds» (вид товара без позиции)
-        бриф не хранит, их берёт ответ на «что-нибудь ещё?»."""
+        бриф не хранит, их берёт ответ на «что-нибудь ещё?». aw — ожидание,
+        на которое ответ: вопрос кода и голый выбор разбираются без модели
+        (_brief_fast)."""
         router = self.slot_router
         if router is None or not str(answer or "").strip():
             return {}
         brief = run.setdefault("brief", _new_brief())
+        fast = self._brief_fast(run, aw, answer, names) if aw else None
+        if fast is not None:
+            what, ch = fast
+            changed = _apply_brief(brief, ch,
+                                   src="private" if private else "user")
+            # Одна строка: разбор без модели (в run["traffic"] его нет); в
+            # лог — вид вопроса и какие слоты изменились, без значений
+            logger.info(f"[TaskAgent] разбор ответа без модели ({what}): "
+                        + (", ".join(sorted(k for k, v in ch.items() if v))
+                           if changed else "бриф без изменений"))
+            return ch
         hidden = self._hidden(run, run.get("chat_id"))
         prompt = (
             "You keep the brief of the user's browser task: what the user has "
@@ -1867,6 +1956,115 @@ class TaskAgent:
                         + ", ".join(sorted(str(k) for k, v in ch.items()
                                            if v)))
         return ch
+
+    def _brief_fast(self, run: dict, aw: dict, answer, names=()
+                    ) -> Optional[Tuple[str, dict]]:
+        """Разбор ответа без модели: вопрос сформировал код (aw["pick"],
+        site_offer), а ответ — голый точный выбор из предложенного (номер,
+        «да»/«нет», название варианта целиком). Изменение брифа тогда
+        однозначно: сайт варианта, позиция из списка раздела, «ничего» (раздел,
+        «больше ничего»). → (вид вопроса для лога, изменения — как вернула бы
+        модель) или None — разбор модели: сложный ответ («пепперони, но 30
+        см», «да, но большую»), неточный выбор, свободный текст, вопрос
+        модели (что в её вариантах — позиция, размер или адрес, код не знает).
+        Значения берутся только из вариантов вопроса; скрытое (_hidden) в
+        них — к модели: она увидит {{secretN}}, как раньше."""
+        q = str(aw.get("question") or "")
+        s = self._command_text(answer, names).strip(" .!…")
+        if aw.get("kind") != "ask" or not q or not s or "?" in s:
+            return None
+        if aw.get("site_offer"):
+            # «Как в прошлый раз — на X?», «заказываем здесь?», «„Додо“ —
+            # это X?»: «да» — сайт X (ветка site_offer кладёт его же),
+            # «нет/другой сайт» — бриф как был (отказ — в site_no)
+            if _confirm_verdict(s, names) == "YES":
+                return "сайт: да", {"site": aw["site_offer"]}
+            if (_confirm_verdict(s, names) == "NO" or _SITE_NO_RE.search(s)) \
+                    and _words_only(s, _SITE_NO_WORDS):
+                return "сайт: нет", {}
+            return None
+        pick = aw.get("pick")
+        if pick == "more":
+            # «Что-нибудь ещё?» кода без приписок (чужое в корзине, не
+            # добавленное): «нет/всё» и голое «да» брифа не меняют —
+            # дальше _more_answer (корзина или снова разделы)
+            v = _confirm_verdict(s, names)
+            if v == "YES" or ((v == "NO" or _MORE_NO_RE.match(s))
+                              and _words_only(s, _MORE_NO_WORDS)):
+                return "что-нибудь ещё", {}
+            return None
+        opts = _option_texts(q)
+        if pick == "site":
+            # «На каком сайте?» с вариантами из выдачи: выбранный сайт тем же
+            # правилом, что откроет ветка «где?» (_site_pick: номер, адрес,
+            # отличительное слово названия) — ровно один
+            hosts = _site_pick(q, s)
+            if len(hosts) != 1 or _NEG_RE.search(s):
+                return None
+            host = hosts[0]
+            opt = next((o for o in opts if _host_in(host, _site_hosts(o))), "")
+            # Ответ — только название/адрес этого сайта: «додо пицца»,
+            # «dodopizza.ru», «давай додо»; «додо, но без пепперони» — модели
+            rest = _SITE_RE.sub(" ", s)
+            if not s.isdigit() and re.search(r"\w", rest) and not all(
+                    t in _ANSWER_FILLER or t in _NAME_GENERIC
+                    or any(_same_word(t, v) for v in re.findall(
+                        r"\w+", opt.casefold()))
+                    or _site_option_fits(t, opt)
+                    for t in re.findall(r"\w+", rest.casefold())):
+                return None
+            if self._fast_hidden(run, host):
+                return None
+            return "выбор сайта", {"site": host}
+        n, exact = _chosen_option(q, s)
+        if not n or not exact or not _bare_choice(s, opts[n - 1]):
+            return None
+        opt = opts[n - 1]
+        if pick == "section":
+            # Раздел каталога — не позиция и не слот: бриф как был, раздел
+            # откроет _browse_answer
+            secs = (run.get("browse") or {}).get("sections") or ()
+            return ("выбор раздела", {}) if opt in secs else None
+        if pick != "item":
+            return None
+        # Позиция из показа раздела: вариант — товар страницы (подпись с
+        # ценой). Список кодом — подписи как есть; текст модели — каждый
+        # вариант «название — цена» ровно одного товара страницы, иначе это
+        # обзор видов («Мясные: …») или чужое — разбор модели
+        products = [" ".join(str(x).split()) for x in aw.get("items") or ()]
+        name = _option_item(opt)
+        if not name:
+            return None
+        if aw.get("listed"):
+            if opt not in products:
+                return None
+        else:
+            def _grounded(o) -> bool:
+                nm, nums = _option_item(o), _price_nums(o)
+                return bool(nm and nums) and sum(
+                    1 for p in products
+                    if _same_item(nm, _option_item(p) or "")
+                    and nums <= _price_nums(p)) == 1
+            if not all(_grounded(o) for o in opts):
+                return None
+        brief = run.get("brief") or {}
+        if any(_same_item(name, it["name"]) for it in brief.get("items") or ()):
+            # Уже в брифе: ещё одна такая же (qty) или та же — решит модель
+            return None
+        ws = _option_words(name)
+        if all(any(_same_word(w, g) for g in _NAME_GENERIC) for w in ws):
+            return None  # «Пицца» — вид, не позиция (как в _update_brief)
+        if self._fast_hidden(run, name):
+            return None
+        return "выбор позиции", {"items": [{"name": name}]}
+
+    def _fast_hidden(self, run: dict, value: str) -> bool:
+        # Значение из варианта несёт скрытое ({{secretN}}): модели оно ушло
+        # бы заглушкой — такой разбор не наш
+        v = str(value or "").casefold()
+        return bool(_SECRET_SLOT_RE.search(v)) or any(
+            h and str(h).casefold() in v
+            for h in self._hidden(run, run.get("chat_id")))
 
     def _unhide(self, run: dict, text) -> str:
         # {{secretN}} → настоящее значение: только здесь, в момент ввода
@@ -2606,9 +2804,11 @@ class TaskAgent:
                 # её) — облачному промпту и памяти задач заглушкой
                 run.setdefault("qa_private", set()).add(len(run["qa"]) - 1)
             # Ответ — по слотам брифа («Додо, но не пепперони»: сайт тот же,
-            # пепперони — в исключения; ответ на два вопроса закрывает оба)
+            # пепперони — в исключения; ответ на два вопроса закрывает оба).
+            # Голый выбор на вопрос кода — без вызова модели (_brief_fast)
             ch = self._update_brief(run, aw["question"], msg,
-                                    private=bool(aw.get("private")))
+                                    private=bool(aw.get("private")), aw=aw,
+                                    names=names)
             if aw.get("browse"):
                 # Разделы магазина / показ раздела (_browse_step)
                 self._browse_answer(run, msg)
@@ -4694,8 +4894,11 @@ class TaskAgent:
         # облачный промпт заглушкой
         private = bool(obs.get("private")) or any(
             b.get("src") == "private" for b in brief_items)
+        # Без приписок (лежавшее до задачи, не добавленное) «нет/всё» и
+        # голое «да» брифа не меняют — разбор без модели (_brief_fast); с
+        # ними «нет» может значить и «это убрать» — разбор модели
         run["awaiting"] = {"kind": "ask", "question": q, "private": private,
-                           "more": True}
+                           "more": True, **({} if extra else {"pick": "more"})}
         self._audit_note(run, chat_id, "task_ask", q, private)
         return ("pause", q)
 
@@ -4946,14 +5149,17 @@ class TaskAgent:
             return self._browse_ask(run, chat_id, b, self._t(
                 "task_section_all" if b.get("section") else "task_page_all",
                 section=b.get("section") or "", items="\n".join(lines),
-                site=host))
+                site=host), {"pick": "item", "listed": True,
+                             "items": items[:SECTION_ALL_MAX]})
         return None
 
-    def _browse_ask(self, run: dict, chat_id, b: dict, q: str
-                    ) -> Tuple[str, str]:
+    def _browse_ask(self, run: dict, chat_id, b: dict, q: str,
+                    pick: Optional[dict] = None) -> Tuple[str, str]:
+        # pick — что в вариантах вопроса (разделы, товары страницы): голый
+        # выбор из них разбирается без модели (_brief_fast)
         b["last_q"] = q
         run["awaiting"] = {"kind": "ask", "question": q, "private": False,
-                           "browse": True}
+                           "browse": True, **(pick or {})}
         self._audit_note(run, chat_id, "task_ask", q)
         return ("pause", q)
 
@@ -5049,7 +5255,7 @@ class TaskAgent:
             q += self._t("task_sections_past", what=", ".join(
                 self._item_text(x) for x in past["brief"]["items"][:3]))
         b.update(stage="asked", sections=opts[:10], sections_q=q)
-        return self._browse_ask(run, chat_id, b, q)
+        return self._browse_ask(run, chat_id, b, q, {"pick": "section"})
 
     def _browse_answer(self, run: dict, msg: str) -> None:
         """Ответ на вопрос о разделах/показ раздела: товар назван — дальше
@@ -5246,6 +5452,9 @@ class TaskAgent:
             # докрутит/найдёт и спросит сама; вид остаётся в плане
             return self._browse_handoff(run, b, sec)
         seen = set(_option_words(" ".join(labels)))
+        # Варианты показа — товары страницы: голый выбор одного из них
+        # разбирается без модели (_brief_fast сверит вариант с товаром)
+        pick = {"pick": "item", "items": products}
         if not text or len(text) > 2500 or _ungrounded_options(text, seen) \
                 or not self._section_text_ok(text, products):
             if vp_known:
@@ -5263,7 +5472,9 @@ class TaskAgent:
             text = self._t("task_section_all" if sec else "task_page_all",
                            section=sec, items="\n".join(lines),
                            site=str(obs.get("host") or "").removeprefix("www."))
-        return self._browse_ask(run, chat_id, b, text)
+            pick = {"pick": "item", "listed": True,
+                    "items": products[:SECTION_LIST_MAX]}
+        return self._browse_ask(run, chat_id, b, text, pick)
 
     def _browse_handoff(self, run: dict, b: dict, sec: str
                         ) -> Tuple[str, None]:
@@ -5524,7 +5735,12 @@ class TaskAgent:
                     t = " ".join(str(r.get("title") or "").split())[:60]
                     opts.append(f"- {h}" + (f" — {t}" if t else ""))
             q = self._t("task_site_which", options="\n".join(opts[:6]))
-        run["awaiting"] = {"kind": "ask", "question": q, "private": False}
+        # Варианты — сайты из выдачи: голый выбор одного разбирается без
+        # модели (_brief_fast), не больше одного вопроса в тексте модели
+        heads = [ln for ln in q.splitlines()
+                 if "?" in ln and not _OPTION_LINE_RE.match(ln)]
+        run["awaiting"] = {"kind": "ask", "question": q, "private": False,
+                           **({"pick": "site"} if len(heads) == 1 else {})}
         self._audit_note(run, chat_id, "task_ask", q)
         return ("pause", q)
 

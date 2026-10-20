@@ -3985,8 +3985,10 @@ def main():
         agent.slot_router = BRouter("- Пиццы\n- Комбо", summary, slots=[
             {}, {"items": [{"name": "Пиццы"}]}])
         agent.start("br5", "закажи пиццу на pizza.test", router, user_id="A")
-        r = agent.feed("br5", "пиццы", router, user_id="A")
-        check("разделы: «пиццы» (разбор записал как позицию) — раздел; "
+        # «пиццу» — не название раздела дословно: разбор моделью (точное
+        # «пиццы» разбирается без неё и в позиции не попадает)
+        r = agent.feed("br5", "пиццу", router, user_id="A")
+        check("разделы: «пиццу» (разбор записал как позицию) — раздел; "
               "больше 10 позиций — коротко от модели",
               r.endswith(summary) and [d.get("idx") for d in cc.dispatched
                                        if d.get("kind") == "click"] == [1])
@@ -4439,12 +4441,14 @@ def main():
             url=H, clicks={1: PZ, 10: PP, 41: PZ2, 4: DR, 20: CW, 42: DR2,
                            7: DRW})
         agent = TaskAgent(cc, memory_path=mem_live.parent / "pl1.json")
+        # Разбор ответов моделью — цель, «добавь какой-нибудь напиток»,
+        # «колу»; «пиццы» (раздел), «пепперони» (товар из показа) и «нет»
+        # на «что-нибудь ещё?» — без модели (_brief_fast)
         agent.slot_router = PlanRouter(
             "- Пиццы\n- Комбо\n- Закуски\n- Напитки",
             ["- Пепперони — от 349 ₽\n- Сырная — от 279 ₽\nКакую?",
              "- Кола 0,5 л — от 135 ₽\n- Морс — от 99 ₽\nКакой напиток?"],
-            [{}, {}, {"items": [{"name": "Пепперони"}]}, {"kinds": ["напиток"]},
-             {"items": [{"name": "Кола 0,5 л"}]}, {}])
+            [{}, {"kinds": ["напиток"]}, {"items": [{"name": "Кола 0,5 л"}]}])
         router = ScriptedRouter([
             {"action": "click", "n": 1, "label": "Пепперони от 349 ₽"},
             {"action": "click", "n": 1, "label": "В корзину за 349 ₽"},
