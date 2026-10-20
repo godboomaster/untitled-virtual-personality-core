@@ -1150,8 +1150,11 @@ def main():
         check("облачный промпт: строка шага с заглушкой приватной страницы",
               "private page" in cloud and 'click "Профиль"' in cloud)
         mem = (LkCC.base_dir / "task_memory.json").read_text(encoding="utf-8")
-        check("память задач: итог прогона с приватной страницей — заглушкой",
-              "private page" in mem and "стоп" not in mem)
+        # Итог дал облачный шаг на /menu: облако кабинета не видело — итог
+        # в память как есть, данных кабинета в ней нет
+        check("память задач: итог облачного шага после кабинета — как есть, "
+              "без данных кабинета", "стоп" in mem
+              and not any(s in mem for s in _PRIV_LEAKS))
 
         # Локальная модель есть: отчёт по кабинету — не в task_memory.json
         _P.PrivateRouter.get_response = (

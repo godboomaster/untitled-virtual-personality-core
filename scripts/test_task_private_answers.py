@@ -219,8 +219,11 @@ def main():
               rec.get("qa") and rec["qa"][0][1] == ADDR
               and rec["qa"][0][0] == ta._PRIVATE_QUESTION
               and rec.get("qa_private") == [0], f"{rec}")
-        check("на диске: итог прогона с приватной страницей — заглушкой",
-              rec.get("result") == ta._PRIVATE_RESULT)
+        # Итог дал облачный шаг на /delivery (облако видело только
+        # заглушки) — в память как есть (scripts/test_task_past_block.py)
+        check("на диске: итог облачного шага на обычной странице — как есть, "
+              "без адреса", "стоп" in str(rec.get("result"))
+              and ADDR not in str(rec.get("result")), f"{rec.get('result')}")
 
         cc2 = ShopCC("https://pizza.test/delivery")
         r2 = ScriptedRouter([{"action": "fail", "message": "стоп"}])

@@ -146,6 +146,14 @@ SEARCH_SNIPPET_MAX = 160
 MEMORY_PER_CHAT = 30
 MEMORY_SHOWN = 3
 MEMORY_TEXT_MAX = 300
+# Прошлая задача в облачном промпте шага — коротко (_past_line short): блок
+# уходит в КАЖДЫЙ шаг прогона, а целиком (вопросы с вариантами и ценами,
+# итог) это ~1,5 тыс. симв. на запись (стенд 21.10). Итог — до
+# PAST_RESULT_SHORT, пар «вопрос — ответ» у записи без позиций заказа —
+# первые PAST_QA_SHORT, вопрос — до PAST_Q_SHORT
+PAST_RESULT_SHORT = 160
+PAST_QA_SHORT = 3
+PAST_Q_SHORT = 100
 # Слова-команды не делают задачи «одной темы» («закажи суши» ≠ «закажи
 # пиццу»): тема — по остальным словам цели. Основы — после stem()
 _GOAL_STOP_STEMS = frozenset({
@@ -590,6 +598,72 @@ def _rec_qa_private(rec: dict) -> set:
         if isinstance(pair, (list, tuple)) and pair \
                 and pair[0] == _PRIVATE_QUESTION:
             out.add(i)
+    return out
+
+
+def _past_items(rec: dict) -> str:
+    # Что заказали в прошлой задаче (бриф записи, _remember): «пепперони
+    # 30 см (традиционное), кола 0,5 л ×2»; записи из файла — без доверия
+    b = rec.get("brief") if isinstance(rec.get("brief"), dict) else {}
+    out = []
+    for it in b.get("items") if isinstance(b.get("items"), list) else ():
+        if not isinstance(it, dict) or not str(it.get("name") or "").strip():
+            continue
+        s = " ".join(str(it["name"]).split())
+        if it.get("size"):
+            s += f" {it['size']}"
+        opts = it.get("options") if isinstance(it.get("options"), list) else []
+        if any(opts):
+            s += " (" + ", ".join(str(o) for o in opts if o) + ")"
+        qty = it.get("qty")
+        if isinstance(qty, int) and not isinstance(qty, bool) and qty > 1:
+            s += f" ×{qty}"
+        out.append(s)
+    return ", ".join(out)
+
+
+def _past_short(rec: dict) -> str:
+    """Хвост короткой строки прошлой задачи для облака (_past_line short):
+    что заказали — позиции брифа записи вместо пар «вопрос — ответ» (бриф —
+    то, что они решили до оформления; ответы с оформления облаку и так
+    заглушкой); у записи без позиций (справка, форма, заказ без разбора) —
+    первые PAST_QA_SHORT пар без списков вариантов, приватные — заглушкой;
+    итог — до PAST_RESULT_SHORT, заглушка итога (_PRIVATE_RESULT) — не
+    нужна. Стенд 21.10: 1,4–1,6 тыс. симв. блока в каждом шаге."""
+    from app.features.computer_control import command_secret_values
+    out = ""
+    items = _past_items(rec)
+    b = rec.get("brief") if isinstance(rec.get("brief"), dict) else {}
+    site = b.get("site") if isinstance(b.get("site"), str) else ""
+    if items:
+        if len(items) > MEMORY_TEXT_MAX:
+            items = items[:MEMORY_TEXT_MAX].rstrip() + "…"
+        out += "; ordered: " + _redact(items, command_secret_values(items))
+        if site and site not in (rec.get("sites") or ()):
+            out += f" on {site}"
+    else:
+        qpriv = _rec_qa_private(rec)
+        pairs = [(i, p) for i, p in enumerate(rec.get("qa") or ())
+                 if isinstance(p, (list, tuple)) and len(p) >= 2]
+        for i, (q, a, *_x) in pairs[:PAST_QA_SHORT]:
+            if i in qpriv:
+                q, a = _PRIVATE_QUESTION, _PRIVATE_ANSWER
+            elif _secret_answer(q, a):
+                a = mask(a)
+            else:
+                a = _redact(a, command_secret_values(str(a or "")))
+            head = _question_head(q) if _option_texts(q) else " ".join(
+                str(q or "").split())
+            if len(head) > PAST_Q_SHORT:
+                head = head[:PAST_Q_SHORT].rstrip() + "…"
+            out += f"\n  - Q: {head}\n    A: {a}"
+        if len(pairs) > PAST_QA_SHORT:
+            out += f"\n  - (+{len(pairs) - PAST_QA_SHORT} more questions)"
+    res = " ".join(str(rec.get("result") or "").split())
+    if res and res != _PRIVATE_RESULT:
+        if len(res) > PAST_RESULT_SHORT:
+            res = res[:PAST_RESULT_SHORT].rstrip() + "…"
+        out += f"\n  Ended with: {res}"
     return out
 
 
@@ -1986,6 +2060,8 @@ _STEP_RULES_REF = ("- (The full list of rules is in my earlier message in "
 _STEP_PAGE_REF = ("Current page and its numbered elements: unchanged — "
                   "exactly as in my latest message in this chat that lists "
                   "them (use the same numbers n).")
+_STEP_PAST_REF = ("The user's earlier tasks on the same topic: unchanged — "
+                  "as listed in my earlier message in this chat.")
 # Сколько треда правила и страница остаются «свежими». Правила — по
 # символам треда после их полной отправки (отправленное и ответы, вместе с
 # короткими вызовами канала): окно в 5 сообщений в run3 №10 отправило их
@@ -1998,6 +2074,11 @@ _STEP_PAGE_REF = ("Current page and its numbered elements: unchanged — "
 STICKY_RULES_SPAN = 30000
 STICKY_RULES_WINDOW = 12
 STICKY_PAGE_WINDOW = 2
+# Прошлые задачи постоянны весь прогон — свежи по тем же границам, что правила
+STICKY_PAST_WINDOW = STICKY_RULES_WINDOW
+# Короче — целиком: ссылка (~100 симв.) почти не короче, а модели пришлось
+# бы искать блок в прошлом сообщении
+STICKY_PAST_MIN = 300
 
 
 class TaskAgent:
@@ -2255,8 +2336,9 @@ class TaskAgent:
         return sum(c for c, _ in list((run.get("traffic") or {}).values()))
 
     def _sticky_for(self, run: dict) -> list:
-        """Повторяемые блоки шага: правила (_STEP_RULES) и страница —
-        постоянный тред веб-чата, получивший их недавно, видит ссылку."""
+        """Повторяемые блоки шага: правила (_STEP_RULES), страница и прошлые
+        задачи чата — постоянный тред веб-чата, получивший их недавно,
+        видит ссылку."""
         from app.core.sticky_scope import StickyBlock
         blocks = [StickyBlock(_STEP_RULES, _STEP_RULES_REF,
                               STICKY_RULES_WINDOW, primable=True,
@@ -2264,6 +2346,12 @@ class TaskAgent:
         if run.get("page_block"):
             blocks.append(StickyBlock(run["page_block"], _STEP_PAGE_REF,
                                       STICKY_PAGE_WINDOW))
+        if len(run.get("past_block") or "") >= STICKY_PAST_MIN:
+            # Блок прошлых задач один на весь прогон (run["past"] — со
+            # старта): со второго шага подряд в том же треде — ссылкой
+            blocks.append(StickyBlock(run["past_block"], _STEP_PAST_REF,
+                                      STICKY_PAST_WINDOW,
+                                      span=STICKY_RULES_SPAN))
         return blocks
 
     @staticmethod
@@ -2565,9 +2653,10 @@ class TaskAgent:
         # секреты (пароль, код, телефон на вопрос о них) — маской целиком,
         # известные секреты и секрет из цели — маской везде
         secrets = list(self._hidden(run, chat_id))
-        if run.get("private_seen") and result not in _SYSTEM_RESULTS:
-            # Прогон побывал на приватной странице: итог (отчёт локальной
-            # модели по кабинету/переписке) в память, уходящую облаку, — нет
+        if result not in _SYSTEM_RESULTS and self._result_private(run, result):
+            # Итог сложился на приватной странице (отчёт локальной модели по
+            # кабинету/переписке, передача оплаты) или несёт данные оттуда —
+            # в память, уходящую облаку, нет
             result = _PRIVATE_RESULT
         # Успешный исход (для «как в прошлый раз»): итог принят кодом (C3)
         # или заказ собран и оплата передана человеку. Отменённые,
@@ -2634,6 +2723,38 @@ class TaskAgent:
         logger.info(f"[TaskAgent] запомнил задачу "
                     f"«{self._goal_safe(run, 40)}» "
                     f"(сайты: {', '.join(sites) or '—'})")
+
+    @staticmethod
+    def _result_private(run: dict, result) -> bool:
+        """Итог прогона — не для памяти, уходящей облаку: прогон бывал на
+        приватной странице и итог сложился там (последний шаг — на
+        приватной странице или локальной моделью, браузер стоит на
+        приватной), это передача оплаты (сводка кода с оформления) или в
+        итоге есть сказанное/названное на приватной странице (ответ на
+        вопрос оттуда, слот или позиция брифа оттуда). Итог облачного шага
+        на обычной странице — из того, что облако и так видело (приватное
+        ему — заглушкой): стенд 21.10 — вопрос о доставке, начатый на
+        /checkout, кончился верным ответом с /delivery, а в память ушла
+        заглушка."""
+        if not run.get("private_seen"):
+            return False
+        if run.get("step_private", True) or run.get("page_private") \
+                or run.get("outcome") == "payment":
+            return True
+        qa = run.get("qa") or []
+        vals = [qa[i][1] for i in run.get("qa_private") or ()
+                if isinstance(i, int) and 0 <= i < len(qa)]
+        brief = run.get("brief") or {}
+        vals += [(brief.get(k) or {}).get("value") for k in _BRIEF_KEYS
+                 if (brief.get(k) or {}).get("src") == "private"]
+        vals += [it.get("name") for it in brief.get("items") or ()
+                 if isinstance(it, dict) and it.get("src") == "private"]
+        vals += list(brief.get("exclude_private") or ())
+        # Короткие ответы («да», «1») — не данные: совпали бы с любым итогом
+        vals = [" ".join(str(v).split()) for v in vals if v]
+        vals = [v for v in vals if len(v) >= 4 and not is_masked(v)
+                and not _SECRET_SLOT_RE.search(v) and v != _PRIVATE_SLOT]
+        return contains_value(result, vals)
 
     def _past_tasks(self, chat_id, goal: str) -> List[dict]:
         """Прошлые задачи той же темы — по предмету цели (слова-команды,
@@ -3614,6 +3735,9 @@ class TaskAgent:
         # банк/private_hosts) — только локальной модели (PrivateRouter)
         llm = self._llm_for(router, obs)
         private = isinstance(llm, PrivateRouter)
+        # Шаг на приватной странице/локальной моделью: итог, которым он
+        # кончит прогон, — не в облачную память (_result_private)
+        run["step_private"] = private or bool(obs.get("private"))
         if obs.get("text"):
             # Прочитанный текст обычной страницы уходит облачной модели —
             # без email/телефонов/карт/токенов (цены и слова как есть);
@@ -4633,16 +4757,23 @@ class TaskAgent:
         # плейсхолдера код подменяет значением в _do_element
         hidden = self._hidden(run, chat_id if chat_id is not None
                               else run.get("chat_id"))
-        elem_part = -1
+        elem_part = past_part = -1
         parts = [
             "You are an autopilot operating a web browser on behalf of the "
             f"user. The user's goal: \"{run['goal']}\"."]
         if run.get("past"):
             # Ответы прошлых задач с приватной страницы — облаку заглушкой,
-            # локальной модели (снова на оформлении) — как есть
+            # локальной модели (снова на оформлении) — как есть. Облаку —
+            # коротко (цель, сайты, что заказали, итог): блок в каждом шаге,
+            # а вопросы с вариантами нужны разве что при повторе — запись,
+            # которую повторяют («как в прошлый раз»), целиком
+            full = None if local else self._past_full(run)
+            past_part = len(parts)
             parts.append(
                 "The user's earlier tasks on the same topic (newest first):\n"
-                + "\n".join(self._past_line(r, local) for r in run["past"]))
+                + "\n".join(self._past_line(r, local, short=not local
+                                            and i != full)
+                            for i, r in enumerate(run["past"])))
         if run["qa"]:
             qpriv = set() if local else (run.get("qa_private") or set())
             parts.append(
@@ -4740,6 +4871,8 @@ class TaskAgent:
         # («NOT performed») или невалидного ответа она та же, и тред веб-чата
         # получает ссылку на прошлое сообщение вместо списка элементов
         run["page_block"] = parts[elem_part] if elem_part >= 0 else None
+        # Прошлые задачи — тоже (после масок: блок — точный кусок промпта)
+        run["past_block"] = parts[past_part] if past_part >= 0 else None
         browse_rule = (_STEP_BROWSE_RULE if (run.get("browse") or {}).get(
             "stage") in ("asked", "chosen", "opened", "presented", "all")
             else "")
@@ -4761,9 +4894,22 @@ class TaskAgent:
                 f"{_PRIVATE_STEP} → {short}")
 
     @staticmethod
-    def _past_line(rec: dict, local: bool = False) -> str:
+    def _past_full(run: dict) -> Optional[int]:
+        # «Как в прошлый раз»/«повтори»: запись, которую повторяют (как в
+        # start: последний успешный заказ с брифом, иначе новейшая), —
+        # облаку целиком, с парами «вопрос — ответ». Не повтор — None
+        if not _REPEAT_RE.search(str(run.get("goal") or "")):
+            return None
+        past = run.get("past") or []
+        return next((i for i, r in enumerate(past) if r.get("ok")
+                     and isinstance(r.get("brief"), dict)),
+                    0 if past else None)
+
+    @staticmethod
+    def _past_line(rec: dict, local: bool = False, short: bool = False) -> str:
         # local — строка уходит локальной модели (приватная страница):
-        # ответы с приватной страницы как есть; облаку — заглушкой
+        # ответы с приватной страницы как есть; облаку — заглушкой.
+        # short — облаку коротко (_past_short): блок уходит в каждый шаг
         when = time.strftime("%Y-%m-%d", time.localtime(rec.get("ts") or 0))
         from app.features.computer_control import command_secret_values
         goal = str(rec.get("goal") or "")
@@ -4771,6 +4917,8 @@ class TaskAgent:
                 f"\"{_redact(goal, command_secret_values(goal))}\"")
         if rec.get("sites"):
             line += "; sites: " + ", ".join(rec["sites"])
+        if short and not local:
+            return line + _past_short(rec)
         qpriv = set() if local else _rec_qa_private(rec)
         for i, (q, a) in enumerate(rec.get("qa") or []):
             if i in qpriv:
