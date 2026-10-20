@@ -335,6 +335,9 @@ def main():
                  clicks={1: SHOP}, base_dir=tmp)
     slot = SlotRouter({dgoal: {"site": "pizzatest.test"}})
     ag = agent(cc, slot)
+    # Только вопрос модели: разделы и показ кодом (со служебной /delivery —
+    # главная кодом) проверяет сквозной ниже и test_task_sections_retry
+    ag._browse_step = lambda *a, **k: None
     rt = ScriptedRouter([
         {"action": "click", "n": 1,
          "label": "Пицца Тест Доставка пиццы за 35 минут"},
@@ -361,6 +364,32 @@ def main():
           len(fast) == 1 and "вопрос модели" in fast[0]
           and fast[0].endswith(": items") and "Кола" not in fast[0]
           and brief_calls(run_e) == 1, f"{fast} {brief_calls(run_e)}")
+
+    # Сценарий 3 стенда целиком после правки разделов: со служебной
+    # /delivery главная кодом, разделов по разметке нет и модель их не
+    # назвала (NONE), показ страницы модель не дала (NONE) — список кодом;
+    # «4» — позиция без модели, «NONE» человеку не уходит
+    print("сквозной — /delivery → главная кодом → список кодом:")
+    cc = real_cc({DL: dl_page, SHOP: [dict(x) for x in menu]}, url=DL,
+                 clicks={1: SHOP}, base_dir=tmp)
+    slot = SlotRouter({dgoal: {"site": "pizzatest.test"}})
+    ag = agent(cc, slot)
+    rt = ScriptedRouter([{"action": "fail", "message": "стоп"}])
+    q = ag.start("e2", dgoal, rt, user_id="A")
+    aw = dict((ag._runs.get("e2") or {}).get("awaiting") or {})
+    check("сквозной: главная кодом, список страницы кодом, без «NONE»",
+          "NONE" not in q and "Кола Зеро" in q and aw.get("pick") == "item"
+          and aw.get("listed") and len(rt.prompts) == 0,
+          f"{q!r} {aw.get('pick')} {len(rt.prompts)}")
+    n_zero = next((i + 1 for i, x in enumerate(aw.get("items") or ())
+                   if x.startswith("Кола Зеро")), 0)
+    nb = len(slot.brief)
+    ag.feed("e2", str(n_zero), rt, user_id="A")
+    run_e = finished(ag, "e2")
+    check(f"сквозной: «{n_zero}» на список кодом — позиция «Кола Зеро» без "
+          "разбора моделью",
+          n_zero and len(slot.brief) == nb and items(run_e) == [
+              ("Кола Зеро", None, [], 1, "user")], f"{items(run_e)}")
 
     # ── 3. Вопросы о товаре перед «В корзину» (гейт) ──
     print("гейт корзины — кола:")

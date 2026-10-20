@@ -6732,11 +6732,16 @@ class TaskAgent:
                   + "Names and prices exactly as in the list above — never "
                   "invent them. Plain text, no headings.\n"),
             max_tokens=900)
-        if sec and text and re.fullmatch(r"\W*NONE\W*", text):
-            # Позиций раздела в снимке нет (страница не докрутилась, раздел
-            # ниже бюджета снимка) — не выдаём чужое за раздел: модель шагов
-            # докрутит/найдёт и спросит сама; вид остаётся в плане
-            return self._browse_handoff(run, b, sec)
+        if text and re.fullmatch(r"\W*NONE\W*", text):
+            if sec:
+                # Позиций раздела в снимке нет (страница не докрутилась,
+                # раздел ниже бюджета снимка) — не выдаём чужое за раздел:
+                # модель шагов докрутит/найдёт и спросит сама; вид остаётся
+                # в плане
+                return self._browse_handoff(run, b, sec)
+            # Страница без раздела: NONE — не текст для человека (стенд
+            # 21.10, тест: «NONE» ушло вопросом) — список кодом
+            text = None
         seen = set(_option_words(" ".join(labels)))
         # Варианты показа — товары страницы: голый выбор одного из них
         # разбирается без модели (_brief_fast сверит вариант с товаром)
