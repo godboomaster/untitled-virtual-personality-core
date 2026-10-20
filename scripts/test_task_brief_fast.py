@@ -499,12 +499,12 @@ def main():
     slot = SlotRouter(sections="- Пиццы\n- Комбо\n- Напитки", show=model_show,
                       slots={"Ленина 5": {"address": "Ленина 5"}})
     ag = agent_with(slot, cc, mem="e2e.json")
+    # Повторы шага после ответа (open после «1», «В корзину» после «без
+    # добавок») делает код без модели (test_task_step_replay)
     rt = ScriptedRouter([
         {"action": "search", "query": "пицца доставка"},
         {"action": "open", "target": SHOP},
-        {"action": "open", "target": SHOP},
         {"action": "click", "n": 1, "label": "Пепперони от 349 ₽"},
-        {"action": "click", "n": 1, "label": "В корзину за 349 ₽"},
         {"action": "click", "n": 1, "label": "В корзину за 349 ₽"},
         {"action": "ask", "question": "Куда доставить? Назови адрес."},
         {"action": "fail", "message": "стоп"}])
