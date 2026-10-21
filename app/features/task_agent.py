@@ -1696,6 +1696,21 @@ _PRICE_WORD_RE = re.compile(r"(?<![^\W\d_])(?:от|до|за|всего|from|for
 _GLYPH_TOKEN_RE = re.compile(r"(?<!\S)[^\w\s]+(?!\S)")
 
 
+def _no_card_button(lab: str) -> str:
+    """Подпись позиции без кнопки карточки после цены: «Кола 0,5 л 119 ₽
+    Выбрать» → «Кола 0,5 л 119 ₽» (позиция раздела по разметке — текст
+    карточки целиком, с её кнопкой). Кнопка не в конце или перед ней не
+    цена — как есть."""
+    lab = " ".join(str(lab or "").split())
+    m = None
+    for m in _CARD_BUTTON_RE.finditer(lab):
+        pass
+    if m is None or lab[m.end():].strip() \
+            or not _PRICE_RE.search(lab[:m.start()][-16:]):
+        return lab
+    return lab[:m.start()].rstrip()
+
+
 def _has_name(lab) -> bool:
     """В подписи есть слово названия — кроме цены, её предлога и кнопки
     карточки. «от 459 ₽ Выбрать» — нет: «Выбрать» раньше сходило за
@@ -6365,8 +6380,9 @@ class TaskAgent:
         (_pre_llm); служебная страница сайта (доставка, контакты) — без
         модели: главная кодом, попытка — на следующей странице. Вид из цели
         («закажи напиток») с разделом сайта — сразу этот раздел. Показ
-        раздела — модель, когда — код. Модели нет или разделов на странице
-        не нашлось — как раньше, решает модель шагов.
+        раздела — модель, когда — код; раздел по разметке целиком (до
+        SECTION_LIST_MAX позиций) — список кодом. Модели нет или разделов
+        на странице не нашлось — как раньше, решает модель шагов.
         → пауза/ход или None."""
         b = run.setdefault("browse", {})
         if b.get("stage") == "done" and b.get("again") and not b.get("closed"):
@@ -6768,7 +6784,10 @@ class TaskAgent:
         """Раздел открыт — показать его человеку: до SECTION_LIST_MAX
         позиций целиком, больше — коротко (модель по странице). Позиции —
         подписи с ценой вокруг раздела; модели нет или она назвала то, чего
-        на странице нет, — список кодом."""
+        на странице нет, — список кодом. Раздел по разметке целиком (каждая
+        позиция блока — с названием и ценой) и позиций до SECTION_LIST_MAX
+        — список кодом без модели: модель только переписала бы те же строки
+        (стенд 21.10, вызов 5: ~1,7 тыс. симв. и ~10 с)."""
         sec = b.get("section") or ""
         items = list(obs.get("shown") or ())
         found, marked = [], []
@@ -6778,8 +6797,8 @@ class TaskAgent:
                 # Позиции раздела по разметке (заголовок раздела и его блок;
                 # только чтение): у Додо все 165 карточек на одной странице,
                 # в общий снимок раздел не влезает
-                marked = _ba.section_items(obs["host"], sec,
-                                           obs["tab_id"]) or []
+                marked = [_no_card_button(x) for x in _ba.section_items(
+                    obs["host"], sec, obs["tab_id"]) or ()]
                 if len(marked) < 2:
                     _u, found = _ba.snapshot_for_goal(obs["host"], sec,
                                                       obs["tab_id"])
@@ -6852,6 +6871,29 @@ class TaskAgent:
         if not products:
             b["stage"] = "done"
             return None
+
+        def _code_list(prods: List[str]) -> Tuple[str, str]:
+            # Список кодом: позиции с ценой, до SECTION_LIST_MAX
+            lines = [f"- {x}" for x in prods[:SECTION_LIST_MAX]]
+            if len(prods) > SECTION_LIST_MAX:
+                lines.append(self._t("task_section_rest",
+                                     n=len(prods) - SECTION_LIST_MAX))
+            return self._browse_ask(run, chat_id, b, self._t(
+                "task_section_all" if sec else "task_page_all",
+                section=sec, items="\n".join(lines),
+                site=str(obs.get("host") or "").removeprefix("www.")),
+                {"pick": "item", "listed": True,
+                 "items": prods[:SECTION_LIST_MAX]})
+        # Разметка раздела целиком: ни одна позиция блока не отброшена (без
+        # названия — «от 429 ₽ Выбрать», цена срезана, акция) — иначе список
+        # неполон, и показ — модели, как раньше. Лента страницы (не по
+        # разметке) — тоже модели: там бывают позиции соседних разделов
+        whole = by_markup and len(products) == len(dict.fromkeys(
+            x[:LABEL_MAX] for x in marked))
+        if whole and len(products) <= SECTION_LIST_MAX:
+            logger.info(f"[TaskAgent] раздел «{sec}» по разметке: "
+                        f"{len(products)} — список кодом, без модели")
+            return _code_list(products)
         text = self._pre_llm(
             run, obs, step=f"present {what} to the user",
             page=(("Items of this section, found by the page's markup (labels "
@@ -6905,16 +6947,7 @@ class TaskAgent:
                 b["items"] = products
                 if len(products) < 2:
                     return self._browse_handoff(run, b, sec)
-            # Список кодом: позиции с ценой, до SECTION_LIST_MAX
-            lines = [f"- {x}" for x in products[:SECTION_LIST_MAX]]
-            if len(products) > SECTION_LIST_MAX:
-                lines.append(self._t("task_section_rest",
-                                     n=len(products) - SECTION_LIST_MAX))
-            text = self._t("task_section_all" if sec else "task_page_all",
-                           section=sec, items="\n".join(lines),
-                           site=str(obs.get("host") or "").removeprefix("www."))
-            pick = {"pick": "item", "listed": True,
-                    "items": products[:SECTION_LIST_MAX]}
+            return _code_list(products)
         return self._browse_ask(run, chat_id, b, text, pick)
 
     def _browse_handoff(self, run: dict, b: dict, sec: str

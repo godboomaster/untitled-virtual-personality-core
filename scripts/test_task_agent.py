@@ -4678,13 +4678,14 @@ def main():
                     user_id="A")
         r = agent.feed("sp3", "напитки", ScriptedRouter(
             [{"action": "fail", "message": "x"}]), user_id="A")
-        mk_show = next(p for p in br_mk.prompts if "Present it:" in p)
+        # Разметка дала раздел целиком (2 позиции с названием и ценой) —
+        # список кодом, модель показа не зовётся (run4 №5); раздел по
+        # разметке модели (>10 позиций) — test_task_browse_markup
         check("раздел по разметке: показаны его позиции (кола, морс), не "
-              "кофе на экране и не пиццы; модели — только они",
+              "кофе на экране и не пиццы; список кодом, без модели показа",
               "В разделе «Напитки»:\n- Кола 0,5 л от 135 ₽\n- Морс от 99 ₽"
               in r and "Капучино" not in r and "Пепперони" not in r
-              and "found by the page's markup" in mk_show
-              and "Капучино" not in mk_show)
+              and not any("Present it:" in p for p in br_mk.prompts))
     finally:
         _ba.snapshot_for_goal = saved_goal_m
         _ba.section_items = lambda *a, **k: None
