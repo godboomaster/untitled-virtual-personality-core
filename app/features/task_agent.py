@@ -1017,6 +1017,148 @@ def _cart_verdict(before: dict, after: dict) -> str:
     return "unknown"
 
 
+# Корзина отдельной страницей (не оформление): /cart, /basket, /korzina
+_CART_URL_RE = re.compile(r"cart|basket|korzin|корзин|warenkorb|panier|"
+                          r"carrito|carrello|koszyk|sepet", re.IGNORECASE)
+# Счётчик строки корзины одной строкой текста: «− 1 +»
+_QTY_ONE_RE = re.compile(r"^[−–-]\s*(\d{1,3})\s*\+$")
+# Шум текста корзины: заголовок («Корзина», «3 товара на 837 ₽»), итог,
+# кнопки строки и шторки («Удалить», «Изменить», «К оформлению»)
+_CART_NOISE_RE = re.compile(
+    r"корзин|cart|basket|итог|всего|сумма|total|удалить|убрать|изменить|"
+    r"оформ|checkout|remove|delete|edit|change|(?<![^\W\d_])(?:товар(?:а|ов)?|"
+    r"items?)(?![^\W\d_])", re.IGNORECASE)
+# Слова строки корзины, которые позицию не отличают: «тесто», размер словом,
+# единицы («Средняя 30 см, традиционное тесто» = «30 см, традиционное»)
+_CART_PLAIN_RE = re.compile(
+    r"^(?:тест\w*|dough|crust|размер\w*|size|объ[её]м\w*|volume|порци\w*|"
+    r"portion|литр\w*|lit(?:er|re)s?|грамм\w*|grams?|штук\w*|pcs|маленьк\w*|"
+    r"средн\w*|больш\w*|small|medium|large|regular)$")
+
+
+def _cart_noise(ln: str) -> bool:
+    rest = _PRICE_RE.sub(" ", ln)
+    if not re.search(r"[^\W\d_]", rest):
+        return True  # цена, количество, глиф («×», «+»); «0,5 л» — нет
+    return len(rest.split()) <= 4 and bool(_CART_NOISE_RE.search(rest))
+
+
+def _cart_lines(text) -> Optional[List[dict]]:
+    """Строки открытой корзины из её текста (чтение для агента: шторка
+    первой): у строки корзины — счётчик «− N +», перед ним название и
+    строка подробностей («Пепперони» / «30 см, традиционное тесто»), цена
+    — до счётчика или после. Заголовок, цены, «Удалить», допродажа без
+    счётчика («Соус сырный 49 ₽ +») — мимо. → [{"name", "detail", "qty",
+    "price", "price_s"}] или None — строение не узнано (больше двух строк
+    текста перед счётчиком, счётчиков нет): тогда корзину читает модель."""
+    rows = [x for x in (" ".join(r.split())
+                        for r in str(text or "").splitlines()) if x]
+    out: List[dict] = []
+    cur: List[str] = []
+    price = None
+    i = 0
+    while i < len(rows):
+        ln = rows[i]
+        m = _QTY_ONE_RE.match(ln)
+        qty, step = (int(m.group(1)), 1) if m else (None, 0)
+        if qty is None and re.fullmatch(r"[−–-]", ln) and i + 2 < len(rows) \
+                and re.fullmatch(r"\d{1,3}", rows[i + 1]) \
+                and rows[i + 2] == "+":
+            qty, step = int(rows[i + 1]), 3
+        if qty is not None:
+            if qty >= 1:
+                if not 1 <= len(cur) <= 2:
+                    return None
+                out.append({"name": cur[0],
+                            "detail": cur[1] if len(cur) > 1 else "",
+                            "qty": qty, "price": price[0] if price else None,
+                            "price_s": price[1] if price else ""})
+            # «− 0 +» — допродажа, не строка корзины
+            cur, price = [], None
+            i += step
+            continue
+        if _cart_noise(ln):
+            m = _CART_SUM_RE.search(ln)
+            v = _money(m.group(1)) if m else None
+            if v is not None:
+                p = (v, " ".join(m.group(0).split()))
+                if cur:
+                    price = p  # до счётчика — этой строки
+                elif out and out[-1]["price"] is None:
+                    # после счётчика — прошлой
+                    out[-1]["price"], out[-1]["price_s"] = p
+            i += 1
+            continue
+        cur.append(ln[:80])
+        i += 1
+    return out or None
+
+
+def _cart_lines_fit(lines: List[dict], st: Optional[dict], text) -> bool:
+    """Разбор сходится с корзиной сайта: счётчик шапки — штуки или строки,
+    без счётчика — сумма (шапки или итог текста) = сумма цен строк (цена
+    строки бывает за штуку и за все). Не сверить — не уверены."""
+    st = st or {}
+    units = sum(x["qty"] for x in lines)
+    if st.get("count") is not None:
+        return st["count"] in (units, len(lines))
+    total = st.get("sum")
+    if total is None:
+        total = _page_total(text)
+    if total is None or any(x["price"] is None for x in lines):
+        return False
+    return any(abs(s - total) < 0.5 for s in (
+        sum(x["price"] for x in lines),
+        sum(x["price"] * x["qty"] for x in lines)))
+
+
+def _cart_toks(s) -> List[str]:
+    return [t.replace(".", ",") for t in re.findall(
+        r"\d+(?:[.,]\d+)?|[^\W\d_]+",
+        str(s or "").casefold().replace("ё", "е"))]
+
+
+def _cart_line_fits(b: dict, ln: dict) -> bool:
+    """Строка корзины — эта позиция брифа, строго (не _same_item): название
+    — начало строки слово в слово (общее начало из 4 букв, как
+    _same_word), числа — ровно размер брифа, слова вариантов брифа есть в
+    строке, лишних слов в строке нет. «Кола» ≠ «Кола Зеро 0,5 л» (лишнее
+    «зеро»), «Кола 0,5 л» ≠ «Кола 1 л», «Пепперони 30 см, традиционное» ≠
+    «… + бекон». Сомнение — не она: позицию положит/проверит модель."""
+    name = _cart_toks(b.get("name"))
+    have = _cart_toks(f"{ln.get('name') or ''} {ln.get('detail') or ''}")
+    if not name or len(have) < len(name) or not all(
+            x == y if x[0].isdigit() or y[0].isdigit() else _same_word(x, y)
+            for x, y in zip(name, have)):
+        return False
+    rest = have[len(name):]
+    want = _cart_toks(b.get("size")) + [
+        t for o in b.get("options") or () if not _NO_ADDONS_RE.search(str(o))
+        for t in _cart_toks(o)]
+    if {t for t in rest if t[0].isdigit()} \
+            != {t for t in want if t[0].isdigit()}:
+        return False
+
+    def words(ts):
+        return [t for t in ts if not t[0].isdigit() and len(t) >= 3
+                and not _CART_PLAIN_RE.match(t)]
+    rw, ww = words(rest), words(want)
+    return all(any(_same_word(x, y) for y in ww) for x in rw) \
+        and all(any(_same_word(x, y) for y in rw) for x in ww)
+
+
+def _cart_had(items: List[dict], lines: List[dict]) -> Dict[int, int]:
+    # Позиция брифа → её строка корзины: только единственная пара в обе
+    # стороны (две подходящие строки или строка на две позиции — сомнение)
+    pairs = {}
+    for i, b in enumerate(items):
+        hits = [j for j, ln in enumerate(lines) if _cart_line_fits(b, ln)]
+        if len(hits) == 1:
+            pairs[i] = hits[0]
+    used = list(pairs.values())
+    return {i: j for i, j in pairs.items() if used.count(j) == 1}
+
+
 # Цель — вопрос-справка, а не заказ: «узнай, сколько стоит доставка», «до
 # скольки работают?», «есть ли доставка в Химки», «проверь мой заказ»,
 # «find out how much delivery costs». Признаки языковые, не сайта: глагол
@@ -3347,10 +3489,15 @@ class TaskAgent:
         for k in run.get("kinds") or ():
             steps.append((False, f"choose “{k}”" if en else f"выбрать «{k}»"))
         for b in items:
-            n = sum(1 for x in adds if _same_item(b["name"], x["key"]))
+            hit = [x for x in adds if _same_item(b["name"], x["key"])]
             txt = self._item_text(b)
-            steps.append((n >= (b.get("qty") or 1),
-                          f"put “{txt}” in the cart" if en
+            done = len(hit) >= (b.get("qty") or 1)
+            if done and all(x.get("pre") for x in hit):
+                # Лежало в корзине до задачи — не «положить»
+                steps.append((True, f"“{txt}” — already in the cart" if en
+                              else f"«{txt}» — уже лежало в корзине"))
+                continue
+            steps.append((done, f"put “{txt}” in the cart" if en
                           else f"положить «{txt}» в корзину"))
         for key in dict.fromkeys(x["key"] for x in adds if not any(
                 _same_item(b["name"], x["key"]) for b in items)):
@@ -4144,7 +4291,7 @@ class TaskAgent:
         if replay is not None:
             return replay
         browse = self._browse_step(run, chat_id, router, obs) \
-            or self._plan_step(run, chat_id, obs)
+            or self._plan_step(run, chat_id, obs, router)
         if browse:
             return browse
         prompt = self._prompt(run, obs, local=private)
@@ -4916,6 +5063,13 @@ class TaskAgent:
                      else None)
         if cur["cart"].get("found"):
             run["cart_seen"] = {"host": host, "cart": dict(cur["cart"])}
+            if host and cart_check is None and cart_watch is None \
+                    and not run.get("cart_adds"):
+                # Корзина сайта, какой задача увидела её впервые (до своих
+                # добавлений), — «до задачи»: повтор заказа, собранного
+                # прошлыми задачами. Без чисел («Корзина») — пустая
+                run.setdefault("cart_first", {}).setdefault(
+                    host.removeprefix("www."), dict(cur["cart"]))
         elif before is not None:
             # Корзина менялась без счётчика на экране (добавление под окном,
             # «−»/«Удалить» в шторке) — база больше не та
@@ -5802,6 +5956,198 @@ class TaskAgent:
             else None
 
     @staticmethod
+    def _cart_first(run: dict) -> Optional[dict]:
+        # Корзина этого сайта при первом взгляде задачи — если не пуста
+        host = str(run.get("page_host") or "").removeprefix("www.")
+        st = (run.get("cart_first") or {}).get(host) or {}
+        return st if (st.get("count") or 0) > 0 or (st.get("sum") or 0) > 0 \
+            else None
+
+    @staticmethod
+    def _cart_now(run: dict) -> Optional[dict]:
+        """Корзина сайта сейчас по шапке: этот снимок, а без чисел в нём
+        (шторка или окно товара закрыли шапку) — последний снимок того же
+        сайта с числами. → состояние; {} — пуста; None — не видно."""
+        def full(st) -> Optional[dict]:
+            st = st or {}
+            if st.get("count") is None and st.get("sum") is None:
+                return None
+            return st if (st.get("count") or 0) > 0 \
+                or (st.get("sum") or 0) > 0 else {}
+        now = full((run.get("page_state") or {}).get("cart"))
+        if now is None:
+            seen = run.get("cart_seen") or {}
+            if _host_in(str(run.get("page_host") or ""), [seen.get("host")]):
+                now = full(seen.get("cart"))
+        return now
+
+    def _cart_open(self, obs: dict) -> bool:
+        # Корзина на экране: шторка (окно со словом «корзина», итогом, «К
+        # оформлению») или страница корзины по адресу
+        try:
+            path = urlsplit(str(obs.get("url") or "")).path
+        except ValueError:
+            path = ""
+        return self._cart_drawer(obs) or bool(_CART_URL_RE.search(path))
+
+    @staticmethod
+    def _cart_line_text(ln: dict) -> str:
+        # Строка корзины человеку: «Пепперони 30 см, традиционное — 599 ₽»
+        s = ln["name"] + (f" {ln['detail']}" if ln.get("detail") else "")
+        if (ln.get("qty") or 1) > 1:
+            s += f" ×{ln['qty']}"
+        return s + (f" — {ln['price_s']}" if ln.get("price_s") else "")
+
+    def _cart_look(self, run: dict, chat_id, obs: dict) -> bool:
+        """Корзина открыта, задача сама в неё ничего не клала: прочитать её
+        кодом (чтение для агента, без модели; текст — только в разбор,
+        облаку не уходит) и разобрать строки (_cart_lines). Разбор сошёлся
+        с корзиной шапки (_cart_lines_fit) — строки в вопрос «что-нибудь
+        ещё?», позиции брифа, которые в ней уже лежат (строго:
+        _cart_line_fits), — в корзину задачи с пометкой pre: план отметит
+        их ✓ «уже в корзине», а повтор «В корзину» отобьёт гейт. Не сошёлся
+        — ничего: корзину смотрит модель, как раньше. Один раз за прогон.
+        Run4, сц. 4: модель сама открыла корзину, прочитала (вызовы 36–37)
+        и спросила о лишнем; план всё это время требовал положить уже
+        лежавшую пиццу. → разобрано ли."""
+        if run.get("cart_read") is not None:
+            return bool(run.get("cart_read"))
+        run["cart_read"] = False
+        text = ""
+        try:
+            a, _err = self.cc.resolve_read("page", None, chat_id=str(chat_id))
+            if a:
+                a.update(read_scope="task", origin="task",
+                         task_run=run.get("id"))
+                if obs.get("tab_id") is not None:
+                    a.setdefault("tab_id", obs["tab_id"])
+                ok, detail = self.cc.execute(a, chat_id)
+                text = str(detail or "") if ok else ""
+        except Exception as e:
+            logger.debug(f"[TaskAgent] корзина не прочитана: {e}")
+        lines = _cart_lines(text)
+        now = self._cart_now(run)
+        if not lines or not _cart_lines_fit(lines, now, text):
+            logger.info("[TaskAgent] корзина кодом: строение не узнано — "
+                        "смотрит модель")
+            return False
+        run["cart_read"] = True
+        run["cart_lines"] = lines[:12]
+        run["cart_lines_private"] = bool(obs.get("private"))
+        if "cart_pre" not in run:
+            # Корзина до задачи — для фактов оформления и передачи оплаты
+            # («лежало там до задачи»); _note_cart её уже не перепишет
+            run["cart_pre"] = dict(self._cart_first(run) or now or {
+                "count": sum(x["qty"] for x in lines)})
+        items = (run.get("brief") or {}).get("items") or []
+        adds = run.setdefault("cart_adds", [])
+        had, unsure = [], []
+        pairs = _cart_had(items, lines)
+
+        def txt(b):
+            return (_PRIVATE_SLOT if b.get("src") == "private"
+                    else self._item_text(b))
+        for i, b in enumerate(items):
+            j = pairs.get(i)
+            if j is None:
+                if any(_same_item(b["name"], ln["name"]) for ln in lines):
+                    # Похожая строка есть, а строго не сошлась («Кола» без
+                    # размера при «Кола 0,5 л» и «Кола Зеро 0,5 л»): ни «уже
+                    # там», ни «ещё нет» — решают модель и человек
+                    unsure.append(b["name"])
+                continue
+            had.append(txt(b))
+            for _ in range(min(lines[j]["qty"], b.get("qty") or 1)):
+                adds.append({"key": b["name"], "label": lines[j]["name"][:40],
+                             "verified": True, "pre": True,
+                             "hist": len(run["history"])})
+        run["cart_unsure"] = unsure
+        if had:
+            # Повтор «В корзину» лежавшего — сначала назад модели (гейт)
+            run["cart_qa_mark"] = len(run.get("qa") or ())
+            run["cart_bounced"] = False
+        logger.info(f"[TaskAgent] корзина кодом: {len(lines)} строк, из брифа "
+                    f"уже там {len(had)}, не уверен {len(unsure)}")
+        shown = "; ".join(self._cart_line_text(x) for x in lines[:12])
+        line = "read the cart (done by the system, no model)"
+        notes = [f"ok — before this task the cart already had: {shown}"]
+        if had:
+            notes.append("The plan's items found there are ✓ — never add "
+                         f"them again: {', '.join(had)}")
+        if unsure:
+            notes.append(
+                "Not sure these are there (a similar line is): "
+                + ", ".join(txt(b) for b in items if b["name"] in unsure)
+                + " — compare with the lines above before adding")
+        if not had and not unsure:
+            notes.append("None of the plan's items is there yet")
+        self._record(run, line, ". ".join(notes))
+        if any(b.get("src") == "private" for b in items):
+            # Позиция, названная на приватной странице, — в строках корзины
+            # открытым текстом: облачному промпту без них
+            run.setdefault("hist_public", {})[len(run["history"]) - 1] = (
+                f"{line} → ok — its lines are hidden (an item was named on a "
+                "private page)")
+        return True
+
+    def _cart_look_step(self, run: dict, chat_id, router, obs: dict
+                        ) -> Optional[Tuple[str, Optional[str]]]:
+        """Повтор заказа («как в прошлый раз»: позиции брифа из памяти), а
+        корзина магазина уже не пуста, задача в неё ещё ничего не клала, —
+        до хода модели открыть корзину кнопкой шапки («Корзина 3») и
+        прочитать кодом (_cart_look): что из заказа там уже лежит, план
+        отметит, и код сразу спросит «что-нибудь ещё?» с её строками. Run4,
+        сц. 4: это делала модель — клик, чтение, вопрос (вызовы 36–38, ~27
+        тыс. симв. облаку). Кнопка корзины одна и с числом, сайт — сайт
+        брифа; клик — через _act со всеми проверками шага. Корзина не
+        открылась или не разобрана — дальше модель, как раньше."""
+        brief = run.get("brief") or {}
+        items = brief.get("items") or []
+        if run.get("cart_read") is not None or run.get("cart_adds") \
+                or obs.get("note") \
+                or not _REPEAT_RE.search(run.get("goal") or "") \
+                or not any(b.get("src") == "memory" for b in items):
+            return None
+        host = str(obs.get("host") or "")
+        site = str((brief.get("site") or {}).get("value") or "")
+        if not host or not site \
+                or not _host_in(host, _site_hosts(site) or [site]):
+            return None  # не сайт прошлого заказа — не наша корзина
+        if self._cart_open(obs):
+            if self._cart_first(run) or self._cart_now(run):
+                self._cart_look(run, chat_id, obs)
+            return None
+        if run.get("cart_looked"):
+            # Клик кодом корзину не открыл — дальше модель
+            run["cart_read"] = False
+            return None
+        if obs.get("private") or not (self._cart_first(run)
+                                      or self._cart_now(run)):
+            return None
+        btns = []
+        for n, it in enumerate(obs.get("shown") or (), 1):
+            st = _cart_state([it])
+            # Кнопка корзины шапки с числом: «Корзина 3», «Cart (2)», «408 ₽
+            # (Корзина)»; не «В корзину», не «Очистить корзину»
+            if not it.get("dis") and not it.get("ed") \
+                    and not self._is_cart_add_item(it) \
+                    and not _CART_EDIT_RE.search(_item_label(it)) \
+                    and ((st.get("count") or 0) > 0
+                         or (st.get("sum") or 0) > 0):
+                btns.append((n, it))
+        if not btns or len({_label_of(it) for _n, it in btns}) != 1:
+            return None
+        n, it = btns[0]
+        run["cart_looked"] = True
+        act = {"action": "click", "n": n, "label": _label_of(it)}
+        run["obs_extra_query"] = (run.get("obs_extra") or {}).get("query")
+        run["obs_extra"] = None
+        run["steps"] += 1
+        logger.info(f"[TaskAgent] шаг {run['steps']} (корзина кодом: повтор "
+                    f"заказа, в ней уже лежит): {self._act_log(act)}")
+        return self._act(run, chat_id, router, act, obs)
+
+    @staticmethod
     def _item_text(b: dict) -> str:
         # Позиция брифа человеку: «Пепперони 30 см (традиционное, моцарелла)
         # ×2». Варианты — в скобках без «+»: выбор варианта (тесто) от
@@ -5843,10 +6189,18 @@ class TaskAgent:
         прошлого вопроса добавилось новое, «нет» ещё не сказано. Сам (до
         хода модели) — когда всё просимое уже в корзине и выбор вида
         («напиток») не идёт; перед оформлением — и с недобавленным (вопрос
-        его назовёт)."""
+        его назовёт). Задача сама ничего не положила, а корзина сайта не
+        пуста (повтор заказа: собрана прошлыми задачами) — перед оформлением
+        тоже, один раз: run4, сц. 4 — модель прочитала корзину, спросила о
+        лишнем и сама нажала «К оформлению заказа», а гейт пропустил (корзина
+        задачи пуста — «пора» не наступала)."""
         adds = run.get("cart_adds") or []
-        if not adds or run.get("more_no"):
+        if run.get("more_no"):
             return False
+        if not adds:
+            now = self._cart_now(run)
+            return before_checkout and run.get("more_n") is None and bool(
+                now if now is not None else self._cart_first(run))
         n = run.get("more_n")
         fresh = n is None or len(adds) > n
         if before_checkout:
@@ -5906,14 +6260,18 @@ class TaskAgent:
             b.update(stage="chosen", section=sec)
         run["browse"] = b
 
-    def _plan_step(self, run: dict, chat_id, obs: dict
-                   ) -> Optional[Tuple[str, str]]:
+    def _plan_step(self, run: dict, chat_id, obs: dict, router=None
+                   ) -> Optional[Tuple[str, Optional[str]]]:
         """До хода модели: всё просимое в корзине — «что-нибудь ещё?» сразу
         (раньше — только когда модель шла к оформлению, а до того она
-        бродила по сайту); после «нет» — отметка «корзина открыта»."""
+        бродила по сайту); после «нет» — отметка «корзина открыта». Повтор
+        заказа при непустой корзине — сначала её состав (_cart_look_step)."""
         if not _ORDER_GOAL_RE.search(run.get("goal") or "") \
                 or obs.get("error"):
             return None
+        look = self._cart_look_step(run, chat_id, router, obs)
+        if look:
+            return look
         if run.get("more_no") and not run.get("cart_checked"):
             # Корзина — и приватной страницей (/cart): отметка без содержимого
             try:
@@ -5950,10 +6308,13 @@ class TaskAgent:
                                  "the section was not shown, scroll to its "
                                  "items and ask the user, listing them"))
         for b in items:
-            n = sum(1 for x in adds if _same_item(b["name"], x["key"]))
-            done = n >= (b.get("qty") or 1)
+            hit = [x for x in adds if _same_item(b["name"], x["key"])]
+            done = len(hit) >= (b.get("qty") or 1)
+            # Лежало в корзине до задачи (прочитал код, _cart_look) — ✓ тоже
+            pre = done and all(x.get("pre") for x in hit)
             steps.append((done, f"put \"{self._item_text(b)}\" into the cart"
-                          + (" — it is in the cart" if done else "")))
+                          + (" — it was in the cart before this task" if pre
+                             else " — it is in the cart" if done else "")))
         for key in dict.fromkeys(x["key"] for x in adds if not any(
                 _same_item(b["name"], x["key"]) for b in items)):
             steps.append((True, f"\"{key}\" is in the cart"))
@@ -6020,27 +6381,81 @@ class TaskAgent:
     def _ask_more(self, run: dict, chat_id, obs: dict) -> Tuple[str, str]:
         """«Что-нибудь ещё?» с составом — когда просимое в корзине (план) и
         перед уходом к оформлению, и о том, что лежало в корзине до задачи
-        (иначе оно ушло бы в заказ молча). Ответ — _more_answer."""
+        (иначе оно ушло бы в заказ молча). Ответ — _more_answer. Задача
+        сама ничего не положила (повтор заказа: корзина собрана до неё) —
+        что лежит в корзине сейчас: её строки (код читает открытую корзину
+        сам, _cart_look) или хотя бы число со шапки — и что из заказа там
+        уже есть."""
+        own = [x for x in run.get("cart_adds") or () if not x.get("pre")]
+        if not own and run.get("cart_read") is None and self._cart_open(obs):
+            # Корзину открыла модель (или она открыта), код её не читал
+            self._cart_look(run, chat_id, obs)
         run["more_asked"] = True
         run["more_n"] = len(run.get("cart_adds") or ())
         brief_items = (run.get("brief") or {}).get("items") or []
         what, missing = self._added_items(run)
+        # Похожая строка в корзине, а строго не сошлась (_cart_look) — не
+        # «ещё не в корзине»: то ли это, решит человек
+        unsure = set(run.get("cart_unsure") or ())
+        doubt = [self._item_text(b) for b in brief_items
+                 if b["name"] in unsure and self._item_text(b) in missing]
+        missing = [m for m in missing if m not in doubt]
+        missing_x = (self._t("task_more_unsure", items=", ".join(doubt))
+                     if doubt else "")
         pre = self._cart_pre(run)
-        extra = self._t("task_more_pre", pre=self._cart_str(pre),
-                        cart=self._cart_str((run.get("page_state") or {})
-                                            .get("cart")) or "?") if pre else ""
-        if missing:
-            extra += self._t("task_more_missing", items=", ".join(missing))
-        q = self._t("task_more", what=", ".join(what) or "—", extra=extra)
-        # Позиция, названная на приватной странице, — вопрос в память и
-        # облачный промпт заглушкой
+        lines = "; ".join(self._cart_line_text(x)
+                          for x in run.get("cart_lines") or ())
+        if not own:
+            first, now = self._cart_first(run), self._cart_now(run)
+            if first and "cart_pre" not in run:
+                # Лежавшее до задачи — и в вопрос о заказе, и в передачу
+                # оплаты («в корзине есть и то, что лежало там до задачи»)
+                run["cart_pre"] = dict(first)
+            cart = (lines or self._cart_str(now or first)).rstrip(".") or "?"
+            # Лежавшее до задачи — если корзина с тех пор не менялась (числа,
+            # видные и тогда, и сейчас, те же)
+            keys = [k for k in ("count", "sum") if now and first
+                    and now.get(k) is not None and first.get(k) is not None]
+            same = bool(first) and (now is None or (bool(keys) and all(
+                now[k] == first[k] for k in keys)))
+            extra = self._t("task_more_before_was") if same else (
+                self._t("task_more_before_pre", pre=self._cart_str(first))
+                if first else "")
+            extra += "."
+            if run.get("cart_read"):
+                if what:
+                    extra += self._t("task_more_had", items=", ".join(what))
+                if missing:
+                    extra += self._t("task_more_missing",
+                                     items=", ".join(missing))
+                extra += missing_x
+            elif brief_items:
+                extra += self._t("task_more_unchecked", items=", ".join(
+                    self._item_text(b) for b in brief_items))
+            q = self._t("task_more_before", cart=cart, extra=extra)
+        else:
+            extra = ((self._t("task_more_pre_lines", lines=lines) if lines
+                      else self._t("task_more_pre", pre=self._cart_str(pre),
+                                   cart=self._cart_str(
+                                       (run.get("page_state") or {})
+                                       .get("cart")) or "?"))
+                     if pre else "")
+            if missing:
+                extra += self._t("task_more_missing", items=", ".join(missing))
+            extra += missing_x
+            q = self._t("task_more", what=", ".join(what) or "—", extra=extra)
+        # Позиция, названная на приватной странице, и строки корзины,
+        # прочитанные на приватной странице, — вопрос в память и облачный
+        # промпт заглушкой
         private = bool(obs.get("private")) or any(
-            b.get("src") == "private" for b in brief_items)
+            b.get("src") == "private" for b in brief_items) \
+            or bool(lines and run.get("cart_lines_private"))
         # Без приписок (лежавшее до задачи, не добавленное) «нет/всё» и
         # голое «да» брифа не меняют — разбор без модели (_brief_fast); с
         # ними «нет» может значить и «это убрать» — разбор модели
         run["awaiting"] = {"kind": "ask", "question": q, "private": private,
-                           "more": True, **({} if extra else {"pick": "more"})}
+                           "more": True,
+                           **({} if extra or not own else {"pick": "more"})}
         self._audit_note(run, chat_id, "task_ask", q, private)
         return ("pause", q)
 
@@ -6168,6 +6583,8 @@ class TaskAgent:
         # Тот же товар второй раз — не нажимаем: модель «исправляла» неверный
         # размер, добавляя пиццу ещё раз, или жала кнопку в ещё открытом окне
         added = "; ".join(f"«{x['key']}»" for x in same[-3:])
+        # Лежало в корзине до задачи (_cart_look), а не положено ею
+        before = all(x.get("pre") for x in same)
         if not run.get("cart_bounced") \
                 and len(run["qa"]) <= run.get("cart_qa_mark", 0):
             # Первый повтор без нового слова человека — назад модели, без
@@ -6176,13 +6593,21 @@ class TaskAgent:
             # а не стопом «зациклился»
             run["cart_bounced"] = True
             run["sigs"] = []
-            self._record(
-                run, line,
-                f"NOT performed — this task already added {added} to the cart. "
-                "It is in the cart: go on (another item, or the cart and "
-                "checkout). If the user may want one more, ask them first")
+            self._record(run, line, (
+                f"NOT performed — {added} was in the cart before this task "
+                "(✓ in the plan)" if before else
+                f"NOT performed — this task already added {added} to the "
+                "cart") + ". It is in the cart: go on (another item, or the "
+                "cart and checkout). If the user may want one more, ask them "
+                "first")
             return ("progress", None)
         run["confirm_cart_key"] = key
+        if before:
+            return self._ask_confirm(run, a, line, question=self._phrase(
+                "task_cart_again_pre",
+                f"В корзине уже лежит (ещё до этой задачи): {added}. Добавить "
+                f"ещё один — нажать «{label}»? (да/нет)",
+                added=added, label=label))
         return self._ask_confirm(run, a, line, question=self._phrase(
             "task_cart_again",
             f"В корзину уже добавлено: {added}. Добавить ещё один — нажать "
