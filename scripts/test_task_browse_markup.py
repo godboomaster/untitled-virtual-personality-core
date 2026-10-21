@@ -1,20 +1,28 @@
-"""Тест показа раздела магазина по разметке (_browse_show,
-_SECTION_ITEMS_JS).
+"""Тест показа раздела магазина по разметке (_browse_show / _browse_open /
+_browse_unclicked, _SECTION_ITEMS_JS).
 
 Run4 21.10 (стенд pizzatest.ru): №5 — раздел «Пицца» по разметке, а список
-«- название — цена» писала модель (~1,7 тыс. симв., ~10 с). Проверяет:
+«- название — цена» писала модель (~1,7 тыс. симв., ~10 с); №31 — клик
+«Напитки» кодом перекрыт окном «Ваш город — Москва?» (в снимке окном не
+помечено), показ ушёл модели шагов (~8,4 тыс. симв.). Проверяет:
 * позиции раздела по разметке целиком (у каждой название и цена), их
   2..SECTION_LIST_MAX — список кодом без модели (тот же текст и пометка
   listed, что у запасного списка), по-русски и по-английски; кнопка
   карточки после цены («Выбрать») — мимо; голый выбор из списка — позиция
   без модели. Больше 10, позиция без названия (список неполон), позиции
   из ленты снимка (разметки нет) — модель, как раньше;
+* клик раздела перекрыт / не прошёл / подписи нет в списке, а меню
+  одностраничное (ссылки разделов — якоря этой страницы) — раздел по
+  разметке без клика, без модели; строка истории модели шагов: показан без
+  клика, слой на месте (закрывать ли — решает она). Ссылка раздела ведёт
+  на другую страницу, позиций по разметке меньше двух — как раньше,
+  модель шагов; больше 10 — показ моделью по разметке;
 * _SECTION_ITEMS_JS на настоящем движке (headless-Chromium Playwright,
   страница стенда — перехватом, без сети): «название — цена» (все 9 пицц,
   длинная карточка, без бейджа «Новинка»), напитки при открытом окне
-  города; две цены, обёртка с несколькими заголовками, подпись картинки,
-  «from $1.19», «от» не внутри слова. Нет Playwright/Chromium — SKIP этой
-  части.
+  города; окно города — не md, центр «Напитки» им перекрыт; две цены,
+  обёртка с несколькими заголовками, подпись картинки, «from $1.19», «от»
+  не внутри слова. Нет Playwright/Chromium — SKIP этой части.
 
 Браузер — real_cc (test_task_agent): настоящий ComputerControlManager,
 заглушены браузер и снимок; модель — скрипт. Живых браузеров, веб-чатов и
@@ -108,6 +116,8 @@ HOME = f"https://{SITE}/"
 NAV = "Пицца Комбо Закуски Напитки Акции Контакты"
 SECTIONS = ["Пицца", "Комбо", "Закуски", "Напитки"]
 CITY = "Ваш город — Москва? Да Выбрать другой"
+COVERED = ("клик не выполнен: элемент перекрыт другим слоем (окном или "
+           "баннером)")
 
 
 def link(idx, text, ctx="", **kw):
@@ -147,11 +157,22 @@ CODE_LIST = ("В разделе «Напитки»:\n- Кола — от 119 ₽
              "заказываем?")
 
 
-def fresh(name, pages=None, items=None, show="", slots=None, heads=SECTIONS):
+def fresh(name, pages=None, items=None, show="", slots=None, covered=False,
+          heads=SECTIONS):
     HEADS[:] = list(heads)
     ITEMS.clear()
     ITEMS["Напитки"] = list(DRINKS) if items is None else items
     cc = real_cc(pages or {HOME: page()}, url=HOME, base_dir=TMP)
+    if covered:
+        # Клик «Напитки» (23) перекрыт окном города: клика не было
+        orig = cc._dispatch
+
+        def disp(action, router=None):
+            if action.get("kind") == "click" and action.get("idx") == 23:
+                cc.dispatched.append(dict(action))
+                raise RuntimeError(COVERED)
+            return orig(action, router)
+        cc._dispatch = disp
     agent = TaskAgent(cc, memory_path=TMP / f"{name}.json")
     agent.slot_router = SecRouter(show, [{"kinds": ["напиток"]}]
                                   if slots is None else slots)
@@ -261,6 +282,121 @@ check("разметки раздела нет — позиции из ленты
       and "found by the page's markup" not in agent.slot_router.shows()[0]
       and r.endswith("Какую?"), r)
 
+print("Клик раздела перекрыт — раздел по разметке без клика")
+log.msgs.clear()
+cc, agent = fresh("d1", covered=True)
+rt = stop()
+r = agent.start("d1", GOAL, rt, user_id="A")
+run = agent._runs.get("d1") or {}
+hist = run.get("history") or []
+check("клик «Напитки» перекрыт (окно города) — человеку список кода",
+      clicked(cc) == [23] and r.endswith(CODE_LIST), (r, cc.dispatched))
+check("ни показа моделью, ни хода модели шагов",
+      calls(agent, "d1", "page") == 0 and not rt.prompts
+      and calls(agent, "d1", "step") == 0, (agent.slot_router.prompts,
+                                            rt.prompts))
+check("история модели шагов: клик не выполнен (слой), раздел показан без "
+      "клика, слой на месте; текста окна (город) в строке нет",
+      any(h.startswith("click \"Напитки\" → NOT performed — the element is "
+                       "covered by another layer") for h in hist)
+      and hist[-1] == ("show the section \"Напитки\" → shown to the user "
+                       "from the page's markup, without the click (the layer "
+                       "over the page is still there)")
+      and "Москва" not in hist[-1], hist)
+check("лог: «клик перекрыт — показ по разметке без клика»; пометка listed",
+      any("раздел «Напитки»: клик перекрыт — показ по разметке без клика"
+          in m for m in log.msgs)
+      and (run.get("awaiting") or {}).get("listed"), log.msgs)
+rt2 = stop()
+agent.feed("d1", "2", rt2, user_id="A")
+step_p = rt2.prompts[0] if rt2.prompts else ""
+check("после выбора — ход модели шагов: в истории оба шага, окно — её "
+      "решение (код его не закрывал)",
+      "covered by another layer" in step_p
+      and "without the click (the layer over the page is still there)"
+      in step_p and clicked(cc) == [23], step_p[:3000])
+
+# Клик доставлен, а видимой реакции нет («не уверен») — тоже по разметке
+cc, agent = fresh("d1b")
+_orig = cc._dispatch
+
+
+def _uncertain(action, router=None):
+    if action.get("kind") == "click":
+        cc.dispatched.append(dict(action))
+        raise _ba.ClickUncertain("клик отправлен, страница не изменилась — "
+                                 "не уверен, что сработало")
+    return _orig(action, router)
+
+
+cc._dispatch = _uncertain
+r = agent.start("d1b", GOAL, stop(), user_id="A")
+hist = (agent._runs.get("d1b") or {}).get("history") or []
+check("клик без видимой реакции — раздел по разметке, строка без «слоя»",
+      r.endswith(CODE_LIST) and any(
+          "no visible change was detected" in h for h in hist)
+      and hist[-1].endswith("from the page's markup, without the click"),
+      (r, hist))
+
+print("Клик не прошёл, а показа нет, как раньше — раздел отдельной "
+      "страницей, разметки мало")
+cc, agent = fresh("d2", pages={HOME: page(hrefs=(
+    "/pizza", "/combo", "/snacks", "/drinks"))}, covered=True)
+rt = stop()
+r = agent.start("d2", GOAL, rt, user_id="A")
+check("ссылка раздела — другая страница (блок здесь бывает витриной) — "
+      "показа нет, ход модели шагов",
+      "В разделе" not in r and len(rt.prompts) == 1
+      and calls(agent, "d2", "page") == 0, (r, rt.prompts[:1]))
+cc, agent = fresh("d3", items=["Кола — от 119 ₽"], covered=True)
+rt = stop()
+r = agent.start("d3", GOAL, rt, user_id="A")
+check("по разметке одна позиция — как раньше, ход модели шагов",
+      "В разделе" not in r and len(rt.prompts) == 1, r)
+cc, agent = fresh("d4", items=many, covered=True,
+                  show="В разделе 12 напитков, от 100 до 111 ₽. Какой?")
+rt = stop()
+r = agent.start("d4", GOAL, rt, user_id="A")
+check("перекрыт, а позиций по разметке 12 — обзор модели по разметке, без "
+      "хода модели шагов", calls(agent, "d4", "page") == 1
+      and "found by the page's markup" in agent.slot_router.shows()[0]
+      and r.endswith("Какой?") and not rt.prompts, r)
+
+print("Подписи раздела нет в списке")
+for name, hrefs, want in (
+        ("d5", ("#pizza", "#combo", "#snacks", "#drinks"), True),
+        ("d6", ("/pizza", "/combo", "/snacks", "/drinks"), False)):
+    cc, agent = fresh(name)
+    run = {"goal": GOAL, "history": [], "steps": 0, "qa": [], "lang": "ru",
+           "sites": [SITE]}
+    b = {"stage": "chosen", "section": "Напитки", "sections": SECTIONS,
+         "kind": "напиток"}
+    shown = [x for x in page(hrefs=hrefs) if x["text"] != "Напитки"]
+    obs = {"host": SITE, "tab_id": 1, "url": HOME, "shown": shown}
+    res = agent._browse_open(run, name, None, obs, b)
+    if want:
+        check("соседние разделы — якоря этой страницы: показ по разметке, "
+              "без клика", res and res[0] == "pause" and res[1] == CODE_LIST
+              and not clicked(cc) and run["history"][-1].endswith(
+                  "from the page's markup, without the click"), (res, run))
+    else:
+        check("соседние разделы — другие страницы: как раньше, «NOT found» "
+              "модели шагов", res == ("progress", None)
+              and b.get("stage") == "done"
+              and "NOT found in the list" in run["history"][-1], (res, run))
+
+print("Ссылка на эту же страницу (_same_page_link)")
+U = "https://pizzatest.test/"
+check("якорь, относительный якорь, кнопка без адреса, www — та же; другой "
+      "путь, запрос, сайт — нет",
+      all(ta._same_page_link({"href": h}, U) for h in (
+          U + "#drinks", "#drinks", "", "javascript:void(0)",
+          "https://www.pizzatest.test/#a"))
+      and not any(ta._same_page_link({"href": h}, U) for h in (
+          U + "drinks", U + "?cat=2", "https://other.test/#a"))
+      and not ta._same_page_link({"href": U}, U + "menu"))
+
+
 def _browser(pw):
     try:
         return pw.chromium.launch(headless=True)
@@ -320,6 +456,21 @@ def js_checks():
                       "Морс клюквенный — 139 ₽", "Сок апельсиновый — 199 ₽",
                       "Вода негазированная — 79 ₽",
                       "Холодный чай лимон — 129 ₽"], got)
+        _u, snap = _ba._parse_snapshot(str(pg.evaluate(_ba._js_fill(
+            _ba._SNAPSHOT_JS, BASE=_ba._mark_base(_ba.SNAPSHOT_MAX))) or ""))
+        city = [i for i in snap if i["text"] in ("Да", "Выбрать другой")]
+        check("снимок: кнопки окна города — не md (absolute-пузырь без "
+              "role=dialog и «popup» в классе), ссылка «Напитки» — якорь",
+              len(city) == 2 and not any(i["md"] for i in city)
+              and any(i["text"] == "Напитки"
+                      and i["href"] == "https://pizzatest.ru/#drinks"
+                      for i in snap), city)
+        cover = pg.locator("nav.cats a", has_text="Напитки").first.evaluate(
+            _ba._COVER_FN)
+        free = pg.locator("nav.cats a", has_text="Пицца").first.evaluate(
+            _ba._COVER_FN)
+        check("центр «Напитки» перекрыт окном города (клик откажет), "
+              "«Пицца» — нет", bool(cover) and not free, (cover, free))
         # Синтетика: две цены, обёртка, подпись картинки, EN, «от» в слове
         card = ("<article style='cursor:pointer'>{0}<p>{1}</p>"
                 "<button>Выбрать</button></article>")

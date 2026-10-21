@@ -1838,6 +1838,24 @@ def _host_in(host: str, hosts) -> bool:
         for g in (str(x).lower().removeprefix("www.") for x in hosts) if g)
 
 
+def _same_page_link(it: dict, url: str) -> bool:
+    # Ссылка элемента ведёт на эту же страницу: якорь («/#drinks»), кнопка
+    # или вкладка без адреса, «javascript:»; другой путь или запрос — нет
+    href = str(it.get("href") or "").strip()
+    if not href or href.lower().startswith("javascript:"):
+        return True
+    try:
+        a, p = urlsplit(href), urlsplit(str(url or ""))
+    except ValueError:
+        return False
+    if a.netloc and not _host_in(a.hostname or "", [p.hostname or ""]):
+        return False
+    # Относительный «#drinks» — без пути: та же страница
+    return ((not a.netloc and not a.path)
+            or a.path.rstrip("/") == p.path.rstrip("/")) \
+        and a.query == p.query
+
+
 def _ungrounded_options(q, seen: set) -> List[str]:
     """Варианты вопроса с ценой, у которых меньше половины слов названия
     встречались на страницах прогона (с общим началом из 4 букв, как
@@ -6754,7 +6772,9 @@ class TaskAgent:
     def _browse_open(self, run: dict, chat_id, router, obs: dict, b: dict
                      ) -> Optional[Tuple[str, Optional[str]]]:
         # Выбранный раздел — клик по его подписи (ссылка/вкладка раздела;
-        # все проверки клика — _do_element); не видно — открывает модель
+        # все проверки клика — _do_element); не видно — открывает модель.
+        # Клик не прошёл или подписи нет, а раздел — блоком на этой же
+        # странице: показ по разметке без клика (_browse_unclicked)
         sec = b.get("section") or ""
         shown = obs.get("shown") or []
         hits = [i for i, it in enumerate(shown, 1)
@@ -6763,6 +6783,9 @@ class TaskAgent:
         hits.sort(key=lambda i: shown[i - 1].get("vp") is False)
         n = hits[0] if hits else None
         if n is None:
+            res = self._browse_unclicked(run, chat_id, obs, b, None)
+            if res is not None:
+                return res
             b["stage"] = "done"
             self._record(run, f"open the section \"{sec}\"", (
                 f"NOT found in the list — the user chose the section "
@@ -6773,21 +6796,73 @@ class TaskAgent:
         out = self._do_element(run, chat_id, router,
                                {"action": "click", "n": n}, shown[n - 1], obs)
         # Раздел открыт, только если клик прошёл («→ ok»: браузер увидел
-        # реакцию — прокрутка к разделу тоже); «не уверен», вопрос, отбой,
-        # провал — дальше модель шагов
+        # реакцию — прокрутка к разделу тоже); «не уверен», отбой, провал —
+        # показ по разметке без клика, нет его — модель шагов; вопрос
+        # (подтверждение) — как был
         b["stage"] = ("opened" if out[0] == "progress"
                       and _last_line(run).endswith("→ ok") else "done")
+        if b["stage"] == "done" and out[0] == "progress":
+            res = self._browse_unclicked(run, chat_id, obs, b, shown[n - 1])
+            if res is not None:
+                return res
         return out
 
-    def _browse_show(self, run: dict, chat_id, obs: dict, b: dict
-                     ) -> Optional[Tuple[str, str]]:
+    def _browse_unclicked(self, run: dict, chat_id, obs: dict, b: dict,
+                          item: Optional[dict]
+                          ) -> Optional[Tuple[str, Optional[str]]]:
+        """Клик раздела не прошёл (стенд 21.10: поверх «Напитков» — окно
+        «Ваш город — Москва?», окном в снимке не помеченное; клик без
+        видимой реакции) или подписи раздела нет в списке, а меню
+        одностраничное: показ раздела по разметке без клика (_browse_show,
+        unclicked) — раньше показ доставался модели шагов (~8 тыс. симв.).
+        Одностраничное — ссылка раздела (item; нет — ссылки соседних
+        разделов) ведёт сюда же: якорь «#drinks», кнопка/вкладка без адреса.
+        Раздел отдельной страницей — как раньше: блок с тем же заголовком
+        здесь бывает витриной (4 позиции из 20). Позиций по разметке меньше
+        двух — None: как раньше, модель шагов. Окно поверх страницы код не
+        закрывает (город, cookie — решает модель): строка истории говорит
+        модели шагов, что раздел показан без клика и слой на месте."""
+        sec = b.get("section") or ""
+        url = str(obs.get("url") or "")
+        if not sec or run.get("cancel"):
+            return None
+        if item is not None:
+            links = [item]
+        else:
+            near = {s for s in b.get("sections") or () if s != sec}
+            links = [it for it in obs.get("shown") or ()
+                     if " ".join(_item_label(it).split())[:40] in near]
+        if not links or not all(_same_page_link(it, url) for it in links):
+            return None
+        covered = item is not None and "covered by another layer" \
+            in _last_line(run)
+        b["stage"] = "opened"
+        out = self._browse_show(run, chat_id, obs, b, unclicked=True)
+        if out is None:
+            b["stage"] = "done"
+            return None
+        logger.info(f"[TaskAgent] раздел «{sec}»: "
+                    + ("клик перекрыт" if covered else "клик не прошёл"
+                       if item is not None else "подписи нет в списке")
+                    + " — показ по разметке без клика")
+        if out[0] == "pause":
+            self._record(run, f"show the section \"{sec}\"", (
+                "shown to the user from the page's markup, without the click"
+                + (" (the layer over the page is still there)" if covered
+                   else "")))
+        return out
+
+    def _browse_show(self, run: dict, chat_id, obs: dict, b: dict,
+                     unclicked: bool = False) -> Optional[Tuple[str, str]]:
         """Раздел открыт — показать его человеку: до SECTION_LIST_MAX
         позиций целиком, больше — коротко (модель по странице). Позиции —
         подписи с ценой вокруг раздела; модели нет или она назвала то, чего
         на странице нет, — список кодом. Раздел по разметке целиком (каждая
         позиция блока — с названием и ценой) и позиций до SECTION_LIST_MAX
         — список кодом без модели: модель только переписала бы те же строки
-        (стенд 21.10, вызов 5: ~1,7 тыс. симв. и ~10 с)."""
+        (стенд 21.10, вызов 5: ~1,7 тыс. симв. и ~10 с). unclicked — клик
+        раздела не прошёл (_browse_unclicked): только разметка, без неё —
+        None (позиции снимка — вся страница, а не раздел)."""
         sec = b.get("section") or ""
         items = list(obs.get("shown") or ())
         found, marked = [], []
@@ -6799,7 +6874,7 @@ class TaskAgent:
                 # в общий снимок раздел не влезает
                 marked = [_no_card_button(x) for x in _ba.section_items(
                     obs["host"], sec, obs["tab_id"]) or ()]
-                if len(marked) < 2:
+                if len(marked) < 2 and not unclicked:
                     _u, found = _ba.snapshot_for_goal(obs["host"], sec,
                                                       obs["tab_id"])
         except Exception as e:
@@ -6858,6 +6933,8 @@ class TaskAgent:
         # порядок страницы уже не важны)
         products = _products([{"text": x} for x in marked])
         by_markup = len(products) >= 2
+        if unclicked and not by_markup:
+            return None
         if by_markup:
             labels, vp_known = products, False
         onscreen = {_show_label(it) for it in items
