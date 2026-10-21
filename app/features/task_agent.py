@@ -685,6 +685,25 @@ def _hist_short(line: str) -> str:
     return line[:cut + 3 + HIST_NOTE_SHORT].rstrip() + "…"
 
 
+# Итог find/read в истории: пока найденное/текст в промпте → когда их уже
+# нет (_hist_gone)
+_SHOWN_BELOW = (
+    (" — the text is shown below", " — its text was shown at the next step, "
+     "not repeated now"),
+    (" as the previous read (shown below):", " as the previous read:"),
+    (" elements around it are listed below", " elements around it were "
+     "listed at the next step, not repeated now"))
+
+
+def _hist_gone(line: str) -> str:
+    # Строка find/read, чьих элементов/текста в промпте уже нет: «shown
+    # below» — неправда (_prompt)
+    for now, then in _SHOWN_BELOW:
+        if now in line:
+            return line.replace(now, then, 1)
+    return line
+
+
 def _question_lines(resp) -> Optional[List[str]]:
     """Ответ модели на «что спросить человека?» → вопросы (строки с «?»;
     строки-варианты «- …» — под своим вопросом). Вступление («Исходя из
@@ -4613,7 +4632,8 @@ class TaskAgent:
                 # найденному номеру давал «элемент потерян»
                 run["obs_extra"] = {"items": found, "query": act["text"],
                                     "note": f"Elements around \"{act['text']}\"",
-                                    "private": bool(obs.get("private"))}
+                                    "private": bool(obs.get("private")),
+                                    "hist": len(run["history"])}
                 self._record(run, f"find \"{act['text']}\"",
                              f"found — {len(found)} elements around it are listed below")
             else:
@@ -4641,8 +4661,11 @@ class TaskAgent:
                 # «хожу по кругу»
                 same = run.get("read_last") == text
                 run["read_last"] = text
+                # hist — строка истории этого чтения: «shown below» она
+                # говорит, только пока текст в промпте (_hist_gone)
                 run["obs_extra"] = {"text": text,
-                                    "private": bool(obs.get("private"))}
+                                    "private": bool(obs.get("private")),
+                                    "hist": len(run["history"])}
                 self._record(run, "read the page", (
                     "ok — the SAME text as the previous read (shown below): "
                     "what you look for is not in the page text; use the "
@@ -4723,6 +4746,9 @@ class TaskAgent:
                 items = found
                 obs["note"] = extra.get("note")
         obs["text"] = extra.get("text")
+        # Строка истории find/read, чьи элементы/текст — в этом снимке
+        obs["extra_hist"] = (extra.get("hist") if obs["text"] or obs["note"]
+                             else None)
         obs["shown"] = _pick_shown(_active_layer(list(items or [])))
         self._note_seen(run, items or [], obs["text"])
         return obs
@@ -5147,6 +5173,11 @@ class TaskAgent:
             first = len(run["history"]) - len(hist) + 1
             public = {} if local else (run.get("hist_public") or {})
             hist = [public.get(first - 1 + i, h) for i, h in enumerate(hist)]
+            # «Текст ниже» — только у чтения, чей текст в этом промпте: run4
+            # req-0040 — после вопроса человеку «read → the text is shown
+            # below» осталась, а текста страницы не было
+            hist = [h if first - 1 + i == obs.get("extra_hist")
+                    else _hist_gone(h) for i, h in enumerate(hist)]
             # Заметки «after it» нужны свежим шагам; у ранних — их начало
             hist = [h if i >= len(hist) - HISTORY_FULL else _hist_short(h)
                     for i, h in enumerate(hist)]
