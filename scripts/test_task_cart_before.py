@@ -397,6 +397,39 @@ def main():
           and "was in the cart before this task" in run["history"][-1],
           run["history"][-1])
 
+    # Run5, сц. 4: «оставь» про лежавшую до задачи «Колу Зеро» — позиция
+    # входит в бриф после чтения корзины; она уже там: ✓ «уже лежало», не
+    # «ещё не в корзине», и «что-нибудь ещё?» второй раз не звучит
+    print("позиция брифа после чтения корзины (run5, сц. 4):")
+    cc = shop_cc(tmp)
+    zero = {"name": "Кола Зеро", "size": "0,5 л", "qty": 1}
+    slot = SlotRouter({"оставь": {"items": [zero]}})
+    ag = agent(cc, slot, past=past_order)
+    rt = ScriptedRouter([
+        {"action": "click", "n": 2, "label": "К оформлению заказа"},
+        {"action": "fail", "message": "стоп"}])
+    ag.start("c", "закажи пиццу как в прошлый раз", rt, user_id="A")
+    r = ag.feed("c", "оставь", rt, user_id="A") or ""
+    run = ag._runs.get("c") or ag.__dict__.get("_finished", {}).get(
+        "c", {}).get("run") or {}
+    pre = [x["key"] for x in run.get("cart_adds") or () if x.get("pre")]
+    check("«Кола Зеро» из ответа — отмечена «уже в корзине» (pre), "
+          "в ожидающих позициях её нет",
+          pre.count("Кола Зеро") == 1 and not ag._pending_items(run),
+          f"{pre} {ag._pending_items(run)}")
+    plan = ag._plan_lines(run)
+    check("план модели: «Кола Зеро» ✓ «лежало до задачи», не ▶ «положить»",
+          any(p.startswith("✓") and "Кола Зеро" in p
+              and "before this task" in p for p in plan)
+          and not any(p.startswith("▶") and "Кола Зеро" in p for p in plan),
+          f"{plan}")
+    check("второго «что-нибудь ещё?» нет: «К оформлению заказа» нажато, "
+          "в истории — сверка с прочитанной корзиной",
+          clicks(cc) == [39, 104] and "Добавить что-нибудь ещё" not in r
+          and any("compare the new items with the cart read earlier" in h
+                  and "Кола Зеро" in h for h in run.get("history") or ()),
+          f"{clicks(cc)} {r!r}")
+
     # Кнопка корзины кодом корзину не открыла — дальше модель
     cc = shop_cc(tmp)
     orig = cc._dispatch

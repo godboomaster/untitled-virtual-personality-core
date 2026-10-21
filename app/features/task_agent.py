@@ -2786,6 +2786,8 @@ class TaskAgent:
             what, ch = fast
             changed = _apply_brief(brief, ch,
                                    src="private" if private else "user")
+            if changed:
+                self._cart_recheck(run)
             # Одна строка: разбор без модели (в run["traffic"] его нет); в
             # лог — вид вопроса и какие слоты изменились, без значений
             logger.info(f"[TaskAgent] разбор ответа без модели ({what}): "
@@ -2866,6 +2868,7 @@ class TaskAgent:
             logger.info("[TaskAgent] бриф обновлён: "
                         + ", ".join(sorted(str(k) for k, v in ch.items()
                                            if v)))
+            self._cart_recheck(run)
         return ch
 
     def _brief_fast(self, run: dict, aw: dict, answer, names=()
@@ -6052,32 +6055,8 @@ class TaskAgent:
             run["cart_pre"] = dict(self._cart_first(run) or now or {
                 "count": sum(x["qty"] for x in lines)})
         items = (run.get("brief") or {}).get("items") or []
-        adds = run.setdefault("cart_adds", [])
-        had, unsure = [], []
-        pairs = _cart_had(items, lines)
-
-        def txt(b):
-            return (_PRIVATE_SLOT if b.get("src") == "private"
-                    else self._item_text(b))
-        for i, b in enumerate(items):
-            j = pairs.get(i)
-            if j is None:
-                if any(_same_item(b["name"], ln["name"]) for ln in lines):
-                    # Похожая строка есть, а строго не сошлась («Кола» без
-                    # размера при «Кола 0,5 л» и «Кола Зеро 0,5 л»): ни «уже
-                    # там», ни «ещё нет» — решают модель и человек
-                    unsure.append(b["name"])
-                continue
-            had.append(txt(b))
-            for _ in range(min(lines[j]["qty"], b.get("qty") or 1)):
-                adds.append({"key": b["name"], "label": lines[j]["name"][:40],
-                             "verified": True, "pre": True,
-                             "hist": len(run["history"])})
-        run["cart_unsure"] = unsure
-        if had:
-            # Повтор «В корзину» лежавшего — сначала назад модели (гейт)
-            run["cart_qa_mark"] = len(run.get("qa") or ())
-            run["cart_bounced"] = False
+        marked, unsure = self._cart_pre_mark(run)
+        had = [self._cart_item_text(b) for b in marked]
         logger.info(f"[TaskAgent] корзина кодом: {len(lines)} строк, из брифа "
                     f"уже там {len(had)}, не уверен {len(unsure)}")
         shown = "; ".join(self._cart_line_text(x) for x in lines[:12])
@@ -6089,7 +6068,8 @@ class TaskAgent:
         if unsure:
             notes.append(
                 "Not sure these are there (a similar line is): "
-                + ", ".join(txt(b) for b in items if b["name"] in unsure)
+                + ", ".join(self._cart_item_text(b) for b in items
+                            if b["name"] in unsure)
                 + " — compare with the lines above before adding")
         if not had and not unsure:
             notes.append("None of the plan's items is there yet")
@@ -6101,6 +6081,71 @@ class TaskAgent:
                 f"{line} → ok — its lines are hidden (an item was named on a "
                 "private page)")
         return True
+
+    @staticmethod
+    def _cart_item_text(b: dict) -> str:
+        # Позиция брифа в строке истории о корзине: названная на приватной
+        # странице — заглушкой
+        return (_PRIVATE_SLOT if b.get("src") == "private"
+                else TaskAgent._item_text(b))
+
+    @staticmethod
+    def _cart_pre_mark(run: dict) -> Tuple[List[dict], List[str]]:
+        """Позиции брифа, которые лежат в корзине, прочитанной кодом
+        (run["cart_lines"], _cart_look; строго — _cart_had), — в корзину
+        задачи с пометкой pre: план отметит их ✓ «уже в корзине», повтор
+        «В корзину» отобьёт гейт. Уже учтённые (положила задача или pre) не
+        трогаем. → (отмеченные сейчас позиции брифа, названия похожих, но
+        строго не сошедшихся — ни «уже там», ни «ещё нет»: решают модель и
+        человек)."""
+        lines = run.get("cart_lines") or []
+        items = (run.get("brief") or {}).get("items") or []
+        adds = run.setdefault("cart_adds", [])
+        marked, unsure = [], []
+        pairs = _cart_had(items, lines)
+        for i, b in enumerate(items):
+            if _brief_count(b, items, adds):
+                continue
+            j = pairs.get(i)
+            if j is None:
+                if any(_same_item(b["name"], ln["name"]) for ln in lines):
+                    # Похожая строка есть, а строго не сошлась («Кола» без
+                    # размера при «Кола 0,5 л» и «Кола Зеро 0,5 л»)
+                    unsure.append(b["name"])
+                continue
+            marked.append(b)
+            for _ in range(min(lines[j]["qty"], b.get("qty") or 1)):
+                adds.append({"key": b["name"], "label": lines[j]["name"][:40],
+                             "verified": True, "pre": True,
+                             "hist": len(run["history"])})
+        run["cart_unsure"] = unsure
+        if marked:
+            # Повтор «В корзину» лежавшего — сначала назад модели (гейт)
+            run["cart_qa_mark"] = len(run.get("qa") or ())
+            run["cart_bounced"] = False
+        return marked, unsure
+
+    def _cart_recheck(self, run: dict):
+        """Бриф изменился после чтения корзины кодом: новая позиция может
+        уже лежать в ней. Run5, сц. 4: «оставь» про лежавшую до задачи
+        «Колу Зеро» — позиция вошла в бриф после _cart_look и числилась «ещё
+        не в корзине»: план требовал положить её второй раз, «что-нибудь
+        ещё?» звучал снова. Отмеченное здесь человек уже видел строками
+        корзины в вопросе — счёт вопроса (more_n) сдвигается вместе с ним."""
+        if not run.get("cart_read"):
+            return
+        n0 = len(run.get("cart_adds") or ())
+        marked, _unsure = self._cart_pre_mark(run)
+        if not marked:
+            return
+        if run.get("more_n") is not None:
+            run["more_n"] += len(run["cart_adds"]) - n0
+        logger.info(f"[TaskAgent] корзина кодом: после брифа уже там ещё "
+                    f"{len(marked)}")
+        self._record(run, "compare the new items with the cart read earlier",
+                     "ok — already in the cart before this task, ✓ — never "
+                     "add them again: " + ", ".join(
+                         self._cart_item_text(b) for b in marked))
 
     def _cart_look_step(self, run: dict, chat_id, router, obs: dict
                         ) -> Optional[Tuple[str, Optional[str]]]:
