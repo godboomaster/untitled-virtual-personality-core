@@ -23,7 +23,7 @@ _ask_more, _cart_look, _cart_look_step, _cart_lines, _cart_line_fits).
   или в брифе нет сайта — ход модели, как раньше;
 * не повтор: модель открыла корзину и жмёт «К оформлению» — не нажато,
   вопрос кода со строками корзины, лежавшее до задачи — и в вопросе о
-  заказе; после «нет» — нажато;
+  заказе; после «нет» — нажато; то же для ссылки «Оформление заказа»;
 * корзина не разобрана — вопрос с числом со шапки, «не проверял»;
   похожее, но не то («Кола» без размера) — «не уверен», а не «ещё нет»;
 * английский ход — английские фразы; строки с приватной страницы —
@@ -160,19 +160,23 @@ CO_ITEMS = [
     {"idx": 202, "tag": "button", "role": "button", "text": "Оформить заказ"}]
 
 
-def shop_cc(base_dir, text=DRAWER_TEXT, drawer=False, badge="Корзина 3"):
+def shop_cc(base_dir, text=DRAWER_TEXT, drawer=False, badge="Корзина 3",
+            co_label=None):
     """Магазин из run4: главная, шторка корзины по клику на «Корзина 3»
     (шапка остаётся в снимке под окном), «К оформлению заказа» → /checkout,
     «Выбрать» у пепперони → окно товара. Чтение — текст шторки."""
     cc = real_cc({}, url=MAIN, base_dir=base_dir)
     cc.drawer, cc.window, cc.reads = drawer, False, 0
     items = [dict(x, text=badge) if x["idx"] == 39 else x for x in MAIN_ITEMS]
+    drawer_items = [dict(x, text=co_label, tag="a", role="link")
+                    if co_label and x["idx"] == 104 else x
+                    for x in DRAWER_ITEMS]
 
     def _snap(site_word, chat_id="", auto_dismiss=False):
         if cc.cur == CO:
             page = CO_ITEMS
         else:
-            page = items + (DRAWER_ITEMS if cc.drawer else []) \
+            page = items + (drawer_items if cc.drawer else []) \
                 + (PIZZA_WINDOW if cc.window else [])
         return cc.cur, SITE, [dict(x) for x in page], 1, None
 
@@ -446,6 +450,29 @@ def main():
     r = ag.feed("g", "нет", rt, user_id="A") or ""
     check("после «нет» — «К оформлению заказа» нажато",
           clicks(cc) == [39, 104], f"{clicks(cc)} {r}")
+
+    # Ссылка «Оформление заказа» (не checkout_step_label, не коммит) — тот же
+    # гейт «что-нибудь ещё?»
+    check("подписи перехода к оформлению вне словаря гейта: «Оформление "
+          "заказа», «Check out», «Kasse»; «Условия оформления заказа» — нет",
+          all(ta._CHECKOUT_GO_RE.fullmatch(x) for x in (
+              "Оформление заказа", "Check out", "Kasse"))
+          and not ta._CHECKOUT_GO_RE.fullmatch("Условия оформления заказа"))
+    cc = shop_cc(tmp, co_label="Оформление заказа")
+    ag = agent(cc, SlotRouter({goal: {"site": SITE, "items": [
+        dict(PEPPERONI), dict(COLA)]}}))
+    rt = ScriptedRouter([
+        {"action": "click", "n": 5, "label": "Корзина 3"},
+        {"action": "click", "n": 2, "label": "Оформление заказа"},
+        {"action": "click", "n": 2, "label": "Оформление заказа"},
+        {"action": "fail", "message": "стоп"}])
+    q = ag.start("l", goal, rt, user_id="A") or ""
+    check("ссылка «Оформление заказа» без «что-нибудь ещё?» — не нажата, "
+          "вопрос кода", clicks(cc) == [39]
+          and "Добавить что-нибудь ещё?" in q, f"{clicks(cc)} {q}")
+    ag.feed("l", "нет", rt, user_id="A")
+    check("после «нет» — нажата без «да»", clicks(cc) == [39, 104],
+          f"{clicks(cc)}")
 
     # Корзина не разобрана — число со шапки, «не проверял»
     cc = shop_cc(tmp, text="Ваша корзина\nчто-то непонятное\nК оформлению")

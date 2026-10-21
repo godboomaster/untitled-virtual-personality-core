@@ -1020,6 +1020,11 @@ def _cart_verdict(before: dict, after: dict) -> str:
 # Корзина отдельной страницей (не оформление): /cart, /basket, /korzina
 _CART_URL_RE = re.compile(r"cart|basket|korzin|корзин|warenkorb|panier|"
                           r"carrito|carrello|koszyk|sepet", re.IGNORECASE)
+# Переход к оформлению, которого не знают checkout_step_label и коммит:
+# «Оформление заказа», «Check out», «Kasse» (подпись целиком)
+_CHECKOUT_GO_RE = re.compile(
+    r"\W*(?:(?:перейти\s+к\s+)?оформлени[ею](?:\s+заказа)?|check[\s-]?out|"
+    r"(?:zur\s+)?kasse)\W*", re.IGNORECASE)
 # Счётчик строки корзины одной строкой текста: «− 1 +»
 _QTY_ONE_RE = re.compile(r"^[−–-]\s*(\d{1,3})\s*\+$")
 # Шум текста корзины: заголовок («Корзина», «3 товара на 837 ₽»), итог,
@@ -5727,7 +5732,12 @@ class TaskAgent:
                     risk = dialog
                     a["context"] = str(item.get("ctx") or "")[:200]
                     a["in_dialog"] = bool(item.get("md"))
-            if (step or pay or risk == "payment" or commit
+            # Переход к оформлению подписью, которой нет ни в переходах
+            # (checkout_step_label), ни в коммитах: ссылка «Оформление
+            # заказа», «Check out», «Kasse» — только для «что-нибудь ещё?»,
+            # «да» на сам переход не нужно
+            go = bool(_CHECKOUT_GO_RE.fullmatch(" ".join(label.split())))
+            if (step or go or pay or risk == "payment" or commit
                     or dialog in ("payment", "commit")) \
                     and _ORDER_GOAL_RE.search(run.get("goal") or "") \
                     and self._more_due(run, before_checkout=True):
