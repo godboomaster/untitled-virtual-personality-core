@@ -355,6 +355,17 @@ def main():
     what, missing = ag1._added_items(run1)
     check("«В корзине: …» — «Кола Зеро», не добавлено — «Кола»",
           what == ["Кола Зеро"] and missing == ["Кола"], (what, missing))
+    # План (человеку и модели шагов) — тем же счётом: «Кола Зеро» корзины
+    # не отмечает «Колу»
+    pv = {s["text"]: s["state"] for s in ag1._plan_view(run1, "busy")}
+    pl = "\n".join(ag1._plan_lines(run1))
+    check("план: «Кола Зеро» ✓, «Кола» — нет; лишней строки «в корзине» нет",
+          pv.get("положить «Кола» в корзину") != "done"
+          and pv.get("положить «Кола Зеро» в корзину") == "done"
+          and not any("в корзине" in t and "положить" not in t for t in pv)
+          and 'put "Кола Зеро" into the cart — it is in the cart' in pl
+          and 'put "Кола" into the cart — it is in the cart' not in pl,
+          (pv, pl))
     run2 = cart_run(zero + [{"key": "Кола", "verified": True}])
     what, missing = ag1._added_items(run2)
     check("обе в корзине — обе в составе, ничего не пропало, «готово» "

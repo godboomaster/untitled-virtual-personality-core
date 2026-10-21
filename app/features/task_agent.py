@@ -3494,7 +3494,9 @@ class TaskAgent:
         for k in run.get("kinds") or ():
             steps.append((False, f"choose “{k}”" if en else f"выбрать «{k}»"))
         for b in items:
-            hit = [x for x in adds if _same_item(b["name"], x["key"])]
+            # Добавленное — своей позиции брифа (_brief_pick): «Кола Зеро»
+            # корзины не отмечает «Колу» при обеих в брифе
+            hit = [x for x in adds if _brief_pick(x["key"], items) is b]
             txt = self._item_text(b)
             done = len(hit) >= (b.get("qty") or 1)
             if done and all(x.get("pre") for x in hit):
@@ -3504,8 +3506,8 @@ class TaskAgent:
                 continue
             steps.append((done, f"put “{txt}” in the cart" if en
                           else f"положить «{txt}» в корзину"))
-        for key in dict.fromkeys(x["key"] for x in adds if not any(
-                _same_item(b["name"], x["key"]) for b in items)):
+        for key in dict.fromkeys(x["key"] for x in adds
+                                 if _brief_pick(x["key"], items) is None):
             steps.append((True, f"“{key}” is in the cart" if en
                           else f"«{key}» в корзине"))
         steps.append((bool(run.get("more_no")), "ask “anything else?”" if en
@@ -6318,15 +6320,17 @@ class TaskAgent:
                                  "the section was not shown, scroll to its "
                                  "items and ask the user, listing them"))
         for b in items:
-            hit = [x for x in adds if _same_item(b["name"], x["key"])]
+            # Добавленное — своей позиции брифа (_brief_pick): «Кола Зеро»
+            # корзины не отмечает «Колу» при обеих в брифе
+            hit = [x for x in adds if _brief_pick(x["key"], items) is b]
             done = len(hit) >= (b.get("qty") or 1)
             # Лежало в корзине до задачи (прочитал код, _cart_look) — ✓ тоже
             pre = done and all(x.get("pre") for x in hit)
             steps.append((done, f"put \"{self._item_text(b)}\" into the cart"
                           + (" — it was in the cart before this task" if pre
                              else " — it is in the cart" if done else "")))
-        for key in dict.fromkeys(x["key"] for x in adds if not any(
-                _same_item(b["name"], x["key"]) for b in items)):
+        for key in dict.fromkeys(x["key"] for x in adds
+                                 if _brief_pick(x["key"], items) is None):
             steps.append((True, f"\"{key}\" is in the cart"))
         if run.get("more_n") is not None and not run.get("more_no"):
             steps.append((False, "the user answered \"anything else?\" — do "
