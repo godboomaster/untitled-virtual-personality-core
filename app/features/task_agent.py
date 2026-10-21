@@ -122,6 +122,10 @@ PRE_PAGE_LINES = 60
 # (сколько, цены, виды с примерами); «покажи все» — не длиннее этого
 SECTION_LIST_MAX = 10
 SECTION_ALL_MAX = 40
+# Разделы на служебной странице сайта (доставка, контакты — вкладка от
+# прошлой задачи): столько раз попытка откладывается до другой страницы того
+# же сайта (первый раз — главная кодом), дальше — модель шагов, без разделов
+SECTIONS_RETRY_MAX = 2
 # Промежуточные сообщения о ходе — пачкой не чаще раза в N секунд
 NOTIFY_EVERY_SEC = 20
 # Эффект действия для модели: сколько появившихся/пропавших подписей показать
@@ -146,6 +150,14 @@ SEARCH_SNIPPET_MAX = 160
 MEMORY_PER_CHAT = 30
 MEMORY_SHOWN = 3
 MEMORY_TEXT_MAX = 300
+# Прошлая задача в облачном промпте шага — коротко (_past_line short): блок
+# уходит в КАЖДЫЙ шаг прогона, а целиком (вопросы с вариантами и ценами,
+# итог) это ~1,5 тыс. симв. на запись (стенд 21.10). Итог — до
+# PAST_RESULT_SHORT, пар «вопрос — ответ» у записи без позиций заказа —
+# первые PAST_QA_SHORT, вопрос — до PAST_Q_SHORT
+PAST_RESULT_SHORT = 160
+PAST_QA_SHORT = 3
+PAST_Q_SHORT = 100
 # Слова-команды не делают задачи «одной темы» («закажи суши» ≠ «закажи
 # пиццу»): тема — по остальным словам цели. Основы — после stem()
 _GOAL_STOP_STEMS = frozenset({
@@ -593,6 +605,74 @@ def _rec_qa_private(rec: dict) -> set:
     return out
 
 
+def _past_items(rec: dict) -> str:
+    # Что заказали в прошлой задаче (бриф записи, _remember): «пепперони
+    # 30 см (традиционное), кола 0,5 л ×2»; записи из файла — без доверия
+    b = rec.get("brief") if isinstance(rec.get("brief"), dict) else {}
+    out = []
+    for it in b.get("items") if isinstance(b.get("items"), list) else ():
+        if not isinstance(it, dict) or not str(it.get("name") or "").strip():
+            continue
+        s = " ".join(str(it["name"]).split())
+        if it.get("size"):
+            s += f" {it['size']}"
+        opts = it.get("options") if isinstance(it.get("options"), list) else []
+        # Запись старого кода — с отказом от добавок опцией (_no_extras)
+        opts = [o for o in opts if o and not _no_extras(o)]
+        if opts:
+            s += " (" + ", ".join(str(o) for o in opts) + ")"
+        qty = it.get("qty")
+        if isinstance(qty, int) and not isinstance(qty, bool) and qty > 1:
+            s += f" ×{qty}"
+        out.append(s)
+    return ", ".join(out)
+
+
+def _past_short(rec: dict) -> str:
+    """Хвост короткой строки прошлой задачи для облака (_past_line short):
+    что заказали — позиции брифа записи вместо пар «вопрос — ответ» (бриф —
+    то, что они решили до оформления; ответы с оформления облаку и так
+    заглушкой); у записи без позиций (справка, форма, заказ без разбора) —
+    первые PAST_QA_SHORT пар без списков вариантов, приватные — заглушкой;
+    итог — до PAST_RESULT_SHORT, заглушка итога (_PRIVATE_RESULT) — не
+    нужна. Стенд 21.10: 1,4–1,6 тыс. симв. блока в каждом шаге."""
+    from app.features.computer_control import command_secret_values
+    out = ""
+    items = _past_items(rec)
+    b = rec.get("brief") if isinstance(rec.get("brief"), dict) else {}
+    site = b.get("site") if isinstance(b.get("site"), str) else ""
+    if items:
+        if len(items) > MEMORY_TEXT_MAX:
+            items = items[:MEMORY_TEXT_MAX].rstrip() + "…"
+        out += "; ordered: " + _redact(items, command_secret_values(items))
+        if site and site not in (rec.get("sites") or ()):
+            out += f" on {site}"
+    else:
+        qpriv = _rec_qa_private(rec)
+        pairs = [(i, p) for i, p in enumerate(rec.get("qa") or ())
+                 if isinstance(p, (list, tuple)) and len(p) >= 2]
+        for i, (q, a, *_x) in pairs[:PAST_QA_SHORT]:
+            if i in qpriv:
+                q, a = _PRIVATE_QUESTION, _PRIVATE_ANSWER
+            elif _secret_answer(q, a):
+                a = mask(a)
+            else:
+                a = _redact(a, command_secret_values(str(a or "")))
+            head = _question_head(q) if _option_texts(q) else " ".join(
+                str(q or "").split())
+            if len(head) > PAST_Q_SHORT:
+                head = head[:PAST_Q_SHORT].rstrip() + "…"
+            out += f"\n  - Q: {head}\n    A: {a}"
+        if len(pairs) > PAST_QA_SHORT:
+            out += f"\n  - (+{len(pairs) - PAST_QA_SHORT} more questions)"
+    res = " ".join(str(rec.get("result") or "").split())
+    if res and res != _PRIVATE_RESULT:
+        if len(res) > PAST_RESULT_SHORT:
+            res = res[:PAST_RESULT_SHORT].rstrip() + "…"
+        out += f"\n  Ended with: {res}"
+    return out
+
+
 def _hist_short(line: str) -> str:
     # Ранний шаг истории: действие и итог целиком, заметки после итога
     # (« | after it: …», « | expected …») — первые HIST_NOTE_SHORT символов.
@@ -603,6 +683,25 @@ def _hist_short(line: str) -> str:
     if cut < 0 or len(line) - cut - 3 <= HIST_NOTE_SHORT:
         return line
     return line[:cut + 3 + HIST_NOTE_SHORT].rstrip() + "…"
+
+
+# Итог find/read в истории: пока найденное/текст в промпте → когда их уже
+# нет (_hist_gone)
+_SHOWN_BELOW = (
+    (" — the text is shown below", " — its text was shown at the next step, "
+     "not repeated now"),
+    (" as the previous read (shown below):", " as the previous read:"),
+    (" elements around it are listed below", " elements around it were "
+     "listed at the next step, not repeated now"))
+
+
+def _hist_gone(line: str) -> str:
+    # Строка find/read, чьих элементов/текста в промпте уже нет: «shown
+    # below» — неправда (_prompt)
+    for now, then in _SHOWN_BELOW:
+        if now in line:
+            return line.replace(now, then, 1)
+    return line
 
 
 def _question_lines(resp) -> Optional[List[str]]:
@@ -918,6 +1017,153 @@ def _cart_verdict(before: dict, after: dict) -> str:
     return "unknown"
 
 
+# Корзина отдельной страницей (не оформление): /cart, /basket, /korzina
+_CART_URL_RE = re.compile(r"cart|basket|korzin|корзин|warenkorb|panier|"
+                          r"carrito|carrello|koszyk|sepet", re.IGNORECASE)
+# Переход к оформлению, которого не знают checkout_step_label и коммит:
+# «Оформление заказа», «Check out», «Kasse» (подпись целиком)
+_CHECKOUT_GO_RE = re.compile(
+    r"\W*(?:(?:перейти\s+к\s+)?оформлени[ею](?:\s+заказа)?|check[\s-]?out|"
+    r"(?:zur\s+)?kasse)\W*", re.IGNORECASE)
+# Счётчик строки корзины одной строкой текста: «− 1 +»
+_QTY_ONE_RE = re.compile(r"^[−–-]\s*(\d{1,3})\s*\+$")
+# Шум текста корзины: заголовок («Корзина», «3 товара на 837 ₽»), итог,
+# кнопки строки и шторки («Удалить», «Изменить», «К оформлению»)
+_CART_NOISE_RE = re.compile(
+    r"корзин|cart|basket|итог|всего|сумма|total|удалить|убрать|изменить|"
+    r"оформ|checkout|remove|delete|edit|change|(?<![^\W\d_])(?:товар(?:а|ов)?|"
+    r"items?)(?![^\W\d_])", re.IGNORECASE)
+# Слова строки корзины, которые позицию не отличают: «тесто», размер словом,
+# единицы («Средняя 30 см, традиционное тесто» = «30 см, традиционное»)
+_CART_PLAIN_RE = re.compile(
+    r"^(?:тест\w*|dough|crust|размер\w*|size|объ[её]м\w*|volume|порци\w*|"
+    r"portion|литр\w*|lit(?:er|re)s?|грамм\w*|grams?|штук\w*|pcs|маленьк\w*|"
+    r"средн\w*|больш\w*|small|medium|large|regular)$")
+
+
+def _cart_noise(ln: str) -> bool:
+    rest = _PRICE_RE.sub(" ", ln)
+    if not re.search(r"[^\W\d_]", rest):
+        return True  # цена, количество, глиф («×», «+»); «0,5 л» — нет
+    return len(rest.split()) <= 4 and bool(_CART_NOISE_RE.search(rest))
+
+
+def _cart_lines(text) -> Optional[List[dict]]:
+    """Строки открытой корзины из её текста (чтение для агента: шторка
+    первой): у строки корзины — счётчик «− N +», перед ним название и
+    строка подробностей («Пепперони» / «30 см, традиционное тесто»), цена
+    — до счётчика или после. Заголовок, цены, «Удалить», допродажа без
+    счётчика («Соус сырный 49 ₽ +») — мимо. → [{"name", "detail", "qty",
+    "price", "price_s"}] или None — строение не узнано (больше двух строк
+    текста перед счётчиком, счётчиков нет): тогда корзину читает модель."""
+    rows = [x for x in (" ".join(r.split())
+                        for r in str(text or "").splitlines()) if x]
+    out: List[dict] = []
+    cur: List[str] = []
+    price = None
+    i = 0
+    while i < len(rows):
+        ln = rows[i]
+        m = _QTY_ONE_RE.match(ln)
+        qty, step = (int(m.group(1)), 1) if m else (None, 0)
+        if qty is None and re.fullmatch(r"[−–-]", ln) and i + 2 < len(rows) \
+                and re.fullmatch(r"\d{1,3}", rows[i + 1]) \
+                and rows[i + 2] == "+":
+            qty, step = int(rows[i + 1]), 3
+        if qty is not None:
+            if qty >= 1:
+                if not 1 <= len(cur) <= 2:
+                    return None
+                out.append({"name": cur[0],
+                            "detail": cur[1] if len(cur) > 1 else "",
+                            "qty": qty, "price": price[0] if price else None,
+                            "price_s": price[1] if price else ""})
+            # «− 0 +» — допродажа, не строка корзины
+            cur, price = [], None
+            i += step
+            continue
+        if _cart_noise(ln):
+            m = _CART_SUM_RE.search(ln)
+            v = _money(m.group(1)) if m else None
+            if v is not None:
+                p = (v, " ".join(m.group(0).split()))
+                if cur:
+                    price = p  # до счётчика — этой строки
+                elif out and out[-1]["price"] is None:
+                    # после счётчика — прошлой
+                    out[-1]["price"], out[-1]["price_s"] = p
+            i += 1
+            continue
+        cur.append(ln[:80])
+        i += 1
+    return out or None
+
+
+def _cart_lines_fit(lines: List[dict], st: Optional[dict], text) -> bool:
+    """Разбор сходится с корзиной сайта: счётчик шапки — штуки или строки,
+    без счётчика — сумма (шапки или итог текста) = сумма цен строк (цена
+    строки бывает за штуку и за все). Не сверить — не уверены."""
+    st = st or {}
+    units = sum(x["qty"] for x in lines)
+    if st.get("count") is not None:
+        return st["count"] in (units, len(lines))
+    total = st.get("sum")
+    if total is None:
+        total = _page_total(text)
+    if total is None or any(x["price"] is None for x in lines):
+        return False
+    return any(abs(s - total) < 0.5 for s in (
+        sum(x["price"] for x in lines),
+        sum(x["price"] * x["qty"] for x in lines)))
+
+
+def _cart_toks(s) -> List[str]:
+    return [t.replace(".", ",") for t in re.findall(
+        r"\d+(?:[.,]\d+)?|[^\W\d_]+",
+        str(s or "").casefold().replace("ё", "е"))]
+
+
+def _cart_line_fits(b: dict, ln: dict) -> bool:
+    """Строка корзины — эта позиция брифа, строго (не _same_item): название
+    — начало строки слово в слово (общее начало из 4 букв, как
+    _same_word), числа — ровно размер брифа, слова вариантов брифа есть в
+    строке, лишних слов в строке нет. «Кола» ≠ «Кола Зеро 0,5 л» (лишнее
+    «зеро»), «Кола 0,5 л» ≠ «Кола 1 л», «Пепперони 30 см, традиционное» ≠
+    «… + бекон». Сомнение — не она: позицию положит/проверит модель."""
+    name = _cart_toks(b.get("name"))
+    have = _cart_toks(f"{ln.get('name') or ''} {ln.get('detail') or ''}")
+    if not name or len(have) < len(name) or not all(
+            x == y if x[0].isdigit() or y[0].isdigit() else _same_word(x, y)
+            for x, y in zip(name, have)):
+        return False
+    rest = have[len(name):]
+    want = _cart_toks(b.get("size")) + [
+        t for o in b.get("options") or () if not _NO_ADDONS_RE.search(str(o))
+        for t in _cart_toks(o)]
+    if {t for t in rest if t[0].isdigit()} \
+            != {t for t in want if t[0].isdigit()}:
+        return False
+
+    def words(ts):
+        return [t for t in ts if not t[0].isdigit() and len(t) >= 3
+                and not _CART_PLAIN_RE.match(t)]
+    rw, ww = words(rest), words(want)
+    return all(any(_same_word(x, y) for y in ww) for x in rw) \
+        and all(any(_same_word(x, y) for y in rw) for x in ww)
+
+
+def _cart_had(items: List[dict], lines: List[dict]) -> Dict[int, int]:
+    # Позиция брифа → её строка корзины: только единственная пара в обе
+    # стороны (две подходящие строки или строка на две позиции — сомнение)
+    pairs = {}
+    for i, b in enumerate(items):
+        hits = [j for j, ln in enumerate(lines) if _cart_line_fits(b, ln)]
+        if len(hits) == 1:
+            pairs[i] = hits[0]
+    used = list(pairs.values())
+    return {i: j for i, j in pairs.items() if used.count(j) == 1}
+
+
 # Цель — вопрос-справка, а не заказ: «узнай, сколько стоит доставка», «до
 # скольки работают?», «есть ли доставка в Химки», «проверь мой заказ»,
 # «find out how much delivery costs». Признаки языковые, не сайта: глагол
@@ -1075,6 +1321,20 @@ _NOT_PRODUCT_RE = re.compile(r"доставк|акци|скидк|бесплат
 _SERVICE_LINK_RE = re.compile(
     r"(?<![^\W\d_])(?:контакты|приложени[ея]|ваканси\w*|карьера|contacts|"
     r"contact\s+us|apps?|jobs?|careers?)(?![^\W\d_])", re.IGNORECASE)
+# Путь служебной страницы сайта — каталога на ней нет (_service_page):
+# доставка, контакты, о компании, помощь, вакансии, правила, акции,
+# приложение, вход, новости, отзывы. Словом пути: «/info/delivery-terms»,
+# «/o-nas» — да; «/apple», «/helpful» — нет
+_SERVICE_PATH_RE = re.compile(
+    r"(?<![^\W\d_])(?:deliver\w*|shipping|dostavk\w*|доставк\w*|contacts?|"
+    r"kontakt\w*|контакт\w*|about|o-nas|o-kompanii|о-нас|о-компании|company|"
+    r"faq|help|support|pomoshch?\w*|помощ\w*|vacanc\w*|vakansi\w*|ваканси\w*|"
+    r"jobs?|careers?|privacy|polic(?:y|ies)|terms|oferta|оферт\w*|rules|"
+    r"pravila|правила|cookies?|legal|allergen\w*|аллерген\w*|promo\w*|"
+    r"akci\w*|aktsi\w*|акци\w*|apps?|download|prilozheni\w*|приложени\w*|"
+    r"login|sign-?in|sign-?up|register|auth|account|profile|cabinet|kabinet|"
+    r"lk|news|novosti|новости|blog|press|reviews?|otzyv\w*|отзыв\w*)"
+    r"(?![^\W\d_])", re.IGNORECASE)
 # «Покажи все» — весь раздел списком
 _SHOW_ALL_RE = re.compile(r"(?:покажи|перечисли|список|дай)\s+(?:вс[её]|все\s+"
                           r"варианты|целиком|полностью)|вс[её]\s+варианты|"
@@ -1085,8 +1345,11 @@ _SEARCH_HOST_RE = re.compile(r"(?:^|\.)(?:google|yandex|ya|bing|duckduckgo|"
                              r"yahoo|ecosia|startpage)\.", re.IGNORECASE)
 # Ответ «оставь как выбрано» на вопрос о товаре
 _AS_IS_RE = re.compile(r"как\s+есть|как\s+(?:выбран|стоит)|остав(?:ь|ляй|ить|"
-                       r"ляем)|без\s+изменени|as\s+(?:it\s+)?is|as\s+selected|"
-                       r"keep\s+(?:it|as)|no\s+changes?", re.IGNORECASE)
+                       r"ляем)|без\s+изменени|так\s+и\s+клад|клад(?:и|ите)\s+"
+                       r"так|пусть\s+(?:будет\s+)?так|(?:ничего\s+)?не\s+"
+                       r"меняй|as\s+(?:it\s+)?is|as\s+selected|keep\s+(?:it|"
+                       r"as)|leave\s+it|don'?t\s+change|no\s+changes?",
+                       re.IGNORECASE)
 # Цель «оформи как есть» — собранное не трогать, выбор из каталога не нужен
 # (_AS_IS_RE для цели широк: «доставь», «поставь» ⊃ «оставь»)
 _AS_IS_GOAL_RE = re.compile(r"как\s+есть|(?<![^\W\d_])as\s+(?:it\s+)?is"
@@ -1120,16 +1383,96 @@ def _new_brief() -> dict:
     return {"items": [], "exclude": [], **{k: None for k in _BRIEF_KEYS}}
 
 
-def _same_item(a, b) -> bool:
+# Слово названия товара, которое позицию не отличает (_same_item strict):
+# вид («пицца», «напиток»), размер словами, мера, служебное. «Соус»,
+# «комбо», «сет», «без» — отличают: «Соус барбекю» — не пицца «Барбекю»
+_ITEM_PLAIN_RE = re.compile(
+    r"пицц\w*|pizzas?|напит\w*|drinks?|ролл\w*|rolls?|суши|sushi|бургер\w*|"
+    r"burgers?|маленьк\w*|средн(?:ий|яя|ее|его|юю|ей|ие)|больш(?:ой|ая|ое|"
+    r"ого|ую|ие)|small|medium|large|regular|литр\w*|lit(?:er|re)s?|грамм\w*|"
+    r"штук\w*|pcs|порци\w*|дюйм\w*|inch\w*|для|the|and|with|for")
+
+
+def _same_item(a, b, strict: bool = False) -> bool:
     """Одна позиция: все значимые слова более короткого названия есть в
     другом (с общим началом, как _same_word). «Пепперони» ~ «пицца
-    пепперони», «Четыре сыра» ≠ «Четыре сезона»."""
+    пепперони», «Четыре сыра» ≠ «Четыре сезона». strict — и лишние слова
+    длинного только неотличительные (_ITEM_PLAIN_RE): «Кола» ≠ «Кола Зеро»
+    (run4 №39: «Кола Зеро» слилась с «Колой» и пропала из брифа),
+    «Пепперони» = «Пицца Пепперони» = «Пепперони 30 см»."""
     wa = [w for w in _option_words(a) if not w.isdigit()]
     wb = [w for w in _option_words(b) if not w.isdigit()]
     if not wa or not wb:
         return False
     short, other = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
-    return all(any(_same_word(x, y) for y in other) for x in short)
+    if not all(any(_same_word(x, y) for y in other) for x in short):
+        return False
+    return not strict or all(any(_same_word(y, x) for x in short)
+                             or _ITEM_PLAIN_RE.fullmatch(y) for y in other)
+
+
+def _brief_pick(name, items) -> Optional[dict]:
+    """Позиция брифа товара name (ключ добавленного в корзину, название
+    карточки/окна): та же (_same_item strict), иначе единственная, чьё
+    название — общее для name («Кола» брифа — «Кока-Кола» корзины). При
+    «Кола» и «Кола Зеро» в брифе «Кола Зеро» корзины — своя, а не первая
+    похожая; «Кола» корзины при одной «Кола Зеро» брифа — не она."""
+    items = [b for b in items or () if isinstance(b, dict) and b.get("name")]
+    hits = [b for b in items if _same_item(b["name"], name, strict=True)]
+    if hits:
+        return hits[0]
+    hits = [b for b in items if _words_in(b["name"], name)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _is_item(name, key, items=()) -> bool:
+    """Позиция name (брифа или разбора ответа) — товар key (окно, кнопка
+    «В корзину»): позиция брифа этого товара (_brief_pick) — она же; брифа
+    нет — сам name. «Кола» — окно «Кола Зеро», если «Колы Зеро» в брифе
+    нет; «Кола Зеро» — не окно «Кола»."""
+    pick = _brief_pick(key, items or [{"name": name}])
+    return pick is not None and _same_item(pick["name"], name, strict=True)
+
+
+def _brief_count(b: dict, items, adds) -> int:
+    # Сколько добавленного задачей (cart_adds) — эта позиция брифа: каждое
+    # добавление — одной позиции (_brief_pick)
+    return sum(1 for x in adds or () if _brief_pick(x["key"], items) is b)
+
+
+def _brief_drop(items: list, name) -> list:
+    """Позиции брифа без названной в remove_items/exclude: та же строго,
+    иначе единственная похожая («убери колу» при одной «Кола Зеро»). «Кола»
+    при «Кола» и «Кола Зеро» — только «Кола»."""
+    hits = [it for it in items if _same_item(it["name"], name, strict=True)]
+    if not hits:
+        hits = [it for it in items if _same_item(it["name"], name)]
+        hits = hits if len(hits) == 1 else []
+    return [it for it in items if not any(it is h for h in hits)]
+
+
+# Отказ от добавок значением опции позиции («без добавок», «ничего», «как
+# есть», «no extras», «none») — не выбор: в опции брифа не кладём. Run4
+# №10: опция «без добавок» — не вариант окна, повтора «В корзину» кодом не
+# было (лишний шаг модели), и она ушла в план, сводку оплаты и память.
+# «Без лука», «без глютена» — выбор (что убрать), остаётся опцией
+_NO_EXTRAS_OPT_RE = re.compile(
+    r"(?:без|никаких|нет|не\s+(?:надо|нужно|нужны))\s+(?:каких\s?(?:либо|"
+    r"нибудь)\s+)?(?:(?:доп|дополнительн\w*)\s+)?(?:добав\w*|дополнени\w*|"
+    r"допов|доп|топпинг\w*|ингредиент\w*)|(?:добав\w*|дополнени\w*|"
+    r"топпинг\w*)\s+не\s+(?:надо|нужн\w*)|без\s+(?:всего|ничего|изменений)|"
+    r"(?:больше\s+)?ничего(?:\s+(?:больше|не\s+(?:надо|нужно|добавля\w*)))?|"
+    r"нет(?:\s+спасибо)?|не\s+(?:надо|нужно)|как\s+(?:есть|выбрано)|"
+    r"по\s+умолчанию|(?:no|without|zero)\s+(?:extras?|add\s?ons?|"
+    r"additions?|toppings?)|nothing(?:\s+(?:else|extra|more|added))?|none|"
+    r"no(?:\s+thanks?)?|as\s+(?:it\s+)?is|default")
+
+
+def _no_extras(opt) -> bool:
+    # Значение опции — целиком отказ от добавок (_NO_EXTRAS_OPT_RE)
+    s = " ".join(re.sub(r"[.,!;:()«»\"'—–-]+", " ",
+                        str(opt or "").casefold()).split())
+    return bool(s) and bool(_NO_EXTRAS_OPT_RE.fullmatch(s))
 
 
 def _apply_brief(brief: dict, ch, src: str = "user") -> bool:
@@ -1153,40 +1496,47 @@ def _apply_brief(brief: dict, ch, src: str = "user") -> bool:
         if str(k) in _BRIEF_KEYS:
             brief[str(k)] = None
     for name in _lst(ch.get("remove_items")):
-        brief["items"] = [it for it in brief["items"]
-                          if not _same_item(it["name"], name)]
+        brief["items"] = _brief_drop(brief["items"], name)
     for x in _lst(ch.get("exclude")):
         x = " ".join(str(x).split())[:60]
         if x.startswith(_PRIVATE_SLOT[:7]):
             continue  # заглушку облачного вида модель вернула как значение
-        if x and not any(_same_item(x, e) for e in brief["exclude"]):
+        if x and not any(_same_item(x, e, strict=True)
+                         for e in brief["exclude"]):
             brief["exclude"].append(x)
             if src == "private":
                 # Отказ, названный на приватной странице («убери подарок для
                 # Маши» из корзины), — облаку заглушкой, как позиция
                 brief.setdefault("exclude_private", []).append(x)
-        brief["items"] = [it for it in brief["items"]
-                          if not _same_item(it["name"], x)]
+        brief["items"] = _brief_drop(brief["items"], x)
     for it in _lst(ch.get("items")):
         if not isinstance(it, dict) or not str(it.get("name") or "").strip() \
                 or str(it["name"]).strip().startswith(_PRIVATE_SLOT[:7]):
             # Заглушка позиции с приватной страницы — не новый товар
             continue
         name = " ".join(str(it["name"]).split())[:80]
-        cur = next((b for b in brief["items"] if _same_item(b["name"], name)),
-                   None)
+        # Та же позиция — строго: «Кола Зеро» при «Коле» — своя (run4 №39:
+        # «Пепперони, Кола, Кола Зеро» после «оставь» — в брифе две).
+        # Замену модель шлёт через remove_items (правило промпта)
+        cur = next((b for b in brief["items"]
+                    if _same_item(b["name"], name, strict=True)), None)
         if cur is None:
             # Человек передумал насчёт исключённого — снова хочет
             brief["exclude"] = [e for e in brief["exclude"]
-                                if not _same_item(e, name)]
+                                if not _same_item(e, name, strict=True)]
             cur = {"name": name, "size": None, "options": [], "qty": 1}
             brief["items"].append(cur)
         if isinstance(it.get("size"), (str, int)) \
                 and str(it.get("size") or "").strip():
             cur["size"] = " ".join(str(it["size"]).split())[:40]
-        if isinstance(it.get("options"), list):
-            cur["options"] = [" ".join(str(o).split())[:40]
-                              for o in it["options"] if str(o).strip()][:8]
+        opts = it.get("options")
+        if isinstance(opts, list) and not (opts and all(
+                _no_extras(o) or not str(o).strip() for o in opts)):
+            # Отказ от добавок — не опция (_no_extras), и для всех
+            # источников: разбор ответа, память задач. Список из одних
+            # отказов опции не меняет — «без добавок» не отменяет тесто
+            cur["options"] = [" ".join(str(o).split())[:40] for o in opts
+                              if str(o).strip() and not _no_extras(o)][:8]
         q = it.get("qty")
         if isinstance(q, int) and not isinstance(q, bool) and 1 <= q <= 20:
             cur["qty"] = q
@@ -1326,6 +1676,94 @@ def _price_nums(text) -> set:
             for x in re.findall(r"\d[\d \u00a0]*\d|\d", str(text or ""))}
 
 
+def _offer_words(s) -> List[str]:
+    # Слова названия в подписи/варианте — без цены, её предлога и кнопки
+    # карточки («Кола — от 119 ₽ Выбрать» → кола, «from $1.19 Select» — ничего)
+    return _option_words(_PRICE_WORD_RE.sub(" ", _CARD_BUTTON_RE.sub(
+        " ", _PRICE_RE.sub(" ", str(s or "")))))
+
+
+def _offer_product(opt, products) -> Optional[str]:
+    """Товар страницы (products — подписи товаров снимка), который называет
+    вариант вопроса «название — цена»: то же название (_same_item) и числа
+    варианта (цена, объём) — среди чисел подписи. Подходят несколько («Кола»
+    ~ «Кола Зеро» при одной цене) — те, у кого слов названия столько же;
+    одно название и объём у всех оставшихся — одна карточка двумя подписями
+    («Кола от 119 ₽» и «Кола — от 119 ₽»). Иначе None: товар ли это, а не
+    вид («Мясные — …»), размер или адрес, код не уверен."""
+    name = re.split(r"\s+[—–-]\s+", str(opt or ""), maxsplit=1)[0]
+    words, nums = _offer_words(name), _price_nums(opt)
+    if not words or not nums:
+        return None
+    hits = [p for p in products if nums <= _price_nums(p)
+            and _same_item(" ".join(words), " ".join(_offer_words(p)))]
+    if len(hits) > 1:
+        hits = [p for p in hits
+                if len(set(_offer_words(p))) == len(set(words))]
+    same = {(frozenset(_offer_words(p)), frozenset(re.findall(
+        r"\d+(?:[.,]\d+)?", _PRICE_RE.sub(" ", p)))) for p in hits}
+    return hits[0] if hits and len(same) == 1 else None
+
+
+# Вопрос модели о замене/удалении: «Пепперони закончилась — что взять
+# вместо?», «Что убрать из корзины?» — выбор там и отказ от прежнего
+# (remove_items/exclude), его разбирает модель
+_SWAP_Q_RE = re.compile(r"вместо|замен|убра|удал|законч|в\s+наличии|"
+                        r"instead|replac|substitut|remove|delete|in\s+stock|"
+                        r"unavailable|sold\s+out", re.IGNORECASE)
+# Опция-мера в окне товара: «0,5 л», «500 мл», «300 г», «12″» — размер
+# позиции (к _SIZE_RE: «30 см», «Маленькая», «Large»), как и «S/M/XL»
+_MEASURE_RE = re.compile(
+    r"(?<![\d.,])\d+(?:[.,]\d+)?\s*(?:см|cm|мм|mm|л|l|литр\w*|мл|ml|г|гр|g|"
+    r"кг|kg|oz|″|\"|дюйм\w*|inch\w*)(?![^\W\d_])|^\s*(?:x{0,3}s|m|x{0,3}l|"
+    r"\d?xl)\s*$", re.IGNORECASE)
+
+
+def _choice_toks(s) -> List[str]:
+    # Слова и числа ответа/подписи: «0.5 л» → ["0,5", "л"] (как в
+    # _answer_keeps: десятичная точка — запятой)
+    return [t.replace(".", ",") for t in re.findall(
+        r"\d+(?:[.,]\d+)?|[^\W\d_]+", str(s or "").casefold())]
+
+
+def _tok_same(a: str, b: str) -> bool:
+    # Число — ровно, слово — с общим началом (_same_word)
+    return a == b if a[0].isdigit() or b[0].isdigit() else _same_word(a, b)
+
+
+def _opt_value(lab) -> Tuple[Optional[str], str]:
+    """Переключатель окна товара → (слот позиции, значение): мера/размер —
+    ("size", «0,5 л»), вариант словами — ("options", «Тонкое»); цена
+    добавки — мимо («Моцарелла 79 ₽» → «Моцарелла»). Прочие числа («6
+    шт», «2 соуса») — (None, …): что это, решает модель."""
+    v = " ".join(_ADDON_PRICE_RE.sub(" ", str(lab or "")).split()).strip(
+        " ,.;:·•—–-+")
+    if _SIZE_RE.search(v) or _MEASURE_RE.search(v):
+        return "size", v[:40]
+    if re.search(r"\d", v) or not re.search(r"[^\W\d_]{3,}", v):
+        return None, v
+    return "options", v[:40]
+
+
+def _opt_mentioned(lab, q) -> bool:
+    """Переключатель назван в вопросе о товаре: все его числа есть в
+    вопросе («25 см» — в «25, 30 или 35 см?»), без чисел — все слова
+    (служебные «тесто», «размер» — мимо)."""
+    toks = [t for t in _choice_toks(_ADDON_PRICE_RE.sub(" ", str(lab or "")))
+            if t not in _KEEP_WORDS]
+    qt = _choice_toks(q)
+    need = [t for t in toks if t[0].isdigit()] or toks
+    return bool(need) and all(any(_tok_same(t, v) for v in qt) for t in need)
+
+
+def _same_size(a, b) -> bool:
+    # Один размер: «30 см» ~ «Средняя 30 см» (числа), «большая» ~ «Большая
+    # 35 см» (слова, когда чисел нет у одного)
+    na = {t for t in _choice_toks(a) if t[0].isdigit()}
+    nb = {t for t in _choice_toks(b) if t[0].isdigit()}
+    return na == nb if na and nb else _same_item(a, b)
+
+
 def _first_json(resp) -> Optional[dict]:
     # Первый JSON-объект ответа модели (рассуждение <think> — мимо)
     s = _THINK_RE.sub(" ", str(resp or ""))
@@ -1403,6 +1841,21 @@ _PRICE_WORD_RE = re.compile(r"(?<![^\W\d_])(?:от|до|за|всего|from|for
                             r"(?![^\W\d_])", re.IGNORECASE)
 # Токен из одних знаков — глиф кнопки, не слово: «×» закрытия окна, «✕», «←»
 _GLYPH_TOKEN_RE = re.compile(r"(?<!\S)[^\w\s]+(?!\S)")
+
+
+def _no_card_button(lab: str) -> str:
+    """Подпись позиции без кнопки карточки после цены: «Кола 0,5 л 119 ₽
+    Выбрать» → «Кола 0,5 л 119 ₽» (позиция раздела по разметке — текст
+    карточки целиком, с её кнопкой). Кнопка не в конце или перед ней не
+    цена — как есть."""
+    lab = " ".join(str(lab or "").split())
+    m = None
+    for m in _CARD_BUTTON_RE.finditer(lab):
+        pass
+    if m is None or lab[m.end():].strip() \
+            or not _PRICE_RE.search(lab[:m.start()][-16:]):
+        return lab
+    return lab[:m.start()].rstrip()
 
 
 def _has_name(lab) -> bool:
@@ -1530,6 +1983,24 @@ def _host_in(host: str, hosts) -> bool:
     return bool(h) and any(
         h == g or h.endswith("." + g) or g.endswith("." + h)
         for g in (str(x).lower().removeprefix("www.") for x in hosts) if g)
+
+
+def _same_page_link(it: dict, url: str) -> bool:
+    # Ссылка элемента ведёт на эту же страницу: якорь («/#drinks»), кнопка
+    # или вкладка без адреса, «javascript:»; другой путь или запрос — нет
+    href = str(it.get("href") or "").strip()
+    if not href or href.lower().startswith("javascript:"):
+        return True
+    try:
+        a, p = urlsplit(href), urlsplit(str(url or ""))
+    except ValueError:
+        return False
+    if a.netloc and not _host_in(a.hostname or "", [p.hostname or ""]):
+        return False
+    # Относительный «#drinks» — без пути: та же страница
+    return ((not a.netloc and not a.path)
+            or a.path.rstrip("/") == p.path.rstrip("/")) \
+        and a.query == p.query
 
 
 def _ungrounded_options(q, seen: set) -> List[str]:
@@ -1986,9 +2457,25 @@ _STEP_RULES_REF = ("- (The full list of rules is in my earlier message in "
 _STEP_PAGE_REF = ("Current page and its numbered elements: unchanged — "
                   "exactly as in my latest message in this chat that lists "
                   "them (use the same numbers n).")
-# Сколько сообщений треда правила и страница остаются «свежими»
-STICKY_RULES_WINDOW = 5
+_STEP_PAST_REF = ("The user's earlier tasks on the same topic: unchanged — "
+                  "as listed in my earlier message in this chat.")
+# Сколько треда правила и страница остаются «свежими». Правила — по
+# символам треда после их полной отправки (отправленное и ответы, вместе с
+# короткими вызовами канала): окно в 5 сообщений в run3 №10 отправило их
+# целиком снова, хотя 4 из 7 сообщений после них — бриф и вопросы о
+# странице по ~2 тыс. Граница в символах заодно короче худшего случая
+# старого окна (5 шагов по ~10 тыс.): правила, ≤30 тыс. после них и шаг
+# помещаются и в тесный контекст бесплатных тарифов (~16 тыс. токенов).
+# Окно в сообщениях — запас против десятков коротких. Страница — по
+# сообщениям: ссылка ведёт на «последнее сообщение со списком»
+STICKY_RULES_SPAN = 30000
+STICKY_RULES_WINDOW = 12
 STICKY_PAGE_WINDOW = 2
+# Прошлые задачи постоянны весь прогон — свежи по тем же границам, что правила
+STICKY_PAST_WINDOW = STICKY_RULES_WINDOW
+# Короче — целиком: ссылка (~100 симв.) почти не короче, а модели пришлось
+# бы искать блок в прошлом сообщении
+STICKY_PAST_MIN = 300
 
 
 class TaskAgent:
@@ -2246,14 +2733,22 @@ class TaskAgent:
         return sum(c for c, _ in list((run.get("traffic") or {}).values()))
 
     def _sticky_for(self, run: dict) -> list:
-        """Повторяемые блоки шага: правила (_STEP_RULES) и страница —
-        постоянный тред веб-чата, получивший их недавно, видит ссылку."""
+        """Повторяемые блоки шага: правила (_STEP_RULES), страница и прошлые
+        задачи чата — постоянный тред веб-чата, получивший их недавно,
+        видит ссылку."""
         from app.core.sticky_scope import StickyBlock
         blocks = [StickyBlock(_STEP_RULES, _STEP_RULES_REF,
-                              STICKY_RULES_WINDOW, primable=True)]
+                              STICKY_RULES_WINDOW, primable=True,
+                              span=STICKY_RULES_SPAN)]
         if run.get("page_block"):
             blocks.append(StickyBlock(run["page_block"], _STEP_PAGE_REF,
                                       STICKY_PAGE_WINDOW))
+        if len(run.get("past_block") or "") >= STICKY_PAST_MIN:
+            # Блок прошлых задач один на весь прогон (run["past"] — со
+            # старта): со второго шага подряд в том же треде — ссылкой
+            blocks.append(StickyBlock(run["past_block"], _STEP_PAST_REF,
+                                      STICKY_PAST_WINDOW,
+                                      span=STICKY_RULES_SPAN))
         return blocks
 
     @staticmethod
@@ -2291,6 +2786,8 @@ class TaskAgent:
             what, ch = fast
             changed = _apply_brief(brief, ch,
                                    src="private" if private else "user")
+            if changed:
+                self._cart_recheck(run)
             # Одна строка: разбор без модели (в run["traffic"] его нет); в
             # лог — вид вопроса и какие слоты изменились, без значений
             logger.info(f"[TaskAgent] разбор ответа без модели ({what}): "
@@ -2318,7 +2815,12 @@ class TaskAgent:
             "user named (\"pepperoni\", \"Cola 0.5 l\", \"iPhone 15 case\"); "
             "a general kind alone (\"pizza\", \"something to eat\", "
             "\"drinks\") is not an item. A product the user rejects (\"not "
-            "pepperoni\") goes to exclude, and its size/options go with it.\n"
+            "pepperoni\") goes to exclude, and its size/options go with it. "
+            "options are what the user chose; declining extras (\"no "
+            "extras\", \"nothing else\") is not an option. \"Cola Zero\" "
+            "and \"Cola\" are different items: update an item under its "
+            "brief name; to swap one for another, put the old one into "
+            "remove_items.\n"
             "- kinds: general kinds the user asks to add in this answer "
             "without naming a concrete product (\"some drink\" → \"drink\", "
             "\"something sweet\" → \"sweet\"), in the user's words.\n"
@@ -2366,20 +2868,24 @@ class TaskAgent:
             logger.info("[TaskAgent] бриф обновлён: "
                         + ", ".join(sorted(str(k) for k, v in ch.items()
                                            if v)))
+            self._cart_recheck(run)
         return ch
 
     def _brief_fast(self, run: dict, aw: dict, answer, names=()
                     ) -> Optional[Tuple[str, dict]]:
         """Разбор ответа без модели: вопрос сформировал код (aw["pick"],
-        site_offer), а ответ — голый точный выбор из предложенного (номер,
+        site_offer) или вопрос модели шагов с вариантами-товарами страницы
+        (_ask_pick), а ответ — голый точный выбор из предложенного (номер,
         «да»/«нет», название варианта целиком). Изменение брифа тогда
         однозначно: сайт варианта, позиция из списка раздела, «ничего» (раздел,
-        «больше ничего»). → (вид вопроса для лога, изменения — как вернула бы
-        модель) или None — разбор модели: сложный ответ («пепперони, но 30
-        см», «да, но большую»), неточный выбор, свободный текст, вопрос
-        модели (что в её вариантах — позиция, размер или адрес, код не знает).
-        Значения берутся только из вариантов вопроса; скрытое (_hidden) в
-        них — к модели: она увидит {{secretN}}, как раньше."""
+        «больше ничего»), «как есть» или вариант окна на вопросы о товаре
+        перед «В корзину» (_gate_fast). → (вид вопроса для лога, изменения —
+        как вернула бы модель) или None — разбор модели: сложный ответ
+        («пепперони, но 30 см», «да, но большую»), неточный выбор, свободный
+        текст, вопрос модели без пометки (что в её вариантах — позиция,
+        размер или адрес, код не знает). Значения берутся только из вариантов
+        вопроса; скрытое (_hidden) в них — к модели: она увидит {{secretN}},
+        как раньше."""
         q = str(aw.get("question") or "")
         s = self._command_text(answer, names).strip(" .!…")
         if aw.get("kind") != "ask" or not q or not s or "?" in s:
@@ -2404,6 +2910,8 @@ class TaskAgent:
                               and _words_only(s, _MORE_NO_WORDS)):
                 return "что-нибудь ещё", {}
             return None
+        if pick == "gate":
+            return self._gate_fast(run, aw, s)
         opts = _option_texts(q)
         if pick == "site":
             # «На каком сайте?» с вариантами из выдачи: выбранный сайт тем же
@@ -2438,10 +2946,12 @@ class TaskAgent:
             return ("выбор раздела", {}) if opt in secs else None
         if pick != "item":
             return None
-        # Позиция из показа раздела: вариант — товар страницы (подпись с
-        # ценой). Список кодом — подписи как есть; текст модели — каждый
-        # вариант «название — цена» ровно одного товара страницы, иначе это
-        # обзор видов («Мясные: …») или чужое — разбор модели
+        # Позиция из показа раздела или из вопроса модели шагов (offer):
+        # вариант — товар страницы (подпись с ценой). Список кодом — подписи
+        # как есть; текст модели — каждый вариант «название — цена» — один
+        # товар страницы (_offer_product), иначе это обзор видов («Мясные:
+        # …») или чужое — разбор модели. Позиция — название варианта без
+        # цифр («Морс 0,5 л» — позиция или размер? — модели)
         products = [" ".join(str(x).split()) for x in aw.get("items") or ()]
         name = _option_item(opt)
         if not name:
@@ -2449,15 +2959,8 @@ class TaskAgent:
         if aw.get("listed"):
             if opt not in products:
                 return None
-        else:
-            def _grounded(o) -> bool:
-                nm, nums = _option_item(o), _price_nums(o)
-                return bool(nm and nums) and sum(
-                    1 for p in products
-                    if _same_item(nm, _option_item(p) or "")
-                    and nums <= _price_nums(p)) == 1
-            if not all(_grounded(o) for o in opts):
-                return None
+        elif not all(_offer_product(o, products) for o in opts):
+            return None
         brief = run.get("brief") or {}
         if any(_same_item(name, it["name"]) for it in brief.get("items") or ()):
             # Уже в брифе: ещё одна такая же (qty) или та же — решит модель
@@ -2467,7 +2970,8 @@ class TaskAgent:
             return None  # «Пицца» — вид, не позиция (как в _update_brief)
         if self._fast_hidden(run, name):
             return None
-        return "выбор позиции", {"items": [{"name": name}]}
+        return ("выбор позиции" + (" (вопрос модели)" if aw.get("offer")
+                                   else ""), {"items": [{"name": name}]})
 
     def _fast_hidden(self, run: dict, value: str) -> bool:
         # Значение из варианта несёт скрытое ({{secretN}}): модели оно ушло
@@ -2476,6 +2980,130 @@ class TaskAgent:
         return bool(_SECRET_SLOT_RE.search(v)) or any(
             h and str(h).casefold() in v
             for h in self._hidden(run, run.get("chat_id")))
+
+    def _ask_pick(self, run: dict, q, obs: dict, more: bool = False) -> dict:
+        """Пометка вопроса модели шагов с вариантами строками «- …» для
+        разбора ответа без модели (_brief_fast): задача — покупка, каждый
+        вариант — товар страницы (_offer_product: название и числа подписи
+        снимка) → выбор позиции; все варианты — разделы магазина
+        (_browse_sections) → выбор раздела, бриф как был. Иначе {} — разбор
+        модели: в вариантах адрес, время, способ получения, размер, магазин,
+        вид — что это для брифа, код не знает. Вопрос с отрицанием или о
+        замене («вместо …», «что убрать?», «нет в наличии») — модели: там
+        выбор и отказ от прежнего; открыто окно товара — варианты бывают его
+        добавками, а не товарами. Стенд 21.10 (вызов 31): «2» на «Какой
+        напиток? - Кола — от 119 ₽ - Кола Зеро — …» разбирала модель."""
+        q = str(q or "")
+        opts = _option_texts(q)
+        if len(opts) < 2 or obs.get("private") or obs.get("error"):
+            return {}
+        secs = (run.get("browse") or {}).get("sections") or ()
+        if secs and not more and all(o in secs for o in opts):
+            # С «что-нибудь ещё?» раздел — вид просьбы (kinds) для
+            # _more_answer: его вынимает модель
+            return {"pick": "section"}
+        shown = obs.get("shown") or ()
+        head = _question_head(q)
+        if not _BUY_GOAL_RE.search(run.get("goal") or "") \
+                or _NEG_RE.search(head) or _SWAP_Q_RE.search(head) \
+                or any(it.get("md") for it in shown):
+            return {}
+        # Товары снимка — подписи с ценой и названием (у подписи-цены —
+        # название карточки, _show_label), не корзина, не акции, не
+        # переключатели
+        products = list(dict.fromkeys(
+            x for x in (_show_label(it) for it in shown
+                        if not it.get("ed") and it.get("on") not in (0, 1))
+            if _PRICE_RE.search(x) and _has_name(x)
+            and not _CART_WORD_RE.search(x) and not _ADD_TO_CART_RE.search(x)
+            and not _NOT_PRODUCT_RE.search(x)))
+        if not all(_offer_product(o, products) for o in opts):
+            return {}
+        return {"pick": "item", "offer": True, "items": products}
+
+    def _gate_pick(self, run: dict, item: dict, obs: dict) -> dict:
+        """Пометка вопросов о товаре перед «В корзину» для разбора ответа без
+        модели (_gate_fast): позиция брифа этого товара и переключатели окна
+        (подпись, выбран ли) — те же, что сверяет _answer_keeps. Позиции в
+        брифе нет или она не этот товар — {} (разбор модели)."""
+        bi = self._brief_item(run, item)
+        if not bi or not _is_item(bi["name"], self._product_key(item, obs),
+                                  (run.get("brief") or {}).get("items")):
+            return {}
+        opts = [[" ".join(_item_label(it).split())[:LABEL_MAX], it["on"]]
+                for it in obs.get("shown") or ()
+                if it is not item and it.get("on") in (0, 1)
+                and not it.get("ed") and (it.get("md") or not item.get("md"))]
+        return {"pick": "gate", "gate": {"name": bi["name"], "opts": opts}}
+
+    def _gate_fast(self, run: dict, aw: dict, s: str
+                   ) -> Optional[Tuple[str, dict]]:
+        """Ответ на вопросы о товаре перед «В корзину» (_cart_add_gate) без
+        модели. «Как есть»/«оставь»/«так и клади»/«as is» — позиция как
+        выбрано: выбранные переключатели окна, о которых спрашивал вопрос
+        («Сейчас выбрано 0,5 л» — по снимку, не по тексту модели), — в
+        размер/опции позиции, если там пусто. Голый вариант окна, названный
+        в вопросе, ровно один («0,5» ↔ «0,5 л», «тонкое», «большую») — в
+        размер или опции. Стенд 21.10 (вызовы 13 и 35): «0,5» и «как есть»
+        разбирала модель. Остальное — None, разбор модели: многосоставное
+        («традиционное, без добавок», «тонкое и бекон»), отрицание, вопрос
+        («а есть без лука?» — отсечён в _brief_fast), количество, номер при
+        вариантах списком, вариант, которого в окне нет или подходят
+        несколько, вариант непонятного вида («6 шт»), опция при уже
+        названных опциях (может заменять одну из них), «как есть» при
+        названном человеком другом размере."""
+        g = aw.get("gate") or {}
+        q = str(aw.get("question") or "")
+        bi = next((it for it in (run.get("brief") or {}).get("items") or ()
+                   if it.get("name") == g.get("name")), None)
+        if bi is None:
+            return None
+        low = " ".join(str(s or "").split()).casefold()
+        opts = [(str(lab), on) for lab, on in g.get("opts") or ()]
+        ment = [(lab, on) for lab, on in opts if _opt_mentioned(lab, q)]
+        have = list(bi.get("options") or ())
+        rest, k = re.subn(r"(?<![^\W\d_])(?:" + _AS_IS_RE.pattern
+                          + r")[^\W\d_]*", " ", low, flags=re.IGNORECASE)
+        upd = {}
+        if k:
+            if _NEG_RE.search(rest) or any(
+                    t not in _KEEP_WORDS for t in re.findall(r"\w+", rest)):
+                return None  # «как есть, но тонкое», «оставь, 2 штуки»
+            sel = [_opt_value(lab) for lab, on in ment if on == 1]
+            sizes = [v for slot, v in sel if slot == "size"]
+            if len(sizes) == 1:
+                if not bi.get("size"):
+                    upd["size"] = sizes[0]
+                elif not _same_size(bi["size"], sizes[0]):
+                    return None  # человек называл другой размер
+            new = [v for slot, v in sel if slot == "options"]
+            if new and not have:
+                upd["options"] = new
+            what = "вопрос о товаре: как есть"
+        else:
+            want = [t for t in _choice_toks(low) if t not in _KEEP_WORDS]
+            if not want or _NEG_RE.search(low) \
+                    or (low.isdigit() and _option_texts(q)):
+                return None
+            hits = [(lab, on) for lab, on in opts if all(
+                any(_tok_same(t, v) for v in _choice_toks(
+                    _ADDON_PRICE_RE.sub(" ", lab))) for t in want)]
+            if len(hits) != 1 or hits[0] not in ment:
+                return None
+            slot, v = _opt_value(hits[0][0])
+            if slot == "size":
+                upd["size"] = v
+            elif slot != "options" or (have and not any(
+                    _same_item(v, o) for o in have)):
+                return None
+            elif not have:
+                upd["options"] = [v]
+            what = "вопрос о товаре: вариант"
+        vals = [upd.get("size")] + list(upd.get("options") or ())
+        if any(self._fast_hidden(run, v) for v in vals if v):
+            return None
+        return what, ({"items": [dict({"name": bi["name"]}, **upd)]}
+                      if upd else {})
 
     def _unhide(self, run: dict, text) -> str:
         # {{secretN}} → настоящее значение: только здесь, в момент ввода
@@ -2555,9 +3183,10 @@ class TaskAgent:
         # секреты (пароль, код, телефон на вопрос о них) — маской целиком,
         # известные секреты и секрет из цели — маской везде
         secrets = list(self._hidden(run, chat_id))
-        if run.get("private_seen") and result not in _SYSTEM_RESULTS:
-            # Прогон побывал на приватной странице: итог (отчёт локальной
-            # модели по кабинету/переписке) в память, уходящую облаку, — нет
+        if result not in _SYSTEM_RESULTS and self._result_private(run, result):
+            # Итог сложился на приватной странице (отчёт локальной модели по
+            # кабинету/переписке, передача оплаты) или несёт данные оттуда —
+            # в память, уходящую облаку, нет
             result = _PRIVATE_RESULT
         # Успешный исход (для «как в прошлый раз»): итог принят кодом (C3)
         # или заказ собран и оплата передана человеку. Отменённые,
@@ -2624,6 +3253,38 @@ class TaskAgent:
         logger.info(f"[TaskAgent] запомнил задачу "
                     f"«{self._goal_safe(run, 40)}» "
                     f"(сайты: {', '.join(sites) or '—'})")
+
+    @staticmethod
+    def _result_private(run: dict, result) -> bool:
+        """Итог прогона — не для памяти, уходящей облаку: прогон бывал на
+        приватной странице и итог сложился там (последний шаг — на
+        приватной странице или локальной моделью, браузер стоит на
+        приватной), это передача оплаты (сводка кода с оформления) или в
+        итоге есть сказанное/названное на приватной странице (ответ на
+        вопрос оттуда, слот или позиция брифа оттуда). Итог облачного шага
+        на обычной странице — из того, что облако и так видело (приватное
+        ему — заглушкой): стенд 21.10 — вопрос о доставке, начатый на
+        /checkout, кончился верным ответом с /delivery, а в память ушла
+        заглушка."""
+        if not run.get("private_seen"):
+            return False
+        if run.get("step_private", True) or run.get("page_private") \
+                or run.get("outcome") == "payment":
+            return True
+        qa = run.get("qa") or []
+        vals = [qa[i][1] for i in run.get("qa_private") or ()
+                if isinstance(i, int) and 0 <= i < len(qa)]
+        brief = run.get("brief") or {}
+        vals += [(brief.get(k) or {}).get("value") for k in _BRIEF_KEYS
+                 if (brief.get(k) or {}).get("src") == "private"]
+        vals += [it.get("name") for it in brief.get("items") or ()
+                 if isinstance(it, dict) and it.get("src") == "private"]
+        vals += list(brief.get("exclude_private") or ())
+        # Короткие ответы («да», «1») — не данные: совпали бы с любым итогом
+        vals = [" ".join(str(v).split()) for v in vals if v]
+        vals = [v for v in vals if len(v) >= 4 and not is_masked(v)
+                and not _SECRET_SLOT_RE.search(v) and v != _PRIVATE_SLOT]
+        return contains_value(result, vals)
 
     def _past_tasks(self, chat_id, goal: str) -> List[dict]:
         """Прошлые задачи той же темы — по предмету цели (слова-команды,
@@ -2786,6 +3447,35 @@ class TaskAgent:
                 "plan": self._plan_view(run, status),
                 "log": [dict(x) for x in run.get("ui_log") or ()]}
 
+    def _shop_label(self, run: dict, brief: dict) -> Optional[str]:
+        """Магазин в плане (человеку и модели): «Пицца Тест (pizzatest.ru)».
+        Адрес — где выросла корзина, подтверждённый или выбранный сайт, иначе
+        адрес из брифа или словаря названий; название — из брифа, если оно
+        об этом адресе (словарь названий, алиас, транслит), иначе только
+        адрес. Стенд 21.10 (run3, сценарий 3): план показывал «магазин:
+        Пицца Тест», а с первым добавлением в корзину — «pizzatest.ru».
+        brief — уже облачный вид: слот с приватной страницы — заглушка, к
+        адресу её не приписываем. Хост на приватность не проверяем: у
+        магазина приватна страница оформления, и подпись сменилась бы на
+        ней."""
+        val = " ".join(str((brief.get("site") or {}).get("value") or "")
+                       .split())
+        hosts = _site_hosts(val)
+        name = "" if hosts else val
+        hidden = name == _PRIVATE_SLOT
+        known = self._name_host(run, name) if name and not hidden else None
+        host = str(run.get("cart_host") or run.get("site_ok")
+                   or next(iter(run.get("site_pick") or ()), None)
+                   or next(iter(hosts), None) or known or "")
+        host = host.lower().removeprefix("www.")
+        if not host:
+            return name or None
+        if hidden or not name or not (
+                _host_in(host, [known]) if known else _name_fits_host(
+                    name, host, getattr(self.cc, "sites", None))):
+            return host
+        return f"{name} ({host})"
+
     def _plan_view(self, run: dict, status: str) -> List[dict]:
         """План заказа человеку (что _plan_lines даёт модели, но словами для
         чата): магазин → позиции в корзину → «что-нибудь ещё?» → проверка
@@ -2798,9 +3488,7 @@ class TaskAgent:
         adds = run.get("cart_adds") or []
         items = brief.get("items") or []
         steps: List[Tuple[bool, str]] = []
-        site = (run.get("cart_host") or run.get("site_ok")
-                or next(iter(run.get("site_pick") or ()), None)
-                or ((brief.get("site") or {}).get("value")))
+        site = self._shop_label(run, brief)
         steps.append((bool(site), (f"shop: {site}" if en else f"магазин: {site}")
                       if site else ("choose the shop" if en else "выбрать магазин")))
         if not items and not adds and not run.get("kinds"):
@@ -2809,13 +3497,20 @@ class TaskAgent:
         for k in run.get("kinds") or ():
             steps.append((False, f"choose “{k}”" if en else f"выбрать «{k}»"))
         for b in items:
-            n = sum(1 for x in adds if _same_item(b["name"], x["key"]))
+            # Добавленное — своей позиции брифа (_brief_pick): «Кола Зеро»
+            # корзины не отмечает «Колу» при обеих в брифе
+            hit = [x for x in adds if _brief_pick(x["key"], items) is b]
             txt = self._item_text(b)
-            steps.append((n >= (b.get("qty") or 1),
-                          f"put “{txt}” in the cart" if en
+            done = len(hit) >= (b.get("qty") or 1)
+            if done and all(x.get("pre") for x in hit):
+                # Лежало в корзине до задачи — не «положить»
+                steps.append((True, f"“{txt}” — already in the cart" if en
+                              else f"«{txt}» — уже лежало в корзине"))
+                continue
+            steps.append((done, f"put “{txt}” in the cart" if en
                           else f"положить «{txt}» в корзину"))
-        for key in dict.fromkeys(x["key"] for x in adds if not any(
-                _same_item(b["name"], x["key"]) for b in items)):
+        for key in dict.fromkeys(x["key"] for x in adds
+                                 if _brief_pick(x["key"], items) is None):
             steps.append((True, f"“{key}” is in the cart" if en
                           else f"«{key}» в корзине"))
         steps.append((bool(run.get("more_no")), "ask “anything else?”" if en
@@ -3043,7 +3738,16 @@ class TaskAgent:
                                  last["brief"], src="memory")
             # Цель — тоже ответ: «закажи пепперони 30 см на додо» заполняет
             # слоты
-            self._update_brief(run, "(the task goal)", goal)
+            ch = self._update_brief(run, "(the task goal)", goal)
+            kinds = [" ".join(str(k).split())[:40] for k in (
+                ch.get("kinds") if isinstance(ch, dict)
+                and isinstance(ch.get("kinds"), list) else ())
+                if str(k).strip()]
+            if kinds and not (run.get("brief") or {}).get("items"):
+                # «Закажи напиток»: вид без позиции — его раздел сайта
+                # («Напитки») откроет и покажет код (_browse_sections), без
+                # вопроса о разделах. Раньше вид из цели терялся (run3 21.10)
+                run["browse"] = {"kind": kinds[0]}
         except Exception as e:
             # Бриф — подсказка, не условие: сбой не должен оставить прогон
             # «занятым» навсегда (busy снимает только _drive)
@@ -3577,6 +4281,9 @@ class TaskAgent:
         # банк/private_hosts) — только локальной модели (PrivateRouter)
         llm = self._llm_for(router, obs)
         private = isinstance(llm, PrivateRouter)
+        # Шаг на приватной странице/локальной моделью: итог, которым он
+        # кончит прогон, — не в облачную память (_result_private)
+        run["step_private"] = private or bool(obs.get("private"))
         if obs.get("text"):
             # Прочитанный текст обычной страницы уходит облачной модели —
             # без email/телефонов/карт/токенов (цены и слова как есть);
@@ -3594,7 +4301,7 @@ class TaskAgent:
         if replay is not None:
             return replay
         browse = self._browse_step(run, chat_id, router, obs) \
-            or self._plan_step(run, chat_id, obs)
+            or self._plan_step(run, chat_id, obs, router)
         if browse:
             return browse
         prompt = self._prompt(run, obs, local=private)
@@ -3964,9 +4671,12 @@ class TaskAgent:
                 # (до новых добавлений), ответ — как на вопрос кода
                 run["more_asked"] = True
                 run["more_n"] = len(run.get("cart_adds") or ())
+            # Варианты — товары страницы или разделы: голый выбор из них
+            # разбирается без модели (_ask_pick → _brief_fast)
             run["awaiting"] = {"kind": "ask", "question": act["question"],
                                "private": bool(obs.get("private")),
-                               "more": more}
+                               "more": more,
+                               **self._ask_pick(run, q_, obs, more)}
             self._audit_note(run, chat_id, "task_ask", act["question"],
                              bool(obs.get("private")))
             return ("pause", act["question"])
@@ -3977,7 +4687,8 @@ class TaskAgent:
             if bounce:
                 return bounce
             run["awaiting"] = {"kind": "ask", "question": act["message"],
-                               "private": bool(obs.get("private"))}
+                               "private": bool(obs.get("private")),
+                               **self._ask_pick(run, act["message"], obs)}
             return ("pause", act["message"])
         if kind == "done":
             nf = self._not_finished(run, obs)
@@ -4111,7 +4822,8 @@ class TaskAgent:
                 # найденному номеру давал «элемент потерян»
                 run["obs_extra"] = {"items": found, "query": act["text"],
                                     "note": f"Elements around \"{act['text']}\"",
-                                    "private": bool(obs.get("private"))}
+                                    "private": bool(obs.get("private")),
+                                    "hist": len(run["history"])}
                 self._record(run, f"find \"{act['text']}\"",
                              f"found — {len(found)} elements around it are listed below")
             else:
@@ -4139,8 +4851,11 @@ class TaskAgent:
                 # «хожу по кругу»
                 same = run.get("read_last") == text
                 run["read_last"] = text
+                # hist — строка истории этого чтения: «shown below» она
+                # говорит, только пока текст в промпте (_hist_gone)
                 run["obs_extra"] = {"text": text,
-                                    "private": bool(obs.get("private"))}
+                                    "private": bool(obs.get("private")),
+                                    "hist": len(run["history"])}
                 self._record(run, "read the page", (
                     "ok — the SAME text as the previous read (shown below): "
                     "what you look for is not in the page text; use the "
@@ -4221,6 +4936,9 @@ class TaskAgent:
                 items = found
                 obs["note"] = extra.get("note")
         obs["text"] = extra.get("text")
+        # Строка истории find/read, чьи элементы/текст — в этом снимке
+        obs["extra_hist"] = (extra.get("hist") if obs["text"] or obs["note"]
+                             else None)
         obs["shown"] = _pick_shown(_active_layer(list(items or [])))
         self._note_seen(run, items or [], obs["text"])
         return obs
@@ -4355,6 +5073,13 @@ class TaskAgent:
                      else None)
         if cur["cart"].get("found"):
             run["cart_seen"] = {"host": host, "cart": dict(cur["cart"])}
+            if host and cart_check is None and cart_watch is None \
+                    and not run.get("cart_adds"):
+                # Корзина сайта, какой задача увидела её впервые (до своих
+                # добавлений), — «до задачи»: повтор заказа, собранного
+                # прошлыми задачами. Без чисел («Корзина») — пустая
+                run.setdefault("cart_first", {}).setdefault(
+                    host.removeprefix("www."), dict(cur["cart"]))
         elif before is not None:
             # Корзина менялась без счётчика на экране (добавление под окном,
             # «−»/«Удалить» в шторке) — база больше не та
@@ -4596,16 +5321,23 @@ class TaskAgent:
         # плейсхолдера код подменяет значением в _do_element
         hidden = self._hidden(run, chat_id if chat_id is not None
                               else run.get("chat_id"))
-        elem_part = -1
+        elem_part = past_part = -1
         parts = [
             "You are an autopilot operating a web browser on behalf of the "
             f"user. The user's goal: \"{run['goal']}\"."]
         if run.get("past"):
             # Ответы прошлых задач с приватной страницы — облаку заглушкой,
-            # локальной модели (снова на оформлении) — как есть
+            # локальной модели (снова на оформлении) — как есть. Облаку —
+            # коротко (цель, сайты, что заказали, итог): блок в каждом шаге,
+            # а вопросы с вариантами нужны разве что при повторе — запись,
+            # которую повторяют («как в прошлый раз»), целиком
+            full = None if local else self._past_full(run)
+            past_part = len(parts)
             parts.append(
                 "The user's earlier tasks on the same topic (newest first):\n"
-                + "\n".join(self._past_line(r, local) for r in run["past"]))
+                + "\n".join(self._past_line(r, local, short=not local
+                                            and i != full)
+                            for i, r in enumerate(run["past"])))
         if run["qa"]:
             qpriv = set() if local else (run.get("qa_private") or set())
             parts.append(
@@ -4638,6 +5370,11 @@ class TaskAgent:
             first = len(run["history"]) - len(hist) + 1
             public = {} if local else (run.get("hist_public") or {})
             hist = [public.get(first - 1 + i, h) for i, h in enumerate(hist)]
+            # «Текст ниже» — только у чтения, чей текст в этом промпте: run4
+            # req-0040 — после вопроса человеку «read → the text is shown
+            # below» осталась, а текста страницы не было
+            hist = [h if first - 1 + i == obs.get("extra_hist")
+                    else _hist_gone(h) for i, h in enumerate(hist)]
             # Заметки «after it» нужны свежим шагам; у ранних — их начало
             hist = [h if i >= len(hist) - HISTORY_FULL else _hist_short(h)
                     for i, h in enumerate(hist)]
@@ -4703,6 +5440,8 @@ class TaskAgent:
         # («NOT performed») или невалидного ответа она та же, и тред веб-чата
         # получает ссылку на прошлое сообщение вместо списка элементов
         run["page_block"] = parts[elem_part] if elem_part >= 0 else None
+        # Прошлые задачи — тоже (после масок: блок — точный кусок промпта)
+        run["past_block"] = parts[past_part] if past_part >= 0 else None
         browse_rule = (_STEP_BROWSE_RULE if (run.get("browse") or {}).get(
             "stage") in ("asked", "chosen", "opened", "presented", "all")
             else "")
@@ -4724,9 +5463,22 @@ class TaskAgent:
                 f"{_PRIVATE_STEP} → {short}")
 
     @staticmethod
-    def _past_line(rec: dict, local: bool = False) -> str:
+    def _past_full(run: dict) -> Optional[int]:
+        # «Как в прошлый раз»/«повтори»: запись, которую повторяют (как в
+        # start: последний успешный заказ с брифом, иначе новейшая), —
+        # облаку целиком, с парами «вопрос — ответ». Не повтор — None
+        if not _REPEAT_RE.search(str(run.get("goal") or "")):
+            return None
+        past = run.get("past") or []
+        return next((i for i, r in enumerate(past) if r.get("ok")
+                     and isinstance(r.get("brief"), dict)),
+                    0 if past else None)
+
+    @staticmethod
+    def _past_line(rec: dict, local: bool = False, short: bool = False) -> str:
         # local — строка уходит локальной модели (приватная страница):
-        # ответы с приватной страницы как есть; облаку — заглушкой
+        # ответы с приватной страницы как есть; облаку — заглушкой.
+        # short — облаку коротко (_past_short): блок уходит в каждый шаг
         when = time.strftime("%Y-%m-%d", time.localtime(rec.get("ts") or 0))
         from app.features.computer_control import command_secret_values
         goal = str(rec.get("goal") or "")
@@ -4734,6 +5486,8 @@ class TaskAgent:
                 f"\"{_redact(goal, command_secret_values(goal))}\"")
         if rec.get("sites"):
             line += "; sites: " + ", ".join(rec["sites"])
+        if short and not local:
+            return line + _past_short(rec)
         qpriv = set() if local else _rec_qa_private(rec)
         for i, (q, a) in enumerate(rec.get("qa") or []):
             if i in qpriv:
@@ -4983,7 +5737,12 @@ class TaskAgent:
                     risk = dialog
                     a["context"] = str(item.get("ctx") or "")[:200]
                     a["in_dialog"] = bool(item.get("md"))
-            if (step or pay or risk == "payment" or commit
+            # Переход к оформлению подписью, которой нет ни в переходах
+            # (checkout_step_label), ни в коммитах: ссылка «Оформление
+            # заказа», «Check out», «Kasse» — только для «что-нибудь ещё?»,
+            # «да» на сам переход не нужно
+            go = bool(_CHECKOUT_GO_RE.fullmatch(" ".join(label.split())))
+            if (step or go or pay or risk == "payment" or commit
                     or dialog in ("payment", "commit")) \
                     and _ORDER_GOAL_RE.search(run.get("goal") or "") \
                     and self._more_due(run, before_checkout=True):
@@ -5165,18 +5924,20 @@ class TaskAgent:
                     "with fail why it is impossible")
         items = (run.get("brief") or {}).get("items") or []
         if items:
+            # Добавленное — каждое своей позиции (_brief_pick): «Кола Зеро»
+            # в корзине при «Кола» и «Кола Зеро» брифа «Колу» не закрывает
             missing = [b["name"] for b in items
-                       if not any(_same_item(b["name"], x["key"]) for x in adds)]
+                       if not _brief_count(b, items, adds)]
             if missing:
                 return ("the user asked for " + ", ".join(missing)
                         + ", but it was not added to the cart in this task")
             extra = [x["key"] for x in adds
-                     if not any(_same_item(b["name"], x["key"]) for b in items)]
+                     if _brief_pick(x["key"], items) is None]
             if extra:
                 return ("the cart got items the user did not ask for: "
                         + ", ".join(extra) + " — open the cart and fix it")
             for b in items:
-                n = sum(1 for x in adds if _same_item(b["name"], x["key"]))
+                n = _brief_count(b, items, adds)
                 if n > (b.get("qty") or 1):
                     return (f"{b['name']} was added {n} times, the user asked "
                             f"for {b.get('qty') or 1} — open the cart and fix it")
@@ -5210,11 +5971,249 @@ class TaskAgent:
             else None
 
     @staticmethod
+    def _cart_first(run: dict) -> Optional[dict]:
+        # Корзина этого сайта при первом взгляде задачи — если не пуста
+        host = str(run.get("page_host") or "").removeprefix("www.")
+        st = (run.get("cart_first") or {}).get(host) or {}
+        return st if (st.get("count") or 0) > 0 or (st.get("sum") or 0) > 0 \
+            else None
+
+    @staticmethod
+    def _cart_now(run: dict) -> Optional[dict]:
+        """Корзина сайта сейчас по шапке: этот снимок, а без чисел в нём
+        (шторка или окно товара закрыли шапку) — последний снимок того же
+        сайта с числами. → состояние; {} — пуста; None — не видно."""
+        def full(st) -> Optional[dict]:
+            st = st or {}
+            if st.get("count") is None and st.get("sum") is None:
+                return None
+            return st if (st.get("count") or 0) > 0 \
+                or (st.get("sum") or 0) > 0 else {}
+        now = full((run.get("page_state") or {}).get("cart"))
+        if now is None:
+            seen = run.get("cart_seen") or {}
+            if _host_in(str(run.get("page_host") or ""), [seen.get("host")]):
+                now = full(seen.get("cart"))
+        return now
+
+    def _cart_open(self, obs: dict) -> bool:
+        # Корзина на экране: шторка (окно со словом «корзина», итогом, «К
+        # оформлению») или страница корзины по адресу
+        try:
+            path = urlsplit(str(obs.get("url") or "")).path
+        except ValueError:
+            path = ""
+        return self._cart_drawer(obs) or bool(_CART_URL_RE.search(path))
+
+    @staticmethod
+    def _cart_line_text(ln: dict) -> str:
+        # Строка корзины человеку: «Пепперони 30 см, традиционное — 599 ₽»
+        s = ln["name"] + (f" {ln['detail']}" if ln.get("detail") else "")
+        if (ln.get("qty") or 1) > 1:
+            s += f" ×{ln['qty']}"
+        return s + (f" — {ln['price_s']}" if ln.get("price_s") else "")
+
+    def _cart_look(self, run: dict, chat_id, obs: dict) -> bool:
+        """Корзина открыта, задача сама в неё ничего не клала: прочитать её
+        кодом (чтение для агента, без модели; текст — только в разбор,
+        облаку не уходит) и разобрать строки (_cart_lines). Разбор сошёлся
+        с корзиной шапки (_cart_lines_fit) — строки в вопрос «что-нибудь
+        ещё?», позиции брифа, которые в ней уже лежат (строго:
+        _cart_line_fits), — в корзину задачи с пометкой pre: план отметит
+        их ✓ «уже в корзине», а повтор «В корзину» отобьёт гейт. Не сошёлся
+        — ничего: корзину смотрит модель, как раньше. Один раз за прогон.
+        Run4, сц. 4: модель сама открыла корзину, прочитала (вызовы 36–37)
+        и спросила о лишнем; план всё это время требовал положить уже
+        лежавшую пиццу. → разобрано ли."""
+        if run.get("cart_read") is not None:
+            return bool(run.get("cart_read"))
+        run["cart_read"] = False
+        text = ""
+        try:
+            a, _err = self.cc.resolve_read("page", None, chat_id=str(chat_id))
+            if a:
+                a.update(read_scope="task", origin="task",
+                         task_run=run.get("id"))
+                if obs.get("tab_id") is not None:
+                    a.setdefault("tab_id", obs["tab_id"])
+                ok, detail = self.cc.execute(a, chat_id)
+                text = str(detail or "") if ok else ""
+        except Exception as e:
+            logger.debug(f"[TaskAgent] корзина не прочитана: {e}")
+        lines = _cart_lines(text)
+        now = self._cart_now(run)
+        if not lines or not _cart_lines_fit(lines, now, text):
+            logger.info("[TaskAgent] корзина кодом: строение не узнано — "
+                        "смотрит модель")
+            return False
+        run["cart_read"] = True
+        run["cart_lines"] = lines[:12]
+        run["cart_lines_private"] = bool(obs.get("private"))
+        if "cart_pre" not in run:
+            # Корзина до задачи — для фактов оформления и передачи оплаты
+            # («лежало там до задачи»); _note_cart её уже не перепишет
+            run["cart_pre"] = dict(self._cart_first(run) or now or {
+                "count": sum(x["qty"] for x in lines)})
+        items = (run.get("brief") or {}).get("items") or []
+        marked, unsure = self._cart_pre_mark(run)
+        had = [self._cart_item_text(b) for b in marked]
+        logger.info(f"[TaskAgent] корзина кодом: {len(lines)} строк, из брифа "
+                    f"уже там {len(had)}, не уверен {len(unsure)}")
+        shown = "; ".join(self._cart_line_text(x) for x in lines[:12])
+        line = "read the cart (done by the system, no model)"
+        notes = [f"ok — before this task the cart already had: {shown}"]
+        if had:
+            notes.append("The plan's items found there are ✓ — never add "
+                         f"them again: {', '.join(had)}")
+        if unsure:
+            notes.append(
+                "Not sure these are there (a similar line is): "
+                + ", ".join(self._cart_item_text(b) for b in items
+                            if b["name"] in unsure)
+                + " — compare with the lines above before adding")
+        if not had and not unsure:
+            notes.append("None of the plan's items is there yet")
+        self._record(run, line, ". ".join(notes))
+        if any(b.get("src") == "private" for b in items):
+            # Позиция, названная на приватной странице, — в строках корзины
+            # открытым текстом: облачному промпту без них
+            run.setdefault("hist_public", {})[len(run["history"]) - 1] = (
+                f"{line} → ok — its lines are hidden (an item was named on a "
+                "private page)")
+        return True
+
+    @staticmethod
+    def _cart_item_text(b: dict) -> str:
+        # Позиция брифа в строке истории о корзине: названная на приватной
+        # странице — заглушкой
+        return (_PRIVATE_SLOT if b.get("src") == "private"
+                else TaskAgent._item_text(b))
+
+    @staticmethod
+    def _cart_pre_mark(run: dict) -> Tuple[List[dict], List[str]]:
+        """Позиции брифа, которые лежат в корзине, прочитанной кодом
+        (run["cart_lines"], _cart_look; строго — _cart_had), — в корзину
+        задачи с пометкой pre: план отметит их ✓ «уже в корзине», повтор
+        «В корзину» отобьёт гейт. Уже учтённые (положила задача или pre) не
+        трогаем. → (отмеченные сейчас позиции брифа, названия похожих, но
+        строго не сошедшихся — ни «уже там», ни «ещё нет»: решают модель и
+        человек)."""
+        lines = run.get("cart_lines") or []
+        items = (run.get("brief") or {}).get("items") or []
+        adds = run.setdefault("cart_adds", [])
+        marked, unsure = [], []
+        pairs = _cart_had(items, lines)
+        for i, b in enumerate(items):
+            if _brief_count(b, items, adds):
+                continue
+            j = pairs.get(i)
+            if j is None:
+                if any(_same_item(b["name"], ln["name"]) for ln in lines):
+                    # Похожая строка есть, а строго не сошлась («Кола» без
+                    # размера при «Кола 0,5 л» и «Кола Зеро 0,5 л»)
+                    unsure.append(b["name"])
+                continue
+            marked.append(b)
+            for _ in range(min(lines[j]["qty"], b.get("qty") or 1)):
+                adds.append({"key": b["name"], "label": lines[j]["name"][:40],
+                             "verified": True, "pre": True,
+                             "hist": len(run["history"])})
+        run["cart_unsure"] = unsure
+        if marked:
+            # Повтор «В корзину» лежавшего — сначала назад модели (гейт)
+            run["cart_qa_mark"] = len(run.get("qa") or ())
+            run["cart_bounced"] = False
+        return marked, unsure
+
+    def _cart_recheck(self, run: dict):
+        """Бриф изменился после чтения корзины кодом: новая позиция может
+        уже лежать в ней. Run5, сц. 4: «оставь» про лежавшую до задачи
+        «Колу Зеро» — позиция вошла в бриф после _cart_look и числилась «ещё
+        не в корзине»: план требовал положить её второй раз, «что-нибудь
+        ещё?» звучал снова. Отмеченное здесь человек уже видел строками
+        корзины в вопросе — счёт вопроса (more_n) сдвигается вместе с ним."""
+        if not run.get("cart_read"):
+            return
+        n0 = len(run.get("cart_adds") or ())
+        marked, _unsure = self._cart_pre_mark(run)
+        if not marked:
+            return
+        if run.get("more_n") is not None:
+            run["more_n"] += len(run["cart_adds"]) - n0
+        logger.info(f"[TaskAgent] корзина кодом: после брифа уже там ещё "
+                    f"{len(marked)}")
+        self._record(run, "compare the new items with the cart read earlier",
+                     "ok — already in the cart before this task, ✓ — never "
+                     "add them again: " + ", ".join(
+                         self._cart_item_text(b) for b in marked))
+
+    def _cart_look_step(self, run: dict, chat_id, router, obs: dict
+                        ) -> Optional[Tuple[str, Optional[str]]]:
+        """Повтор заказа («как в прошлый раз»: позиции брифа из памяти), а
+        корзина магазина уже не пуста, задача в неё ещё ничего не клала, —
+        до хода модели открыть корзину кнопкой шапки («Корзина 3») и
+        прочитать кодом (_cart_look): что из заказа там уже лежит, план
+        отметит, и код сразу спросит «что-нибудь ещё?» с её строками. Run4,
+        сц. 4: это делала модель — клик, чтение, вопрос (вызовы 36–38, ~27
+        тыс. симв. облаку). Кнопка корзины одна и с числом, сайт — сайт
+        брифа; клик — через _act со всеми проверками шага. Корзина не
+        открылась или не разобрана — дальше модель, как раньше."""
+        brief = run.get("brief") or {}
+        items = brief.get("items") or []
+        if run.get("cart_read") is not None or run.get("cart_adds") \
+                or obs.get("note") \
+                or not _REPEAT_RE.search(run.get("goal") or "") \
+                or not any(b.get("src") == "memory" for b in items):
+            return None
+        host = str(obs.get("host") or "")
+        site = str((brief.get("site") or {}).get("value") or "")
+        if not host or not site \
+                or not _host_in(host, _site_hosts(site) or [site]):
+            return None  # не сайт прошлого заказа — не наша корзина
+        if self._cart_open(obs):
+            if self._cart_first(run) or self._cart_now(run):
+                self._cart_look(run, chat_id, obs)
+            return None
+        if run.get("cart_looked"):
+            # Клик кодом корзину не открыл — дальше модель
+            run["cart_read"] = False
+            return None
+        if obs.get("private") or not (self._cart_first(run)
+                                      or self._cart_now(run)):
+            return None
+        btns = []
+        for n, it in enumerate(obs.get("shown") or (), 1):
+            st = _cart_state([it])
+            # Кнопка корзины шапки с числом: «Корзина 3», «Cart (2)», «408 ₽
+            # (Корзина)»; не «В корзину», не «Очистить корзину»
+            if not it.get("dis") and not it.get("ed") \
+                    and not self._is_cart_add_item(it) \
+                    and not _CART_EDIT_RE.search(_item_label(it)) \
+                    and ((st.get("count") or 0) > 0
+                         or (st.get("sum") or 0) > 0):
+                btns.append((n, it))
+        if not btns or len({_label_of(it) for _n, it in btns}) != 1:
+            return None
+        n, it = btns[0]
+        run["cart_looked"] = True
+        act = {"action": "click", "n": n, "label": _label_of(it)}
+        run["obs_extra_query"] = (run.get("obs_extra") or {}).get("query")
+        run["obs_extra"] = None
+        run["steps"] += 1
+        logger.info(f"[TaskAgent] шаг {run['steps']} (корзина кодом: повтор "
+                    f"заказа, в ней уже лежит): {self._act_log(act)}")
+        return self._act(run, chat_id, router, act, obs)
+
+    @staticmethod
     def _item_text(b: dict) -> str:
-        # Позиция брифа человеку: «Пепперони 30 см (+ моцарелла) ×2»
+        # Позиция брифа человеку: «Пепперони 30 см (традиционное, моцарелла)
+        # ×2». Варианты — в скобках без «+»: выбор варианта (тесто) от
+        # добавки за доплату бриф не отличает, а «(+ традиционное)» в
+        # сводке оплаты читалось как платная добавка. Скобки, а не запятая:
+        # позиции в сводке и «В корзине: …» разделены запятыми
         s = b["name"] + (f" {b['size']}" if b.get("size") else "")
         if b.get("options"):
-            s += " (+ " + ", ".join(b["options"]) + ")"
+            s += " (" + ", ".join(b["options"]) + ")"
         if (b.get("qty") or 1) > 1:
             s += f" ×{b['qty']}"
         return s
@@ -5238,19 +6237,27 @@ class TaskAgent:
     def _pending_items(run: dict) -> List[dict]:
         # Позиции брифа, которых в корзине задачи меньше, чем просили
         adds = run.get("cart_adds") or []
-        return [b for b in (run.get("brief") or {}).get("items") or ()
-                if sum(1 for x in adds if _same_item(b["name"], x["key"]))
-                < (b.get("qty") or 1)]
+        items = (run.get("brief") or {}).get("items") or []
+        return [b for b in items
+                if _brief_count(b, items, adds) < (b.get("qty") or 1)]
 
     def _more_due(self, run: dict, before_checkout: bool = False) -> bool:
         """Пора спросить «что-нибудь ещё?»: задача что-то положила, после
         прошлого вопроса добавилось новое, «нет» ещё не сказано. Сам (до
         хода модели) — когда всё просимое уже в корзине и выбор вида
         («напиток») не идёт; перед оформлением — и с недобавленным (вопрос
-        его назовёт)."""
+        его назовёт). Задача сама ничего не положила, а корзина сайта не
+        пуста (повтор заказа: собрана прошлыми задачами) — перед оформлением
+        тоже, один раз: run4, сц. 4 — модель прочитала корзину, спросила о
+        лишнем и сама нажала «К оформлению заказа», а гейт пропустил (корзина
+        задачи пуста — «пора» не наступала)."""
         adds = run.get("cart_adds") or []
-        if not adds or run.get("more_no"):
+        if run.get("more_no"):
             return False
+        if not adds:
+            now = self._cart_now(run)
+            return before_checkout and run.get("more_n") is None and bool(
+                now if now is not None else self._cart_first(run))
         n = run.get("more_n")
         fresh = n is None or len(adds) > n
         if before_checkout:
@@ -5310,14 +6317,18 @@ class TaskAgent:
             b.update(stage="chosen", section=sec)
         run["browse"] = b
 
-    def _plan_step(self, run: dict, chat_id, obs: dict
-                   ) -> Optional[Tuple[str, str]]:
+    def _plan_step(self, run: dict, chat_id, obs: dict, router=None
+                   ) -> Optional[Tuple[str, Optional[str]]]:
         """До хода модели: всё просимое в корзине — «что-нибудь ещё?» сразу
         (раньше — только когда модель шла к оформлению, а до того она
-        бродила по сайту); после «нет» — отметка «корзина открыта»."""
+        бродила по сайту); после «нет» — отметка «корзина открыта». Повтор
+        заказа при непустой корзине — сначала её состав (_cart_look_step)."""
         if not _ORDER_GOAL_RE.search(run.get("goal") or "") \
                 or obs.get("error"):
             return None
+        look = self._cart_look_step(run, chat_id, router, obs)
+        if look:
+            return look
         if run.get("more_no") and not run.get("cart_checked"):
             # Корзина — и приватной страницей (/cart): отметка без содержимого
             try:
@@ -5340,9 +6351,7 @@ class TaskAgent:
         adds = run.get("cart_adds") or []
         items = brief.get("items") or []
         steps: List[Tuple[bool, str]] = []
-        site = (run.get("cart_host") or run.get("site_ok")
-                or next(iter(run.get("site_pick") or ()), None)
-                or ((brief.get("site") or {}).get("value")))
+        site = self._shop_label(run, brief)
         steps.append((bool(site), f"the shop: {site}" if site else
                       "the shop — the system asks the user where to order"))
         if not items and not adds and not run.get("kinds"):
@@ -5356,12 +6365,17 @@ class TaskAgent:
                                  "the section was not shown, scroll to its "
                                  "items and ask the user, listing them"))
         for b in items:
-            n = sum(1 for x in adds if _same_item(b["name"], x["key"]))
-            done = n >= (b.get("qty") or 1)
+            # Добавленное — своей позиции брифа (_brief_pick): «Кола Зеро»
+            # корзины не отмечает «Колу» при обеих в брифе
+            hit = [x for x in adds if _brief_pick(x["key"], items) is b]
+            done = len(hit) >= (b.get("qty") or 1)
+            # Лежало в корзине до задачи (прочитал код, _cart_look) — ✓ тоже
+            pre = done and all(x.get("pre") for x in hit)
             steps.append((done, f"put \"{self._item_text(b)}\" into the cart"
-                          + (" — it is in the cart" if done else "")))
-        for key in dict.fromkeys(x["key"] for x in adds if not any(
-                _same_item(b["name"], x["key"]) for b in items)):
+                          + (" — it was in the cart before this task" if pre
+                             else " — it is in the cart" if done else "")))
+        for key in dict.fromkeys(x["key"] for x in adds
+                                 if _brief_pick(x["key"], items) is None):
             steps.append((True, f"\"{key}\" is in the cart"))
         if run.get("more_n") is not None and not run.get("more_no"):
             steps.append((False, "the user answered \"anything else?\" — do "
@@ -5403,37 +6417,104 @@ class TaskAgent:
         except ValueError:
             pass
         name = _PRICE_RE.sub(" ", lab)
-        if not re.search(r"[^\W\d_]{3,}", name) or any(
-                _same_item(b["name"], name) for b in self._pending_items(run)):
+        if not re.search(r"[^\W\d_]{3,}", name):
+            return None
+        # Карточка — позиция брифа (название без цены и кнопки, _brief_pick):
+        # при «Коле» и «Коле Зеро» в брифе карточка «Колы», пока её нет в
+        # корзине, — не положенная «Кола Зеро»
+        items = (run.get("brief") or {}).get("items") or []
+        pick = _brief_pick(" ".join(_offer_words(lab)), items)
+        pend = self._pending_items(run)
+        if pick is not None:
+            todo = any(pick is b for b in pend)
+        else:
+            todo = any(_same_item(b["name"], name) for b in pend)
+        if todo:
             return None
         hit = next((x["key"] for x in reversed(adds)
-                    if _same_item(x["key"], name)), None)
+                    if _same_item(x["key"], name) and (
+                        pick is None or _brief_pick(x["key"], items) in (
+                            None, pick))), None)
         return hit
 
     def _ask_more(self, run: dict, chat_id, obs: dict) -> Tuple[str, str]:
         """«Что-нибудь ещё?» с составом — когда просимое в корзине (план) и
         перед уходом к оформлению, и о том, что лежало в корзине до задачи
-        (иначе оно ушло бы в заказ молча). Ответ — _more_answer."""
+        (иначе оно ушло бы в заказ молча). Ответ — _more_answer. Задача
+        сама ничего не положила (повтор заказа: корзина собрана до неё) —
+        что лежит в корзине сейчас: её строки (код читает открытую корзину
+        сам, _cart_look) или хотя бы число со шапки — и что из заказа там
+        уже есть."""
+        own = [x for x in run.get("cart_adds") or () if not x.get("pre")]
+        if not own and run.get("cart_read") is None and self._cart_open(obs):
+            # Корзину открыла модель (или она открыта), код её не читал
+            self._cart_look(run, chat_id, obs)
         run["more_asked"] = True
         run["more_n"] = len(run.get("cart_adds") or ())
         brief_items = (run.get("brief") or {}).get("items") or []
         what, missing = self._added_items(run)
+        # Похожая строка в корзине, а строго не сошлась (_cart_look) — не
+        # «ещё не в корзине»: то ли это, решит человек
+        unsure = set(run.get("cart_unsure") or ())
+        doubt = [self._item_text(b) for b in brief_items
+                 if b["name"] in unsure and self._item_text(b) in missing]
+        missing = [m for m in missing if m not in doubt]
+        missing_x = (self._t("task_more_unsure", items=", ".join(doubt))
+                     if doubt else "")
         pre = self._cart_pre(run)
-        extra = self._t("task_more_pre", pre=self._cart_str(pre),
-                        cart=self._cart_str((run.get("page_state") or {})
-                                            .get("cart")) or "?") if pre else ""
-        if missing:
-            extra += self._t("task_more_missing", items=", ".join(missing))
-        q = self._t("task_more", what=", ".join(what) or "—", extra=extra)
-        # Позиция, названная на приватной странице, — вопрос в память и
-        # облачный промпт заглушкой
+        lines = "; ".join(self._cart_line_text(x)
+                          for x in run.get("cart_lines") or ())
+        if not own:
+            first, now = self._cart_first(run), self._cart_now(run)
+            if first and "cart_pre" not in run:
+                # Лежавшее до задачи — и в вопрос о заказе, и в передачу
+                # оплаты («в корзине есть и то, что лежало там до задачи»)
+                run["cart_pre"] = dict(first)
+            cart = (lines or self._cart_str(now or first)).rstrip(".") or "?"
+            # Лежавшее до задачи — если корзина с тех пор не менялась (числа,
+            # видные и тогда, и сейчас, те же)
+            keys = [k for k in ("count", "sum") if now and first
+                    and now.get(k) is not None and first.get(k) is not None]
+            same = bool(first) and (now is None or (bool(keys) and all(
+                now[k] == first[k] for k in keys)))
+            extra = self._t("task_more_before_was") if same else (
+                self._t("task_more_before_pre", pre=self._cart_str(first))
+                if first else "")
+            extra += "."
+            if run.get("cart_read"):
+                if what:
+                    extra += self._t("task_more_had", items=", ".join(what))
+                if missing:
+                    extra += self._t("task_more_missing",
+                                     items=", ".join(missing))
+                extra += missing_x
+            elif brief_items:
+                extra += self._t("task_more_unchecked", items=", ".join(
+                    self._item_text(b) for b in brief_items))
+            q = self._t("task_more_before", cart=cart, extra=extra)
+        else:
+            extra = ((self._t("task_more_pre_lines", lines=lines) if lines
+                      else self._t("task_more_pre", pre=self._cart_str(pre),
+                                   cart=self._cart_str(
+                                       (run.get("page_state") or {})
+                                       .get("cart")) or "?"))
+                     if pre else "")
+            if missing:
+                extra += self._t("task_more_missing", items=", ".join(missing))
+            extra += missing_x
+            q = self._t("task_more", what=", ".join(what) or "—", extra=extra)
+        # Позиция, названная на приватной странице, и строки корзины,
+        # прочитанные на приватной странице, — вопрос в память и облачный
+        # промпт заглушкой
         private = bool(obs.get("private")) or any(
-            b.get("src") == "private" for b in brief_items)
+            b.get("src") == "private" for b in brief_items) \
+            or bool(lines and run.get("cart_lines_private"))
         # Без приписок (лежавшее до задачи, не добавленное) «нет/всё» и
         # голое «да» брифа не меняют — разбор без модели (_brief_fast); с
         # ними «нет» может значить и «это убрать» — разбор модели
         run["awaiting"] = {"kind": "ask", "question": q, "private": private,
-                           "more": True, **({} if extra else {"pick": "more"})}
+                           "more": True,
+                           **({} if extra or not own else {"pick": "more"})}
         self._audit_note(run, chat_id, "task_ask", q, private)
         return ("pause", q)
 
@@ -5443,15 +6524,15 @@ class TaskAgent:
         brief_items = (run.get("brief") or {}).get("items") or []
         keys = []
         for x in run.get("cart_adds") or ():
-            if not any(_same_item(x["key"], k) for k in keys):
+            # «Кола» и «Кола Зеро» — две строки состава, не одна
+            if not any(_same_item(x["key"], k, strict=True) for k in keys):
                 keys.append(x["key"])
         what = []
         for k in keys:
-            b = next((b for b in brief_items if _same_item(b["name"], k)),
-                     None)
+            b = _brief_pick(k, brief_items)
             what.append(self._item_text(b) if b else k)
         missing = [self._item_text(b) for b in brief_items
-                   if not any(_same_item(b["name"], k) for k in keys)]
+                   if not any(_brief_pick(k, brief_items) is b for k in keys)]
         return what, missing
 
     @staticmethod
@@ -5508,8 +6589,11 @@ class TaskAgent:
         q = self._item_questions(run, item, obs)
         if q:
             private = bool(obs.get("private"))
+            # «Как есть» и голый вариант окна разбираются без модели
+            # (_gate_pick → _gate_fast)
             run["awaiting"] = {"kind": "ask", "question": q,
-                               "private": private}
+                               "private": private,
+                               **self._gate_pick(run, item, obs)}
             if act and not private:
                 # Отложенный клик: ответ, который выбор не меняет, — код
                 # нажмёт сам, без круга к модели (_replay_step)
@@ -5537,8 +6621,14 @@ class TaskAgent:
                 "task_cart_stuck",
                 f"«{label}» не сработала — товар в корзину не попал (корзина "
                 "не изменилась). Нажать ещё раз? (да/нет)", label=label))
+        # Тот же товар — и по брифу: «Кола» после положенной «Колы Зеро»,
+        # когда в брифе обе, — другая позиция, не повтор (_brief_pick)
+        items = (run.get("brief") or {}).get("items") or []
+        mine = _brief_pick(key, items)
         same = [x for x in run.get("cart_adds") or ()
-                if _same_item(x["key"], key) or x["key"] == key]
+                if x["key"] == key or (_same_item(x["key"], key) and (
+                    mine is None or _brief_pick(x["key"], items) in (None,
+                                                                     mine)))]
         if same and not any(x["verified"] for x in same) and any(
                 h.startswith("read the page") or (
                     "the address changed" in h and _CART_WORD_RE.search(h))
@@ -5552,6 +6642,8 @@ class TaskAgent:
         # Тот же товар второй раз — не нажимаем: модель «исправляла» неверный
         # размер, добавляя пиццу ещё раз, или жала кнопку в ещё открытом окне
         added = "; ".join(f"«{x['key']}»" for x in same[-3:])
+        # Лежало в корзине до задачи (_cart_look), а не положено ею
+        before = all(x.get("pre") for x in same)
         if not run.get("cart_bounced") \
                 and len(run["qa"]) <= run.get("cart_qa_mark", 0):
             # Первый повтор без нового слова человека — назад модели, без
@@ -5560,13 +6652,21 @@ class TaskAgent:
             # а не стопом «зациклился»
             run["cart_bounced"] = True
             run["sigs"] = []
-            self._record(
-                run, line,
-                f"NOT performed — this task already added {added} to the cart. "
-                "It is in the cart: go on (another item, or the cart and "
-                "checkout). If the user may want one more, ask them first")
+            self._record(run, line, (
+                f"NOT performed — {added} was in the cart before this task "
+                "(✓ in the plan)" if before else
+                f"NOT performed — this task already added {added} to the "
+                "cart") + ". It is in the cart: go on (another item, or the "
+                "cart and checkout). If the user may want one more, ask them "
+                "first")
             return ("progress", None)
         run["confirm_cart_key"] = key
+        if before:
+            return self._ask_confirm(run, a, line, question=self._phrase(
+                "task_cart_again_pre",
+                f"В корзине уже лежит (ещё до этой задачи): {added}. Добавить "
+                f"ещё один — нажать «{label}»? (да/нет)",
+                added=added, label=label))
         return self._ask_confirm(run, a, line, question=self._phrase(
             "task_cart_again",
             f"В корзину уже добавлено: {added}. Добавить ещё один — нажать "
@@ -5670,13 +6770,16 @@ class TaskAgent:
                 if not isinstance(it, dict) \
                         or set(it) - {"name", "size", "options", "qty"} \
                         or it.get("qty") not in (None, 1) \
-                        or not _same_item(str(it.get("name") or ""), key):
+                        or not _is_item(it.get("name"), key, (
+                            run.get("brief") or {}).get("items")):
                     return False
                 opts = it.get("options") or []
                 if not isinstance(opts, list):
                     return False  # ответ модели не проверен
+                # Отказ от добавок значением опции («без добавок» — run4
+                # №10) — не вариант окна: выбор он не меняет (_no_extras)
                 for val in ([it["size"]] if it.get("size") else []) + [
-                        o for o in opts if o]:
+                        o for o in opts if o and not _no_extras(o)]:
                     if not any(fits(val, lab) for lab in sel) \
                             or any(fits(val, lab) for lab in off):
                         return False
@@ -5776,8 +6879,12 @@ class TaskAgent:
         до SECTION_LIST_MAX позиций — список целиком, больше — коротко
         (сколько, цены, виды с примерами; «покажи все» — список). Разделы —
         по разметке страницы, не нашлось двух — модель по странице
-        (_pre_llm); показ раздела — модель, когда — код. Модели нет или
-        разделов на странице не нашлось — как раньше, решает модель шагов.
+        (_pre_llm); служебная страница сайта (доставка, контакты) — без
+        модели: главная кодом, попытка — на следующей странице. Вид из цели
+        («закажи напиток») с разделом сайта — сразу этот раздел. Показ
+        раздела — модель, когда — код; раздел по разметке целиком (до
+        SECTION_LIST_MAX позиций) — список кодом. Модели нет или разделов
+        на странице не нашлось — как раньше, решает модель шагов.
         → пауза/ход или None."""
         b = run.setdefault("browse", {})
         if b.get("stage") == "done" and b.get("again") and not b.get("closed"):
@@ -5822,7 +6929,8 @@ class TaskAgent:
             # там, куда пришёл агент, а не на вкладке новостей человека
             return None
         if stage is None:
-            return self._browse_sections(run, chat_id, obs, b, host)
+            return self._browse_sections(run, chat_id, obs, b, host,
+                                         router=router)
         if stage == "chosen":
             if b.get("again") and any(it.get("md") for it in obs["shown"]):
                 # Просьба после «что-нибудь ещё?», а открыто окно товара
@@ -5856,21 +6964,39 @@ class TaskAgent:
         return ("pause", q)
 
     def _browse_sections(self, run: dict, chat_id, obs: dict, b: dict,
-                         host: str) -> Optional[Tuple[str, str]]:
+                         host: str, router=None
+                         ) -> Optional[Tuple[str, Optional[str]]]:
         # Разделы — подписи этой страницы: заголовки разделов по разметке,
         # иначе названные моделью; открытое окно (город, cookie) сначала
         # решит модель
         if any(it.get("md") for it in obs["shown"]):
             return None
-        # Одна попытка: при первом приходе на сайт. Разделов не нашлось —
-        # дальше модель шагов, вопрос посреди выбора товара не нужен
-        b["stage"] = "done"
+        if b.get("retry_url") and b["retry_url"] == obs.get("url"):
+            # Попытка отложена до другой страницы сайта (_browse_later)
+            return None
         if self.slot_router is None:
+            b["stage"] = "done"
             return None  # модели разбора нет — как раньше, без разделов
         # Разметка первой: два годных раздела — модель не зовём (вызов
         # веб-чата на каждый заход в магазин — риск бана аккаунта). Её NONE
         # «цели каталог не нужен» решает код до разделов (_browse_step)
         marked = self._markup_sections(obs)
+        if len(marked) < 2 and self._service_page(obs):
+            # Служебная страница сайта без товаров (доставка, контакты —
+            # вкладка от прошлой задачи): разделов на ней нет, модель о них
+            # не спрашиваем (run3 21.10: NONE на /delivery, и разделов
+            # больше не было — меню перечисляла модель шагов). Главная того
+            # же сайта — кодом, раз; дальше — следующая страница сайта
+            if not self._browse_later(b, obs):
+                b["stage"] = "done"
+                return None
+            if router is not None and not b.get("home"):
+                b["home"] = True
+                return self._browse_home(run, chat_id, router, obs)
+            return None
+        # Одна попытка на странице с товарами или на главной: разделов не
+        # нашлось — дальше модель шагов, вопрос посреди выбора не нужен
+        b["stage"] = "done"
         opts, src = list(marked), "по разметке"
         if len(opts) < 2:
             labels = [_item_label(it)[:LABEL_MAX] for it in obs["shown"]
@@ -5945,6 +7071,74 @@ class TaskAgent:
                 self._item_text(x) for x in past["brief"]["items"][:3]))
         b.update(stage="asked", sections=opts[:10], sections_q=q)
         return self._browse_ask(run, chat_id, b, q, {"pick": "section"})
+
+    @staticmethod
+    def _service_page(obs: dict) -> bool:
+        """Служебная страница сайта: путь — доставка, контакты, о компании,
+        правила, акции… (_SERVICE_PATH_RE), и на ней ни одной позиции с
+        названием и ценой. Главная, страница с товарами, адрес без
+        служебного слова («/menu», «/catalog») — нет: там разделы решают
+        разметка и модель, как раньше (лучше вызов, чем мимо каталога)."""
+        from urllib.parse import unquote
+        try:
+            path = unquote(urlsplit(str(obs.get("url") or "")).path)
+        except ValueError:
+            return False
+        if not path.strip("/") or not _SERVICE_PATH_RE.search(path):
+            return False
+        # Позиция — подпись с названием и ценой; корзина и доставка с ценой
+        # («Корзина 459 ₽», «Доставка 149 ₽») — не товар
+        return not any(
+            _PRICE_RE.search(x) and _has_name(x)
+            and not _CART_WORD_RE.search(x) and not _NOT_PRODUCT_RE.search(x)
+            for x in (_show_label(it) for it in obs.get("shown") or ()
+                      if not it.get("ed")))
+
+    @staticmethod
+    def _browse_later(b: dict, obs: dict) -> bool:
+        """Разделы — позже, на другой странице того же сайта (на этой их
+        нет: _service_page); та же страница снова — без попытки. Не больше
+        SECTIONS_RETRY_MAX раз за выбор. → отложено ли (False — лимит:
+        дальше модель шагов, как после NONE)."""
+        n = int(b.get("tries") or 0)
+        if n >= SECTIONS_RETRY_MAX:
+            return False
+        b.update(tries=n + 1, retry_url=str(obs.get("url") or ""))
+        return True
+
+    def _browse_home(self, run: dict, chat_id, router, obs: dict
+                     ) -> Optional[Tuple[str, Optional[str]]]:
+        """Главная сайта со служебной страницы — кодом, без вызова модели:
+        тот же хост, путь «/» (адрес не от модели и без данных; гейт
+        execute — как у любого шага), новой вкладкой агента, как open.
+        Разделы — следующим наблюдением (_browse_sections). Адрес не
+        разрешён — None: попытка ждёт другой страницы, ход за моделью."""
+        try:
+            parts = urlsplit(str(obs.get("url") or ""))
+            port = f":{parts.port}" if parts.port else ""
+        except ValueError:
+            return None
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return None
+        home = f"{parts.scheme}://{parts.hostname}{port}/"
+        try:
+            a = self.cc.resolve_url(home)
+        except Exception as e:
+            logger.debug(f"[TaskAgent] главная сайта не разрешена: {e}")
+            a = None
+        if not a:
+            return None
+        a["origin"] = "task"
+        run["steps"] += 1
+        kind, text = self._execute(
+            run, chat_id, router, a, f"open the home page \"{home}\" (by the "
+            "system: no catalog on the previous page)")
+        if kind == "progress" and text and _last_line(run).endswith("→ ok"):
+            site = parts.hostname.removeprefix("www.")
+            logger.info(f"[TaskAgent] разделы: служебная страница — открыл "
+                        f"главную {site}")
+            return ("progress", self._t("task_sections_home", site=site))
+        return (kind, text)
 
     @staticmethod
     def _markup_sections(obs: dict) -> List[str]:
@@ -6062,7 +7256,9 @@ class TaskAgent:
     def _browse_open(self, run: dict, chat_id, router, obs: dict, b: dict
                      ) -> Optional[Tuple[str, Optional[str]]]:
         # Выбранный раздел — клик по его подписи (ссылка/вкладка раздела;
-        # все проверки клика — _do_element); не видно — открывает модель
+        # все проверки клика — _do_element); не видно — открывает модель.
+        # Клик не прошёл или подписи нет, а раздел — блоком на этой же
+        # странице: показ по разметке без клика (_browse_unclicked)
         sec = b.get("section") or ""
         shown = obs.get("shown") or []
         hits = [i for i, it in enumerate(shown, 1)
@@ -6071,6 +7267,9 @@ class TaskAgent:
         hits.sort(key=lambda i: shown[i - 1].get("vp") is False)
         n = hits[0] if hits else None
         if n is None:
+            res = self._browse_unclicked(run, chat_id, obs, b, None)
+            if res is not None:
+                return res
             b["stage"] = "done"
             self._record(run, f"open the section \"{sec}\"", (
                 f"NOT found in the list — the user chose the section "
@@ -6081,18 +7280,73 @@ class TaskAgent:
         out = self._do_element(run, chat_id, router,
                                {"action": "click", "n": n}, shown[n - 1], obs)
         # Раздел открыт, только если клик прошёл («→ ok»: браузер увидел
-        # реакцию — прокрутка к разделу тоже); «не уверен», вопрос, отбой,
-        # провал — дальше модель шагов
+        # реакцию — прокрутка к разделу тоже); «не уверен», отбой, провал —
+        # показ по разметке без клика, нет его — модель шагов; вопрос
+        # (подтверждение) — как был
         b["stage"] = ("opened" if out[0] == "progress"
                       and _last_line(run).endswith("→ ok") else "done")
+        if b["stage"] == "done" and out[0] == "progress":
+            res = self._browse_unclicked(run, chat_id, obs, b, shown[n - 1])
+            if res is not None:
+                return res
         return out
 
-    def _browse_show(self, run: dict, chat_id, obs: dict, b: dict
-                     ) -> Optional[Tuple[str, str]]:
+    def _browse_unclicked(self, run: dict, chat_id, obs: dict, b: dict,
+                          item: Optional[dict]
+                          ) -> Optional[Tuple[str, Optional[str]]]:
+        """Клик раздела не прошёл (стенд 21.10: поверх «Напитков» — окно
+        «Ваш город — Москва?», окном в снимке не помеченное; клик без
+        видимой реакции) или подписи раздела нет в списке, а меню
+        одностраничное: показ раздела по разметке без клика (_browse_show,
+        unclicked) — раньше показ доставался модели шагов (~8 тыс. симв.).
+        Одностраничное — ссылка раздела (item; нет — ссылки соседних
+        разделов) ведёт сюда же: якорь «#drinks», кнопка/вкладка без адреса.
+        Раздел отдельной страницей — как раньше: блок с тем же заголовком
+        здесь бывает витриной (4 позиции из 20). Позиций по разметке меньше
+        двух — None: как раньше, модель шагов. Окно поверх страницы код не
+        закрывает (город, cookie — решает модель): строка истории говорит
+        модели шагов, что раздел показан без клика и слой на месте."""
+        sec = b.get("section") or ""
+        url = str(obs.get("url") or "")
+        if not sec or run.get("cancel"):
+            return None
+        if item is not None:
+            links = [item]
+        else:
+            near = {s for s in b.get("sections") or () if s != sec}
+            links = [it for it in obs.get("shown") or ()
+                     if " ".join(_item_label(it).split())[:40] in near]
+        if not links or not all(_same_page_link(it, url) for it in links):
+            return None
+        covered = item is not None and "covered by another layer" \
+            in _last_line(run)
+        b["stage"] = "opened"
+        out = self._browse_show(run, chat_id, obs, b, unclicked=True)
+        if out is None:
+            b["stage"] = "done"
+            return None
+        logger.info(f"[TaskAgent] раздел «{sec}»: "
+                    + ("клик перекрыт" if covered else "клик не прошёл"
+                       if item is not None else "подписи нет в списке")
+                    + " — показ по разметке без клика")
+        if out[0] == "pause":
+            self._record(run, f"show the section \"{sec}\"", (
+                "shown to the user from the page's markup, without the click"
+                + (" (the layer over the page is still there)" if covered
+                   else "")))
+        return out
+
+    def _browse_show(self, run: dict, chat_id, obs: dict, b: dict,
+                     unclicked: bool = False) -> Optional[Tuple[str, str]]:
         """Раздел открыт — показать его человеку: до SECTION_LIST_MAX
         позиций целиком, больше — коротко (модель по странице). Позиции —
         подписи с ценой вокруг раздела; модели нет или она назвала то, чего
-        на странице нет, — список кодом."""
+        на странице нет, — список кодом. Раздел по разметке целиком (каждая
+        позиция блока — с названием и ценой) и позиций до SECTION_LIST_MAX
+        — список кодом без модели: модель только переписала бы те же строки
+        (стенд 21.10, вызов 5: ~1,7 тыс. симв. и ~10 с). unclicked — клик
+        раздела не прошёл (_browse_unclicked): только разметка, без неё —
+        None (позиции снимка — вся страница, а не раздел)."""
         sec = b.get("section") or ""
         items = list(obs.get("shown") or ())
         found, marked = [], []
@@ -6102,9 +7356,9 @@ class TaskAgent:
                 # Позиции раздела по разметке (заголовок раздела и его блок;
                 # только чтение): у Додо все 165 карточек на одной странице,
                 # в общий снимок раздел не влезает
-                marked = _ba.section_items(obs["host"], sec,
-                                           obs["tab_id"]) or []
-                if len(marked) < 2:
+                marked = [_no_card_button(x) for x in _ba.section_items(
+                    obs["host"], sec, obs["tab_id"]) or ()]
+                if len(marked) < 2 and not unclicked:
                     _u, found = _ba.snapshot_for_goal(obs["host"], sec,
                                                       obs["tab_id"])
         except Exception as e:
@@ -6163,6 +7417,8 @@ class TaskAgent:
         # порядок страницы уже не важны)
         products = _products([{"text": x} for x in marked])
         by_markup = len(products) >= 2
+        if unclicked and not by_markup:
+            return None
         if by_markup:
             labels, vp_known = products, False
         onscreen = {_show_label(it) for it in items
@@ -6176,6 +7432,29 @@ class TaskAgent:
         if not products:
             b["stage"] = "done"
             return None
+
+        def _code_list(prods: List[str]) -> Tuple[str, str]:
+            # Список кодом: позиции с ценой, до SECTION_LIST_MAX
+            lines = [f"- {x}" for x in prods[:SECTION_LIST_MAX]]
+            if len(prods) > SECTION_LIST_MAX:
+                lines.append(self._t("task_section_rest",
+                                     n=len(prods) - SECTION_LIST_MAX))
+            return self._browse_ask(run, chat_id, b, self._t(
+                "task_section_all" if sec else "task_page_all",
+                section=sec, items="\n".join(lines),
+                site=str(obs.get("host") or "").removeprefix("www.")),
+                {"pick": "item", "listed": True,
+                 "items": prods[:SECTION_LIST_MAX]})
+        # Разметка раздела целиком: ни одна позиция блока не отброшена (без
+        # названия — «от 429 ₽ Выбрать», цена срезана, акция) — иначе список
+        # неполон, и показ — модели, как раньше. Лента страницы (не по
+        # разметке) — тоже модели: там бывают позиции соседних разделов
+        whole = by_markup and len(products) == len(dict.fromkeys(
+            x[:LABEL_MAX] for x in marked))
+        if whole and len(products) <= SECTION_LIST_MAX:
+            logger.info(f"[TaskAgent] раздел «{sec}» по разметке: "
+                        f"{len(products)} — список кодом, без модели")
+            return _code_list(products)
         text = self._pre_llm(
             run, obs, step=f"present {what} to the user",
             page=(("Items of this section, found by the page's markup (labels "
@@ -6206,11 +7485,16 @@ class TaskAgent:
                   + "Names and prices exactly as in the list above — never "
                   "invent them. Plain text, no headings.\n"),
             max_tokens=900)
-        if sec and text and re.fullmatch(r"\W*NONE\W*", text):
-            # Позиций раздела в снимке нет (страница не докрутилась, раздел
-            # ниже бюджета снимка) — не выдаём чужое за раздел: модель шагов
-            # докрутит/найдёт и спросит сама; вид остаётся в плане
-            return self._browse_handoff(run, b, sec)
+        if text and re.fullmatch(r"\W*NONE\W*", text):
+            if sec:
+                # Позиций раздела в снимке нет (страница не докрутилась,
+                # раздел ниже бюджета снимка) — не выдаём чужое за раздел:
+                # модель шагов докрутит/найдёт и спросит сама; вид остаётся
+                # в плане
+                return self._browse_handoff(run, b, sec)
+            # Страница без раздела: NONE — не текст для человека (стенд
+            # 21.10, тест: «NONE» ушло вопросом) — список кодом
+            text = None
         seen = set(_option_words(" ".join(labels)))
         # Варианты показа — товары страницы: голый выбор одного из них
         # разбирается без модели (_brief_fast сверит вариант с товаром)
@@ -6224,16 +7508,7 @@ class TaskAgent:
                 b["items"] = products
                 if len(products) < 2:
                     return self._browse_handoff(run, b, sec)
-            # Список кодом: позиции с ценой, до SECTION_LIST_MAX
-            lines = [f"- {x}" for x in products[:SECTION_LIST_MAX]]
-            if len(products) > SECTION_LIST_MAX:
-                lines.append(self._t("task_section_rest",
-                                     n=len(products) - SECTION_LIST_MAX))
-            text = self._t("task_section_all" if sec else "task_page_all",
-                           section=sec, items="\n".join(lines),
-                           site=str(obs.get("host") or "").removeprefix("www."))
-            pick = {"pick": "item", "listed": True,
-                    "items": products[:SECTION_LIST_MAX]}
+            return _code_list(products)
         return self._browse_ask(run, chat_id, b, text, pick)
 
     def _browse_handoff(self, run: dict, b: dict, sec: str
@@ -6816,7 +8091,11 @@ class TaskAgent:
             return items[0]
         ctx = str(item.get("ctx") or "")
         hits = [b for b in items if _same_item(b["name"], ctx)]
-        return hits[0] if len(hits) == 1 else None
+        if len(hits) > 1:
+            # В блоке и «Кола», и «Кола Зеро» брифа — позиция по названию
+            # товара окна (_product_key), а не первая похожая
+            return _brief_pick(TaskAgent._product_key(item, {}), hits)
+        return hits[0] if hits else None
 
     @staticmethod
     def _repeat_click(run: dict, item: dict, obs: dict) -> Optional[int]:

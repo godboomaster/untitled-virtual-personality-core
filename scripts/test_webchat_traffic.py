@@ -7,8 +7,11 @@
   блокирует отправку;
 * повторяемые блоки (app/core/sticky_scope) в WebChatLLM: блок, недавно
   ушедший в тред целиком, уходит ссылкой; окно в сообщениях (чужие вызовы
-  канала тоже считаются), навигация/новая вкладка — снова целиком, срок
-  STICKY_MAX_AGE_SEC, поисковик (stateless) — всегда целиком;
+  канала тоже считаются) и в символах треда (span: короткие вызовы почти не
+  двигают блок, длинные и ответы — двигают), навигация/новая вкладка —
+  снова целиком, срок STICKY_MAX_AGE_SEC, поисковик (stateless) — всегда
+  целиком; правила агента задач в run3 №10 (после 4 коротких вызовов) —
+  ссылкой;
 * жёсткий лимит поля (duck.ai, 16 тыс.): длинные правила уходят отдельным
   сообщением перед шагом, шаг — со ссылкой; не влезает и так — пропуск без
   отправки;
@@ -118,6 +121,7 @@ def main():
             super().__init__(site, base_dir=tmp / site, channel=channel)
             self.sent = []
             self.nav_next = True
+            self.answer = None  # ответ на следующий вызов (None — обычный)
 
         def _ensure_chat(self, fresh=False):
             if fresh or self.nav_next:
@@ -132,6 +136,9 @@ def main():
             return None
 
         def _wait_answer(self, *a, **kw):
+            if self.answer is not None:
+                ans, self.answer = self.answer, None
+                return ans
             return "OK" if "Standing instructions" in self.sent[-1][:40] \
                 else '{"action":"scroll"}'
 
@@ -192,6 +199,66 @@ def main():
     check("без области sticky — промпт как есть",
           c.sent[-1] == f"User: x\n{rules}" or rules in c.sent[-1])
     check("ровно одна отправка на вызов", len(c.sent) == n0 + 1)
+
+    # Окно в символах треда (span): короткие вызовы канала почти не
+    # отодвигают блок, длинное сообщение и длинный ответ — отодвигают
+    sb = StickyBlock(rules, "[rules as before]", window=10, span=8000)
+    c = FakeChat("deepseek")
+    step(c, blocks=(sb,))
+    for i in range(3):
+        c.get_response([{"role": "user", "content": f"brief {i} " + "b" * 1000}])
+    step(c, blocks=(sb,))
+    check("span: после 3 коротких вызовов (~3 тыс.) — правила ссылкой",
+          "[rules as before]" in c.sent[-1] and rules not in c.sent[-1])
+    c.get_response([{"role": "user", "content": "long " + "l" * 6000}])
+    step(c, blocks=(sb,))
+    check("span: после длинного сообщения (>8 тыс.) — целиком снова",
+          rules in c.sent[-1])
+    step(c, blocks=(sb,))
+    check("span: сразу после полной отправки — снова ссылкой",
+          "[rules as before]" in c.sent[-1])
+    c.answer = "a" * 9000
+    c.get_response([{"role": "user", "content": "short"}])
+    step(c, blocks=(sb,))
+    check("span: длинный ответ тоже текст треда — целиком снова",
+          rules in c.sent[-1])
+    for i in range(10):
+        c.get_response([{"role": "user", "content": f"tiny {i}"}])
+    step(c, blocks=(sb,))
+    check("span: окно в сообщениях (10) — запас против множества коротких",
+          rules in c.sent[-1])
+    step(c, blocks=(sb,))
+    c.nav_next = True
+    step(c, blocks=(sb,))
+    check("span: навигация (новый тред) — целиком", rules in c.sent[-1])
+
+    # run3 №2 → №10: полный шаг с правилами, потом шаги со ссылкой,
+    # бриф и вопросы о странице — размеры прогона; правила агента задач
+    # (STICKY_RULES_SPAN) остаются ссылкой
+    from app.features import task_agent as ta_r
+    rr = ta_r.TaskAgent._sticky_for(None, {})[0]
+    lang = "The user speaks Russian."  # после правил, как в шаге
+    c = FakeChat("deepseek")
+    with sticky_blocks(rr):
+        c.get_response([{"role": "user", "content":
+                         "s" * 2800 + ta_r._STEP_RULES + lang}])
+        for n in (3578, 1544, 1871, 8842, 6461, 1958, 2204):
+            body = "x" * n
+            if n > 3000:  # шаг: правила в промпте, тред их видел
+                body = "x" * (n - len(ta_r._STEP_RULES_REF) - len(lang)) \
+                    + ta_r._STEP_RULES + lang
+            c.get_response([{"role": "user", "content": body}])
+        c.get_response([{"role": "user", "content": "x" * 10100
+                         + ta_r._STEP_RULES + lang}])
+    check("run3 №10: после 7 сообщений (4 коротких, ~27 тыс.) — правила "
+          "ссылкой", ta_r._STEP_RULES not in c.sent[-1]
+          and ta_r._STEP_RULES_REF in c.sent[-1]
+          and all(ta_r._STEP_RULES not in x for x in c.sent[1:]))
+    with sticky_blocks(rr):
+        c.get_response([{"role": "user", "content": "x" * 6400
+                         + ta_r._STEP_RULES + lang}])
+    check("run3 №11: дальше STICKY_RULES_SPAN — правила целиком",
+          ta_r._STEP_RULES in c.sent[-1])
 
     g = FakeChat("google", channel="cc")
     check("поисковик на канале cc — stateless", g.stateless)
@@ -297,6 +364,12 @@ def main():
           and blocks[0].primable and "Товар 3" in blocks[1].text)
     check("правила — общий блок для всех шагов",
           blocks[0].text == ta._STEP_RULES)
+    check("правила — окно в символах (STICKY_RULES_SPAN) с запасом в "
+          "сообщениях, страница — только в сообщениях",
+          blocks[0].span == ta.STICKY_RULES_SPAN > 0
+          and blocks[0].window == ta.STICKY_RULES_WINDOW
+          and blocks[1].span == 0
+          and blocks[1].window == ta.STICKY_PAGE_WINDOW)
 
     seen_sticky = []
 

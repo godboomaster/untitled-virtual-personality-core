@@ -1150,8 +1150,11 @@ def main():
         check("облачный промпт: строка шага с заглушкой приватной страницы",
               "private page" in cloud and 'click "Профиль"' in cloud)
         mem = (LkCC.base_dir / "task_memory.json").read_text(encoding="utf-8")
-        check("память задач: итог прогона с приватной страницей — заглушкой",
-              "private page" in mem and "стоп" not in mem)
+        # Итог дал облачный шаг на /menu: облако кабинета не видело — итог
+        # в память как есть, данных кабинета в ней нет
+        check("память задач: итог облачного шага после кабинета — как есть, "
+              "без данных кабинета", "стоп" in mem
+              and not any(s in mem for s in _PRIV_LEAKS))
 
         # Локальная модель есть: отчёт по кабинету — не в task_memory.json
         _P.PrivateRouter.get_response = (
@@ -4275,9 +4278,14 @@ def main():
         r = agent.start("gm1", "закажи пиццу на pizza.test", ScriptedRouter(
             [{"action": "fail", "message": "стоп"}]), user_id="A")
         run_g = agent._runs.get("gm1") or {}
+        bg = run_g.get("browse") or {}
+        # Вид из цели — раздел сайта с ним открыт и показан кодом (вопрос о
+        # разделах не нужен: test_task_sections_retry)
         check("gemma 01.10: позиция «пицца» из цели — вид, не товар: бриф "
-              "пуст, вопрос о разделах на месте",
-              "На pizza.test есть разделы:" in r
+              "пуст, выбор из каталога на месте (раздел «Пиццы» по виду)",
+              "Нажал «Пиццы»" in r and bg.get("kind") == "пицца"
+              and bg.get("section") == "Пиццы"
+              and bg.get("stage") == "presented"
               and not (run_g.get("brief") or {}).get("items"))
         agent.slot_router = SlotRouter([{"items": [
             {"name": "Пицца Пепперони"}, {"name": "суши"}]}])
@@ -4670,13 +4678,14 @@ def main():
                     user_id="A")
         r = agent.feed("sp3", "напитки", ScriptedRouter(
             [{"action": "fail", "message": "x"}]), user_id="A")
-        mk_show = next(p for p in br_mk.prompts if "Present it:" in p)
+        # Разметка дала раздел целиком (2 позиции с названием и ценой) —
+        # список кодом, модель показа не зовётся (run4 №5); раздел по
+        # разметке модели (>10 позиций) — test_task_browse_markup
         check("раздел по разметке: показаны его позиции (кола, морс), не "
-              "кофе на экране и не пиццы; модели — только они",
+              "кофе на экране и не пиццы; список кодом, без модели показа",
               "В разделе «Напитки»:\n- Кола 0,5 л от 135 ₽\n- Морс от 99 ₽"
               in r and "Капучино" not in r and "Пепперони" not in r
-              and "found by the page's markup" in mk_show
-              and "Капучино" not in mk_show)
+              and not any("Present it:" in p for p in br_mk.prompts))
     finally:
         _ba.snapshot_for_goal = saved_goal_m
         _ba.section_items = lambda *a, **k: None

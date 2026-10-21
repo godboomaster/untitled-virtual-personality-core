@@ -338,6 +338,11 @@ _T = {
                       "en": "On {site}:\n{items}\nWhat shall I order?"},
     "task_section_rest": {"ru": "- и ещё {n} — скажи «покажи все»",
                           "en": "- and {n} more — say \"show all\""},
+    # Задача началась на служебной странице сайта (доставка, контакты) —
+    # разделы ищем на главной
+    "task_sections_home": {"ru": "Здесь товаров нет — открыл главную {site}.",
+                           "en": "No products on this page — opened the "
+                                 "{site} home page."},
     # Магазин открыт кликом, сайт не выбран — до первого действия на нём
     "task_site_here": {"ru": "Заказываем здесь — на {site}? (да / другой "
                              "сайт)",
@@ -390,6 +395,39 @@ _T = {
                             "tell me if it should go."},
     "task_more_missing": {"ru": " Ещё не в корзине: {items}.",
                           "en": " Not in the cart yet: {items}."},
+    # Строки корзины до задачи прочитаны кодом (шторка/страница корзины)
+    "task_more_pre_lines": {"ru": " Ещё до этой задачи в корзине лежало: "
+                                  "{lines} — скажи, если что-то из этого "
+                                  "убрать.",
+                            "en": " Before this task the cart already had: "
+                                  "{lines} — tell me if any of it should go."},
+    # Похожее на позицию заказа в корзине есть, а то ли это — не ясно
+    "task_more_unsure": {"ru": " Похожее на {items} в корзине уже есть — то "
+                               "же ли это, не уверен: скажи, класть ли ещё.",
+                         "en": " Something like {items} is already in the "
+                               "cart — not sure it's the same: tell me "
+                               "whether to add one more."},
+    # Задача сама ничего не положила: корзина собрана до неё (повтор заказа)
+    "task_more_before": {"ru": "В корзине на сайте сейчас: {cart}{extra} "
+                               "Добавить что-нибудь ещё? Если что-то из "
+                               "корзины убрать — скажи; если нет — «нет», "
+                               "открою корзину и перейду к оформлению.",
+                         "en": "The cart on the site has now: {cart}{extra} "
+                               "Anything else? Tell me if something should "
+                               "go; if not, say \"no\" and I'll open the cart "
+                               "and go to checkout."},
+    "task_more_before_was": {"ru": " — это лежало там ещё до этой задачи",
+                             "en": " — it was there before this task"},
+    "task_more_before_pre": {"ru": " (до этой задачи там было {pre})",
+                             "en": " (before this task it had {pre})"},
+    "task_more_had": {"ru": " Из заказа там уже есть: {items} — второй раз "
+                            "не кладу.",
+                      "en": " From the order, it already has: {items} — I "
+                            "won't add them again."},
+    "task_more_unchecked": {"ru": " Что именно там лежит, я не проверял; "
+                                  "заказ: {items}.",
+                            "en": " I haven't checked what exactly is in it; "
+                                  "the order: {items}."},
     "task_fact_pre": {"ru": "в корзине есть и то, что лежало там до задачи",
                       "en": "the cart also has what was there before this "
                             "task"},
@@ -786,6 +824,9 @@ _EN_PHRASES = {
                         "isn't in the cart. Press it again? (yes/no)"),
     "task_cart_again": ("Already in the cart: {added}. Add more — press "
                         "\"{label}\"? (yes/no)"),
+    "task_cart_again_pre": ("Already in the cart (since before this task): "
+                            "{added}. Add one more — press \"{label}\"? "
+                            "(yes/no)"),
     "task_repeat_toggle": ("\"{label}\" is already pressed — pressing it "
                            "again will most likely undo the choice. Press it "
                            "anyway? (yes/no)"),

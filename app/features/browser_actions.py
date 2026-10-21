@@ -6488,9 +6488,17 @@ def snapshot_for_goal(host_part: Optional[str], goal: str,
 # закреплённой панели; блок раздела — самый широкий предок заголовка, где
 # нет другого заголовка того же уровня; позиции — кликабельные элементы
 # блока с ценой и словом (внешний из вложенных, без дублей текста).
+# Подпись позиции — «название — цена», когда у карточки один заголовок (его
+# свой текст — без бейджа «Новинка»; нет — подпись картинки, если это строка
+# текста карточки) и одна цена: сплошной текст карточки с описанием режется
+# на 80 знаках вместе с ценой (стенд 21.10: из 9 пицц раздела — 4), а
+# длинная (>120) карточка уступала подвалу «от 429 ₽ Выбрать» без названия.
+# Иначе — текст как есть (две цены — старая и новая); несколько заголовков
+# и цен — обёртка карточек, не позиция
 _SECTION_ITEMS_JS = (
     "(function(name){"
     "function nm(s){return (s||'').replace(/\\s+/g,' ').trim().toLowerCase();}"
+    "function sp(s){return (s||'').replace(/\\s+/g,' ').trim();}"
     "var want=nm(name);"
     "function pinned(e){while(e&&e!==document.body){var ps=getComputedStyle(e).position;"
     "if(ps==='fixed'||ps==='sticky')return true;e=e.parentElement;}return false;}"
@@ -6508,17 +6516,39 @@ _SECTION_ITEMS_JS = (
     "if(!box)return JSON.stringify({found:true,items:[]});"
     "var money=/\\d[\\d\\s\\u00a0.,]*\\s*(?:\\u20bd|\\u0440\\u0443\\u0431|\\$|\\u20ac|\\u00a3)|[$\\u20ac\\u00a3]\\s*\\d/i;"
     "var word=/[^\\s\\d.,:;()\\u20bd$\\u20ac\\u00a3\\u2013\\u2014-]{3}/;"
+    # Цена целиком, с предлогом «от»/«from»: «от 1 199 ₽», «$5.99»
+    "var price=/(?:(?<!\\p{L})(?:\\u043e\\u0442|from)\\s+)?(?:\\d[\\d\\s\\u00a0.,]*\\s*"
+    "(?:\\u20bd|\\u0440\\u0443\\u0431\\.?|\\$|\\u20ac|\\u00a3)|[$\\u20ac\\u00a3]\\s*\\d[\\d.,]*)/giu;"
+    "function cn(e){var hh=e.querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading]'),s='';"
+    "if(hh.length>1)return '';"
+    "if(hh.length){for(var c=hh[0].firstChild;c;c=c.nextSibling){"
+    "if(c.nodeType===3)s+=c.nodeValue;}"
+    "s=sp(s);if(!/\\p{L}{3}/u.test(s))s=sp(hh[0].innerText);}"
+    "else{var ls=(e.innerText||'').split('\\n').map(sp),im=e.querySelectorAll('img[alt]');"
+    "for(var k=0;k<im.length&&!s;k++){var al=sp(im[k].getAttribute('alt'));"
+    "if(al.length>=3&&ls.indexOf(al)>=0)s=al;}}"
+    "if(!/\\p{L}{3}/u.test(s)||s.length>60||money.test(s)||nm(s)===want)"
+    "return '';return s;}"
     "var cand=box.querySelectorAll('a[href],button,[role=button],[role=link],article,li,div,span');"
     "var out=[],taken=[],seen={};"
     "for(i=0;i<cand.length&&out.length<120;i++){var e=cand[i];"
     "var inside=false;for(j=0;j<taken.length;j++){if(taken[j].contains(e)){inside=true;break;}}"
     "if(inside)continue;"
-    "var t=(e.innerText||'').replace(/\\s+/g,' ').trim();"
-    "if(!t||t.length>120||!money.test(t)||!word.test(t.replace(money,' ')))continue;"
+    "var t=sp(e.innerText);"
+    "if(!t||!money.test(t))continue;"
     "var clk=e.matches('a[href],button,[role=button],[role=link],article')"
     "||getComputedStyle(e).cursor==='pointer';if(!clk)continue;"
     "var r=e.getBoundingClientRect();if(r.width<2||r.height<2)continue;"
-    "taken.push(e);if(seen[t])continue;seen[t]=1;out.push(t.slice(0,80));}"
+    # Несколько заголовков и цен — обёртка карточек («Хиты» с двумя
+    # пиццами): не позиция, карточки внутри — свои
+    "var ps=t.match(price)||[];"
+    "if(ps.length>1&&e.querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading]')"
+    ".length>1)continue;"
+    "var n=cn(e),lab='';"
+    "if(n&&ps.length===1)lab=n+' \\u2014 '+sp(ps[0]);"
+    "else if(t.length<=120&&word.test(t.replace(money,' ')))lab=t.slice(0,80);"
+    "if(!lab)continue;"
+    "taken.push(e);if(seen[lab])continue;seen[lab]=1;out.push(lab.slice(0,80));}"
     "return JSON.stringify({found:true,items:out});"
     "})(__NAME__)"
 )
@@ -6526,9 +6556,10 @@ _SECTION_ITEMS_JS = (
 
 def section_items(host_part: Optional[str], name: str,
                   tab_id: Optional[int] = None) -> Optional[List[str]]:
-    """Подписи позиций раздела «name» по разметке страницы (_SECTION_ITEMS_JS)
-    — только чтение. None — заголовка раздела нет (раздел — отдельная
-    страница, другой язык подписи) или ответ не разобрать."""
+    """Подписи позиций раздела «name» по разметке страницы (_SECTION_ITEMS_JS:
+    «название — цена» или текст карточки как есть) — только чтение. None —
+    заголовка раздела нет (раздел — отдельная страница, другой язык
+    подписи) или ответ не разобрать."""
     safe = _clean_goal_text(name, 60)
     if not safe:
         return None
