@@ -617,8 +617,10 @@ def _past_items(rec: dict) -> str:
         if it.get("size"):
             s += f" {it['size']}"
         opts = it.get("options") if isinstance(it.get("options"), list) else []
-        if any(opts):
-            s += " (" + ", ".join(str(o) for o in opts if o) + ")"
+        # Запись старого кода — с отказом от добавок опцией (_no_extras)
+        opts = [o for o in opts if o and not _no_extras(o)]
+        if opts:
+            s += " (" + ", ".join(str(o) for o in opts) + ")"
         qty = it.get("qty")
         if isinstance(qty, int) and not isinstance(qty, bool) and qty > 1:
             s += f" ×{qty}"
@@ -1227,6 +1229,30 @@ def _same_item(a, b) -> bool:
     return all(any(_same_word(x, y) for y in other) for x in short)
 
 
+# Отказ от добавок значением опции позиции («без добавок», «ничего», «как
+# есть», «no extras», «none») — не выбор: в опции брифа не кладём. Run4
+# №10: опция «без добавок» — не вариант окна, повтора «В корзину» кодом не
+# было (лишний шаг модели), и она ушла в план, сводку оплаты и память.
+# «Без лука», «без глютена» — выбор (что убрать), остаётся опцией
+_NO_EXTRAS_OPT_RE = re.compile(
+    r"(?:без|никаких|нет|не\s+(?:надо|нужно|нужны))\s+(?:каких\s?(?:либо|"
+    r"нибудь)\s+)?(?:(?:доп|дополнительн\w*)\s+)?(?:добав\w*|дополнени\w*|"
+    r"допов|доп|топпинг\w*|ингредиент\w*)|(?:добав\w*|дополнени\w*|"
+    r"топпинг\w*)\s+не\s+(?:надо|нужн\w*)|без\s+(?:всего|ничего|изменений)|"
+    r"(?:больше\s+)?ничего(?:\s+(?:больше|не\s+(?:надо|нужно|добавля\w*)))?|"
+    r"нет(?:\s+спасибо)?|не\s+(?:надо|нужно)|как\s+(?:есть|выбрано)|"
+    r"по\s+умолчанию|(?:no|without|zero)\s+(?:extras?|add\s?ons?|"
+    r"additions?|toppings?)|nothing(?:\s+(?:else|extra|more|added))?|none|"
+    r"no(?:\s+thanks?)?|as\s+(?:it\s+)?is|default")
+
+
+def _no_extras(opt) -> bool:
+    # Значение опции — целиком отказ от добавок (_NO_EXTRAS_OPT_RE)
+    s = " ".join(re.sub(r"[.,!;:()«»\"'—–-]+", " ",
+                        str(opt or "").casefold()).split())
+    return bool(s) and bool(_NO_EXTRAS_OPT_RE.fullmatch(s))
+
+
 def _apply_brief(brief: dict, ch, src: str = "user") -> bool:
     """Изменения слотов (JSON разбора ответа) → бриф. Не названное в
     изменениях остаётся («Додо, но не пепперони»: сайт тот же, пепперони —
@@ -1279,9 +1305,14 @@ def _apply_brief(brief: dict, ch, src: str = "user") -> bool:
         if isinstance(it.get("size"), (str, int)) \
                 and str(it.get("size") or "").strip():
             cur["size"] = " ".join(str(it["size"]).split())[:40]
-        if isinstance(it.get("options"), list):
-            cur["options"] = [" ".join(str(o).split())[:40]
-                              for o in it["options"] if str(o).strip()][:8]
+        opts = it.get("options")
+        if isinstance(opts, list) and not (opts and all(
+                _no_extras(o) or not str(o).strip() for o in opts)):
+            # Отказ от добавок — не опция (_no_extras), и для всех
+            # источников: разбор ответа, память задач. Список из одних
+            # отказов опции не меняет — «без добавок» не отменяет тесто
+            cur["options"] = [" ".join(str(o).split())[:40] for o in opts
+                              if str(o).strip() and not _no_extras(o)][:8]
         q = it.get("qty")
         if isinstance(q, int) and not isinstance(q, bool) and 1 <= q <= 20:
             cur["qty"] = q
@@ -2525,7 +2556,9 @@ class TaskAgent:
             "user named (\"pepperoni\", \"Cola 0.5 l\", \"iPhone 15 case\"); "
             "a general kind alone (\"pizza\", \"something to eat\", "
             "\"drinks\") is not an item. A product the user rejects (\"not "
-            "pepperoni\") goes to exclude, and its size/options go with it.\n"
+            "pepperoni\") goes to exclude, and its size/options go with it. "
+            "options are what the user chose; declining extras (\"no "
+            "extras\", \"nothing else\") is not an option.\n"
             "- kinds: general kinds the user asks to add in this answer "
             "without naming a concrete product (\"some drink\" → \"drink\", "
             "\"something sweet\" → \"sweet\"), in the user's words.\n"
@@ -6111,8 +6144,10 @@ class TaskAgent:
                 opts = it.get("options") or []
                 if not isinstance(opts, list):
                     return False  # ответ модели не проверен
+                # Отказ от добавок значением опции («без добавок» — run4
+                # №10) — не вариант окна: выбор он не меняет (_no_extras)
                 for val in ([it["size"]] if it.get("size") else []) + [
-                        o for o in opts if o]:
+                        o for o in opts if o and not _no_extras(o)]:
                     if not any(fits(val, lab) for lab in sel) \
                             or any(fits(val, lab) for lab in off):
                         return False
