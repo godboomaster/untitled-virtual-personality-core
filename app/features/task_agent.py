@@ -1217,16 +1217,72 @@ def _new_brief() -> dict:
     return {"items": [], "exclude": [], **{k: None for k in _BRIEF_KEYS}}
 
 
-def _same_item(a, b) -> bool:
+# Слово названия товара, которое позицию не отличает (_same_item strict):
+# вид («пицца», «напиток»), размер словами, мера, служебное. «Соус»,
+# «комбо», «сет», «без» — отличают: «Соус барбекю» — не пицца «Барбекю»
+_ITEM_PLAIN_RE = re.compile(
+    r"пицц\w*|pizzas?|напит\w*|drinks?|ролл\w*|rolls?|суши|sushi|бургер\w*|"
+    r"burgers?|маленьк\w*|средн(?:ий|яя|ее|его|юю|ей|ие)|больш(?:ой|ая|ое|"
+    r"ого|ую|ие)|small|medium|large|regular|литр\w*|lit(?:er|re)s?|грамм\w*|"
+    r"штук\w*|pcs|порци\w*|дюйм\w*|inch\w*|для|the|and|with|for")
+
+
+def _same_item(a, b, strict: bool = False) -> bool:
     """Одна позиция: все значимые слова более короткого названия есть в
     другом (с общим началом, как _same_word). «Пепперони» ~ «пицца
-    пепперони», «Четыре сыра» ≠ «Четыре сезона»."""
+    пепперони», «Четыре сыра» ≠ «Четыре сезона». strict — и лишние слова
+    длинного только неотличительные (_ITEM_PLAIN_RE): «Кола» ≠ «Кола Зеро»
+    (run4 №39: «Кола Зеро» слилась с «Колой» и пропала из брифа),
+    «Пепперони» = «Пицца Пепперони» = «Пепперони 30 см»."""
     wa = [w for w in _option_words(a) if not w.isdigit()]
     wb = [w for w in _option_words(b) if not w.isdigit()]
     if not wa or not wb:
         return False
     short, other = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
-    return all(any(_same_word(x, y) for y in other) for x in short)
+    if not all(any(_same_word(x, y) for y in other) for x in short):
+        return False
+    return not strict or all(any(_same_word(y, x) for x in short)
+                             or _ITEM_PLAIN_RE.fullmatch(y) for y in other)
+
+
+def _brief_pick(name, items) -> Optional[dict]:
+    """Позиция брифа товара name (ключ добавленного в корзину, название
+    карточки/окна): та же (_same_item strict), иначе единственная, чьё
+    название — общее для name («Кола» брифа — «Кока-Кола» корзины). При
+    «Кола» и «Кола Зеро» в брифе «Кола Зеро» корзины — своя, а не первая
+    похожая; «Кола» корзины при одной «Кола Зеро» брифа — не она."""
+    items = [b for b in items or () if isinstance(b, dict) and b.get("name")]
+    hits = [b for b in items if _same_item(b["name"], name, strict=True)]
+    if hits:
+        return hits[0]
+    hits = [b for b in items if _words_in(b["name"], name)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _is_item(name, key, items=()) -> bool:
+    """Позиция name (брифа или разбора ответа) — товар key (окно, кнопка
+    «В корзину»): позиция брифа этого товара (_brief_pick) — она же; брифа
+    нет — сам name. «Кола» — окно «Кола Зеро», если «Колы Зеро» в брифе
+    нет; «Кола Зеро» — не окно «Кола»."""
+    pick = _brief_pick(key, items or [{"name": name}])
+    return pick is not None and _same_item(pick["name"], name, strict=True)
+
+
+def _brief_count(b: dict, items, adds) -> int:
+    # Сколько добавленного задачей (cart_adds) — эта позиция брифа: каждое
+    # добавление — одной позиции (_brief_pick)
+    return sum(1 for x in adds or () if _brief_pick(x["key"], items) is b)
+
+
+def _brief_drop(items: list, name) -> list:
+    """Позиции брифа без названной в remove_items/exclude: та же строго,
+    иначе единственная похожая («убери колу» при одной «Кола Зеро»). «Кола»
+    при «Кола» и «Кола Зеро» — только «Кола»."""
+    hits = [it for it in items if _same_item(it["name"], name, strict=True)]
+    if not hits:
+        hits = [it for it in items if _same_item(it["name"], name)]
+        hits = hits if len(hits) == 1 else []
+    return [it for it in items if not any(it is h for h in hits)]
 
 
 # Отказ от добавок значением опции позиции («без добавок», «ничего», «как
@@ -1274,32 +1330,34 @@ def _apply_brief(brief: dict, ch, src: str = "user") -> bool:
         if str(k) in _BRIEF_KEYS:
             brief[str(k)] = None
     for name in _lst(ch.get("remove_items")):
-        brief["items"] = [it for it in brief["items"]
-                          if not _same_item(it["name"], name)]
+        brief["items"] = _brief_drop(brief["items"], name)
     for x in _lst(ch.get("exclude")):
         x = " ".join(str(x).split())[:60]
         if x.startswith(_PRIVATE_SLOT[:7]):
             continue  # заглушку облачного вида модель вернула как значение
-        if x and not any(_same_item(x, e) for e in brief["exclude"]):
+        if x and not any(_same_item(x, e, strict=True)
+                         for e in brief["exclude"]):
             brief["exclude"].append(x)
             if src == "private":
                 # Отказ, названный на приватной странице («убери подарок для
                 # Маши» из корзины), — облаку заглушкой, как позиция
                 brief.setdefault("exclude_private", []).append(x)
-        brief["items"] = [it for it in brief["items"]
-                          if not _same_item(it["name"], x)]
+        brief["items"] = _brief_drop(brief["items"], x)
     for it in _lst(ch.get("items")):
         if not isinstance(it, dict) or not str(it.get("name") or "").strip() \
                 or str(it["name"]).strip().startswith(_PRIVATE_SLOT[:7]):
             # Заглушка позиции с приватной страницы — не новый товар
             continue
         name = " ".join(str(it["name"]).split())[:80]
-        cur = next((b for b in brief["items"] if _same_item(b["name"], name)),
-                   None)
+        # Та же позиция — строго: «Кола Зеро» при «Коле» — своя (run4 №39:
+        # «Пепперони, Кола, Кола Зеро» после «оставь» — в брифе две).
+        # Замену модель шлёт через remove_items (правило промпта)
+        cur = next((b for b in brief["items"]
+                    if _same_item(b["name"], name, strict=True)), None)
         if cur is None:
             # Человек передумал насчёт исключённого — снова хочет
             brief["exclude"] = [e for e in brief["exclude"]
-                                if not _same_item(e, name)]
+                                if not _same_item(e, name, strict=True)]
             cur = {"name": name, "size": None, "options": [], "qty": 1}
             brief["items"].append(cur)
         if isinstance(it.get("size"), (str, int)) \
@@ -2558,7 +2616,10 @@ class TaskAgent:
             "\"drinks\") is not an item. A product the user rejects (\"not "
             "pepperoni\") goes to exclude, and its size/options go with it. "
             "options are what the user chose; declining extras (\"no "
-            "extras\", \"nothing else\") is not an option.\n"
+            "extras\", \"nothing else\") is not an option. \"Cola Zero\" "
+            "and \"Cola\" are different items: update an item under its "
+            "brief name; to swap one for another, put the old one into "
+            "remove_items.\n"
             "- kinds: general kinds the user asks to add in this answer "
             "without naming a concrete product (\"some drink\" → \"drink\", "
             "\"something sweet\" → \"sweet\"), in the user's words.\n"
@@ -2764,7 +2825,8 @@ class TaskAgent:
         (подпись, выбран ли) — те же, что сверяет _answer_keeps. Позиции в
         брифе нет или она не этот товар — {} (разбор модели)."""
         bi = self._brief_item(run, item)
-        if not bi or not _same_item(bi["name"], self._product_key(item, obs)):
+        if not bi or not _is_item(bi["name"], self._product_key(item, obs),
+                                  (run.get("brief") or {}).get("items")):
             return {}
         opts = [[" ".join(_item_label(it).split())[:LABEL_MAX], it["on"]]
                 for it in obs.get("shown") or ()
@@ -5629,18 +5691,20 @@ class TaskAgent:
                     "with fail why it is impossible")
         items = (run.get("brief") or {}).get("items") or []
         if items:
+            # Добавленное — каждое своей позиции (_brief_pick): «Кола Зеро»
+            # в корзине при «Кола» и «Кола Зеро» брифа «Колу» не закрывает
             missing = [b["name"] for b in items
-                       if not any(_same_item(b["name"], x["key"]) for x in adds)]
+                       if not _brief_count(b, items, adds)]
             if missing:
                 return ("the user asked for " + ", ".join(missing)
                         + ", but it was not added to the cart in this task")
             extra = [x["key"] for x in adds
-                     if not any(_same_item(b["name"], x["key"]) for b in items)]
+                     if _brief_pick(x["key"], items) is None]
             if extra:
                 return ("the cart got items the user did not ask for: "
                         + ", ".join(extra) + " — open the cart and fix it")
             for b in items:
-                n = sum(1 for x in adds if _same_item(b["name"], x["key"]))
+                n = _brief_count(b, items, adds)
                 if n > (b.get("qty") or 1):
                     return (f"{b['name']} was added {n} times, the user asked "
                             f"for {b.get('qty') or 1} — open the cart and fix it")
@@ -5706,9 +5770,9 @@ class TaskAgent:
     def _pending_items(run: dict) -> List[dict]:
         # Позиции брифа, которых в корзине задачи меньше, чем просили
         adds = run.get("cart_adds") or []
-        return [b for b in (run.get("brief") or {}).get("items") or ()
-                if sum(1 for x in adds if _same_item(b["name"], x["key"]))
-                < (b.get("qty") or 1)]
+        items = (run.get("brief") or {}).get("items") or []
+        return [b for b in items
+                if _brief_count(b, items, adds) < (b.get("qty") or 1)]
 
     def _more_due(self, run: dict, before_checkout: bool = False) -> bool:
         """Пора спросить «что-нибудь ещё?»: задача что-то положила, после
@@ -5869,11 +5933,24 @@ class TaskAgent:
         except ValueError:
             pass
         name = _PRICE_RE.sub(" ", lab)
-        if not re.search(r"[^\W\d_]{3,}", name) or any(
-                _same_item(b["name"], name) for b in self._pending_items(run)):
+        if not re.search(r"[^\W\d_]{3,}", name):
+            return None
+        # Карточка — позиция брифа (название без цены и кнопки, _brief_pick):
+        # при «Коле» и «Коле Зеро» в брифе карточка «Колы», пока её нет в
+        # корзине, — не положенная «Кола Зеро»
+        items = (run.get("brief") or {}).get("items") or []
+        pick = _brief_pick(" ".join(_offer_words(lab)), items)
+        pend = self._pending_items(run)
+        if pick is not None:
+            todo = any(pick is b for b in pend)
+        else:
+            todo = any(_same_item(b["name"], name) for b in pend)
+        if todo:
             return None
         hit = next((x["key"] for x in reversed(adds)
-                    if _same_item(x["key"], name)), None)
+                    if _same_item(x["key"], name) and (
+                        pick is None or _brief_pick(x["key"], items) in (
+                            None, pick))), None)
         return hit
 
     def _ask_more(self, run: dict, chat_id, obs: dict) -> Tuple[str, str]:
@@ -5909,15 +5986,15 @@ class TaskAgent:
         brief_items = (run.get("brief") or {}).get("items") or []
         keys = []
         for x in run.get("cart_adds") or ():
-            if not any(_same_item(x["key"], k) for k in keys):
+            # «Кола» и «Кола Зеро» — две строки состава, не одна
+            if not any(_same_item(x["key"], k, strict=True) for k in keys):
                 keys.append(x["key"])
         what = []
         for k in keys:
-            b = next((b for b in brief_items if _same_item(b["name"], k)),
-                     None)
+            b = _brief_pick(k, brief_items)
             what.append(self._item_text(b) if b else k)
         missing = [self._item_text(b) for b in brief_items
-                   if not any(_same_item(b["name"], k) for k in keys)]
+                   if not any(_brief_pick(k, brief_items) is b for k in keys)]
         return what, missing
 
     @staticmethod
@@ -6006,8 +6083,14 @@ class TaskAgent:
                 "task_cart_stuck",
                 f"«{label}» не сработала — товар в корзину не попал (корзина "
                 "не изменилась). Нажать ещё раз? (да/нет)", label=label))
+        # Тот же товар — и по брифу: «Кола» после положенной «Колы Зеро»,
+        # когда в брифе обе, — другая позиция, не повтор (_brief_pick)
+        items = (run.get("brief") or {}).get("items") or []
+        mine = _brief_pick(key, items)
         same = [x for x in run.get("cart_adds") or ()
-                if _same_item(x["key"], key) or x["key"] == key]
+                if x["key"] == key or (_same_item(x["key"], key) and (
+                    mine is None or _brief_pick(x["key"], items) in (None,
+                                                                     mine)))]
         if same and not any(x["verified"] for x in same) and any(
                 h.startswith("read the page") or (
                     "the address changed" in h and _CART_WORD_RE.search(h))
@@ -6139,7 +6222,8 @@ class TaskAgent:
                 if not isinstance(it, dict) \
                         or set(it) - {"name", "size", "options", "qty"} \
                         or it.get("qty") not in (None, 1) \
-                        or not _same_item(str(it.get("name") or ""), key):
+                        or not _is_item(it.get("name"), key, (
+                            run.get("brief") or {}).get("items")):
                     return False
                 opts = it.get("options") or []
                 if not isinstance(opts, list):
@@ -7382,7 +7466,11 @@ class TaskAgent:
             return items[0]
         ctx = str(item.get("ctx") or "")
         hits = [b for b in items if _same_item(b["name"], ctx)]
-        return hits[0] if len(hits) == 1 else None
+        if len(hits) > 1:
+            # В блоке и «Кола», и «Кола Зеро» брифа — позиция по названию
+            # товара окна (_product_key), а не первая похожая
+            return _brief_pick(TaskAgent._product_key(item, {}), hits)
+        return hits[0] if hits else None
 
     @staticmethod
     def _repeat_click(run: dict, item: dict, obs: dict) -> Optional[int]:
