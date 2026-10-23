@@ -1,0 +1,128 @@
+@import './fonts.css';
+
+/* Parchment & Ink: миниатюра в галерее — страница инкунабулы.
+   Кожаный переплёт с золотой рамкой и киноварной наклейкой, лист
+   с буквицей, абзац с пилкроу на поле, вклеенная записка, строка для
+   письма. Всё плоское: заливки и линии в 1 px, без теней и градиентов. */
+
+.skin-swatch[data-swatch='parchment'] {
+  --sw-bg: #eee4cd;
+  --sw-panel: #f5efe2;
+  --sw-side: #74553f;
+  --sw-text: #291912;
+  --sw-dim: #4d3322;
+  --sw-in: #f5efe2;
+  --sw-out: #e4d6ba;
+  --sw-line: #291912;
+  --sw-accent: #9a3b26;
+  --sw-gold: #b89a62;
+  --sw-tan: #997960;
+  border-color: #291912;
+  border-radius: 0;
+  background: var(--sw-bg);
+  font-family: 'PA Text', Georgia, serif;
+}
+
+/* Верх окна — колонтитул: тонкая чернильная линейка */
+.skin-swatch[data-swatch='parchment'] .skin-swatch-bar {
+  background: var(--sw-bg);
+  border-bottom: 1px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='parchment'] .skin-swatch-bar i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--sw-tan);
+}
+
+/* Переплёт: кожа, двойная золотая рамка, наклейка киноварью */
+.skin-swatch[data-swatch='parchment'] .skin-swatch-side {
+  gap: 6px;
+  padding: 9px 8px;
+  background: var(--sw-side);
+  border-right: 1px solid var(--sw-line);
+  box-shadow: inset 0 0 0 2px var(--sw-side), inset 0 0 0 3px var(--sw-gold), inset 0 0 0 4px var(--sw-side),
+    inset 0 0 0 5px var(--sw-gold);
+}
+
+.skin-swatch[data-swatch='parchment'] .skin-swatch-side i {
+  height: 2px;
+  margin: 0 3px;
+  background: #dccdb0;
+  opacity: 0.8;
+}
+
+.skin-swatch[data-swatch='parchment'] .skin-swatch-side i:first-child {
+  height: 8px;
+  margin: 0;
+  background: var(--sw-accent);
+  box-shadow: inset 0 0 0 1px var(--sw-accent), inset 0 0 0 2px #dcc28a;
+  opacity: 1;
+}
+
+/* Лист: заголовок Garamond с киноварной буквицей */
+.skin-swatch[data-swatch='parchment'] .skin-swatch-main {
+  gap: 6px;
+  padding: 6px 10px 7px 16px;
+}
+
+.skin-swatch[data-swatch='parchment'] .skin-swatch-title {
+  font-family: 'PA Display', 'PA Text', Georgia, serif;
+  font-size: 19px;
+  font-weight: 500;
+  color: var(--sw-text);
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='parchment'] .skin-swatch-title::first-letter {
+  color: var(--sw-accent);
+}
+
+/* Абзац персоны: линейка слева, строки текста, пилкроу на поле */
+.skin-swatch[data-swatch='parchment'] .skin-swatch-msg--in {
+  position: relative;
+  height: 11px;
+  width: 72%;
+  border: none;
+  border-left: 1px solid var(--sw-tan);
+  background:
+    linear-gradient(var(--sw-dim), var(--sw-dim)) left 4px top 2px / 88% 2px no-repeat,
+    linear-gradient(var(--sw-dim), var(--sw-dim)) left 4px top 7px / 56% 2px no-repeat;
+}
+
+.skin-swatch[data-swatch='parchment'] .skin-swatch-msg--in::before {
+  content: '¶';
+  position: absolute;
+  left: -8px;
+  top: -2px;
+  font-family: 'PA Display', Georgia, serif;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--sw-accent);
+}
+
+/* Своя реплика — вклеенная записка */
+.skin-swatch[data-swatch='parchment'] .skin-swatch-msg--out {
+  height: 11px;
+  width: 52%;
+  background: var(--sw-out);
+  border: 1px solid var(--sw-tan);
+}
+
+/* Строка для письма и чернильная плашка «отправить» */
+.skin-swatch[data-swatch='parchment'] .skin-swatch-input {
+  height: 12px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='parchment'] .skin-swatch-send {
+  width: 14px;
+  height: 7px;
+  margin-bottom: 2px;
+  background: var(--sw-text);
+}

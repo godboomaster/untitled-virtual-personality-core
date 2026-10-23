@@ -3301,3 +3301,33 @@ async def persona_draft_delete(draft_id: str):
     if not await asyncio.to_thread(drafts_api.delete_draft, draft_id):
         raise HTTPException(status_code=404, detail="Черновик не найден")
     return {"status": "ok"}
+
+
+# ── Сервисы: почта, Диск, GitHub, Telegram-аккаунт, ленты, вебхук ──
+# (app/integrations; маршруты — app/api/integrations_api.py)
+
+from app.api import integrations_api  # noqa: E402
+
+app.include_router(integrations_api.router, dependencies=[Depends(require_auth)])
+# Вебхук без токена API: ключ — токен в адресе
+app.include_router(integrations_api.hooks_router)
+
+
+@app.on_event("startup")
+def _start_integrations():
+    # Хаб сервисов: опросы, разбор, уведомления. Один на папку данных —
+    # второе ядро на тех же данных работает «в ожидании» (hub.lock)
+    try:
+        from app.integrations.hub import hub
+        hub.start()
+    except Exception as e:
+        logger.warning(f"[Integrations] хаб не запустился: {e}")
+
+
+@app.on_event("shutdown")
+def _stop_integrations():
+    try:
+        from app.integrations.hub import hub
+        hub.stop()
+    except Exception:
+        pass

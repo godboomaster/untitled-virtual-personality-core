@@ -1,0 +1,3652 @@
+/* =====================================================================
+   Волшебное небо — плоская иллюстрация неба, как в книжке с картинками.
+   Весь экран — небо (день: перивинкль, ночь: тёмно-синий) с редкими
+   звёздами; панели — облака: сплошная заливка и контур 1,5 px.
+   Внизу сайдбара, героя главной и поля ввода чата лежит «облачный
+   берег» — слои куполов с жёстким краем (radial-gradient без размытия).
+   Отметка активного — янтарная четырёхлучевая искра (clip-path).
+   Никаких теней с размытием, плавных градиентов, бликов и стекла.
+   Ночь — по реф. «ночное небо»: синий, сланец, кремовые линии и текст,
+   янтарь. День — перивинклевое небо, кремовые облака, синие чернила.
+   ===================================================================== */
+
+/* ===== Токены: день ===== */
+html[data-skin='sky-magic'] {
+  /* Палитра дня: небо, дальние облака, облако-панель, чернила, искра */
+  --smg-sky: #8f9ce0;
+  --smg-sky-2: #b4bdee;
+  --smg-cloud: #f7efdc;
+  --smg-cloud-2: #ede2c6;
+  --smg-well: #fffaf0;
+  --smg-ink: #1c2850;
+  --smg-ink-dim: #343f70;
+  --smg-ink-mute: #4d5786;
+  --smg-on-sky: #1c2850;
+  --smg-on-sky-dim: #232d5c;
+  --smg-line: #1c2850;
+  --smg-line-soft: rgba(28, 40, 80, 0.28);
+  --smg-line-field: rgba(28, 40, 80, 0.55);
+  --smg-solid: #1c2850;
+  --smg-solid-fg: #f7efdc;
+  --smg-solid-hover: #2c3c74;
+  --smg-amber: #e9a35b;
+  /* Искра на облаке и на небе: днём на перивинкле янтарь сливается по
+     светлоте — там искры белые, как на реф. 19; ночью всюду янтарь */
+  --smg-spark-cloud: #c46a1e;
+  --smg-spark-sky: #fffaf0;
+  --smg-focus: #c46a1e;
+  --smg-honey: #8f5218;
+  --smg-hover: rgba(28, 40, 80, 0.07);
+  --smg-hover-sky: rgba(255, 250, 240, 0.32);
+  /* Облачный берег: дальний ряд, ближний ряд, контур */
+  --smg-bank-back: #b4bdee;
+  --smg-bank-front: #f7efdc;
+  --smg-bank-line: #1c2850;
+  /* Ночное окошко: терминалы, YAML, код */
+  --smg-night: #141d3d;
+  --smg-night-line: #4f6390;
+  --smg-night-text: #f1e7d0;
+  --smg-night-dim: #a9b8d6;
+  /* Геометрия: одна толщина линии, три радиуса */
+  --smg-lw: 1.5px;
+  --smg-r: 18px;
+  --smg-r-sm: 12px;
+  --smg-r-xs: 8px;
+  /* Искра: четырёхлучевая звезда; тонкая — для крупных знаков */
+  --smg-spark: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
+  --smg-spark-thin: polygon(50% 0, 56.5% 43.5%, 100% 50%, 56.5% 56.5%, 50% 100%, 43.5% 56.5%, 0 50%, 43.5% 43.5%);
+  --smg-display: 'SkyMagic Display', 'Kurale', Georgia, serif;
+  --smg-code: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  /* Облачный берег, крупный: два слоя куполов, контур 1,5 px, жёсткие края.
+     Высота купольной части — 46 px, ниже — ровная заливка ближнего слоя */
+  --smg-bank-lg:
+    radial-gradient(circle at 50% 100%, var(--smg-bank-front) 0 22px, transparent 23px) 0 21px / 74px 25px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-front) 0 14px, transparent 15px) 25px 29px / 43px 17px repeat-x,
+    linear-gradient(var(--smg-bank-front), var(--smg-bank-front)) 0 46px / 100% 100% no-repeat,
+    linear-gradient(var(--smg-bank-line), var(--smg-bank-line)) 0 44.5px / 100% 1.5px no-repeat,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-line) 0 23.5px, transparent 24.5px) 0 21px / 74px 25px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-line) 0 15.5px, transparent 16.5px) 25px 29px / 43px 17px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-back) 0 28px, transparent 29px) 40px 3px / 101px 31px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-back) 0 18px, transparent 19px) 8px 13px / 57px 21px repeat-x,
+    linear-gradient(var(--smg-bank-back), var(--smg-bank-back)) 0 34px / 100% 100% no-repeat,
+    linear-gradient(var(--smg-bank-line), var(--smg-bank-line)) 0 32.5px / 100% 1.5px no-repeat,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-line) 0 29.5px, transparent 30.5px) 40px 3px / 101px 31px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-line) 0 19.5px, transparent 20.5px) 8px 13px / 57px 21px repeat-x;
+  /* Облачный берег, малый (поле ввода чата): купола до 28 px */
+  --smg-bank-sm:
+    radial-gradient(circle at 50% 100%, var(--smg-bank-front) 0 13px, transparent 14px) 0 12px / 46px 16px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-front) 0 9px, transparent 10px) 17px 16px / 29px 12px repeat-x,
+    linear-gradient(var(--smg-bank-front), var(--smg-bank-front)) 0 28px / 100% 100% no-repeat,
+    linear-gradient(var(--smg-bank-line), var(--smg-bank-line)) 0 26.5px / 100% 1.5px no-repeat,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-line) 0 14.5px, transparent 15.5px) 0 12px / 46px 16px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-line) 0 10.5px, transparent 11.5px) 17px 16px / 29px 12px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-back) 0 17px, transparent 18px) 30px 0 / 67px 20px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-back) 0 11px, transparent 12px) 5px 6px / 37px 14px repeat-x,
+    linear-gradient(var(--smg-bank-back), var(--smg-bank-back)) 0 20px / 100% 100% no-repeat,
+    linear-gradient(var(--smg-bank-line), var(--smg-bank-line)) 0 18.5px / 100% 1.5px no-repeat,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-line) 0 18.5px, transparent 19.5px) 30px 0 / 67px 20px repeat-x,
+    radial-gradient(circle at 50% 100%, var(--smg-bank-line) 0 12.5px, transparent 13.5px) 5px 6px / 37px 14px repeat-x;
+
+  /* Токены приложения */
+  --bg: var(--smg-sky);
+  --bg-panel: var(--smg-cloud);
+  --bg-panel-2: var(--smg-cloud-2);
+  --text: var(--smg-ink);
+  --text-dim: var(--smg-ink-dim);
+  --text-muted: var(--smg-ink-mute);
+  --border: var(--smg-line);
+  --border-soft: var(--smg-line-soft);
+  --accent: var(--smg-honey);
+  --accent-dim: #a07a55;
+  --accent-soft: rgba(233, 163, 91, 0.2);
+  --bg-hover: var(--smg-hover);
+  --border-accent: var(--smg-ink);
+  --accent-dark: var(--smg-ink);
+  --danger: #b23b4e;
+  --success: #2c7560;
+  --warning: #8f5218;
+  --term-bg: var(--smg-night);
+  --term-line: rgba(241, 231, 208, 0.18);
+  --term-dim: var(--smg-night-dim);
+  --term-bright: var(--smg-night-text);
+  --topbar-bg: transparent;
+  --overlay-bg: rgba(28, 40, 80, 0.55);
+  --radius-sm: var(--smg-r-sm);
+  --radius: var(--smg-r);
+  --shadow-card: none;
+  --shadow-card-hover: none;
+  --font: 'SkyMagic Text', 'Nunito', -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  --font-disp: 'SkyMagic Text', 'Nunito', -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'SkyMagic Text', 'Nunito', -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light;
+}
+
+/* ===== Токены: ночь ===== */
+html[data-skin='sky-magic'][data-theme='dark'] {
+  --smg-sky: #1c2850;
+  --smg-sky-2: #4f6390;
+  --smg-cloud: #2b3966;
+  --smg-cloud-2: #364676;
+  --smg-well: #151e40;
+  --smg-ink: #f1e7d0;
+  --smg-ink-dim: #c4cde0;
+  --smg-ink-mute: #a3b2d2;
+  --smg-on-sky: #f1e7d0;
+  --smg-on-sky-dim: #c4cde0;
+  --smg-line: #8ea5cc;
+  --smg-line-soft: rgba(142, 165, 204, 0.34);
+  --smg-line-field: rgba(142, 165, 204, 0.72);
+  --smg-solid: #f1e7d0;
+  --smg-solid-fg: #1c2850;
+  --smg-solid-hover: #fff6e3;
+  --smg-amber: #e9a35b;
+  --smg-spark-cloud: #e9a35b;
+  --smg-spark-sky: #e9a35b;
+  --smg-focus: #e9a35b;
+  --smg-honey: #e9a35b;
+  --smg-hover: rgba(241, 231, 208, 0.08);
+  --smg-hover-sky: rgba(43, 57, 102, 0.9);
+  --smg-bank-back: #4f6390;
+  --smg-bank-front: #2b3966;
+  --smg-bank-line: #8ea5cc;
+  --smg-night: #141d3d;
+
+  --accent-dim: #b98a5a;
+  --accent-soft: rgba(233, 163, 91, 0.16);
+  --border-accent: var(--smg-ink);
+  --danger: #f19a9a;
+  --success: #8fd0b8;
+  --warning: #e9a35b;
+  --term-line: rgba(241, 231, 208, 0.14);
+  --overlay-bg: rgba(10, 15, 36, 0.72);
+  color-scheme: dark;
+}
+
+/* ===== Небо: фон страницы (звёзды рисует ambient.tsx) ===== */
+html[data-skin='sky-magic'] body {
+  background: var(--smg-sky);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14.5px;
+  letter-spacing: 0.005em;
+  /* у Kurale одно начертание — без поддельного жирного */
+  font-synthesis: none;
+}
+
+html[data-skin='sky-magic'] ::selection {
+  background: var(--smg-amber);
+  color: #1c2850;
+}
+
+html[data-skin='sky-magic'] :focus-visible {
+  outline: 2px solid var(--smg-focus);
+  outline-offset: 2px;
+}
+
+/* Декор HUD основы — уголки-скобки, глитч-копии — у неба не нужен */
+html[data-skin='sky-magic'] .corner,
+html[data-skin='sky-magic'] .home-title.glitch::before,
+html[data-skin='sky-magic'] .home-title.glitch::after {
+  display: none;
+}
+
+/* Полоса-разделитель под героем — чистый декор HUD: конец героя и так
+   отмечен облачным берегом */
+html[data-skin='sky-magic'] .chrome-bar {
+  display: none;
+}
+
+/* ===== Скроллбары: тонкая кремовая/синяя капсула ===== */
+html[data-skin='sky-magic'] body,
+html[data-skin='sky-magic'] .content-scroll,
+html[data-skin='sky-magic'] .chat-messages {
+  scrollbar-color: var(--smg-line-soft) transparent;
+}
+
+@media (min-width: 761px) and (pointer: fine) {
+  html[data-skin='sky-magic'] ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  html[data-skin='sky-magic'] ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  html[data-skin='sky-magic'] ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: var(--smg-line-soft);
+    background-clip: padding-box;
+  }
+
+  html[data-skin='sky-magic'] ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--smg-line);
+  }
+
+  html[data-skin='sky-magic'] ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* ===== Анимации: медленно и мягко ===== */
+@keyframes smg-breathe {
+  0%, 100% { transform: scale(0.82); }
+  50% { transform: scale(1); }
+}
+
+@keyframes smg-twinkle {
+  0%, 100% { opacity: 0.4; transform: scale(0.62); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes smg-fade {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ===== Экран запуска: облако-карточка над облачным берегом ===== */
+html[data-skin='sky-magic'] .boot {
+  background: var(--smg-sky);
+}
+
+html[data-skin='sky-magic'] .boot::after {
+  content: '';
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 132px;
+  background: var(--smg-bank-lg);
+  pointer-events: none;
+}
+
+html[data-skin='sky-magic'] .boot-panel {
+  z-index: 1;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 22px;
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .boot-panel .home-eyebrow {
+  margin-bottom: 12px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .boot-panel .home-eyebrow::before {
+  background: var(--smg-spark-cloud);
+}
+
+html[data-skin='sky-magic'] .boot-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .boot-lead {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .boot-steps {
+  font-size: 14px;
+}
+
+html[data-skin='sky-magic'] .boot-step-tag {
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='sky-magic'] .boot-step--run .boot-step-tag {
+  color: var(--accent);
+}
+
+html[data-skin='sky-magic'] .boot-step--fail .boot-step-tag {
+  color: var(--danger);
+}
+
+/* Ячейки загрузки — ряд маленьких лун-кружков */
+html[data-skin='sky-magic'] .boot-cells {
+  gap: 6px;
+}
+
+html[data-skin='sky-magic'] .boot-cells i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--smg-line-soft);
+  opacity: 1;
+}
+
+html[data-skin='sky-magic'] .boot-cells i.on {
+  background: var(--smg-solid);
+}
+
+html[data-skin='sky-magic'] .boot--offline .boot-cells i {
+  background: var(--danger);
+  opacity: 0.45;
+}
+
+html[data-skin='sky-magic'] .boot-meta,
+html[data-skin='sky-magic'] .boot-cmd-label {
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .boot-hint {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .boot-cmd-row {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+  font-family: var(--smg-code);
+}
+
+html[data-skin='sky-magic'] .boot-cmd-row code {
+  font-family: var(--smg-code);
+}
+
+html[data-skin='sky-magic'] .boot-cmd-copy {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--smg-night-text);
+  font-family: var(--font);
+  font-weight: 700;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .boot-cmd-copy:hover {
+  border-color: var(--smg-amber);
+  color: var(--smg-amber);
+}
+
+html[data-skin='sky-magic'] .boot-found .boot-cmd-copy.is-active {
+  background: var(--smg-amber);
+  border-color: var(--smg-amber);
+  color: #1c2850;
+}
+
+/* ===== Сайдбар: колонка неба с облачным берегом внизу ===== */
+html[data-skin='sky-magic'] .sidebar {
+  background: var(--smg-sky);
+  border-right: var(--smg-lw) solid var(--smg-line-soft);
+}
+
+/* Облачный берег под подвалом — чистый декор, под текстом подвала */
+html[data-skin='sky-magic'] .sidebar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 172px;
+  background: var(--smg-bank-lg);
+  pointer-events: none;
+  z-index: 0;
+}
+
+html[data-skin='sky-magic'] .sidebar-logo {
+  position: relative;
+  z-index: 1;
+  border-bottom: var(--smg-lw) solid var(--smg-line-soft);
+  padding-bottom: 18px;
+  margin-bottom: 16px;
+}
+
+/* Логотип: янтарная искра вместо ◉ */
+html[data-skin='sky-magic'] .sidebar-logo-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  font-size: 0;
+  color: transparent;
+  background: var(--smg-spark-sky);
+  clip-path: var(--smg-spark-thin);
+  animation: smg-breathe 6s ease-in-out infinite;
+}
+
+html[data-skin='sky-magic'] .sidebar-logo-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 20px;
+  line-height: 1.1;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .sidebar-logo-sub {
+  margin-top: 3px;
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--smg-on-sky-dim);
+}
+
+/* Пункты меню: на небе; активный — сплошная капсула с искрой */
+html[data-skin='sky-magic'] .nav-item {
+  border-radius: 999px;
+  color: var(--smg-on-sky);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 14.5px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='sky-magic'][data-theme='dark'] .nav-item:not(.nav-item--active) {
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .nav-item:hover {
+  background: var(--smg-hover-sky);
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .nav-item-icon {
+  opacity: 1;
+}
+
+html[data-skin='sky-magic'] .nav-item--active,
+html[data-skin='sky-magic'] .nav-item--active:hover {
+  background: transparent;
+  color: var(--smg-solid-fg);
+  font-weight: 800;
+}
+
+html[data-skin='sky-magic'] .nav-item--active .nav-item-icon {
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .nav-indicator {
+  border-radius: 999px;
+  background: var(--smg-solid);
+}
+
+/* Искра едет вместе с индикатором и медленно «дышит» */
+html[data-skin='sky-magic'] .nav-indicator::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  background: var(--smg-amber);
+  clip-path: var(--smg-spark);
+  animation: smg-breathe 5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+html[data-skin='sky-magic'] .sidebar--collapsed .nav-indicator::after {
+  top: 3px;
+  right: 3px;
+  width: 10px;
+  height: 10px;
+  margin-top: 0;
+}
+
+html[data-skin='sky-magic'] .sidebar--collapsed .nav-item:hover::after {
+  border-radius: 999px;
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+/* Подвал на облачном береге */
+html[data-skin='sky-magic'] .sidebar-footer {
+  position: relative;
+  z-index: 1;
+  border-top: 0;
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .sidebar-status-row--ok {
+  color: var(--success);
+}
+
+html[data-skin='sky-magic'] .sidebar-status-row--down,
+html[data-skin='sky-magic'] .topbar-status--down {
+  color: var(--danger);
+}
+
+html[data-skin='sky-magic'] .sidebar-toggle {
+  position: relative;
+  z-index: 1;
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-weight: 800;
+}
+
+html[data-skin='sky-magic'] .sidebar-toggle:hover {
+  border-color: var(--smg-line);
+  background: var(--smg-hover);
+  color: var(--text);
+}
+
+/* Индикаторы-ромбы основы становятся искрами */
+html[data-skin='sky-magic'] .status-led,
+html[data-skin='sky-magic'] .dot {
+  width: 10px;
+  height: 10px;
+  transform: none;
+  border-radius: 0;
+  clip-path: var(--smg-spark);
+  animation: none;
+}
+
+html[data-skin='sky-magic'] .status-led,
+html[data-skin='sky-magic'] .dot--green {
+  background: var(--smg-spark-cloud);
+  animation: smg-fade 5s ease-in-out infinite;
+}
+
+html[data-skin='sky-magic'] .dot {
+  background: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .sidebar-status-row--down .status-led,
+html[data-skin='sky-magic'] .topbar-status--down .status-led {
+  background: var(--danger);
+  animation: none;
+}
+
+/* ===== Шапка: небо, тонкий горизонт, справа — кремовые капсулы ===== */
+html[data-skin='sky-magic'] .topbar {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: var(--smg-lw) solid var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .topbar-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 23px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .topbar-right {
+  gap: 10px;
+}
+
+/* Сегмент «день / ночь»: капсула-облако, выбранная половина — сплошная */
+html[data-skin='sky-magic'] .theme-toggle {
+  padding: 2px;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 999px;
+  background: var(--smg-cloud);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='sky-magic'] .theme-toggle span {
+  padding: 5px 11px;
+  border-radius: 999px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .theme-toggle span:hover:not(.active) {
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .theme-toggle span.active {
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+/* Статус ядра — та же капсула-облако */
+html[data-skin='sky-magic'] .topbar-status {
+  gap: 7px;
+  padding: 6px 12px 6px 10px;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 999px;
+  background: var(--smg-cloud);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--success);
+}
+
+html[data-skin='sky-magic'] .topbar-status--down {
+  color: var(--danger);
+}
+
+html[data-skin='sky-magic'] .topbar-status .badge {
+  margin-left: 2px;
+}
+
+html[data-skin='sky-magic'] .topbar-menu {
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .topbar-menu-dot {
+  border-radius: 0;
+  width: 10px;
+  height: 10px;
+  background: var(--smg-spark-sky);
+  clip-path: var(--smg-spark);
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .topbar-devlog {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 999px;
+  background: var(--smg-cloud);
+  color: var(--text-dim);
+}
+
+/* ===== Заголовки разделов: книжная антиква, искра, горизонт ===== */
+html[data-skin='sky-magic'] .section-header {
+  border-bottom: var(--smg-lw) solid var(--smg-line);
+  padding-bottom: 16px;
+  margin-bottom: 22px;
+}
+
+html[data-skin='sky-magic'] .section-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .section-title::before {
+  content: '';
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  background: var(--smg-spark-sky);
+  clip-path: var(--smg-spark);
+}
+
+html[data-skin='sky-magic'] .section-subtitle {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: 0.08em;
+  color: var(--smg-on-sky-dim);
+}
+
+/* ===== Карточки: облака — заливка и контур ===== */
+html[data-skin='sky-magic'] .card {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .card:hover {
+  transform: none;
+  border-color: var(--smg-line);
+}
+
+html[data-skin='sky-magic'] .card-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 19px;
+  line-height: 1.25;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+/* Подписи полей, мелкие метки — гротеск капителью */
+html[data-skin='sky-magic'] .field-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .field-hint {
+  font-family: var(--font);
+  font-size: 12.5px;
+  line-height: 1.55;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .field-value {
+  font-family: var(--smg-display);
+  font-size: 15px;
+}
+
+/* ===== Кнопки: капсулы ===== */
+html[data-skin='sky-magic'] .btn {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 999px;
+  background: var(--smg-cloud);
+  color: var(--text);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 13.5px;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .btn:hover {
+  border-color: var(--smg-line);
+  background: var(--smg-cloud-2);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+html[data-skin='sky-magic'] .btn:disabled,
+html[data-skin='sky-magic'] .btn:disabled:hover {
+  opacity: 0.45;
+  border-color: var(--smg-line-soft);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .btn--primary {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .btn--primary:hover {
+  border-color: var(--smg-solid-hover);
+  background: var(--smg-solid-hover);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .btn--primary:disabled,
+html[data-skin='sky-magic'] .btn--primary:disabled:hover {
+  border-color: var(--smg-line-soft);
+  background: var(--smg-line-soft);
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .btn--ghost {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  background: transparent;
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .btn--ghost:hover {
+  border-color: var(--smg-line);
+  background: var(--smg-hover);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .btn--ghost:disabled,
+html[data-skin='sky-magic'] .btn--ghost:disabled:hover {
+  background: transparent;
+}
+
+html[data-skin='sky-magic'] .btn--chip {
+  border-color: transparent;
+  background: var(--smg-cloud-2);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'][data-theme='dark'] .btn--chip {
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .btn--chip:hover {
+  transform: none;
+  border-color: var(--smg-line);
+  background: var(--smg-cloud-2);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .btn--danger {
+  border-color: var(--danger);
+  background: transparent;
+  color: var(--danger);
+}
+
+html[data-skin='sky-magic'] .btn--danger:hover {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .btn--icon {
+  border-color: var(--smg-line-soft);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .btn--icon:hover {
+  border-color: var(--smg-line);
+  color: var(--text);
+}
+
+/* ===== Бейджи: маленькие капсулы ===== */
+html[data-skin='sky-magic'] .badge {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='sky-magic'] .topbar .badge {
+  border-color: var(--smg-line-soft);
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .badge--active,
+html[data-skin='sky-magic'] .badge--bot,
+html[data-skin='sky-magic'] .badge--user {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .badge--success {
+  border-color: var(--success);
+  background: transparent;
+  color: var(--success);
+}
+
+html[data-skin='sky-magic'] .badge--muted {
+  opacity: 0.8;
+}
+
+html[data-skin='sky-magic'] .badge--type-question,
+html[data-skin='sky-magic'] .badge--type-observation,
+html[data-skin='sky-magic'] .badge--type-continuation,
+html[data-skin='sky-magic'] .badge--type-thought {
+  border-color: var(--smg-line-soft);
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .badge--type-question {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ===== Аватары: круглые «луны» — сплошной диск с буквой ===== */
+html[data-skin='sky-magic'] .avatar {
+  border: 0;
+  border-radius: 50%;
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 17px;
+}
+
+html[data-skin='sky-magic'] .avatar--large {
+  font-size: 21px;
+}
+
+/* ===== Поля ввода: «колодцы» с контуром ===== */
+html[data-skin='sky-magic'] .input,
+html[data-skin='sky-magic'] .chat-input {
+  border: var(--smg-lw) solid var(--smg-line-field);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-well);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+html[data-skin='sky-magic'] .input::placeholder,
+html[data-skin='sky-magic'] .chat-input::placeholder {
+  color: var(--text-muted);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+html[data-skin='sky-magic'] .input:focus,
+html[data-skin='sky-magic'] .chat-input:focus,
+html[data-skin='sky-magic'] .select-trigger--open {
+  border-color: var(--smg-line);
+  box-shadow: 0 0 0 2px var(--smg-focus);
+}
+
+html[data-skin='sky-magic'] .input:disabled:not(.select-trigger) {
+  border-style: dashed;
+  border-color: var(--smg-line-soft);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] textarea.input {
+  line-height: 1.55;
+}
+
+/* Код, YAML, промпты — моноширинный шрифт */
+html[data-skin='sky-magic'] .art-prompt,
+html[data-skin='sky-magic'] .pcreate-yaml,
+html[data-skin='sky-magic'] .yaml-view,
+html[data-skin='sky-magic'] .yaml-edit,
+html[data-skin='sky-magic'] .msg-code,
+html[data-skin='sky-magic'] .msg-pre,
+html[data-skin='sky-magic'] .svc-code,
+html[data-skin='sky-magic'] .start-guide-code,
+html[data-skin='sky-magic'] .ollama-model-cmd {
+  font-family: var(--smg-code);
+}
+
+/* Select: поле + выпадающее облако */
+html[data-skin='sky-magic'] .select-trigger:hover:not(:disabled) {
+  border-color: var(--smg-line);
+}
+
+html[data-skin='sky-magic'] .select-chevron {
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .select-menu {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 14px;
+  background: var(--smg-cloud);
+  box-shadow: none;
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0;
+  padding: 6px;
+}
+
+html[data-skin='sky-magic'] .select-highlight {
+  border-radius: 10px;
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'][data-theme='dark'] .select-highlight {
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .select-option {
+  padding-left: 28px;
+  border-radius: 10px;
+}
+
+html[data-skin='sky-magic'] .select-option-hint {
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+html[data-skin='sky-magic'] .select-option--selected {
+  box-shadow: none;
+  color: var(--text);
+  font-weight: 700;
+}
+
+html[data-skin='sky-magic'] .select-option--selected::before {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-top: -5.5px;
+  background: var(--smg-spark-cloud);
+  clip-path: var(--smg-spark);
+  pointer-events: none;
+}
+
+/* Чекбоксы: скруглённая ячейка; отмеченный — сплошной с искрой */
+html[data-skin='sky-magic'] input[type='checkbox']:not(.switch input),
+html[data-skin='sky-magic'] input[type='radio'] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: var(--smg-lw) solid var(--smg-line-field);
+  border-radius: 6px;
+  background: var(--smg-well);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+html[data-skin='sky-magic'] input[type='radio'] {
+  border-radius: 50%;
+}
+
+html[data-skin='sky-magic'] input[type='checkbox']:not(.switch input):checked,
+html[data-skin='sky-magic'] input[type='radio']:checked {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+}
+
+html[data-skin='sky-magic'] input[type='checkbox']:not(.switch input):checked::before,
+html[data-skin='sky-magic'] input[type='radio']:checked::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  background: var(--smg-amber);
+  clip-path: var(--smg-spark);
+}
+
+html[data-skin='sky-magic'] input[type='checkbox']:disabled,
+html[data-skin='sky-magic'] input[type='radio']:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+html[data-skin='sky-magic'] .checkbox-row {
+  font-size: 14px;
+}
+
+/* Переключатель: капсула; включён — сплошная с кремовой «луной» */
+html[data-skin='sky-magic'] .switch {
+  width: 42px;
+  height: 22px;
+}
+
+html[data-skin='sky-magic'] .switch-slider {
+  border: var(--smg-lw) solid var(--smg-line-field);
+  border-radius: 999px;
+  background: var(--smg-well);
+}
+
+html[data-skin='sky-magic'] .switch-slider::before {
+  left: 3px;
+  top: 3px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .switch input:checked + .switch-slider {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+}
+
+html[data-skin='sky-magic'] .switch input:checked + .switch-slider::before {
+  transform: translateX(20px);
+  background: var(--smg-amber);
+}
+
+html[data-skin='sky-magic'] .switch input:focus-visible + .switch-slider {
+  outline: 2px solid var(--smg-focus);
+  outline-offset: 2px;
+}
+
+/* Ползунок: тонкая капсула-дорожка, круглая ручка */
+html[data-skin='sky-magic'] input[type='range'] {
+  height: 8px;
+  border: var(--smg-lw) solid var(--smg-line-field);
+  border-radius: 999px;
+  background: var(--smg-well);
+}
+
+html[data-skin='sky-magic'] input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 50%;
+  background: var(--smg-solid);
+  box-shadow: none;
+  transform: none;
+}
+
+html[data-skin='sky-magic'] input[type='range']::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 50%;
+  background: var(--smg-solid);
+  box-shadow: none;
+}
+
+/* ===== Вкладки: ряд капсул, активная — сплошная ===== */
+html[data-skin='sky-magic'] .tabs {
+  gap: 6px;
+  padding-bottom: 12px;
+  border-bottom: var(--smg-lw) solid var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .tab {
+  margin-bottom: 0;
+  padding: 7px 15px;
+  border: var(--smg-lw) solid transparent;
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .tab:hover {
+  border-color: var(--smg-line-soft);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .tab--active,
+html[data-skin='sky-magic'] .tab--active:hover {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+  font-weight: 800;
+}
+
+html[data-skin='sky-magic'] .tab:disabled {
+  opacity: 0.45;
+}
+
+/* Вкладки прямо на небе (персоны комнаты) — цвет текста неба */
+html[data-skin='sky-magic'] .room-persona-tabs .tab:not(.tab--active) {
+  color: var(--smg-on-sky);
+}
+
+/* ===== Списки ===== */
+html[data-skin='sky-magic'] .memory-item {
+  border-bottom: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .memory-item-time,
+html[data-skin='sky-magic'] .diary-date,
+html[data-skin='sky-magic'] .ltm-category-name {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+/* ===== Счётчики: крупные книжные цифры ===== */
+html[data-skin='sky-magic'] .stat-card {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .stat-card:hover {
+  transform: none;
+}
+
+html[data-skin='sky-magic'] .stats-row--compact .stat-card {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .stat-value {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  color: var(--text);
+  animation: none;
+}
+
+html[data-skin='sky-magic'] .stat-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+
+/* ===== InfoButton «?» и окно пояснения ===== */
+html[data-skin='sky-magic'] .info-btn {
+  border: var(--smg-lw) solid var(--smg-line-field);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-weight: 800;
+}
+
+html[data-skin='sky-magic'] .info-btn:hover {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .info-overlay,
+html[data-skin='sky-magic'] .dialog-overlay,
+html[data-skin='sky-magic'] .image-lightbox {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-skin='sky-magic'] .info-modal {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 20px;
+  background: var(--smg-cloud);
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .info-modal-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .info-modal-body {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+html[data-skin='sky-magic'] .info-modal-close,
+html[data-skin='sky-magic'] .pxe-close {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .info-modal-close:hover,
+html[data-skin='sky-magic'] .pxe-close:hover {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+/* ===== Окна поверх: формы, досье, диалоги ===== */
+html[data-skin='sky-magic'] .pcreate-panel,
+html[data-skin='sky-magic'] .dossier-panel,
+html[data-skin='sky-magic'] .dialog-panel {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 22px;
+  background: var(--smg-cloud);
+  box-shadow: none;
+  overflow: hidden;
+}
+
+html[data-skin='sky-magic'] .pcreate-head,
+html[data-skin='sky-magic'] .dossier-head {
+  border-bottom: var(--smg-lw) solid var(--smg-line-soft);
+  background: transparent;
+}
+
+html[data-skin='sky-magic'] .pcreate-foot {
+  border-top: var(--smg-lw) solid var(--smg-line-soft);
+  background: transparent;
+}
+
+html[data-skin='sky-magic'] .pcreate-title,
+html[data-skin='sky-magic'] .dossier-name,
+html[data-skin='sky-magic'] .dialog-title,
+html[data-skin='sky-magic'] .room-modal-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .dossier-meta,
+html[data-skin='sky-magic'] .pcreate-sub {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .pcreate-sec,
+html[data-skin='sky-magic'] .features-group-title,
+html[data-skin='sky-magic'] .dossier-core-title {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+}
+
+/* YAML-превью, код, терминалы — ночное окошко */
+html[data-skin='sky-magic'] .pcreate-yaml,
+html[data-skin='sky-magic'] .yaml-view {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+  font-size: 12.5px;
+}
+
+html[data-skin='sky-magic'] .pcreate-yaml.input:focus,
+html[data-skin='sky-magic'] .yaml-edit:focus {
+  border-color: var(--smg-amber);
+}
+
+html[data-skin='sky-magic'] .dossier-tabs {
+  border-bottom: var(--smg-lw) solid var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .dialog-mark {
+  border: 0;
+  border-radius: 50%;
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+  font-family: var(--smg-display);
+}
+
+html[data-skin='sky-magic'] .dialog-panel--danger .dialog-mark {
+  background: var(--danger);
+  color: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .dialog-message {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+html[data-skin='sky-magic'] .dialog-actions {
+  border-top: var(--smg-lw) solid var(--smg-line-soft);
+}
+
+/* ===== Чат: колонки-облака по краям, лента — открытое небо ===== */
+html[data-skin='sky-magic'] .chat-persona-list,
+html[data-skin='sky-magic'] .chat-context {
+  background: var(--smg-cloud);
+  border: 0;
+}
+
+html[data-skin='sky-magic'] .chat-persona-list {
+  border-right: var(--smg-lw) solid var(--smg-line);
+}
+
+html[data-skin='sky-magic'] .chat-context {
+  border-left: var(--smg-lw) solid var(--smg-line);
+}
+
+html[data-skin='sky-magic'] .chat-persona-list-title,
+html[data-skin='sky-magic'] .chat-context-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .chat-persona-back {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 999px;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .chat-persona-back:hover {
+  border-color: var(--smg-line);
+  background: var(--smg-hover);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .chat-persona-item {
+  position: relative;
+  border: var(--smg-lw) solid transparent;
+  border-radius: 999px;
+}
+
+html[data-skin='sky-magic'] .chat-persona-item:hover {
+  transform: none;
+  background: var(--smg-hover);
+}
+
+/* Выбранный собеседник — контурная капсула и искра справа */
+html[data-skin='sky-magic'] .chat-persona-item--active,
+html[data-skin='sky-magic'] .chat-persona-item--active:hover {
+  border-color: var(--smg-line);
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .chat-persona-item--active::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  background: var(--smg-spark-cloud);
+  clip-path: var(--smg-spark);
+  pointer-events: none;
+}
+
+html[data-skin='sky-magic'] .chat-persona-list--flying .chat-persona-item:not(.chat-persona-item--active) {
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .chat-persona-name {
+  font-weight: 700;
+  font-size: 14.5px;
+  letter-spacing: 0;
+}
+
+html[data-skin='sky-magic'] .chat-persona-status {
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .chat-context-toggle {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .chat-context-toggle:hover {
+  border-color: var(--smg-line);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .chat-mood {
+  font-size: 14px;
+}
+
+html[data-skin='sky-magic'] .ctx-row {
+  font-size: 13.5px;
+}
+
+html[data-skin='sky-magic'] .ctx-note,
+html[data-skin='sky-magic'] .ctx-mono,
+html[data-skin='sky-magic'] .ctx-list {
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .ctx-trend {
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .ctx-details,
+html[data-skin='sky-magic'] .ctx-actions {
+  border-top: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .ctx-details summary {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .ctx-details summary::before {
+  color: var(--accent);
+}
+
+/* Шапка беседы — на небе, тонкий горизонт */
+html[data-skin='sky-magic'] .chat-main {
+  background: transparent;
+}
+
+html[data-skin='sky-magic'] .chat-header {
+  background: transparent;
+  border-bottom: var(--smg-lw) solid var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .chat-header-name {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .chat-header-status {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .chat-messages {
+  gap: 22px;
+  padding: 26px 34px 18px 38px;
+}
+
+/* Пузыри — облачка-реплики: у персоны — контурное облако, у вас —
+   сплошное; хвостик — две «капли облака», как у мысли в книжке */
+html[data-skin='sky-magic'] .message-bubble {
+  position: relative;
+  max-width: 62%;
+  padding: 12px 17px 9px;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 20px 20px 20px 7px;
+  background: var(--smg-cloud);
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+
+html[data-skin='sky-magic'] .message-bubble::before,
+html[data-skin='sky-magic'] .message-bubble::after {
+  content: '';
+  position: absolute;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 50%;
+  background: var(--smg-cloud);
+  pointer-events: none;
+}
+
+html[data-skin='sky-magic'] .message-bubble::before {
+  left: -14px;
+  bottom: -3px;
+  width: 11px;
+  height: 11px;
+}
+
+html[data-skin='sky-magic'] .message-bubble::after {
+  left: -22px;
+  bottom: -11px;
+  width: 6px;
+  height: 6px;
+}
+
+html[data-skin='sky-magic'] .message--user .message-bubble {
+  border-color: var(--smg-solid);
+  border-radius: 20px 20px 7px 20px;
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .message--user .message-bubble::before,
+html[data-skin='sky-magic'] .message--user .message-bubble::after {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+}
+
+html[data-skin='sky-magic'] .message--user .message-bubble::before {
+  left: auto;
+  right: -14px;
+}
+
+html[data-skin='sky-magic'] .message--user .message-bubble::after {
+  left: auto;
+  right: -22px;
+}
+
+/* Пузырь-«печатает» и черновик без связи — без хвостика-капель */
+html[data-skin='sky-magic'] .message-bubble--typing::before,
+html[data-skin='sky-magic'] .message-bubble--typing::after {
+  display: none;
+}
+
+html[data-skin='sky-magic'] .message--user .message-bubble--queued {
+  border-style: dashed;
+  border-color: var(--smg-line);
+  background: var(--smg-cloud);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .message--user .message-bubble--queued::before,
+html[data-skin='sky-magic'] .message--user .message-bubble--queued::after {
+  border-style: dashed;
+  border-color: var(--smg-line);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .message--bot .message-text {
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .message--user .message-text {
+  color: inherit;
+}
+
+html[data-skin='sky-magic'] .message-time {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .message--user .message-time {
+  color: var(--smg-solid-fg);
+  opacity: 0.72;
+}
+
+html[data-skin='sky-magic'] .message--user .message-bubble--queued .message-time {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+html[data-skin='sky-magic'] .msg-status--read {
+  color: var(--smg-amber);
+}
+
+/* Ярлык «ответить» — маленькая капсула на кромке пузыря */
+html[data-skin='sky-magic'] .message-reply-btn {
+  top: -11px;
+  padding: 1px 9px;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 999px;
+  background: var(--smg-cloud);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+html[data-skin='sky-magic'] .message-reply-btn:hover {
+  border-color: var(--smg-line);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .message-quote {
+  border-left: 3px solid var(--smg-spark-cloud);
+  border-radius: 4px;
+  background: var(--smg-hover);
+}
+
+html[data-skin='sky-magic'] .message--user .message-quote {
+  background: rgba(127, 140, 200, 0.22);
+}
+
+html[data-skin='sky-magic'] .message-quote-author {
+  font-family: var(--font);
+  font-weight: 800;
+}
+
+html[data-skin='sky-magic'] .chat-reply-bar {
+  border-top: var(--smg-lw) solid var(--smg-line-soft);
+  border-left: 3px solid var(--smg-spark-cloud);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .msg-code {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 6px;
+  background: var(--smg-hover);
+}
+
+html[data-skin='sky-magic'] .msg-pre {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+}
+
+html[data-skin='sky-magic'] .msg-quote {
+  border-left: 3px solid var(--smg-spark-cloud);
+}
+
+html[data-skin='sky-magic'] .msg-mark {
+  border-radius: 4px;
+  background: var(--smg-amber);
+  color: #1c2850;
+}
+
+html[data-skin='sky-magic'] .msg-spoiler {
+  border-radius: 4px;
+  background: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .message-text a {
+  color: inherit;
+  text-decoration-color: var(--smg-spark-cloud);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+html[data-skin='sky-magic'] .message-image {
+  border-radius: var(--smg-r-sm);
+}
+
+html[data-skin='sky-magic'] .unread-dot {
+  background: var(--smg-amber);
+  color: #1c2850;
+  font-family: var(--font);
+  font-weight: 800;
+}
+
+/* «Печатает» — три искры мерцают по очереди */
+html[data-skin='sky-magic'] .message-bubble--typing {
+  gap: 8px;
+  padding: 14px 18px;
+}
+
+html[data-skin='sky-magic'] .typing-dot {
+  width: 11px;
+  height: 11px;
+  transform: none;
+  background: var(--smg-spark-cloud);
+  clip-path: var(--smg-spark);
+  animation: smg-twinkle 1.9s ease-in-out infinite;
+}
+
+html[data-skin='sky-magic'] .typing-dot:nth-child(2) {
+  animation-delay: 0.32s;
+}
+
+html[data-skin='sky-magic'] .typing-dot:nth-child(3) {
+  animation-delay: 0.64s;
+}
+
+html[data-skin='sky-magic'] .chat-loading-bubble {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .chat-loading-cells i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text);
+  animation: smg-fade 2.4s ease-in-out infinite;
+}
+
+html[data-skin='sky-magic'] .chat-loading-caption,
+html[data-skin='sky-magic'] .chat-loading-hint {
+  font-family: var(--font);
+  font-size: 12.5px;
+}
+
+/* Строка статуса — тихая подпись на небе над облачным берегом */
+html[data-skin='sky-magic'] .chat-status-bar {
+  padding: 6px 34px 4px;
+  border-top: 0;
+  background: transparent;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .chat-status-bar .dot {
+  background: var(--smg-spark-sky);
+}
+
+/* Поле ввода лежит на облачном береге */
+html[data-skin='sky-magic'] .chat-input-bar {
+  gap: 12px;
+  padding: 40px 22px 18px;
+  border-top: 0;
+  background: var(--smg-bank-sm);
+}
+
+html[data-skin='sky-magic'] .chat-input {
+  border-radius: 999px;
+  padding: 11px 18px;
+  font-size: 14.5px;
+}
+
+html[data-skin='sky-magic'] .chat-input-bar .btn--icon,
+html[data-skin='sky-magic'] .chat-input-bar .btn:not(.btn--primary) {
+  border-radius: 50%;
+  min-width: 42px;
+  border-color: var(--smg-line-soft);
+  background: transparent;
+}
+
+html[data-skin='sky-magic'] .chat-input-bar .btn--primary {
+  padding-left: 20px;
+  padding-right: 20px;
+}
+
+html[data-skin='sky-magic'] .chat-offline-banner,
+html[data-skin='sky-magic'] .prov-gemma-hint,
+html[data-skin='sky-magic'] .persona-local-note {
+  border: var(--smg-lw) dashed var(--smg-line-soft);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-cloud);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+html[data-skin='sky-magic'] .chat-load-earlier {
+  background: var(--smg-cloud);
+}
+
+/* ===== Страница всех чатов ===== */
+html[data-skin='sky-magic'] .chat-overview-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 34px;
+  line-height: 1.1;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .chat-overview-lead {
+  font-size: 14px;
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .chat-overview-stats {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .chat-overview-stats b {
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .chat-overview-stats--hot b {
+  color: var(--smg-on-sky);
+  text-decoration: underline 2px var(--smg-spark-cloud);
+  text-underline-offset: 3px;
+}
+
+html[data-skin='sky-magic'] .chat-overview-grid {
+  gap: 18px;
+}
+
+html[data-skin='sky-magic'] .chat-card {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .chat-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--smg-line);
+  background: var(--smg-cloud);
+}
+
+/* Непрочитанное — контур облака вдвое толще */
+html[data-skin='sky-magic'] .chat-card--unread {
+  border-color: var(--smg-line);
+  box-shadow: 0 0 0 2px var(--smg-line);
+}
+
+/* Цвет персоны — тонкое кольцо вокруг «луны»-аватара */
+html[data-skin='sky-magic'] .chat-card .avatar,
+html[data-skin='sky-magic'] .home-presence .avatar {
+  box-shadow: 0 0 0 2.5px var(--smg-cloud), 0 0 0 4px var(--persona-color, var(--smg-line-soft));
+}
+
+html[data-skin='sky-magic'] .chat-card-name {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 20px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .chat-card-status,
+html[data-skin='sky-magic'] .chat-card-time,
+html[data-skin='sky-magic'] .chat-card-foot {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .chat-card-preview {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+html[data-skin='sky-magic'] .chat-card-preview--empty {
+  font-family: var(--font);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .chat-card-foot {
+  border-top: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .chat-card-badge {
+  border: 0;
+  border-radius: 999px;
+  background: var(--smg-amber);
+  color: #1c2850;
+  font-weight: 800;
+}
+
+/* ===== Главная ===== */
+
+/* Герой — окно в небо: прозрачная рамка, внизу облачный берег */
+html[data-skin='sky-magic'] .home-hero {
+  overflow: hidden;
+  padding: 36px 34px 92px;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 24px;
+  background: transparent;
+}
+
+html[data-skin='sky-magic'] .home-hero::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 76px;
+  background: var(--smg-bank-lg);
+  pointer-events: none;
+}
+
+html[data-skin='sky-magic'] .home-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-skin='sky-magic'] .home-hero > .home-readout {
+  position: absolute;
+}
+
+html[data-skin='sky-magic'] .home-eyebrow {
+  gap: 10px;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .home-eyebrow::before {
+  width: 13px;
+  height: 13px;
+  background: var(--smg-spark-sky);
+  clip-path: var(--smg-spark);
+}
+
+html[data-skin='sky-magic'] .home-greet {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .home-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: clamp(34px, 4.6vw, 58px);
+  line-height: 1.05;
+  letter-spacing: -0.005em;
+  text-transform: none;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .home-lead {
+  max-width: 560px;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .home-ticker {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .home-ticker-label {
+  padding: 2px 9px;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 999px;
+  background: var(--smg-cloud);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .home-ticker-text {
+  font-style: italic;
+}
+
+html[data-skin='sky-magic'] .home-cta-row {
+  gap: 12px;
+}
+
+html[data-skin='sky-magic'] .home-cta-row .btn {
+  padding: 11px 22px;
+  font-size: 14px;
+}
+
+html[data-skin='sky-magic'] .home-cta-row .btn--ghost {
+  border-color: var(--smg-line);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .home-cta-row .btn--ghost:hover {
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .home-readout {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .home-readout .val {
+  color: var(--smg-on-sky);
+  font-weight: 800;
+}
+
+html[data-skin='sky-magic'] .home-readout.bottom-right {
+  bottom: 14px;
+  right: 18px;
+  z-index: 1;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .home-readout.bottom-right .val {
+  color: var(--text);
+}
+
+/* Метка «LIVE» на небе: днём — чернилами с янтарной чертой, ночью — янтарь */
+html[data-skin='sky-magic'] .home-readout .live-tag {
+  color: var(--smg-on-sky);
+  text-decoration: underline 2px var(--smg-spark-cloud);
+  text-underline-offset: 3px;
+}
+
+html[data-skin='sky-magic'][data-theme='dark'] .home-readout .live-tag {
+  color: var(--smg-amber);
+  text-decoration: none;
+}
+
+/* Заголовки блоков главной — как заголовки разделов, поменьше */
+html[data-skin='sky-magic'] .home-block-head {
+  border-bottom: var(--smg-lw) solid var(--smg-line);
+  padding-bottom: 12px;
+  margin-bottom: 18px;
+}
+
+html[data-skin='sky-magic'] .home-block-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 25px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .home-block-title::before {
+  content: '';
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  background: var(--smg-spark-sky);
+  clip-path: var(--smg-spark);
+}
+
+html[data-skin='sky-magic'] .home-block-num {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--smg-on-sky-dim);
+}
+
+/* Карточки присутствия и разделов консоли — облака */
+html[data-skin='sky-magic'] .home-presence-grid {
+  gap: 18px;
+}
+
+html[data-skin='sky-magic'] .home-presence,
+html[data-skin='sky-magic'] .home-dossier,
+html[data-skin='sky-magic'] .home-feed {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+  clip-path: none;
+}
+
+html[data-skin='sky-magic'] .home-presence:hover,
+html[data-skin='sky-magic'] .home-dossier:hover {
+  transform: translateY(-2px);
+  border-color: var(--smg-line);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .home-presence-name,
+html[data-skin='sky-magic'] .home-dossier h3 {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .home-presence-status,
+html[data-skin='sky-magic'] .home-presence-reply,
+html[data-skin='sky-magic'] .home-dossier-foot,
+html[data-skin='sky-magic'] .home-dossier-index,
+html[data-skin='sky-magic'] .home-feed-empty {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .home-presence-activity {
+  font-size: 13.5px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .home-presence-reply,
+html[data-skin='sky-magic'] .home-dossier-foot {
+  border-top: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .home-presence-reply--unread {
+  color: var(--accent);
+}
+
+/* Телеметрия — четыре отдельных облачка с крупной цифрой */
+html[data-skin='sky-magic'] .home-telemetry {
+  gap: 14px;
+  border: 0;
+  background: transparent;
+}
+
+html[data-skin='sky-magic'] .home-tele-cell {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .home-tele-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .home-tele-value {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 34px;
+  line-height: 1.1;
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .home-tele-value span {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+html[data-skin='sky-magic'] .home-tele-note {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* Лента «пока вас не было» */
+html[data-skin='sky-magic'] .home-feed-row {
+  border-bottom: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .home-feed-persona,
+html[data-skin='sky-magic'] .home-feed-time {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+html[data-skin='sky-magic'] .home-feed-badge--diary,
+html[data-skin='sky-magic'] .home-feed-badge--initiative,
+html[data-skin='sky-magic'] .home-feed-badge--reminder {
+  border-radius: 999px;
+}
+
+/* Заметки и календарь */
+html[data-skin='sky-magic'] .notes,
+html[data-skin='sky-magic'] .cal {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .notes-persona {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 999px;
+  background: transparent;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+html[data-skin='sky-magic'] .notes-persona:hover {
+  border-color: var(--smg-line);
+}
+
+html[data-skin='sky-magic'] .notes-persona--on {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .notes-persona-avatar {
+  border-radius: 50%;
+  font-family: var(--smg-display);
+}
+
+html[data-skin='sky-magic'] .note {
+  border-bottom: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .note-author,
+html[data-skin='sky-magic'] .note-time {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 11.5px;
+}
+
+html[data-skin='sky-magic'] .cal-month {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 20px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+html[data-skin='sky-magic'] .cal-weekdays span,
+html[data-skin='sky-magic'] .cal-day-num {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+html[data-skin='sky-magic'] .cal-day {
+  border: var(--smg-lw) solid transparent;
+  border-radius: 10px;
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .cal-day:hover {
+  border-color: var(--smg-line);
+  background: var(--smg-cloud-2);
+}
+
+/* Сегодня — сплошной кружок-день с искрой в углу */
+html[data-skin='sky-magic'] .cal-day--today {
+  position: relative;
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .cal-day--today .cal-day-num {
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .cal-day--today::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 9px;
+  height: 9px;
+  background: var(--smg-amber);
+  clip-path: var(--smg-spark);
+  pointer-events: none;
+}
+
+/* Столбцы календаря не раздвигаются длинными подписями */
+html[data-skin='sky-magic'] .cal-grid {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+html[data-skin='sky-magic'] .cal-chip {
+  border-radius: 6px;
+}
+
+@media (min-width: 721px) {
+  html[data-skin='sky-magic'] .cal-chip {
+    font-size: 11.5px;
+  }
+}
+
+html[data-skin='sky-magic'] .cal-dot {
+  border-radius: 50%;
+}
+
+html[data-skin='sky-magic'] .cal-entry {
+  border-bottom: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+/* Журнал системы — ночное окошко */
+html[data-skin='sky-magic'] .home-term {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+  font-family: var(--smg-code);
+}
+
+html[data-skin='sky-magic'] .home-term-titlebar {
+  font-family: var(--font);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  border-bottom: var(--smg-lw) solid var(--smg-night-line);
+  color: var(--smg-night-dim);
+}
+
+html[data-skin='sky-magic'] .home-term-titlebar .lights i,
+html[data-skin='sky-magic'] .start-guide-dlg-titlebar .lights i {
+  width: 9px;
+  height: 9px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--smg-night-line);
+}
+
+html[data-skin='sky-magic'] .home-term-titlebar .lights i:first-child,
+html[data-skin='sky-magic'] .start-guide-dlg-titlebar .lights i:first-child {
+  background: var(--smg-amber);
+}
+
+html[data-skin='sky-magic'] .home-term-line .bright {
+  color: var(--smg-amber);
+}
+
+html[data-skin='sky-magic'] .home-term-cursor,
+html[data-skin='sky-magic'] .start-guide-dlg-cursor {
+  background: var(--smg-amber);
+  animation: smg-fade 2.6s ease-in-out infinite;
+}
+
+html[data-skin='sky-magic'] .home-foot-stencil,
+html[data-skin='sky-magic'] .home-foot-right {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--smg-on-sky-dim);
+}
+
+/* Штрихкод подвала — ряд звёздочек-точек */
+html[data-skin='sky-magic'] .barcode {
+  align-items: center;
+  height: 18px;
+}
+
+html[data-skin='sky-magic'] .barcode i {
+  width: 4px !important;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--smg-on-sky);
+  opacity: 0.6;
+}
+
+/* ===== «Старт» ===== */
+html[data-skin='sky-magic'] .start-guide-bar {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+html[data-skin='sky-magic'] .start-guide-bar-label,
+html[data-skin='sky-magic'] .start-guide-bar-count {
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+/* Шкала — капсула-колодец, заполнение сплошное, деления-просветы */
+html[data-skin='sky-magic'] .start-guide-meter {
+  height: 12px;
+  padding: 2px;
+  border: var(--smg-lw) solid var(--smg-line-field);
+  border-radius: 999px;
+  background: var(--smg-well);
+  overflow: hidden;
+}
+
+html[data-skin='sky-magic'] .start-guide-meter::after {
+  inset: 2px;
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 2px), var(--smg-well) calc(10% - 2px) 10%);
+}
+
+html[data-skin='sky-magic'] .start-guide-meter i {
+  border-radius: 999px;
+  background: var(--smg-spark-cloud);
+}
+
+html[data-skin='sky-magic'] .start-guide-bar-pct {
+  font-family: var(--smg-display);
+  font-size: 18px;
+}
+
+html[data-skin='sky-magic'] .start-guide-lead,
+html[data-skin='sky-magic'] .start-guide-step-desc {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+html[data-skin='sky-magic'] .start-guide-lead {
+  color: var(--smg-on-sky-dim);
+}
+
+/* Маршруты — облака-плитки, выбранный — сплошной */
+html[data-skin='sky-magic'] .start-guide-tabs {
+  gap: 12px;
+  border: 0;
+  background: transparent;
+}
+
+html[data-skin='sky-magic'] .start-guide-tab {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .start-guide-tab:hover {
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .start-guide-tab.is-active {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .start-guide-tab.is-active .start-guide-tab-index,
+html[data-skin='sky-magic'] .start-guide-tab.is-active .start-guide-tab-count,
+html[data-skin='sky-magic'] .start-guide-tab.is-active .start-guide-tab-title,
+html[data-skin='sky-magic'] .start-guide-tab.is-active .start-guide-tab-sub {
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .start-guide-tab-index,
+html[data-skin='sky-magic'] .start-guide-tab-count {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='sky-magic'] .start-guide-tab-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .start-guide-tab-sub {
+  font-size: 13px;
+}
+
+/* Бегунок под выбранным маршрутом — не нужен: плитка сплошная */
+html[data-skin='sky-magic'] .start-guide-tab-ink {
+  display: none;
+}
+
+html[data-skin='sky-magic'] .start-guide-steps {
+  clip-path: none;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+}
+
+/* Отметки шагов — кружки; пройденный — сплошной с искрой */
+html[data-skin='sky-magic'] .start-guide-mark {
+  position: relative;
+  border: var(--smg-lw) solid var(--smg-line-field);
+  border-radius: 50%;
+  background: var(--smg-well);
+  font-family: var(--font);
+  font-weight: 800;
+}
+
+html[data-skin='sky-magic'] .start-guide-mark:hover {
+  border-color: var(--smg-line);
+}
+
+html[data-skin='sky-magic'] .start-guide-step.is-done .start-guide-mark {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .start-guide-line {
+  width: 1.5px;
+  background: var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .start-guide-line i {
+  background: var(--smg-line);
+}
+
+html[data-skin='sky-magic'] .start-guide-step-idx,
+html[data-skin='sky-magic'] .start-guide-check {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='sky-magic'] .start-guide-step-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 19px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .start-guide-warn {
+  border: var(--smg-lw) dashed var(--smg-line-field);
+  border-radius: var(--smg-r-sm);
+  font-size: 13px;
+}
+
+html[data-skin='sky-magic'] .start-guide-warn-tag {
+  border-radius: 999px;
+  background: var(--smg-amber);
+  color: #1c2850;
+  font-family: var(--font);
+  font-weight: 800;
+}
+
+html[data-skin='sky-magic'] .start-guide-go,
+html[data-skin='sky-magic'] .start-guide-link {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 13px;
+}
+
+html[data-skin='sky-magic'] .start-guide-ex-row,
+html[data-skin='sky-magic'] .start-guide-cmd {
+  border-radius: var(--smg-r-sm);
+}
+
+html[data-skin='sky-magic'] .start-guide-code,
+html[data-skin='sky-magic'] .svc-code {
+  border-radius: 6px;
+}
+
+/* Демо-окно — ночное окошко */
+html[data-skin='sky-magic'] .start-guide-dlg {
+  overflow: hidden;
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+  font-size: 13px;
+}
+
+html[data-skin='sky-magic'] .start-guide-dlg-titlebar {
+  font-family: var(--font);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  border-bottom: var(--smg-lw) solid var(--smg-night-line);
+  color: var(--smg-night-dim);
+}
+
+html[data-skin='sky-magic'] .start-guide-dlg-avatar {
+  border: 0;
+  border-radius: 50%;
+  background: var(--smg-night-text);
+  color: var(--smg-night);
+  font-family: var(--smg-display);
+}
+
+html[data-skin='sky-magic'] .start-guide-dlg-peer {
+  border-bottom: var(--smg-lw) solid var(--smg-night-line);
+}
+
+html[data-skin='sky-magic'] .start-guide-dlg-peer-name {
+  font-family: var(--smg-display);
+  font-size: 16px;
+}
+
+html[data-skin='sky-magic'] .start-guide-dlg-peer-status,
+html[data-skin='sky-magic'] .start-guide-dlg-msg--sys {
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--smg-night-dim);
+}
+
+html[data-skin='sky-magic'] .start-guide-dlg-msg {
+  font-family: var(--font);
+  border-radius: 14px;
+}
+
+html[data-skin='sky-magic'] .start-guide-dlg-msg--bot {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-bottom-left-radius: 5px;
+  background: #23305c;
+}
+
+html[data-skin='sky-magic'] .start-guide-dlg-msg--op {
+  clip-path: none;
+  border: 0;
+  border-bottom-right-radius: 5px;
+  background: var(--smg-night-text);
+  color: var(--smg-night);
+}
+
+html[data-skin='sky-magic'] .start-guide-dlg-live {
+  color: var(--smg-amber);
+}
+
+/* ===== Комната: сцена — окно-облако ===== */
+html[data-skin='sky-magic'] .room-layout {
+  overflow: hidden;
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .room-layout .room-scene-card {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .room-scene-card {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  overflow: hidden;
+}
+
+html[data-skin='sky-magic'] .room-scene-card:hover {
+  transform: none;
+}
+
+html[data-skin='sky-magic'] .room-side,
+html[data-skin='sky-magic'] .room-layout .home-telemetry {
+  gap: 0;
+  border-left: var(--smg-lw) solid var(--smg-line);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .room-layout .home-tele-cell {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+@media (min-width: 761px) {
+  html[data-skin='sky-magic'] .room-layout .home-tele-cell + .home-tele-cell {
+    border-top: var(--smg-lw) dotted var(--smg-line-soft);
+  }
+}
+
+html[data-skin='sky-magic'] .room-tele-text {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 19px;
+  line-height: 1.3;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .room-tele-sub {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.55;
+  letter-spacing: 0;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .room-tele-bar {
+  height: 10px;
+  border: var(--smg-lw) solid var(--smg-line-field);
+  border-radius: 999px;
+  background: var(--smg-well);
+}
+
+html[data-skin='sky-magic'] .room-tele-bar-fill {
+  border-radius: 999px;
+  background: var(--smg-spark-cloud);
+}
+
+/* Табличка состояния и плашка «нет связи» */
+html[data-skin='sky-magic'] .room-status-plate {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 999px;
+  background: var(--smg-cloud);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .room-offline-plate {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+  font-family: var(--font);
+}
+
+html[data-skin='sky-magic'] .room-offline-plate-k {
+  font-family: var(--smg-display);
+  font-size: 20px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .room-focus-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .room-cat-label,
+html[data-skin='sky-magic'] .room-crow-label,
+html[data-skin='sky-magic'] .room-poster-label {
+  font-family: var(--font);
+  font-weight: 700;
+}
+
+html[data-skin='sky-magic'] .room-modal-head {
+  border-bottom: var(--smg-lw) solid var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .room-scene-card--fullscreen .room-scene {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .room-focus-bubble {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 14px 14px 14px 5px;
+  background: var(--smg-cloud);
+  box-shadow: none;
+}
+
+/* Арт-мастерская */
+html[data-skin='sky-magic'] .art-drop {
+  border: var(--smg-lw) dashed var(--smg-line-field);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .art-drop:hover {
+  border-color: var(--smg-line);
+}
+
+html[data-skin='sky-magic'] .art-drop-title {
+  font-family: var(--smg-display);
+  font-size: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .art-drop-spec,
+html[data-skin='sky-magic'] .art-drop-status {
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+html[data-skin='sky-magic'] .art-prompt {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+  font-size: 12.5px;
+}
+
+/* Выбор персоны комнаты и нижний лист (телефон) */
+html[data-skin='sky-magic'] .room-pick-face,
+html[data-skin='sky-magic'] .sheet-row .room-pick-face {
+  border: 0;
+  border-radius: 50%;
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+  font-family: var(--smg-display);
+}
+
+html[data-skin='sky-magic'] .room-pick-name {
+  font-family: var(--smg-display);
+  font-size: 18px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .room-pick-status {
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .sheet {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+  background: var(--smg-cloud);
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .sheet-grip {
+  border-radius: 999px;
+  background: var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .sheet-title {
+  font-family: var(--smg-display);
+  font-size: 20px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .sheet-row {
+  border-bottom: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .sheet-check {
+  color: var(--accent);
+}
+
+/* ===== Персоны: карточки-облака ===== */
+html[data-skin='sky-magic'] .persona-card {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .persona-card:hover {
+  transform: none;
+  border-color: var(--smg-line);
+}
+
+/* Аватар — луна с кольцом цвета персоны */
+html[data-skin='sky-magic'] .persona-avatar-btn {
+  border: 0;
+  border-radius: 50%;
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 24px;
+  overflow: hidden;
+  box-shadow: 0 0 0 3px var(--smg-cloud), 0 0 0 4.5px var(--persona, var(--smg-line-soft));
+}
+
+html[data-skin='sky-magic'] .persona-avatar-overlay {
+  border-radius: 50%;
+}
+
+html[data-skin='sky-magic'] .persona-avatar-remove {
+  border-radius: 50%;
+}
+
+html[data-skin='sky-magic'] .persona-card-name {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .persona-card-meta {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .persona-card-desc {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .persona-card-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .persona-status {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 999px;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+}
+
+html[data-skin='sky-magic'] .persona-status-dot {
+  border-radius: 0;
+  clip-path: var(--smg-spark);
+  transform: none;
+}
+
+html[data-skin='sky-magic'] .persona-chip {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 999px;
+  background: transparent;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+/* Телеметрия генерации — колодец с тремя ячейками */
+html[data-skin='sky-magic'] .persona-telemetry {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .persona-tele-cell + .persona-tele-cell {
+  border-left: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .persona-tele-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='sky-magic'] .persona-tele-value {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 16px;
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .persona-icon-btn {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .persona-icon-btn:hover {
+  border-color: var(--smg-line);
+  color: var(--text);
+}
+
+html[data-skin='sky-magic'] .persona-icon-btn--danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+html[data-skin='sky-magic'] .persona-card-actions {
+  border-top: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+/* Палитра цвета персоны */
+html[data-skin='sky-magic'] .color-popover {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 14px;
+  background: var(--smg-cloud);
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .color-picker-swatch,
+html[data-skin='sky-magic'] .color-popover-cell {
+  border-radius: 50%;
+}
+
+/* ===== Галерея тем ===== */
+html[data-skin='sky-magic'] .skin-themes-lead {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .skin-themes-grid {
+  gap: 16px;
+}
+
+html[data-skin='sky-magic'] .skin-theme-card {
+  position: relative;
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+  overflow: visible;
+}
+
+html[data-skin='sky-magic'] .skin-theme-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--smg-line);
+}
+
+html[data-skin='sky-magic'] .skin-theme-card--active,
+html[data-skin='sky-magic'] .skin-theme-card--active:hover {
+  border-color: var(--smg-line);
+  background: var(--smg-cloud-2);
+  box-shadow: 0 0 0 2px var(--smg-spark-cloud);
+}
+
+/* Выбранная тема — искра у правого верхнего угла */
+html[data-skin='sky-magic'] .skin-theme-card--active::after {
+  content: '';
+  position: absolute;
+  top: -9px;
+  right: 14px;
+  width: 18px;
+  height: 18px;
+  background: var(--smg-spark-cloud);
+  clip-path: var(--smg-spark);
+  pointer-events: none;
+}
+
+html[data-skin='sky-magic'] .skin-theme-card-name {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 18px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .skin-theme-card-tagline {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .skin-theme-card-meta,
+html[data-skin='sky-magic'] .skin-theme-card-scheme {
+  font-family: var(--font);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+html[data-skin='sky-magic'] .skin-themes-assigned {
+  border-top: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .skin-themes-assigned-title,
+html[data-skin='sky-magic'] .skin-themes-hint {
+  font-size: 13px;
+}
+
+html[data-skin='sky-magic'] .skin-themes-inherit--on {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+/* Старый движок HTML-скинов персон (ниже галереи): карточки-облака */
+html[data-skin='sky-magic'] .skin-card {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .skin-card--active {
+  border-color: var(--smg-line);
+  box-shadow: 0 0 0 2px var(--smg-spark-cloud);
+}
+
+html[data-skin='sky-magic'] .skin-card-name {
+  font-family: var(--smg-display);
+  font-size: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .skin-chip {
+  border-radius: 999px;
+}
+
+html[data-skin='sky-magic'] .skin-chip--on {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .skin-frame,
+html[data-skin='sky-magic'] .skin-screen-row,
+html[data-skin='sky-magic'] .skin-report {
+  border-radius: var(--smg-r-sm);
+}
+
+html[data-skin='sky-magic'] .skin-gen-log {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+}
+
+/* ===== Настройки и сервисы ===== */
+html[data-skin='sky-magic'] .apikey-row,
+html[data-skin='sky-magic'] .pmodel-row,
+html[data-skin='sky-magic'] .provider-item {
+  border-bottom: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .provider-name {
+  font-weight: 700;
+}
+
+html[data-skin='sky-magic'] .apikey-chip {
+  border-radius: 999px;
+}
+
+html[data-skin='sky-magic'] .link-card {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+}
+
+/* Сегмент языка в карточке — по ширине содержимого */
+html[data-skin='sky-magic'] .card .theme-toggle {
+  width: fit-content;
+}
+
+html[data-skin='sky-magic'] .link-qr {
+  border-radius: var(--smg-r-sm);
+}
+
+html[data-skin='sky-magic'] .progress-bar {
+  height: 10px;
+  border: var(--smg-lw) solid var(--smg-line-field);
+  border-radius: 999px;
+  background: var(--smg-well);
+  overflow: hidden;
+}
+
+html[data-skin='sky-magic'] .progress-fill {
+  border-radius: 999px;
+  background: var(--smg-spark-cloud);
+}
+
+html[data-skin='sky-magic'] .ollama-model {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .ollama-model-name {
+  font-family: var(--smg-display);
+  font-size: 17px;
+}
+
+html[data-skin='sky-magic'] .svc-group-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 19px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .svc-stat-num {
+  font-family: var(--smg-display);
+  font-weight: 400;
+}
+
+html[data-skin='sky-magic'] .svc-stat-label {
+  font-family: var(--font);
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='sky-magic'] .svc-feed {
+  border-radius: var(--smg-r-sm);
+}
+
+html[data-skin='sky-magic'] .svc-feed-who {
+  font-weight: 800;
+}
+
+html[data-skin='sky-magic'] .svc-feed-time {
+  color: var(--text-muted);
+}
+
+/* ===== Раскрывающиеся блоки ===== */
+html[data-skin='sky-magic'] .collapsible-head {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .collapsible-head:hover,
+html[data-skin='sky-magic'] .collapsible.is-open .collapsible-head {
+  border-color: var(--smg-line);
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .collapsible-chevron {
+  border: var(--smg-lw) solid var(--smg-line-soft);
+  border-radius: 50%;
+}
+
+html[data-skin='sky-magic'] .collapsible-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  font-size: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .collapsible-summary {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sky-magic'] .reminder-item {
+  border-bottom: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+/* ===== Досье: обучение, файлы, шкалы ===== */
+html[data-skin='sky-magic'] .learn-quiz-alert {
+  border: var(--smg-lw) solid var(--smg-spark-cloud);
+  border-radius: var(--smg-r-sm);
+  background: var(--accent-soft);
+}
+
+html[data-skin='sky-magic'] .learn-history-item,
+html[data-skin='sky-magic'] .files-item,
+html[data-skin='sky-magic'] .diary-item {
+  border-bottom: var(--smg-lw) dotted var(--smg-line-soft);
+}
+
+html[data-skin='sky-magic'] .learn-empty,
+html[data-skin='sky-magic'] .files-empty,
+html[data-skin='sky-magic'] .notes-empty {
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+html[data-skin='sky-magic'] .emotion-stage {
+  border-radius: 999px;
+}
+
+html[data-skin='sky-magic'] .emotion-stage--current {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+/* ===== Режим управления на «Старте» (вне скриншотного тура) ===== */
+html[data-skin='sky-magic'] .start-control-intro,
+html[data-skin='sky-magic'] .start-control-pipe,
+html[data-skin='sky-magic'] .start-control-faq,
+html[data-skin='sky-magic'] .start-control-stage,
+html[data-skin='sky-magic'] .start-control-card,
+html[data-skin='sky-magic'] .start-control-ex {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: var(--smg-r);
+  background: var(--smg-cloud);
+  clip-path: none;
+}
+
+/* Карточка шага внутри облака — вторым тоном, без контура-дубля */
+html[data-skin='sky-magic'] .start-control-pipe .start-control-stage {
+  border-color: var(--smg-line-soft);
+  background: var(--smg-cloud-2);
+}
+
+html[data-skin='sky-magic'] .start-control-stage-num {
+  font-family: var(--font);
+  font-weight: 800;
+  color: var(--accent);
+}
+
+html[data-skin='sky-magic'] .start-control-step-title,
+html[data-skin='sky-magic'] .start-control-card-title,
+html[data-skin='sky-magic'] .start-control-stage h3 {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='sky-magic'] .start-control-node {
+  border-radius: 50%;
+}
+
+html[data-skin='sky-magic'] .start-control-step.is-active .start-control-node,
+html[data-skin='sky-magic'] .start-control-step.is-done .start-control-node {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+/* Активный узел — без пульсирующего свечения основы: кольцо-ореол сплошное */
+html[data-skin='sky-magic'] .start-control-step.is-active .start-control-node {
+  animation: none;
+  box-shadow: 0 0 0 4px var(--smg-cloud), 0 0 0 5.5px var(--smg-spark-cloud);
+}
+
+html[data-skin='sky-magic'] .start-control-track::after {
+  display: none;
+}
+
+html[data-skin='sky-magic'] .start-control-term {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+}
+
+html[data-skin='sky-magic'] .start-control-filter,
+html[data-skin='sky-magic'] .start-control-ex-tab,
+html[data-skin='sky-magic'] .start-control-demo-tab,
+html[data-skin='sky-magic'] .start-control-path span,
+html[data-skin='sky-magic'] .start-control-ex-phrase {
+  border-radius: 999px;
+}
+
+html[data-skin='sky-magic'] .start-control-filter.is-active,
+html[data-skin='sky-magic'] .start-control-ex-tab.is-active,
+html[data-skin='sky-magic'] .start-control-demo-tab.is-active {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+/* ===== Голосовой режим (вне скриншотного тура) ===== */
+html[data-skin='sky-magic'] .voice-chat {
+  background: var(--smg-sky);
+}
+
+html[data-skin='sky-magic'] .voice-chat-topbar {
+  border-color: var(--smg-line-soft);
+  background: transparent;
+}
+
+/* Кнопки голосового режима — на том же облачном береге, что и поле ввода */
+html[data-skin='sky-magic'] .voice-chat-controls {
+  padding-top: 40px;
+  border-top: 0;
+  background: var(--smg-bank-sm);
+}
+
+html[data-skin='sky-magic'] .voice-chat-title {
+  font-family: var(--smg-display);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--smg-on-sky);
+}
+
+html[data-skin='sky-magic'] .voice-chat-status,
+html[data-skin='sky-magic'] .voice-chat-note {
+  color: var(--smg-on-sky-dim);
+}
+
+html[data-skin='sky-magic'] .voice-avatar-img {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 50%;
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .voice-avatar::after {
+  border-color: var(--smg-spark-sky);
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .voice-input-toggle {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 999px;
+  background: var(--smg-cloud);
+}
+
+html[data-skin='sky-magic'] .voice-input-toggle button {
+  border-radius: 999px;
+}
+
+html[data-skin='sky-magic'] .voice-input-toggle button.active {
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+html[data-skin='sky-magic'] .voice-mic-btn {
+  border: var(--smg-lw) solid var(--smg-line);
+  border-radius: 50%;
+  background: var(--smg-cloud);
+  color: var(--text);
+  box-shadow: none;
+}
+
+html[data-skin='sky-magic'] .voice-mic-btn--active {
+  border-color: var(--smg-solid);
+  background: var(--smg-solid);
+  color: var(--smg-solid-fg);
+}
+
+/* Журнал разработчика */
+html[data-skin='sky-magic'] .devlog-panel,
+html[data-skin='sky-magic'] .devlog-fab,
+html[data-skin='sky-magic'] .devmem-chip {
+  border: var(--smg-lw) solid var(--smg-night-line);
+  border-radius: var(--smg-r-sm);
+  background: var(--smg-night);
+  color: var(--smg-night-text);
+  box-shadow: none;
+}
+
+/* Картинка на весь экран — без размытой тени */
+html[data-skin='sky-magic'] .image-lightbox-img {
+  border: var(--smg-lw) solid var(--smg-line);
+  box-shadow: none;
+}
+
+/* ===== Телефон (≤760px) ===== */
+@media (max-width: 760px) {
+  /* Шторка меню — колонка неба; поверх контента — сплошная заливка */
+  html[data-skin='sky-magic'] .sidebar--open {
+    border-right: var(--smg-lw) solid var(--smg-line);
+    box-shadow: none;
+  }
+
+  html[data-skin='sky-magic'] .sidebar::after {
+    height: calc(150px + var(--sa-bottom));
+  }
+
+  html[data-skin='sky-magic'] .topbar {
+    padding-top: calc(8px + var(--sa-top));
+  }
+
+  html[data-skin='sky-magic'] .topbar-title {
+    font-size: 21px;
+  }
+
+  html[data-skin='sky-magic'] .topbar-status {
+    padding: 5px 9px;
+  }
+
+  html[data-skin='sky-magic'] .theme-toggle span {
+    padding: 5px 8px;
+  }
+
+  html[data-skin='sky-magic'] .skin-themes-grid {
+    gap: 10px;
+  }
+
+  html[data-skin='sky-magic'] .topbar-menu-dot {
+    top: 7px;
+    right: 6px;
+  }
+
+  html[data-skin='sky-magic'] .section-title {
+    font-size: 26px;
+  }
+
+  html[data-skin='sky-magic'] .home-hero {
+    padding: 26px 20px 96px;
+  }
+
+  html[data-skin='sky-magic'] .home-title {
+    font-size: clamp(30px, 9vw, 40px);
+  }
+
+  html[data-skin='sky-magic'] .home-block-title {
+    font-size: 22px;
+  }
+
+  html[data-skin='sky-magic'] .home-telemetry {
+    gap: 10px;
+  }
+
+  html[data-skin='sky-magic'] .home-tele-value {
+    font-size: 28px;
+  }
+
+  html[data-skin='sky-magic'] .chat-overview-title {
+    font-size: 28px;
+  }
+
+  /* Шапка беседы — на небе, без тени */
+  html[data-skin='sky-magic'] .chat-header-back,
+  html[data-skin='sky-magic'] .dossier-back {
+    color: var(--smg-on-sky);
+  }
+
+  html[data-skin='sky-magic'] .chat-messages {
+    gap: 20px;
+    padding: 18px 26px 16px 28px;
+  }
+
+  html[data-skin='sky-magic'] .message-bubble {
+    max-width: 82%;
+    font-size: 15px;
+    padding: 11px 15px 8px;
+  }
+
+  html[data-skin='sky-magic'] .chat-input-bar {
+    gap: 8px;
+    padding: 38px 12px calc(12px + var(--sa-bottom));
+  }
+
+  html[data-skin='sky-magic'] .chat-input {
+    font-size: 16px;
+    padding: 10px 15px;
+  }
+
+  html[data-skin='sky-magic'] .chat-input-bar .btn--icon,
+  html[data-skin='sky-magic'] .chat-input-bar .btn:not(.btn--primary) {
+    min-width: 40px;
+  }
+
+  html[data-skin='sky-magic'] .chat-input-bar .btn--primary {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  /* Досье и формы во весь экран — без внешнего скругления */
+  html[data-skin='sky-magic'] .dossier-panel,
+  html[data-skin='sky-magic'] .pcreate-overlay .pcreate-panel {
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+
+  html[data-skin='sky-magic'] .dossier-tabs {
+    border-bottom: 0;
+    box-shadow: inset 0 -1.5px 0 var(--smg-line-soft);
+  }
+
+  html[data-skin='sky-magic'] .dossier-tabs .tab {
+    padding: 7px 13px;
+    margin: 8px 0;
+  }
+
+  /* Край строки вкладок гаснет ступенями (жёсткие стопы), а не размытием */
+  html[data-skin='sky-magic'] .dossier-tabs--more-right {
+    mask-image: linear-gradient(to right, #000 calc(100% - 42px), rgba(0, 0, 0, 0.55) calc(100% - 42px) calc(100% - 21px), rgba(0, 0, 0, 0.2) calc(100% - 21px));
+  }
+
+  html[data-skin='sky-magic'] .dossier-tabs--more-left {
+    mask-image: linear-gradient(to left, #000 calc(100% - 42px), rgba(0, 0, 0, 0.55) calc(100% - 42px) calc(100% - 21px), rgba(0, 0, 0, 0.2) calc(100% - 21px));
+  }
+
+  html[data-skin='sky-magic'] .dossier-tabs--more-left.dossier-tabs--more-right {
+    mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.2) 0 21px, rgba(0, 0, 0, 0.55) 21px 42px, #000 42px calc(100% - 42px), rgba(0, 0, 0, 0.55) calc(100% - 42px) calc(100% - 21px), rgba(0, 0, 0, 0.2) calc(100% - 21px));
+  }
+
+  /* Кнопка «на весь экран» рядом с выбором персоны — скруглённый квадрат */
+  html[data-skin='sky-magic'] .room-pick-bar .room-fs-btn {
+    border-radius: var(--smg-r);
+  }
+
+  html[data-skin='sky-magic'] .persona-grid--list .persona-card + .persona-card {
+    margin-top: 10px;
+  }
+
+  html[data-skin='sky-magic'] .room-side,
+  html[data-skin='sky-magic'] .room-layout .home-telemetry {
+    border-left: 0;
+    border-top: var(--smg-lw) solid var(--smg-line);
+  }
+
+  html[data-skin='sky-magic'] .room-telemetry .room-tele-offline {
+    grid-column: 1 / -1;
+  }
+
+  html[data-skin='sky-magic'] .mem-stats .stat-value {
+    font-size: 22px;
+  }
+
+  html[data-skin='sky-magic'] .mem-stats .stat-label {
+    font-size: 9.5px;
+    letter-spacing: 0.04em;
+  }
+
+  html[data-skin='sky-magic'] .start-guide-tabs {
+    gap: 10px;
+  }
+}

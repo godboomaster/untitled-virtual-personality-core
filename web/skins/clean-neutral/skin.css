@@ -1,0 +1,4336 @@
+/* =====================================================================
+   Clean Neutral — тема по умолчанию: тёплая бумага, песок и шалфей.
+   Идея: «тихий дорогой бланк». Кремовые карточки с крупным радиусом и
+   многослойной мягкой тенью лежат на бумаге с едва заметным зерном;
+   слева — оливковая колонка меню с кремовой «таблеткой» активного пункта;
+   заголовки — антиква (Cormorant), текст — геометричный гротеск (Jost),
+   мелкие подписи — капсом с разрядкой. Пастель — только в статусах.
+   Все селекторы — под html[data-skin='clean-neutral'].
+   ===================================================================== */
+
+/* ===== Токены ===== */
+html[data-skin='clean-neutral'] {
+  /* своя палитра */
+  --cn-paper: #f3f0e8;
+  --cn-paper-2: #ebe6db;
+  --cn-card: #fbfaf6;
+  --cn-card-2: #f6f3ec;
+  --cn-field: #fdfcf9;
+  --cn-oat: #e6dac8;
+  --cn-sand: #cbb9a4;
+  --cn-rock: #a48d78;
+  --cn-rock-ink: #7e6a57;
+  --cn-ink: #2d2e29;
+  --cn-ink-2: #55564d;
+  --cn-muted: #8a857a;
+  --cn-line: #e2dbce;
+  --cn-line-soft: #ebe5da;
+  --cn-olive: #4f5844;
+  --cn-olive-2: #5c6650;
+  --cn-olive-deep: #434b39;
+  --cn-cream: #f4efe3;
+  --cn-sage: #5e7449;
+  --cn-sage-mid: #7a9c57;
+  --cn-sage-soft: #e3e9d6;
+  --cn-sage-mist: #eef1e6;
+  --cn-blue: #d0e1e8;
+  --cn-blue-ink: #3e6375;
+  --cn-rose: #efe0e0;
+  --cn-rose-ink: #94504b;
+  --cn-butter: #fbf1d3;
+  --cn-butter-ink: #7f6320;
+  --cn-code: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  --cn-sh-1: 0 1px 1px rgba(80, 66, 44, 0.04), 0 2px 6px -2px rgba(80, 66, 44, 0.07), 0 14px 30px -16px rgba(80, 66, 44, 0.18);
+  --cn-sh-2: 0 1px 1px rgba(80, 66, 44, 0.04), 0 6px 14px -6px rgba(80, 66, 44, 0.1), 0 26px 48px -20px rgba(80, 66, 44, 0.26);
+  --cn-sh-pop: 0 2px 4px rgba(60, 50, 30, 0.05), 0 18px 40px -12px rgba(60, 50, 30, 0.22), 0 40px 90px -30px rgba(60, 50, 30, 0.3);
+  --cn-sh-in: inset 0 1px 2px rgba(80, 66, 44, 0.06);
+  --cn-ring: 0 0 0 4px rgba(94, 116, 73, 0.16);
+  --cn-r-lg: 28px;
+  --cn-ease: cubic-bezier(0.22, 0.8, 0.24, 1);
+
+  /* токены приложения */
+  --bg: var(--cn-paper);
+  --bg-panel: var(--cn-card);
+  --bg-panel-2: var(--cn-card-2);
+  --text: var(--cn-ink);
+  --text-dim: var(--cn-ink-2);
+  --text-muted: var(--cn-muted);
+  --border: var(--cn-line);
+  --border-soft: var(--cn-line-soft);
+  --accent: var(--cn-sage);
+  --accent-dim: #9aab88;
+  --accent-soft: rgba(122, 156, 87, 0.13);
+  --bg-hover: rgba(122, 104, 74, 0.06);
+  --border-accent: var(--cn-sage);
+  --accent-dark: var(--cn-ink);
+  --danger: #a4544b;
+  --success: var(--cn-sage);
+  --warning: #9a7322;
+  --term-bg: #454d3b;
+  --term-line: rgba(244, 239, 227, 0.14);
+  --term-dim: #c3c6b2;
+  --term-bright: #f6f2e8;
+  --topbar-bg: rgba(243, 240, 232, 0.78);
+  --overlay-bg: rgba(64, 58, 46, 0.3);
+  --radius-sm: 12px;
+  --radius: 20px;
+  --shadow-card: var(--cn-sh-1);
+  --shadow-card-hover: var(--cn-sh-2);
+  --font: 'CN Sans', 'Jost', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-disp: 'CN Serif', 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
+  /* моно-подписи HUD становятся гротеском с разрядкой; настоящий код — --cn-code */
+  --font-mono: 'CN Sans', 'Jost', -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light;
+}
+
+/* ===== Фон страницы: бумага с едва заметным зерном ===== */
+/* Антиква — с прописными цифрами (по умолчанию у Cormorant старостильные) */
+html[data-skin='clean-neutral'] *,
+html[data-skin='clean-neutral'] *::before,
+html[data-skin='clean-neutral'] *::after {
+  font-variant-numeric: lining-nums;
+}
+
+html[data-skin='clean-neutral'] body {
+  font-size: 14.5px;
+  line-height: 1.55;
+  letter-spacing: 0.005em;
+  background-color: var(--cn-paper);
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.35 0 0 0 0 0.29 0 0 0 0 0.2 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+    radial-gradient(1200px 700px at 100% -10%, rgba(208, 225, 232, 0.35), transparent 60%),
+    radial-gradient(900px 600px at 0% 110%, rgba(232, 240, 213, 0.45), transparent 60%);
+  background-attachment: fixed;
+}
+
+/* Сетка-фон HUD не нужна */
+html[data-skin='clean-neutral'] .detroit-bg {
+  display: none;
+}
+
+html[data-skin='clean-neutral'] ::selection {
+  background: #d9e2c6;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] :focus-visible {
+  outline: 2px solid rgba(94, 116, 73, 0.55);
+  outline-offset: 3px;
+}
+
+/* Скроллбары — тонкие песочные капсулы */
+html[data-skin='clean-neutral'] * {
+  scrollbar-color: var(--cn-sand) transparent;
+}
+
+html[data-skin='clean-neutral'] ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+html[data-skin='clean-neutral'] ::-webkit-scrollbar-thumb {
+  background: rgba(164, 141, 120, 0.45);
+  border-radius: 99px;
+}
+
+html[data-skin='clean-neutral'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--cn-rock);
+}
+
+/* Декор HUD (угловые скобки, плюсики) — спрятан */
+html[data-skin='clean-neutral'] .corner {
+  display: none;
+}
+
+html[data-skin='clean-neutral'] .chrome-bar {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--cn-line) 12%, var(--cn-line) 88%, transparent);
+}
+
+/* ===== Каркас ===== */
+html[data-skin='clean-neutral'] .app {
+  background: transparent;
+}
+
+/* ===== Сайдбар: оливковая колонка-«стебель» ===== */
+html[data-skin='clean-neutral'] .sidebar {
+  margin: 12px 0 12px 12px;
+  padding: 22px 14px 14px;
+  border: none;
+  border-radius: var(--cn-r-lg);
+  background:
+    radial-gradient(140% 60% at 0% 0%, rgba(255, 255, 255, 0.07), transparent 60%),
+    linear-gradient(180deg, var(--cn-olive-2) 0%, var(--cn-olive) 45%, var(--cn-olive-deep) 100%);
+  color: var(--cn-cream);
+  box-shadow: 0 2px 4px rgba(47, 52, 38, 0.12), 0 24px 48px -24px rgba(47, 52, 38, 0.55);
+}
+
+html[data-skin='clean-neutral'] .sidebar--collapsed {
+  padding: 22px 8px 14px;
+}
+
+html[data-skin='clean-neutral'] .sidebar-logo {
+  gap: 12px;
+  padding: 2px 8px 20px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid rgba(244, 239, 227, 0.14);
+}
+
+html[data-skin='clean-neutral'] .sidebar--collapsed .sidebar-logo {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Знак: кремовый кружок с шалфейной сердцевиной */
+html[data-skin='clean-neutral'] .sidebar-logo-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--cn-cream);
+  color: var(--cn-sage);
+  font-size: 13px;
+  line-height: 1;
+  box-shadow: 0 0 0 4px rgba(244, 239, 227, 0.12);
+  animation: none;
+}
+
+html[data-skin='clean-neutral'] .sidebar-logo-title {
+  font-family: var(--font-disp);
+  font-size: 21px;
+  font-weight: 500;
+  font-style: italic;
+  line-height: 1.05;
+  text-transform: none;
+  letter-spacing: 0.005em;
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .sidebar-logo-sub {
+  margin-top: 3px;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.3em;
+  color: rgba(244, 239, 227, 0.62);
+}
+
+html[data-skin='clean-neutral'] .sidebar-nav {
+  gap: 2px;
+}
+
+/* Активный пункт — кремовая таблетка, плавно переезжает */
+html[data-skin='clean-neutral'] .nav-indicator {
+  border-radius: 999px;
+  background: var(--cn-cream);
+  box-shadow: 0 1px 1px rgba(30, 34, 24, 0.12), 0 8px 18px -8px rgba(20, 24, 14, 0.55);
+  transition: transform 0.5s var(--cn-ease), background 0.3s ease;
+}
+
+/* шалфейная точка на правом конце таблетки */
+html[data-skin='clean-neutral'] .nav-indicator::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--cn-sage-mid);
+  box-shadow: 0 0 0 3px rgba(122, 156, 87, 0.16);
+  pointer-events: none;
+}
+
+html[data-skin='clean-neutral'] .sidebar--collapsed .nav-indicator::after {
+  display: none;
+}
+
+html[data-skin='clean-neutral'] .nav-item {
+  border-radius: 999px;
+  padding: 0 14px;
+  color: rgba(244, 239, 227, 0.74);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0.015em;
+  transition: color 0.3s ease, background 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .nav-item:hover {
+  background: rgba(244, 239, 227, 0.08);
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .nav-item--active,
+html[data-skin='clean-neutral'] .nav-item--active:hover {
+  background: transparent;
+  color: var(--cn-olive-deep);
+  font-weight: 500;
+}
+
+html[data-skin='clean-neutral'] .nav-item-icon {
+  opacity: 0.8;
+}
+
+html[data-skin='clean-neutral'] .nav-item--active .nav-item-icon {
+  color: var(--cn-sage);
+  opacity: 1;
+}
+
+/* Подсказка у свёрнутого меню */
+html[data-skin='clean-neutral'] .sidebar--collapsed .nav-item:hover::after {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--cn-ink);
+  color: var(--cn-cream);
+  font-family: var(--font);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  box-shadow: var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .sidebar-footer {
+  padding: 14px 8px 4px;
+  border-top: 1px solid rgba(244, 239, 227, 0.14);
+  color: rgba(244, 239, 227, 0.6);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  gap: 6px;
+}
+
+html[data-skin='clean-neutral'] .sidebar-status-row--ok {
+  color: #dfe8cf;
+}
+
+html[data-skin='clean-neutral'] .sidebar-status-row--down {
+  color: #f0c9c2;
+}
+
+html[data-skin='clean-neutral'] .sidebar .status-led {
+  box-shadow: 0 0 0 3px rgba(244, 239, 227, 0.1);
+}
+
+html[data-skin='clean-neutral'] .sidebar-status-row--ok .status-led {
+  background: #b9cf9c;
+}
+
+html[data-skin='clean-neutral'] .sidebar-status-row--down .status-led {
+  background: #e7a59c;
+}
+
+html[data-skin='clean-neutral'] .sidebar-toggle {
+  margin-top: 10px;
+  padding: 7px 0;
+  border: 1px solid rgba(244, 239, 227, 0.18);
+  border-radius: 999px;
+  background: rgba(244, 239, 227, 0.04);
+  color: rgba(244, 239, 227, 0.72);
+  font-family: var(--font);
+}
+
+html[data-skin='clean-neutral'] .sidebar-toggle:hover {
+  border-color: rgba(244, 239, 227, 0.4);
+  background: rgba(244, 239, 227, 0.1);
+  color: #fbf8f0;
+}
+
+/* ===== Индикаторы: круглые, дышат медленно ===== */
+@keyframes cn-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+html[data-skin='clean-neutral'] .status-led,
+html[data-skin='clean-neutral'] .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: none;
+}
+
+html[data-skin='clean-neutral'] .status-led {
+  background: var(--cn-sage-mid);
+  box-shadow: 0 0 0 3px rgba(122, 156, 87, 0.16);
+  animation: cn-breathe 4.8s ease-in-out infinite;
+}
+
+html[data-skin='clean-neutral'] .dot {
+  background: var(--cn-sand);
+}
+
+html[data-skin='clean-neutral'] .dot--green {
+  background: var(--cn-sage-mid);
+  box-shadow: 0 0 0 3px rgba(122, 156, 87, 0.16);
+  animation: cn-breathe 4.8s ease-in-out infinite;
+}
+
+html[data-skin='clean-neutral'] .sidebar-status-row--down .status-led,
+html[data-skin='clean-neutral'] .topbar-status--down .status-led {
+  background: #c97b70;
+  box-shadow: 0 0 0 3px rgba(201, 123, 112, 0.16);
+  animation: none;
+}
+
+/* ===== Шапка ===== */
+/* Шапка прозрачная: под ней ничего не прокручивается — бумага видна насквозь,
+   размытие не нужно (бережём телефон) */
+html[data-skin='clean-neutral'] .topbar {
+  padding: 16px 32px 12px;
+  border-bottom: none;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-skin='clean-neutral'] .topbar::after {
+  content: '';
+  position: absolute;
+  left: 32px;
+  right: 32px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--cn-line) 0%, var(--cn-line) 70%, transparent);
+  pointer-events: none;
+}
+
+html[data-skin='clean-neutral'] .topbar-title {
+  font-family: var(--font-disp);
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .topbar-status {
+  gap: 9px;
+  color: var(--cn-rock-ink);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+}
+
+html[data-skin='clean-neutral'] .topbar-status--down {
+  color: var(--danger);
+}
+
+html[data-skin='clean-neutral'] .topbar-status .badge {
+  opacity: 1;
+}
+
+/* Переключатель схемы — сегмент-таблетка */
+html[data-skin='clean-neutral'] .theme-toggle {
+  width: fit-content;
+  padding: 3px;
+  border: none;
+  border-radius: 999px;
+  background: var(--cn-paper-2);
+  box-shadow: var(--cn-sh-in);
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+}
+
+html[data-skin='clean-neutral'] .theme-toggle span {
+  padding: 5px 13px;
+  border-radius: 999px;
+  color: var(--cn-ink-2);
+  transition: background 0.3s ease, color 0.3s ease, box-shadow 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .theme-toggle span.active {
+  background: var(--cn-card);
+  color: var(--cn-ink);
+  box-shadow: 0 1px 2px rgba(80, 66, 44, 0.12), 0 4px 10px -4px rgba(80, 66, 44, 0.2);
+}
+
+html[data-skin='clean-neutral'] .topbar-menu {
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .topbar-menu-dot {
+  background: var(--cn-sage-mid);
+  box-shadow: 0 0 0 2px var(--cn-paper);
+}
+
+/* ===== Разделы: антиква и линейка с шалфейным отрезком ===== */
+html[data-skin='clean-neutral'] :where(.section) {
+  padding: 30px 36px 40px;
+}
+
+html[data-skin='clean-neutral'] .section-header {
+  position: relative;
+  margin-bottom: 26px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .section-header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: 44px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--cn-sage-mid);
+  pointer-events: none;
+}
+
+html[data-skin='clean-neutral'] .section-title {
+  margin: 0 0 8px;
+  font-family: var(--font-disp);
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.05;
+  text-transform: none;
+  letter-spacing: -0.005em;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .section-subtitle {
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.7;
+  letter-spacing: 0.2em;
+  color: var(--cn-rock-ink);
+}
+
+/* ===== Карточки ===== */
+html[data-skin='clean-neutral'] .card {
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: var(--radius);
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+  transition: transform 0.45s var(--cn-ease), box-shadow 0.45s var(--cn-ease), border-color 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .card:hover,
+html[data-skin='clean-neutral'] .persona-card:hover,
+html[data-skin='clean-neutral'] .stat-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(164, 141, 120, 0.18);
+  box-shadow: var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .card-title {
+  font-family: var(--font-disp);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cn-ink);
+}
+
+/* ===== Кнопки: таблетки ===== */
+html[data-skin='clean-neutral'] .btn {
+  border-radius: 999px;
+  border: 1px solid var(--cn-line);
+  background: var(--cn-card);
+  color: var(--cn-ink);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  box-shadow: 0 1px 1px rgba(80, 66, 44, 0.05);
+  transition: background 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.35s var(--cn-ease),
+    transform 0.35s var(--cn-ease);
+}
+
+html[data-skin='clean-neutral'] .btn:hover {
+  background: #fffefb;
+  border-color: var(--cn-sand);
+  color: var(--cn-ink);
+  box-shadow: 0 1px 2px rgba(80, 66, 44, 0.06), 0 8px 18px -10px rgba(80, 66, 44, 0.35);
+  transform: translateY(-1px);
+}
+
+html[data-skin='clean-neutral'] .btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+html[data-skin='clean-neutral'] .btn:disabled,
+html[data-skin='clean-neutral'] .btn:disabled:hover {
+  opacity: 0.45;
+  background: var(--cn-card);
+  border-color: var(--cn-line);
+  color: var(--cn-ink);
+  box-shadow: none;
+  transform: none;
+}
+
+html[data-skin='clean-neutral'] .btn--primary {
+  border-color: transparent;
+  background: linear-gradient(180deg, var(--cn-olive-2), var(--cn-olive));
+  color: #fbf8f0;
+  box-shadow: 0 1px 1px rgba(47, 52, 38, 0.2), 0 8px 18px -10px rgba(47, 52, 38, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+html[data-skin='clean-neutral'] .btn--primary:hover {
+  border-color: transparent;
+  background: linear-gradient(180deg, #677259, var(--cn-olive-2));
+  color: #ffffff;
+  box-shadow: 0 1px 1px rgba(47, 52, 38, 0.2), 0 14px 26px -12px rgba(47, 52, 38, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+html[data-skin='clean-neutral'] .btn--primary:disabled,
+html[data-skin='clean-neutral'] .btn--primary:disabled:hover {
+  border-color: transparent;
+  background: #a7ab9c;
+  color: #fbf8f0;
+  opacity: 0.7;
+}
+
+html[data-skin='clean-neutral'] .btn--ghost {
+  border: 1px solid var(--cn-sand);
+  background: transparent;
+  color: var(--cn-ink-2);
+  box-shadow: none;
+}
+
+html[data-skin='clean-neutral'] .btn--ghost:hover {
+  border-color: var(--cn-rock);
+  background: var(--cn-card);
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .btn--chip {
+  border-color: transparent;
+  background: var(--cn-sage-mist);
+  color: var(--cn-olive);
+  box-shadow: inset 0 0 0 1px rgba(94, 116, 73, 0.14);
+}
+
+html[data-skin='clean-neutral'] .btn--chip:hover {
+  border-color: transparent;
+  background: var(--cn-sage-soft);
+  color: var(--cn-olive-deep);
+  box-shadow: inset 0 0 0 1px rgba(94, 116, 73, 0.22), 0 8px 16px -10px rgba(47, 52, 38, 0.4);
+}
+
+html[data-skin='clean-neutral'] .btn--danger {
+  border-color: rgba(164, 84, 75, 0.45);
+  background: transparent;
+  color: var(--danger);
+  box-shadow: none;
+}
+
+html[data-skin='clean-neutral'] .btn--danger:hover {
+  border-color: transparent;
+  background: var(--cn-rose);
+  color: #85413b;
+}
+
+html[data-skin='clean-neutral'] .btn--icon {
+  padding: 6px 11px;
+  border-color: var(--cn-line);
+  background: var(--cn-card);
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .btn--icon:hover {
+  color: var(--cn-ink);
+}
+
+/* Мелкие служебные кнопки (закрыть, свернуть) — круглые */
+html[data-skin='clean-neutral'] .pxe-close,
+html[data-skin='clean-neutral'] .chat-context-toggle,
+html[data-skin='clean-neutral'] .info-modal-close {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--cn-line);
+  border-radius: 50%;
+  background: var(--cn-card);
+  color: var(--cn-ink-2);
+  box-shadow: 0 1px 1px rgba(80, 66, 44, 0.05);
+  transition: background 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .pxe-close:hover,
+html[data-skin='clean-neutral'] .chat-context-toggle:hover,
+html[data-skin='clean-neutral'] .info-modal-close:hover {
+  border-color: var(--cn-sand);
+  background: #fffefb;
+  color: var(--cn-ink);
+  box-shadow: 0 6px 14px -8px rgba(80, 66, 44, 0.4);
+}
+
+/* ===== Бейджи: пастельные таблетки ===== */
+html[data-skin='clean-neutral'] :where(.badge) {
+  padding: 3px 11px;
+}
+
+html[data-skin='clean-neutral'] .badge {
+  border: none;
+  border-radius: 999px;
+  background: #efe9de;
+  color: var(--cn-rock-ink);
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+}
+
+html[data-skin='clean-neutral'] .badge--active,
+html[data-skin='clean-neutral'] .badge--success,
+html[data-skin='clean-neutral'] .badge--bot {
+  background: var(--cn-sage-soft);
+  color: #4c5f3a;
+}
+
+html[data-skin='clean-neutral'] .badge--user {
+  background: var(--cn-blue);
+  color: #34576a;
+}
+
+html[data-skin='clean-neutral'] .badge--muted {
+  opacity: 0.85;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--cn-line);
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .badge--type-question {
+  background: var(--cn-blue);
+  color: #34576a;
+}
+
+html[data-skin='clean-neutral'] .badge--type-observation {
+  background: var(--cn-butter);
+  color: var(--cn-butter-ink);
+}
+
+html[data-skin='clean-neutral'] .badge--type-continuation {
+  background: var(--cn-rose);
+  color: var(--cn-rose-ink);
+}
+
+html[data-skin='clean-neutral'] .badge--type-thought {
+  background: var(--cn-sage-mist);
+  color: #4c5f3a;
+}
+
+/* ===== Аватары: круг с двойным кольцом, буква — курсивом антиквы ===== */
+html[data-skin='clean-neutral'] .avatar {
+  border: none;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #f1ebdf, #e4dccd);
+  color: var(--cn-olive);
+  font-family: var(--font-disp);
+  font-size: 19px;
+  font-style: italic;
+  font-weight: 500;
+  box-shadow: 0 0 0 2px var(--cn-card), 0 0 0 3px rgba(164, 141, 120, 0.4), 0 6px 12px -6px rgba(80, 66, 44, 0.4);
+}
+
+html[data-skin='clean-neutral'] .avatar--large {
+  font-size: 22px;
+}
+
+/* ===== Поля ввода ===== */
+html[data-skin='clean-neutral'] .input,
+html[data-skin='clean-neutral'] .chat-input {
+  border: 1px solid var(--cn-line);
+  border-radius: 14px;
+  background: var(--cn-field);
+  color: var(--cn-ink);
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  box-shadow: var(--cn-sh-in);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .input::placeholder,
+html[data-skin='clean-neutral'] .chat-input::placeholder {
+  color: var(--cn-muted);
+  font-size: inherit;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='clean-neutral'] .input:hover:not(:disabled) {
+  border-color: #d6ccbb;
+}
+
+html[data-skin='clean-neutral'] .input:focus,
+html[data-skin='clean-neutral'] .chat-input:focus {
+  border-color: rgba(94, 116, 73, 0.6);
+  background: #fffefb;
+  box-shadow: var(--cn-ring);
+}
+
+/* у полей фокус уже виден мягким кольцом — без второй обводки */
+html[data-skin='clean-neutral'] .input:focus-visible,
+html[data-skin='clean-neutral'] .chat-input:focus-visible {
+  outline: none;
+}
+
+html[data-skin='clean-neutral'] .input:disabled:not(.select-trigger) {
+  border-style: dashed;
+  background: transparent;
+  box-shadow: none;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] textarea.input {
+  line-height: 1.55;
+}
+
+/* Подписи полей — капс с разрядкой, цвет песчаника */
+html[data-skin='clean-neutral'] .field-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--cn-rock-ink);
+  margin-bottom: 8px;
+}
+
+html[data-skin='clean-neutral'] .field-hint {
+  font-family: var(--font);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+  line-height: 1.5;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .field-value {
+  font-family: var(--font-disp);
+  font-size: 18px;
+  color: var(--cn-sage);
+}
+
+/* Select */
+html[data-skin='clean-neutral'] .select-trigger {
+  min-height: 40px;
+}
+
+html[data-skin='clean-neutral'] .select-trigger:hover:not(:disabled) {
+  border-color: var(--cn-sand);
+}
+
+html[data-skin='clean-neutral'] .select-trigger--open {
+  border-color: rgba(94, 116, 73, 0.6);
+  box-shadow: var(--cn-ring);
+}
+
+html[data-skin='clean-neutral'] .select-chevron {
+  color: var(--cn-rock);
+}
+
+html[data-skin='clean-neutral'] .select-menu {
+  padding: 6px;
+  border: 1px solid rgba(164, 141, 120, 0.18);
+  border-radius: 16px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-pop);
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='clean-neutral'] .select-highlight {
+  border-radius: 10px;
+  background: var(--cn-sage-mist);
+}
+
+html[data-skin='clean-neutral'] .select-option {
+  padding: 8px 12px 8px 14px;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .select-option--active,
+html[data-skin='clean-neutral'] .select-option--selected {
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .select-option--selected {
+  box-shadow: none;
+}
+
+html[data-skin='clean-neutral'] .select-option--selected .select-option-label::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 8px 1px 0;
+  border-radius: 50%;
+  background: var(--cn-sage-mid);
+  vertical-align: middle;
+}
+
+/* Переключатель — таблетка с круглой ручкой */
+html[data-skin='clean-neutral'] .switch {
+  width: 40px;
+  height: 22px;
+}
+
+html[data-skin='clean-neutral'] .switch-slider {
+  border: none;
+  border-radius: 999px;
+  background: #e4ddd0;
+  box-shadow: inset 0 1px 2px rgba(80, 66, 44, 0.14);
+  transition: background 0.35s ease;
+}
+
+html[data-skin='clean-neutral'] .switch-slider::before {
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  top: 3px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(60, 50, 30, 0.2), 0 3px 6px -2px rgba(60, 50, 30, 0.25);
+  transition: transform 0.4s var(--cn-ease), background 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .switch input:checked + .switch-slider {
+  background: var(--cn-sage-mid);
+  border-color: transparent;
+}
+
+html[data-skin='clean-neutral'] .switch input:checked + .switch-slider::before {
+  transform: translateX(18px);
+  background: #ffffff;
+}
+
+html[data-skin='clean-neutral'] .switch input:focus-visible + .switch-slider {
+  box-shadow: var(--cn-ring);
+}
+
+/* Ползунок */
+html[data-skin='clean-neutral'] input[type='range'] {
+  height: 4px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--cn-sage-mid), var(--cn-oat));
+  accent-color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] input[type='range']::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transform: none;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px rgba(94, 116, 73, 0.45), 0 2px 6px rgba(60, 50, 30, 0.22);
+}
+
+html[data-skin='clean-neutral'] input[type='range']:hover::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+
+html[data-skin='clean-neutral'] input[type='range']::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transform: none;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px rgba(94, 116, 73, 0.45), 0 2px 6px rgba(60, 50, 30, 0.22);
+}
+
+html[data-skin='clean-neutral'] input[type='range']:hover::-moz-range-thumb {
+  transform: scale(1.12);
+}
+
+html[data-skin='clean-neutral'] input[type='checkbox'],
+html[data-skin='clean-neutral'] input[type='radio'] {
+  accent-color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .checkbox-row {
+  font-size: 14px;
+}
+
+html[data-skin='clean-neutral'] .checkbox-row:hover {
+  color: var(--cn-olive);
+}
+
+/* ===== Вкладки: сегмент-таблетка ===== */
+html[data-skin='clean-neutral'] .tabs {
+  flex-wrap: wrap;
+  gap: 2px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border: none;
+  border-radius: 22px;
+  background: var(--cn-paper-2);
+  box-shadow: var(--cn-sh-in);
+}
+
+html[data-skin='clean-neutral'] :where(.tab) {
+  padding: 7px 16px;
+}
+
+html[data-skin='clean-neutral'] .tab {
+  margin-bottom: 0;
+  border: none;
+  border-radius: 999px;
+  color: var(--cn-ink-2);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  transition: color 0.3s ease, background 0.35s ease, box-shadow 0.35s ease;
+}
+
+html[data-skin='clean-neutral'] .tab:hover {
+  color: var(--cn-ink);
+  background: rgba(255, 255, 255, 0.45);
+}
+
+html[data-skin='clean-neutral'] .tab--active,
+html[data-skin='clean-neutral'] .tab--active:hover {
+  border: none;
+  background: var(--cn-card);
+  color: var(--cn-ink);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(80, 66, 44, 0.1), 0 6px 14px -6px rgba(80, 66, 44, 0.28);
+}
+
+/* ===== Списки ===== */
+html[data-skin='clean-neutral'] :where(.memory-item) {
+  padding: 11px 4px;
+}
+
+html[data-skin='clean-neutral'] .memory-item {
+  border-bottom-color: var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .memory-item-time {
+  font-size: 11px;
+  color: var(--cn-muted);
+  letter-spacing: 0.06em;
+}
+
+html[data-skin='clean-neutral'] .ltm-category-name,
+html[data-skin='clean-neutral'] .diary-date {
+  color: var(--cn-sage);
+  letter-spacing: 0.18em;
+  font-weight: 500;
+}
+
+/* ===== Счётчики ===== */
+html[data-skin='clean-neutral'] :where(.stat-card) {
+  padding: 18px 14px 16px;
+}
+
+html[data-skin='clean-neutral'] .stat-card {
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 18px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] :where(.stat-value) {
+  font-size: 34px;
+}
+
+html[data-skin='clean-neutral'] .stat-value {
+  font-family: var(--font-disp);
+  font-weight: 600;
+  line-height: 1.05;
+  color: var(--cn-ink);
+  animation: none;
+}
+
+html[data-skin='clean-neutral'] :where(.stat-label) {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+
+html[data-skin='clean-neutral'] .stat-label {
+  margin-top: 4px;
+  font-weight: 500;
+  color: var(--cn-rock-ink);
+}
+
+/* ===== Кнопка-пояснение «?» ===== */
+html[data-skin='clean-neutral'] .info-btn {
+  width: 15px;
+  height: 15px;
+  border: 1px solid rgba(164, 141, 120, 0.6);
+  border-radius: 50%;
+  background: var(--cn-card);
+  color: var(--cn-rock-ink);
+  font-family: var(--font-disp);
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 500;
+  vertical-align: 2px;
+}
+
+html[data-skin='clean-neutral'] .info-btn:hover {
+  border-color: var(--cn-sage);
+  background: var(--cn-sage);
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .info-overlay {
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+html[data-skin='clean-neutral'] .info-modal {
+  border: 1px solid rgba(164, 141, 120, 0.16);
+  border-radius: 24px;
+  padding: 24px 26px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-pop);
+}
+
+html[data-skin='clean-neutral'] .info-modal-title {
+  font-family: var(--font-disp);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .info-modal-body {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--cn-ink-2);
+}
+
+/* ===== Чат ===== */
+html[data-skin='clean-neutral'] .chat-layout {
+  background: transparent;
+}
+
+html[data-skin='clean-neutral'] .chat-persona-list {
+  border-right: 1px solid var(--cn-line-soft);
+  background: rgba(246, 243, 236, 0.7);
+  padding: 16px 14px;
+}
+
+html[data-skin='clean-neutral'] .chat-persona-list-title {
+  padding: 10px 10px 10px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .chat-persona-back {
+  padding: 8px 12px;
+  border: 1px solid var(--cn-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cn-ink-2);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+}
+
+html[data-skin='clean-neutral'] .chat-persona-back:hover {
+  border-color: var(--cn-sand);
+  background: var(--cn-card);
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .chat-persona-item {
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  transition: background 0.3s ease, box-shadow 0.35s var(--cn-ease), transform 0.35s var(--cn-ease);
+}
+
+html[data-skin='clean-neutral'] .chat-persona-item:hover {
+  background: rgba(255, 255, 255, 0.55);
+}
+
+html[data-skin='clean-neutral'] .chat-persona-item--active,
+html[data-skin='clean-neutral'] .chat-persona-item--active:hover {
+  border-color: rgba(164, 141, 120, 0.14);
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .chat-persona-item--active .avatar {
+  box-shadow: 0 0 0 2px var(--cn-card), 0 0 0 3.5px var(--cn-sage-mid), 0 6px 12px -6px rgba(80, 66, 44, 0.4);
+}
+
+html[data-skin='clean-neutral'] .chat-persona-name {
+  font-family: var(--font-disp);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .chat-persona-status {
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .chat-persona-list--flying .chat-persona-item:not(.chat-persona-item--active) {
+  border-color: rgba(164, 141, 120, 0.14);
+  background: var(--cn-card);
+}
+
+/* Шапка чата */
+html[data-skin='clean-neutral'] .chat-header {
+  gap: 14px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--cn-line-soft);
+  background: rgba(251, 250, 246, 0.6);
+}
+
+html[data-skin='clean-neutral'] .chat-header-name {
+  font-family: var(--font-disp);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .chat-header-status {
+  margin-top: 2px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--cn-sage);
+}
+
+/* Лента */
+html[data-skin='clean-neutral'] .chat-messages {
+  gap: 16px;
+  padding: 28px 32px;
+}
+
+html[data-skin='clean-neutral'] .message-bubble {
+  position: relative;
+  padding: 13px 18px 10px 26px;
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 6px 22px 22px 22px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+/* Цитатная черта у реплик персоны */
+html[data-skin='clean-neutral'] .message--bot .message-bubble::before {
+  content: '';
+  position: absolute;
+  left: 13px;
+  top: 15px;
+  bottom: 15px;
+  width: 1.5px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--cn-sage-mid), rgba(122, 156, 87, 0.12));
+  pointer-events: none;
+}
+
+html[data-skin='clean-neutral'] .message--user .message-bubble {
+  padding: 13px 20px 10px;
+  border: none;
+  border-radius: 22px 6px 22px 22px;
+  background: linear-gradient(170deg, #5a6450, var(--cn-olive));
+  color: #f8f4ea;
+  box-shadow: 0 1px 1px rgba(47, 52, 38, 0.2), 0 14px 26px -16px rgba(47, 52, 38, 0.65);
+}
+
+html[data-skin='clean-neutral'] .message--user .message-bubble--queued {
+  border: 1px dashed rgba(248, 244, 234, 0.5);
+  opacity: 0.85;
+}
+
+html[data-skin='clean-neutral'] .message-time {
+  margin-top: 5px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .message--user .message-time {
+  color: rgba(248, 244, 234, 0.62);
+}
+
+html[data-skin='clean-neutral'] .message--user .message-text a {
+  color: #f8f4ea;
+}
+
+html[data-skin='clean-neutral'] .message-text a {
+  color: var(--cn-sage);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+html[data-skin='clean-neutral'] .msg-status--read {
+  color: #cfe0b8;
+}
+
+html[data-skin='clean-neutral'] .msg-code {
+  border: 1px solid var(--cn-line);
+  border-radius: 6px;
+  background: var(--cn-card-2);
+  font-family: var(--cn-code);
+}
+
+html[data-skin='clean-neutral'] .message--user .msg-code {
+  border-color: rgba(248, 244, 234, 0.25);
+  background: rgba(248, 244, 234, 0.12);
+}
+
+html[data-skin='clean-neutral'] .msg-pre {
+  border: 1px solid var(--cn-line);
+  border-radius: 14px;
+  background: var(--cn-card-2);
+  font-family: var(--cn-code);
+}
+
+html[data-skin='clean-neutral'] .msg-quote {
+  border-left: 1.5px solid var(--cn-sage-mid);
+  font-family: var(--font-disp);
+  font-size: 1.08em;
+  font-style: italic;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .msg-mark {
+  border-radius: 4px;
+  background: var(--cn-butter);
+}
+
+html[data-skin='clean-neutral'] .msg-spoiler {
+  border-radius: 6px;
+  background: var(--cn-sand);
+}
+
+html[data-skin='clean-neutral'] .msg-spoiler--open {
+  background: var(--cn-sage-mist);
+}
+
+html[data-skin='clean-neutral'] .unread-dot {
+  background: var(--cn-sage);
+  color: #fbf8f0;
+  font-family: var(--font);
+  font-weight: 500;
+}
+
+/* «Печатает» — три круглые точки */
+html[data-skin='clean-neutral'] .message-bubble--typing {
+  gap: 7px;
+  padding: 16px 20px 16px 28px;
+}
+
+html[data-skin='clean-neutral'] .typing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: none;
+  background: var(--cn-sage-mid);
+  animation-duration: 1.8s;
+}
+
+html[data-skin='clean-neutral'] .typing-dots span {
+  animation-duration: 1.8s;
+}
+
+/* Загрузка истории */
+html[data-skin='clean-neutral'] .chat-loading-bubble {
+  border: none;
+  border-radius: 6px 20px 20px 20px;
+  background: rgba(230, 218, 200, 0.45);
+  animation-duration: 3.2s;
+}
+
+html[data-skin='clean-neutral'] .chat-loading-bubble--user {
+  border-radius: 20px 6px 20px 20px;
+}
+
+html[data-skin='clean-neutral'] .chat-loading-cells i,
+html[data-skin='clean-neutral'] .boot-cells i {
+  border-radius: 50%;
+  background: var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .chat-loading-tag {
+  color: var(--cn-sage);
+  animation-duration: 3s;
+}
+
+/* Статус-строка и поле ввода — плавающая капсула */
+html[data-skin='clean-neutral'] .chat-status-bar {
+  padding: 8px 32px 0;
+  border-top: none;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .chat-input-bar {
+  align-items: center;
+  gap: 8px;
+  margin: 10px 24px 20px;
+  padding: 7px 7px 7px 8px;
+  border: 1px solid rgba(164, 141, 120, 0.16);
+  border-top: 1px solid rgba(164, 141, 120, 0.16);
+  border-radius: 999px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-2);
+  transition: box-shadow 0.4s var(--cn-ease), border-color 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .chat-input-bar:focus-within {
+  border-color: rgba(94, 116, 73, 0.4);
+  box-shadow: var(--cn-ring), var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .chat-input-bar .chat-input,
+html[data-skin='clean-neutral'] .chat-input-bar .chat-input:focus {
+  padding: 9px 6px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 15px;
+}
+
+html[data-skin='clean-neutral'] .chat-input-bar .btn--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: transparent;
+  background: var(--cn-card-2);
+  color: var(--cn-ink-2);
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: 0;
+  box-shadow: none;
+}
+
+html[data-skin='clean-neutral'] .chat-input-bar .btn--icon:hover {
+  background: var(--cn-sage-mist);
+  color: var(--cn-olive);
+}
+
+html[data-skin='clean-neutral'] .chat-input-bar .btn--primary {
+  height: 40px;
+  padding: 0 22px;
+}
+
+/* Контекстная панель справа */
+html[data-skin='clean-neutral'] .chat-context {
+  gap: 13px;
+  padding: 18px 18px;
+  border-left: 1px solid var(--cn-line-soft);
+  background: rgba(246, 243, 236, 0.7);
+}
+
+html[data-skin='clean-neutral'] .chat-context-title {
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .ctx-row,
+html[data-skin='clean-neutral'] .chat-mood {
+  font-size: 14px;
+  gap: 10px;
+}
+
+html[data-skin='clean-neutral'] .ctx-note {
+  font-size: 12.5px;
+  line-height: 1.55;
+  letter-spacing: 0.01em;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .ctx-mono {
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='clean-neutral'] .ctx-trend {
+  font-family: var(--font-disp);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .ctx-details {
+  border-top: 1px solid var(--cn-line-soft);
+  padding: 10px 0 2px;
+}
+
+html[data-skin='clean-neutral'] .ctx-details summary {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .ctx-details summary::before {
+  color: var(--cn-rock);
+}
+
+html[data-skin='clean-neutral'] .ctx-list {
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='clean-neutral'] .ctx-actions {
+  border-top: 1px solid var(--cn-line-soft);
+}
+
+/* ===== Страница всех чатов ===== */
+html[data-skin='clean-neutral'] .chat-overview {
+  padding: 34px 40px 44px;
+}
+
+html[data-skin='clean-neutral'] .chat-overview-title {
+  font-family: var(--font-disp);
+  font-size: 44px;
+  font-weight: 600;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: -0.01em;
+}
+
+html[data-skin='clean-neutral'] .chat-overview-lead {
+  margin-top: 10px;
+  font-size: 14px;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .chat-overview-stats {
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .chat-overview-stats > * {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--cn-card);
+  box-shadow: inset 0 0 0 1px var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .chat-overview-stats b {
+  font-family: var(--font-disp);
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .chat-overview-grid {
+  gap: 18px;
+}
+
+html[data-skin='clean-neutral'] .chat-card {
+  gap: 12px;
+  min-height: 150px;
+  padding: 20px 22px 16px;
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 24px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+  transition: transform 0.45s var(--cn-ease), box-shadow 0.45s var(--cn-ease), border-color 0.3s ease;
+}
+
+/* Цвет персоны — тонкая полоса сверху вместо левой рамки */
+html[data-skin='clean-neutral'] .chat-card::before {
+  content: '';
+  position: absolute;
+  left: 22px;
+  top: 0;
+  width: 36px;
+  height: 3px;
+  border-radius: 0 0 3px 3px;
+  background: var(--persona-color, var(--cn-sand));
+  opacity: 0.85;
+  transform-origin: left center;
+  transition: transform 0.6s var(--cn-ease);
+  pointer-events: none;
+}
+
+html[data-skin='clean-neutral'] .chat-card:hover::before {
+  transform: scaleX(1.8);
+}
+
+html[data-skin='clean-neutral'] .chat-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(164, 141, 120, 0.2);
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .chat-card--unread {
+  border-color: rgba(94, 116, 73, 0.35);
+}
+
+html[data-skin='clean-neutral'] .chat-card-name {
+  font-family: var(--font-disp);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .chat-card-status,
+html[data-skin='clean-neutral'] .chat-card-time {
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .chat-card-preview {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .chat-card-you {
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .chat-card-foot {
+  border-top: 1px solid var(--cn-line-soft);
+  font-size: 11.5px;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .chat-card-badge {
+  padding: 2px 9px;
+  border: none;
+  border-radius: 999px;
+  background: var(--cn-sage-soft);
+  color: #4c5f3a;
+  font-size: 9.5px;
+}
+
+/* ===== Главная ===== */
+html[data-skin='clean-neutral'] .home {
+  gap: 34px;
+}
+
+@keyframes cn-mist {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    transform: translate3d(-4%, 3%, 0) scale(1.06);
+  }
+}
+
+/* Герой: большая карточка с утренней пастельной дымкой */
+html[data-skin='clean-neutral'] .home-hero {
+  overflow: hidden;
+  isolation: isolate;
+  padding: 52px 52px 46px;
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 32px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .home-hero::before {
+  content: '';
+  position: absolute;
+  inset: -20% -10% -20% 30%;
+  z-index: -1;
+  background:
+    radial-gradient(40% 45% at 70% 30%, rgba(208, 225, 232, 0.75), transparent 70%),
+    radial-gradient(35% 40% at 92% 70%, rgba(235, 223, 225, 0.8), transparent 70%),
+    radial-gradient(45% 50% at 45% 85%, rgba(232, 240, 213, 0.85), transparent 70%);
+  filter: blur(6px);
+  pointer-events: none;
+  animation: cn-mist 38s ease-in-out infinite alternate;
+}
+
+html[data-skin='clean-neutral'] .home-eyebrow {
+  gap: 14px;
+  margin-bottom: 22px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.26em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .home-eyebrow::before {
+  width: 32px;
+  background: var(--cn-rock);
+}
+
+html[data-skin='clean-neutral'] .home-greet {
+  margin: -6px 0 12px;
+  font-family: var(--font-disp);
+  font-size: 20px;
+  font-style: italic;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .home-title {
+  margin-bottom: 20px;
+  font-family: var(--font-disp);
+  font-size: clamp(38px, 5.4vw, 68px);
+  font-weight: 600;
+  line-height: 0.98;
+  text-transform: none;
+  letter-spacing: -0.012em;
+  color: var(--cn-ink);
+}
+
+/* Глитч-копии заголовка не нужны */
+html[data-skin='clean-neutral'] .home-title.glitch::before,
+html[data-skin='clean-neutral'] .home-title.glitch::after {
+  display: none;
+}
+
+html[data-skin='clean-neutral'] .home-lead {
+  max-width: 560px;
+  font-size: 15.5px;
+  line-height: 1.7;
+  color: var(--cn-ink-2);
+}
+
+/* Тикер мыслей — курсивная цитата с тонкой чертой */
+html[data-skin='clean-neutral'] .home-ticker {
+  align-items: center;
+  gap: 14px;
+  margin: -6px 0 30px;
+  padding: 2px 0 2px 16px;
+  border-left: 1.5px solid var(--cn-sage-mid);
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-style: italic;
+}
+
+html[data-skin='clean-neutral'] .home-ticker-label {
+  font-family: var(--font);
+  font-size: 9.5px;
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .home-ticker-text {
+  color: var(--cn-ink-2);
+  animation-duration: 1.2s;
+}
+
+html[data-skin='clean-neutral'] .home-cta-row {
+  gap: 12px;
+}
+
+html[data-skin='clean-neutral'] .home-cta-row .btn {
+  padding: 13px 24px;
+  font-size: 11.5px;
+}
+
+html[data-skin='clean-neutral'] .home-readout {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  line-height: 1.8;
+  text-transform: uppercase;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .home-readout.top-right {
+  top: 22px;
+  right: 26px;
+}
+
+html[data-skin='clean-neutral'] .home-readout.bottom-right {
+  bottom: 20px;
+  right: 26px;
+}
+
+html[data-skin='clean-neutral'] .home-readout .val {
+  color: var(--cn-ink);
+  font-weight: 600;
+}
+
+html[data-skin='clean-neutral'] .home-readout .live-tag {
+  color: var(--cn-sage);
+}
+
+/* Заголовки блоков */
+html[data-skin='clean-neutral'] .home-block-head {
+  position: relative;
+  padding-bottom: 12px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .home-block-head::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: 44px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--cn-sage-mid);
+  pointer-events: none;
+}
+
+html[data-skin='clean-neutral'] .home-block-title {
+  font-family: var(--font-disp);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .home-block-num {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--cn-rock-ink);
+}
+
+/* Карточки присутствия */
+html[data-skin='clean-neutral'] .home-presence-grid {
+  gap: 18px;
+}
+
+html[data-skin='clean-neutral'] .home-presence,
+html[data-skin='clean-neutral'] .home-dossier {
+  gap: 12px;
+  padding: 20px 22px 16px;
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 24px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+  clip-path: none;
+  transition: transform 0.45s var(--cn-ease), box-shadow 0.45s var(--cn-ease);
+}
+
+html[data-skin='clean-neutral'] .home-presence:hover,
+html[data-skin='clean-neutral'] .home-dossier:hover {
+  transform: translateY(-3px);
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .home-presence-name,
+html[data-skin='clean-neutral'] .home-dossier h3 {
+  font-family: var(--font-disp);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .home-presence-status {
+  font-size: 11.5px;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .home-presence-activity {
+  font-family: var(--font-disp);
+  font-size: 16px;
+  font-style: italic;
+  line-height: 1.4;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .home-presence-activity--none {
+  opacity: 0.8;
+}
+
+html[data-skin='clean-neutral'] .home-presence-reply,
+html[data-skin='clean-neutral'] .home-dossier-foot {
+  border-top: 1px solid var(--cn-line-soft);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .home-presence-reply--unread {
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .home-dossier-index {
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .home-dossier p {
+  font-size: 13.5px;
+  color: var(--cn-ink-2);
+}
+
+/* Телеметрия: отдельные плитки вместо сетки через 1px */
+html[data-skin='clean-neutral'] .home-telemetry {
+  gap: 16px;
+  border: none;
+  background: transparent;
+}
+
+html[data-skin='clean-neutral'] :where(.home-tele-cell) {
+  padding: 22px 22px 20px;
+}
+
+html[data-skin='clean-neutral'] .home-tele-cell {
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 22px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .home-tele-label {
+  margin-bottom: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .home-tele-value {
+  font-family: var(--font-disp);
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .home-tele-value span {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .home-tele-note {
+  font-size: 13px;
+  color: var(--cn-ink-2);
+}
+
+/* Лента событий */
+html[data-skin='clean-neutral'] .home-feed {
+  overflow: hidden;
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 22px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .home-feed-row {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--cn-line-soft);
+  font-size: 14px;
+}
+
+html[data-skin='clean-neutral'] .home-feed-empty {
+  padding: 16px 20px;
+  font-size: 13px;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .home-feed-badge--initiative {
+  background: var(--cn-sage-soft);
+  color: #4c5f3a;
+}
+
+html[data-skin='clean-neutral'] .home-feed-badge--diary {
+  background: var(--cn-blue);
+  color: #34576a;
+}
+
+html[data-skin='clean-neutral'] .home-feed-badge--reminder {
+  background: var(--cn-butter);
+  color: var(--cn-butter-ink);
+}
+
+html[data-skin='clean-neutral'] .home-feed-persona {
+  font-family: var(--font-disp);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+html[data-skin='clean-neutral'] .home-feed-time {
+  font-size: 11px;
+  color: var(--cn-muted);
+}
+
+/* Журнал — оливковая карточка с кремовым текстом */
+html[data-skin='clean-neutral'] .home-term {
+  border: none;
+  border-radius: 24px;
+  background: linear-gradient(170deg, #4d5642, #3f4636);
+  box-shadow: var(--cn-sh-2);
+  font-family: var(--cn-code);
+  font-size: 12.5px;
+}
+
+html[data-skin='clean-neutral'] .home-term-titlebar {
+  font-family: var(--font);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+html[data-skin='clean-neutral'] .home-term-titlebar .lights i {
+  width: 8px;
+  height: 8px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(244, 239, 227, 0.25);
+}
+
+html[data-skin='clean-neutral'] .home-term-line .bright {
+  color: #cfe0b8;
+}
+
+@keyframes cn-caret {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+html[data-skin='clean-neutral'] .home-term-cursor {
+  width: 2px;
+  border-radius: 1px;
+  background: #cfe0b8;
+  animation: cn-caret 2.6s ease-in-out infinite;
+}
+
+html[data-skin='clean-neutral'] .home-foot-stencil,
+html[data-skin='clean-neutral'] .home-foot-right {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .barcode i {
+  border-radius: 2px;
+  background: var(--cn-sand);
+}
+
+/* ===== Экран запуска ===== */
+html[data-skin='clean-neutral'] .boot-panel {
+  overflow: hidden;
+  isolation: isolate;
+  padding: 44px 40px 32px;
+  border: 1px solid rgba(164, 141, 120, 0.14);
+  border-radius: 32px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-pop);
+  animation-duration: 0.7s;
+}
+
+html[data-skin='clean-neutral'] .boot-panel::before {
+  content: '';
+  position: absolute;
+  inset: -30% -30% 40% 20%;
+  z-index: -1;
+  background:
+    radial-gradient(40% 50% at 70% 40%, rgba(208, 225, 232, 0.7), transparent 70%),
+    radial-gradient(40% 50% at 30% 60%, rgba(232, 240, 213, 0.75), transparent 70%);
+  filter: blur(8px);
+  pointer-events: none;
+}
+
+html[data-skin='clean-neutral'] .boot-title {
+  font-size: clamp(30px, 6vw, 44px);
+  line-height: 1;
+}
+
+html[data-skin='clean-neutral'] .boot-lead {
+  font-size: 14px;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .boot-steps {
+  gap: 10px;
+  font-size: 13px;
+}
+
+html[data-skin='clean-neutral'] .boot-step-tag {
+  min-width: 52px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+}
+
+html[data-skin='clean-neutral'] .boot-step--ok .boot-step-tag {
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .boot-step--run .boot-step-tag {
+  color: var(--cn-rock-ink);
+  animation: cn-breathe 3.2s ease-in-out infinite;
+}
+
+html[data-skin='clean-neutral'] .boot-step--fail .boot-step-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--cn-rose);
+  color: var(--cn-rose-ink);
+}
+
+html[data-skin='clean-neutral'] .boot-cells i {
+  width: 7px;
+  height: 7px;
+  animation-duration: 3.6s;
+}
+
+html[data-skin='clean-neutral'] .boot-meta {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .boot-cmd-row {
+  border: none;
+  border-radius: 14px;
+  background: var(--term-bg);
+  font-family: var(--cn-code);
+}
+
+html[data-skin='clean-neutral'] .boot-cmd-label,
+html[data-skin='clean-neutral'] .boot-hint {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .boot-cmd-copy {
+  border-radius: 999px;
+  font-family: var(--font);
+  letter-spacing: 0.14em;
+}
+
+/* ===== Досье ===== */
+html[data-skin='clean-neutral'] .dossier-panel {
+  margin: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(164, 141, 120, 0.14);
+  border-radius: 26px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .dossier-head {
+  gap: 14px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .dossier-name {
+  font-family: var(--font-disp);
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .dossier-meta {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--cn-muted);
+}
+
+/* Вкладки досье — ряд таблеток без дорожки */
+html[data-skin='clean-neutral'] .dossier-tabs {
+  width: auto;
+  gap: 4px;
+  padding: 12px 18px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  border-bottom: 1px solid var(--cn-line-soft);
+  margin-bottom: 0;
+}
+
+html[data-skin='clean-neutral'] .dossier-tabs .tab {
+  padding: 7px 14px;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='clean-neutral'] .dossier-tabs .tab--active {
+  background: var(--cn-sage-mist);
+  color: var(--cn-olive-deep);
+  box-shadow: inset 0 0 0 1px rgba(94, 116, 73, 0.2);
+}
+
+html[data-skin='clean-neutral'] .dossier-body {
+  padding: 20px 22px;
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .dossier-core-title,
+html[data-skin='clean-neutral'] .danger-parts-title {
+  border-top: 1px solid var(--cn-line-soft);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .dossier-confirm-text {
+  font-size: 13px;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .danger-part {
+  border: 1px solid var(--cn-line);
+  border-radius: 12px;
+  font-size: 12px;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .danger-part:hover,
+html[data-skin='clean-neutral'] .danger-part--armed {
+  border-color: rgba(164, 84, 75, 0.5);
+  background: var(--cn-rose);
+  color: var(--cn-rose-ink);
+}
+
+/* ===== Модалки (FormModal) и диалоги ===== */
+html[data-skin='clean-neutral'] .pcreate-overlay,
+html[data-skin='clean-neutral'] .dialog-overlay {
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+html[data-skin='clean-neutral'] .pcreate-panel {
+  overflow: hidden;
+  border: 1px solid rgba(164, 141, 120, 0.16);
+  border-radius: 28px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-pop);
+}
+
+html[data-skin='clean-neutral'] .pcreate-head {
+  gap: 14px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .pcreate-title {
+  font-family: var(--font-disp);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .pcreate-body {
+  padding: 20px 24px;
+}
+
+html[data-skin='clean-neutral'] .pcreate-foot {
+  gap: 10px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--cn-line-soft);
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .pcreate-sec {
+  margin: 8px 0 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--cn-line-soft);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .pcreate-sub {
+  border-left: 1.5px solid var(--cn-sage-mid);
+  border-radius: 0 14px 14px 0;
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .pcreate-yaml,
+html[data-skin='clean-neutral'] .pcreate-yaml:focus,
+html[data-skin='clean-neutral'] .pcreate-yaml:hover {
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background: linear-gradient(170deg, #4b5440, #3f4636);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), var(--cn-sh-1);
+  color: var(--term-bright);
+  font-family: var(--cn-code);
+  font-size: 11.5px;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] textarea.pcreate-yaml--edit:focus {
+  border-color: rgba(207, 224, 184, 0.45);
+  box-shadow: var(--cn-ring), var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .pcreate-yaml::placeholder {
+  color: var(--term-dim);
+}
+
+html[data-skin='clean-neutral'] .pcreate-draft-note {
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .features-group-title {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .features-group + .features-group {
+  border-top: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .feature-label--raw {
+  font-family: var(--cn-code);
+}
+
+html[data-skin='clean-neutral'] .dialog-panel {
+  padding: 26px 26px 20px;
+  border: 1px solid rgba(164, 141, 120, 0.16);
+  border-radius: 26px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-pop);
+}
+
+html[data-skin='clean-neutral'] .dialog-title {
+  gap: 12px;
+  font-family: var(--font-disp);
+  font-size: 23px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .dialog-mark {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: var(--cn-sage-mist);
+  color: var(--cn-olive);
+  font-family: var(--font-disp);
+  font-size: 16px;
+  font-style: italic;
+}
+
+html[data-skin='clean-neutral'] .dialog-panel--danger .dialog-mark {
+  background: var(--cn-rose);
+  color: var(--cn-rose-ink);
+}
+
+html[data-skin='clean-neutral'] .dialog-message {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .dialog-actions {
+  border-top: 1px solid var(--cn-line-soft);
+}
+
+/* ===== Персоны ===== */
+html[data-skin='clean-neutral'] .persona-card {
+  gap: 16px;
+  padding: 24px 24px 18px;
+  border-radius: 26px;
+}
+
+html[data-skin='clean-neutral'] .persona-avatar-btn {
+  width: 60px;
+  height: 60px;
+  border: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--persona) 16%, #f1ebdf);
+  color: var(--cn-olive);
+  font-family: var(--font-disp);
+  font-size: 26px;
+  font-style: italic;
+  box-shadow: 0 0 0 2px var(--cn-card), 0 0 0 3.5px color-mix(in srgb, var(--persona) 55%, var(--cn-sand)),
+    0 10px 18px -10px rgba(80, 66, 44, 0.5);
+}
+
+html[data-skin='clean-neutral'] .persona-avatar-overlay {
+  background: rgba(64, 58, 46, 0.5);
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .persona-avatar-remove {
+  border-radius: 50%;
+  border-color: var(--cn-line);
+  background: var(--cn-card);
+}
+
+html[data-skin='clean-neutral'] .persona-card-name {
+  font-family: var(--font-disp);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .persona-card-meta {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .persona-status {
+  gap: 6px;
+  padding: 3px 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--cn-sage-mist);
+  color: #4c5f3a;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='clean-neutral'] .persona-status-dot {
+  border-radius: 50%;
+  background: var(--cn-sage-mid);
+  animation: cn-breathe 4.8s ease-in-out infinite;
+}
+
+html[data-skin='clean-neutral'] .persona-status--frozen {
+  border: none;
+  background: var(--cn-blue);
+  color: #34576a;
+}
+
+html[data-skin='clean-neutral'] .persona-status--local {
+  box-shadow: inset 0 0 0 1px rgba(94, 116, 73, 0.3);
+}
+
+html[data-skin='clean-neutral'] .persona-local-note {
+  border: 1px dashed var(--cn-sand);
+  border-radius: 12px;
+}
+
+/* ===== Галерея тем ===== */
+html[data-skin='clean-neutral'] .skin-themes-lead {
+  font-size: 14px;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .skin-themes-grid {
+  gap: 16px;
+}
+
+html[data-skin='clean-neutral'] .skin-theme-card {
+  gap: 7px;
+  padding: 10px 10px 12px;
+  border: 1px solid rgba(164, 141, 120, 0.14);
+  border-radius: 22px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+  transition: transform 0.45s var(--cn-ease), box-shadow 0.45s var(--cn-ease), border-color 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .skin-theme-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(164, 141, 120, 0.24);
+  box-shadow: var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .skin-theme-card--active {
+  border-color: rgba(94, 116, 73, 0.55);
+  box-shadow: 0 0 0 3px rgba(122, 156, 87, 0.16), var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .skin-theme-card-name {
+  padding: 0 4px;
+  font-family: var(--font-disp);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .skin-theme-card-tagline {
+  padding: 0 4px;
+  font-size: 12.5px;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .skin-theme-card-meta {
+  padding: 4px 4px 0;
+}
+
+html[data-skin='clean-neutral'] .skin-themes-assigned {
+  border-top: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .skin-themes-assigned-title {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .skin-themes-hint {
+  font-size: 12.5px;
+  color: var(--cn-muted);
+}
+
+/* ===== Заметки (главная) ===== */
+html[data-skin='clean-neutral'] .notes,
+html[data-skin='clean-neutral'] .cal {
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 24px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] :where(.notes) {
+  padding: 18px 20px 16px;
+}
+
+html[data-skin='clean-neutral'] :where(.cal) {
+  padding: 18px 20px 20px;
+}
+
+html[data-skin='clean-neutral'] .notes-persona {
+  gap: 9px;
+  padding: 4px 13px 4px 4px;
+  border: 1px solid var(--cn-line);
+  border-radius: 999px;
+  background: var(--cn-card);
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .notes-persona:hover {
+  background: var(--cn-card-2);
+  border-color: var(--cn-sand);
+}
+
+html[data-skin='clean-neutral'] .notes-persona--on {
+  border-color: transparent;
+  background: var(--cn-sage-mist);
+  box-shadow: inset 0 0 0 1px rgba(94, 116, 73, 0.3);
+}
+
+html[data-skin='clean-neutral'] .notes-persona-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--note-color, var(--cn-sage-mid)) 70%, #f1ebdf);
+  color: #fbf8f0;
+  font-family: var(--font-disp);
+  font-size: 14px;
+  font-style: italic;
+  text-transform: none;
+}
+
+html[data-skin='clean-neutral'] .notes-persona-name {
+  text-transform: none;
+}
+
+html[data-skin='clean-neutral'] .notes-persona-count {
+  color: var(--cn-muted);
+  font-size: 11px;
+}
+
+html[data-skin='clean-neutral'] .notes-empty,
+html[data-skin='clean-neutral'] .notes-error,
+html[data-skin='clean-neutral'] .notes-hint {
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .notes-hint {
+  border-top: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .note {
+  border-bottom: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .note-time,
+html[data-skin='clean-neutral'] .note-author {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .note-more {
+  color: var(--cn-sage);
+  letter-spacing: 0.12em;
+}
+
+/* ===== Календарь ===== */
+html[data-skin='clean-neutral'] .cal-month {
+  font-family: var(--font-disp);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='clean-neutral'] .cal-head .btn--icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+html[data-skin='clean-neutral'] .cal-weekdays span {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .cal-grid,
+html[data-skin='clean-neutral'] .cal-weekdays {
+  gap: 6px;
+}
+
+html[data-skin='clean-neutral'] .cal-day {
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: var(--cn-card-2);
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.35s var(--cn-ease);
+}
+
+html[data-skin='clean-neutral'] .cal-day:hover {
+  border-color: var(--cn-line);
+  background: #fffefb;
+  box-shadow: 0 8px 18px -12px rgba(80, 66, 44, 0.4);
+}
+
+html[data-skin='clean-neutral'] .cal-day--out {
+  opacity: 0.5;
+  background: transparent;
+}
+
+html[data-skin='clean-neutral'] .cal-day--today {
+  border-color: rgba(94, 116, 73, 0.45);
+  background: #e7ecdc;
+  box-shadow: none;
+}
+
+html[data-skin='clean-neutral'] .cal-day-num {
+  font-size: 12px;
+  color: var(--cn-ink-2);
+}
+
+/* Сегодня — число в шалфейном кружке */
+html[data-skin='clean-neutral'] .cal-day--today .cal-day-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--cn-sage);
+  color: #fbf8f0;
+  font-weight: 600;
+}
+
+html[data-skin='clean-neutral'] .cal-chip {
+  padding: 2px 6px 2px 7px;
+  border-left-width: 2px;
+  border-radius: 2px 6px 6px 2px;
+  background: rgba(255, 255, 255, 0.75);
+  font-size: 11px;
+}
+
+html[data-skin='clean-neutral'] .cal-dot {
+  border-radius: 50%;
+}
+
+html[data-skin='clean-neutral'] .cal-tag {
+  border-radius: 999px;
+}
+
+html[data-skin='clean-neutral'] .cal-entry {
+  border-bottom: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .cal-form {
+  border-top: 1px solid var(--cn-line-soft);
+}
+
+/* ===== «Старт»: обучение ===== */
+html[data-skin='clean-neutral'] .start-guide-bar {
+  gap: 10px 16px;
+  padding: 12px 20px;
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 999px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+  font-size: 11px;
+}
+
+html[data-skin='clean-neutral'] .start-guide-bar-label {
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .start-guide-bar-count {
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='clean-neutral'] .start-guide-meter {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--cn-paper-2);
+}
+
+html[data-skin='clean-neutral'] .start-guide-meter::after {
+  display: none;
+}
+
+html[data-skin='clean-neutral'] .start-guide-meter i {
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--cn-sage-mid), var(--cn-sage));
+}
+
+html[data-skin='clean-neutral'] .start-guide-bar-pct {
+  font-family: var(--font-disp);
+  font-size: 16px;
+}
+
+html[data-skin='clean-neutral'] .start-guide-lead {
+  font-size: 14px;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .start-guide-tabs {
+  gap: 4px;
+  padding: 5px;
+  border: none;
+  border-radius: 24px;
+  background: var(--cn-paper-2);
+  box-shadow: var(--cn-sh-in);
+}
+
+html[data-skin='clean-neutral'] .start-guide-tab {
+  border-radius: 19px;
+  background: transparent;
+  transition: background 0.35s ease, color 0.3s ease, box-shadow 0.35s ease;
+}
+
+html[data-skin='clean-neutral'] .start-guide-tab:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+
+html[data-skin='clean-neutral'] .start-guide-tab.is-active {
+  background: var(--cn-card);
+  box-shadow: 0 1px 2px rgba(80, 66, 44, 0.1), 0 8px 18px -8px rgba(80, 66, 44, 0.3);
+}
+
+html[data-skin='clean-neutral'] .start-guide-tab-index {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .start-guide-tab-title {
+  font-size: 22px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .start-guide-tab-sub {
+  font-size: 12.5px;
+  color: var(--cn-ink-2);
+}
+
+/* Бегущая полоса под вкладкой не нужна — активная вкладка приподнята */
+html[data-skin='clean-neutral'] .start-guide-tab-ink {
+  display: none;
+}
+
+html[data-skin='clean-neutral'] .start-guide-steps {
+  padding: 26px 26px 6px;
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 26px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+  clip-path: none;
+}
+
+html[data-skin='clean-neutral'] .start-guide-mark {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--cn-line);
+  border-radius: 50%;
+  background: var(--cn-card);
+  color: var(--cn-rock-ink);
+  font-family: var(--font-disp);
+  font-size: 15px;
+  box-shadow: 0 1px 1px rgba(80, 66, 44, 0.05);
+}
+
+html[data-skin='clean-neutral'] .start-guide-mark:hover {
+  border-color: var(--cn-sage);
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .start-guide-step.is-done .start-guide-mark {
+  border-color: transparent;
+  background: var(--cn-sage);
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .start-guide-line {
+  width: 1.5px;
+  border-radius: 2px;
+  background: var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .start-guide-line i {
+  background: var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .start-guide-step-idx {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .start-guide-step-title {
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .start-guide-check {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .start-guide-check.is-done {
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .start-guide-step-desc {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--cn-ink-2);
+}
+
+/* Предупреждение — мягкая масляная плашка */
+html[data-skin='clean-neutral'] .start-guide-warn {
+  padding: 12px 16px;
+  border: none;
+  border-radius: 16px;
+  background: var(--cn-butter);
+  color: #4d4128;
+  font-size: 13px;
+}
+
+html[data-skin='clean-neutral'] .start-guide-warn-tag {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #c9a24a;
+  color: #fffaf0;
+  font-family: var(--font-disp);
+  font-size: 14px;
+  font-style: italic;
+}
+
+html[data-skin='clean-neutral'] .start-guide-code,
+html[data-skin='clean-neutral'] .start-control-cmd {
+  border: 1px solid var(--cn-line);
+  border-radius: 10px;
+  background: var(--cn-card-2);
+  transition: border-color 0.3s ease, background 0.3s ease, transform 0.3s var(--cn-ease);
+}
+
+html[data-skin='clean-neutral'] .start-control-cmd {
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='clean-neutral'] .start-guide-code code,
+html[data-skin='clean-neutral'] .start-guide-ex-text,
+html[data-skin='clean-neutral'] .ollama-model-cmd code {
+  font-family: var(--cn-code);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .start-guide-code:hover,
+html[data-skin='clean-neutral'] .start-guide-code.is-copied,
+html[data-skin='clean-neutral'] .start-control-cmd:hover,
+html[data-skin='clean-neutral'] .start-control-cmd.is-copied {
+  border-style: solid;
+  border-color: rgba(94, 116, 73, 0.45);
+  background: var(--cn-sage-mist);
+}
+
+html[data-skin='clean-neutral'] .start-guide-code-flash {
+  background: var(--cn-sage);
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .start-guide-ex-row {
+  border-radius: 0 12px 12px 0;
+}
+
+html[data-skin='clean-neutral'] .start-guide-ex-row:hover,
+html[data-skin='clean-neutral'] .start-guide-ex-row:focus-visible {
+  background: var(--cn-card-2);
+  border-left-color: var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .start-guide-ex-row.is-copied {
+  background: var(--cn-sage-mist);
+  border-left-color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .start-guide-ex-key {
+  border-radius: 5px;
+  background: var(--cn-sage-soft);
+}
+
+/* Карточки моделей Ollama */
+html[data-skin='clean-neutral'] .ollama-model {
+  border: 1px solid rgba(164, 141, 120, 0.14);
+  border-radius: 18px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .ollama-model.is-recommended {
+  border-color: rgba(94, 116, 73, 0.45);
+  box-shadow: 0 0 0 3px rgba(122, 156, 87, 0.12), var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .ollama-model-name {
+  font-family: var(--font-disp);
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .ollama-models-head {
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .ollama-model-dots i {
+  border-radius: 99px;
+  background: var(--cn-paper-2);
+}
+
+html[data-skin='clean-neutral'] .ollama-model-dots i.is-on {
+  background: var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .ollama-model-inputs span {
+  border: none;
+  border-radius: 999px;
+  background: var(--cn-blue);
+  color: #34576a;
+}
+
+html[data-skin='clean-neutral'] .ollama-model-pro::before {
+  color: var(--cn-sage);
+}
+
+/* Демо-окно переписки — оливковая карточка */
+html[data-skin='clean-neutral'] .start-guide-dlg {
+  overflow: hidden;
+  border: none;
+  border-radius: 24px;
+  background: linear-gradient(170deg, #4d5642, #3f4636);
+  box-shadow: var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .start-guide-dlg-titlebar .lights i {
+  border: none;
+  border-radius: 50%;
+  background: rgba(244, 239, 227, 0.25);
+}
+
+html[data-skin='clean-neutral'] .start-guide-dlg-live::before {
+  border-radius: 50%;
+  background: #b9cf9c;
+}
+
+html[data-skin='clean-neutral'] .start-guide-dlg-avatar {
+  border: none;
+  border-radius: 50%;
+  background: rgba(244, 239, 227, 0.14);
+  font-style: italic;
+}
+
+html[data-skin='clean-neutral'] .start-guide-dlg-msg--op {
+  border-radius: 14px 4px 14px 14px;
+  background: rgba(244, 239, 227, 0.16);
+  clip-path: none;
+}
+
+html[data-skin='clean-neutral'] .start-guide-dlg-msg--bot {
+  border-radius: 4px 14px 14px 14px;
+}
+
+html[data-skin='clean-neutral'] .start-guide-dlg-input {
+  border-radius: 999px;
+}
+
+html[data-skin='clean-neutral'] .start-guide-dlg-dots i {
+  border-radius: 50%;
+}
+
+html[data-skin='clean-neutral'] .start-guide-dlg-cursor {
+  width: 2px;
+  border-radius: 1px;
+  animation: cn-caret 2.6s ease-in-out infinite;
+}
+
+/* ===== «Старт»: режим управления ===== */
+html[data-skin='clean-neutral'] .start-control-intro,
+html[data-skin='clean-neutral'] .start-control-pipe,
+html[data-skin='clean-neutral'] .start-control-card,
+html[data-skin='clean-neutral'] .start-control-ex {
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 24px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+  clip-path: none;
+}
+
+html[data-skin='clean-neutral'] .start-control-ex {
+  overflow: hidden;
+}
+
+html[data-skin='clean-neutral'] .start-control-eyebrow {
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .start-control-eyebrow::before {
+  width: 32px;
+  background: var(--cn-rock);
+}
+
+html[data-skin='clean-neutral'] .start-control-lead {
+  font-size: 15px;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .start-control-access {
+  font-size: 13px;
+}
+
+html[data-skin='clean-neutral'] .start-control-pipe-head {
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .start-control-track {
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .start-control-track i {
+  background: var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .start-control-node {
+  width: 14px;
+  height: 14px;
+  margin: 0 0 4px;
+  border: 1.5px solid var(--cn-sand);
+  border-radius: 50%;
+  background: var(--cn-card);
+  transform: none;
+}
+
+html[data-skin='clean-neutral'] .start-control-step.is-done .start-control-node {
+  border-color: var(--cn-sage-mid);
+  background: var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .start-control-step.is-active .start-control-node {
+  border-color: var(--cn-sage);
+  background: var(--cn-sage);
+  transform: scale(1.15);
+  box-shadow: 0 0 0 5px rgba(122, 156, 87, 0.16);
+  animation: none;
+}
+
+html[data-skin='clean-neutral'] .start-control-step-num {
+  letter-spacing: 0.16em;
+}
+
+html[data-skin='clean-neutral'] .start-control-step-title {
+  font-size: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='clean-neutral'] .start-control-step-timer {
+  border-radius: 2px;
+}
+
+html[data-skin='clean-neutral'] .start-control-stage {
+  border-radius: 20px;
+  background: var(--cn-card-2);
+  clip-path: none;
+}
+
+html[data-skin='clean-neutral'] .start-control-stage-num {
+  letter-spacing: 0.18em;
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .start-control-stage h4,
+html[data-skin='clean-neutral'] .start-control-stage h3,
+html[data-skin='clean-neutral'] .start-control-card-title,
+html[data-skin='clean-neutral'] .start-control-ex-head h4,
+html[data-skin='clean-neutral'] .start-control-sub {
+  font-family: var(--font-disp);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .start-control-card-title {
+  border-bottom: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .start-control-path span {
+  border: 1px solid var(--cn-line);
+  border-radius: 999px;
+  padding: 4px 12px;
+  background: var(--cn-card);
+  font-size: 12px;
+}
+
+html[data-skin='clean-neutral'] .start-control-path span:last-child {
+  border-color: transparent;
+  background: var(--cn-olive);
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .start-control-say {
+  border-left: 1px solid var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .start-control-say-label,
+html[data-skin='clean-neutral'] .start-control-yn-label,
+html[data-skin='clean-neutral'] .start-control-sc-label {
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .start-control-sc-label {
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .start-control-toggles {
+  font-size: 13px;
+}
+
+html[data-skin='clean-neutral'] .start-control-q {
+  border-left: none;
+  border-radius: 4px 16px 16px 16px;
+  background: linear-gradient(170deg, #4d5642, #3f4636);
+}
+
+html[data-skin='clean-neutral'] .start-control-yn-opt {
+  border: 1px solid var(--cn-line);
+  border-radius: 16px;
+  background: var(--cn-card);
+}
+
+html[data-skin='clean-neutral'] .start-control-yn-opt--yes {
+  border-color: rgba(94, 116, 73, 0.4);
+  background: var(--cn-sage-mist);
+  box-shadow: none;
+}
+
+html[data-skin='clean-neutral'] .start-control-yn-opt--no {
+  border-style: solid;
+}
+
+html[data-skin='clean-neutral'] .start-control-yn-icon {
+  border-radius: 50%;
+}
+
+html[data-skin='clean-neutral'] .start-control-yn-opt--yes .start-control-yn-icon {
+  background: var(--cn-sage);
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .start-control-alt {
+  font-size: 12.5px;
+}
+
+html[data-skin='clean-neutral'] .start-control-mark {
+  border-radius: 999px;
+  padding: 0 3px;
+}
+
+html[data-skin='clean-neutral'] .start-control-mark[data-mode='always'] {
+  background: var(--cn-olive);
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .start-control-mark[data-mode='ask'] {
+  border-color: rgba(94, 116, 73, 0.5);
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .start-control-rec {
+  animation: cn-breathe 4s ease-in-out infinite;
+}
+
+html[data-skin='clean-neutral'] .start-control-demo-tab {
+  border-radius: 999px;
+  padding: 4px 11px;
+}
+
+html[data-skin='clean-neutral'] .start-control-shot {
+  border-radius: 10px;
+}
+
+html[data-skin='clean-neutral'] .start-control-typing i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  animation-duration: 1.8s;
+}
+
+html[data-skin='clean-neutral'] .start-control-sc-way {
+  border: 1px solid var(--cn-line-soft);
+  border-radius: 16px;
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .start-control-sc-block + .start-control-sc-block {
+  border-left-color: var(--cn-line-soft);
+  border-left-style: solid;
+}
+
+@media (max-width: 1100px) {
+  html[data-skin='clean-neutral'] .start-control-sc-block + .start-control-sc-block {
+    border-left-style: none;
+    border-top-color: var(--cn-line-soft);
+    border-top-style: solid;
+  }
+}
+
+html[data-skin='clean-neutral'] .start-control-sc-flow::before {
+  border-left: 1px solid var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .start-control-sc-flow li::before {
+  border-radius: 50%;
+  background: var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .start-control-sc .start-control-sc-tip {
+  border-left: 1.5px solid var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .start-control-sc-facts b {
+  border-radius: 999px;
+  border-color: var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .start-control-sc-facts li:last-child b {
+  border-color: transparent;
+  background: var(--cn-sage);
+  color: #fbf8f0;
+}
+
+html[data-skin='clean-neutral'] .start-control-filters {
+  overflow: hidden;
+  padding: 3px;
+  border: none;
+  border-radius: 999px;
+  background: var(--cn-paper-2);
+  box-shadow: var(--cn-sh-in);
+}
+
+html[data-skin='clean-neutral'] .start-control-filter {
+  border: none;
+  border-radius: 999px;
+}
+
+html[data-skin='clean-neutral'] .start-control-filter.is-active {
+  background: var(--cn-card);
+  color: var(--cn-ink);
+  box-shadow: 0 1px 2px rgba(80, 66, 44, 0.1), 0 6px 14px -6px rgba(80, 66, 44, 0.28);
+}
+
+html[data-skin='clean-neutral'] .start-control-ex-nav {
+  border-right: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .start-control-ex-tab {
+  border-left: 2px solid transparent;
+  border-radius: 0 12px 12px 0;
+}
+
+html[data-skin='clean-neutral'] .start-control-ex-tab.is-active {
+  border-left-color: var(--cn-sage-mid);
+  background: var(--cn-sage-mist);
+}
+
+html[data-skin='clean-neutral'] .start-control-ex-hint {
+  border-left: 1.5px solid var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .start-control-ex-hint.is-off {
+  border-left-color: var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .start-control-faq-item {
+  border-color: var(--cn-line-soft);
+}
+
+/* ===== Комната ===== */
+html[data-skin='clean-neutral'] .room-layout {
+  gap: 0;
+  border: 1px solid rgba(164, 141, 120, 0.12);
+  border-radius: 26px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .room-layout .room-scene-card {
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-skin='clean-neutral'] .room-layout .room-scene-card:hover {
+  box-shadow: none;
+}
+
+html[data-skin='clean-neutral'] .room-side {
+  border-left: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .room-side .card,
+html[data-skin='clean-neutral'] .room-telemetry .home-tele-cell {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-skin='clean-neutral'] .room-telemetry {
+  gap: 0;
+}
+
+html[data-skin='clean-neutral'] .room-telemetry .home-tele-cell + .home-tele-cell {
+  border-top: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .room-telemetry .home-tele-value,
+html[data-skin='clean-neutral'] .room-tele-text {
+  font-family: var(--font-disp);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .room-tele-sub {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .room-tele-offline .room-tele-sub {
+  font-size: 13px;
+  color: var(--cn-ink-2);
+}
+
+html[data-skin='clean-neutral'] .room-tele-bar {
+  height: 4px;
+  border-radius: 99px;
+  background: var(--cn-paper-2);
+}
+
+html[data-skin='clean-neutral'] .room-tele-bar-fill {
+  border-radius: 99px;
+  background: var(--cn-sage-mid);
+}
+
+/* Сцена — тёплая, с мягкой виньеткой по краю */
+html[data-skin='clean-neutral'] .room-scene {
+  background: linear-gradient(180deg, #f8f5ee, #f1ece2);
+}
+
+html[data-skin='clean-neutral'] .room-floor {
+  background: #ebe4d7;
+  border-top-color: var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .room-night-shade {
+  background: rgba(80, 66, 44, 0.04);
+}
+
+html[data-skin='clean-neutral'] .room-scene--tod-night .room-night-shade {
+  background: rgba(60, 54, 70, 0.1);
+}
+
+html[data-skin='clean-neutral'] .room-scene--tod-night .room-window {
+  background:
+    radial-gradient(circle at 22% 28%, #e9e3d4 0 1px, transparent 1.5px),
+    radial-gradient(circle at 68% 18%, #e9e3d4 0 1px, transparent 1.5px),
+    radial-gradient(circle at 80% 62%, #e9e3d4 0 0.8px, transparent 1.3px),
+    linear-gradient(180deg, #5c6a78, #7d8a8f);
+}
+
+html[data-skin='clean-neutral'] .room-scene--tod-morning .room-window {
+  background: linear-gradient(180deg, #d0e1e8, #f6ead7);
+}
+
+html[data-skin='clean-neutral'] .room-scene--tod-day .room-window {
+  background: linear-gradient(180deg, #cadfe8, #eaf2f2);
+}
+
+html[data-skin='clean-neutral'] .room-scene--tod-evening .room-window {
+  background: linear-gradient(180deg, #e8c9b8, #f1ddd6);
+}
+
+html[data-skin='clean-neutral'] .room-status-plate {
+  gap: 9px;
+  padding: 6px 13px 6px 10px;
+  border: 1px solid rgba(164, 141, 120, 0.16);
+  border-radius: 999px;
+  background: rgba(251, 250, 246, 0.92);
+  box-shadow: var(--cn-sh-1);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+}
+
+html[data-skin='clean-neutral'] .room-offline-veil {
+  background: color-mix(in srgb, var(--cn-card) 40%, transparent);
+}
+
+html[data-skin='clean-neutral'] .room-offline-plate {
+  gap: 4px;
+  padding: 16px 26px;
+  border: none;
+  border-radius: 20px;
+  background: rgba(69, 77, 59, 0.94);
+  box-shadow: var(--cn-sh-2);
+  font-size: 12.5px;
+}
+
+html[data-skin='clean-neutral'] .room-offline-plate-k {
+  font-family: var(--font-disp);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='clean-neutral'] .room-scene-card--fullscreen .room-scene {
+  border-radius: 22px;
+  border-color: rgba(164, 141, 120, 0.2);
+  box-shadow: var(--cn-sh-pop);
+}
+
+html[data-skin='clean-neutral'] .room-modal-head {
+  border-radius: 16px 16px 0 0;
+}
+
+/* Арт-мастерская: дроп-зоны */
+html[data-skin='clean-neutral'] .art-drop {
+  border: 1.5px dashed var(--cn-sand);
+  border-radius: 18px;
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .art-drop:hover {
+  border-color: var(--cn-sage-mid);
+  background: var(--cn-sage-mist);
+}
+
+html[data-skin='clean-neutral'] .art-drop-title {
+  font-family: var(--font-disp);
+  font-size: 18px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='clean-neutral'] .art-prompt {
+  border: 1px solid var(--cn-line);
+  border-radius: 16px;
+  background: var(--cn-card-2);
+  font-family: var(--cn-code);
+  letter-spacing: 0;
+}
+
+/* ===== Экран запуска: волна точек — плавная ===== */
+@keyframes cn-cell {
+  0%,
+  100% {
+    opacity: 0.18;
+  }
+  35% {
+    opacity: 0.85;
+  }
+}
+
+html[data-skin='clean-neutral'] .boot-cells i:not(.on),
+html[data-skin='clean-neutral'] .chat-loading-cells i {
+  animation-name: cn-cell;
+  animation-timing-function: ease-in-out;
+}
+
+/* ===== Чат: ответ на сообщение, вложения ===== */
+html[data-skin='clean-neutral'] .message-reply-btn {
+  top: -11px;
+  padding: 2px 10px;
+  border: 1px solid var(--cn-line);
+  border-radius: 999px;
+  background: var(--cn-card);
+  color: var(--cn-ink-2);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  box-shadow: 0 4px 10px -6px rgba(80, 66, 44, 0.4);
+  transition: opacity 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
+
+html[data-skin='clean-neutral'] .message-reply-btn:hover {
+  border-color: rgba(94, 116, 73, 0.45);
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .message-quote {
+  padding: 6px 10px;
+  border-left: 1.5px solid var(--cn-sage-mid);
+  border-radius: 0 10px 10px 0;
+  background: var(--cn-card-2);
+  font-size: 12.5px;
+}
+
+html[data-skin='clean-neutral'] .message--user .message-quote {
+  border-left-color: rgba(248, 244, 234, 0.6);
+  background: rgba(248, 244, 234, 0.1);
+}
+
+html[data-skin='clean-neutral'] .message--user .message-quote-text,
+html[data-skin='clean-neutral'] .message--user .message-quote-author {
+  color: rgba(248, 244, 234, 0.8);
+}
+
+html[data-skin='clean-neutral'] .message-quote-author {
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .chat-reply-bar,
+html[data-skin='clean-neutral'] .chat-attach-bar {
+  margin: 10px 24px 0;
+  padding: 8px 16px;
+  border: 1px solid var(--cn-line-soft);
+  border-radius: 18px;
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .chat-attach-thumb {
+  border: none;
+  border-radius: 10px;
+}
+
+html[data-skin='clean-neutral'] .chat-attach-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+html[data-skin='clean-neutral'] .message-image {
+  border: none;
+  border-radius: 14px;
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .sent-file {
+  border: 1px solid var(--cn-line-soft);
+  border-radius: 14px;
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .message--user .sent-file {
+  border-color: rgba(248, 244, 234, 0.2);
+  background: rgba(248, 244, 234, 0.1);
+}
+
+html[data-skin='clean-neutral'] .image-lightbox-img {
+  border-radius: 22px;
+}
+
+/* ===== Карточка персоны: детали ===== */
+html[data-skin='clean-neutral'] .persona-card-label {
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .persona-chip {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 999px;
+  background: #efe9de;
+  color: var(--cn-ink-2);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='clean-neutral'] .persona-card:hover .persona-chip {
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .persona-chip--empty {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--cn-line);
+}
+
+html[data-skin='clean-neutral'] .persona-telemetry {
+  border: none;
+  border-radius: 16px;
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .persona-tele-cell + .persona-tele-cell {
+  border-left-color: var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .persona-tele-label {
+  font-weight: 500;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .persona-tele-value {
+  font-family: var(--font-disp);
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .persona-card-actions {
+  border-top: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .persona-icon-btn {
+  border-radius: 50%;
+}
+
+html[data-skin='clean-neutral'] .persona-icon-btn:hover {
+  border-color: var(--cn-line);
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .persona-icon-btn--on {
+  border-style: solid;
+  border-color: rgba(94, 116, 73, 0.4);
+  background: var(--cn-sage-mist);
+  color: var(--cn-olive);
+}
+
+html[data-skin='clean-neutral'] .persona-icon-btn--danger:hover {
+  border-color: transparent;
+  background: var(--cn-rose);
+  color: var(--cn-rose-ink);
+}
+
+html[data-skin='clean-neutral'] .color-picker-swatch {
+  border-radius: 50%;
+}
+
+html[data-skin='clean-neutral'] .color-popover {
+  border: 1px solid rgba(164, 141, 120, 0.18);
+  border-radius: 18px;
+  box-shadow: var(--cn-sh-pop);
+}
+
+/* ===== Раскрывающиеся блоки ===== */
+html[data-skin='clean-neutral'] .collapsible-head {
+  padding: 11px 16px;
+  border: 1px solid rgba(164, 141, 120, 0.14);
+  border-radius: 999px;
+  background: var(--cn-card);
+  box-shadow: 0 1px 1px rgba(80, 66, 44, 0.04);
+  transition: border-color 0.3s ease, background 0.3s ease, box-shadow 0.35s var(--cn-ease);
+}
+
+html[data-skin='clean-neutral'] .collapsible-head:hover {
+  border-color: var(--cn-sand);
+  background: #fffefb;
+  box-shadow: 0 8px 18px -12px rgba(80, 66, 44, 0.4);
+}
+
+html[data-skin='clean-neutral'] .collapsible.is-open .collapsible-head {
+  border-color: rgba(94, 116, 73, 0.35);
+}
+
+html[data-skin='clean-neutral'] .collapsible-chevron {
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(94, 116, 73, 0.35);
+  border-radius: 50%;
+  color: var(--cn-sage);
+  font-size: 10px;
+  transition: transform 0.4s var(--cn-ease);
+}
+
+html[data-skin='clean-neutral'] .collapsible-title {
+  font-family: var(--font-disp);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='clean-neutral'] .collapsible-summary {
+  font-size: 12.5px;
+  color: var(--cn-muted);
+}
+
+/* ===== Комната: выбор персоны (телефон), нижний лист, фокус ===== */
+html[data-skin='clean-neutral'] .room-pick {
+  gap: 12px;
+  padding: 8px 14px 8px 8px;
+  border: 1px solid rgba(164, 141, 120, 0.14);
+  border-radius: 999px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-1);
+}
+
+html[data-skin='clean-neutral'] .room-pick-face {
+  border: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--persona) 16%, #f1ebdf);
+  color: var(--cn-olive);
+  font-size: 18px;
+  font-style: italic;
+  font-weight: 500;
+  box-shadow: 0 0 0 2px var(--cn-card), 0 0 0 3px color-mix(in srgb, var(--persona) 50%, var(--cn-sand));
+}
+
+html[data-skin='clean-neutral'] .room-pick-name {
+  font-size: 20px;
+  line-height: 1.1;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-skin='clean-neutral'] .room-pick-status {
+  font-size: 12px;
+  color: var(--cn-muted);
+}
+
+html[data-skin='clean-neutral'] .room-pick-bar .room-fs-btn {
+  border-radius: 50%;
+  width: 52px;
+  height: 52px;
+  align-self: center;
+}
+
+html[data-skin='clean-neutral'] .sheet {
+  border: none;
+  border-radius: 28px 28px 0 0;
+  background: var(--cn-card);
+  box-shadow: 0 -20px 50px -20px rgba(60, 50, 30, 0.35);
+}
+
+html[data-skin='clean-neutral'] .sheet-grip {
+  background: var(--cn-sand);
+}
+
+html[data-skin='clean-neutral'] .sheet-title {
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .sheet-row {
+  border-bottom-color: var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .sheet-row.is-current .room-pick-face {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--cn-card), 0 0 0 3.5px var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .sheet-check {
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .room-focus-label {
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .room-focus-btn:not(.btn) {
+  border-radius: 999px;
+  border-color: var(--cn-line);
+  background: var(--cn-card);
+}
+
+html[data-skin='clean-neutral'] .room-focus-bar {
+  background: transparent;
+}
+
+html[data-skin='clean-neutral'] .room-focus-bar-fill {
+  background: var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .room-focus-bubble {
+  border: 1px solid rgba(164, 141, 120, 0.16);
+  border-left: 1.5px solid var(--cn-sage-mid);
+  border-radius: 4px 16px 16px 16px;
+  background: var(--cn-card);
+  box-shadow: var(--cn-sh-2);
+  font-size: 13px;
+}
+
+@media (max-width: 1000px) {
+  html[data-skin='clean-neutral'] .room-side {
+    border-left: none;
+    border-top: 1px solid var(--cn-line-soft);
+  }
+}
+
+/* ===== Досье: обучение и файлы ===== */
+html[data-skin='clean-neutral'] .learn-quiz-alert {
+  border: none;
+  border-radius: 14px;
+  background: var(--cn-sage-mist);
+  box-shadow: inset 0 0 0 1px rgba(94, 116, 73, 0.25);
+  color: #4c5f3a;
+}
+
+html[data-skin='clean-neutral'] .learn-schedule {
+  border-top: 1px solid var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .learn-empty,
+html[data-skin='clean-neutral'] .files-empty {
+  border: 1.5px dashed var(--cn-line);
+  border-radius: 18px;
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .files-icon {
+  border: none;
+  border-radius: 12px;
+  background: var(--cn-paper-2);
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .files-name {
+  font-weight: 500;
+}
+
+html[data-skin='clean-neutral'] .learn-history-item,
+html[data-skin='clean-neutral'] .files-item {
+  border-bottom-color: var(--cn-line-soft);
+}
+
+/* ===== Сервисы ===== */
+html[data-skin='clean-neutral'] .svc-group-title {
+  font-family: var(--font-disp);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .svc-toggle-label {
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='clean-neutral'] .svc-sub {
+  border-left: 1.5px solid var(--cn-sage-mid);
+}
+
+html[data-skin='clean-neutral'] .svc-flash {
+  border: 1px solid rgba(94, 116, 73, 0.35);
+  border-radius: 16px;
+  background: var(--cn-sage-mist);
+}
+
+html[data-skin='clean-neutral'] .svc-stat-num {
+  font-weight: 600;
+}
+
+html[data-skin='clean-neutral'] .svc-stat-label {
+  letter-spacing: 0.16em;
+  color: var(--cn-rock-ink);
+}
+
+html[data-skin='clean-neutral'] .svc-code {
+  border-radius: 10px;
+  background: var(--cn-card-2);
+  border-color: var(--cn-line-soft);
+  font-family: var(--cn-code);
+  letter-spacing: 0;
+}
+
+html[data-skin='clean-neutral'] .svc-list li,
+html[data-skin='clean-neutral'] .svc-feed-item {
+  border-bottom-color: var(--cn-line-soft);
+}
+
+html[data-skin='clean-neutral'] .svc-feed-head {
+  border-radius: 12px;
+}
+
+html[data-skin='clean-neutral'] .btn--chip.svc-chip-on {
+  background: var(--cn-sage-soft);
+  color: var(--cn-olive-deep);
+  box-shadow: inset 0 0 0 1px rgba(94, 116, 73, 0.35);
+}
+
+/* ===== Голосовой режим ===== */
+html[data-skin='clean-neutral'] .voice-chat {
+  background: transparent;
+}
+
+html[data-skin='clean-neutral'] .voice-chat--fullscreen {
+  background: var(--cn-paper);
+}
+
+html[data-skin='clean-neutral'] .voice-chat-topbar,
+html[data-skin='clean-neutral'] .voice-chat-controls {
+  border-color: var(--cn-line-soft);
+  background: rgba(251, 250, 246, 0.6);
+}
+
+html[data-skin='clean-neutral'] .voice-chat-title {
+  font-size: 24px;
+  line-height: 1.1;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--cn-ink);
+}
+
+html[data-skin='clean-neutral'] .voice-chat-status {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--cn-sage);
+}
+
+html[data-skin='clean-neutral'] .voice-avatar-img {
+  border-color: var(--cn-card);
+  box-shadow: 0 0 0 1px rgba(164, 141, 120, 0.4), var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .voice-avatar--listening::after,
+html[data-skin='clean-neutral'] .voice-avatar--speaking::after {
+  border-color: var(--cn-sage-mid);
+  animation-duration: 2.4s;
+}
+
+html[data-skin='clean-neutral'] .voice-chat-line {
+  font-family: var(--font-disp);
+  font-size: 20px;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+html[data-skin='clean-neutral'] .voice-input-toggle {
+  padding: 3px;
+  border: none;
+  border-radius: 999px;
+  background: var(--cn-paper-2);
+  box-shadow: var(--cn-sh-in);
+}
+
+html[data-skin='clean-neutral'] .voice-input-toggle button {
+  border-radius: 999px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+}
+
+html[data-skin='clean-neutral'] .voice-input-toggle button.active {
+  background: var(--cn-card);
+  color: var(--cn-ink);
+  box-shadow: 0 1px 2px rgba(80, 66, 44, 0.12), 0 4px 10px -4px rgba(80, 66, 44, 0.2);
+}
+
+html[data-skin='clean-neutral'] .voice-mic-btn {
+  border: none;
+  background: linear-gradient(180deg, var(--cn-olive-2), var(--cn-olive));
+  color: #fbf8f0;
+  box-shadow: 0 0 0 6px rgba(122, 156, 87, 0.14), var(--cn-sh-2);
+}
+
+html[data-skin='clean-neutral'] .voice-mic-btn--active {
+  background: linear-gradient(180deg, #6f8a59, var(--cn-sage));
+  animation-duration: 2.6s;
+}
+
+/* ===== Окно браузера агента, сканер, камера ===== */
+html[data-skin='clean-neutral'] .chat-browser {
+  border-left-color: var(--cn-line-soft);
+  background: var(--cn-card-2);
+}
+
+html[data-skin='clean-neutral'] .camera-capture .btn--primary {
+  border-color: transparent;
+}
+
+/* Календарь на узком экране: записи — цветные полоски, как в основе */
+@media (max-width: 720px) {
+  html[data-skin='clean-neutral'] .cal-chip {
+    height: 6px;
+    padding: 0;
+    border-left-width: 0;
+    border-radius: 99px;
+    background: var(--cal-color, var(--cn-sage-mid));
+    font-size: 0;
+  }
+
+  html[data-skin='clean-neutral'] .cal-day {
+    padding: 5px;
+    border-radius: 12px;
+  }
+
+  html[data-skin='clean-neutral'] .cal-grid,
+  html[data-skin='clean-neutral'] .cal-weekdays {
+    gap: 4px;
+  }
+
+  html[data-skin='clean-neutral'] .cal-weekdays span {
+    letter-spacing: 0.08em;
+  }
+}
+
+@media (max-width: 560px) {
+  html[data-skin='clean-neutral'] :where(.notes) {
+    padding: 14px 14px 12px;
+  }
+
+  html[data-skin='clean-neutral'] :where(.cal) {
+    padding: 14px 12px 14px;
+  }
+}
+
+/* ===== Телефон ===== */
+@media (max-width: 760px) {
+  html[data-skin='clean-neutral'] .sidebar,
+  html[data-skin='clean-neutral'] .sidebar--collapsed {
+    margin: 0;
+    padding: calc(22px + var(--sa-top)) 14px calc(16px + var(--sa-bottom));
+    border-radius: 0 28px 28px 0;
+  }
+
+  html[data-skin='clean-neutral'] .sidebar--open {
+    box-shadow: 0 30px 60px -10px rgba(40, 44, 32, 0.45);
+  }
+
+  html[data-skin='clean-neutral'] .topbar {
+    padding: calc(10px + var(--sa-top)) 14px 10px;
+  }
+
+  html[data-skin='clean-neutral'] .topbar::after {
+    left: 16px;
+    right: 16px;
+  }
+
+  html[data-skin='clean-neutral'] .topbar-title {
+    font-size: 23px;
+  }
+
+  html[data-skin='clean-neutral'] .theme-toggle span {
+    padding: 5px 9px;
+  }
+
+  html[data-skin='clean-neutral'] .section {
+    padding: 20px 16px 28px;
+  }
+
+  html[data-skin='clean-neutral'] .section-title {
+    font-size: 30px;
+  }
+
+  html[data-skin='clean-neutral'] .home-hero {
+    padding: 30px 22px 26px;
+    border-radius: 26px;
+  }
+
+  html[data-skin='clean-neutral'] .home-title {
+    font-size: 40px;
+  }
+
+  html[data-skin='clean-neutral'] .home-telemetry {
+    gap: 12px;
+  }
+
+  html[data-skin='clean-neutral'] :where(.home-tele-cell) {
+    padding: 16px 16px 14px;
+  }
+
+  html[data-skin='clean-neutral'] .home-tele-cell {
+    border-radius: 18px;
+  }
+
+  html[data-skin='clean-neutral'] .home-tele-value {
+    font-size: 32px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-overview {
+    padding: 22px 16px 28px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-overview-title {
+    font-size: 38px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-header {
+    padding: 10px 12px 10px 4px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-header-name {
+    font-size: 21px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-messages {
+    padding: 18px 14px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-input-bar {
+    gap: 6px;
+    margin: 8px 10px calc(10px + var(--sa-bottom) * 0);
+    padding: 5px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-input-bar .btn--icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-input-bar .btn--primary {
+    height: 38px;
+    padding: 0 14px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-input-bar .chat-input,
+  html[data-skin='clean-neutral'] .chat-input-bar .chat-input:focus {
+    font-size: 16px;
+  }
+
+  html[data-skin='clean-neutral'] .dossier-panel {
+    margin: 0;
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+  }
+
+  html[data-skin='clean-neutral'] .dossier-head {
+    padding: 8px 12px 8px 4px;
+  }
+
+  html[data-skin='clean-neutral'] .dossier-name {
+    font-size: 22px;
+  }
+
+  html[data-skin='clean-neutral'] .dossier-tabs {
+    flex-wrap: nowrap;
+    padding: 10px 10px;
+    border-bottom: none;
+    box-shadow: inset 0 -1px 0 var(--cn-line-soft);
+  }
+
+  html[data-skin='clean-neutral'] .dossier-tabs .tab {
+    padding: 8px 13px;
+  }
+
+  html[data-skin='clean-neutral'] .dossier-body {
+    padding: 14px 12px;
+  }
+
+  html[data-skin='clean-neutral'] .pcreate-overlay .pcreate-panel {
+    border-radius: 0;
+    border: none;
+  }
+
+  html[data-skin='clean-neutral'] .persona-grid--list .persona-card {
+    border-radius: 0;
+  }
+
+  html[data-skin='clean-neutral'] .persona-grid--list {
+    overflow: hidden;
+    border-radius: 22px;
+    box-shadow: var(--cn-sh-1);
+  }
+
+  html[data-skin='clean-neutral'] .persona-grid--list .persona-card {
+    box-shadow: none;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    border-bottom: 1px solid var(--cn-line-soft);
+  }
+
+  html[data-skin='clean-neutral'] .persona-grid--list .persona-card:hover {
+    transform: none;
+    box-shadow: none;
+  }
+
+  html[data-skin='clean-neutral'] .persona-grid--list .persona-avatar-btn {
+    width: 42px;
+    height: 42px;
+    font-size: 20px;
+  }
+
+  html[data-skin='clean-neutral'] .persona-grid--list .persona-card-name {
+    font-size: 21px;
+  }
+
+  html[data-skin='clean-neutral'] body::after {
+    background: var(--cn-paper);
+  }
+
+  html[data-skin='clean-neutral'] .btn {
+    letter-spacing: 0.1em;
+  }
+
+  html[data-skin='clean-neutral'] .persona-grid--list .persona-status {
+    padding: 0;
+    background: transparent;
+  }
+
+  html[data-skin='clean-neutral'] .room-telemetry .home-tele-value,
+  html[data-skin='clean-neutral'] .room-tele-text {
+    font-size: 19px;
+  }
+
+  html[data-skin='clean-neutral'] .chat-reply-bar,
+  html[data-skin='clean-neutral'] .chat-attach-bar {
+    margin: 8px 10px 0;
+  }
+
+  html[data-skin='clean-neutral'] .home-ticker {
+    font-size: 16px;
+  }
+
+  /* поля и размеры, которые основа ужимает на телефоне */
+  html[data-skin='clean-neutral'] .boot-panel {
+    padding: 30px 22px 24px;
+    border-radius: 26px;
+  }
+
+  html[data-skin='clean-neutral'] .persona-grid--list .persona-card {
+    padding: 14px 16px;
+  }
+
+  html[data-skin='clean-neutral'] .skin-themes-grid {
+    gap: 10px;
+  }
+
+  html[data-skin='clean-neutral'] .skin-theme-card {
+    padding: 8px 8px 10px;
+    border-radius: 18px;
+  }
+
+  html[data-skin='clean-neutral'] .start-guide-steps {
+    padding: 18px 16px 4px;
+    border-radius: 22px;
+  }
+
+  html[data-skin='clean-neutral'] .start-guide-mark {
+    width: 28px;
+    height: 28px;
+    font-size: 14px;
+  }
+
+  html[data-skin='clean-neutral'] .start-guide-tab.is-active {
+    box-shadow: 0 1px 2px rgba(80, 66, 44, 0.1), 0 8px 18px -8px rgba(80, 66, 44, 0.3);
+  }
+
+  html[data-skin='clean-neutral'] .start-control-node {
+    margin: 0;
+  }
+
+  html[data-skin='clean-neutral'] .start-control-say {
+    border-left: none;
+    border-top: 1px solid var(--cn-line);
+  }
+
+  html[data-skin='clean-neutral'] .start-control-intro,
+  html[data-skin='clean-neutral'] .start-control-pipe,
+  html[data-skin='clean-neutral'] .start-control-card,
+  html[data-skin='clean-neutral'] .start-control-ex {
+    border-radius: 22px;
+  }
+}

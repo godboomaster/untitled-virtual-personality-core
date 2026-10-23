@@ -8,6 +8,8 @@ import BootGate from './components/BootGate'
 import { isNativeApp } from './api'
 import { handleBack } from './backStack'
 import { initWakeOffline } from './wakeWord'
+import SkinHost from './components/SkinHost'
+import { initSkinTheme } from './skinTheme'
 
 // Приложение на Android: «Назад» закрывает открытое (backStack), а с
 // пустым стеком сворачивает приложение — не выходит из него, чтобы
@@ -23,12 +25,16 @@ if (isNativeApp()) {
 // Голосом без ядра (WakeWordService) — ответ приложения, как в чате без связи
 initWakeOffline()
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <I18nProvider>
-      <BootGate>
-        <App />
-      </BootGate>
-    </I18nProvider>
-  </StrictMode>,
-)
+// Тема оформления — до первого кадра: экран запуска сразу в ней
+void initSkinTheme().then(() => {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <I18nProvider>
+        <SkinHost />
+        <BootGate>
+          <App />
+        </BootGate>
+      </I18nProvider>
+    </StrictMode>,
+  )
+})

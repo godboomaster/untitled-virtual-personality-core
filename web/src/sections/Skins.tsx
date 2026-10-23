@@ -1,8 +1,10 @@
 import { useI18n } from '../i18n';
 import SkinPanel from '../components/SkinPanel';
+import SkinThemeGallery from '../components/SkinThemeGallery';
 
-// Раздел «Скины»: библиотека внешнего вида персон, вынесена из «Персон»
-// в свой раздел (SkinPanel несёт собственный заголовок/статус скина).
+// Раздел «Скины»: темы оформления всего приложения или одной персоны
+// (web/skins) и библиотека HTML-скинов персон (SkinPanel несёт собственный
+// заголовок/статус скина).
 export default function Skins() {
   const { t } = useI18n();
 
@@ -14,6 +16,8 @@ export default function Skins() {
           <p className="section-subtitle">{t('skins.subtitle')}</p>
         </div>
       </div>
+
+      <SkinThemeGallery />
 
       <SkinPanel />
     </div>

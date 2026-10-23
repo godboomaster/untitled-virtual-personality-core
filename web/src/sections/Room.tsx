@@ -11,6 +11,7 @@ import { usePersonaAvatars } from '../avatarStore';
 import { usePersonaSkin } from '../skins/skinStore';
 import { buildRoomPayload } from '../skins/payloads';
 import { useShellTheme } from '../skins/shellTheme';
+import { usePersonaSkinScope } from '../skinTheme';
 import AvatarBuilder from '../room/AvatarBuilder';
 import InventoryCard from '../room/InventoryCard';
 import RoomFeed from '../room/RoomFeed';
@@ -177,6 +178,8 @@ export default function Room() {
       ?? (broken.dossier ? null : skins.dossier)
       ?? null,
   );
+  // Своя тема оформления персоны (web/skins) — пока открыта её комната
+  usePersonaSkinScope(persona.id);
   const avatars = usePersonaAvatars();
   // Управление инвентарём при скине: карточка раскрывается кнопкой в шапке
   const [skinInventoryOpen, setSkinInventoryOpen] = useState(false);

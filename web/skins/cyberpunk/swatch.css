@@ -1,0 +1,118 @@
+@import './fonts.css';
+
+/* Киберпанк: миниатюра в галерее — дека нетраннера в миниатюре:
+   срезанные углы, розовый и бирюзовый полюса, штрихкод, сканлайны */
+
+.skin-swatch[data-swatch='cyberpunk'] {
+  --sw-bg: #0a0712;
+  --sw-panel: #120c1f;
+  --sw-side: #0d0918;
+  --sw-text: #f1eafb;
+  --sw-dim: #ac9acc;
+  --sw-in: rgba(3, 61, 83, 0.7);
+  --sw-out: rgba(253, 2, 110, 0.28);
+  --sw-line: #3a2861;
+  --sw-accent: #ff2e88;
+  --sw-cyan: #31d6e0;
+  border: none;
+  border-radius: 0;
+  background:
+    radial-gradient(rgba(172, 154, 204, 0.12) 0.6px, transparent 0.9px) 0 0 / 8px 8px,
+    radial-gradient(120px 70px at 100% 0%, rgba(49, 214, 224, 0.16), transparent 70%),
+    radial-gradient(120px 80px at 0% 100%, rgba(255, 46, 136, 0.2), transparent 70%),
+    var(--sw-bg);
+  box-shadow: inset 0 0 0 1px rgba(255, 46, 136, 0.65);
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+}
+
+/* Сканлайны поверх миниатюры */
+.skin-swatch[data-swatch='cyberpunk']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: repeating-linear-gradient(180deg, transparent 0 2px, rgba(0, 0, 0, 0.22) 2px 3px);
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-bar {
+  justify-content: flex-start;
+  padding: 0 8px 0 12px;
+  background:
+    repeating-linear-gradient(90deg, #ff2e88 0 1px, transparent 1px 3px, #ff2e88 3px 5px, transparent 5px 6px) right 8px center / 34px 6px no-repeat,
+    #0d0918;
+  border-bottom: 1px solid #ff2e88;
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-bar i {
+  width: 9px;
+  height: 4px;
+  background: var(--sw-dim);
+  opacity: 0.6;
+  clip-path: polygon(30% 0, 100% 0, 70% 100%, 0 100%);
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-bar i:first-child {
+  background: var(--sw-accent);
+  opacity: 1;
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-bar i:nth-child(2) {
+  background: var(--sw-cyan);
+  opacity: 1;
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-side {
+  background: linear-gradient(0deg, rgba(255, 46, 136, 0.1), transparent 50%), var(--sw-side);
+  border-right: 1px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-side i {
+  height: 6px;
+  background: var(--sw-dim);
+  opacity: 0.35;
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-side i:first-child {
+  height: 8px;
+  background: linear-gradient(90deg, var(--sw-cyan) 0 2px, var(--sw-accent) 2px);
+  opacity: 1;
+  clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px);
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-title {
+  font-family: 'CP Display', sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--sw-text);
+  text-shadow: -1.5px 0 rgba(255, 46, 136, 0.85), 1.5px 0 rgba(49, 214, 224, 0.8);
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-msg {
+  height: 12px;
+  border: none;
+  background: var(--sw-in);
+  box-shadow: inset 0 0 0 1px rgba(49, 214, 224, 0.6);
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px);
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-msg--out {
+  background: var(--sw-out);
+  box-shadow: inset 0 0 0 1px rgba(255, 46, 136, 0.75);
+  clip-path: polygon(0 0, calc(100% - 4px) 0, 100% 4px, 100% 100%, 4px 100%, 0 calc(100% - 4px));
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-input {
+  border: none;
+  background: #0b0716;
+  box-shadow: inset 0 0 0 1px #5b3f92;
+  clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 0 100%);
+}
+
+.skin-swatch[data-swatch='cyberpunk'] .skin-swatch-send {
+  width: 12px;
+  height: 7px;
+  background: var(--sw-accent);
+  clip-path: polygon(30% 0, 100% 0, 70% 100%, 0 100%);
+}

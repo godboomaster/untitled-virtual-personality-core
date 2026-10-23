@@ -618,6 +618,109 @@ export const api = {
       { method: 'DELETE' },
     ),
 
+  // ── Сервисы (app/integrations): почта, Диск, GitHub, Telegram, ленты, вебхук ──
+  getServices: () => request<ServicesStatus>('/api/integrations'),
+
+  putServicesSettings: (patch: { notify?: Partial<ServicesNotify>; services?: Record<string, Record<string, unknown>> }) =>
+    request<{ ok: boolean; settings: ServicesSettings }>('/api/integrations/settings', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  addServiceRule: (rule: { action: ServiceRule['action']; source: string; match: string }) =>
+    request<{ ok: boolean; rule: ServiceRule }>('/api/integrations/rules', {
+      method: 'POST',
+      body: JSON.stringify(rule),
+    }),
+
+  deleteServiceRule: (id: string) =>
+    request<{ ok: boolean }>(`/api/integrations/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  clearServiceExamples: () => request<{ ok: boolean }>('/api/integrations/examples/clear', { method: 'POST' }),
+
+  setServicesDnd: (minutes: number) =>
+    request<{ ok: boolean; dnd_until: number }>('/api/integrations/dnd', {
+      method: 'POST',
+      body: JSON.stringify({ minutes }),
+    }),
+
+  getServicesFeed: (limit = 80, source?: string) =>
+    request<{ items: ServiceFeedItem[] }>(
+      `/api/integrations/feed?limit=${limit}${source ? `&source=${encodeURIComponent(source)}` : ''}`,
+    ),
+
+  rateServiceItem: (id: string, level: ServiceLevel) =>
+    request<{ ok: boolean; rule: ServiceRule | null }>(
+      `/api/integrations/feed/${encodeURIComponent(id)}/feedback`,
+      { method: 'POST', body: JSON.stringify({ level }) },
+    ),
+
+  clearServicesFeed: () => request<{ ok: boolean }>('/api/integrations/feed/clear', { method: 'POST' }),
+
+  testServicesNotify: () =>
+    request<{ ok: boolean; detail?: string }>('/api/integrations/test-notify', { method: 'POST' }),
+
+  servicesDigestNow: () =>
+    request<{ ok: boolean; sent: number }>('/api/integrations/digest-now', { method: 'POST' }),
+
+  checkService: (service: string) =>
+    request<ServiceCheck>(`/api/integrations/${encodeURIComponent(service)}/check`, { method: 'POST' }),
+
+  pollService: (service: string) =>
+    request<{ ok: boolean }>(`/api/integrations/${encodeURIComponent(service)}/poll`, { method: 'POST' }),
+
+  disconnectService: (account: string) =>
+    request<{ ok: boolean }>(`/api/integrations/${encodeURIComponent(account)}`, { method: 'DELETE' }),
+
+  setGoogleClient: (body: { client_id?: string; client_secret?: string; json_text?: string }) =>
+    request<{ ok: boolean }>('/api/integrations/google/client', { method: 'POST', body: JSON.stringify(body) }),
+
+  startGoogleLogin: () => request<{ url: string }>('/api/integrations/google/login', { method: 'POST' }),
+
+  googleLoginResult: () =>
+    request<{ result: { ok: boolean; error?: string; email?: string } | null; connected: boolean; email: string }>(
+      '/api/integrations/google/login',
+    ),
+
+  finishGoogleLogin: (url: string) =>
+    request<{ ok: boolean; error?: string; email?: string }>('/api/integrations/google/finish', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
+
+  setGithubToken: (token: string) =>
+    request<{ ok: boolean; login?: string; error?: string }>('/api/integrations/github/token', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+
+  telegramLogin: (body: { api_id: number; api_hash: string; phone: string }) =>
+    request<ServiceLoginStep>('/api/integrations/telegram/login', { method: 'POST', body: JSON.stringify(body) }),
+
+  telegramCode: (code: string) =>
+    request<ServiceLoginStep>('/api/integrations/telegram/code', { method: 'POST', body: JSON.stringify({ code }) }),
+
+  telegramPassword: (password: string) =>
+    request<ServiceLoginStep>('/api/integrations/telegram/password', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  connectImap: (body: { user: string; password: string; host?: string; port?: number; folder?: string }) =>
+    request<{ ok: boolean; host?: string; error?: string }>('/api/integrations/imap', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  imapPreset: (user: string) =>
+    request<{ host: string; port: number }>(`/api/integrations/imap/preset?user=${encodeURIComponent(user)}`),
+
+  checkRssFeed: (url: string) =>
+    request<ServiceCheck>('/api/integrations/rss/check', { method: 'POST', body: JSON.stringify({ url }) }),
+
+  regenerateWebhook: () =>
+    request<{ ok: boolean; path: string }>('/api/integrations/webhook/regenerate', { method: 'POST' }),
+
   getReminders: (persona: string) =>
     request<{ items: ReminderEntry[] }>(
       `/api/personas/${encodeURIComponent(persona)}/reminders?chat_id=${WEB_CHAT_ID}`,
@@ -1624,6 +1727,128 @@ export interface HomePersonaOverview {
   // Заметки: у старых серверов полей нет
   notes_enabled?: boolean;
   notes_count?: number;
+}
+
+// ── Сервисы ──
+export type ServiceLevel = 'urgent' | 'notify' | 'digest' | 'ignore';
+export type ServiceSource = 'gmail' | 'drive' | 'github' | 'telegram' | 'imap' | 'rss' | 'webhook';
+
+export interface ServiceRule {
+  id: string;
+  action: 'urgent' | 'always' | 'digest' | 'never';
+  source: ServiceSource | 'any';
+  match: string;
+  created_at: number;
+}
+
+export interface ServicesNotify {
+  persona: string | null;
+  channels: { web: boolean; telegram: boolean };
+  style: 'plain' | 'persona';
+  engine: 'local' | 'persona' | 'rules';
+  interests: string;
+  quiet: { enabled: boolean; from: string; to: string; urgent: boolean };
+  digest_times: string[];
+  max_per_hour: number;
+  language: 'auto' | 'ru' | 'en';
+}
+
+export interface ServicesSettings {
+  notify: ServicesNotify;
+  services: {
+    gmail: { enabled: boolean; interval: number };
+    drive: { enabled: boolean; interval: number; shared: boolean; edits: boolean };
+    github: { enabled: boolean; interval: number };
+    telegram: {
+      enabled: boolean;
+      private: boolean;
+      mentions: boolean;
+      groups: boolean;
+      channels: boolean;
+      muted: 'digest' | 'ignore' | 'normal';
+      skip_read: boolean;
+    };
+    imap: { enabled: boolean; interval: number };
+    rss: { enabled: boolean; interval: number; feeds: { url: string; title: string }[] };
+    webhook: { enabled: boolean };
+  };
+  rules: ServiceRule[];
+  examples: { source: string; sender: string; title: string; level: ServiceLevel; ts: number }[];
+  dnd_until: number;
+}
+
+export interface ServiceState {
+  last_ok: number | null;
+  last_error: string;
+  auth_error: string;
+}
+
+export interface ServicesStatus {
+  hub: { started: boolean; active: boolean };
+  settings: ServicesSettings;
+  personas: { id: string; name: string; muted: boolean }[];
+  persona: string | null;
+  telegram_delivery: { token: boolean; owner: boolean };
+  accounts: {
+    google: {
+      client: boolean;
+      client_id: string;
+      connected: boolean;
+      email: string;
+      gmail: boolean;
+      drive: boolean;
+      auth_error: string;
+    };
+    github: { connected: boolean; login: string; token_hint: string };
+    telegram: {
+      available: boolean;
+      connected: boolean;
+      user: { id: number; name: string; username: string } | null;
+      api_id: boolean;
+      login_step: 'code' | null;
+      running: boolean | null;
+    };
+    imap: { connected: boolean; user: string; host: string; port: number; folder: string };
+    webhook: { token: boolean; path: string };
+  };
+  status: Record<'gmail' | 'drive' | 'github' | 'telegram' | 'imap' | 'rss', ServiceState>;
+  counts: { queued: number; digest: number; today: number; notified_today: number };
+  now: number;
+}
+
+export interface ServiceFeedItem {
+  id: string;
+  source: ServiceSource;
+  kind: string;
+  title: string;
+  sender: string;
+  text: string;
+  url: string;
+  ts: number;
+  received: number;
+  group: string;
+  level: ServiceLevel | null;
+  summary: string;
+  reason: string;
+  by: 'rule' | 'signals' | 'model' | '';
+  status: 'new' | 'queued' | 'digest' | 'notified' | 'digested' | 'ignored' | 'skipped';
+  notified_at: number | null;
+  feedback: ServiceLevel | null;
+}
+
+export interface ServiceCheck {
+  ok: boolean;
+  error?: string;
+  account?: string;
+  auth?: boolean;
+  feeds?: { url: string; ok: boolean; title?: string; items?: number; error?: string }[];
+}
+
+export interface ServiceLoginStep {
+  ok: boolean;
+  next?: 'code' | 'password';
+  error?: string;
+  user?: { id: number; name: string; username: string };
 }
 
 // Заметка пользователя («запиши в заметки …» в чате или блок на главной)

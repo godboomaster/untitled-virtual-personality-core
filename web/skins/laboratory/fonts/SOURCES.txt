@@ -1,0 +1,4 @@
+Oswald — https://fonts.google.com/specimen/Oswald (SIL OFL 1.1 / Apache 2.0, см. страницу шрифта)
+Caveat — https://fonts.google.com/specimen/Caveat (SIL OFL 1.1 / Apache 2.0, см. страницу шрифта)
+Golos Text — https://fonts.google.com/specimen/Golos+Text (SIL OFL 1.1 / Apache 2.0, см. страницу шрифта)
+PT Mono — https://fonts.google.com/specimen/PT+Mono (SIL OFL 1.1 / Apache 2.0, см. страницу шрифта)

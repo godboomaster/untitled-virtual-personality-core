@@ -1,0 +1,3310 @@
+/* =====================================================================
+   Гача — чистое меню аниме-игры, собранное из «наклеек».
+   Молочный фон в мелкую точку, белые карточки с тёмно-синим контуром 2 px,
+   пилюли-кнопки с жёстким «ободком» снизу (без размытия), бирки-ярлыки,
+   крупные контурные номера «01», рамки редкости у карточек персон и
+   искры-наклейки (clip-path) у логотипа и заголовков.
+   Цвет — пятном и с ролью:
+     бирюза  #5cc6c9 — действие и выбранное (кнопки, активный пункт, фокус);
+     сакура  #f4a7c0 — персона (аватары, полоса редкости);
+     небо    #8fd0ef — «ты» (свои реплики, бейдж пользователя);
+     лимон   #ffe58a — внимание и редкость (непрочитанное, звезда, «сегодня»);
+     чернила #2b3445 — текст и все контуры.
+   Никаких размытых теней, свечений и плавных градиентов: градиенты — только
+   с жёсткими стопами, как узор (точки, полосы, разметка).
+   ===================================================================== */
+
+/* ===== Токены ===== */
+html[data-skin='gacha'] {
+  --bg: #f2f5f5;
+  --bg-panel: #ffffff;
+  --bg-panel-2: #f2f5f5;
+  --text: #2b3445;
+  --text-dim: #4b5769;
+  --text-muted: #667183;
+  --border: #2b3445;
+  --border-soft: #cdd8db;
+  --accent: #1b7c81;
+  --accent-dim: #74bfc1;
+  --accent-soft: #dcf3f3;
+  --bg-hover: #e8f7f7;
+  --border-accent: #5cc6c9;
+  --accent-dark: #2b3445;
+  --danger: #c63551;
+  --success: #1c7a55;
+  --warning: #9a6410;
+  --term-bg: #2b3445;
+  --term-line: rgba(255, 255, 255, 0.16);
+  --term-dim: #adb9c8;
+  --term-bright: #ffffff;
+  --topbar-bg: #ffffff;
+  --overlay-bg: rgba(43, 52, 69, 0.58);
+  --radius-sm: 12px;
+  --radius: 20px;
+  --shadow-card: none;
+  --shadow-card-hover: none;
+  --font: 'Gacha Text', 'Nunito', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  --font-disp: 'Gacha Display', 'Gacha Text', sans-serif;
+  --font-mono: 'Gacha Text', 'Nunito', system-ui, sans-serif;
+
+  /* Свои: палитра */
+  --gc-ink: #2b3445;
+  --gc-paper: #ffffff;
+  --gc-milk: #f2f5f5;
+  --gc-teal: #5cc6c9;
+  --gc-teal-hi: #79d3d5;
+  --gc-teal-pale: #dcf3f3;
+  --gc-teal-ink: #1b7c81;
+  --gc-sakura: #f4a7c0;
+  --gc-sakura-pale: #fde7ef;
+  --gc-sky: #8fd0ef;
+  --gc-sky-pale: #e2f3fc;
+  --gc-lemon: #ffe58a;
+  --gc-lemon-pale: #fff6cf;
+  --gc-code: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* Свои: линии, «ободок», наклейка */
+  --gc-line: 2px solid var(--gc-ink);
+  --gc-lip: 0 3px 0 0 var(--gc-ink);
+  --gc-lip-sm: 0 1px 0 0 var(--gc-ink);
+  --gc-sticker: 0 0 0 3px var(--gc-paper), 0 0 0 5px var(--gc-ink);
+  --gc-ring: 0 0 0 3px var(--gc-teal-pale), 0 0 0 5px var(--gc-teal-ink);
+
+  /* Свои: узоры (жёсткие стопы) */
+  --gc-dots: radial-gradient(circle, rgba(43, 52, 69, 0.11) 1.3px, transparent 1.8px);
+  --gc-dots-white: radial-gradient(circle, rgba(255, 255, 255, 0.55) 1.6px, transparent 2.1px);
+  --gc-dash: repeating-linear-gradient(90deg, var(--gc-ink) 0 14px, transparent 14px 22px);
+
+  /* Свои: фигуры */
+  --gc-spark: polygon(50% 0, 63% 37%, 100% 50%, 63% 63%, 50% 100%, 37% 63%, 0 50%, 37% 37%);
+  --gc-star: polygon(50% 0%, 62% 34.5%, 98% 35%, 69% 57%, 79.5% 92%, 50% 71%, 20.5% 92%, 31% 57%, 2% 35%, 38% 34.5%);
+  --gc-tag: polygon(10px 0, 100% 0, 100% 100%, 10px 100%, 0 50%);
+  color-scheme: light;
+}
+
+/* ===== Фон страницы, выделение, фокус ===== */
+html[data-skin='gacha'] body {
+  background-color: var(--bg);
+  background-image: var(--gc-dots);
+  background-size: 22px 22px;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14.5px;
+  letter-spacing: 0;
+}
+
+html[data-skin='gacha'] ::selection {
+  background: var(--gc-lemon);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] :focus-visible {
+  outline: 2px solid var(--gc-teal-ink);
+  outline-offset: 3px;
+}
+
+/* HUD-декор основы — уголки, глитч-копии — не нужен */
+html[data-skin='gacha'] .corner,
+html[data-skin='gacha'] .home-title.glitch::before,
+html[data-skin='gacha'] .home-title.glitch::after {
+  display: none;
+}
+
+/* Разделитель HUD под баннером — лишний: у заголовков блоков своя разметка */
+html[data-skin='gacha'] .chrome-bar {
+  display: none;
+}
+
+/* ===== Скроллбары: тонкая бирюзовая пилюля ===== */
+html[data-skin='gacha'] * {
+  scrollbar-color: var(--accent-dim) transparent;
+}
+
+html[data-skin='gacha'] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+html[data-skin='gacha'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html[data-skin='gacha'] ::-webkit-scrollbar-thumb {
+  background: var(--accent-dim);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+html[data-skin='gacha'] ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--gc-teal-ink);
+}
+
+/* ===== Анимации: медленно и мягко ===== */
+@keyframes gc-twinkle {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(0.86) rotate(8deg); }
+}
+
+@keyframes gc-hop {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+}
+
+@keyframes gc-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ===== Каркас: сайдбар ===== */
+html[data-skin='gacha'] .sidebar {
+  background: var(--gc-paper);
+  border-right: var(--gc-line);
+}
+
+html[data-skin='gacha'] .sidebar-logo {
+  gap: 12px;
+  padding: 6px 8px 18px;
+  margin-bottom: 14px;
+  border-bottom: 0;
+  background: var(--gc-dash) 0 100% / 100% 2px no-repeat;
+}
+
+/* Логотип: искра-наклейка — бирюза с белой каймой и тёмным контуром */
+html[data-skin='gacha'] .sidebar-logo-icon {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  font-size: 0;
+  color: transparent;
+  animation: none;
+}
+
+html[data-skin='gacha'] .sidebar-logo-icon::before,
+html[data-skin='gacha'] .sidebar-logo-icon::after {
+  content: '';
+  position: absolute;
+  clip-path: var(--gc-spark);
+  pointer-events: none;
+}
+
+html[data-skin='gacha'] .sidebar-logo-icon::before {
+  inset: 0;
+  background: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .sidebar-logo-icon::after {
+  inset: 4px;
+  background: var(--gc-teal);
+  animation: gc-twinkle 6s ease-in-out infinite;
+}
+
+html[data-skin='gacha'] .sidebar-logo-title {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .sidebar-logo-sub {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--gc-teal-ink);
+}
+
+/* Пункты меню */
+html[data-skin='gacha'] .nav-item {
+  border-radius: 999px;
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .nav-item:hover {
+  background: var(--gc-teal-pale);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .nav-item--active,
+html[data-skin='gacha'] .nav-item--active:hover {
+  background: transparent;
+  color: var(--gc-ink);
+  font-weight: 800;
+}
+
+html[data-skin='gacha'] .nav-item-icon {
+  opacity: 1;
+}
+
+html[data-skin='gacha'] .nav-item--active .nav-item-icon {
+  color: var(--gc-ink);
+}
+
+/* Выбранный пункт — бирюзовая пилюля-наклейка с ободком снизу */
+html[data-skin='gacha'] .nav-indicator {
+  height: 35px;
+  border-radius: 999px;
+  background: var(--gc-teal);
+  box-shadow: inset 0 0 0 2px var(--gc-ink), var(--gc-lip);
+}
+
+html[data-skin='gacha'] .sidebar--collapsed .nav-item:hover::after {
+  border: 0;
+  border-radius: 999px;
+  background: var(--gc-ink);
+  color: #ffffff;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0;
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .sidebar-footer {
+  border-top: 0;
+  padding-top: 14px;
+  background: var(--gc-dash) 0 0 / 100% 2px no-repeat;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .sidebar-footer-text {
+  font-family: var(--font);
+  letter-spacing: 0.02em;
+}
+
+html[data-skin='gacha'] .sidebar-toggle {
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-paper);
+  color: var(--gc-ink);
+  font-family: var(--font);
+  font-weight: 800;
+  box-shadow: var(--gc-lip);
+  transition: background 0.15s, transform 0.12s;
+}
+
+html[data-skin='gacha'] .sidebar-toggle:hover {
+  background: var(--gc-teal-pale);
+  color: var(--gc-ink);
+  border-color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .sidebar-toggle:active {
+  transform: translateY(2px);
+  box-shadow: var(--gc-lip-sm);
+}
+
+/* Индикаторы — круглые бусины с контуром */
+html[data-skin='gacha'] .status-led,
+html[data-skin='gacha'] .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  transform: none;
+  background: var(--gc-teal);
+  box-shadow: 0 0 0 1.5px var(--gc-ink);
+  animation-duration: 4s;
+}
+
+html[data-skin='gacha'] .dot {
+  background: var(--border-soft);
+}
+
+html[data-skin='gacha'] .dot--green {
+  background: var(--gc-teal);
+}
+
+html[data-skin='gacha'] .sidebar-status-row--down .status-led,
+html[data-skin='gacha'] .topbar-status--down .status-led {
+  background: var(--gc-lemon);
+}
+
+html[data-skin='gacha'] .topbar-status--down .status-led {
+  background: var(--gc-paper);
+}
+
+/* ===== Шапка ===== */
+html[data-skin='gacha'] .topbar {
+  background: var(--gc-paper);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: var(--gc-line);
+}
+
+html[data-skin='gacha'] .topbar-title {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 19px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .topbar-status {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+/* Нет связи с ядром — лимонная плашка «внимание», без красного */
+html[data-skin='gacha'] .topbar-status--down {
+  padding: 3px 12px 3px 9px;
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-lemon);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .sidebar-status-row--down {
+  color: var(--gc-ink);
+}
+
+/* Сегменты LIGHT / DARK (и подобные) — пилюля, выбранный — бирюза */
+html[data-skin='gacha'] .theme-toggle {
+  padding: 2px;
+  gap: 2px;
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-paper);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+}
+
+html[data-skin='gacha'] .theme-toggle span {
+  padding: 4px 12px;
+  border-radius: 999px;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .theme-toggle span:hover:not(.active) {
+  background: var(--gc-teal-pale);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .theme-toggle span.active {
+  background: var(--gc-teal);
+  color: var(--gc-ink);
+  box-shadow: inset 0 0 0 2px var(--gc-ink);
+}
+
+html[data-skin='gacha'] .theme-toggle span.theme-toggle-off {
+  opacity: 0.45;
+}
+
+html[data-skin='gacha'] .card .theme-toggle {
+  width: fit-content;
+}
+
+html[data-skin='gacha'] .topbar-menu {
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .topbar-menu-dot {
+  background: var(--gc-lemon);
+  box-shadow: 0 0 0 2px var(--gc-ink);
+}
+
+/* ===== Заголовки разделов: искра-наклейка + разметка ===== */
+html[data-skin='gacha'] .section-header {
+  border-bottom: 0;
+  padding-bottom: 16px;
+  background: var(--gc-dash) 0 100% / 100% 2px no-repeat;
+}
+
+html[data-skin='gacha'] .section-title,
+html[data-skin='gacha'] .home-block-title {
+  position: relative;
+  padding-left: 32px;
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 26px;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-block-title {
+  font-size: 22px;
+  padding-left: 30px;
+}
+
+/* Искра у заголовка: два слоя — тёмный контур и лимонная серединка */
+html[data-skin='gacha'] .section-title::before,
+html[data-skin='gacha'] .section-title::after,
+html[data-skin='gacha'] .home-block-title::before,
+html[data-skin='gacha'] .home-block-title::after {
+  content: '';
+  position: absolute;
+  clip-path: var(--gc-spark);
+  pointer-events: none;
+}
+
+html[data-skin='gacha'] .section-title::before,
+html[data-skin='gacha'] .home-block-title::before {
+  left: 0;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  margin-top: -12px;
+  background: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .section-title::after,
+html[data-skin='gacha'] .home-block-title::after {
+  left: 5px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  background: var(--gc-lemon);
+}
+
+html[data-skin='gacha'] .section-subtitle {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+/* ===== Карточки: белые, контур 2 px, скругление 20 ===== */
+html[data-skin='gacha'] .card {
+  background: var(--gc-paper);
+  border: var(--gc-line);
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .card:hover,
+html[data-skin='gacha'] .stat-card:hover {
+  transform: none;
+  border-color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .card-title {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 13.5px;
+  letter-spacing: 0.06em;
+  color: var(--gc-ink);
+}
+
+/* Шрифт скина шире моноширинного: ряд заголовка карточки переносится,
+   а колонки двухколоночной сетки не распираются содержимым */
+html[data-skin='gacha'] .card-title-row {
+  flex-wrap: wrap;
+}
+
+html[data-skin='gacha'] .two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  html[data-skin='gacha'] .two-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ===== Кнопки: пилюли с контуром и жёстким ободком ===== */
+html[data-skin='gacha'] .btn {
+  --b-bg: var(--gc-paper);
+  --b-fg: var(--gc-ink);
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--b-bg);
+  color: var(--b-fg);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12.5px;
+  letter-spacing: 0.05em;
+  line-height: 1.25;
+  box-shadow: var(--gc-lip);
+  transition: background 0.15s, color 0.15s, transform 0.12s, box-shadow 0.12s;
+}
+
+html[data-skin='gacha'] .btn:hover {
+  --b-bg: var(--gc-teal-pale);
+  border-color: var(--gc-ink);
+  background: var(--b-bg);
+  color: var(--b-fg);
+}
+
+html[data-skin='gacha'] .btn:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: var(--gc-lip-sm);
+}
+
+html[data-skin='gacha'] .btn:disabled,
+html[data-skin='gacha'] .btn:disabled:hover {
+  opacity: 0.5;
+  background: var(--gc-milk);
+  color: var(--text-dim);
+  border-color: var(--text-muted);
+  box-shadow: none;
+}
+
+/* Главная кнопка — бирюзовая */
+html[data-skin='gacha'] .btn--primary {
+  --b-bg: var(--gc-teal);
+  --b-fg: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .btn--primary:hover {
+  --b-bg: var(--gc-teal-hi);
+  color: var(--gc-ink);
+}
+
+/* Вторая — без заливки и без ободка */
+html[data-skin='gacha'] .btn--ghost {
+  --b-bg: transparent;
+  border: var(--gc-line);
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .btn--ghost:hover {
+  --b-bg: var(--gc-teal-pale);
+  border: var(--gc-line);
+}
+
+html[data-skin='gacha'] .btn--ghost:active:not(:disabled) {
+  box-shadow: none;
+  transform: translateY(1px);
+}
+
+html[data-skin='gacha'] .btn--ghost:disabled,
+html[data-skin='gacha'] .btn--ghost:disabled:hover {
+  background: transparent;
+}
+
+/* Чип — маленькая пилюля без ободка */
+html[data-skin='gacha'] .btn--chip {
+  --b-bg: var(--gc-paper);
+  border: var(--gc-line);
+  box-shadow: none;
+  letter-spacing: 0.04em;
+}
+
+html[data-skin='gacha'] .btn--chip:hover {
+  --b-bg: var(--gc-teal-pale);
+  transform: none;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .btn--danger {
+  --b-fg: var(--danger);
+}
+
+html[data-skin='gacha'] .btn--danger:hover {
+  --b-bg: var(--danger);
+  --b-fg: #ffffff;
+  color: #ffffff;
+}
+
+html[data-skin='gacha'] .btn--icon {
+  --b-fg: var(--gc-ink);
+  box-shadow: none;
+}
+
+/* ===== Бирка: тёмный ярлык с дырочкой (номера блоков, надписи) ===== */
+html[data-skin='gacha'] .home-block-num,
+html[data-skin='gacha'] .home-eyebrow,
+html[data-skin='gacha'] .start-guide-warn-tag {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 12px 4px 22px;
+  background:
+    radial-gradient(circle at 13px 50%, var(--gc-paper) 0 3px, transparent 3.5px),
+    var(--gc-ink);
+  clip-path: var(--gc-tag);
+  border-radius: 0 8px 8px 0;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  color: #ffffff;
+  text-transform: uppercase;
+}
+
+html[data-skin='gacha'] .home-eyebrow::before {
+  display: none;
+}
+
+/* ===== Бейджи — маленькие пилюли ===== */
+html[data-skin='gacha'] .badge {
+  padding: 2px 10px;
+  border: 2px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--gc-paper);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+html[data-skin='gacha'] .badge--active,
+html[data-skin='gacha'] .badge--success {
+  border-color: var(--gc-ink);
+  background: var(--gc-teal-pale);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .badge--user {
+  border-color: var(--gc-ink);
+  background: var(--gc-sky-pale);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .badge--bot {
+  border-color: var(--gc-ink);
+  background: var(--gc-sakura-pale);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .badge--muted {
+  opacity: 1;
+  border-color: var(--border-soft);
+  background: var(--gc-milk);
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .badge--type-question { border-color: var(--gc-ink); background: var(--gc-lemon-pale); color: var(--gc-ink); }
+html[data-skin='gacha'] .badge--type-observation { border-color: var(--gc-ink); background: var(--gc-sky-pale); color: var(--gc-ink); }
+html[data-skin='gacha'] .badge--type-continuation { border-color: var(--border-soft); color: var(--text-dim); }
+html[data-skin='gacha'] .badge--type-thought { border-color: var(--gc-ink); background: var(--gc-sakura-pale); color: var(--gc-ink); }
+
+/* ===== Аватары — круглые наклейки: сакура, белая кайма, контур ===== */
+html[data-skin='gacha'] .avatar {
+  border: 2.5px solid var(--gc-paper);
+  border-radius: 50%;
+  background: var(--gc-sakura);
+  color: var(--gc-ink);
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 14px;
+  box-shadow: 0 0 0 2px var(--gc-ink);
+}
+
+html[data-skin='gacha'] .avatar--large {
+  font-size: 17px;
+}
+
+html[data-skin='gacha'] .avatar img {
+  border-radius: 50%;
+}
+
+/* ===== Поля ввода ===== */
+html[data-skin='gacha'] .input,
+html[data-skin='gacha'] .chat-input {
+  border: var(--gc-line);
+  border-radius: 14px;
+  background: var(--gc-paper);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+html[data-skin='gacha'] .input:hover:not(:disabled) {
+  border-color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .input:focus,
+html[data-skin='gacha'] .chat-input:focus,
+html[data-skin='gacha'] .select-trigger:focus-visible,
+html[data-skin='gacha'] .select-trigger--open {
+  border-color: var(--gc-teal-ink);
+  box-shadow: 0 0 0 3px var(--gc-teal-pale);
+  outline: none;
+}
+
+html[data-skin='gacha'] .input::placeholder,
+html[data-skin='gacha'] .chat-input::placeholder {
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+html[data-skin='gacha'] .input:disabled:not(.select-trigger) {
+  background: var(--gc-milk);
+  border-color: var(--border-soft);
+}
+
+html[data-skin='gacha'] textarea.input {
+  border-radius: 16px;
+}
+
+html[data-skin='gacha'] .field-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .field-hint {
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .field-value {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  color: var(--gc-teal-ink);
+}
+
+/* Код, YAML, терминалы — настоящий моноширинный */
+html[data-skin='gacha'] .art-prompt,
+html[data-skin='gacha'] .pcreate-yaml,
+html[data-skin='gacha'] .msg-code,
+html[data-skin='gacha'] .msg-pre,
+html[data-skin='gacha'] .yaml-view,
+html[data-skin='gacha'] .home-term,
+html[data-skin='gacha'] .boot-cmd-row,
+html[data-skin='gacha'] .svc-code,
+html[data-skin='gacha'] .start-guide-code,
+html[data-skin='gacha'] .start-guide-ex-text {
+  font-family: var(--gc-code);
+}
+
+/* Select */
+html[data-skin='gacha'] .select-trigger:hover:not(:disabled) {
+  border-color: var(--gc-ink);
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .select-chevron {
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .select-menu {
+  padding: 6px;
+  border: var(--gc-line);
+  border-radius: 16px;
+  background: var(--gc-paper);
+  box-shadow: 4px 4px 0 0 var(--gc-ink);
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+html[data-skin='gacha'] .select-option {
+  border-radius: 10px;
+}
+
+html[data-skin='gacha'] .select-highlight {
+  left: 6px;
+  right: 6px;
+  background: var(--gc-teal-pale);
+  border-radius: 10px;
+}
+
+html[data-skin='gacha'] .select-option--selected {
+  box-shadow: none;
+  color: var(--gc-ink);
+  font-weight: 800;
+}
+
+html[data-skin='gacha'] .select-option-hint {
+  font-family: var(--font);
+}
+
+/* Чекбоксы и радио */
+html[data-skin='gacha'] input[type='checkbox'],
+html[data-skin='gacha'] input[type='radio'] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border: var(--gc-line);
+  border-radius: 7px;
+  background: var(--gc-paper);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background 0.12s;
+}
+
+html[data-skin='gacha'] input[type='radio'] {
+  border-radius: 50%;
+}
+
+html[data-skin='gacha'] input[type='checkbox']:hover,
+html[data-skin='gacha'] input[type='radio']:hover {
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] input[type='checkbox']:checked,
+html[data-skin='gacha'] input[type='radio']:checked {
+  background: var(--gc-teal);
+  box-shadow: inset 0 0 0 3px var(--gc-paper);
+}
+
+html[data-skin='gacha'] input[type='checkbox']:disabled,
+html[data-skin='gacha'] input[type='radio']:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+html[data-skin='gacha'] .checkbox-row {
+  font-size: 14px;
+}
+
+html[data-skin='gacha'] .checkbox-row:hover {
+  color: var(--gc-teal-ink);
+}
+
+/* Переключатель — пилюля, бусина с контуром */
+html[data-skin='gacha'] .switch-slider {
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-milk);
+}
+
+html[data-skin='gacha'] .switch-slider::before {
+  border-radius: 50%;
+  background: var(--gc-paper);
+  box-shadow: 0 0 0 2px var(--gc-ink);
+}
+
+html[data-skin='gacha'] .switch input:checked + .switch-slider {
+  background: var(--gc-teal);
+  border-color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .switch input:checked + .switch-slider::before {
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .switch input:focus-visible + .switch-slider {
+  outline: 2px solid var(--gc-teal-ink);
+  outline-offset: 3px;
+}
+
+/* Ползунок */
+html[data-skin='gacha'] input[type='range'] {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--gc-teal-pale);
+  box-shadow: inset 0 0 0 2px var(--gc-ink);
+}
+
+html[data-skin='gacha'] input[type='range']::-webkit-slider-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--gc-teal);
+  box-shadow: inset 0 0 0 2px var(--gc-ink);
+}
+
+html[data-skin='gacha'] input[type='range']::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: var(--gc-line);
+  border-radius: 50%;
+  background: var(--gc-teal);
+}
+
+/* ===== Вкладки — ряд пилюль, выбранная — бирюзовая наклейка ===== */
+html[data-skin='gacha'] .tabs {
+  gap: 6px;
+  border-bottom: 0;
+  padding-bottom: 4px;
+}
+
+html[data-skin='gacha'] .tab {
+  margin-bottom: 0;
+  padding: 6px 13px;
+  border: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 999px;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .tab:hover {
+  background: var(--gc-teal-pale);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .tab--active,
+html[data-skin='gacha'] .tab--active:hover {
+  border: var(--gc-line);
+  background: var(--gc-teal);
+  color: var(--gc-ink);
+  font-weight: 800;
+}
+
+/* ===== Списки ===== */
+html[data-skin='gacha'] .memory-item,
+html[data-skin='gacha'] .reminder-item,
+html[data-skin='gacha'] .diary-item,
+html[data-skin='gacha'] .apikey-row,
+html[data-skin='gacha'] .pmodel-row,
+html[data-skin='gacha'] .svc-list li,
+html[data-skin='gacha'] .svc-feed-item,
+html[data-skin='gacha'] .note {
+  border-color: var(--border-soft);
+  border-bottom-width: 2px;
+}
+
+html[data-skin='gacha'] .memory-item-time,
+html[data-skin='gacha'] .reminder-meta {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .ltm-category-name,
+html[data-skin='gacha'] .diary-date {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--gc-ink);
+}
+
+/* ===== Крупные номера и счётчики: бирюза в тёмном контуре ===== */
+html[data-skin='gacha'] .stat-value,
+html[data-skin='gacha'] .home-tele-value,
+html[data-skin='gacha'] .start-guide-mark {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  color: var(--gc-teal);
+  -webkit-text-stroke: 4px var(--gc-ink);
+  paint-order: stroke fill;
+  letter-spacing: 0.02em;
+  animation: none;
+}
+
+html[data-skin='gacha'] .stat-card {
+  border: var(--gc-line);
+  border-radius: 18px;
+  background: var(--gc-paper);
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .stats-row--compact .stat-card {
+  border: var(--gc-line);
+}
+
+html[data-skin='gacha'] .stat-value {
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+html[data-skin='gacha'] .stat-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+/* ===== InfoButton «?» и окно пояснения ===== */
+html[data-skin='gacha'] .info-btn {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--gc-ink);
+  border-radius: 50%;
+  background: var(--gc-paper);
+  color: var(--gc-ink);
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 11px;
+  line-height: 1;
+}
+
+html[data-skin='gacha'] .info-btn:hover {
+  background: var(--gc-lemon);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .info-overlay,
+html[data-skin='gacha'] .dialog-overlay,
+html[data-skin='gacha'] .pcreate-overlay,
+html[data-skin='gacha'] .dossier-overlay {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-skin='gacha'] .info-modal {
+  border: var(--gc-line);
+  border-radius: 22px;
+  background: var(--gc-paper);
+  box-shadow: 6px 6px 0 0 var(--gc-ink);
+}
+
+html[data-skin='gacha'] .info-modal-title {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 18px;
+  letter-spacing: 0.01em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .info-modal-body {
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+html[data-skin='gacha'] .info-modal-close,
+html[data-skin='gacha'] .pxe-close {
+  border: var(--gc-line);
+  border-radius: 50%;
+  background: var(--gc-paper);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .info-modal-close:hover,
+html[data-skin='gacha'] .pxe-close:hover {
+  background: var(--gc-sakura);
+  color: var(--gc-ink);
+  border-color: var(--gc-ink);
+}
+
+/* ===== Окна поверх: формы, досье, диалоги ===== */
+html[data-skin='gacha'] .pcreate-panel,
+html[data-skin='gacha'] .dossier-panel,
+html[data-skin='gacha'] .dialog-panel {
+  border: var(--gc-line);
+  border-radius: 26px;
+  background: var(--gc-paper);
+  box-shadow: 8px 8px 0 0 var(--gc-ink);
+  overflow: hidden;
+}
+
+html[data-skin='gacha'] .pcreate-head,
+html[data-skin='gacha'] .dossier-head {
+  border-bottom: var(--gc-line);
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .pcreate-foot {
+  border-top: var(--gc-line);
+  background: var(--gc-milk);
+}
+
+html[data-skin='gacha'] .pcreate-title,
+html[data-skin='gacha'] .dossier-name,
+html[data-skin='gacha'] .dialog-title {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 19px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .dossier-meta {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .pcreate-sec,
+html[data-skin='gacha'] .features-group-title,
+html[data-skin='gacha'] .pcreate-sub,
+html[data-skin='gacha'] .dossier-core-title {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--gc-teal-ink);
+  border-color: var(--border-soft);
+}
+
+/* YAML и терминалы — тёмно-синее окно со скруглением */
+html[data-skin='gacha'] .pcreate-yaml,
+html[data-skin='gacha'] .pcreate-yaml.pcreate-yaml {
+  border: var(--gc-line);
+  border-radius: 16px;
+  background: var(--term-bg);
+  color: var(--term-bright);
+  font-size: 12.5px;
+}
+
+html[data-skin='gacha'] .dossier-tabs {
+  border-bottom: var(--gc-line);
+  padding: 8px 14px;
+  gap: 4px;
+}
+
+html[data-skin='gacha'] .dossier-body {
+  background: var(--gc-milk);
+}
+
+html[data-skin='gacha'] .dialog-mark {
+  border: var(--gc-line);
+  border-radius: 50%;
+  background: var(--gc-lemon);
+  color: var(--gc-ink);
+  font-family: var(--font-disp);
+  font-weight: 900;
+}
+
+html[data-skin='gacha'] .dialog-panel--danger .dialog-mark {
+  background: var(--gc-sakura);
+}
+
+html[data-skin='gacha'] .dialog-message {
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+html[data-skin='gacha'] .dialog-actions {
+  border-top: 2px solid var(--border-soft);
+}
+
+/* ===== Чат: список персон и контекстная панель ===== */
+html[data-skin='gacha'] .chat-persona-list,
+html[data-skin='gacha'] .chat-context {
+  background: var(--gc-paper);
+  border: 0;
+}
+
+html[data-skin='gacha'] .chat-persona-list {
+  border-right: var(--gc-line);
+}
+
+html[data-skin='gacha'] .chat-context {
+  border-left: var(--gc-line);
+}
+
+html[data-skin='gacha'] .chat-persona-list-title,
+html[data-skin='gacha'] .chat-context-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-context-title::before {
+  content: '';
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gc-teal);
+  box-shadow: 0 0 0 1.5px var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-persona-back {
+  border: var(--gc-line);
+  border-radius: 999px;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-persona-back:hover {
+  background: var(--gc-teal-pale);
+  border-color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-persona-item {
+  border: 2px solid transparent;
+  border-radius: 18px;
+}
+
+html[data-skin='gacha'] .chat-persona-item:hover {
+  background: var(--gc-teal-pale);
+  transform: none;
+}
+
+html[data-skin='gacha'] .chat-persona-item--active,
+html[data-skin='gacha'] .chat-persona-item--active:hover {
+  border: var(--gc-line);
+  background: var(--gc-teal-pale);
+  box-shadow: var(--gc-lip);
+}
+
+html[data-skin='gacha'] .chat-persona-list--flying .chat-persona-item:not(.chat-persona-item--active) {
+  background: var(--gc-paper);
+  border: var(--gc-line);
+}
+
+html[data-skin='gacha'] .chat-persona-name {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 15px;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-persona-status {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .chat-context-toggle {
+  border: var(--gc-line);
+  border-radius: 50%;
+  background: var(--gc-paper);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-context-toggle:hover {
+  background: var(--gc-teal-pale);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-mood {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+html[data-skin='gacha'] .ctx-row {
+  font-size: 13.5px;
+}
+
+html[data-skin='gacha'] .ctx-note,
+html[data-skin='gacha'] .ctx-mono,
+html[data-skin='gacha'] .ctx-list {
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .ctx-trend {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .ctx-details,
+html[data-skin='gacha'] .ctx-actions {
+  border-top: 2px solid var(--border-soft);
+}
+
+html[data-skin='gacha'] .ctx-details summary {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .ctx-details summary:hover {
+  color: var(--gc-teal-ink);
+}
+
+/* Стрелка раскрытия — маленький бирюзовый треугольник */
+html[data-skin='gacha'] .ctx-details summary::before {
+  content: '';
+  flex-shrink: 0;
+  width: 7px;
+  height: 9px;
+  background: var(--gc-teal-ink);
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+
+/* ===== Чат: шапка, лента, реплики ===== */
+html[data-skin='gacha'] .chat-header {
+  background: var(--gc-paper);
+  border-bottom: var(--gc-line);
+}
+
+html[data-skin='gacha'] .chat-header-name {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 19px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-header-status {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0;
+  color: var(--gc-teal-ink);
+}
+
+html[data-skin='gacha'] .chat-messages {
+  gap: 16px;
+  padding: 24px 28px;
+}
+
+/* Реплика персоны — белая наклейка-окно; хвостик — острый угол снизу слева */
+html[data-skin='gacha'] .message-bubble {
+  padding: 11px 16px 9px;
+  border: var(--gc-line);
+  border-radius: 20px 20px 20px 6px;
+  background: var(--gc-paper);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+/* Своя реплика — небесная, хвостик справа */
+html[data-skin='gacha'] .message--user .message-bubble {
+  border: var(--gc-line);
+  border-radius: 20px 20px 6px 20px;
+  background: var(--gc-sky-pale);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .message--user .message-bubble--queued {
+  border-style: dashed;
+}
+
+html[data-skin='gacha'] .message--bot .message-text,
+html[data-skin='gacha'] .message--user .message-text {
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .message-time {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .message-reply-btn {
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-paper);
+  color: var(--gc-ink);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 10.5px;
+}
+
+html[data-skin='gacha'] .message-quote {
+  border-left: 3px solid var(--gc-teal);
+  border-radius: 4px 10px 10px 4px;
+  background: var(--gc-milk);
+}
+
+html[data-skin='gacha'] .msg-code {
+  border: 0;
+  border-radius: 6px;
+  background: var(--gc-teal-pale);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .msg-pre {
+  border: var(--gc-line);
+  border-radius: 14px;
+  background: var(--term-bg);
+  color: var(--term-bright);
+}
+
+html[data-skin='gacha'] .msg-quote {
+  border-left: 3px solid var(--gc-teal);
+}
+
+html[data-skin='gacha'] .msg-mark {
+  background: var(--gc-lemon);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .msg-spoiler {
+  background: repeating-linear-gradient(-45deg, var(--text-dim) 0 4px, var(--text-muted) 4px 8px);
+}
+
+html[data-skin='gacha'] .message-text a {
+  color: var(--gc-teal-ink);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+html[data-skin='gacha'] .message-image {
+  border: var(--gc-line);
+  border-radius: 16px;
+}
+
+/* Непрочитанное — лимон */
+html[data-skin='gacha'] .unread-dot {
+  border-radius: 999px;
+  background: var(--gc-lemon);
+  color: var(--gc-ink);
+  font-family: var(--font);
+  font-weight: 900;
+  box-shadow: 0 0 0 2px var(--gc-ink);
+}
+
+/* «Печатает» — три бирюзовые бусины подпрыгивают по очереди */
+html[data-skin='gacha'] .typing-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gc-teal);
+  box-shadow: 0 0 0 1.5px var(--gc-ink);
+  animation: gc-hop 1.8s ease-in-out infinite;
+}
+
+html[data-skin='gacha'] .typing-dot:nth-child(2) {
+  animation-delay: 0.25s;
+}
+
+html[data-skin='gacha'] .typing-dot:nth-child(3) {
+  animation-delay: 0.5s;
+}
+
+html[data-skin='gacha'] .chat-status-bar {
+  background: var(--gc-paper);
+  border-top: 2px solid var(--border-soft);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .chat-input-bar {
+  gap: 12px;
+  background: var(--gc-paper);
+  border-top: var(--gc-line);
+}
+
+html[data-skin='gacha'] .chat-input {
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-size: 15px;
+}
+
+html[data-skin='gacha'] .chat-input-bar > .btn {
+  align-self: center;
+}
+
+/* Скрепка и камера — круглые кнопки */
+html[data-skin='gacha'] .chat-input-bar > .btn--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+html[data-skin='gacha'] .chat-loading-bubble {
+  border: var(--gc-line);
+  border-radius: 20px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .chat-loading-caption {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+html[data-skin='gacha'] .chat-loading-cells i {
+  border-radius: 50%;
+  background: var(--gc-teal);
+}
+
+html[data-skin='gacha'] .chat-offline-banner {
+  border: 2px dashed var(--gc-ink);
+  border-radius: 16px;
+  background: var(--gc-lemon-pale);
+  font-size: 13.5px;
+}
+
+/* ===== Карточки персон: рамка редкости ===== */
+/* Полоса цвета персоны сверху (по умолчанию — сакура) и звезда-наклейка
+   на углу. Одна и та же «карта героя» — в списке чатов, на главной, в персонах. */
+html[data-skin='gacha'] .chat-card,
+html[data-skin='gacha'] .home-presence,
+html[data-skin='gacha'] .persona-card {
+  --gc-band: var(--persona-color, var(--persona, var(--gc-sakura)));
+  position: relative;
+  border: var(--gc-line);
+  border-radius: 22px;
+  background:
+    linear-gradient(var(--gc-band) 0 12px, var(--gc-ink) 12px 14px, transparent 14px),
+    var(--gc-paper);
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .persona-card {
+  --gc-band: var(--gc-sakura);
+}
+
+html[data-skin='gacha'] .chat-card,
+html[data-skin='gacha'] .home-presence {
+  padding-top: 28px;
+}
+
+html[data-skin='gacha'] .persona-card {
+  padding-top: 32px;
+}
+
+/* Звезда редкости: тёмный контур + лимон */
+html[data-skin='gacha'] .chat-card::before,
+html[data-skin='gacha'] .chat-card::after,
+html[data-skin='gacha'] .home-presence::before,
+html[data-skin='gacha'] .home-presence::after,
+html[data-skin='gacha'] .persona-card::before,
+html[data-skin='gacha'] .persona-card::after {
+  content: '';
+  position: absolute;
+  clip-path: var(--gc-star);
+  pointer-events: none;
+}
+
+html[data-skin='gacha'] .chat-card::before,
+html[data-skin='gacha'] .home-presence::before,
+html[data-skin='gacha'] .persona-card::before {
+  top: -9px;
+  right: 18px;
+  width: 30px;
+  height: 30px;
+  background: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-card::after,
+html[data-skin='gacha'] .home-presence::after,
+html[data-skin='gacha'] .persona-card::after {
+  top: -2px;
+  right: 25px;
+  width: 16px;
+  height: 16px;
+  background: var(--gc-lemon);
+}
+
+html[data-skin='gacha'] .chat-card:hover,
+html[data-skin='gacha'] .home-presence:hover,
+html[data-skin='gacha'] .persona-card:hover {
+  transform: translate(-2px, -2px);
+  border-color: var(--gc-ink);
+  background:
+    linear-gradient(var(--gc-band) 0 12px, var(--gc-ink) 12px 14px, transparent 14px),
+    var(--gc-paper);
+  box-shadow: 4px 4px 0 0 var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-card--unread {
+  outline: 3px solid var(--gc-lemon);
+  outline-offset: 3px;
+}
+
+html[data-skin='gacha'] .chat-card-name,
+html[data-skin='gacha'] .home-presence-name,
+html[data-skin='gacha'] .persona-card-name,
+html[data-skin='gacha'] .persona-card .persona-card-name {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 18px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-card-status,
+html[data-skin='gacha'] .chat-card-time,
+html[data-skin='gacha'] .chat-card-foot,
+html[data-skin='gacha'] .chat-card-preview--empty,
+html[data-skin='gacha'] .home-presence-status,
+html[data-skin='gacha'] .home-presence-reply {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .chat-card-preview,
+html[data-skin='gacha'] .home-presence-activity {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .chat-card-foot,
+html[data-skin='gacha'] .home-presence-reply,
+html[data-skin='gacha'] .home-dossier-foot {
+  border-top: 2px dashed var(--border-soft);
+}
+
+html[data-skin='gacha'] .chat-card-badge {
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-lemon);
+  color: var(--gc-ink);
+}
+
+/* ===== Страница всех чатов ===== */
+html[data-skin='gacha'] .chat-overview-title,
+html[data-skin='gacha'] .home-title,
+html[data-skin='gacha'] .boot-title {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  line-height: 1.12;
+  letter-spacing: 0.01em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-overview-title {
+  font-size: 34px;
+}
+
+html[data-skin='gacha'] .chat-overview-lead {
+  font-size: 15px;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .chat-overview-stats {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .chat-overview-stats b {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .chat-overview-grid {
+  gap: 22px;
+}
+
+/* ===== Главная: баннер в бирюзе (как обложка в гача-меню) ===== */
+html[data-skin='gacha'] .home-hero {
+  overflow: hidden;
+  border: var(--gc-line);
+  border-radius: 28px;
+  background-color: var(--gc-teal);
+  background-image: var(--gc-dots-white);
+  background-size: 18px 18px;
+  color: var(--gc-ink);
+  box-shadow: none;
+}
+
+/* Две искры-наклейки справа — белые, в контуре */
+html[data-skin='gacha'] .home-hero::before,
+html[data-skin='gacha'] .home-hero::after {
+  content: '';
+  position: absolute;
+  clip-path: var(--gc-spark);
+  pointer-events: none;
+}
+
+html[data-skin='gacha'] .home-hero::before {
+  right: 8%;
+  top: 50%;
+  width: 92px;
+  height: 92px;
+  margin-top: -46px;
+  background: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-hero::after {
+  right: calc(8% + 11px);
+  top: 50%;
+  width: 70px;
+  height: 70px;
+  margin-top: -35px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .home-hero > :not(.home-readout):not(.corner) {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-skin='gacha'] .home-hero > .home-readout {
+  z-index: 1;
+}
+
+/* Заголовок — тёмные буквы с белой каймой-наклейкой */
+html[data-skin='gacha'] .home-title {
+  font-size: clamp(30px, 4.4vw, 54px);
+  color: var(--gc-ink);
+  -webkit-text-stroke: 8px var(--gc-paper);
+  paint-order: stroke fill;
+}
+
+html[data-skin='gacha'] .home-greet {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-lead {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-ticker {
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 14px;
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-paper);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-ticker-label {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--gc-teal-ink);
+}
+
+html[data-skin='gacha'] .home-ticker-text {
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-cta-row {
+  gap: 14px;
+}
+
+/* На бирюзе главная кнопка — тёмная, иначе слилась бы */
+html[data-skin='gacha'] .home-hero .btn--primary {
+  --b-bg: var(--gc-ink);
+  --b-fg: #ffffff;
+  box-shadow: 0 3px 0 0 #1a202b;
+}
+
+html[data-skin='gacha'] .home-hero .btn--primary:hover {
+  --b-bg: #3a465b;
+  color: #ffffff;
+}
+
+html[data-skin='gacha'] .home-hero .btn--ghost {
+  --b-bg: var(--gc-paper);
+  box-shadow: var(--gc-lip);
+}
+
+html[data-skin='gacha'] .home-hero .btn--ghost:hover {
+  --b-bg: var(--gc-lemon-pale);
+}
+
+html[data-skin='gacha'] .home-readout {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-readout .val {
+  font-family: var(--font);
+  font-weight: 900;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-readout .live-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--gc-lemon);
+  box-shadow: inset 0 0 0 2px var(--gc-ink);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-block-head {
+  border-bottom: 0;
+  padding-bottom: 14px;
+  background: var(--gc-dash) 0 100% / 100% 2px no-repeat;
+}
+
+html[data-skin='gacha'] .home-presence-grid {
+  gap: 22px;
+}
+
+html[data-skin='gacha'] .home-dossier,
+html[data-skin='gacha'] .home-feed,
+html[data-skin='gacha'] .notes,
+html[data-skin='gacha'] .cal {
+  border: var(--gc-line);
+  border-radius: 22px;
+  background: var(--gc-paper);
+  box-shadow: none;
+  clip-path: none;
+}
+
+html[data-skin='gacha'] .home-dossier:hover {
+  transform: translate(-2px, -2px);
+  background: var(--gc-paper);
+  box-shadow: 4px 4px 0 0 var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-dossier h3 {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 18px;
+  text-transform: none;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .home-dossier-index,
+html[data-skin='gacha'] .home-feed-empty,
+html[data-skin='gacha'] .home-dossier-foot {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Телеметрия — отдельные плитки с крупными номерами */
+html[data-skin='gacha'] .home-telemetry {
+  gap: 16px;
+  background: transparent;
+  border: 0;
+}
+
+html[data-skin='gacha'] .home-tele-cell {
+  border: var(--gc-line);
+  border-radius: 20px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .home-tele-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .home-tele-value {
+  font-size: 32px;
+  line-height: 1.15;
+}
+
+html[data-skin='gacha'] .home-tele-value span {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 14px;
+  -webkit-text-stroke: 0;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .home-tele-note {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* Лента, заметки, календарь */
+html[data-skin='gacha'] .home-feed-row {
+  border-bottom: 2px dashed var(--border-soft);
+}
+
+html[data-skin='gacha'] .home-feed-persona,
+html[data-skin='gacha'] .home-feed-time {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+}
+
+html[data-skin='gacha'] .notes-persona {
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-paper);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12.5px;
+}
+
+html[data-skin='gacha'] .notes-persona:hover {
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .notes-persona--on {
+  background: var(--gc-teal);
+  box-shadow: var(--gc-lip);
+}
+
+html[data-skin='gacha'] .notes-persona-avatar {
+  border-radius: 50%;
+  background: var(--gc-sakura);
+  color: var(--gc-ink);
+  font-family: var(--font-disp);
+  font-weight: 900;
+  box-shadow: 0 0 0 1.5px var(--gc-ink);
+}
+
+html[data-skin='gacha'] .cal-month {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 18px;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .cal-weekdays span {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+}
+
+/* Колонки дней — строго поровну: длинная запись не распирает сетку на телефоне */
+html[data-skin='gacha'] .cal-grid,
+html[data-skin='gacha'] .cal-weekdays {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+html[data-skin='gacha'] .cal-day {
+  min-width: 0;
+  border: 2px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .cal-day:hover {
+  border-color: var(--gc-ink);
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .cal-day--today {
+  border-color: var(--gc-ink);
+  background: var(--gc-lemon);
+}
+
+html[data-skin='gacha'] .cal-day-num {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 12.5px;
+}
+
+html[data-skin='gacha'] .cal-chip {
+  border-left-width: 3px;
+  border-radius: 4px 8px 8px 4px;
+  font-size: 11.5px;
+}
+
+/* Журнал системы — тёмно-синее окно */
+html[data-skin='gacha'] .home-term {
+  border: var(--gc-line);
+  border-radius: 22px;
+  background: var(--term-bg);
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .home-term-titlebar {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+html[data-skin='gacha'] .home-term-titlebar .lights i,
+html[data-skin='gacha'] .start-guide-dlg-titlebar .lights i {
+  width: 10px;
+  height: 10px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--gc-sakura);
+}
+
+html[data-skin='gacha'] .home-term-titlebar .lights i:nth-child(2),
+html[data-skin='gacha'] .start-guide-dlg-titlebar .lights i:nth-child(2) {
+  background: var(--gc-lemon);
+}
+
+html[data-skin='gacha'] .home-term-titlebar .lights i:nth-child(3),
+html[data-skin='gacha'] .start-guide-dlg-titlebar .lights i:nth-child(3) {
+  background: var(--gc-teal);
+}
+
+html[data-skin='gacha'] .home-term-line .bright {
+  color: var(--gc-lemon);
+}
+
+/* Курсоры терминалов — мягкое «дыхание», без мигания */
+html[data-skin='gacha'] .home-term-cursor,
+html[data-skin='gacha'] .start-guide-dlg-cursor {
+  background: var(--gc-teal);
+  animation: gc-breathe 2.6s ease-in-out infinite;
+}
+
+html[data-skin='gacha'] .home-foot-stencil,
+html[data-skin='gacha'] .home-foot-right {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .barcode i {
+  border-radius: 2px;
+  background: var(--gc-ink);
+}
+
+/* ===== «Старт» ===== */
+html[data-skin='gacha'] .start-guide-bar {
+  padding: 12px 18px;
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-paper);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .start-guide-bar-label {
+  color: var(--gc-teal-ink);
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='gacha'] .start-guide-bar-count {
+  color: var(--gc-ink);
+}
+
+/* Шкала: пилюля в контуре, бирюза, белые деления */
+html[data-skin='gacha'] .start-guide-meter {
+  height: 14px;
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-milk);
+}
+
+html[data-skin='gacha'] .start-guide-meter::after {
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 2px), var(--gc-paper) calc(10% - 2px) 10%);
+}
+
+html[data-skin='gacha'] .start-guide-meter i {
+  background: var(--gc-teal);
+}
+
+html[data-skin='gacha'] .start-guide-bar-pct {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 14px;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .start-guide-link {
+  color: var(--gc-teal-ink);
+  font-weight: 800;
+}
+
+html[data-skin='gacha'] .start-guide-lead,
+html[data-skin='gacha'] .start-guide-step-desc {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+/* Маршруты — две большие пилюли-карты */
+html[data-skin='gacha'] .start-guide-tabs {
+  gap: 14px;
+  background: transparent;
+  border: 0;
+}
+
+html[data-skin='gacha'] .start-guide-tab {
+  border: var(--gc-line);
+  border-radius: 20px;
+  background: var(--gc-paper);
+  box-shadow: var(--gc-lip);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .start-guide-tab:hover {
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .start-guide-tab.is-active {
+  background: var(--gc-teal);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .start-guide-tab-index,
+html[data-skin='gacha'] .start-guide-tab.is-active .start-guide-tab-index {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .start-guide-tab-count {
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .start-guide-tab-title {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 19px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+html[data-skin='gacha'] .start-guide-tab-sub {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gc-ink);
+}
+
+/* Бегущая планка не нужна — выбранная карта и так залита */
+html[data-skin='gacha'] .start-guide-tab-ink {
+  display: none;
+}
+
+html[data-skin='gacha'] .start-guide-steps {
+  clip-path: none;
+  border: var(--gc-line);
+  border-radius: 24px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .start-guide-step {
+  grid-template-columns: 44px minmax(0, 1fr);
+}
+
+/* Номер шага — крупное «01» в контуре */
+html[data-skin='gacha'] .start-guide-mark {
+  width: 44px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  font-size: 26px;
+  -webkit-text-stroke-width: 4px;
+}
+
+html[data-skin='gacha'] .start-guide-mark:hover {
+  color: var(--gc-teal-hi);
+}
+
+html[data-skin='gacha'] .start-guide-step.is-done .start-guide-mark {
+  background: transparent;
+  color: var(--gc-lemon);
+}
+
+html[data-skin='gacha'] .start-guide-line {
+  width: 2px;
+  background: repeating-linear-gradient(180deg, var(--border-soft) 0 6px, transparent 6px 10px);
+}
+
+html[data-skin='gacha'] .start-guide-line i {
+  background: var(--gc-teal);
+}
+
+html[data-skin='gacha'] .start-guide-step-idx,
+html[data-skin='gacha'] .start-guide-check {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .start-guide-check:hover,
+html[data-skin='gacha'] .start-guide-check.is-done {
+  color: var(--gc-teal-ink);
+}
+
+html[data-skin='gacha'] .start-guide-step-title {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 17px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .start-guide-warn {
+  border: 2px dashed var(--gc-ink);
+  border-radius: 14px;
+  background: var(--gc-lemon-pale);
+  font-size: 13.5px;
+}
+
+html[data-skin='gacha'] .start-guide-go {
+  font-size: 12px;
+}
+
+html[data-skin='gacha'] .start-guide-ex,
+html[data-skin='gacha'] .start-guide-code,
+html[data-skin='gacha'] .start-guide-cmd {
+  border: 2px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--gc-milk);
+}
+
+/* Демо-окно — тёмно-синее, скруглённое */
+html[data-skin='gacha'] .start-guide-dlg {
+  border: var(--gc-line);
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .start-guide-dlg-titlebar {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+}
+
+html[data-skin='gacha'] .start-guide-dlg-avatar {
+  border: 2px solid var(--gc-paper);
+  border-radius: 50%;
+  background: var(--gc-sakura);
+  color: var(--gc-ink);
+  font-family: var(--font-disp);
+  font-weight: 900;
+}
+
+html[data-skin='gacha'] .start-guide-dlg-peer-name {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 13.5px;
+}
+
+html[data-skin='gacha'] .start-guide-dlg-peer-status,
+html[data-skin='gacha'] .start-guide-dlg-msg--sys {
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+html[data-skin='gacha'] .start-guide-dlg-msg {
+  font-family: var(--font);
+  font-size: 13.5px;
+}
+
+html[data-skin='gacha'] .start-guide-dlg-msg--bot {
+  border: 2px solid var(--term-line);
+  border-radius: 14px 14px 14px 4px;
+}
+
+html[data-skin='gacha'] .start-guide-dlg-msg--op {
+  border-radius: 14px 14px 4px 14px;
+  background: rgba(143, 208, 239, 0.22);
+}
+
+/* ===== «Старт»: режим управления, модели Ollama ===== */
+/* Карточки со срезанным углом HUD — скруглённые, с мягкой рамкой */
+html[data-skin='gacha'] .start-control-stage,
+html[data-skin='gacha'] .start-control-card,
+html[data-skin='gacha'] .start-control-ex {
+  clip-path: none;
+  border: 2px solid var(--border-soft);
+  border-radius: 18px;
+  background: var(--gc-milk);
+}
+
+/* Дорожка шагов: линия 2 px, узлы — бусины, текущий — бирюзовая наклейка */
+html[data-skin='gacha'] .start-control-track {
+  height: 2px;
+  background: var(--border-soft);
+}
+
+html[data-skin='gacha'] .start-control-track i {
+  background: var(--gc-teal);
+}
+
+/* «Данные идут» — короткая сплошная черта, без растушёвки, медленно */
+html[data-skin='gacha'] .start-control-track::after {
+  width: 26px;
+  background: var(--gc-teal-ink);
+  animation-duration: 6s;
+}
+
+html[data-skin='gacha'] .start-control-node {
+  width: 14px;
+  height: 14px;
+  border: var(--gc-line);
+  border-radius: 50%;
+  background: var(--gc-paper);
+  transform: none;
+}
+
+html[data-skin='gacha'] .start-control-step.is-done .start-control-node {
+  border-color: var(--gc-ink);
+  background: var(--gc-teal);
+}
+
+html[data-skin='gacha'] .start-control-step.is-active .start-control-node {
+  border-color: var(--gc-ink);
+  background: var(--gc-lemon);
+  transform: scale(1.15);
+  box-shadow: 0 0 0 3px var(--gc-paper), 0 0 0 5px var(--gc-ink);
+  animation: none;
+}
+
+html[data-skin='gacha'] .start-control-step-title {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+}
+
+html[data-skin='gacha'] .start-control-path span {
+  border: 2px solid var(--gc-ink);
+  border-radius: 999px;
+}
+
+html[data-skin='gacha'] .start-control-path span:last-child {
+  background: var(--gc-teal);
+  border-color: var(--gc-ink);
+  color: var(--gc-ink);
+}
+
+/* Фильтры и «включено / выключено» — сегмент-пилюля */
+html[data-skin='gacha'] .start-control-filters {
+  overflow: hidden;
+  border: var(--gc-line);
+  border-radius: 999px;
+}
+
+html[data-skin='gacha'] .start-control-filter {
+  border-right: 2px solid var(--gc-ink);
+  font-family: var(--font);
+  font-weight: 800;
+}
+
+html[data-skin='gacha'] .start-control-filter:last-child {
+  border-right: 0;
+}
+
+html[data-skin='gacha'] .start-control-filter:hover {
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .start-control-filter.is-active {
+  background: var(--gc-teal);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .start-control-ex-tab.is-active {
+  border-left: 3px solid var(--gc-teal);
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .start-control-ex-tag,
+html[data-skin='gacha'] .start-control-ex-mode,
+html[data-skin='gacha'] .ollama-model-inputs span {
+  border-radius: 999px;
+}
+
+html[data-skin='gacha'] .start-control-sc-facts b {
+  border-radius: 6px;
+}
+
+html[data-skin='gacha'] .start-control-sc-facts li:last-child b {
+  border-color: var(--gc-ink);
+  background: var(--gc-lemon);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .start-control-demo-tab {
+  border-radius: 999px;
+}
+
+html[data-skin='gacha'] .ollama-model {
+  border: 2px solid var(--border-soft);
+}
+
+html[data-skin='gacha'] .ollama-model-dots i {
+  border-radius: 2px;
+}
+
+/* ===== Комната ===== */
+html[data-skin='gacha'] .room-layout {
+  overflow: hidden;
+  border: var(--gc-line);
+  border-radius: 24px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .room-layout .room-scene-card {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .room-side {
+  border-left: var(--gc-line);
+}
+
+html[data-skin='gacha'] .room-layout .home-telemetry {
+  gap: 0;
+}
+
+html[data-skin='gacha'] .room-layout .home-tele-cell {
+  border: 0;
+  border-radius: 0;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .room-tele-text,
+html[data-skin='gacha'] .home-tele-value.room-tele-text {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 18px;
+  line-height: 1.3;
+  color: var(--gc-ink);
+  -webkit-text-stroke: 0;
+}
+
+html[data-skin='gacha'] .room-tele-sub,
+html[data-skin='gacha'] .room-tele-source {
+  font-family: var(--font);
+  font-size: 12.5px;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .room-tele-bar {
+  height: 12px;
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-milk);
+}
+
+html[data-skin='gacha'] .room-tele-bar-fill {
+  border-radius: 999px;
+  background: var(--gc-teal);
+}
+
+html[data-skin='gacha'] .room-status-plate {
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-paper);
+  box-shadow: none;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .room-status-plate .val {
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .room-offline-plate {
+  border: var(--gc-line);
+  border-radius: 20px;
+  background: var(--gc-ink);
+  color: #ffffff;
+  font-family: var(--font);
+}
+
+html[data-skin='gacha'] .room-focus-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+html[data-skin='gacha'] .room-art-grid .card,
+html[data-skin='gacha'] .art-drop {
+  border-radius: 20px;
+}
+
+html[data-skin='gacha'] .art-drop {
+  border: 2px dashed var(--gc-ink);
+  background: var(--gc-milk);
+}
+
+html[data-skin='gacha'] .art-drop:hover {
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .art-drop-title {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 14px;
+}
+
+html[data-skin='gacha'] .art-drop-spec,
+html[data-skin='gacha'] .art-drop-status {
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+html[data-skin='gacha'] .art-prompt,
+html[data-skin='gacha'] .art-prompt.art-prompt {
+  border: 2px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--gc-milk);
+  font-size: 12.5px;
+}
+
+/* Сцена: пастельные плоскости в тёмном контуре — стена белая, пол сакура,
+   ковёр бирюзовый, небо в окне голубое, ночью — тёмно-синее с точками звёзд */
+html[data-skin='gacha'] .room-scene {
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .room-floor {
+  border-top: var(--gc-line);
+  background: var(--gc-sakura-pale);
+}
+
+html[data-skin='gacha'] .room-floor::after {
+  background: repeating-linear-gradient(90deg, transparent 0 44px, #f5c4d4 44px 46px);
+}
+
+html[data-skin='gacha'] .room-rug {
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .room-rug::before {
+  border: 2px dashed var(--gc-teal);
+  border-radius: 999px;
+  background: none;
+}
+
+html[data-skin='gacha'] .room-window {
+  border: var(--gc-line);
+  border-radius: 8px;
+  background: var(--gc-sky-pale);
+}
+
+html[data-skin='gacha'] .room-scene--tod-evening .room-window {
+  background: var(--gc-sakura-pale);
+}
+
+html[data-skin='gacha'] .room-scene--tod-night .room-window {
+  background:
+    radial-gradient(circle at 22% 28%, #ffffff 0 1.2px, transparent 1.7px),
+    radial-gradient(circle at 68% 18%, #ffffff 0 1.2px, transparent 1.7px),
+    radial-gradient(circle at 80% 62%, var(--gc-lemon) 0 1px, transparent 1.5px),
+    var(--gc-ink);
+}
+
+html[data-skin='gacha'] .room-window::before {
+  background: none;
+}
+
+html[data-skin='gacha'] .room-scene--wx-fog .room-window::before {
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.75) 0 3px, transparent 3px 7px);
+}
+
+html[data-skin='gacha'] .room-window-cross-h,
+html[data-skin='gacha'] .room-window-cross-v {
+  background: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .room-curtain {
+  background: repeating-linear-gradient(90deg, var(--gc-sakura) 0 3px, var(--gc-sakura-pale) 3px 6px);
+}
+
+html[data-skin='gacha'] .room-shelf {
+  border-bottom-color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .room-book {
+  background: var(--gc-teal);
+}
+
+html[data-skin='gacha'] .room-book:nth-child(2n) {
+  background: var(--gc-sakura);
+}
+
+html[data-skin='gacha'] .room-book:nth-child(3n) {
+  background: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .room-clock {
+  border: var(--gc-line);
+  border-radius: 50%;
+}
+
+html[data-skin='gacha'] .room-clock-hand--s {
+  background: var(--gc-sakura);
+}
+
+html[data-skin='gacha'] .room-poster-frame {
+  border: var(--gc-line);
+  border-radius: 4px;
+  background: var(--gc-lemon-pale);
+}
+
+html[data-skin='gacha'] .room-poster-frame::before {
+  background: repeating-linear-gradient(45deg, transparent 0 6px, #f3d77a 6px 7px);
+}
+
+/* Торшер: ровный лимонный конус света, без растушёвки */
+html[data-skin='gacha'] .room-lamp-cone {
+  background: var(--gc-lemon);
+}
+
+html[data-skin='gacha'] .room-plant-leaf {
+  background: var(--gc-teal);
+}
+
+html[data-skin='gacha'] .room-plant-leaf--c {
+  background: var(--gc-teal-ink);
+}
+
+html[data-skin='gacha'] .room-night-shade {
+  background: rgba(43, 52, 69, 0.05);
+}
+
+html[data-skin='gacha'] .room-scene--tod-night .room-night-shade {
+  background: rgba(43, 52, 69, 0.16);
+}
+
+/* Комната на весь экран: затемнение без рамки карточки, окно с контуром */
+html[data-skin='gacha'] .room-scene-card--fullscreen,
+html[data-skin='gacha'] .room-scene-card--fullscreen:hover {
+  border: 0;
+  border-radius: 0;
+  background: var(--overlay-bg);
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .room-scene-card--fullscreen .room-scene {
+  border: var(--gc-line);
+  box-shadow: 8px 8px 0 0 var(--gc-teal);
+}
+
+html[data-skin='gacha'] .room-modal-head {
+  border: var(--gc-line);
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .room-modal-title {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  color: var(--gc-ink);
+}
+
+/* Выбор персоны в комнате (телефон) */
+html[data-skin='gacha'] .room-pick {
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .room-pick-face {
+  border-radius: 50%;
+  background: var(--gc-sakura);
+  color: var(--gc-ink);
+  font-family: var(--font-disp);
+  font-weight: 900;
+}
+
+html[data-skin='gacha'] .room-pick-name {
+  font-family: var(--font);
+  font-weight: 800;
+}
+
+/* ===== Персоны ===== */
+html[data-skin='gacha'] .persona-avatar-btn {
+  border: 3px solid var(--gc-paper);
+  border-radius: 50%;
+  background: var(--gc-sakura);
+  color: var(--gc-ink);
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 22px;
+  box-shadow: 0 0 0 2px var(--gc-ink);
+  overflow: hidden;
+}
+
+html[data-skin='gacha'] .persona-avatar-overlay {
+  border-radius: 50%;
+}
+
+html[data-skin='gacha'] .persona-card-meta,
+html[data-skin='gacha'] .persona-card-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .persona-card-desc {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .persona-status {
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-teal-pale);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .persona-status--frozen {
+  background: var(--gc-milk);
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .persona-status-dot {
+  border-radius: 50%;
+  background: var(--gc-teal);
+  box-shadow: 0 0 0 1.5px var(--gc-ink);
+}
+
+html[data-skin='gacha'] .persona-chip,
+html[data-skin='gacha'] .persona-card:hover .persona-chip {
+  border: 2px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--gc-paper);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* Телеметрия генерации — три ячейки с крупными цифрами */
+html[data-skin='gacha'] .persona-telemetry {
+  border: var(--gc-line);
+  border-radius: 16px;
+  background: var(--gc-milk);
+}
+
+html[data-skin='gacha'] .persona-tele-cell + .persona-tele-cell {
+  border-left: 2px dashed var(--border-soft);
+}
+
+html[data-skin='gacha'] .persona-tele-label {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+html[data-skin='gacha'] .persona-tele-value {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 17px;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .persona-icon-btn {
+  border: var(--gc-line);
+  border-radius: 50%;
+  background: var(--gc-paper);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .persona-icon-btn:hover {
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .persona-icon-btn--danger:hover {
+  background: var(--gc-sakura);
+  color: var(--gc-ink);
+}
+
+/* ===== Галерея тем ===== */
+html[data-skin='gacha'] .skin-themes-lead {
+  font-size: 14px;
+}
+
+html[data-skin='gacha'] .skin-themes-grid {
+  gap: 18px;
+}
+
+html[data-skin='gacha'] .skin-theme-card {
+  border: var(--gc-line);
+  border-radius: 20px;
+  background: var(--gc-paper);
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .skin-theme-card:hover {
+  transform: translate(-2px, -2px);
+  border-color: var(--gc-ink);
+  box-shadow: 4px 4px 0 0 var(--gc-ink);
+}
+
+/* Выбранная тема — бирюзовая карта с ободком */
+html[data-skin='gacha'] .skin-theme-card--active,
+html[data-skin='gacha'] .skin-theme-card--active:hover {
+  border-color: var(--gc-ink);
+  background: var(--gc-teal);
+  box-shadow: 4px 4px 0 0 var(--gc-ink);
+}
+
+html[data-skin='gacha'] .skin-theme-card-name {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  font-size: 16px;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .skin-theme-card-tagline,
+html[data-skin='gacha'] .skin-theme-card-meta,
+html[data-skin='gacha'] .skin-theme-card-scheme {
+  font-family: var(--font);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .skin-theme-card--active .skin-theme-card-tagline,
+html[data-skin='gacha'] .skin-theme-card--active .skin-theme-card-meta,
+html[data-skin='gacha'] .skin-theme-card--active .skin-theme-card-scheme {
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .skin-themes-assigned {
+  border-top: 2px dashed var(--border-soft);
+}
+
+html[data-skin='gacha'] .skin-themes-assigned-title,
+html[data-skin='gacha'] .skin-themes-hint {
+  font-size: 13px;
+}
+
+/* ===== Настройки и сервисы ===== */
+html[data-skin='gacha'] .provider-name,
+html[data-skin='gacha'] .svc-group-title {
+  font-family: var(--font-disp);
+  font-weight: 900;
+  letter-spacing: 0.01em;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .link-card {
+  border-radius: 22px;
+}
+
+html[data-skin='gacha'] .apikey-chip {
+  border: 2px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .yaml-view,
+html[data-skin='gacha'] .svc-code {
+  border: 2px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--gc-milk);
+}
+
+html[data-skin='gacha'] .svc-flash {
+  border: var(--gc-line);
+  border-radius: 14px;
+  background: var(--gc-lemon-pale);
+}
+
+html[data-skin='gacha'] .svc-feed-head {
+  border-radius: 12px;
+}
+
+html[data-skin='gacha'] .ollama-model {
+  border-radius: 14px;
+}
+
+html[data-skin='gacha'] .ollama-model.is-recommended {
+  border-color: var(--gc-ink);
+  background: var(--gc-teal-pale);
+}
+
+/* ===== Прочие панели и плашки (режим управления, файлы, обучение…) ===== */
+html[data-skin='gacha'] .start-control-intro,
+html[data-skin='gacha'] .start-control-faq,
+html[data-skin='gacha'] .start-control-pipe,
+html[data-skin='gacha'] .link-device,
+html[data-skin='gacha'] .editor-stage,
+html[data-skin='gacha'] .editor-side,
+html[data-skin='gacha'] .room-preview,
+html[data-skin='gacha'] .task-card {
+  border: var(--gc-line);
+  border-radius: 22px;
+  background: var(--gc-paper);
+  box-shadow: none;
+}
+
+html[data-skin='gacha'] .room-option,
+html[data-skin='gacha'] .day-chip,
+html[data-skin='gacha'] .start-control-yn-opt,
+html[data-skin='gacha'] .start-control-cmd,
+html[data-skin='gacha'] .start-control-sc-way,
+html[data-skin='gacha'] .answer-btn,
+html[data-skin='gacha'] .sent-file,
+html[data-skin='gacha'] .link-token-value,
+html[data-skin='gacha'] .room-item {
+  border: 2px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .answer-btn:hover,
+html[data-skin='gacha'] .start-control-cmd:hover,
+html[data-skin='gacha'] .room-option:hover,
+html[data-skin='gacha'] .day-chip:hover {
+  border-color: var(--gc-ink);
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .room-away-strip,
+html[data-skin='gacha'] .room-focus-bubble {
+  border: var(--gc-line);
+  border-radius: 16px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .prov-gemma-hint,
+html[data-skin='gacha'] .learn-empty,
+html[data-skin='gacha'] .files-empty,
+html[data-skin='gacha'] .room-plan-tag {
+  border: 2px dashed var(--border-soft);
+  border-radius: 16px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .bw-tab {
+  border: var(--gc-line);
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+}
+
+html[data-skin='gacha'] .start-control-node {
+  border-radius: 50%;
+}
+
+html[data-skin='gacha'] .color-popover {
+  border: var(--gc-line);
+  border-radius: 16px;
+  box-shadow: 4px 4px 0 0 var(--gc-ink);
+}
+
+html[data-skin='gacha'] .color-picker-swatch,
+html[data-skin='gacha'] .color-popover-cell {
+  border-radius: 50%;
+}
+
+/* Раскрывающиеся блоки */
+html[data-skin='gacha'] .collapsible-head {
+  border: var(--gc-line);
+  border-radius: 18px;
+  background: var(--gc-paper);
+  box-shadow: var(--gc-lip);
+}
+
+html[data-skin='gacha'] .collapsible-head:hover,
+html[data-skin='gacha'] .collapsible.is-open .collapsible-head {
+  background: var(--gc-teal-pale);
+}
+
+html[data-skin='gacha'] .collapsible-chevron {
+  border: var(--gc-line);
+  border-radius: 50%;
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .collapsible-title {
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 14.5px;
+}
+
+html[data-skin='gacha'] .collapsible-summary {
+  font-size: 13px;
+}
+
+/* ===== Экран запуска: «Now loading» ===== */
+html[data-skin='gacha'] .boot-panel {
+  border: var(--gc-line);
+  border-radius: 28px;
+  background: var(--gc-paper);
+  box-shadow: 8px 8px 0 0 var(--gc-teal);
+}
+
+html[data-skin='gacha'] .boot-title {
+  font-size: clamp(24px, 4.6vw, 36px);
+}
+
+html[data-skin='gacha'] .boot-lead {
+  font-size: 15px;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .boot-steps {
+  gap: 10px;
+  font-size: 14px;
+}
+
+html[data-skin='gacha'] .boot-step-tag {
+  border-radius: 999px;
+  font-family: var(--font);
+  font-weight: 900;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  box-shadow: inset 0 0 0 2px var(--gc-ink);
+}
+
+html[data-skin='gacha'] .boot-step--ok .boot-step-tag {
+  background: var(--gc-teal);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .boot-step--run .boot-step-tag {
+  background: var(--gc-lemon);
+  color: var(--gc-ink);
+}
+
+html[data-skin='gacha'] .boot-step--fail .boot-step-tag {
+  background: var(--gc-sakura);
+  color: var(--gc-ink);
+}
+
+/* Шкала загрузки — пилюли-сегменты */
+html[data-skin='gacha'] .boot-cells {
+  gap: 4px;
+  padding: 4px;
+  border: var(--gc-line);
+  border-radius: 999px;
+  background: var(--gc-paper);
+}
+
+html[data-skin='gacha'] .boot-cells i {
+  flex: 1;
+  width: auto;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--gc-teal);
+  opacity: 0.2;
+}
+
+html[data-skin='gacha'] .boot-cells i.on {
+  opacity: 1;
+}
+
+html[data-skin='gacha'] .boot-meta,
+html[data-skin='gacha'] .boot-cmd-label,
+html[data-skin='gacha'] .boot-hint {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+html[data-skin='gacha'] .boot-cmd-row {
+  border: var(--gc-line);
+  border-radius: 14px;
+}
+
+html[data-skin='gacha'] .boot-cmd-copy {
+  border: 2px solid var(--term-dim);
+  border-radius: 999px;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 11.5px;
+}
+
+/* Бегущая волна по ячейкам — медленно и тускло */
+@keyframes gc-cell-wave {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.5; }
+}
+
+html[data-skin='gacha'] .boot-cells i:not(.on),
+html[data-skin='gacha'] .chat-loading-cells i {
+  animation: gc-cell-wave 3.6s ease-in-out infinite;
+}
+
+/* ===== Телефон (≤760px) ===== */
+@media (max-width: 760px) {
+  html[data-skin='gacha'] .sidebar,
+  html[data-skin='gacha'] .sidebar--collapsed {
+    background: var(--gc-paper);
+  }
+
+  html[data-skin='gacha'] .sidebar--open {
+    box-shadow: 6px 0 0 0 var(--gc-teal);
+  }
+
+  html[data-skin='gacha'] .nav-indicator {
+    height: 41px;
+  }
+
+  html[data-skin='gacha'] .topbar-title {
+    font-size: 17px;
+  }
+
+  html[data-skin='gacha'] .section-title {
+    font-size: 21px;
+  }
+
+  html[data-skin='gacha'] .home-block-title {
+    font-size: 19px;
+  }
+
+  html[data-skin='gacha'] .home-title {
+    font-size: clamp(26px, 8vw, 34px);
+    -webkit-text-stroke-width: 6px;
+  }
+
+  html[data-skin='gacha'] .home-hero {
+    border-radius: 22px;
+  }
+
+  /* Искра — в правом нижнем углу, где кнопки уже кончились */
+  html[data-skin='gacha'] .home-hero::before {
+    top: auto;
+    right: 18px;
+    bottom: 22px;
+    width: 58px;
+    height: 58px;
+    margin-top: 0;
+  }
+
+  html[data-skin='gacha'] .home-hero::after {
+    top: auto;
+    right: 25px;
+    bottom: 29px;
+    width: 44px;
+    height: 44px;
+    margin-top: 0;
+  }
+
+  html[data-skin='gacha'] .chat-overview-title {
+    font-size: 26px;
+  }
+
+  html[data-skin='gacha'] .chat-messages {
+    padding: 18px 14px 20px;
+    gap: 14px;
+  }
+
+  html[data-skin='gacha'] .chat-input-bar {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+
+  html[data-skin='gacha'] .chat-input-bar > .btn--icon {
+    width: 38px;
+    height: 38px;
+  }
+
+  html[data-skin='gacha'] .chat-input-bar > .btn--primary {
+    padding-left: 12px;
+    padding-right: 12px;
+    letter-spacing: 0.02em;
+  }
+
+  html[data-skin='gacha'] .chat-input {
+    padding: 9px 14px;
+  }
+
+  html[data-skin='gacha'] .home-tele-value.room-tele-text {
+    font-size: 16px;
+  }
+
+  /* «Нет связи с ядром» в комнате — переносом, а не многоточием */
+  html[data-skin='gacha'] .room-tele-offline .room-tele-text {
+    white-space: normal;
+  }
+
+  /* Персоны списком: место под звёзды-наклейки между строками */
+  html[data-skin='gacha'] .persona-grid--list .persona-card + .persona-card {
+    margin-top: 14px;
+  }
+
+  html[data-skin='gacha'] .chat-input {
+    font-size: 16px;
+  }
+
+  html[data-skin='gacha'] .message-bubble {
+    max-width: 86%;
+  }
+
+  /* Вкладки досье прокручиваются — без мягкой маски по краю */
+  html[data-skin='gacha'] .dossier-tabs,
+  html[data-skin='gacha'] .dossier-tabs--more-right,
+  html[data-skin='gacha'] .dossier-tabs--more-left {
+    mask-image: none;
+    -webkit-mask-image: none;
+    box-shadow: none;
+  }
+
+  /* Окна во весь экран: без смещённой тени, углы прямые */
+  html[data-skin='gacha'] .dossier-panel,
+  html[data-skin='gacha'] .pcreate-overlay .pcreate-panel {
+    border-radius: 0;
+    box-shadow: none;
+    border-left: 0;
+    border-right: 0;
+  }
+
+  html[data-skin='gacha'] .stat-value {
+    font-size: 22px;
+    -webkit-text-stroke-width: 3px;
+  }
+
+  html[data-skin='gacha'] .mem-stats .stat-label {
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+  }
+
+  html[data-skin='gacha'] .home-tele-value {
+    font-size: 26px;
+  }
+
+  html[data-skin='gacha'] .start-guide-tab-title {
+    font-size: 17px;
+  }
+
+  html[data-skin='gacha'] .start-guide-bar {
+    border-radius: 22px;
+  }
+
+  html[data-skin='gacha'] .start-control-track {
+    width: 2px;
+    height: auto;
+  }
+
+  html[data-skin='gacha'] .start-control-track::after {
+    width: 100%;
+    height: 22px;
+    background: var(--gc-teal-ink);
+  }
+}

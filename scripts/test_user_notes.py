@@ -345,16 +345,19 @@ def test_wiring():
     check("в режиме управления заметки молчат",
           "if getattr(self, \"notes\", None) is not None \\\n"
           "                and not (chat_id and self.control_mode_on(chat_id)):" in src)
+    # claimed — ход забран явной просьбой: заметки или сервисы (app/integrations)
+    check("заметки забирают ход (claimed)",
+          "claimed = notes_explicit or services_chat.claims(services_req)" in src)
     for frag, name in [
-        ("and not self.control_mode_on(chat_id) and not notes_explicit:\n                reminder_context, is_reminder_request",
+        ("and not self.control_mode_on(chat_id) and not claimed:\n                reminder_context, is_reminder_request",
          "напоминания не перехватывают"),
-        ("and not self.control_mode_on(chat_id) and not notes_explicit:\n                if is_todo_done_request",
+        ("and not self.control_mode_on(chat_id) and not claimed:\n                if is_todo_done_request",
          "дела не перехватывают"),
-        ("and not self.control_mode_on(chat_id) and not notes_explicit):\n                if is_inventory_add_request",
+        ("and not self.control_mode_on(chat_id) and not claimed):\n                if is_inventory_add_request",
          "инвентарь не перехватывает"),
-        ("                    or notes_explicit\n", "обучение уступает"),
-        ("and not notes_explicit):\n            # Собираем контекст персоны для QueryEnhancer", "без веб-поиска"),
-        ("and not scenario_outside_mode \\\n                    and not notes_explicit:", "«запомни в заметках» — не правило"),
+        ("                    or claimed\n", "обучение уступает"),
+        ("and not claimed):\n            # Собираем контекст персоны для QueryEnhancer", "без веб-поиска"),
+        ("and not scenario_outside_mode \\\n                    and not claimed:", "«запомни в заметках» — не правило"),
         ("notes_context=notes_context,", "блок уходит в prepare_messages"),
     ]:
         check(f"заметки: {name}", frag in src)

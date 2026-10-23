@@ -1,0 +1,3431 @@
+/* =====================================================================
+   Тёмная академия — ночная готическая библиотека как строгая графика.
+   Почти чёрный камень и сланец, текст цвета кости, бледный серо-голубой
+   вторым голосом, вино — плоскими плашками, кровь — редкой точкой.
+   Система: волосяные линии одной толщины (1px) и двойная рамка у главных
+   окон; узлы-ромбы на линиях (как плашки палитры); стрельчатая арка —
+   «окно» (аватары, знак, окно героя, навершие диалогов); закладка-ляссе —
+   выбранное (меню, собеседник, тема); каталожные карточки с римским
+   номером на рамке. Углы — острые. Ни теней, ни свечений, ни градиентов.
+   ===================================================================== */
+
+/* ===== Токены ===== */
+html[data-skin='dark-academia'],
+html[data-skin='dark-academia'][data-theme] {
+  /* палитра */
+  --da-ink: #0b0d11;
+  --da-night: #101418;
+  --da-slate: #161b20;
+  --da-slate-2: #1c2328;
+  --da-stone: #222a2f;
+  --da-line: #445257;
+  --da-line-soft: #2a3338;
+  --da-bone: #e8e2d5;
+  --da-bone-line: #6b6d69;
+  --da-mist: #829ea2;
+  --da-mist-hi: #a9c0c2;
+  --da-mist-lo: #6a8084;
+  --da-wine: #3b1c26;
+  --da-wine-hi: #4a2330;
+  --da-wine-line: #62303e;
+  --da-blood: #a33a48;
+  --da-blood-text: #c46a76;
+  --da-oat: #b49a83;
+  --da-code: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* двойная рамка главных окон: линия, зазор, тонкая внутренняя линия */
+  --da-double: inset 0 0 0 4px var(--da-slate), inset 0 0 0 5px var(--da-line-soft);
+  /* стрельчатая арка (пята на 62% высоты) — аватары */
+  --da-ogive: polygon(0% 100%, 0% 62%, 1.2% 49.8%, 4.7% 38%, 10.4% 27.1%, 18.1% 17.6%, 27.6% 9.7%, 38.3% 3.8%, 50% 0%, 61.7% 3.8%, 72.4% 9.7%, 81.9% 17.6%, 89.6% 27.1%, 95.3% 38%, 98.8% 49.8%, 100% 62%, 100% 100%);
+  /* высокое стрельчатое окно (равносторонняя арка, окно 1:2.2) */
+  --da-ogive-tall: polygon(0% 100%, 0% 40%, 1.1% 33.1%, 4.4% 26.4%, 9.9% 19.9%, 17.4% 14%, 26.7% 8.6%, 37.7% 3.9%, 50% 0%, 62.3% 3.9%, 73.3% 8.6%, 82.6% 14%, 90.1% 19.9%, 95.6% 26.4%, 98.9% 33.1%, 100% 40%, 100% 100%);
+  /* навершие диалога и знак (окно 1:1.4) */
+  --da-ogive-crown: polygon(0% 100%, 0% 60.6%, 1.1% 50.2%, 4.4% 40%, 9.9% 30.2%, 17.4% 21.2%, 26.7% 13%, 37.7% 5.9%, 50% 0%, 62.3% 5.9%, 73.3% 13%, 82.6% 21.2%, 90.1% 30.2%, 95.6% 40%, 98.9% 50.2%, 100% 60.6%, 100% 100%);
+  /* закладка-ляссе: полоса с вырезом «ласточкин хвост» справа */
+  --da-ribbon: polygon(0 0, 100% 0, calc(100% - 12px) 50%, 100% 100%, 0 100%);
+  /* висячая закладка: вырез снизу */
+  --da-tail: polygon(0 0, 100% 0, 100% 100%, 50% calc(100% - 6px), 0 100%);
+  /* плашка-ромб с заострёнными концами (чипы) */
+  --da-lozenge: polygon(10px 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 10px 100%, 0 50%);
+
+  /* токены приложения */
+  --bg: #0b0d11;
+  --bg-panel: #161b20;
+  --bg-panel-2: #1c2328;
+  --text: #e8e2d5;
+  --text-dim: #829ea2;
+  --text-muted: #6a8084;
+  --border: #445257;
+  --border-soft: #2a3338;
+  --accent: #a9c0c2;
+  --accent-dim: #6a8084;
+  --accent-soft: rgba(130, 158, 162, 0.12);
+  --bg-hover: rgba(232, 226, 213, 0.04);
+  --border-accent: #829ea2;
+  --accent-dark: #e8e2d5;
+  --danger: #c46a76;
+  --success: #a9c0c2;
+  --warning: #b49a83;
+  --term-bg: #07080b;
+  --term-line: #222a2f;
+  --term-dim: #6a8084;
+  --term-bright: #e8e2d5;
+  --topbar-bg: #0b0d11;
+  --overlay-bg: rgba(5, 6, 9, 0.84);
+  --radius-sm: 0;
+  --radius: 0;
+  --shadow-card: none;
+  --shadow-card-hover: none;
+  --font: 'DA Text', 'Tenor Sans', 'Optima', 'Segoe UI', Roboto, Arial, sans-serif;
+  --font-disp: 'DA Display', 'Prata', Georgia, 'Times New Roman', serif;
+  --font-mono: 'DA Text', 'Tenor Sans', 'Optima', 'Segoe UI', sans-serif;
+  color-scheme: dark;
+}
+
+/* ===== Основа: камень с едва заметным зерном ===== */
+html[data-skin='dark-academia'] body {
+  background-color: var(--da-ink);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.66 0 0 0 0 0.75 0 0 0 0 0.77 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14.5px;
+  letter-spacing: 0.01em;
+  /* у шрифтов одно начертание — без поддельного жирного и курсива */
+  font-synthesis: none;
+}
+
+/* Фоновый холст HUD и уголки-скобки — не из этой эпохи */
+html[data-skin='dark-academia'] .detroit-bg,
+html[data-skin='dark-academia'] .corner,
+html[data-skin='dark-academia'] .home-title.glitch::before,
+html[data-skin='dark-academia'] .home-title.glitch::after,
+html[data-skin='dark-academia'] .barcode {
+  display: none;
+}
+
+html[data-skin='dark-academia'] ::selection {
+  background: var(--da-wine-hi);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] :focus-visible {
+  outline: 1px solid var(--da-mist-hi);
+  outline-offset: 2px;
+}
+
+/* Скроллбары — тонкая линия */
+html[data-skin='dark-academia'] * {
+  scrollbar-color: var(--da-line) transparent;
+}
+
+html[data-skin='dark-academia'] ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+html[data-skin='dark-academia'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html[data-skin='dark-academia'] ::-webkit-scrollbar-thumb {
+  background: var(--da-line);
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--da-mist-lo);
+}
+
+/* Разделитель — двойная линия */
+html[data-skin='dark-academia'] .chrome-bar {
+  height: 4px;
+  background: none;
+  border-top: 1px solid var(--da-line);
+  border-bottom: 1px solid var(--da-line-soft);
+  opacity: 1;
+}
+
+/* Код, YAML, терминал — настоящая моноширинная гарнитура */
+html[data-skin='dark-academia'] .input.pcreate-yaml,
+html[data-skin='dark-academia'] .input.art-prompt,
+html[data-skin='dark-academia'] .pcreate-yaml,
+html[data-skin='dark-academia'] .msg-code,
+html[data-skin='dark-academia'] .msg-pre,
+html[data-skin='dark-academia'] .boot-cmd-row,
+html[data-skin='dark-academia'] .home-term,
+html[data-skin='dark-academia'] .art-prompt,
+html[data-skin='dark-academia'] .svc-code,
+html[data-skin='dark-academia'] .start-guide-code,
+html[data-skin='dark-academia'] code,
+html[data-skin='dark-academia'] pre,
+html[data-skin='dark-academia'] kbd {
+  font-family: var(--da-code);
+  letter-spacing: 0;
+}
+
+/* ===== Сайдбар: тёмный переплёт, двойная линия по краю ===== */
+html[data-skin='dark-academia'] .sidebar {
+  background: var(--da-night);
+  border-right: 1px solid var(--da-line);
+  box-shadow: inset -4px 0 0 0 var(--da-night), inset -5px 0 0 0 var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .sidebar-logo {
+  gap: 12px;
+  padding-bottom: 18px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--da-line);
+  box-shadow: 0 3px 0 0 var(--da-night), 0 4px 0 0 var(--da-line-soft);
+}
+
+/* Знак — стрельчатое окно: костяной контур, винная заливка */
+html[data-skin='dark-academia'] .sidebar-logo-icon {
+  position: relative;
+  display: inline-block;
+  width: 22px;
+  height: 30px;
+  flex-shrink: 0;
+  font-size: 0;
+  color: transparent;
+  background: var(--da-bone-line);
+  clip-path: var(--da-ogive-crown);
+  animation: none;
+}
+
+html[data-skin='dark-academia'] .sidebar-logo-icon::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  background: var(--da-wine);
+  clip-path: var(--da-ogive-crown);
+}
+
+html[data-skin='dark-academia'] .sidebar-logo-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 12.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .sidebar-logo-sub {
+  margin-top: 3px;
+  font-family: var(--font);
+  font-size: 10.5px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+/* Пункты меню — надписи антиквой капителью */
+html[data-skin='dark-academia'] .nav-item {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .nav-item--active,
+html[data-skin='dark-academia'] .nav-item--active:hover {
+  background: transparent;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .nav-item--active .nav-item-icon {
+  color: var(--da-bone);
+}
+
+/* Активный пункт — закладка-ляссе: плоское вино, кровяной корешок, «ласточкин хвост» */
+html[data-skin='dark-academia'] .nav-indicator {
+  border-radius: 0;
+  background: var(--da-wine);
+  box-shadow: inset 2px 0 0 0 var(--da-blood);
+  clip-path: var(--da-ribbon);
+  transition: transform 0.45s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+
+html[data-skin='dark-academia'] .sidebar--collapsed .nav-indicator {
+  clip-path: none;
+}
+
+html[data-skin='dark-academia'] .sidebar--collapsed .nav-item:hover::after {
+  background: var(--da-slate);
+  color: var(--da-bone);
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  box-shadow: none;
+  font-family: var(--font-disp);
+  font-size: 12.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+html[data-skin='dark-academia'] .sidebar-footer {
+  border-top: 1px solid var(--da-line);
+  box-shadow: inset 0 3px 0 0 var(--da-night), inset 0 4px 0 0 var(--da-line-soft);
+  padding-top: 14px;
+  font-size: 10px;
+  letter-spacing: 0.01em;
+  color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .sidebar-toggle {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--da-mist);
+  font-family: var(--font-disp);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .sidebar-toggle:hover {
+  border-color: var(--da-mist);
+  background: var(--bg-hover);
+  color: var(--da-bone);
+}
+
+/* Индикаторы — ромбы без свечения */
+html[data-skin='dark-academia'] .status-led,
+html[data-skin='dark-academia'] .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 0;
+  transform: rotate(45deg);
+  box-shadow: none;
+  animation: none;
+}
+
+html[data-skin='dark-academia'] .status-led,
+html[data-skin='dark-academia'] .dot--green {
+  background: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .dot {
+  background: var(--da-line);
+}
+
+html[data-skin='dark-academia'] .sidebar-status-row--down .status-led,
+html[data-skin='dark-academia'] .topbar-status--down .status-led {
+  background: var(--da-blood);
+}
+
+/* ===== Шапка ===== */
+html[data-skin='dark-academia'] .topbar {
+  background: var(--da-ink);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: 1px solid var(--da-line);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .topbar-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 16px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .topbar-status {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .topbar-status--down {
+  color: var(--da-blood-text);
+}
+
+/* Переключатели-сегменты (тема, язык) */
+html[data-skin='dark-academia'] .theme-toggle {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--font);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .theme-toggle span {
+  border-radius: 0;
+  color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .theme-toggle span:hover:not(.active) {
+  color: var(--da-bone);
+  background: var(--bg-hover);
+}
+
+html[data-skin='dark-academia'] .theme-toggle span.active {
+  background: var(--da-wine);
+  color: var(--da-bone);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .card .theme-toggle {
+  width: fit-content;
+}
+
+html[data-skin='dark-academia'] .topbar-menu {
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .topbar-menu-dot {
+  border-radius: 0;
+  transform: rotate(45deg);
+  background: var(--da-blood);
+  box-shadow: 0 0 0 2px var(--da-ink);
+}
+
+/* ===== Заголовки разделов: надпись капителью и линия с узлом-ромбом ===== */
+html[data-skin='dark-academia'] .section-header {
+  position: relative;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--da-line);
+}
+
+html[data-skin='dark-academia'] .section-header::after,
+html[data-skin='dark-academia'] .home-block-head::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -4px;
+  width: 7px;
+  height: 7px;
+  background: var(--da-blood);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+html[data-skin='dark-academia'] .section-title {
+  margin-bottom: 6px;
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 24px;
+  line-height: 1.2;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+  text-shadow: none;
+}
+
+html[data-skin='dark-academia'] .section-subtitle {
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--da-mist);
+}
+
+/* ===== Карточки: плоский сланец, волосяная рамка ===== */
+html[data-skin='dark-academia'] .card {
+  background: var(--da-slate);
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .card:hover {
+  border-color: var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .card-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 14px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+/* ===== Кнопки: острые углы, капитель с разрядкой ===== */
+html[data-skin='dark-academia'] .btn {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-slate-2);
+  color: var(--da-bone);
+  font-family: var(--font);
+  font-weight: 400;
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  box-shadow: none;
+  text-shadow: none;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+html[data-skin='dark-academia'] .btn:hover {
+  background: var(--da-stone);
+  border-color: var(--da-mist);
+  color: var(--da-bone);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+html[data-skin='dark-academia'] .btn:disabled,
+html[data-skin='dark-academia'] .btn:disabled:hover {
+  opacity: 0.5;
+  background: transparent;
+  border-color: var(--da-line-soft);
+  color: var(--da-mist);
+  box-shadow: none;
+}
+
+/* Главная — плоское вино */
+html[data-skin='dark-academia'] .btn--primary {
+  background: var(--da-wine);
+  border-color: var(--da-wine-line);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .btn--primary:hover {
+  background: var(--da-wine-hi);
+  border-color: var(--da-blood);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .btn--primary:disabled,
+html[data-skin='dark-academia'] .btn--primary:disabled:hover {
+  opacity: 0.55;
+  background: var(--da-wine);
+  border-color: var(--da-wine);
+  color: var(--da-mist);
+}
+
+/* Призрачная — только контур */
+html[data-skin='dark-academia'] .btn--ghost {
+  background: transparent;
+  border: 1px solid var(--da-line);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .btn--ghost:hover {
+  background: var(--bg-hover);
+  border-color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .btn--ghost:disabled,
+html[data-skin='dark-academia'] .btn--ghost:disabled:hover {
+  background: transparent;
+}
+
+/* Чип — плашка-ромб с заострёнными концами (как ромбы палитры) */
+html[data-skin='dark-academia'] .btn--chip {
+  padding-left: 18px;
+  padding-right: 18px;
+  border: 0;
+  border-radius: 0;
+  clip-path: var(--da-lozenge);
+  background: var(--da-stone);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .btn--chip:hover {
+  background: var(--da-wine);
+  color: var(--da-bone);
+  transform: none;
+}
+
+html[data-skin='dark-academia'] .btn--chip:focus-visible {
+  outline-offset: -3px;
+}
+
+html[data-skin='dark-academia'] .btn--danger {
+  background: transparent;
+  border-color: var(--da-wine-line);
+  color: var(--da-blood-text);
+}
+
+html[data-skin='dark-academia'] .btn--danger:hover {
+  background: var(--da-wine);
+  border-color: var(--da-blood);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .btn--icon {
+  background: transparent;
+  border-color: var(--da-line);
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .btn--icon:hover {
+  border-color: var(--da-mist);
+  color: var(--da-bone);
+}
+
+/* ===== Бейджи — плашки с волосяной рамкой ===== */
+html[data-skin='dark-academia'] .badge {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--da-mist);
+  font-family: var(--font);
+  font-weight: 400;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .badge--active,
+html[data-skin='dark-academia'] .badge--bot {
+  background: var(--da-wine);
+  border-color: var(--da-wine-line);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .badge--success {
+  background: transparent;
+  border-color: var(--da-mist-lo);
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .badge--user {
+  background: transparent;
+  border-color: var(--da-bone-line);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .badge--muted {
+  opacity: 0.85;
+}
+
+/* ===== Аватары — стрельчатые окна: костяной контур, сланец внутри ===== */
+html[data-skin='dark-academia'] .avatar,
+html[data-skin='dark-academia'] .room-pick-face,
+html[data-skin='dark-academia'] .notes-persona-avatar,
+html[data-skin='dark-academia'] .start-guide-dlg-avatar {
+  position: relative;
+  isolation: isolate;
+  padding-top: 6px;
+  border: 0;
+  border-radius: 0;
+  clip-path: var(--da-ogive);
+  background: var(--da-bone-line);
+  color: var(--da-bone);
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 15px;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+html[data-skin='dark-academia'] .avatar::before,
+html[data-skin='dark-academia'] .room-pick-face::before,
+html[data-skin='dark-academia'] .notes-persona-avatar::before,
+html[data-skin='dark-academia'] .start-guide-dlg-avatar::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  clip-path: var(--da-ogive);
+  background: var(--da-slate-2);
+  pointer-events: none;
+}
+
+html[data-skin='dark-academia'] .avatar--large {
+  font-size: 18px;
+  padding-top: 8px;
+}
+
+html[data-skin='dark-academia'] .avatar img,
+html[data-skin='dark-academia'] .room-pick-face img {
+  position: absolute;
+  inset: 1px;
+  width: calc(100% - 2px);
+  height: calc(100% - 2px);
+  object-fit: cover;
+  border-radius: 0;
+  clip-path: var(--da-ogive);
+}
+
+/* ===== Поля ввода — тёмная ниша с волосяной рамкой ===== */
+html[data-skin='dark-academia'] .input,
+html[data-skin='dark-academia'] .chat-input {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-ink);
+  color: var(--da-bone);
+  font-family: var(--font);
+  font-size: 14.5px;
+  letter-spacing: 0.01em;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .input::placeholder,
+html[data-skin='dark-academia'] .chat-input::placeholder,
+html[data-skin='dark-academia'] textarea::placeholder {
+  color: var(--da-mist-lo);
+  font-size: inherit;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+html[data-skin='dark-academia'] .input:focus,
+html[data-skin='dark-academia'] .chat-input:focus,
+html[data-skin='dark-academia'] .select-trigger--open {
+  border-color: var(--da-mist-hi);
+  box-shadow: none;
+  outline: none;
+}
+
+html[data-skin='dark-academia'] .input:disabled:not(.select-trigger) {
+  background: transparent;
+  color: var(--da-mist);
+  border-style: dashed;
+}
+
+html[data-skin='dark-academia'] .field-label {
+  font-family: var(--font);
+  font-weight: 400;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .field-hint {
+  font-family: var(--font);
+  font-size: 12.5px;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .field-value {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 15px;
+  color: var(--da-bone);
+}
+
+/* Select: поле и выпадающий лист */
+html[data-skin='dark-academia'] .select-trigger:hover:not(:disabled) {
+  border-color: var(--da-mist);
+  background: var(--da-ink);
+}
+
+html[data-skin='dark-academia'] .select-chevron {
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .select-menu {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+  font-family: var(--font);
+  font-size: 14px;
+}
+
+html[data-skin='dark-academia'] .select-highlight {
+  background: var(--da-wine);
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .select-option {
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .select-option--active,
+html[data-skin='dark-academia'] .select-option--selected {
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .select-option--selected {
+  box-shadow: inset 2px 0 0 0 var(--da-blood);
+}
+
+html[data-skin='dark-academia'] .select-option-hint {
+  color: var(--da-mist-lo);
+}
+
+/* Переключатель: паз и ромб-бегунок */
+html[data-skin='dark-academia'] .switch-slider {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-ink);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .switch-slider::before {
+  border-radius: 0;
+  background: var(--da-mist-lo);
+  box-shadow: none;
+  transform: scale(0.72) rotate(45deg);
+}
+
+html[data-skin='dark-academia'] .switch input:checked + .switch-slider {
+  background: var(--da-wine);
+  border-color: var(--da-wine-line);
+}
+
+html[data-skin='dark-academia'] .switch input:checked + .switch-slider::before {
+  background: var(--da-bone);
+  transform: translateX(19px) scale(0.72) rotate(45deg);
+}
+
+html[data-skin='dark-academia'] .switch input:focus-visible + .switch-slider {
+  outline: 1px solid var(--da-mist-hi);
+  outline-offset: 2px;
+}
+
+/* Ползунок — линия и ромб */
+html[data-skin='dark-academia'] input[type='range'] {
+  height: 1px;
+  background: var(--da-line);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] input[type='range']::-webkit-slider-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 0;
+  background: var(--da-bone);
+  box-shadow: none;
+  transform: rotate(45deg);
+}
+
+html[data-skin='dark-academia'] input[type='range']::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 0;
+  background: var(--da-bone);
+  box-shadow: none;
+  transform: rotate(45deg);
+}
+
+/* Чекбоксы и радио — квадрат с волосяной рамкой, отмеченный — вино */
+html[data-skin='dark-academia'] input[type='checkbox'],
+html[data-skin='dark-academia'] input[type='radio'] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-ink);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+html[data-skin='dark-academia'] input[type='radio'] {
+  transform: rotate(45deg) scale(0.86);
+}
+
+html[data-skin='dark-academia'] input[type='checkbox']:checked,
+html[data-skin='dark-academia'] input[type='radio']:checked {
+  border-color: var(--da-bone-line);
+  background: var(--da-wine);
+  box-shadow: inset 0 0 0 3px var(--da-ink), inset 0 0 0 8px var(--da-bone);
+}
+
+html[data-skin='dark-academia'] input[type='checkbox']:disabled,
+html[data-skin='dark-academia'] input[type='radio']:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+html[data-skin='dark-academia'] .checkbox-row {
+  font-size: 14px;
+}
+
+html[data-skin='dark-academia'] .checkbox-row:hover {
+  color: var(--da-bone);
+}
+
+/* ===== Вкладки: капитель, активная — линия с узлом-ромбом ===== */
+html[data-skin='dark-academia'] .tabs {
+  border-bottom: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .tab {
+  position: relative;
+  border-radius: 0;
+  font-family: var(--font);
+  font-weight: 400;
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .tab:hover {
+  color: var(--da-bone);
+  background: transparent;
+}
+
+html[data-skin='dark-academia'] .tab--active {
+  color: var(--da-bone);
+  font-weight: 400;
+  background: transparent;
+  border-bottom-color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .tab--active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  background: var(--da-blood);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+/* ===== Списки и счётчики ===== */
+html[data-skin='dark-academia'] .memory-item,
+html[data-skin='dark-academia'] .reminder-item,
+html[data-skin='dark-academia'] .todo-item,
+html[data-skin='dark-academia'] .diary-item,
+html[data-skin='dark-academia'] .apikey-row,
+html[data-skin='dark-academia'] .home-feed-row {
+  border-bottom-color: var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .memory-item-text {
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+html[data-skin='dark-academia'] .memory-item-time,
+html[data-skin='dark-academia'] .reminder-meta,
+html[data-skin='dark-academia'] .todo-progress {
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .ltm-category-name,
+html[data-skin='dark-academia'] .diary-date {
+  font-family: var(--font-disp);
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .stat-card {
+  background: var(--da-slate);
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .stats-row--compact .stat-card {
+  border: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .stat-value {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1.1;
+  color: var(--da-bone);
+  text-shadow: none;
+  animation: none;
+}
+
+html[data-skin='dark-academia'] .stat-label {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+/* ===== Пояснение «?» ===== */
+html[data-skin='dark-academia'] .info-btn {
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--da-mist);
+  font-family: var(--font-disp);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+html[data-skin='dark-academia'] .info-btn:hover {
+  border-color: var(--da-mist);
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+/* ===== Окна поверх: лист в двойной раме, стрельчатое навершие ===== */
+html[data-skin='dark-academia'] .info-overlay,
+html[data-skin='dark-academia'] .pcreate-overlay,
+html[data-skin='dark-academia'] .dialog-overlay {
+  background: var(--overlay-bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-skin='dark-academia'] .info-modal,
+html[data-skin='dark-academia'] .pcreate-panel,
+html[data-skin='dark-academia'] .dialog-panel {
+  position: relative;
+  background: var(--da-slate);
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  box-shadow: var(--da-double);
+}
+
+/* Навершие — маленькое стрельчатое окно на верхней раме, внутри узел-ромб */
+html[data-skin='dark-academia'] .info-modal::before,
+html[data-skin='dark-academia'] .pcreate-panel::before,
+html[data-skin='dark-academia'] .dialog-panel::before,
+html[data-skin='dark-academia'] .dossier-panel::before,
+html[data-skin='dark-academia'] .boot-panel::before {
+  content: '';
+  position: absolute;
+  top: -15px;
+  left: 50%;
+  z-index: 2;
+  width: 22px;
+  height: 30px;
+  margin-left: -11px;
+  background: var(--da-line);
+  clip-path: var(--da-ogive-crown);
+  pointer-events: none;
+}
+
+html[data-skin='dark-academia'] .info-modal::after,
+html[data-skin='dark-academia'] .pcreate-panel::after,
+html[data-skin='dark-academia'] .dialog-panel::after,
+html[data-skin='dark-academia'] .dossier-panel::after,
+html[data-skin='dark-academia'] .boot-panel::after {
+  content: '';
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  z-index: 2;
+  width: 20px;
+  height: 28px;
+  margin-left: -10px;
+  background: var(--da-wine);
+  clip-path: var(--da-ogive-crown);
+  pointer-events: none;
+}
+
+html[data-skin='dark-academia'] .info-modal-title,
+html[data-skin='dark-academia'] .pcreate-title,
+html[data-skin='dark-academia'] .dialog-title,
+html[data-skin='dark-academia'] .dossier-name {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 17px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .info-modal-body,
+html[data-skin='dark-academia'] .dialog-message {
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+html[data-skin='dark-academia'] .dialog-message {
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .dialog-mark {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--da-bone);
+  font-family: var(--font-disp);
+  font-weight: 400;
+}
+
+html[data-skin='dark-academia'] .dialog-panel--danger .dialog-mark {
+  background: var(--da-wine);
+  border-color: var(--da-blood);
+}
+
+html[data-skin='dark-academia'] .pcreate-head,
+html[data-skin='dark-academia'] .dossier-head {
+  border-bottom: 1px solid var(--da-line);
+  background: transparent;
+}
+
+html[data-skin='dark-academia'] .pcreate-foot,
+html[data-skin='dark-academia'] .dialog-actions {
+  border-top: 1px solid var(--da-line-soft);
+  background: transparent;
+}
+
+/* Шапка и подвал формы — внутри двойной рамы */
+html[data-skin='dark-academia'] .pcreate-panel > .pcreate-head {
+  margin: 5px 5px 0;
+}
+
+html[data-skin='dark-academia'] .pcreate-panel > .pcreate-foot {
+  margin: 0 5px 5px;
+}
+
+html[data-skin='dark-academia'] .pcreate-sec,
+html[data-skin='dark-academia'] .features-group-title,
+html[data-skin='dark-academia'] .danger-parts-title {
+  font-family: var(--font);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .pcreate-sub {
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .pxe-close,
+html[data-skin='dark-academia'] .info-modal-close,
+html[data-skin='dark-academia'] .image-lightbox-close {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--da-mist);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .pxe-close:hover,
+html[data-skin='dark-academia'] .info-modal-close:hover,
+html[data-skin='dark-academia'] .image-lightbox-close:hover {
+  border-color: var(--da-mist);
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .pcreate-yaml {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-ink);
+  color: var(--da-bone);
+  font-size: 12.5px;
+  box-shadow: none;
+}
+
+/* ===== Досье ===== */
+html[data-skin='dark-academia'] .dossier-panel {
+  position: relative;
+  background: var(--da-slate);
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  box-shadow: var(--da-double);
+}
+
+html[data-skin='dark-academia'] .dossier-panel > .dossier-head {
+  margin: 5px 5px 0;
+}
+
+html[data-skin='dark-academia'] .dossier-panel > .dossier-tabs,
+html[data-skin='dark-academia'] .dossier-panel > .dossier-body {
+  margin-left: 5px;
+  margin-right: 5px;
+}
+
+html[data-skin='dark-academia'] .dossier-panel > .dossier-body {
+  margin-bottom: 5px;
+}
+
+html[data-skin='dark-academia'] .dossier-meta {
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .dossier-tabs {
+  border-bottom: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .dossier-core-title {
+  font-family: var(--font-disp);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+html[data-skin='dark-academia'] .dossier-back {
+  color: var(--da-mist);
+}
+
+/* ===== Чат: список собеседников ===== */
+html[data-skin='dark-academia'] .chat-persona-list,
+html[data-skin='dark-academia'] .chat-context {
+  background: var(--da-night);
+  border-color: var(--da-line);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .chat-persona-list-title,
+html[data-skin='dark-academia'] .chat-context-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .chat-persona-back {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-persona-back:hover {
+  border-color: var(--da-mist);
+  background: var(--bg-hover);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .chat-persona-item {
+  position: relative;
+  border: 0;
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .chat-persona-item:hover {
+  background: var(--bg-hover);
+  transform: none;
+}
+
+/* Выбранный собеседник — та же закладка, что в меню */
+html[data-skin='dark-academia'] .chat-persona-item--active,
+html[data-skin='dark-academia'] .chat-persona-item--active:hover {
+  background: var(--da-wine);
+  box-shadow: inset 2px 0 0 0 var(--da-blood);
+  clip-path: var(--da-ribbon);
+}
+
+html[data-skin='dark-academia'] .chat-persona-item--active .avatar::before {
+  background: var(--da-wine-hi);
+}
+
+html[data-skin='dark-academia'] .chat-persona-list--flying .chat-persona-item:not(.chat-persona-item--active) {
+  background: var(--da-slate);
+}
+
+html[data-skin='dark-academia'] .chat-persona-name {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 15.5px;
+  letter-spacing: 0.03em;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .chat-persona-status {
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-persona-item--active .chat-persona-status {
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .chat-context-toggle {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--da-mist);
+  font-family: var(--font-disp);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .chat-context-toggle:hover {
+  border-color: var(--da-mist);
+  background: var(--bg-hover);
+  color: var(--da-bone);
+}
+
+/* ===== Чат: шапка, лента, пузыри ===== */
+html[data-skin='dark-academia'] .chat-header {
+  background: var(--da-ink);
+  border-bottom: 1px solid var(--da-line);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .chat-header-name {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 18px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .chat-header-status {
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-header-back {
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-messages {
+  background: transparent;
+  gap: 16px;
+}
+
+/* Реплика персоны — сланец с тонкой костяной линией, острый хвост слева сверху */
+html[data-skin='dark-academia'] .message-bubble {
+  position: relative;
+  padding: 11px 16px 9px;
+  border: 1px solid var(--da-bone-line);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .message--bot .message-bubble::before,
+html[data-skin='dark-academia'] .message--bot .message-bubble::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  width: 9px;
+  height: 11px;
+  pointer-events: none;
+}
+
+html[data-skin='dark-academia'] .message--bot .message-bubble::before {
+  left: -9px;
+  background: var(--da-bone-line);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+html[data-skin='dark-academia'] .message--bot .message-bubble::after {
+  top: 0;
+  left: -7px;
+  width: 8px;
+  height: 9px;
+  background: var(--da-slate);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+/* Своя реплика — плоское вино, хвост справа сверху */
+html[data-skin='dark-academia'] .message--user .message-bubble {
+  border: 1px solid var(--da-wine);
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .message--user .message-bubble::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  right: -9px;
+  width: 9px;
+  height: 11px;
+  background: var(--da-wine);
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  pointer-events: none;
+}
+
+html[data-skin='dark-academia'] .message--user .message-bubble--queued {
+  border: 1px dashed var(--da-wine-line);
+  background: transparent;
+}
+
+html[data-skin='dark-academia'] .message--user .message-bubble--queued::after {
+  background: var(--da-wine-line);
+}
+
+html[data-skin='dark-academia'] .message-bubble--typing {
+  background: var(--da-slate);
+}
+
+html[data-skin='dark-academia'] .message-text {
+  font-size: 15px;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='dark-academia'] .message--bot .message-text {
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .message-text b,
+html[data-skin='dark-academia'] .message-text strong,
+html[data-skin='dark-academia'] .message-text i,
+html[data-skin='dark-academia'] .message-text em {
+  font-synthesis: weight style;
+}
+
+html[data-skin='dark-academia'] .message-time {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .message--user .message-time {
+  color: #b89aa1;
+}
+
+html[data-skin='dark-academia'] .msg-status,
+html[data-skin='dark-academia'] .msg-status--read {
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .message-text a {
+  color: var(--da-mist-hi);
+  text-decoration-color: var(--da-mist-lo);
+  text-underline-offset: 3px;
+}
+
+html[data-skin='dark-academia'] .msg-quote {
+  border-left: 1px solid var(--da-blood);
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .msg-mark {
+  background: var(--da-wine-hi);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .msg-code,
+html[data-skin='dark-academia'] .msg-pre {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-ink);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .msg-spoiler {
+  background: repeating-linear-gradient(135deg, var(--da-line) 0 2px, var(--da-stone) 2px 5px);
+}
+
+html[data-skin='dark-academia'] .message-image {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+}
+
+/* «Ответить» и цитата */
+html[data-skin='dark-academia'] .message-reply-btn {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-ink);
+  color: var(--da-mist);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+}
+
+html[data-skin='dark-academia'] .message-reply-btn:hover {
+  border-color: var(--da-mist);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .message-quote {
+  border-left: 1px solid var(--da-blood);
+  border-radius: 0;
+  background: rgba(11, 13, 17, 0.45);
+  font-size: 13px;
+}
+
+html[data-skin='dark-academia'] .message-quote-author {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .message-quote-text {
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .chat-reply-bar {
+  border-top: 1px solid var(--da-line);
+  background: var(--da-night);
+}
+
+/* Непрочитанное — кровяной ромб с числом */
+html[data-skin='dark-academia'] .unread-dot {
+  border-radius: 0;
+  background: var(--da-blood);
+  color: var(--da-bone);
+  font-family: var(--font);
+  box-shadow: none;
+}
+
+/* «Печатает» — три ромба, медленно */
+html[data-skin='dark-academia'] .typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  background: var(--da-mist);
+  transform: rotate(45deg);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .typing-dot,
+html[data-skin='dark-academia'] .typing-dots span,
+html[data-skin='dark-academia'] .start-guide-dlg-dots i,
+html[data-skin='dark-academia'] .start-control-typing i {
+  animation-duration: 1.8s;
+}
+
+html[data-skin='dark-academia'] .chat-status-bar {
+  background: var(--da-ink);
+  border-top: 1px solid var(--da-line-soft);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-input-bar {
+  background: var(--da-night);
+  border-top: 1px solid var(--da-line);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .chat-input {
+  font-size: 15px;
+}
+
+html[data-skin='dark-academia'] .chat-loading-bubble {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-slate);
+  animation-duration: 4s;
+}
+
+html[data-skin='dark-academia'] .chat-loading-caption {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-loading-cells i {
+  border-radius: 0;
+  background: var(--da-mist);
+  transform: rotate(45deg) scale(0.8);
+  animation-duration: 2.8s;
+}
+
+html[data-skin='dark-academia'] .chat-loading-tag {
+  color: var(--da-mist);
+  animation-duration: 3.2s;
+}
+
+html[data-skin='dark-academia'] .chat-offline-banner {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-slate);
+  color: var(--da-mist-hi);
+  font-size: 13px;
+}
+
+/* Кнопки-ответы режима управления и карточка задачи */
+html[data-skin='dark-academia'] .answer-btn {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--da-bone);
+  font-family: var(--font);
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='dark-academia'] .answer-btn:hover {
+  border-color: var(--da-mist);
+  background: var(--bg-hover);
+}
+
+html[data-skin='dark-academia'] .answer-btn--yes {
+  background: var(--da-wine);
+  border-color: var(--da-wine-line);
+}
+
+html[data-skin='dark-academia'] .answer-btn--yes:hover {
+  background: var(--da-wine-hi);
+  border-color: var(--da-blood);
+}
+
+html[data-skin='dark-academia'] .answer-btn--no,
+html[data-skin='dark-academia'] .answer-btn--cancel {
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .task-card {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .chat-cc-btn--on {
+  background: var(--da-wine);
+  border-color: var(--da-wine-line);
+  color: var(--da-bone);
+}
+
+/* ===== Чат: контекстная панель ===== */
+html[data-skin='dark-academia'] .chat-mood,
+html[data-skin='dark-academia'] .ctx-row {
+  font-size: 13.5px;
+}
+
+html[data-skin='dark-academia'] .ctx-note,
+html[data-skin='dark-academia'] .ctx-mono,
+html[data-skin='dark-academia'] .ctx-list {
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='dark-academia'] .ctx-note {
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .ctx-trend {
+  font-size: 11.5px;
+  color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .ctx-details,
+html[data-skin='dark-academia'] .ctx-actions {
+  border-top: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .ctx-details summary {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+/* Стрелка раскрытия — маленький ромб */
+html[data-skin='dark-academia'] .ctx-details summary::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border: 1px solid var(--da-mist);
+  background: transparent;
+  transform: rotate(45deg);
+}
+
+html[data-skin='dark-academia'] .ctx-details[open] summary::before {
+  background: var(--da-blood);
+  border-color: var(--da-blood);
+  transform: rotate(45deg);
+}
+
+/* ===== Все чаты: каталожные карточки ===== */
+html[data-skin='dark-academia'] .chat-overview-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 32px;
+  line-height: 1.2;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+  text-shadow: none;
+}
+
+html[data-skin='dark-academia'] .chat-overview-lead {
+  font-size: 14.5px;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-overview-stats {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-overview-stats b {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 16px;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .chat-overview-stats--hot b {
+  color: var(--da-blood-text);
+}
+
+html[data-skin='dark-academia'] .chat-overview-grid,
+html[data-skin='dark-academia'] .persona-grid,
+html[data-skin='dark-academia'] .home-presence-grid {
+  counter-reset: da-cat;
+  row-gap: 26px;
+}
+
+html[data-skin='dark-academia'] .chat-card,
+html[data-skin='dark-academia'] .home-presence,
+html[data-skin='dark-academia'] .persona-card {
+  position: relative;
+  counter-increment: da-cat;
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+/* Шифр каталога — римский номер на верхней раме */
+html[data-skin='dark-academia'] .chat-card::after,
+html[data-skin='dark-academia'] .home-presence::after,
+html[data-skin='dark-academia'] .persona-card::after {
+  content: '№ ' counter(da-cat, upper-roman);
+  position: absolute;
+  top: -8px;
+  right: 14px;
+  padding: 0 7px;
+  background: var(--da-ink);
+  font-family: var(--font-disp);
+  font-size: 11px;
+  line-height: 15px;
+  letter-spacing: 0.18em;
+  color: var(--da-mist);
+  pointer-events: none;
+}
+
+/* Цвет персоны — только в раме её окна-аватара, приглушённо */
+html[data-skin='dark-academia'] .chat-card .avatar {
+  background: color-mix(in srgb, var(--persona-color, #6b6d69) 40%, #6b6d69);
+}
+
+html[data-skin='dark-academia'] .persona-avatar-btn,
+html[data-skin='dark-academia'] .room-pick-face {
+  background: color-mix(in srgb, var(--persona, #6b6d69) 40%, #6b6d69);
+}
+
+html[data-skin='dark-academia'] .chat-card {
+  border-left: 1px solid var(--da-line);
+}
+
+html[data-skin='dark-academia'] .chat-card:hover,
+html[data-skin='dark-academia'] .home-presence:hover {
+  background: var(--da-slate-2);
+  border-color: var(--da-mist-lo);
+  transform: none;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .chat-card--unread {
+  border-color: var(--da-wine-line);
+  box-shadow: inset 0 2px 0 0 var(--da-blood);
+}
+
+html[data-skin='dark-academia'] .chat-card-name,
+html[data-skin='dark-academia'] .home-presence-name {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 16px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .chat-card-status,
+html[data-skin='dark-academia'] .chat-card-time,
+html[data-skin='dark-academia'] .chat-card-foot,
+html[data-skin='dark-academia'] .chat-card-preview--empty {
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-card-foot {
+  border-top: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .chat-card-preview {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .chat-card-you {
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .chat-card-badge {
+  border: 1px solid var(--da-wine-line);
+  border-radius: 0;
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+/* ===== Главная: титульный лист ===== */
+html[data-skin='dark-academia'] .home-hero {
+  position: relative;
+  background: var(--da-slate);
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  box-shadow: var(--da-double);
+}
+
+/* Стрельчатое окно справа: волосяная рама, зазор, плоское вино (только на широком экране) */
+@media (min-width: 1240px) {
+  html[data-skin='dark-academia'] .home-hero::before,
+  html[data-skin='dark-academia'] .home-hero::after {
+    content: '';
+    position: absolute;
+    right: 64px;
+    bottom: 34px;
+    width: 112px;
+    height: 250px;
+    pointer-events: none;
+  }
+
+  html[data-skin='dark-academia'] .home-hero::before {
+    background: var(--da-bone-line);
+    clip-path: polygon(evenodd, 0px 250px, 0px 96.99px, 0.96px 82.37px, 3.82px 68px, 8.53px 54.13px, 15.01px 40.99px, 23.14px 28.81px, 32.8px 17.8px, 43.82px 8.14px, 56px 0px, 68.18px 8.14px, 79.2px 17.8px, 88.86px 28.81px, 96.99px 40.99px, 103.47px 54.13px, 108.18px 68px, 111.04px 82.37px, 112px 96.99px, 112px 250px, 0px 250px, 111px 249px, 111px 96.99px, 110.06px 82.58px, 107.26px 68.4px, 102.63px 54.72px, 96.27px 41.74px, 88.28px 29.71px, 78.79px 18.81px, 67.97px 9.24px, 56px 1.16px, 44.03px 9.24px, 33.21px 18.81px, 23.72px 29.71px, 15.73px 41.74px, 9.37px 54.72px, 4.74px 68.4px, 1.94px 82.58px, 1px 96.99px, 1px 249px, 111px 249px);
+  }
+
+  /* Текст героя не заходит под окно */
+  html[data-skin='dark-academia'] .home-hero .home-title {
+    max-width: min(820px, calc(100% - 200px));
+  }
+
+  html[data-skin='dark-academia'] .home-hero .home-lead {
+    max-width: min(580px, calc(100% - 200px));
+  }
+
+  html[data-skin='dark-academia'] .home-hero .home-cta-row {
+    padding-right: 190px;
+  }
+
+  html[data-skin='dark-academia'] .home-hero::after {
+    background: var(--da-wine);
+    clip-path: polygon(6px 244px, 6px 96.99px, 6.85px 83.59px, 9.39px 70.4px, 13.57px 57.64px, 19.34px 45.52px, 26.59px 34.21px, 35.21px 23.92px, 45.07px 14.8px, 56px 6.99px, 66.93px 14.8px, 76.79px 23.92px, 85.41px 34.21px, 92.66px 45.52px, 98.43px 57.64px, 102.61px 70.4px, 105.15px 83.59px, 106px 96.99px, 106px 244px);
+  }
+}
+
+html[data-skin='dark-academia'] .home-eyebrow {
+  font-family: var(--font);
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .home-eyebrow::before {
+  width: 28px;
+  height: 1px;
+  background: var(--da-blood);
+}
+
+html[data-skin='dark-academia'] .home-greet {
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: none;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .home-title {
+  max-width: 820px;
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: clamp(28px, 3.9vw, 50px);
+  line-height: 1.16;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+  text-shadow: none;
+}
+
+html[data-skin='dark-academia'] .home-lead {
+  max-width: 580px;
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .home-ticker {
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+html[data-skin='dark-academia'] .home-ticker-label {
+  font-family: var(--font);
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--da-blood-text);
+}
+
+html[data-skin='dark-academia'] .home-ticker-text {
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .home-cta-row {
+  gap: 12px;
+}
+
+html[data-skin='dark-academia'] .home-readout {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .home-readout .val {
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .home-readout .live-tag {
+  color: var(--da-mist-hi);
+}
+
+/* Заголовки блоков главной — как заголовки разделов */
+html[data-skin='dark-academia'] .home-block-head {
+  position: relative;
+  border-bottom: 1px solid var(--da-line);
+}
+
+html[data-skin='dark-academia'] .home-block-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+  text-shadow: none;
+}
+
+html[data-skin='dark-academia'] .home-block-num {
+  font-family: var(--font);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .home-presence-status,
+html[data-skin='dark-academia'] .home-presence-reply {
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .home-presence-reply {
+  border-top: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .home-presence-activity {
+  font-size: 13.5px;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .home-presence-reply--unread {
+  color: var(--da-blood-text);
+}
+
+/* Телеметрия — строка ячеек, разделённых волосяными линиями */
+html[data-skin='dark-academia'] .home-telemetry {
+  gap: 0;
+  background: var(--da-slate);
+  border: 1px solid var(--da-line);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .home-tele-cell {
+  background: transparent;
+  border-right: 1px solid var(--da-line-soft);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .home-tele-cell:last-child {
+  border-right: 0;
+}
+
+html[data-skin='dark-academia'] .home-tele-label {
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .home-tele-value {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 34px;
+  line-height: 1.1;
+  color: var(--da-bone);
+  text-shadow: none;
+}
+
+html[data-skin='dark-academia'] .home-tele-value span {
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .home-tele-note,
+html[data-skin='dark-academia'] .home-feed-empty {
+  font-size: 13px;
+  color: var(--da-mist);
+}
+
+/* Модули консоли */
+html[data-skin='dark-academia'] .home-dossier,
+html[data-skin='dark-academia'] .home-feed,
+html[data-skin='dark-academia'] .link-card {
+  clip-path: none;
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .home-dossier:hover,
+html[data-skin='dark-academia'] .link-card:hover {
+  background: var(--da-slate-2);
+  border-color: var(--da-mist-lo);
+  transform: none;
+}
+
+html[data-skin='dark-academia'] .home-dossier h3 {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 16px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .home-dossier p {
+  font-size: 13.5px;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .home-dossier-index,
+html[data-skin='dark-academia'] .home-dossier-foot,
+html[data-skin='dark-academia'] .home-feed-persona,
+html[data-skin='dark-academia'] .home-feed-time {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .home-dossier-foot {
+  border-top: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .home-dossier-foot .go {
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .home-foot-stencil,
+html[data-skin='dark-academia'] .home-foot-right {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--da-mist-lo);
+}
+
+/* Журнал системы — чёрный лист */
+html[data-skin='dark-academia'] .home-term {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--term-bg);
+  box-shadow: none;
+  font-size: 12.5px;
+}
+
+html[data-skin='dark-academia'] .home-term-titlebar,
+html[data-skin='dark-academia'] .start-guide-dlg-titlebar {
+  border-bottom: 1px solid var(--da-line-soft);
+  font-family: var(--font);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .home-term-titlebar .lights i,
+html[data-skin='dark-academia'] .start-guide-dlg-titlebar .lights i {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  transform: rotate(45deg);
+}
+
+html[data-skin='dark-academia'] .home-term-titlebar .lights i:first-child,
+html[data-skin='dark-academia'] .start-guide-dlg-titlebar .lights i:first-child {
+  background: var(--da-blood);
+  border-color: var(--da-blood);
+}
+
+html[data-skin='dark-academia'] .home-term-line .bright {
+  color: var(--da-bone);
+}
+
+/* Курсор не мигает — медленно тлеет */
+@keyframes da-ember {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.9; }
+}
+
+html[data-skin='dark-academia'] .home-term-cursor,
+html[data-skin='dark-academia'] .start-guide-dlg-cursor {
+  background: var(--da-mist);
+  animation: da-ember 3.6s ease-in-out infinite;
+}
+
+/* Заметки и календарь */
+html[data-skin='dark-academia'] .notes,
+html[data-skin='dark-academia'] .cal {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .note {
+  border-color: var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate-2);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .note-text {
+  font-size: 14px;
+}
+
+html[data-skin='dark-academia'] .notes-hint,
+html[data-skin='dark-academia'] .notes-empty {
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .notes-persona {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+}
+
+html[data-skin='dark-academia'] .notes-persona:hover {
+  border-color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .notes-persona--on {
+  border-color: var(--da-wine-line);
+  background: var(--da-wine);
+}
+
+html[data-skin='dark-academia'] .notes-persona-avatar {
+  font-size: 12px;
+  padding-top: 4px;
+}
+
+html[data-skin='dark-academia'] .cal-month {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 16px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+html[data-skin='dark-academia'] .cal-weekdays span {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .cal-day {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-ink);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .cal-day:hover {
+  border-color: var(--da-mist-lo);
+  background: var(--da-slate-2);
+}
+
+html[data-skin='dark-academia'] .cal-day--today {
+  border-color: var(--da-bone-line);
+  box-shadow: inset 0 2px 0 0 var(--da-blood);
+}
+
+html[data-skin='dark-academia'] .cal-day-num {
+  font-family: var(--font-disp);
+  font-size: 12.5px;
+}
+
+html[data-skin='dark-academia'] .cal-chip,
+html[data-skin='dark-academia'] .cal-entry,
+html[data-skin='dark-academia'] .cal-tag {
+  border-radius: 0;
+  font-size: 11.5px;
+}
+
+html[data-skin='dark-academia'] .cal-dot {
+  border-radius: 0;
+  transform: rotate(45deg);
+}
+
+html[data-skin='dark-academia'] .day-chip--on,
+html[data-skin='dark-academia'] .cal-optional-chip--active {
+  border-color: var(--da-wine-line);
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+/* ===== «Старт» ===== */
+html[data-skin='dark-academia'] .start-guide-bar {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .start-guide-bar-label {
+  color: var(--da-blood-text);
+  letter-spacing: 0.2em;
+}
+
+html[data-skin='dark-academia'] .start-guide-bar-pct {
+  font-family: var(--font-disp);
+  font-size: 13px;
+  color: var(--da-bone);
+}
+
+/* Шкала — тонкая линия с делениями */
+html[data-skin='dark-academia'] .start-guide-meter {
+  height: 3px;
+  border-radius: 0;
+  background: var(--da-line-soft);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .start-guide-meter::after {
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), var(--da-slate) calc(10% - 1px) 10%);
+}
+
+html[data-skin='dark-academia'] .start-guide-meter i {
+  border-radius: 0;
+  background: var(--da-bone);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .start-guide-lead,
+html[data-skin='dark-academia'] .start-guide-step-desc {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .start-guide-tabs {
+  gap: 0;
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .start-guide-tab {
+  border-radius: 0;
+  background: transparent;
+}
+
+html[data-skin='dark-academia'] .start-guide-tab + .start-guide-tab {
+  border-left: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .start-guide-tab:hover {
+  background: var(--bg-hover);
+}
+
+html[data-skin='dark-academia'] .start-guide-tab.is-active {
+  background: var(--da-slate-2);
+}
+
+html[data-skin='dark-academia'] .start-guide-tab-index,
+html[data-skin='dark-academia'] .start-guide-tab-count {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .start-guide-tab-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .start-guide-tab-sub {
+  font-size: 12.5px;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .start-guide-tab-ink {
+  height: 1px;
+  background: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .start-guide-tab-ink::before {
+  left: 50%;
+  bottom: -3px;
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  background: var(--da-blood);
+  border-radius: 0;
+  transform: rotate(45deg);
+}
+
+html[data-skin='dark-academia'] .start-guide-steps {
+  clip-path: none;
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .start-guide-mark {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-ink);
+  color: var(--da-mist-hi);
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 12.5px;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .start-guide-mark:hover {
+  border-color: var(--da-mist);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .start-guide-step.is-done .start-guide-mark {
+  background: var(--da-wine);
+  border-color: var(--da-wine-line);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .start-guide-line {
+  width: 1px;
+  background: var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .start-guide-line i {
+  background: var(--da-bone-line);
+}
+
+html[data-skin='dark-academia'] .start-guide-step-idx,
+html[data-skin='dark-academia'] .start-guide-check {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .start-guide-step-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .start-guide-go {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+}
+
+html[data-skin='dark-academia'] .start-guide-warn {
+  border: 1px solid var(--da-wine-line);
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+html[data-skin='dark-academia'] .start-guide-warn-tag {
+  border-radius: 0;
+  background: var(--da-wine);
+  color: var(--da-bone);
+  font-family: var(--font);
+  letter-spacing: 0.14em;
+}
+
+html[data-skin='dark-academia'] .start-guide-code,
+html[data-skin='dark-academia'] .start-guide-ex-key {
+  border-color: var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-ink);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .start-guide-code-flash {
+  background: var(--da-wine);
+}
+
+html[data-skin='dark-academia'] .start-guide-ex-row {
+  border-color: var(--da-line-soft);
+}
+
+/* Демо-окно переписки */
+html[data-skin='dark-academia'] .start-guide-dlg {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--term-bg);
+  box-shadow: none;
+  font-size: 13px;
+}
+
+html[data-skin='dark-academia'] .start-guide-dlg-peer {
+  border-color: var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .start-guide-dlg-avatar {
+  font-size: 12px;
+  padding-top: 5px;
+}
+
+html[data-skin='dark-academia'] .start-guide-dlg-peer-name {
+  font-family: var(--font-disp);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+html[data-skin='dark-academia'] .start-guide-dlg-peer-status,
+html[data-skin='dark-academia'] .start-guide-dlg-msg--sys {
+  font-size: 11.5px;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .start-guide-dlg-msg {
+  border-radius: 0;
+  font-family: var(--font);
+}
+
+html[data-skin='dark-academia'] .start-guide-dlg-msg--bot {
+  border: 1px solid var(--da-bone-line);
+  background: var(--da-slate);
+}
+
+html[data-skin='dark-academia'] .start-guide-dlg-msg--op {
+  border: 1px solid var(--da-wine);
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .start-guide-dlg-input {
+  border-color: var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-ink);
+}
+
+html[data-skin='dark-academia'] .start-guide-dlg-live::before,
+html[data-skin='dark-academia'] .room-serverrack-live,
+html[data-skin='dark-academia'] .start-control-rec {
+  animation-duration: 4s;
+}
+
+/* Режим управления на «Старте» */
+html[data-skin='dark-academia'] .start-control-card,
+html[data-skin='dark-academia'] .start-control-faq,
+html[data-skin='dark-academia'] .start-control-stage,
+html[data-skin='dark-academia'] .start-control-shot,
+html[data-skin='dark-academia'] .start-control-ex {
+  border-color: var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .start-control-eyebrow {
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .start-control-eyebrow::before {
+  background: var(--da-blood);
+}
+
+html[data-skin='dark-academia'] .start-control-cmd,
+html[data-skin='dark-academia'] .start-control-ex-phrase {
+  border-color: var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-ink);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .start-control-filter,
+html[data-skin='dark-academia'] .start-control-ex-tab,
+html[data-skin='dark-academia'] .start-control-demo-tab {
+  border-color: var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .start-control-filter.is-active,
+html[data-skin='dark-academia'] .start-control-ex-tab.is-active,
+html[data-skin='dark-academia'] .start-control-demo-tab.is-active,
+html[data-skin='dark-academia'] .start-control-filter.is-on {
+  border-color: var(--da-wine-line);
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .start-control-mark,
+html[data-skin='dark-academia'] .start-control-node {
+  border-color: var(--da-line);
+  border-radius: 0;
+  background: var(--da-ink);
+}
+
+/* Активный шаг — костяной ромб без пульсирующего свечения основы */
+html[data-skin='dark-academia'] .start-control-step.is-active .start-control-node {
+  background: var(--da-bone);
+  border-color: var(--da-bone);
+  box-shadow: none;
+  animation: none;
+}
+
+/* Бегущий импульс по линии шагов — короткий плоский штрих вместо размытого блика */
+html[data-skin='dark-academia'] .start-control-track::after {
+  width: 24px;
+  background: var(--border-accent);
+  animation-duration: 6s;
+}
+@media (max-width: 760px) {
+  html[data-skin='dark-academia'] .start-control-track::after {
+    width: 100%;
+    height: 24px;
+    background: var(--border-accent);
+  }
+}
+
+html[data-skin='dark-academia'] .start-control-track,
+html[data-skin='dark-academia'] .start-control-path,
+html[data-skin='dark-academia'] .start-control-pipe {
+  border-color: var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .start-control-ex-tag,
+html[data-skin='dark-academia'] .start-control-ex-mode {
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .start-control-yn-opt {
+  border-color: var(--da-line);
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .start-control-yn-opt--yes {
+  border-color: var(--da-wine-line);
+  background: var(--da-wine);
+}
+
+/* ===== Комната ===== */
+html[data-skin='dark-academia'] .room-layout {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-line-soft);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .room-scene-card {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .room-status-plate {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-ink);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .room-telemetry .home-tele-cell {
+  background: var(--da-slate);
+  border-right: 0;
+  border-bottom: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .room-tele-text,
+html[data-skin='dark-academia'] .room-telemetry .home-tele-value {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.35;
+  letter-spacing: 0.05em;
+  color: var(--da-bone);
+  text-shadow: none;
+}
+
+html[data-skin='dark-academia'] .room-tele-sub {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .room-tele-offline .room-tele-sub {
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .room-tele-bar {
+  height: 3px;
+  border-radius: 0;
+  background: var(--da-line-soft);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .room-tele-bar-fill {
+  border-radius: 0;
+  background: var(--da-bone);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .room-offline-plate {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-ink);
+  box-shadow: var(--da-double);
+}
+
+html[data-skin='dark-academia'] .room-focus-label {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .room-art-grid .card,
+html[data-skin='dark-academia'] .art-drop {
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .art-drop {
+  border: 1px dashed var(--da-line);
+  background: var(--da-ink);
+}
+
+html[data-skin='dark-academia'] .art-drop:hover {
+  border-color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .art-drop-title {
+  font-family: var(--font-disp);
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+html[data-skin='dark-academia'] .art-drop-spec,
+html[data-skin='dark-academia'] .art-drop-status {
+  font-size: 11px;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .art-prompt {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-ink);
+  font-size: 12px;
+}
+
+html[data-skin='dark-academia'] .room-spot-toggle--on {
+  border-color: var(--da-wine-line);
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+/* Выбор персоны комнаты на телефоне: нижний лист */
+html[data-skin='dark-academia'] .room-pick {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .room-pick-face {
+  font-size: 16px;
+}
+
+html[data-skin='dark-academia'] .room-pick-name {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 15px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .room-pick-status {
+  font-size: 11.5px;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .sheet {
+  border-top: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .sheet-grip {
+  width: 9px;
+  height: 9px;
+  border-radius: 0;
+  background: transparent;
+  border: 1px solid var(--da-mist);
+  transform: rotate(45deg);
+}
+
+html[data-skin='dark-academia'] .sheet-title {
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .sheet-row {
+  border-bottom-color: var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .sheet-row.is-current .room-pick-face::before {
+  background: var(--da-wine);
+}
+
+html[data-skin='dark-academia'] .sheet-check {
+  color: var(--da-blood-text);
+}
+
+/* ===== Персоны: каталожные карточки ===== */
+html[data-skin='dark-academia'] .persona-card {
+  border-color: var(--da-line);
+}
+
+html[data-skin='dark-academia'] .persona-avatar-btn {
+  position: relative;
+  isolation: isolate;
+  padding-top: 10px;
+  border: 0;
+  border-radius: 0;
+  clip-path: var(--da-ogive);
+  background: var(--da-bone-line);
+  color: var(--da-bone);
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 24px;
+  box-shadow: none;
+  text-shadow: none;
+  overflow: hidden;
+}
+
+html[data-skin='dark-academia'] .persona-avatar-btn::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  clip-path: var(--da-ogive);
+  background: var(--da-slate-2);
+  pointer-events: none;
+}
+
+html[data-skin='dark-academia'] .persona-avatar-btn img {
+  position: absolute;
+  inset: 1px;
+  width: calc(100% - 2px);
+  height: calc(100% - 2px);
+  object-fit: cover;
+  border-radius: 0;
+  clip-path: var(--da-ogive);
+}
+
+html[data-skin='dark-academia'] .persona-avatar-overlay {
+  border-radius: 0;
+  background: rgba(11, 13, 17, 0.72);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .persona-avatar-remove {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: var(--da-slate);
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .persona-card-name {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 1.25;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  overflow-wrap: normal;
+  word-break: normal;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .persona-card-meta {
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .persona-card-desc {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .persona-card-label {
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .persona-status {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  background: transparent;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .persona-status-dot {
+  border-radius: 0;
+  background: var(--da-mist-hi);
+  transform: rotate(45deg);
+  box-shadow: none;
+  animation: none;
+}
+
+html[data-skin='dark-academia'] .persona-chip {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate-2);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .persona-telemetry {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-ink);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .persona-tele-cell + .persona-tele-cell {
+  border-left: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .persona-tele-label {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .persona-tele-value {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 18px;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .persona-card-actions {
+  border-top: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .persona-icon-btn {
+  border-radius: 0;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .persona-icon-btn:hover,
+html[data-skin='dark-academia'] .persona-icon-btn--on {
+  border-color: var(--da-line);
+  background: var(--bg-hover);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .persona-icon-btn--danger:hover {
+  border-color: var(--da-blood);
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+/* ===== Сервисы и настройки ===== */
+html[data-skin='dark-academia'] .svc-card {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .svc-group-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 15px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .svc-sub,
+html[data-skin='dark-academia'] .svc-toggle-label {
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .svc-stat-num {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .svc-code {
+  border: 1px dashed var(--da-line);
+  border-radius: 0;
+  background: var(--da-ink);
+}
+
+html[data-skin='dark-academia'] .svc-ok,
+html[data-skin='dark-academia'] .svc-chip-on {
+  border-color: var(--da-mist-lo);
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .svc-flash {
+  background: var(--da-wine);
+}
+
+html[data-skin='dark-academia'] .provider-name {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='dark-academia'] .apikey-chip {
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .ollama-model {
+  border-color: var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+}
+
+html[data-skin='dark-academia'] .is-recommended {
+  border-color: var(--da-wine-line);
+}
+
+html[data-skin='dark-academia'] .danger-part {
+  border-color: var(--da-line-soft);
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .danger-part--armed {
+  border-color: var(--da-blood);
+  background: var(--da-wine);
+}
+
+/* Раскрывающиеся блоки */
+html[data-skin='dark-academia'] .collapsible-head {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .collapsible-head:hover,
+html[data-skin='dark-academia'] .collapsible.is-open .collapsible-head {
+  border-color: var(--da-line);
+  background: var(--da-slate-2);
+}
+
+html[data-skin='dark-academia'] .collapsible-chevron {
+  border-radius: 0;
+  border-color: var(--da-line);
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .collapsible-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+html[data-skin='dark-academia'] .collapsible-summary {
+  font-size: 12.5px;
+  color: var(--da-mist);
+}
+
+/* ===== Экран запуска ===== */
+html[data-skin='dark-academia'] .boot-panel {
+  background: var(--da-slate);
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  box-shadow: var(--da-double);
+}
+
+html[data-skin='dark-academia'] .boot-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: clamp(22px, 4.6vw, 32px);
+  line-height: 1.2;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+  text-shadow: none;
+}
+
+html[data-skin='dark-academia'] .boot-lead {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .boot-steps {
+  font-size: 13.5px;
+}
+
+html[data-skin='dark-academia'] .boot-step-tag {
+  font-family: var(--font);
+  letter-spacing: 0.12em;
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .boot-step--ok .boot-step-tag {
+  color: var(--da-mist-hi);
+}
+
+html[data-skin='dark-academia'] .boot-step--run .boot-step-tag {
+  color: var(--da-bone);
+  animation-duration: 4s;
+}
+
+html[data-skin='dark-academia'] .boot-step--wait {
+  color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .boot-step--fail .boot-step-tag {
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+/* Шаги загрузки — ряд ромбов */
+html[data-skin='dark-academia'] .boot-cells {
+  gap: 7px;
+}
+
+html[data-skin='dark-academia'] .boot-cells i {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  background: var(--da-line);
+  transform: rotate(45deg);
+  box-shadow: none;
+  animation-duration: 3.6s;
+}
+
+html[data-skin='dark-academia'] .boot-cells i.on {
+  background: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .boot-meta {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--da-mist-lo);
+}
+
+html[data-skin='dark-academia'] .boot-cmd-label {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .boot-hint {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .boot-cmd-row {
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--term-bg);
+}
+
+html[data-skin='dark-academia'] .boot-cmd-copy {
+  border: 1px solid var(--da-line);
+  border-radius: 0;
+  font-family: var(--font);
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='dark-academia'] .boot-found {
+  border-color: var(--da-line-soft);
+  border-radius: 0;
+}
+
+/* ===== Галерея тем ===== */
+html[data-skin='dark-academia'] .skin-themes-lead,
+html[data-skin='dark-academia'] .skin-themes-hint {
+  font-size: 14px;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .skin-themes-grid {
+  gap: 18px;
+}
+
+html[data-skin='dark-academia'] .skin-theme-card {
+  position: relative;
+  border: 1px solid var(--da-line-soft);
+  border-radius: 0;
+  background: var(--da-slate);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .skin-theme-card:hover {
+  border-color: var(--da-mist-lo);
+  transform: none;
+  box-shadow: none;
+}
+
+/* Выбранная тема — висячая закладка-ляссе и костяная рамка */
+html[data-skin='dark-academia'] .skin-theme-card--active,
+html[data-skin='dark-academia'] .skin-theme-card--active:hover {
+  border-color: var(--da-bone-line);
+  box-shadow: inset 0 0 0 1px var(--da-bone-line);
+}
+
+html[data-skin='dark-academia'] .skin-theme-card--active::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  right: 16px;
+  z-index: 2;
+  width: 10px;
+  height: 26px;
+  background: var(--da-blood);
+  clip-path: var(--da-tail);
+  pointer-events: none;
+}
+
+html[data-skin='dark-academia'] .skin-theme-card-name {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .skin-theme-card-tagline,
+html[data-skin='dark-academia'] .skin-theme-card-meta {
+  font-size: 12px;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .skin-theme-card-scheme {
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .skin-themes-assigned {
+  border-top: 1px solid var(--da-line-soft);
+}
+
+html[data-skin='dark-academia'] .skin-themes-assigned-title {
+  font-family: var(--font-disp);
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+html[data-skin='dark-academia'] .skin-themes-inherit--on {
+  border-color: var(--da-wine-line);
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+/* ===== Голосовой режим: персона в стрельчатом окне ===== */
+html[data-skin='dark-academia'] .voice-chat {
+  background: var(--da-ink);
+}
+
+html[data-skin='dark-academia'] .voice-chat-topbar,
+html[data-skin='dark-academia'] .voice-chat-controls {
+  background: var(--da-night);
+  border-color: var(--da-line);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .voice-chat-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 17px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+html[data-skin='dark-academia'] .voice-chat-status {
+  letter-spacing: 0.14em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .voice-avatar {
+  isolation: isolate;
+  width: 180px;
+  height: 240px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .voice-avatar-img {
+  position: relative;
+  border: 0;
+  border-radius: 0;
+  clip-path: var(--da-ogive-crown);
+  box-shadow: none;
+}
+
+/* Рама окна — волосяная линия; когда персона слушает или говорит — линия светлеет */
+html[data-skin='dark-academia'] .voice-avatar::before {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  z-index: -1;
+  clip-path: var(--da-ogive-crown);
+  background: var(--da-line);
+  pointer-events: none;
+}
+
+html[data-skin='dark-academia'] .voice-avatar::after {
+  inset: -5px;
+  z-index: -1;
+  border: 0;
+  border-radius: 0;
+  clip-path: var(--da-ogive-crown);
+  background: var(--da-ink);
+  box-shadow: none;
+  opacity: 1;
+  animation: none;
+}
+
+html[data-skin='dark-academia'] .voice-avatar--listening::before,
+html[data-skin='dark-academia'] .voice-avatar--speaking::before {
+  background: var(--da-blood);
+}
+
+html[data-skin='dark-academia'] .voice-chat-line {
+  font-family: var(--font);
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .voice-input-toggle {
+  border-color: var(--da-line);
+  border-radius: 0;
+}
+
+html[data-skin='dark-academia'] .voice-input-toggle button {
+  border-radius: 0;
+  font-family: var(--font);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--da-mist);
+}
+
+html[data-skin='dark-academia'] .voice-input-toggle button.active {
+  background: var(--da-wine);
+  color: var(--da-bone);
+}
+
+html[data-skin='dark-academia'] .voice-mic-btn {
+  border: 1px solid var(--da-wine-line);
+  background: var(--da-wine);
+  color: var(--da-bone);
+  box-shadow: none;
+}
+
+html[data-skin='dark-academia'] .voice-mic-btn--active {
+  background: var(--da-wine-hi);
+  border-color: var(--da-blood);
+  box-shadow: 0 0 0 4px var(--da-ink), 0 0 0 5px var(--da-blood);
+  animation-duration: 2.4s;
+}
+
+html[data-skin='dark-academia'] .voice-chat-note {
+  color: var(--da-mist);
+}
+
+/* ===== Телефон ===== */
+@media (max-width: 760px) {
+  html[data-skin='dark-academia'] .sidebar--open {
+    box-shadow: inset -4px 0 0 0 var(--da-night), inset -5px 0 0 0 var(--da-line-soft);
+  }
+
+  html[data-skin='dark-academia'] .sidebar-backdrop {
+    background: rgba(5, 6, 9, 0.8);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  html[data-skin='dark-academia'] .topbar-title {
+    font-size: 14px;
+    letter-spacing: 0.22em;
+  }
+
+  html[data-skin='dark-academia'] .section-title {
+    font-size: 19px;
+    letter-spacing: 0.14em;
+  }
+
+  html[data-skin='dark-academia'] .message-bubble {
+    padding: 10px 13px 8px;
+  }
+
+  html[data-skin='dark-academia'] .chat-messages {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  html[data-skin='dark-academia'] .chat-header-name {
+    font-size: 15px;
+    letter-spacing: 0.18em;
+  }
+
+  html[data-skin='dark-academia'] .home-title {
+    font-size: clamp(22px, 6.6vw, 30px);
+    letter-spacing: 0.1em;
+  }
+
+  html[data-skin='dark-academia'] .chat-overview-title {
+    font-size: 24px;
+    letter-spacing: 0.14em;
+  }
+
+  html[data-skin='dark-academia'] .home-block-title {
+    font-size: 17px;
+    letter-spacing: 0.16em;
+  }
+
+  html[data-skin='dark-academia'] .home-tele-value {
+    font-size: 28px;
+  }
+
+  html[data-skin='dark-academia'] .card-title {
+    letter-spacing: 0.12em;
+  }
+
+  html[data-skin='dark-academia'] .card-title-row {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  html[data-skin='dark-academia'] .tab {
+    letter-spacing: 0.06em;
+  }
+
+  /* Состояние комнаты без связи — на всю ширину, иначе заголовок обрезается */
+  html[data-skin='dark-academia'] .room-telemetry .room-tele-offline {
+    grid-column: 1 / -1;
+  }
+
+  html[data-skin='dark-academia'] .btn {
+    letter-spacing: 0.1em;
+  }
+
+  /* Окна во весь экран — навершие и двойная рама не нужны */
+  html[data-skin='dark-academia'] .dossier-panel::before,
+  html[data-skin='dark-academia'] .dossier-panel::after,
+  html[data-skin='dark-academia'] .pcreate-overlay .pcreate-panel::before,
+  html[data-skin='dark-academia'] .pcreate-overlay .pcreate-panel::after {
+    display: none;
+  }
+
+  html[data-skin='dark-academia'] .dossier-panel,
+  html[data-skin='dark-academia'] .pcreate-overlay .pcreate-panel {
+    box-shadow: none;
+  }
+
+  html[data-skin='dark-academia'] .dossier-panel > .dossier-head,
+  html[data-skin='dark-academia'] .pcreate-overlay .pcreate-panel > .pcreate-head {
+    margin: 0;
+  }
+
+  html[data-skin='dark-academia'] .dossier-panel > .dossier-tabs,
+  html[data-skin='dark-academia'] .dossier-panel > .dossier-body {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  html[data-skin='dark-academia'] .dossier-panel > .dossier-body,
+  html[data-skin='dark-academia'] .pcreate-overlay .pcreate-panel > .pcreate-foot {
+    margin: 0;
+  }
+
+  /* Край ряда вкладок гаснет ступенями (жёсткие стопы), а не плавно */
+  html[data-skin='dark-academia'] .dossier-tabs--more-right {
+    mask-image: linear-gradient(to right, #000 calc(100% - 36px), rgba(0, 0, 0, 0.55) calc(100% - 36px) calc(100% - 24px), rgba(0, 0, 0, 0.25) calc(100% - 24px) calc(100% - 12px), transparent calc(100% - 12px));
+  }
+
+  html[data-skin='dark-academia'] .dossier-tabs--more-left {
+    mask-image: linear-gradient(to left, #000 calc(100% - 36px), rgba(0, 0, 0, 0.55) calc(100% - 36px) calc(100% - 24px), rgba(0, 0, 0, 0.25) calc(100% - 24px) calc(100% - 12px), transparent calc(100% - 12px));
+  }
+
+  html[data-skin='dark-academia'] .dossier-tabs--more-left.dossier-tabs--more-right {
+    mask-image: linear-gradient(to right, transparent 12px, rgba(0, 0, 0, 0.25) 12px 24px, rgba(0, 0, 0, 0.55) 24px 36px, #000 36px calc(100% - 36px), rgba(0, 0, 0, 0.55) calc(100% - 36px) calc(100% - 24px), rgba(0, 0, 0, 0.25) calc(100% - 24px) calc(100% - 12px), transparent calc(100% - 12px));
+  }
+
+  html[data-skin='dark-academia'] .mem-stats .stat-value {
+    font-size: 22px;
+  }
+
+  html[data-skin='dark-academia'] .mem-stats .stat-label {
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+  }
+}

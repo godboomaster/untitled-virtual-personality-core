@@ -22,6 +22,7 @@ const navItems: { id: Section; icon: IconName }[] = [
   { id: 'room', icon: 'room' },
   { id: 'personas', icon: 'personas' },
   { id: 'skins', icon: 'skins' },
+  { id: 'services', icon: 'services' },
   { id: 'settings', icon: 'settings' },
 ];
 

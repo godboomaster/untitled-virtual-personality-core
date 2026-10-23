@@ -12,6 +12,7 @@ import { choiceDialog } from './dialogStore';
 import { forgetPersonaItems, renamePersonaItems } from './inventoryStore';
 import { forgetOverlay, renameOverlay } from './skins/overlayStore';
 import { forgetPersonaSkins, renameSkins } from './skins/skinStore';
+import { renamePersonaSkinTheme, setPersonaSkin } from './skinTheme';
 
 // Формат id как у бэкенда (app/api/security.PERSONA_ID_RE)
 export const PERSONA_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -41,6 +42,7 @@ export function forgetPersonaLocal(id: string) {
   forgetPersonaItems(id);
   forgetOverlay(id);
   forgetPersonaSkins(id);
+  setPersonaSkin(id, null);
 }
 
 // Промис резолвится, когда новый список персон уже загружен (родитель может
@@ -56,6 +58,7 @@ export async function renamePersonaId(
   renamePersonaArt(oldId, newId);
   renamePersonaItems(oldId, newId);
   renameSkins(oldId, newId);
+  renamePersonaSkinTheme(oldId, newId);
   renameOverlay(oldId, newId);
   refetchAvatars();
   await refetchPersonas();

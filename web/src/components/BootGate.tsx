@@ -12,6 +12,7 @@ import { setOfflineBoot } from '../offline/state';
 import { useI18n } from '../i18n';
 import { getInitialTheme } from '../useAppTheme';
 import { DetroitBackground } from '../effects/DetroitBackground';
+import { useAppliedSkin } from '../skinTheme';
 
 /* Экран запуска: Vite поднимается за секунду, а ядро API (импорты, прогрев
    ботов) — заметно дольше. Без гейта приложение успевало отрисоваться на
@@ -65,6 +66,7 @@ function formatElapsed(ms: number): string {
 
 export default function BootGate({ children }: { children: ReactNode }) {
   const { t } = useI18n();
+  const skinApplied = useAppliedSkin() != null;
   const [stage, setStage] = useState<Stage>(0);
   const [attempt, setAttempt] = useState(1);
   const [elapsed, setElapsed] = useState(0);
@@ -327,7 +329,7 @@ export default function BootGate({ children }: { children: ReactNode }) {
 
   return (
     <div className={`boot${stage === 2 ? ' boot--done' : ''}${stopped ? ' boot--offline' : ''}`}>
-      <DetroitBackground />
+      {!skinApplied && <DetroitBackground />}
       <div className="boot-panel bracketed" role={stopped ? 'alert' : 'status'} aria-live="polite">
         <span className="corner tl plus" />
         <span className="corner tr" />

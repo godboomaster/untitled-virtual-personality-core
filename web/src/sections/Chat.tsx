@@ -52,6 +52,7 @@ import { usePersonaSkin } from '../skins/skinStore';
 import { usePersonaOverlay } from '../skins/overlayStore';
 import { buildChatPayload } from '../skins/payloads';
 import { useShellTheme } from '../skins/shellTheme';
+import { usePersonaSkinScope } from '../skinTheme';
 import { useSkinEnv } from '../skins/useSkinEnv';
 import { parseReminderWhen } from '../reminderWhen';
 import { fmtRecurrence, formFromRepeatText, recurrenceFromForm } from '../reminderRepeat';
@@ -2117,6 +2118,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   // в его палитру — и на дефолтных экранах (досье без своего файла,
   // обычный вид), чтобы интерфейс не прыгал между палитрами
   useShellTheme(activeSkin ?? chatSkinFile ?? dossierSkinFile);
+  // Своя тема оформления персоны (web/skins) — пока открыт её чат или досье
+  usePersonaSkinScope(persona.id);
 
   // Активный скин заменяет соответствующий вид целиком; сверху — тонкая
   // панель приложения: то, чего в контракте скина нет (все чаты, голос,

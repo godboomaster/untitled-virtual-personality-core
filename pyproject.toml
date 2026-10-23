@@ -50,6 +50,9 @@ dependencies = [
     # WebSocket напрямую и до посредника
     "cryptography>=48,<51",
     "websockets>=14,<18",
+    # Сервисы (app/integrations): Telegram-аккаунт пользователя (MTProto) —
+    # входящие сообщения для уведомлений
+    "telethon>=1.40,<2",
 ]
 
 # Необязательное: pip install -e ".[voice]"
