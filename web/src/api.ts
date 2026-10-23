@@ -1234,8 +1234,10 @@ export interface PersonaDraft {
 // (бэкенд отдаёт reply после постобработки ядра кусками, эффект печати),
 // part_break — граница расщеплённого ответа (settings.split_messages):
 // следующие токены относятся к новому сообщению; reply_ts (до токенов) —
-// серверная метка ответа в STM. Промис резолвится финальным событием done
-// с тем же reply (+ extra_messages).
+// серверная метка ответа в STM; photo — кадр устройства ядра («что видит
+// робот?»), как только он снят, ещё до ответа (в финальном images он
+// придёт снова). Промис резолвится финальным событием done с тем же reply
+// (+ extra_messages).
 // Живые кадры вкладки агента (режим управления): SSE
 // /api/personas/{p}/control/view — JPEG base64 + адрес/заголовок/приватность
 // или смена состояния браузера. Режим погас — {status: 'off'} и конец потока
@@ -1290,6 +1292,7 @@ export async function streamChat(
   onToken: (text: string) => void,
   onPartBreak?: () => void,
   onReplyTs?: (ts: number) => void,
+  onPhoto?: (dataUrl: string) => void,
 ): Promise<ApiChatResponse> {
   // Сетевой сбой до ответа (fetch отклонён) — запрос мог и дойти до сервера:
   // считаем обрывом, чат сверится с историей по last_ts
@@ -1359,6 +1362,7 @@ export async function streamChat(
       if (event.token) onToken(event.token);
       else if (event.part_break) onPartBreak?.();
       else if (!event.done && typeof event.reply_ts === 'number') onReplyTs?.(event.reply_ts);
+      else if (typeof event.photo === 'string') onPhoto?.(event.photo);
       else if (event.error) throw new ApiError(500, event.error);
       else if (event.done) return event as ApiChatResponse;
     }

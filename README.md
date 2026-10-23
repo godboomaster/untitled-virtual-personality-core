@@ -541,6 +541,12 @@ works (`ollama show <model>` lists `vision` among its capabilities).
 - **Camera** — the camera button next to "+" in the chat: the phone's camera in the app, a
   webcam with a preview in the browser. A picture attached with "+" is handled as before: by a
   cloud model with vision if one is set up, otherwise by the local one.
+- **A device's camera** — "what does the robot see?", "look through the robot", "что видит
+  робот?". The device (say, a Raspberry Pi with a camera) connects to the core itself with
+  `API_TOKEN` and tells how to address it; the core asks it for a photo, the local model looks
+  at the frame, and the persona answers with the frame attached. A sample program for the Pi
+  is the `vpc-robot` repository. If the device is offline, the chat says so. Works on the web
+  and in the app.
 
 On macOS the screen can be captured only with permission. On the first request the system
 asks it for the app the core was started from (Terminal, iTerm, VS Code or the tray panel).
@@ -839,6 +845,8 @@ descriptions are in Swagger: `/docs`.
 | GET | `/api/personas/{p}/inbox` | background messages: reminders, lessons, initiative; "typing" and messages from other devices the persona is answering now (`pending`) |
 | GET | `/api/changes` | which personas changed (generation, history, background message); with `since`, `epoch` and `wait` it waits for a change — the web then polls their inbox at once |
 | GET | `/api/phone-llm/next` | the phone waits for a Gemma job (`LOCAL_LLM_DEVICE=phone`); the answer goes back via `POST /api/phone-llm/result` |
+| POST | `/api/devices/hello` | a core device introduces itself: id, name, how to address it, what it can do (`camera.snapshot`); the list is `GET /api/devices` |
+| GET | `/api/devices/{id}/commands` | the device waits for a command (with `wait`); the result goes back via `POST /api/devices/{id}/result` |
 | GET | `/api/inbox` | new background messages of all personas — for the app's notification service; with `wait` it waits up to `wait` seconds for a message |
 | GET | `/api/personas/{p}/state` | the persona's state and its life feed |
 | GET | `/api/providers` | providers, keys, the active one |

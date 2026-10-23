@@ -1,8 +1,9 @@
 # Pydantic-схемы запросов и ответов API.
 
+import re
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.api.security import PersonaId, SafeId
 
@@ -352,6 +353,42 @@ class PhoneLlmResult(BaseModel):
     ms: float | None = None
     # Не начата — вернуть в очередь другому исполнителю (приложение свернулось)
     release: bool = False
+
+
+_CAPABILITY_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
+
+
+class DeviceHello(BaseModel):
+    # Устройство ядра представилось (app/core/devices): Pi с камерой и т.п.
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=64)  # «Робот» — в ответах и ошибках
+    # Как к нему обращаются в чате («робот», «robot»): по ним узнаётся просьба
+    names: list[str] = Field(default_factory=list, max_length=8)
+    capabilities: list[str] = Field(default_factory=list, max_length=32)  # «camera.snapshot»
+
+    @field_validator("names")
+    @classmethod
+    def _names(cls, v: list[str]) -> list[str]:
+        out = [" ".join(n.split()) for n in v]
+        if any(not n or len(n) > 32 for n in out):
+            raise ValueError("имя устройства — от 1 до 32 символов")
+        return out
+
+    @field_validator("capabilities")
+    @classmethod
+    def _caps(cls, v: list[str]) -> list[str]:
+        if any(not _CAPABILITY_RE.match(c) for c in v):
+            raise ValueError("возможность — латиница в нижнем регистре, цифры, «._-»")
+        return v
+
+
+class DeviceResult(BaseModel):
+    # Итог команды из GET /api/devices/{id}/commands
+    command_id: str = Field(min_length=1, max_length=32)
+    ok: bool
+    error: str | None = Field(None, max_length=500)
+    image: str | None = None  # JPEG base64 или dataURL; размер режет BodySizeLimit
+    data: dict | None = None
 
 
 class PersonaLocalTasksUpdate(BaseModel):

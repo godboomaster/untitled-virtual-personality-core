@@ -987,6 +987,18 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       el.scrollTop = el.scrollHeight;
     }
   }, [persona.id, visibleMessages]);
+  // Картинка в пузыре (кадр устройства, скриншот, фото) декодируется уже
+  // после скролла к низу и растягивает пузырь — лента оставалась над кадром.
+  // Были у низа до её роста — докручиваем
+  const keepBottomOnImage = (img: HTMLImageElement) => {
+    const el = listRef.current;
+    if (!el) return;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (stickBottom.current || gap - img.offsetHeight < 120) {
+      el.scrollTop = el.scrollHeight;
+      stickBottom.current = true;
+    }
+  };
 
   const init = initiativeStateByPersona[persona.id] ?? initiativeStateByPersona.connor;
   // Живые параметры инициативы этой персоны с бэкенда (иначе — мок-фолбэк,
@@ -1398,13 +1410,17 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
         return { ...prev, [pid]: [...list, { id: msgId, role: 'bot' as const, text: msgText, time, ts }] };
       });
     };
-    // Картинки ответа (скриншоты страницы) — в тот же пузырь, что и текст:
-    // одно сообщение, а не отдельный пузырь на каждый кадр
+    // Картинки ответа (скриншоты страницы, кадр устройства) — в тот же пузырь,
+    // что и текст: одно сообщение, а не отдельный пузырь на каждый кадр. Кадр,
+    // показанный заранее (событие photo), финальный images не повторяет
     const attachBotImages = (msgId: number, imgs: string[]) => {
       setSentByPersona((prev) => ({
         ...prev,
-        [pid]: (prev[pid] ?? []).map((m) =>
-          m.id === msgId ? { ...m, images: [...(m.images ?? []), ...imgs] } : m),
+        [pid]: (prev[pid] ?? []).map((m) => {
+          if (m.id !== msgId) return m;
+          const fresh = imgs.filter((src) => !(m.images ?? []).includes(src));
+          return fresh.length ? { ...m, images: [...(m.images ?? []), ...fresh] } : m;
+        }),
       }));
     };
     // Файлы с компьютера ядра («пришли файл X») — карточками в том же пузыре
@@ -1430,6 +1446,12 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
       },
       (ts) => {
         replyTs = ts;
+      },
+      (photo) => {
+        // Кадр устройства снят — показываем сразу, в пузыре ответа: текст
+        // допечатается в тот же пузырь, когда модель посмотрит кадр
+        upsertBot(bubbleIds[0], bubbleTexts[0]);
+        attachBotImages(bubbleIds[0], [photo]);
       },
     )
       .then((res) => {
@@ -2455,7 +2477,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                         ? <><span className="answer-echo-num">{m.text.trim()}</span>{echo}</>
                         : m.text}
                   </div>
-                  {m.image && <img className="message-image" src={m.image} alt={t('chat.attachment')} />}
+                  {m.image && <img className="message-image" src={m.image} alt={t('chat.attachment')}
+                                   onLoad={(e) => keepBottomOnImage(e.currentTarget)} />}
                   {m.offlineReminder && (
                     <div className="msg-reminder">
                       <span>
@@ -2474,7 +2497,8 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
                   {m.images && m.images.length > 0 && (
                     <div className="message-images">
                       {m.images.map((src, k) => (
-                        <img key={k} className="message-image" src={src} alt={t('chat.attachment')} />
+                        <img key={k} className="message-image" src={src} alt={t('chat.attachment')}
+                             onLoad={(e) => keepBottomOnImage(e.currentTarget)} />
                       ))}
                     </div>
                   )}
