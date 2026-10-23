@@ -1507,6 +1507,13 @@ class BotInstance:
         фото, веб — dataURL в ответе)."""
         return self._pending_photos.pop(str(chat_id), [])
 
+    def add_pending_photo(self, chat_id, data: bytes, caption: str = "") -> None:
+        """Снимок к ответу, сделанный не ботом (кадр устройства ядра — см.
+        app/features/device_look). Звать после process_message: тот
+        обнуляет бакет в начале хода."""
+        self._pending_photos.setdefault(str(chat_id), []).append(
+            {"data": data, "caption": caption})
+
     def pop_pending_files(self, chat_id) -> List[dict]:
         """Забирает файлы хода для отправки в чат («пришли файл X») — и
         очищает бакет. Файлы — настоящие файлы пользователя: канал их только

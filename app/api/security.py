@@ -63,6 +63,10 @@ PersonaIdPath = Annotated[
 PersonaIdQuery = Annotated[
     str, ApiQuery(pattern=SAFE_ID_RE.pattern, description="id персоны (имя YAML-файла)")
 ]
+DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+DeviceIdPath = Annotated[
+    str, ApiPath(pattern=DEVICE_ID_RE.pattern, description="id устройства ядра (app/core/devices)")
+]
 
 
 def safe_join(base: Path, name: str, suffix: str = "", prefix: str = "") -> Path | None:

@@ -31,7 +31,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.api import chat_events, runtime
 from app.api.runtime import chat_lock, get_persona_info, list_personas
 from app.core.router import NoProvidersError
-from app.api.security import (BodySizeLimit, LOOPBACK_HOSTS, LOOPBACK_ORIGIN_RE,
+from app.api.security import (BodySizeLimit, DeviceIdPath, LOOPBACK_HOSTS, LOOPBACK_ORIGIN_RE,
                               LocalOriginGuard, PersonaIdPath, PersonaIdQuery,
                               host_without_port)
 from app.api.schemas import (
@@ -44,6 +44,8 @@ from app.api.schemas import (
     OfflineImportRequest,
     OfflineRemindersRequest,
     ClearChatRequest,
+    DeviceHello,
+    DeviceResult,
     FactRequest,
     FactUpdateRequest,
     HistoryMessage,
@@ -165,6 +167,8 @@ app.add_middleware(BodySizeLimit, rules=[
     ("PUT", r"/api/personas/[^/]+/room/layout", 20 * 1024 * 1024),
     ("PUT", r"/api/personas/[^/]+/room/style", 2 * 1024 * 1024),
     ("POST", r"/api/personas/[^/]+/room/style/describe", 2 * 1024 * 1024),
+    # Итог команды устройства: кадр камеры base64 (~350 КБ при 1600 px)
+    ("POST", r"/api/devices/[^/]+/result", 8 * 1024 * 1024),
 ])
 
 # Источники: API_CORS_ORIGINS — явный список ("*" — любой сайт); не задано
@@ -1022,7 +1026,8 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                 provider, model = _answer_provider(bot) if llm_used else (None, None)
                 split_extra = bot.pop_pending_split_messages(req.chat_id)
             else:
-                llm_input, shown = _prepare_turn_input(bot, req)
+                photos = []
+                llm_input, shown = _prepare_turn_input(bot, req, photos)
                 reply = bot.process_message(
                     llm_input,
                     user_id=req.user_id,
@@ -1041,6 +1046,7 @@ async def _chat_in_turn(bot, req: ChatRequest, lock_key: str, stm_key: str, fram
                 # Провайдер ответа — СРАЗУ после process_message и в этом же
                 # потоке (см. _answer_provider)
                 provider, model = _answer_provider(bot)
+                _attach_photos(bot, req.chat_id, photos)
                 # Хвост расщеплённого ответа (settings.split_messages) забираем
                 # до правки STM картинки — переписываемый хвост включает его части
                 split_extra = bot.pop_pending_split_messages(req.chat_id)
@@ -1160,20 +1166,39 @@ def _decode_image(data: str) -> bytes:
         raise HTTPException(status_code=400, detail="Некорректные данные изображения (base64)")
 
 
-def _prepare_turn_input(bot, req: ChatRequest) -> tuple[str, str | None]:
+def _prepare_turn_input(bot, req: ChatRequest, photos: list | None = None,
+                        on_photo=None) -> tuple[str, str | None]:
     """Текст хода для process_message → (текст, что показать в истории).
 
-    Второе — None для обычной реплики; для картинки, кадра камеры и снимка
-    экрана — подпись «📷 …»/«🖥 …»: в STM ложится служебный текст с
-    описанием, а веб показывает историю пользователю (_rewrite_image_stm)."""
+    Второе — None для обычной реплики; для картинки, кадра камеры, кадра
+    устройства и снимка экрана — подпись «📷 …»/«🖥 …»: в STM ложится
+    служебный текст с описанием, а веб показывает историю пользователю
+    (_rewrite_image_stm). photos — сюда кладётся (JPEG, подпись) кадра
+    устройства: вызывающий прикладывает его к ответу после process_message.
+    on_photo(JPEG) — кадр пришёл, модель его ещё смотрит (потоковый чат
+    показывает его сразу)."""
     message = req.message.strip()
     if req.image:
         llm_input = _prepare_image_input(bot, req.message, req.image, req.chat_id, req.user_id,
                                          local_only=req.image_source == "camera")
         return llm_input, f"📷 {message}" if message else "📷 (изображение)"
+    device = _wants_device_look(bot, req)
+    if device is not None:
+        llm_input, shot = _prepare_device_input(bot, device, message, req.chat_id, req.user_id,
+                                                on_photo)
+        if photos is not None:
+            photos.append((shot, device["name"]))
+        return llm_input, f"📷 {message}"
     if _wants_screen(bot, req):
         return _prepare_screen_input(bot, message, req.chat_id, req.user_id), f"🖥 {message}"
     return req.message, None
+
+
+def _attach_photos(bot, chat_id, photos: list) -> None:
+    # Кадр устройства — к ответу (поле images, как скриншоты режима
+    # управления). После process_message: он обнуляет бакет в начале хода
+    for shot, caption in photos:
+        bot.add_pending_photo(chat_id, shot, caption)
 
 
 def _phone_note(req: ChatRequest) -> str | None:
@@ -1197,6 +1222,36 @@ def _wants_screen(bot, req: ChatRequest) -> bool:
         return not bot.control_mode_on(req.chat_id or req.user_id)
     except Exception:
         return True
+
+
+def _wants_device_look(bot, req: ChatRequest) -> dict | None:
+    # «Что видит робот?» → устройство с камерой (app/features/device_look).
+    # Не из скина и не в режиме управления — как экран; не в ходе команды
+    # телефону: её уже исполнил телефон
+    from app.features import device_look
+    if req.from_skin or req.phone_action is not None:
+        return None
+    device = device_look.find_request(req.message)
+    if device is None:
+        return None
+    try:
+        if bot.control_mode_on(req.chat_id or req.user_id):
+            return None
+    except Exception:
+        pass
+    return device
+
+
+def _prepare_device_input(bot, device: dict, message: str, chat_id: str = None,
+                          user_id: str = None, on_photo=None) -> tuple[str, bytes]:
+    # Кадр устройства, как и экран, смотрит только локальная модель
+    from app.features import device_look, screen_look
+    try:
+        return device_look.snapshot_input(getattr(bot, "_local_router", None), device, message,
+                                          _turn_language(bot, message, chat_id, user_id),
+                                          on_shot=on_photo)
+    except screen_look.ScreenLookError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 def _turn_language(bot, text: str, chat_id: str = None, user_id: str = None):
@@ -1459,7 +1514,8 @@ async def chat_stream(req: ChatRequest, request: Request):
     await _touch_persona(req.persona)
     gen_key = f"{req.persona}:{req.chat_id or req.user_id}"
     stm_key = _stm_key(req)
-    turn = {"frame": None}
+    # on_photo — кадр устройства из потока генерации в SSE (ставит _gen_in_turn)
+    turn = {"frame": None, "on_photo": None}
     delivery = _file_delivery(request, req)
 
     def _generate():
@@ -1478,7 +1534,8 @@ async def chat_stream(req: ChatRequest, request: Request):
                 provider, model = _answer_provider(bot) if llm_used else (None, None)
                 split_rest = bot.pop_pending_split_messages(req.chat_id)
             else:
-                llm_input, shown = _prepare_turn_input(bot, req)
+                photos = []
+                llm_input, shown = _prepare_turn_input(bot, req, photos, on_photo=turn["on_photo"])
                 reply = bot.process_message(
                     llm_input,
                     user_id=req.user_id,
@@ -1494,6 +1551,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                 )
                 # Провайдер ответа — сразу и в этом же потоке (_answer_provider)
                 provider, model = _answer_provider(bot)
+                _attach_photos(bot, req.chat_id, photos)
                 split_rest = bot.pop_pending_split_messages(req.chat_id)
                 if shown:
                     _rewrite_image_stm(bot, stm_key, req.user_id, shown, [reply] + split_rest)
@@ -1545,11 +1603,37 @@ async def chat_stream(req: ChatRequest, request: Request):
             }
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
             return
+        # Кадр устройства («что видит робот?») — пользователю сразу, как
+        # пришёл: снимок сделан, а модель его ещё смотрит. В финале он же
+        # остаётся в images — для клиентов без события photo
+        loop = asyncio.get_running_loop()
+        early_photos: asyncio.Queue = asyncio.Queue()
+        turn["on_photo"] = lambda shot: loop.call_soon_threadsafe(
+            early_photos.put_nowait, "data:image/jpeg;base64," + base64.b64encode(shot).decode("ascii"))
+        gen = asyncio.ensure_future(_run_generation(
+            gen_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token),
+            pending=_pending_entry(req)))
         try:
+            try:
+                while not gen.done():
+                    got = asyncio.ensure_future(early_photos.get())
+                    try:
+                        await asyncio.wait({gen, got}, return_when=asyncio.FIRST_COMPLETED)
+                    finally:
+                        if not got.done():
+                            got.cancel()
+                    if got.done() and not got.cancelled():
+                        yield f"data: {json.dumps({'photo': got.result()})}\n\n"
+                while not early_photos.empty():
+                    yield f"data: {json.dumps({'photo': early_photos.get_nowait()})}\n\n"
+            finally:
+                # Клиент ушёл посреди генерации: отмена ожидания — как раньше
+                # у await _run_generation (генерация дорабатывает в фоне, её
+                # ошибка — в лог)
+                if not gen.done():
+                    gen.cancel()
             (reply, split_rest, extra, question_kind, images,
-             provider, model, reply_ts, files, reply_stm) = await _run_generation(
-                gen_key, _generate, on_done=lambda: _cc_turn_exit(bot, cc_token),
-                pending=_pending_entry(req))
+             provider, model, reply_ts, files, reply_stm) = gen.result()
         except HTTPException as e:
             # Отказ нашего же кода до генерации (картинку, камеру или экран
             # не посмотреть: нет разрешения на запись экрана, Ollama не
@@ -3146,6 +3230,55 @@ async def phone_llm_result(req: PhoneLlmResult):
         return {"ok": phone_llm.release(req.worker, req.id)}
     return {"ok": phone_llm.complete(req.worker, req.id, text=req.text, error=req.error,
                                      backend=req.backend, ms=req.ms)}
+
+
+@app.post("/api/devices/hello", dependencies=[Depends(require_auth)])
+async def device_hello(req: DeviceHello):
+    # Устройство ядра (app/core/devices) представилось: кто оно и что умеет.
+    # При каждом своём запуске и после обрыва связи
+    from app.core import devices
+    return {"ok": True, "device": devices.register(req.id, req.name, req.names, req.capabilities)}
+
+
+@app.get("/api/devices", dependencies=[Depends(require_auth)])
+async def device_list():
+    from app.core import devices
+    return {"devices": devices.list_devices()}
+
+
+@app.delete("/api/devices/{device_id}", dependencies=[Depends(require_auth)])
+async def device_forget(device_id: DeviceIdPath):
+    from app.core import devices
+    if not devices.forget(device_id):
+        raise HTTPException(status_code=404, detail="Такого устройства нет")
+    return {"ok": True}
+
+
+@app.get("/api/devices/{device_id}/commands", dependencies=[Depends(require_auth)])
+async def device_commands(request: Request, device_id: DeviceIdPath,
+                          wait: float = Query(0, ge=0)):
+    # Долгий опрос устройства: команды («camera.snapshot», …) — сразу, как
+    # их положит ход персоны. 404 — ядро его не знает: сначала hello
+    from app.core import devices
+    cmds = await devices.next_commands(device_id, wait, gone=request.is_disconnected)
+    if cmds is None:
+        raise HTTPException(status_code=404, detail="Устройство не представилось: нужен POST /api/devices/hello")
+    return {"commands": cmds}
+
+
+@app.post("/api/devices/{device_id}/result", dependencies=[Depends(require_auth)])
+async def device_result(device_id: DeviceIdPath, req: DeviceResult):
+    # Итог команды. ok: false в ответе — команду уже сняли (ход не дождался)
+    from app.core import devices
+    image = None
+    if req.image:
+        # Строже _decode_image: мусор в base64 — ошибка, а не пустой кадр
+        try:
+            image = base64.b64decode(req.image.split(",", 1)[-1], validate=True) or None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Некорректные данные изображения (base64)")
+    return {"ok": devices.complete(device_id, req.command_id, req.ok, data=req.data,
+                                   image=image, error=req.error)}
 
 
 @app.get("/api/personas/{persona}/local-tasks", dependencies=[Depends(require_auth)])
