@@ -1,0 +1,144 @@
+@import './fonts.css';
+
+/* Pixel Art: миниатюра в галерее — крошечное окно 16-битной RPG */
+
+.skin-swatch[data-swatch='pixel'] {
+  --sw-bg: #f2dcbd;
+  --sw-panel: #fff5dc;
+  --sw-side: #f8e7c5;
+  --sw-text: #2d2a32;
+  --sw-dim: #a3707a;
+  --sw-in: #fff5dc;
+  --sw-out: #f2dc9b;
+  --sw-line: #2d2a32;
+  --sw-accent: #c42f4f;
+  --sw-sel: #ffe7a3;
+  --sw-shadow: #f2b66d;
+  --sw-check: rgba(45, 42, 50, 0.08);
+  border: 2px solid var(--sw-line);
+  border-radius: 0;
+  background-color: var(--sw-bg);
+  background-image: repeating-conic-gradient(var(--sw-check) 0 25%, transparent 0 50%);
+  background-size: 4px 4px;
+  clip-path: polygon(2px 0, calc(100% - 2px) 0, calc(100% - 2px) 2px, 100% 2px, 100% calc(100% - 2px), calc(100% - 2px) calc(100% - 2px), calc(100% - 2px) 100%, 2px 100%, 2px calc(100% - 2px), 0 calc(100% - 2px), 0 2px, 2px 2px);
+}
+
+.skin-swatch[data-swatch='pixel'][data-scheme='dark'] {
+  --sw-bg: #1b1626;
+  --sw-panel: #2a2340;
+  --sw-side: #241e36;
+  --sw-text: #fbeed2;
+  --sw-dim: #8f81a3;
+  --sw-in: #2e2652;
+  --sw-out: #5a2f55;
+  --sw-line: #0d0a14;
+  --sw-accent: #f5c451;
+  --sw-sel: #3d3266;
+  --sw-shadow: #c42f4f;
+  --sw-check: rgba(255, 240, 210, 0.04);
+}
+
+/* Строка заголовка окна: три «кнопки» и полоса дизеринга */
+.skin-swatch[data-swatch='pixel'] .skin-swatch-bar {
+  height: 15px;
+  gap: 3px;
+  background: var(--sw-panel);
+  border-bottom: 2px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-bar i {
+  width: 6px;
+  height: 6px;
+  background: var(--sw-accent);
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-bar i:nth-child(2) {
+  background: #f2c84b;
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-bar i:nth-child(3) {
+  background: #5aa05a;
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-side {
+  gap: 5px;
+  padding: 8px 6px 8px 10px;
+  background: var(--sw-side);
+  border-right: 2px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-side i {
+  height: 6px;
+  background: var(--sw-dim);
+  opacity: 0.6;
+}
+
+/* Активный пункт — подсвеченный слот с курсором-треугольником */
+.skin-swatch[data-swatch='pixel'] .skin-swatch-side i:first-child {
+  position: relative;
+  height: 9px;
+  background: var(--sw-sel);
+  box-shadow: 0 0 0 1px var(--sw-line);
+  opacity: 1;
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-side i:first-child::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 1px;
+  width: 4px;
+  height: 7px;
+  background: var(--sw-accent);
+  clip-path: polygon(0 0, 50% 0, 50% 28%, 100% 28%, 100% 72%, 50% 72%, 50% 100%, 0 100%);
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-main {
+  gap: 6px;
+  padding: 7px 9px 8px;
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-title {
+  font-family: 'PX Arcade', monospace;
+  font-weight: 400;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--sw-text);
+  text-shadow: 2px 2px 0 var(--sw-shadow);
+}
+
+/* Реплика персоны — окно диалога с двойной рамкой */
+.skin-swatch[data-swatch='pixel'] .skin-swatch-msg {
+  height: 13px;
+  border: 0;
+  background: var(--sw-in);
+  box-shadow: 0 0 0 2px var(--sw-line), inset 0 0 0 1px var(--sw-in), inset 0 0 0 2px var(--sw-line);
+}
+
+.skin-swatch[data-swatch='pixel'][data-scheme='dark'] .skin-swatch-msg {
+  box-shadow: 0 0 0 2px var(--sw-line), inset 0 0 0 1px #eadcbe;
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-msg--out {
+  background: var(--sw-out);
+  box-shadow: 0 0 0 2px var(--sw-line), 2px 2px 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.skin-swatch[data-swatch='pixel'][data-scheme='dark'] .skin-swatch-msg--out {
+  box-shadow: 0 0 0 2px var(--sw-line), 2px 2px 0 1px rgba(0, 0, 0, 0.4);
+}
+
+/* Поле ввода и кнопка отправки */
+.skin-swatch[data-swatch='pixel'] .skin-swatch-input {
+  height: 14px;
+  padding: 0 2px;
+  border: 2px solid var(--sw-line);
+  background: var(--sw-panel);
+}
+
+.skin-swatch[data-swatch='pixel'] .skin-swatch-send {
+  width: 14px;
+  height: 7px;
+  background: var(--sw-accent);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.25);
+}

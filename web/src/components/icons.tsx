@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
    24×24 сетка, скруглённые концы — единый стиль вместо юникод-глифов) */
 
 export type IconName =
-  | 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings' | 'voice' | 'dossier'
+  | 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'services' | 'settings' | 'voice' | 'dossier'
   | 'fullscreen' | 'fullscreenExit'
   // Предметы инвентаря
   | 'book' | 'gem' | 'cup' | 'cards' | 'photo' | 'pencil' | 'frame' | 'disc' | 'cable'
@@ -60,6 +60,13 @@ const paths: Record<IconName, ReactNode> = {
       <circle cx="9.5" cy="7" r="1.1" fill="currentColor" stroke="none" />
       <circle cx="14.5" cy="6.5" r="1.1" fill="currentColor" stroke="none" />
       <circle cx="17.5" cy="10.5" r="1.1" fill="currentColor" stroke="none" />
+    </>
+  ),
+  // Сервисы: колокольчик уведомлений
+  services: (
+    <>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </>
   ),
   // Настройки: шестерёнка (контур с зубьями, не «солнце» из лучей)

@@ -1,0 +1,2493 @@
+/* Laboratory — «лаборатория линии»: тетрадь лаборанта в эстетике манги.
+   Бумага и чернила, серый растр-скринтон, рамки панелей манги, акриловые
+   ярлыки с бликом по кромке и цепочка-шарики. Светлая схема — лист,
+   тёмная — негатив (чёрный лист, белые линии и растр). */
+
+/* ===== Токены: светлая схема — белый картон и чернила ===== */
+html[data-skin='laboratory'] {
+  color-scheme: light;
+
+  --lab-desk: #ebe9e4;
+  --lab-paper: #fcfbf8;
+  --lab-paper-2: #f3f1ec;
+  --lab-paper-3: #e3e1db;
+  --lab-ink: #151515;
+  --lab-ink-2: #2f2e2b;
+  --lab-graphite: #53514c;
+  --lab-muted: #706e69;
+  --lab-line-soft: #bdbab3;
+  --lab-rule: rgba(21, 21, 21, 0.055);
+  --lab-rule-major: rgba(21, 21, 21, 0.085);
+  --lab-tone-dot: rgba(21, 21, 21, 0.36);
+  --lab-tone-light: rgba(21, 21, 21, 0.17);
+  --lab-on-ink: #fcfbf8;
+  --lab-tape: rgba(206, 204, 198, 0.78);
+  --lab-gloss: rgba(255, 255, 255, 0.95);
+  --lab-acrylic: rgba(255, 255, 255, 0.5);
+  --lab-acrylic-2: rgba(255, 255, 255, 0.12);
+  --lab-silver-hi: #ffffff;
+  --lab-silver-mid: #c3c3c1;
+  --lab-silver-lo: #8e8e8b;
+  --lab-silver-rim: #3c3c3a;
+  --lab-bw: 1.5px;
+  --lab-sh: 6px;
+  --lab-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+
+  /* Растр: диагональная сетка точек (две решётки со сдвигом) */
+  --lab-tone:
+    radial-gradient(circle, var(--lab-tone-dot) 0 1px, transparent 1.4px) 0 0 / 6px 6px,
+    radial-gradient(circle, var(--lab-tone-dot) 0 1px, transparent 1.4px) 3px 3px / 6px 6px;
+  --lab-tone-soft:
+    radial-gradient(circle, var(--lab-tone-light) 0 0.9px, transparent 1.3px) 0 0 / 5px 5px,
+    radial-gradient(circle, var(--lab-tone-light) 0 0.9px, transparent 1.3px) 2.5px 2.5px / 5px 5px;
+  --lab-hatch: repeating-linear-gradient(-45deg, var(--lab-tone-light) 0 1px, transparent 1px 6px);
+  /* Миллиметровка лабораторной тетради */
+  --lab-grid:
+    linear-gradient(var(--lab-rule-major) 1px, transparent 1px) -1px -1px / 120px 120px,
+    linear-gradient(90deg, var(--lab-rule-major) 1px, transparent 1px) -1px -1px / 120px 120px,
+    linear-gradient(var(--lab-rule) 1px, transparent 1px) -1px -1px / 24px 24px,
+    linear-gradient(90deg, var(--lab-rule) 1px, transparent 1px) -1px -1px / 24px 24px;
+  /* Шарик цепочки: блик, серебро, тень */
+  --lab-bead:
+    radial-gradient(circle at 40% 36%, var(--lab-silver-hi) 0 0.55px, var(--lab-silver-mid) 1.1px, var(--lab-silver-lo) 2.1px, var(--lab-silver-rim) 2.75px, transparent 3.1px) 50% 100% / 7px 7px repeat-y,
+    linear-gradient(90deg, transparent 3px, var(--lab-silver-lo) 3px 4px, transparent 4px) 50% 0 / 7px 100% no-repeat;
+
+  /* Токены приложения */
+  --bg: var(--lab-desk);
+  --bg-panel: var(--lab-paper);
+  --bg-panel-2: var(--lab-paper-2);
+  --text: var(--lab-ink);
+  --text-dim: var(--lab-graphite);
+  --text-muted: var(--lab-muted);
+  --border: #2b2a27;
+  --border-soft: var(--lab-line-soft);
+  --accent: var(--lab-ink);
+  --accent-dim: var(--lab-muted);
+  --accent-soft: rgba(21, 21, 21, 0.07);
+  --bg-hover: rgba(21, 21, 21, 0.05);
+  --border-accent: var(--lab-ink);
+  --accent-dark: var(--lab-ink);
+  --danger: #2f2e2b;
+  --success: var(--lab-ink);
+  --warning: #3d3c38;
+  --term-bg: #121212;
+  --term-line: rgba(252, 251, 248, 0.2);
+  --term-dim: #9b9993;
+  --term-bright: #f3f1ec;
+  --topbar-bg: var(--lab-paper);
+  --overlay-bg: rgba(21, 21, 21, 0.4);
+  --radius-sm: 8px;
+  --radius: 2px;
+  --shadow-card: none;
+  --shadow-card-hover: none;
+  --font: 'LAB Text', -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  --font-disp: 'LAB Display', 'Arial Narrow', 'LAB Text', sans-serif;
+  --font-mono: 'LAB Mono', ui-monospace, Menlo, Consolas, monospace;
+  --lab-hand: 'LAB Hand', 'LAB Text', cursive;
+}
+
+/* ===== Токены: тёмная схема — негатив ===== */
+html[data-skin='laboratory'][data-theme='dark'] {
+  color-scheme: dark;
+
+  --lab-desk: #0b0b0b;
+  --lab-paper: #141413;
+  --lab-paper-2: #1a1a19;
+  --lab-paper-3: #262624;
+  --lab-ink: #f0ede6;
+  --lab-ink-2: #d9d6cf;
+  --lab-graphite: #b2afa8;
+  --lab-muted: #8f8c85;
+  --lab-line-soft: #48463f;
+  --lab-rule: rgba(240, 237, 230, 0.045);
+  --lab-rule-major: rgba(240, 237, 230, 0.075);
+  --lab-tone-dot: rgba(240, 237, 230, 0.3);
+  --lab-tone-light: rgba(240, 237, 230, 0.13);
+  --lab-on-ink: #0d0d0d;
+  --lab-tape: rgba(120, 118, 112, 0.55);
+  --lab-gloss: rgba(255, 255, 255, 0.5);
+  --lab-acrylic: rgba(255, 255, 255, 0.09);
+  --lab-acrylic-2: rgba(255, 255, 255, 0.02);
+  --lab-silver-hi: #ffffff;
+  --lab-silver-mid: #c4c4c1;
+  --lab-silver-lo: #85857f;
+  --lab-silver-rim: #5a5a56;
+  --lab-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+
+  --border: #d6d3cc;
+  --accent-soft: rgba(240, 237, 230, 0.09);
+  --bg-hover: rgba(240, 237, 230, 0.06);
+  --danger: #d9d6cf;
+  --warning: #cfccc4;
+  --term-bg: #000000;
+  --term-line: rgba(240, 237, 230, 0.22);
+  --term-dim: #8f8c85;
+  --term-bright: #f0ede6;
+  --overlay-bg: rgba(0, 0, 0, 0.62);
+}
+
+/* ===== Основа: лист, выделение, фокус, скроллбары ===== */
+/* Лист: зерно бумаги, миллиметровка и растр, густеющий к низу экрана */
+html[data-skin='laboratory'] body {
+  background:
+    var(--lab-grain),
+    var(--lab-grid),
+    linear-gradient(to top, transparent 0, var(--lab-desk) 38%),
+    var(--lab-tone-soft),
+    var(--lab-desk);
+  font-family: var(--font);
+  font-synthesis-weight: none;
+  letter-spacing: 0.005em;
+}
+
+/* Фоновый холст HUD — не к этой теме */
+html[data-skin='laboratory'] .detroit-bg {
+  display: none;
+}
+
+/* Уголки-скобки HUD — декор, в лаборатории их заменяют рамки панелей */
+html[data-skin='laboratory'] .corner {
+  display: none;
+}
+
+html[data-skin='laboratory'] ::selection {
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] :focus-visible {
+  outline: 2px dashed var(--lab-ink);
+  outline-offset: 3px;
+}
+
+html[data-skin='laboratory'] * {
+  scrollbar-color: var(--lab-ink) transparent;
+}
+
+html[data-skin='laboratory'] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+html[data-skin='laboratory'] ::-webkit-scrollbar-track {
+  background: radial-gradient(circle, var(--lab-tone-light) 0 1px, transparent 1.4px) 50% 0 / 8px 6px repeat-y;
+}
+
+html[data-skin='laboratory'] ::-webkit-scrollbar-thumb {
+  background: var(--lab-ink);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+}
+
+html[data-skin='laboratory'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--lab-ink-2);
+  background-clip: padding-box;
+}
+
+/* ===== Сайдбар — карточка образца: белый картон, растр снизу ===== */
+html[data-skin='laboratory'] .sidebar {
+  background: var(--lab-paper);
+  border-right: var(--lab-bw) solid var(--lab-ink);
+  box-shadow: 4px 0 0 -2px var(--lab-paper-3);
+}
+
+/* Градиентный скринтон: точки густеют к низу карточки */
+html[data-skin='laboratory'] .sidebar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 46%;
+  z-index: -1;
+  background: var(--lab-tone);
+  -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.35) 40%, transparent 92%);
+  mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.35) 40%, transparent 92%);
+  pointer-events: none;
+}
+
+/* Логотип: тонкая «рукописная» подпись, как на карточке «Lab of Line» */
+html[data-skin='laboratory'] .sidebar-logo {
+  gap: 12px;
+  padding: 2px 6px 16px;
+  border-bottom: none;
+  margin-bottom: 16px;
+  background:
+    linear-gradient(var(--lab-ink), var(--lab-ink)) left bottom / 100% 1.5px no-repeat,
+    repeating-linear-gradient(90deg, var(--lab-ink) 0 1px, transparent 1px 8px) left calc(100% - 1.5px) / 100% 4px no-repeat;
+}
+
+/* Значок — акриловый диск с бликом */
+html[data-skin='laboratory'] .sidebar-logo-icon {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 50%;
+  font-size: 0;
+  color: transparent;
+  background:
+    radial-gradient(circle at 50% 50%, var(--lab-paper) 0 4px, var(--lab-ink) 4px 5.5px, transparent 6px),
+    linear-gradient(135deg, var(--lab-gloss) 0 18%, transparent 30% 62%, var(--lab-acrylic) 74%, transparent 90%),
+    var(--lab-tone-soft),
+    var(--lab-paper-2);
+  box-shadow: inset 1px 1px 0 var(--lab-gloss), 2px 2px 0 var(--lab-paper-3);
+  animation: none;
+}
+
+html[data-skin='laboratory'] .sidebar-logo-title {
+  font-family: var(--lab-hand);
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .sidebar-logo-sub {
+  margin-top: 3px;
+  font-family: var(--lab-hand);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  text-transform: none;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .sidebar-logo-sub::before,
+html[data-skin='laboratory'] .sidebar-logo-sub::after {
+  content: '\00B7';
+  margin: 0 6px 0 2px;
+  font-weight: 700;
+}
+
+html[data-skin='laboratory'] .sidebar-logo-sub::after {
+  margin: 0 0 0 6px;
+}
+
+/* Меню: обрезаем цепочку сверху, справа/слева — свободно (подсказки) */
+html[data-skin='laboratory'] .sidebar-nav {
+  gap: 2px;
+  clip-path: inset(-6px -400px -400px -400px);
+}
+
+/* Активный пункт — акриловый ярлык на цепочке-шариках */
+html[data-skin='laboratory'] .nav-indicator {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at calc(100% - 16px) 50%, var(--lab-paper) 0 3.4px, var(--lab-ink) 3.4px 4.9px, transparent 5.3px),
+    linear-gradient(115deg, var(--lab-gloss) 0 7%, transparent 16% 70%, var(--lab-acrylic) 82%, transparent 94%),
+    var(--lab-tone-soft),
+    var(--lab-paper-2);
+  box-shadow:
+    inset 1.5px 1.5px 0 var(--lab-gloss),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.08),
+    3px 3px 0 -0.5px var(--lab-paper-3);
+}
+
+/* Блик, медленно пробегающий по акрилу (раз в ~10 с, мягко) */
+html[data-skin='laboratory'] .nav-indicator::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 3%;
+  width: 34%;
+  border-radius: 8px;
+  background: linear-gradient(105deg, transparent 22%, var(--lab-gloss) 50%, transparent 78%);
+  opacity: 0;
+  animation: lab-glint 10s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes lab-glint {
+  0%,
+  58% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  68% {
+    opacity: 0.55;
+  }
+  84% {
+    opacity: 0.35;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    transform: translateX(170%);
+  }
+}
+
+/* Цепочка-шарики: висит от верхней кромки меню до отверстия ярлыка */
+html[data-skin='laboratory'] .nav-indicator::before {
+  content: '';
+  position: absolute;
+  right: 12.5px;
+  bottom: calc(50% + 4px);
+  width: 7px;
+  height: 1400px;
+  background: var(--lab-bead);
+  pointer-events: none;
+}
+
+html[data-skin='laboratory'] .nav-item {
+  gap: 12px;
+  border-radius: 10px;
+  padding: 0 34px 0 12px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.05em;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .nav-item:hover {
+  background: var(--lab-tone-soft);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .nav-item--active,
+html[data-skin='laboratory'] .nav-item--active:hover {
+  background: transparent;
+  color: var(--lab-ink);
+  font-family: var(--font-disp);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+html[data-skin='laboratory'] .nav-item--active .nav-item-icon {
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .sidebar--collapsed .nav-item {
+  padding: 0;
+}
+
+html[data-skin='laboratory'] .sidebar--collapsed .nav-indicator::before {
+  right: 4px;
+}
+
+html[data-skin='laboratory'] .sidebar--collapsed .nav-indicator {
+  background:
+    linear-gradient(115deg, var(--lab-gloss) 0 7%, transparent 16% 70%, var(--lab-acrylic) 82%, transparent 94%),
+    var(--lab-tone-soft),
+    var(--lab-paper-2);
+}
+
+html[data-skin='laboratory'] .sidebar--collapsed .nav-item:hover::after {
+  border-radius: 999px;
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+  font-family: var(--font-mono);
+}
+
+/* Подвал: штамп-плашка состояния и этикетка сборки */
+html[data-skin='laboratory'] .sidebar-footer {
+  position: relative;
+  border-top: none;
+  padding: 14px 8px 2px;
+  color: var(--lab-graphite);
+  font-size: 10.5px;
+  background: repeating-linear-gradient(90deg, var(--lab-ink) 0 5px, transparent 5px 9px) left top / 100% 1.5px no-repeat;
+}
+
+html[data-skin='laboratory'] .sidebar-status-row--down,
+html[data-skin='laboratory'] .sidebar-status-row--ok {
+  align-self: flex-start;
+  padding: 3px 9px 2px 7px;
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 4px;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+  box-shadow: inset 0 0 0 2px var(--lab-paper), inset 0 0 0 2.75px var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .sidebar--collapsed .sidebar-status-row--down,
+html[data-skin='laboratory'] .sidebar--collapsed .sidebar-status-row--ok {
+  align-self: center;
+  padding: 5px;
+  border-radius: 50%;
+  box-shadow: none;
+}
+
+html[data-skin='laboratory'] .sidebar-toggle {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 999px;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .sidebar-toggle:hover {
+  background: var(--lab-ink);
+  border-color: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+/* Ромб-индикатор → круглая «бусина» (точка растра) */
+html[data-skin='laboratory'] .status-led,
+html[data-skin='laboratory'] .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: none;
+}
+
+html[data-skin='laboratory'] .status-led {
+  background: var(--lab-ink);
+  animation: lab-breathe 4.8s ease-in-out infinite;
+}
+
+html[data-skin='laboratory'] .sidebar-status-row--down .status-led,
+html[data-skin='laboratory'] .topbar-status--down .status-led {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--lab-ink);
+  animation: none;
+}
+
+html[data-skin='laboratory'] .dot {
+  background: var(--lab-tone-light);
+  box-shadow: inset 0 0 0 1.5px var(--lab-muted);
+}
+
+html[data-skin='laboratory'] .dot--green {
+  background: var(--lab-ink);
+  box-shadow: none;
+  animation: lab-breathe 4.8s ease-in-out infinite;
+}
+
+@keyframes lab-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ===== Шапка — газетная «шапка» с фестонной кромкой ===== */
+html[data-skin='laboratory'] .topbar {
+  background: var(--lab-paper);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: var(--lab-bw) solid var(--lab-ink);
+}
+
+/* Фестон — ряд полукругов под шапкой, как вырубка на краю ярлыка */
+html[data-skin='laboratory'] .topbar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 7px;
+  margin-top: 0;
+  background: radial-gradient(circle at 50% 0, var(--lab-paper) 0 4.6px, var(--lab-ink) 4.6px 6px, transparent 6.4px) 0 -1px / 14px 8px repeat-x;
+  pointer-events: none;
+}
+
+html[data-skin='laboratory'] .topbar-title {
+  font-family: var(--font-disp);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .topbar-status {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--lab-ink);
+}
+
+/* LIGHT / DARK — акриловая пара ярлыков */
+html[data-skin='laboratory'] .theme-toggle {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 999px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .theme-toggle span {
+  padding: 5px 12px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .theme-toggle span.active {
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .topbar-status .badge {
+  border-radius: 999px;
+}
+
+/* ===== Разделы: заголовок — жирный узкий гротеск над линейкой ===== */
+html[data-skin='laboratory'] .content-scroll {
+  counter-reset: lab-spec;
+}
+
+html[data-skin='laboratory'] .section-header {
+  border-bottom: none;
+  padding-bottom: 20px;
+  margin-bottom: 24px;
+  background:
+    linear-gradient(var(--lab-ink), var(--lab-ink)) left bottom / 100% 2px no-repeat,
+    repeating-linear-gradient(90deg, var(--lab-ink) 0 1px, transparent 1px 10px) left bottom / 100% 6px no-repeat,
+    repeating-linear-gradient(90deg, var(--lab-ink) 0 1.5px, transparent 1.5px 50px) left bottom / 100% 11px no-repeat;
+}
+
+html[data-skin='laboratory'] .section-title {
+  margin: 0 0 10px;
+  font-family: var(--font-disp);
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--lab-ink);
+}
+
+/* Подзаголовок — перевёрнутая чёрная плашка (как в коллаже-газете) */
+html[data-skin='laboratory'] .section-subtitle {
+  display: inline;
+  padding: 3px 8px;
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 2;
+  letter-spacing: 0.08em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+html[data-skin='laboratory'] .section-subtitle .info-btn {
+  vertical-align: 0;
+  margin-left: 6px;
+}
+
+/* ===== Карточки — панели манги: рамка чернилами, растровая тень ===== */
+html[data-skin='laboratory'] .card {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: var(--radius);
+  background: var(--lab-paper);
+  box-shadow: none;
+  counter-increment: lab-spec;
+}
+
+/* Тень-скринтон: видна только справа-снизу, под карточку не лезет */
+html[data-skin='laboratory'] .card::after,
+html[data-skin='laboratory'] .home-hero::after,
+html[data-skin='laboratory'] .chat-card::after,
+html[data-skin='laboratory'] .home-presence::after,
+html[data-skin='laboratory'] .skin-theme-card::after,
+html[data-skin='laboratory'] .dossier-panel::after,
+html[data-skin='laboratory'] .home-telemetry::after,
+html[data-skin='laboratory'] .home-dossier::after,
+html[data-skin='laboratory'] .start-guide-steps::after {
+  content: '';
+  position: absolute;
+  inset: calc(var(--lab-bw) * -1);
+  z-index: 0;
+  transform: translate(var(--lab-sh), var(--lab-sh));
+  background: var(--lab-tone);
+  clip-path: polygon(
+    calc(100% - var(--lab-sh)) 0,
+    100% 0,
+    100% 100%,
+    0 100%,
+    0 calc(100% - var(--lab-sh)),
+    calc(100% - var(--lab-sh)) calc(100% - var(--lab-sh))
+  );
+  pointer-events: none;
+  transition: transform 0.25s ease;
+}
+
+html[data-skin='laboratory'] .card:hover,
+html[data-skin='laboratory'] .stat-card:hover {
+  transform: none;
+  border-color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .card-title {
+  font-family: var(--font-disp);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--lab-ink);
+}
+
+/* Номер образца у заголовка карточки: No.01, No.02… */
+html[data-skin='laboratory'] .card-title::before {
+  content: 'No.' counter(lab-spec, decimal-leading-zero);
+  display: inline-block;
+  text-transform: none;
+  margin-right: 10px;
+  padding: 2px 6px 1px;
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  vertical-align: 2px;
+}
+
+/* ===== Кнопки — ярлыки: обводка чернилами, растр при наведении ===== */
+html[data-skin='laboratory'] .btn {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 20px;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+  font-family: var(--font-disp);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.12s ease;
+}
+
+html[data-skin='laboratory'] .btn:hover {
+  background: var(--lab-tone-soft), var(--lab-paper);
+  border-color: var(--lab-ink);
+  color: var(--lab-ink);
+  box-shadow: 2px 2px 0 var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .btn:disabled,
+html[data-skin='laboratory'] .btn:disabled:hover {
+  opacity: 0.45;
+  border-style: dashed;
+  background: transparent;
+  color: var(--lab-ink);
+  box-shadow: none;
+}
+
+/* Основная — чернильный штамп с внутренней линией */
+html[data-skin='laboratory'] .btn--primary {
+  background: var(--lab-ink);
+  border-color: var(--lab-ink);
+  color: var(--lab-on-ink);
+  box-shadow: inset 0 0 0 2px var(--lab-ink), inset 0 0 0 3px var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .btn--primary:hover {
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.16) 0 12%, transparent 26% 100%),
+    var(--lab-ink-2);
+  border-color: var(--lab-ink);
+  color: var(--lab-on-ink);
+  box-shadow: inset 0 0 0 2px var(--lab-ink), inset 0 0 0 3px var(--lab-on-ink), 3px 3px 0 var(--lab-paper-3);
+}
+
+html[data-skin='laboratory'] .btn--primary:disabled,
+html[data-skin='laboratory'] .btn--primary:disabled:hover {
+  background: var(--lab-muted);
+  border-color: var(--lab-muted);
+  border-style: solid;
+  color: var(--lab-on-ink);
+  box-shadow: none;
+}
+
+/* Призрачная — линия отреза (пунктир) */
+html[data-skin='laboratory'] .btn--ghost {
+  background: transparent;
+  border: var(--lab-bw) dashed var(--lab-ink);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .btn--ghost:hover {
+  border-style: solid;
+  background: var(--lab-tone-soft), var(--lab-paper);
+  color: var(--lab-ink);
+}
+
+/* Чип — бирка с пробитым отверстием */
+html[data-skin='laboratory'] .btn--chip {
+  padding-left: 24px;
+  border: var(--lab-bw) solid var(--lab-ink);
+  background:
+    radial-gradient(circle at 12px 50%, var(--lab-desk) 0 2.6px, var(--lab-ink) 2.6px 3.9px, transparent 4.3px),
+    var(--lab-paper-2);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .btn--chip:hover {
+  background:
+    radial-gradient(circle at 12px 50%, var(--lab-desk) 0 2.6px, var(--lab-on-ink) 2.6px 3.9px, transparent 4.3px),
+    var(--lab-ink);
+  border-color: var(--lab-ink);
+  color: var(--lab-on-ink);
+  transform: translateY(-1px) rotate(-1deg);
+  box-shadow: none;
+}
+
+/* Включённые кнопки-переключатели: чип — залит чернилами, пунктир — сплошной */
+html[data-skin='laboratory'] .btn--chip.chat-cc-btn--on,
+html[data-skin='laboratory'] .btn--chip.svc-chip-on {
+  background:
+    radial-gradient(circle at 12px 50%, var(--lab-desk) 0 2.6px, var(--lab-on-ink) 2.6px 3.9px, transparent 4.3px),
+    var(--lab-ink);
+  border-color: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .btn--ghost.room-spot-toggle--on {
+  border-style: solid;
+  background: var(--lab-tone-soft), var(--lab-paper);
+  box-shadow: inset 0 0 0 1.5px var(--lab-ink);
+}
+
+/* Опасная — штриховка, при наведении — заливка */
+html[data-skin='laboratory'] .btn--danger {
+  background: var(--lab-hatch), var(--lab-paper);
+  border-color: var(--lab-ink);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .btn--danger:hover {
+  background: var(--lab-ink);
+  border-color: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .btn--icon {
+  background: var(--lab-paper);
+  border-color: var(--lab-ink);
+  color: var(--lab-ink);
+}
+
+/* ===== Бейджи — штампы с двойной рамкой ===== */
+html[data-skin='laboratory'] .badge {
+  padding: 2px 9px 1px;
+  border: 1px solid var(--lab-ink);
+  border-radius: 3px;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  box-shadow: inset 0 0 0 1.5px var(--lab-paper), inset 0 0 0 2.25px var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .badge--active,
+html[data-skin='laboratory'] .badge--success,
+html[data-skin='laboratory'] .badge--bot {
+  background: var(--lab-ink);
+  border-color: var(--lab-ink);
+  color: var(--lab-on-ink);
+  box-shadow: inset 0 0 0 1.5px var(--lab-ink), inset 0 0 0 2.25px var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .badge--user {
+  background: var(--lab-tone-soft), var(--lab-paper);
+  border-color: var(--lab-ink);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .badge--muted {
+  opacity: 1;
+  border-style: dashed;
+  color: var(--lab-graphite);
+  box-shadow: none;
+}
+
+/* ===== Аватары — акриловые жетоны ===== */
+html[data-skin='laboratory'] .avatar {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 50%;
+  background:
+    linear-gradient(135deg, var(--lab-gloss) 0 14%, transparent 28% 66%, var(--lab-acrylic) 80%, transparent 92%),
+    var(--lab-tone-soft),
+    var(--lab-paper-2);
+  color: var(--lab-ink);
+  font-family: var(--font-disp);
+  font-weight: 700;
+  font-size: 15px;
+  box-shadow: inset 1px 1px 0 var(--lab-gloss), 2px 2px 0 var(--lab-paper-3);
+}
+
+html[data-skin='laboratory'] .avatar--large {
+  font-size: 19px;
+}
+
+/* ===== Вкладки — индексы тетради ===== */
+html[data-skin='laboratory'] .tabs {
+  gap: 4px;
+  border-bottom: var(--lab-bw) solid var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .tab {
+  position: relative;
+  padding: 8px 14px 7px;
+  border: var(--lab-bw) solid transparent;
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  margin-bottom: calc(var(--lab-bw) * -1);
+  color: var(--lab-graphite);
+  font-family: var(--font-disp);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+html[data-skin='laboratory'] .tab:hover {
+  color: var(--lab-ink);
+  background: var(--lab-tone-soft);
+}
+
+html[data-skin='laboratory'] .tab--active,
+html[data-skin='laboratory'] .tab--active:hover {
+  color: var(--lab-ink);
+  font-weight: 700;
+  background: var(--lab-paper);
+  border-color: var(--lab-ink);
+  border-bottom: var(--lab-bw) solid var(--lab-paper);
+}
+
+/* ===== Поля, выпадающие списки, переключатели ===== */
+html[data-skin='laboratory'] .field-label,
+html[data-skin='laboratory'] .features-group-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .field-hint {
+  font-family: var(--font);
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .field-value {
+  font-family: var(--font-disp);
+  font-size: 15px;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .input {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 8px;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='laboratory'] .input::placeholder,
+html[data-skin='laboratory'] .chat-input::placeholder {
+  color: var(--lab-muted);
+}
+
+html[data-skin='laboratory'] .input:focus,
+html[data-skin='laboratory'] .chat-input:focus {
+  border-color: var(--lab-ink);
+  box-shadow: 0 0 0 2.5px var(--lab-paper), 0 0 0 4px var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .input:disabled:not(.select-trigger) {
+  border-style: dashed;
+  background: var(--lab-hatch);
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .select-trigger:hover:not(:disabled) {
+  border-color: var(--lab-ink);
+  background: var(--lab-tone-soft), var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .select-chevron {
+  color: var(--lab-ink);
+}
+
+/* Меню Select — листок с растровой тенью */
+html[data-skin='laboratory'] .select-menu {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 8px;
+  background: var(--lab-paper);
+  box-shadow: 5px 5px 0 var(--lab-paper-3);
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='laboratory'] .select-highlight {
+  background: var(--lab-tone-soft);
+}
+
+html[data-skin='laboratory'] .select-option {
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .select-option--active,
+html[data-skin='laboratory'] .select-option--selected {
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .select-option--selected {
+  box-shadow: inset 4px 0 0 var(--lab-ink);
+}
+
+/* Переключатель — акриловая дорожка и серебряная бусина */
+html[data-skin='laboratory'] .switch {
+  width: 42px;
+  height: 22px;
+}
+
+html[data-skin='laboratory'] .switch-slider {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 999px;
+  background: var(--lab-tone-soft), var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .switch-slider::before {
+  width: 14px;
+  height: 14px;
+  left: 2.5px;
+  top: 2.5px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 34%, var(--lab-silver-hi) 0 1.5px, var(--lab-silver-mid) 3.5px, var(--lab-silver-lo) 7px);
+  box-shadow: 0 0 0 1px var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .switch input:checked + .switch-slider {
+  background: var(--lab-ink);
+  border-color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .switch input:checked + .switch-slider::before {
+  transform: translateX(20px);
+  background: radial-gradient(circle at 38% 34%, #ffffff 0 1.5px, #dcdcda 3.5px, #8d8d8a 7px);
+  box-shadow: 0 0 0 1px var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .switch input:focus-visible + .switch-slider {
+  outline: 2px dashed var(--lab-ink);
+  outline-offset: 3px;
+}
+
+/* Ползунок — линейка с делениями и бусина */
+html[data-skin='laboratory'] input[type='range'] {
+  height: 10px;
+  background:
+    linear-gradient(var(--lab-ink), var(--lab-ink)) 0 50% / 100% 2px no-repeat,
+    repeating-linear-gradient(90deg, var(--lab-ink) 0 1px, transparent 1px 10%) 0 0 / 100% 100% no-repeat;
+  accent-color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] input[type='range']::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transform: none;
+  background: radial-gradient(circle at 38% 34%, var(--lab-silver-hi) 0 1.5px, var(--lab-silver-mid) 4px, var(--lab-silver-lo) 8px);
+  box-shadow: 0 0 0 1.5px var(--lab-ink);
+}
+
+html[data-skin='laboratory'] input[type='range']:hover::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+
+html[data-skin='laboratory'] input[type='range']::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transform: none;
+  background: radial-gradient(circle at 38% 34%, var(--lab-silver-hi) 0 1.5px, var(--lab-silver-mid) 4px, var(--lab-silver-lo) 8px);
+  box-shadow: 0 0 0 1.5px var(--lab-ink);
+}
+
+html[data-skin='laboratory'] input[type='checkbox'],
+html[data-skin='laboratory'] input[type='radio'] {
+  accent-color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .checkbox-row:hover {
+  color: var(--lab-ink);
+}
+
+/* Поле в фокусе — двойное кольцо вместо пунктира */
+html[data-skin='laboratory'] .input:focus-visible,
+html[data-skin='laboratory'] .chat-input:focus-visible {
+  outline: none;
+}
+
+/* YAML и промпты — моноширинный текст на чёрной вклейке */
+html[data-skin='laboratory'] .pcreate-yaml {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 6px;
+  background: var(--term-bg);
+  color: var(--term-bright);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+html[data-skin='laboratory'] .art-prompt {
+  border: var(--lab-bw) dashed var(--lab-ink);
+  border-radius: 6px;
+  background: var(--lab-paper-2);
+  color: var(--lab-ink-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Переключатель RU / EN и подобные внутри карточек — по содержимому */
+html[data-skin='laboratory'] .card .theme-toggle {
+  width: max-content;
+  max-width: 100%;
+}
+
+/* «?» — круглая пометка карандашом */
+html[data-skin='laboratory'] .info-btn {
+  width: 15px;
+  height: 15px;
+  border: 1.25px solid var(--lab-ink);
+  border-radius: 50%;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+  font-family: var(--font-disp);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+html[data-skin='laboratory'] .info-btn:hover {
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+/* ===== Модалки и диалоги — лист на скотче поверх растровой подложки ===== */
+html[data-skin='laboratory'] .dialog-overlay,
+html[data-skin='laboratory'] .pcreate-overlay,
+html[data-skin='laboratory'] .info-overlay {
+  background:
+    radial-gradient(circle, rgba(0, 0, 0, 0.16) 0 0.9px, transparent 1.3px) 0 0 / 5px 5px,
+    var(--overlay-bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-skin='laboratory'] .dialog-panel,
+html[data-skin='laboratory'] .pcreate-panel,
+html[data-skin='laboratory'] .info-modal {
+  position: relative;
+  border: 2px solid var(--lab-ink);
+  border-radius: 2px;
+  background: var(--lab-paper);
+  box-shadow: 8px 8px 0 -1px var(--lab-ink);
+}
+
+/* Полоска скотча сверху листа */
+html[data-skin='laboratory'] .dialog-panel::before,
+html[data-skin='laboratory'] .pcreate-panel::before,
+html[data-skin='laboratory'] .info-modal::before,
+html[data-skin='laboratory'] .boot-panel::before {
+  content: '';
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  width: 104px;
+  height: 24px;
+  margin-left: -52px;
+  z-index: 3;
+  background: var(--lab-tape);
+  transform: rotate(-2.5deg);
+  -webkit-mask-image:
+    linear-gradient(90deg, transparent 0 2px, #000 2px calc(100% - 2px), transparent calc(100% - 2px)),
+    conic-gradient(from -45deg at 0 50%, #000 90deg, transparent 0) 0 0 / 4px 6px repeat-y,
+    conic-gradient(from 135deg at 100% 50%, #000 90deg, transparent 0) 100% 0 / 4px 6px repeat-y;
+  mask-image:
+    linear-gradient(90deg, transparent 0 2px, #000 2px calc(100% - 2px), transparent calc(100% - 2px)),
+    conic-gradient(from -45deg at 0 50%, #000 90deg, transparent 0) 0 0 / 4px 6px repeat-y,
+    conic-gradient(from 135deg at 100% 50%, #000 90deg, transparent 0) 100% 0 / 4px 6px repeat-y;
+  pointer-events: none;
+}
+
+html[data-skin='laboratory'] .dialog-title,
+html[data-skin='laboratory'] .info-modal-title {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .dialog-mark {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 50%;
+  font-family: var(--font-disp);
+  font-weight: 700;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .dialog-panel--danger .dialog-mark {
+  border-color: var(--lab-ink);
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .dialog-message,
+html[data-skin='laboratory'] .info-modal-body {
+  font-size: 14px;
+  color: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .dialog-actions {
+  border-top: none;
+  background: repeating-linear-gradient(90deg, var(--lab-ink) 0 5px, transparent 5px 9px) left top / 100% 1.5px no-repeat;
+}
+
+html[data-skin='laboratory'] .info-modal-close {
+  border-radius: 50%;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .info-modal-close:hover {
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+/* Шапка и подвал формы: заголовок гротеском, подвал — линия отреза */
+html[data-skin='laboratory'] .pcreate-head {
+  border-bottom: var(--lab-bw) solid var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .pcreate-title {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .pcreate-foot {
+  border-top: none;
+  background: repeating-linear-gradient(90deg, var(--lab-ink) 0 5px, transparent 5px 9px) left top / 100% 1.5px no-repeat;
+}
+
+html[data-skin='laboratory'] .pcreate-sub {
+  border-left: 3px solid var(--lab-ink);
+  background: var(--lab-tone-soft), var(--lab-paper-2);
+}
+
+/* ===== Чат: список персон ===== */
+html[data-skin='laboratory'] .chat-persona-list {
+  background: var(--lab-paper);
+  border-right: var(--lab-bw) solid var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .chat-persona-list-title,
+html[data-skin='laboratory'] .chat-context-title {
+  font-family: var(--font-disp);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .chat-persona-back {
+  border: var(--lab-bw) dashed var(--lab-ink);
+  border-radius: 999px;
+  color: var(--lab-ink);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+html[data-skin='laboratory'] .chat-persona-back:hover {
+  border-style: solid;
+  background: var(--lab-tone-soft);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .chat-persona-item {
+  border: var(--lab-bw) solid transparent;
+  border-radius: 10px;
+}
+
+html[data-skin='laboratory'] .chat-persona-item:hover {
+  background: var(--lab-tone-soft);
+  transform: none;
+}
+
+html[data-skin='laboratory'] .chat-persona-item--active,
+html[data-skin='laboratory'] .chat-persona-list--flying .chat-persona-item--active {
+  border-color: var(--lab-ink);
+  background:
+    linear-gradient(115deg, var(--lab-gloss) 0 6%, transparent 14% 100%),
+    var(--lab-paper-2);
+  box-shadow: inset 1.5px 1.5px 0 var(--lab-gloss), 3px 3px 0 var(--lab-paper-3);
+}
+
+html[data-skin='laboratory'] .chat-persona-name {
+  font-weight: 600;
+}
+
+html[data-skin='laboratory'] .chat-persona-status,
+html[data-skin='laboratory'] .chat-header-status {
+  font-family: var(--font-mono);
+  color: var(--lab-graphite);
+}
+
+/* ===== Чат: шапка, лента, пузыри ===== */
+html[data-skin='laboratory'] .chat-header {
+  background: var(--lab-paper);
+  border-bottom: var(--lab-bw) solid var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .chat-header-name {
+  font-family: var(--font-disp);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+}
+
+html[data-skin='laboratory'] .chat-messages {
+  gap: 16px;
+  padding: 22px 24px;
+}
+
+/* Реплика персоны — круглый «баллон» манги с хвостиком */
+html[data-skin='laboratory'] .message-bubble {
+  padding: 12px 18px 9px;
+  border: 2px solid var(--lab-ink);
+  border-radius: 22px;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+
+html[data-skin='laboratory'] .message--bot .message-bubble {
+  margin-left: 16px;
+  border-bottom-left-radius: 6px;
+}
+
+/* Хвостик баллона: чернильный клин и бумажный клин поверх — рамка
+   баллона в месте хвостика «раскрывается» */
+html[data-skin='laboratory'] .message--bot .message-bubble::before,
+html[data-skin='laboratory'] .message--bot .message-bubble::after {
+  content: '';
+  position: absolute;
+  left: -20px;
+  bottom: 2px;
+  width: 26px;
+  height: 30px;
+  pointer-events: none;
+}
+
+html[data-skin='laboratory'] .message--bot .message-bubble::before {
+  background: var(--lab-ink);
+  clip-path: polygon(20px 9px, 20px 22px, 0 30px);
+}
+
+html[data-skin='laboratory'] .message--bot .message-bubble::after {
+  background: var(--lab-paper);
+  clip-path: polygon(26px 5px, 26px 17.5px, 5.5px 25.8px);
+}
+
+/* Своя реплика — перевёрнутая «подпись-рамка» (чёрный блок) */
+html[data-skin='laboratory'] .message--user .message-bubble {
+  border: 2px solid var(--lab-ink);
+  border-radius: 3px;
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+  box-shadow: 5px 5px 0 -1px var(--lab-paper-3);
+}
+
+html[data-skin='laboratory'] .message--user .message-text {
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .message--user .message-bubble--queued {
+  border-style: dashed;
+  background: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .message-time {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--lab-muted);
+}
+
+html[data-skin='laboratory'] .message--user .message-time,
+html[data-skin='laboratory'] .message--user .msg-status {
+  color: var(--lab-on-ink);
+  opacity: 0.72;
+}
+
+html[data-skin='laboratory'] .message-text a {
+  color: inherit;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+
+html[data-skin='laboratory'] .msg-code {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+}
+
+html[data-skin='laboratory'] .msg-pre {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 6px;
+  background: var(--lab-paper-2);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .msg-quote {
+  border-left: 3px solid currentColor;
+  color: inherit;
+  opacity: 0.85;
+}
+
+html[data-skin='laboratory'] .msg-mark {
+  background: var(--lab-tone-soft);
+  box-shadow: inset 0 -0.45em 0 var(--lab-accent-mark, rgba(21, 21, 21, 0.12));
+}
+
+/* «Ответить» — ярлычок на верхней кромке баллона */
+html[data-skin='laboratory'] .message-reply-btn {
+  top: -11px;
+  padding: 1px 8px;
+  border: 1.25px solid var(--lab-ink);
+  border-radius: 999px;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+}
+
+html[data-skin='laboratory'] .message-reply-btn:hover {
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+  border-color: var(--lab-ink);
+}
+
+/* Цитата внутри пузыря — вклеенная вырезка */
+html[data-skin='laboratory'] .message-quote {
+  border-left: 3px solid currentColor;
+  border-radius: 0 6px 6px 0;
+  background: var(--lab-tone-soft);
+}
+
+html[data-skin='laboratory'] .message--user .message-quote {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+html[data-skin='laboratory'][data-theme='dark'] .message--user .message-quote {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+html[data-skin='laboratory'] .message-quote-author {
+  color: inherit;
+}
+
+html[data-skin='laboratory'] .message-quote-text {
+  color: inherit;
+  opacity: 0.8;
+}
+
+html[data-skin='laboratory'] .message-image {
+  border: 2px solid var(--lab-ink);
+  border-radius: 4px;
+}
+
+html[data-skin='laboratory'] .chat-loading-bubble {
+  border: var(--lab-bw) dashed var(--lab-ink);
+  border-radius: 20px;
+  background: var(--lab-tone-soft);
+}
+
+html[data-skin='laboratory'] .chat-loading-cells i,
+html[data-skin='laboratory'] .boot-cells i {
+  border-radius: 50%;
+  background: var(--lab-ink);
+}
+
+/* Кнопки-ответы режима управления — бирки под баллоном */
+html[data-skin='laboratory'] .answer-btn {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 14px;
+  background: var(--lab-paper);
+  font-size: 14px;
+}
+
+html[data-skin='laboratory'] .answer-btn--yes,
+html[data-skin='laboratory'] .answer-btn--no,
+html[data-skin='laboratory'] .answer-btn--cancel {
+  font-family: var(--font-disp);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+
+html[data-skin='laboratory'] .answer-btn:hover,
+html[data-skin='laboratory'] .answer-btn:focus-visible {
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+  border-color: var(--lab-ink);
+}
+
+/* Карточка задачи агента — протокол на вклейке */
+html[data-skin='laboratory'] .task-card {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-left: 4px solid var(--lab-ink);
+  border-radius: 2px;
+  background: var(--lab-paper);
+  box-shadow: 5px 5px 0 -1px var(--lab-paper-3);
+}
+
+/* Загрузка переписки и «печатает» — мягче и медленнее */
+html[data-skin='laboratory'] .chat-loading-cells i {
+  animation-duration: 2.6s;
+  animation-timing-function: ease-in-out;
+}
+
+html[data-skin='laboratory'] .chat-loading-tag,
+html[data-skin='laboratory'] .boot-step--run .boot-step-tag {
+  animation-duration: 2.8s;
+}
+
+html[data-skin='laboratory'] .chat-loading-bubble {
+  animation-duration: 3s;
+}
+
+/* ===== Чат: статус-строка, поле ввода ===== */
+html[data-skin='laboratory'] .chat-status-bar {
+  border-top: none;
+  background:
+    repeating-linear-gradient(90deg, var(--lab-ink) 0 5px, transparent 5px 9px) left top / 100% 1.5px no-repeat,
+    var(--lab-paper);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .chat-input-bar {
+  border-top: var(--lab-bw) solid var(--lab-ink);
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .chat-input {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 22px;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+  font-family: var(--font);
+  font-size: 14.5px;
+  padding: 10px 18px;
+}
+
+/* Кнопки у поля — круглые жетоны */
+html[data-skin='laboratory'] .chat-input-bar .btn:not(.btn--primary) {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+html[data-skin='laboratory'] .chat-reply-bar {
+  border-top: var(--lab-bw) dashed var(--lab-ink);
+  background: var(--lab-tone-soft), var(--lab-paper-2);
+}
+
+/* ===== Чат: контекстная панель — протокол наблюдения ===== */
+html[data-skin='laboratory'] .chat-context {
+  background: var(--lab-paper);
+  border-left: var(--lab-bw) solid var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .chat-context-title {
+  padding-bottom: 6px;
+  background: repeating-linear-gradient(90deg, var(--lab-ink) 0 1px, transparent 1px 6px) left bottom / 100% 4px no-repeat;
+}
+
+html[data-skin='laboratory'] .chat-context-toggle {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 50%;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .chat-context-toggle:hover {
+  background: var(--lab-ink);
+  border-color: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .chat-mood {
+  font-size: 13px;
+}
+
+/* ===== Страница всех чатов — карточки-образцы ===== */
+html[data-skin='laboratory'] .chat-overview-title {
+  font-family: var(--font-disp);
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='laboratory'] .chat-overview-lead {
+  font-size: 14px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .chat-overview-stats {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .chat-overview-grid {
+  gap: 20px;
+}
+
+html[data-skin='laboratory'] .chat-card {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-left: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 2px;
+  background: var(--lab-paper);
+  box-shadow: inset 4px 0 0 var(--persona-color, transparent);
+  transition: transform 0.25s ease, background 0.15s;
+}
+
+html[data-skin='laboratory'] .chat-card:hover {
+  transform: translate(-2px, -2px);
+  background: var(--lab-paper);
+  border-color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .chat-card:hover::after,
+html[data-skin='laboratory'] .home-presence:hover::after,
+html[data-skin='laboratory'] .skin-theme-card:hover::after {
+  transform: translate(calc(var(--lab-sh) + 2px), calc(var(--lab-sh) + 2px));
+}
+
+html[data-skin='laboratory'] .chat-card-name {
+  font-family: var(--font-disp);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+html[data-skin='laboratory'] .chat-card-preview {
+  font-size: 14px;
+}
+
+html[data-skin='laboratory'] .chat-card-status,
+html[data-skin='laboratory'] .chat-card-time,
+html[data-skin='laboratory'] .chat-card-foot {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .chat-card-foot {
+  border-top: var(--lab-bw) dashed var(--lab-line-soft);
+}
+
+html[data-skin='laboratory'] .chat-card--unread {
+  border-width: 2.5px;
+}
+
+html[data-skin='laboratory'] .chat-card-badge {
+  border: 1px solid var(--lab-ink);
+  border-radius: 3px;
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .unread-dot {
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+/* ===== Досье ===== */
+html[data-skin='laboratory'] .dossier-panel {
+  position: relative;
+  margin: 18px 24px 24px 18px;
+  border: 2px solid var(--lab-ink);
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .dossier-head {
+  border-bottom: var(--lab-bw) solid var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .dossier-name {
+  font-family: var(--font-disp);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+html[data-skin='laboratory'] .dossier-meta {
+  font-family: var(--font-mono);
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .dossier-tabs {
+  padding-top: 10px;
+}
+
+html[data-skin='laboratory'] .dossier-panel .card::after {
+  display: none;
+}
+
+html[data-skin='laboratory'] .pxe-close {
+  border-radius: 50%;
+}
+
+/* Счётчики — крупные цифры на ярлыках */
+html[data-skin='laboratory'] .stat-card {
+  border: var(--lab-bw) solid var(--lab-ink);
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .stat-value {
+  font-family: var(--font-disp);
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--lab-ink);
+  animation: none;
+}
+
+html[data-skin='laboratory'] .stat-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .memory-item {
+  border-bottom: 1px dashed var(--lab-line-soft);
+}
+
+html[data-skin='laboratory'] .memory-item-time,
+html[data-skin='laboratory'] .diary-date,
+html[data-skin='laboratory'] .ltm-category-name {
+  font-family: var(--font-mono);
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .ltm-category-name,
+html[data-skin='laboratory'] .diary-date {
+  color: var(--lab-ink);
+}
+
+/* ===== Главная: hero — титульный лист с линиями концентрации ===== */
+html[data-skin='laboratory'] .home {
+  gap: 34px;
+}
+
+html[data-skin='laboratory'] .home-hero {
+  isolation: isolate;
+  padding: 38px 34px 32px;
+  border: 2px solid var(--lab-ink);
+  background: var(--lab-paper);
+}
+
+/* Линии концентрации манги — справа, гаснут к тексту */
+html[data-skin='laboratory'] .home-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: repeating-conic-gradient(from 0deg at 86% 46%, var(--lab-tone-light) 0deg 0.9deg, transparent 0.9deg 3.6deg);
+  -webkit-mask-image: radial-gradient(ellipse 70% 120% at 86% 46%, transparent 0 16%, #000 46%, transparent 92%);
+  mask-image: radial-gradient(ellipse 70% 120% at 86% 46%, transparent 0 16%, #000 46%, transparent 92%);
+  pointer-events: none;
+}
+
+html[data-skin='laboratory'] .home-hero::after {
+  z-index: -2;
+}
+
+html[data-skin='laboratory'] .home-eyebrow {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  transform: rotate(-1.2deg);
+  transform-origin: left center;
+  gap: 8px;
+  padding: 4px 10px 3px 8px;
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='laboratory'] .home-eyebrow::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .home-hero > .home-eyebrow,
+html[data-skin='laboratory'] .home-hero .home-eyebrow {
+  margin-bottom: 18px;
+}
+
+/* Приветствие — рукописная приписка лаборанта */
+html[data-skin='laboratory'] .home-greet {
+  margin: -4px 0 6px;
+  font-family: var(--lab-hand);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .home-title {
+  font-family: var(--font-disp);
+  font-weight: 700;
+  font-size: clamp(38px, 6.2vw, 76px);
+  line-height: 0.98;
+  letter-spacing: 0;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .home-title.glitch::before,
+html[data-skin='laboratory'] .home-title.glitch::after {
+  display: none;
+}
+
+html[data-skin='laboratory'] .home-lead {
+  font-size: 15px;
+  color: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .home-ticker {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+html[data-skin='laboratory'] .home-ticker-label {
+  padding: 1px 6px;
+  border: 1px solid var(--lab-ink);
+  border-radius: 999px;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .home-ticker-text {
+  color: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .home-cta-row .btn {
+  padding: 12px 22px;
+  font-size: 14px;
+}
+
+html[data-skin='laboratory'] .home-readout {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .home-readout .val {
+  color: var(--lab-ink);
+}
+
+/* Показания в углу hero — этикетка образца со штрихкодом */
+html[data-skin='laboratory'] .home-readout.top-right {
+  top: 14px;
+  right: 16px;
+  padding: 18px 10px 6px;
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 4px;
+  background:
+    repeating-linear-gradient(90deg, var(--lab-ink) 0 1px, transparent 1px 3px, var(--lab-ink) 3px 5px, transparent 5px 6px, var(--lab-ink) 6px 7px, transparent 7px 10px, var(--lab-ink) 10px 13px, transparent 13px 14px) 10px 6px / calc(100% - 20px) 8px no-repeat,
+    var(--lab-paper);
+  line-height: 1.5;
+}
+
+/* Разделитель — перфорация: ряд пробитых отверстий */
+html[data-skin='laboratory'] .chrome-bar {
+  height: 10px;
+  background: radial-gradient(circle, var(--lab-desk) 0 2.2px, var(--lab-ink) 2.2px 3.4px, transparent 3.8px) 0 50% / 14px 10px;
+  background-repeat: space no-repeat;
+}
+
+/* Заголовки блоков: жирный гротеск + номер-ярлык + линейка */
+html[data-skin='laboratory'] .home-block-head {
+  border-bottom: none;
+  padding-bottom: 14px;
+  background:
+    linear-gradient(var(--lab-ink), var(--lab-ink)) left bottom / 100% 2px no-repeat,
+    repeating-linear-gradient(90deg, var(--lab-ink) 0 1px, transparent 1px 10px) left bottom / 100% 6px no-repeat;
+}
+
+html[data-skin='laboratory'] .home-block-title {
+  font-family: var(--font-disp);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+html[data-skin='laboratory'] .home-block-num {
+  transform: rotate(1.5deg);
+  padding: 2px 8px 1px;
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+/* Телеметрия — ряд этикеток с перфорацией между ними */
+html[data-skin='laboratory'] .home-telemetry {
+  position: relative;
+  gap: 0;
+  background: var(--lab-paper);
+  border: 2px solid var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .home-tele-cell {
+  background: transparent;
+  border-right: var(--lab-bw) dashed var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .home-tele-cell:last-child {
+  border-right: none;
+}
+
+html[data-skin='laboratory'] .home-tele-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .home-tele-value {
+  font-family: var(--font-disp);
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .home-tele-value span {
+  font-family: var(--font-mono);
+  color: var(--lab-graphite);
+}
+
+/* Карточки присутствия на главной */
+html[data-skin='laboratory'] .home-presence {
+  position: relative;
+  border: var(--lab-bw) solid var(--lab-ink);
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .home-presence:hover {
+  transform: translate(-2px, -2px);
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .home-presence-name {
+  font-family: var(--font-disp);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+html[data-skin='laboratory'] .home-presence-status,
+html[data-skin='laboratory'] .home-presence-reply {
+  font-family: var(--font-mono);
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .home-presence-activity {
+  font-family: var(--font);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .home-presence-reply {
+  border-top-color: var(--lab-line-soft);
+}
+
+/* Комната: панель состояния — значения помельче, чтобы влезали */
+html[data-skin='laboratory'] .room-telemetry .home-tele-value,
+html[data-skin='laboratory'] .room-tele-text {
+  font-family: var(--font-disp);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1.15;
+}
+
+html[data-skin='laboratory'] .room-tele-sub {
+  font-size: 10.5px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .room-tele-offline .room-tele-sub {
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+html[data-skin='laboratory'] .room-tele-bar {
+  height: 6px;
+  border: 1px solid var(--lab-ink);
+  border-radius: 999px;
+  background: var(--lab-tone-soft), var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .room-tele-bar-fill {
+  background: var(--lab-ink);
+}
+
+/* Иконки действий на карточке персоны */
+html[data-skin='laboratory'] .persona-icon-btn {
+  border-radius: 50%;
+  color: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .persona-icon-btn:hover {
+  border-color: var(--lab-ink);
+  background: var(--lab-tone-soft), var(--lab-paper);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .persona-icon-btn--on {
+  border-color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .persona-icon-btn--danger:hover {
+  border-color: var(--lab-ink);
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .persona-avatar-overlay {
+  background: rgba(21, 21, 21, 0.6);
+  color: #fcfbf8;
+}
+
+/* Сервисы: заголовки групп и счётчики */
+html[data-skin='laboratory'] .svc-group-title {
+  font-family: var(--font-disp);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+html[data-skin='laboratory'] .svc-stat-num {
+  font-weight: 700;
+  font-size: 28px;
+}
+
+html[data-skin='laboratory'] .svc-code {
+  border: var(--lab-bw) dashed var(--lab-ink);
+  background: var(--lab-paper-2);
+}
+
+html[data-skin='laboratory'] .day-chip--on,
+html[data-skin='laboratory'] .cal-optional-chip--active {
+  border-color: var(--lab-ink);
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+/* Персоны: аватар — акриловая плитка, чипы — бирки */
+html[data-skin='laboratory'] .persona-avatar-btn {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, var(--lab-gloss) 0 12%, transparent 26% 64%, var(--lab-acrylic) 80%, transparent 92%),
+    var(--lab-tone-soft),
+    var(--lab-paper-2);
+  color: var(--lab-ink);
+  font-family: var(--font-disp);
+  font-size: 26px;
+  font-weight: 700;
+  box-shadow: inset 1.5px 1.5px 0 var(--lab-gloss), 3px 3px 0 color-mix(in srgb, var(--persona) 45%, var(--lab-paper-3));
+}
+
+html[data-skin='laboratory'] .persona-chip {
+  border: 1px solid var(--lab-ink);
+  border-radius: 999px;
+  background: var(--lab-paper);
+  color: var(--lab-ink-2);
+  font-size: 10.5px;
+}
+
+html[data-skin='laboratory'] .persona-card:hover .persona-chip {
+  border-color: var(--lab-ink);
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .persona-telemetry {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 8px;
+}
+
+html[data-skin='laboratory'] .persona-tele-cell + .persona-tele-cell {
+  border-left: var(--lab-bw) dashed var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .persona-tele-label {
+  font-size: 10px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .persona-tele-value {
+  font-family: var(--font-disp);
+  font-size: 19px;
+  font-weight: 700;
+}
+
+/* Модули консоли на главной — панели манги вместо срезанных углов */
+html[data-skin='laboratory'] .home-dossier {
+  position: relative;
+  clip-path: none;
+  border: var(--lab-bw) solid var(--lab-ink);
+  background: var(--lab-paper);
+  transition: transform 0.25s ease, background 0.15s;
+}
+
+html[data-skin='laboratory'] .home-dossier:hover {
+  transform: translate(-2px, -2px);
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .home-dossier:hover::after {
+  transform: translate(calc(var(--lab-sh) + 2px), calc(var(--lab-sh) + 2px));
+}
+
+html[data-skin='laboratory'] .home-dossier h3 {
+  font-family: var(--font-disp);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+html[data-skin='laboratory'] .home-dossier p {
+  font-size: 13.5px;
+  color: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .home-dossier-index {
+  align-self: flex-start;
+  padding: 1px 7px;
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+html[data-skin='laboratory'] .home-dossier-foot {
+  border-top: var(--lab-bw) dashed var(--lab-line-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .home-dossier-foot .go {
+  color: var(--lab-ink);
+}
+
+/* «Старт»: шкала прогресса — линейка, маршруты — индексы, шаги — лист */
+html[data-skin='laboratory'] .start-guide-bar {
+  border: var(--lab-bw) solid var(--lab-ink);
+  background: var(--lab-paper);
+  font-size: 11px;
+}
+
+html[data-skin='laboratory'] .start-guide-bar-label,
+html[data-skin='laboratory'] .start-guide-bar-pct {
+  color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .start-guide-meter {
+  height: 8px;
+  border: 1px solid var(--lab-ink);
+  border-radius: 999px;
+  background: var(--lab-tone-soft), var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .start-guide-meter::after {
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), var(--lab-ink) calc(10% - 1px) 10%);
+  opacity: 0.35;
+}
+
+html[data-skin='laboratory'] .start-guide-tabs {
+  gap: 0;
+  border: var(--lab-bw) solid var(--lab-ink);
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .start-guide-tab {
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .start-guide-tab + .start-guide-tab {
+  border-left: var(--lab-bw) dashed var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .start-guide-tab:hover {
+  background: var(--lab-tone-soft), var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .start-guide-tab.is-active {
+  background: var(--lab-paper-2);
+}
+
+html[data-skin='laboratory'] .start-guide-tab-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+html[data-skin='laboratory'] .start-guide-tab-sub {
+  font-size: 12.5px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .start-guide-tab-index {
+  font-size: 10.5px;
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .start-guide-tab-ink {
+  height: 4px;
+  background: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .start-guide-steps {
+  position: relative;
+  clip-path: none;
+  border: var(--lab-bw) solid var(--lab-ink);
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .start-guide-mark {
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 50%;
+  background: var(--lab-paper);
+  color: var(--lab-ink);
+  font-family: var(--font-disp);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+html[data-skin='laboratory'] .start-guide-mark:hover {
+  background: var(--lab-tone-soft), var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .start-guide-step.is-done .start-guide-mark {
+  background: var(--lab-ink);
+  border-color: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .start-guide-line {
+  width: 0;
+  border-left: var(--lab-bw) dashed var(--lab-line-soft);
+  background: transparent;
+  overflow: visible;
+}
+
+html[data-skin='laboratory'] .start-guide-line i {
+  left: calc(var(--lab-bw) * -1);
+  width: var(--lab-bw);
+  background: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .start-guide-step-title {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+html[data-skin='laboratory'] .start-guide-step-idx {
+  font-family: var(--font-mono);
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .start-guide-step-desc {
+  font-size: 14px;
+  color: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .start-guide-check {
+  font-family: var(--font-mono);
+  color: var(--lab-ink);
+}
+
+/* Терминал — чёрная вклейка */
+html[data-skin='laboratory'] .home-term {
+  border: 2px solid var(--lab-ink);
+  border-radius: 2px;
+}
+
+/* ===== Экран запуска — карточка «Lab of Line» на цепочке ===== */
+html[data-skin='laboratory'] .boot {
+  background: var(--lab-grain), var(--lab-grid), var(--lab-desk);
+}
+
+html[data-skin='laboratory'] .boot-panel {
+  padding-top: 44px;
+  border: 2px solid var(--lab-ink);
+  border-radius: 14px;
+  background:
+    linear-gradient(118deg, var(--lab-gloss) 0 3%, transparent 9% 100%),
+    linear-gradient(to bottom, var(--lab-paper) 52%, transparent 100%),
+    var(--lab-tone),
+    var(--lab-paper);
+  box-shadow: inset 2px 2px 0 var(--lab-gloss), 7px 7px 0 -1px var(--lab-ink);
+}
+
+/* Отверстие под кольцо и цепочка, уходящая за верх экрана */
+html[data-skin='laboratory'] .boot-panel::before {
+  top: 11px;
+  width: 20px;
+  height: 20px;
+  margin-left: -10px;
+  border: 3.5px solid var(--lab-silver-mid);
+  border-radius: 50%;
+  background: var(--lab-desk);
+  box-shadow: 0 0 0 1.5px var(--lab-ink), inset 0 0 0 1px var(--lab-ink);
+  transform: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+html[data-skin='laboratory'] .boot-panel::after {
+  content: '';
+  position: absolute;
+  inset: auto auto calc(100% - 16px) 50%;
+  pointer-events: none;
+  width: 7px;
+  height: 100vh;
+  margin-left: -3.5px;
+  transform: none;
+  clip-path: none;
+  background: var(--lab-bead);
+  z-index: -1;
+}
+
+html[data-skin='laboratory'] .boot-title {
+  font-family: var(--font-disp);
+}
+
+
+html[data-skin='laboratory'] .boot-lead {
+  font-size: 14px;
+  color: var(--lab-ink-2);
+}
+
+html[data-skin='laboratory'] .boot-steps {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+html[data-skin='laboratory'] .boot-step--fail .boot-step-tag {
+  padding: 0 4px;
+  background: var(--lab-ink);
+  color: var(--lab-on-ink);
+}
+
+html[data-skin='laboratory'] .boot-cells {
+  margin: 24px 0 12px;
+}
+
+html[data-skin='laboratory'] .boot-cells i {
+  width: 7px;
+  height: 7px;
+  opacity: 0.18;
+  animation-duration: 3.6s;
+  animation-timing-function: ease-in-out;
+}
+
+html[data-skin='laboratory'] .boot-cells i.on {
+  opacity: 1;
+}
+
+html[data-skin='laboratory'] .boot-meta {
+  font-family: var(--font-mono);
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .boot-cmd-row {
+  border-radius: 6px;
+}
+
+/* ===== Галерея тем ===== */
+html[data-skin='laboratory'] .skin-theme-card {
+  position: relative;
+  border: var(--lab-bw) solid var(--lab-ink);
+  border-radius: 2px;
+  background: var(--lab-paper);
+}
+
+html[data-skin='laboratory'] .skin-theme-card:hover {
+  transform: translate(-2px, -2px);
+  border-color: var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .skin-theme-card--active {
+  border-color: var(--lab-ink);
+  box-shadow: inset 0 0 0 2px var(--lab-ink);
+}
+
+html[data-skin='laboratory'] .skin-theme-card-name {
+  font-family: var(--font-disp);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+html[data-skin='laboratory'] .skin-theme-card-tagline {
+  color: var(--lab-graphite);
+}
+
+html[data-skin='laboratory'] .skin-themes-inherit--on {
+  border-style: solid;
+  background: var(--lab-tone-soft), var(--lab-paper);
+}
+
+/* ===== Телефон ===== */
+@media (max-width: 760px) {
+  html[data-skin='laboratory'] .sidebar--open {
+    box-shadow: 5px 0 0 -1px var(--lab-ink), 0 0 36px rgba(0, 0, 0, 0.35);
+  }
+
+  html[data-skin='laboratory'] .topbar-title {
+    font-size: 20px;
+  }
+
+  html[data-skin='laboratory'] .topbar-menu {
+    color: var(--lab-ink);
+  }
+
+  html[data-skin='laboratory'] .topbar-menu-dot {
+    background: var(--lab-ink);
+    box-shadow: 0 0 0 2px var(--lab-paper);
+  }
+
+  html[data-skin='laboratory'] .section-title {
+    font-size: 28px;
+  }
+
+  html[data-skin='laboratory'] .chat-messages {
+    padding: 16px 14px;
+  }
+
+  html[data-skin='laboratory'] .message-bubble {
+    font-size: 15px;
+  }
+
+  html[data-skin='laboratory'] .chat-input {
+    font-size: 16px;
+  }
+
+  html[data-skin='laboratory'] .chat-header-name {
+    font-size: 18px;
+  }
+
+  html[data-skin='laboratory'] .dossier-panel {
+    margin: 0;
+  }
+
+  html[data-skin='laboratory'] .dossier-panel::after {
+    display: none;
+  }
+
+  html[data-skin='laboratory'] .home-hero {
+    padding: 28px 20px 24px;
+  }
+
+  html[data-skin='laboratory'] .home-tele-cell {
+    border-right: none;
+    border-bottom: var(--lab-bw) dashed var(--lab-ink);
+  }
+
+  html[data-skin='laboratory'] .home-tele-cell:nth-child(odd) {
+    border-right: var(--lab-bw) dashed var(--lab-ink);
+  }
+
+  html[data-skin='laboratory'] .chat-overview-title {
+    font-size: 32px;
+  }
+
+  html[data-skin='laboratory'] .pcreate-overlay .pcreate-panel {
+    box-shadow: none;
+  }
+
+  /* Модалка во весь экран — скотчу некуда клеиться */
+  html[data-skin='laboratory'] .pcreate-overlay .pcreate-panel::before {
+    display: none;
+  }
+
+  /* В шапке чата чипы — одни иконки: без отверстия бирки */
+  html[data-skin='laboratory'] .chat-header-actions .btn--chip {
+    padding-left: 12px;
+    padding-right: 12px;
+    background: var(--lab-paper-2);
+  }
+
+  html[data-skin='laboratory'] .chat-header-actions .btn--chip:hover {
+    background: var(--lab-ink);
+  }
+
+  html[data-skin='laboratory'] .chat-input-bar {
+    gap: 6px;
+  }
+
+  html[data-skin='laboratory'] .chat-input-bar .btn:not(.btn--primary) {
+    width: 40px;
+    height: 40px;
+  }
+
+  html[data-skin='laboratory'] .chat-input {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  html[data-skin='laboratory'] .chat-input::placeholder {
+    font-size: 13.5px;
+  }
+
+  html[data-skin='laboratory'] .room-telemetry .home-tele-cell {
+    border-bottom: none;
+  }
+
+  /* Линии концентрации — в правый верхний угол, подальше от текста */
+  html[data-skin='laboratory'] .home-hero::before {
+    background: repeating-conic-gradient(from 0deg at 100% 0, var(--lab-tone-light) 0deg 0.9deg, transparent 0.9deg 3.4deg);
+    -webkit-mask-image: radial-gradient(ellipse 75% 45% at 100% 0, transparent 0 12%, #000 38%, transparent 80%);
+    mask-image: radial-gradient(ellipse 75% 45% at 100% 0, transparent 0 12%, #000 38%, transparent 80%);
+  }
+}
+
+/* ===== Без анимаций ===== */
+@media (prefers-reduced-motion: reduce) {
+  html[data-skin='laboratory'] .status-led,
+  html[data-skin='laboratory'] .dot--green,
+  html[data-skin='laboratory'] .boot-cells i,
+  html[data-skin='laboratory'] .nav-indicator::after {
+    animation: none;
+  }
+}

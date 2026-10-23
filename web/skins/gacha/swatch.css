@@ -1,0 +1,144 @@
+@import './fonts.css';
+
+/* Гача: миниатюра в галерее — то же меню гача-игры в миниатюре: молочный фон
+   в точку, белое меню с тёмным контуром, бирюзовая пилюля выбранного пункта,
+   «Aa» на бирюзовой плашке-баннере, реплики-наклейки и искра в углу.
+   Всё плоско: контуры, заливки пятном, без теней и градиентов. */
+
+.skin-swatch[data-swatch='gacha'] {
+  --sw-bg: #f2f5f5;
+  --sw-panel: #ffffff;
+  --sw-side: #ffffff;
+  --sw-text: #2b3445;
+  --sw-dim: #cdd8db;
+  --sw-in: #ffffff;
+  --sw-out: #e2f3fc;
+  --sw-line: #2b3445;
+  --sw-accent: #5cc6c9;
+  border: 2px solid var(--sw-line);
+  border-radius: 12px;
+  background-color: var(--sw-bg);
+  background-image: radial-gradient(circle, rgba(43, 52, 69, 0.13) 0.8px, transparent 1.2px);
+  background-size: 9px 9px;
+  font-family: 'Gacha Text', 'Nunito', sans-serif;
+}
+
+/* Шапка — белая полоска с контуром снизу, «огоньки» трёх ролей */
+.skin-swatch[data-swatch='gacha'] .skin-swatch-bar {
+  height: 13px;
+  background: var(--sw-panel);
+  border-bottom: 1.5px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-bar i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f4a7c0;
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-bar i:nth-child(2) {
+  background: #ffe58a;
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-bar i:nth-child(3) {
+  background: #5cc6c9;
+}
+
+/* Меню: белое, пункты-полоски, выбранный — бирюзовая пилюля в контуре */
+.skin-swatch[data-swatch='gacha'] .skin-swatch-side {
+  gap: 5px;
+  padding: 7px 5px;
+  background: var(--sw-side);
+  border-right: 1.5px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-side i {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--sw-dim);
+  opacity: 1;
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-side i:first-child {
+  height: 9px;
+  background: var(--sw-accent);
+  box-shadow: inset 0 0 0 1.5px var(--sw-line), 0 1.5px 0 0 var(--sw-line);
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-main {
+  gap: 4px;
+  padding: 6px 7px;
+}
+
+/* Искра-наклейка в углу: тёмный контур + лимон */
+.skin-swatch[data-swatch='gacha'] .skin-swatch-main::before,
+.skin-swatch[data-swatch='gacha'] .skin-swatch-main::after {
+  content: '';
+  position: absolute;
+  clip-path: polygon(50% 0, 63% 37%, 100% 50%, 63% 63%, 50% 100%, 37% 63%, 0 50%, 37% 37%);
+  pointer-events: none;
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-main::before {
+  top: 5px;
+  right: 7px;
+  width: 15px;
+  height: 15px;
+  background: #2b3445;
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-main::after {
+  top: 8px;
+  right: 10px;
+  width: 9px;
+  height: 9px;
+  background: #ffe58a;
+}
+
+/* «Aa» — на бирюзовой плашке-баннере, тёмные буквы с белой каймой */
+.skin-swatch[data-swatch='gacha'] .skin-swatch-title {
+  align-self: flex-start;
+  padding: 1px 7px 2px;
+  border: 1.5px solid var(--sw-line);
+  border-radius: 6px;
+  background: var(--sw-accent);
+  font-family: 'Gacha Display', 'Gacha Text', sans-serif;
+  font-weight: 900;
+  font-size: 13px;
+  line-height: 1.1;
+  color: var(--sw-text);
+  -webkit-text-stroke: 3px #ffffff;
+  paint-order: stroke fill;
+}
+
+/* Реплики: персона — белая, своя — небесная; обе в контуре */
+.skin-swatch[data-swatch='gacha'] .skin-swatch-msg {
+  height: 10px;
+  border: 1.5px solid var(--sw-line);
+  border-radius: 6px 6px 6px 2px;
+  background: var(--sw-in);
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-msg--out {
+  border-color: var(--sw-line);
+  border-radius: 6px 6px 2px 6px;
+  background: var(--sw-out);
+}
+
+/* Поле ввода — пилюля, отправка — бирюзовая бусина */
+.skin-swatch[data-swatch='gacha'] .skin-swatch-input {
+  height: 13px;
+  padding: 0 2px;
+  border: 1.5px solid var(--sw-line);
+  border-radius: 999px;
+  background: var(--sw-panel);
+}
+
+.skin-swatch[data-swatch='gacha'] .skin-swatch-send {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--sw-accent);
+  box-shadow: inset 0 0 0 1.5px var(--sw-line);
+}

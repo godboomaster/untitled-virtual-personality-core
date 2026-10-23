@@ -1,0 +1,122 @@
+@import './fonts.css';
+
+/* Эльфийская сказка: миниатюра в галерее — печатный лист с бусинным
+   рельсом у меню, реплика персоны — лесная плашка, своя — светлый лист.
+   Плоско: только заливки, линии и бусины с жёстким краем. */
+.skin-swatch[data-swatch='elven'] {
+  --sw-bg: #eee4c8;
+  --sw-panel: #f8f2df;
+  --sw-side: #eee4c8;
+  --sw-text: #1d2b22;
+  --sw-dim: #9e9478;
+  --sw-in: #1d2b22;
+  --sw-out: #f8f2df;
+  --sw-line: #9a7b3c;
+  --sw-accent: #1d2b22;
+  --sw-plate-line: #b8995a;
+  --sw-out-line: #1d2b22;
+  border: 1px solid var(--sw-line);
+  border-radius: 2px 12px;
+  background: var(--sw-bg);
+}
+
+.skin-swatch[data-swatch='elven'][data-scheme='dark'] {
+  --sw-bg: #162821;
+  --sw-panel: #1c3129;
+  --sw-side: #162821;
+  --sw-text: #ece3c8;
+  --sw-dim: #5f7562;
+  --sw-in: #223b2f;
+  --sw-out: #e9d3a2;
+  --sw-line: #7d8956;
+  --sw-accent: #d1f2e0;
+  --sw-plate-line: #e9d3a2;
+  --sw-out-line: #e9d3a2;
+}
+
+/* Верх — двойная печатная линейка и три листочка */
+.skin-swatch[data-swatch='elven'] .skin-swatch-bar {
+  height: 14px;
+  gap: 4px;
+  background: var(--sw-bg);
+  border-bottom: 1px solid var(--sw-line);
+  box-shadow: 0 2px 0 0 var(--sw-bg), 0 3px 0 0 var(--sw-line);
+  position: relative;
+  z-index: 1;
+}
+.skin-swatch[data-swatch='elven'] .skin-swatch-bar i {
+  width: 5px;
+  height: 5px;
+  border-radius: 0 100%;
+  background: var(--sw-line);
+}
+.skin-swatch[data-swatch='elven'] .skin-swatch-bar i:nth-child(2) {
+  background: #e5a177;
+}
+.skin-swatch[data-swatch='elven'] .skin-swatch-bar i:nth-child(3) {
+  background: #7d8956;
+}
+
+/* Меню — лист с рельсом по правому краю: две линии и бусины */
+.skin-swatch[data-swatch='elven'] .skin-swatch-side {
+  padding: 9px 12px 8px 5px;
+  gap: 5px;
+  border-right: 0;
+  background:
+    linear-gradient(var(--sw-line), var(--sw-line)) right 2px top 0 / 1px 100% no-repeat,
+    linear-gradient(var(--sw-line), var(--sw-line)) right 8px top 0 / 1px 100% no-repeat,
+    radial-gradient(circle, var(--sw-line) 0 1px, transparent 1.4px) right 3px top 0 / 5px 6px repeat-y,
+    var(--sw-side);
+}
+.skin-swatch[data-swatch='elven'] .skin-swatch-side i {
+  height: 4px;
+  border-radius: 1px 4px;
+  background: var(--sw-dim);
+  opacity: 0.7;
+}
+/* Активный пункт — плашка-лист */
+.skin-swatch[data-swatch='elven'] .skin-swatch-side i:first-child {
+  height: 8px;
+  border-radius: 1px 6px;
+  background: var(--sw-accent);
+  opacity: 1;
+}
+
+/* Заголовок — вязь */
+.skin-swatch[data-swatch='elven'] .skin-swatch-title {
+  font-family: 'EL Script', 'Great Vibes', cursive;
+  font-size: 21px;
+  font-weight: 400;
+  line-height: 0.95;
+  color: var(--sw-text);
+}
+
+/* Реплики — зеркальные листья: персона — лесная плашка, своя — светлый лист */
+.skin-swatch[data-swatch='elven'] .skin-swatch-msg {
+  height: 13px;
+  border: 0;
+  border-radius: 1px 7px;
+  background: var(--sw-in);
+  box-shadow: inset 0 0 0 2px var(--sw-in), inset 0 0 0 3px var(--sw-plate-line);
+}
+.skin-swatch[data-swatch='elven'] .skin-swatch-msg--out {
+  border: 1px solid var(--sw-out-line);
+  border-radius: 7px 1px;
+  background: var(--sw-out);
+  box-shadow: none;
+}
+
+/* Поле ввода — светлый лист, отправка — лесная линза */
+.skin-swatch[data-swatch='elven'] .skin-swatch-input {
+  height: 14px;
+  border-radius: 1px 7px;
+  background: var(--sw-panel);
+  border: 1px solid var(--sw-line);
+  padding: 0 3px;
+}
+.skin-swatch[data-swatch='elven'] .skin-swatch-send {
+  width: 8px;
+  height: 8px;
+  border-radius: 0 100%;
+  background: var(--sw-accent);
+}

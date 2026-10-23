@@ -45,6 +45,7 @@ from app.features.reminder_manager import (
 )
 from app.features.learning_manager import LearningManager, parse_frequency, classify_continue_answer
 from app.features import user_notes
+from app.integrations import chat as services_chat
 from app.features.user_notes import UserNotes
 from app.features.learning_intent import extract_subject
 from app.features.inventory_manager import (
@@ -1358,6 +1359,21 @@ class BotInstance:
             allowed = (cfg.get("allowed_chats") or []) if isinstance(cfg, dict) else []
             if chat not in {str(c).strip() for c in allowed}:
                 return False
+        return self.is_owner(user_id)
+
+    def services_allowed(self, user_id: str, chat_id=None) -> bool:
+        """Сервисы в чате (почта, Telegram-аккаунт, GitHub, Диск — данные
+        владельца): только владелец, не из скина (реплику мог написать
+        скрипт скина), не в ходе команды телефону и в Telegram — только в
+        личке (в группе их увидели бы все). features.services: false —
+        выключено у персоны."""
+        if getattr(self, "features", {}).get("services", True) is False:
+            return False
+        if getattr(_SKIN_TURN, "on", False) or getattr(_PHONE_TURN, "on", False):
+            return False
+        chat = str(chat_id or "")
+        if not getattr(self, "web_single_user", False) and chat.startswith("-"):
+            return False
         return self.is_owner(user_id)
 
     @staticmethod
@@ -4277,6 +4293,21 @@ class BotInstance:
             notes_req = user_notes.parse_request(raw_user_text, self._address_names())
         notes_explicit = bool(notes_req and notes_req.kind != "ask")
 
+        # Сервисы («что нового в почте?», «найди на диске …», «не присылай
+        # уведомления от X», «не беспокой до 9», «это не важно») — только
+        # владельцу: это его почта и переписка. Данные достаёт и правила
+        # пишет код, модели — блок с итогом (app/integrations/chat.py).
+        # claimed — ход забран явной просьбой (заметки или сервисы): дела,
+        # инвентарь, напоминания, обучение, правило и веб-поиск его не берут
+        services_req = None
+        if notes_req is None and self.services_allowed(user_id, chat_id) \
+                and not (chat_id and self.control_mode_on(chat_id)):
+            try:
+                services_req = services_chat.parse_request(raw_user_text, self._address_names())
+            except Exception as e:
+                logger.warning(f"[BotInstance] разбор просьбы про сервисы: {e}")
+        claimed = notes_explicit or services_chat.claims(services_req)
+
         # Серия подряд идущих ответов бота с финальным вопросом (conversation_style):
         # по истории ДО текущего сообщения; ниже решает, нужна ли регенерация
         from app.features.conversation_style import count_question_streak
@@ -4344,7 +4375,7 @@ class BotInstance:
                 # вопрос к интернету
                 and not turn_note
                 # «Запиши в заметки рецепт …» — не вопрос к интернету
-                and not notes_explicit):
+                and not claimed):
             # Собираем контекст персоны для QueryEnhancer
             persona_context = self._get_persona_context_for_search()
             # Берём последние 6 сообщений для контекста
@@ -4434,7 +4465,7 @@ class BotInstance:
             # «Запомни сценарий …» вне режима управления — не правило (см. выше)
             # «Запомни в заметках …» — заметка, не правило
             if _looks_like_correction(user_input, typed_h) and not scenario_outside_mode \
-                    and not notes_explicit:
+                    and not claimed:
                 rule = self._extract_rule_from_correction(user_input)
                 if rule:
                     self.memory.ltm.save_facts(
@@ -4515,7 +4546,7 @@ class BotInstance:
             # Напоминания: ответы на висящие вопросы, отмена/список текстом,
             # новая просьба — см. _reminder_turn
             if self.reminder_manager and chat_id \
-                    and not self.control_mode_on(chat_id) and not notes_explicit:
+                    and not self.control_mode_on(chat_id) and not claimed:
                 reminder_context, is_reminder_request = self._reminder_turn(
                     user_input, chat_id, user_id, user_name, reply_to_bot_message_id)
 
@@ -4534,7 +4565,7 @@ class BotInstance:
                 # фейковый урок через parse_frequency("5 минут")=300с.
                 explicit_other_feature = (
                     is_reminder_request
-                    or notes_explicit
+                    or claimed
                     or is_inventory_add_request(user_input)
                     or is_inventory_remove_request(user_input)
                     or is_todo_request(user_input)
@@ -4774,7 +4805,7 @@ class BotInstance:
             # Какие эвристики фич сработали на этом сообщении
             _fired_intents = set()
             if self.todo_manager and chat_id \
-                    and not self.control_mode_on(chat_id) and not notes_explicit:
+                    and not self.control_mode_on(chat_id) and not claimed:
                 if is_todo_done_request(user_input):
                     _fired_intents.add("todo_remove")
                 elif is_todo_list_request(user_input):
@@ -4782,7 +4813,7 @@ class BotInstance:
                 elif is_todo_request(user_input):
                     _fired_intents.add("todo_add")
             if (self.inventory_manager and not is_reminder_request
-                    and not self.control_mode_on(chat_id) and not notes_explicit):
+                    and not self.control_mode_on(chat_id) and not claimed):
                 if is_inventory_add_request(user_input):
                     _fired_intents.add("inventory_add")
                 elif is_inventory_remove_request(user_input):
@@ -4914,6 +4945,21 @@ class BotInstance:
             # него персона «поставит будильник» на словах или откажется
             if turn_note:
                 addon_blocks.append(turn_note)
+            # Сервисы: итог просьбы и подробности недавнего уведомления — и в
+            # light-режиме: без них персона ответит про почту наугад
+            if services_req is not None:
+                block = services_chat.turn_block(services_req, self.persona_name)
+                if block:
+                    addon_blocks.append(block)
+            if self.services_allowed(user_id, chat_id) \
+                    and not (chat_id and self.control_mode_on(chat_id)):
+                try:
+                    recent = services_chat.recent_block(self.persona_name)
+                except Exception as e:
+                    recent = None
+                    logger.debug(f"[BotInstance] блок недавних уведомлений: {e}")
+                if recent:
+                    addon_blocks.append(recent)
             # О файлах говорят, но поиск файлов реплику не взял: модель сама
             # файлов не видит — без заметки «открывает» их на словах
             if self._file_talk(raw_user_text, reply_context):

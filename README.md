@@ -40,6 +40,11 @@ https://github.com/user-attachments/assets/aa87b619-6564-4703-81d8-762ad478f123
 - **Household.** Reminders ("tomorrow at 12", "every Friday at 6 pm"), a to-do list,
   notes ("add to my notes …", "what's in my notes?" — each persona keeps its own, shown on
   the home page), inventory, courses with quizzes, web search.
+- **Services and notifications.** Gmail and Google Drive, GitHub, your Telegram account,
+  any IMAP mailbox, RSS feeds and a webhook: the persona decides what is worth interrupting
+  you for (your rules, the service's own signals, a local model) and tells you in its chat,
+  on the phone or in Telegram; the rest goes to a digest. In chat: "any new emails?", "who
+  messaged me?", "don't notify me about emails from LinkedIn".
 - **Control mode.** On the owner's command the bot opens sites and apps, searches on sites,
   clicks buttons, types text, reads pages, carries out multi-step tasks ("order a pizza")
   and replays recorded scenarios. Actions are confirmed. Task steps spare your web chat
@@ -422,6 +427,7 @@ Modules in `features`:
 | `self_memory` | the persona's diary: conversation episodes and notes |
 | `todo`, `reminder`, `inventory` | to-dos, reminders, inventory |
 | `notes` | the user's notes: on unless `notes: false` |
+| `services` | requests about connected services in chat (mail, Telegram, GitHub, Drive): on unless `services: false` |
 | `learning` | "teach me X" courses; as a dict — `quiz_every`, lesson intervals |
 | `proactive` | initiative — see below |
 | `rhythm` | morning greeting, "time to sleep", weather |
@@ -639,6 +645,67 @@ Linux); without an index it walks the home folder by file name.
   `features.file_access.allowed_chats` (everyone in such a group sees the file); not from skins.
   Every action is logged to `data/<context>/file_access/audit.jsonl`. Turn it off for a persona
   with `features.file_access: false`.
+
+## Services
+
+The persona watches your accounts and tells you only what matters: Gmail and Google
+Drive/Docs, GitHub, your own Telegram account, any other mailbox over IMAP (Yandex, Mail.ru,
+Outlook, iCloud), RSS/Atom feeds, and anything else through an incoming webhook. Everything
+is set up on the web in **Services**. Access is read-only: nothing is sent, changed or
+marked as read.
+
+- **Connecting.**
+  - Google — your own OAuth client of type "Desktop app" in Google Cloud Console: enable
+    Gmail API and Google Drive API, add yourself as a test user on the consent screen (or
+    publish the app — sign-ins of an app in testing expire after 7 days), paste the client
+    ID and secret (or the downloaded JSON) and press "Sign in with Google". Google returns to
+    a one-time server on 127.0.0.1; if you signed in on another device, paste the address
+    from its browser.
+  - GitHub — a personal token with `notifications` (and `repo` for private repositories).
+  - Telegram — api_id and api_hash from my.telegram.org, the phone number and the login code
+    (and the cloud password, if set). The core signs in as one more device, "Virtual Persona
+    Core" in Telegram's active sessions; "Disconnect" ends that session. Needs `telethon`
+    (it is in `requirements.txt`).
+  - Mail — the address and an app password; the server is filled in from the domain.
+  - Feeds — any RSS/Atom address. Webhook — "Create address", then
+    `POST {"title", "text", "url", "priority"}` to it (a form or plain text works too).
+- **What becomes an event.** New unread mail in the inbox; a file shared with you or your
+  file edited by someone else; GitHub notifications (review requests, mentions, assignments,
+  CI, security alerts); Telegram private messages and mentions or replies in groups
+  (optionally all group messages and channel posts). Bots — persona bots too — service
+  messages and login codes are skipped; a burst from one chat waits 40 seconds of silence and
+  becomes one event; a chat you have read or replied in is not reported. Plus new feed
+  entries and webhook posts. The first check only remembers where it is, so old mail does not
+  become new.
+- **Is it worth interrupting.** Every event gets a level: *urgent* — right away, even during
+  quiet hours; *notify* — right away or after quiet hours; *digest* — in the scheduled
+  digest; *ignore* — the feed only. Order: your rules → the service's signals (Promotions, a
+  muted chat, a subscription, `priority`) → a model. The model is local by default (Ollama):
+  mail and messages do not leave the computer; it sees "What matters to me" and your past
+  ratings. Without the model, rules and signals decide. Events older than 6 hours (the core
+  was off) go to the digest. Texts are treated as data: a letter cannot order the model to
+  mark it urgent, and a "never" rule is applied before the model sees anything.
+- **Delivery.** From the chosen persona (or the one you talked to last): a message in its web
+  chat with a notification on the phone and, optionally, a message from its Telegram bot
+  (`<PERSONA>_BOT_TOKEN` and `OWNER_USER_ID`). Events of one minute come as one message;
+  quiet hours (23:00–08:00 by default) and "do not disturb" hold the normal ones; at most N
+  messages an hour; the digest comes at set times (09:00 and 19:00 by default). Plain text by
+  default; "in the persona's own words" retells it with the persona's model and keeps the
+  facts and links. If access to a service is lost, the persona says so once.
+- **In chat** — owner only; in Telegram only in a private chat; not from skins: "any new
+  emails?", "who messaged me?", "check my github", "what did I miss?" (it also empties the
+  digest queue), "find emails from Ivan", "find report on my drive", "summarize google doc
+  Plan", "don't notify me about emails from LinkedIn", "always notify me about mail from my
+  professor", "do not disturb until 9", "turn notifications back on". Right after a
+  notification: "that's not important", "don't send stuff like that", "that was urgent" — two
+  equal ratings of one sender become a rule. For 30 minutes after a notification the persona
+  knows its details ("what did he write?"). Russian works too: «что нового в почте?», «не
+  беспокой до 9».
+- **Data.** Settings and rules — `data/integrations/settings.json`; tokens — `secrets.json`
+  (mode 0600, the API never returns them); positions in the services — `state.json`; the
+  feed — `feed.json` (the last 400 events). One core per data folder polls services
+  (`hub.lock`); another core on the same data only changes settings. Chat requests are turned
+  off for a persona with `features.services: false`.
 
 ## Control mode
 
@@ -947,6 +1014,7 @@ Building the database and checks — in the Arrodes README.
 | `app/core/` | persona, memory (ChromaDB), model router, persona life, intelligence tiers, add-ons |
 | `app/features/` | modules: reminders, to-dos, learning, initiative, rhythm, search, control mode, browser, web chats, screenshots |
 | `app/api/` | FastAPI: server, settings, security, skins, room |
+| `app/integrations/` | services: Google, GitHub, Telegram account, IMAP, RSS, webhook; triage and notifications |
 | `app/link/` | VPC Link: the encrypted channel to the phone (Noise), the relay |
 | `app/voice/` | voice activation: listening for a persona's name (sherpa-onnx), matching names by sound |
 | `app/personas/` | the built-in test persona (Connor) |
@@ -961,7 +1029,7 @@ The path of one message — filters, memory, search, model, markers, saving — 
 
 ## Tests
 
-Tests are `scripts/test_*.py` scripts (111), without pytest; Arrodes tests are in its own
+Tests are `scripts/test_*.py` scripts (115), without pytest; Arrodes tests are in its own
 repository. Run them from the project root:
 
 ```bash

@@ -601,6 +601,8 @@ public class OfflineLlmPlugin extends Plugin {
         final double topP = call.getDouble("topP", 0.95);
         // Задача ядра: не начинать после этого времени (System.currentTimeMillis)
         final Long deadline = call.getLong("deadline", 0L);
+        // Страница рисует 3D — видеоядро её: считать на процессоре (PhoneGemma)
+        final Boolean spareGpu = call.getBoolean("spareGpu", false);
         // Генерации идут по одной в потоке модели; здесь — только ждём ответ
         io.execute(() -> {
             try {
@@ -609,7 +611,7 @@ public class OfflineLlmPlugin extends Plugin {
                     ev.put("requestId", requestId);
                     ev.put("text", chunk);
                     notifyListeners("localToken", ev);
-                }, deadline == null ? 0L : deadline);
+                }, deadline == null ? 0L : deadline, Boolean.TRUE.equals(spareGpu));
                 JSObject ret = new JSObject();
                 ret.put("text", r.text);
                 ret.put("backend", r.backend);

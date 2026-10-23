@@ -458,9 +458,13 @@ final class PhoneGemmaPeer {
     }
 
     PhoneGemma.Reply chat(String system, JSONArray history, String text, int maxTokens,
-                          double temperature, double topP, PhoneGemma.Tokens tokens, long deadline) throws Exception {
+                          double temperature, double topP, PhoneGemma.Tokens tokens, long deadline,
+                          boolean spareGpu) throws Exception {
         Bundle d = new Bundle();
         d.putLong("deadline", deadline);
+        // Видеоядро занято у просящего — считать на процессоре (сосед прежней
+        // версии ключа не знает и считает как раньше)
+        d.putBoolean("spareGpu", spareGpu);
         d.putString("system", system);
         d.putString("history", history == null ? "[]" : history.toString());
         d.putString("text", text);

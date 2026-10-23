@@ -1,0 +1,2576 @@
+/* =====================================================================
+   Чистый HUD (sci-fi-hud) — интерфейс как техническая графика:
+   приборная панель из хорошего фильма, а не «неоновый дашборд».
+   Система: плоская полупрозрачная заливка панелей + волосяная линия 1px,
+   угловые засечки 2px, шкалы-линейки под заголовками, координатная сетка
+   с метками совмещения, выноски-лидеры у реплик и активного пункта меню.
+   Ни теней с размытием, ни плавных градиентов, ни свечений: градиенты
+   здесь — только способ нарисовать линию, засечку или шкалу (жёсткие стопы).
+   Тёмная схема — ночной прибор (полночь, тил, белое море, арктика);
+   светлая — технический лист (полярный белый, кобальт, тил).
+   ===================================================================== */
+
+/* ===== Токены: светлая схема — технический лист ===== */
+html[data-skin='sci-fi-hud'] {
+  --bg: #f5f5fa;
+  --bg-panel: #fcfcfe;
+  --bg-panel-2: #eaf0f4;
+  --text: #122f4c;
+  --text-dim: #34506a;
+  --text-muted: #5a7186;
+  --border: #8da2b4;
+  --border-soft: #c5d1db;
+  --accent: #1a6d73;
+  --accent-dim: #3d8a96;
+  --accent-soft: rgba(26, 109, 115, 0.09);
+  --bg-hover: rgba(18, 47, 76, 0.05);
+  --border-accent: var(--accent);
+  --accent-dark: #122f4c;
+  --danger: #b3412f;
+  --success: #1a6d73;
+  --warning: #93620c;
+  --term-bg: #122f4c;
+  --term-line: #2e4f70;
+  --term-dim: #9fb6cb;
+  --term-bright: #f5f5fa;
+  --topbar-bg: rgba(245, 245, 250, 0.92);
+  --overlay-bg: rgba(18, 47, 76, 0.42);
+  --radius-sm: 0;
+  --radius: 0;
+  --shadow-card: none;
+  --shadow-card-hover: none;
+  --font: 'SFH Sans', 'IBM Plex Sans', -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  --font-disp: 'SFH Display', 'SFH Sans', sans-serif;
+  --font-mono: 'SFH Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Свои токены */
+  --sfh-glass: rgba(255, 255, 255, 0.78); /* «стекло» — плоская полупрозрачная заливка */
+  --sfh-glass-2: rgba(215, 230, 234, 0.55); /* приподнятая/выбранная */
+  --sfh-solid: #fcfcfe; /* непрозрачная панель: меню, модалки */
+  --sfh-well: #ffffff; /* поле ввода */
+  --sfh-line: #c2ced9; /* волосяная линия рамок */
+  --sfh-line-2: #8da2b4; /* линия полей и сильных разделителей */
+  --sfh-ink: #122f4c; /* засечки, главные линии */
+  --sfh-tick: #8da2b4; /* деления шкал */
+  --sfh-hi: #1a6d73; /* акцент меток */
+  --sfh-cool: #2f7c93;
+  --sfh-on-accent: #f5f5fa;
+  --sfh-primary: #122f4c;
+  --sfh-primary-hover: #1a6d73;
+  --sfh-user: #122f4c;
+  --sfh-user-fg: #f5f5fa;
+  --sfh-user-dim: #a4dbe1;
+  --sfh-node: #1a6d73;
+  /* Координатная сетка 96 px + метки совмещения «+» на пересечениях */
+  --sfh-grid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' shape-rendering='crispEdges'%3E%3Cpath d='M48.5 0V96M0 48.5H96' stroke='%23122f4c' stroke-opacity='.05' fill='none'/%3E%3Cpath d='M43 48.5h11M48.5 43v11' stroke='%23122f4c' stroke-opacity='.2' fill='none'/%3E%3C/svg%3E");
+  color-scheme: light;
+}
+
+/* ===== Токены: тёмная схема — ночной прибор (основная) ===== */
+html[data-skin='sci-fi-hud'][data-theme='dark'] {
+  --bg: #08141b;
+  --bg-panel: #0e2229;
+  --bg-panel-2: #132f37;
+  --text: #d7e6ea;
+  --text-dim: #a6c0c6;
+  --text-muted: #7b99a0;
+  --border: #51727a;
+  --border-soft: #22434c;
+  --accent: #3ed7c1;
+  --accent-dim: #56a8be;
+  --accent-soft: rgba(62, 215, 193, 0.1);
+  --bg-hover: rgba(164, 219, 225, 0.06);
+  --accent-dark: #f5f5fa;
+  --danger: #ec8a7b;
+  --success: #3ed7c1;
+  --warning: #e3bb6c;
+  --term-bg: #050e13;
+  --term-line: #1d3a42;
+  --term-dim: #7b99a0;
+  --term-bright: #a4dbe1;
+  --topbar-bg: rgba(8, 20, 27, 0.9);
+  --overlay-bg: rgba(3, 9, 13, 0.8);
+
+  --sfh-glass: rgba(19, 47, 55, 0.66);
+  --sfh-glass-2: rgba(42, 79, 88, 0.42);
+  --sfh-solid: #0e2229;
+  --sfh-well: rgba(3, 10, 14, 0.62);
+  --sfh-line: #2a4f58;
+  --sfh-line-2: #51727a;
+  --sfh-ink: #7b99a0;
+  --sfh-tick: #3c626b;
+  --sfh-hi: #3ed7c1;
+  --sfh-cool: #56a8be;
+  --sfh-on-accent: #06161b;
+  --sfh-primary: #3ed7c1;
+  --sfh-primary-hover: #a4dbe1;
+  --sfh-user: #1a6d73;
+  --sfh-user-fg: #f5f5fa;
+  --sfh-user-dim: #a4dbe1;
+  --sfh-node: #3ed7c1;
+  --sfh-grid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' shape-rendering='crispEdges'%3E%3Cpath d='M48.5 0V96M0 48.5H96' stroke='%23a4dbe1' stroke-opacity='.045' fill='none'/%3E%3Cpath d='M43 48.5h11M48.5 43v11' stroke='%23a4dbe1' stroke-opacity='.16' fill='none'/%3E%3C/svg%3E");
+  color-scheme: dark;
+}
+
+/* ===== Анимации: только медленные, только opacity/transform ===== */
+@keyframes sfh-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@keyframes sfh-cell {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.8; }
+}
+
+/* ===== Фон страницы: ночь/лист + координатная сетка ===== */
+html[data-skin='sci-fi-hud'] body {
+  background-color: var(--bg);
+  background-image: var(--sfh-grid);
+  background-position: -48px -48px;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+/* Фоновый холст стандартной темы и её уголки — не нужны: свои засечки */
+html[data-skin='sci-fi-hud'] .detroit-bg,
+html[data-skin='sci-fi-hud'] .corner,
+html[data-skin='sci-fi-hud'] .home-title.glitch::before,
+html[data-skin='sci-fi-hud'] .home-title.glitch::after {
+  display: none;
+}
+
+html[data-skin='sci-fi-hud'] ::selection {
+  background: var(--sfh-hi);
+  color: var(--sfh-on-accent);
+}
+
+html[data-skin='sci-fi-hud'] :focus-visible {
+  outline: 1px solid var(--sfh-hi);
+  outline-offset: 3px;
+}
+
+/* Скроллбары — тонкая линия без скругления */
+html[data-skin='sci-fi-hud'] * {
+  scrollbar-color: var(--sfh-line-2) transparent;
+}
+
+html[data-skin='sci-fi-hud'] ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+html[data-skin='sci-fi-hud'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] ::-webkit-scrollbar-thumb {
+  background: var(--sfh-line-2);
+  border-radius: 0;
+}
+
+html[data-skin='sci-fi-hud'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--sfh-hi);
+}
+
+/* Разделитель стандартной темы — пустой: шкала уже есть под заголовком блока */
+html[data-skin='sci-fi-hud'] .chrome-bar {
+  background: transparent;
+}
+
+/* =====================================================================
+   ПАНЕЛЬ — главный примитив: заливка-«стекло», волосяная рамка и
+   четыре угловые засечки 2px (фон с жёсткими стопами, без псевдоэлементов).
+   --bk — цвет засечек, --bk1 — левого верхнего угла, --bl — длина плеча.
+   ===================================================================== */
+html[data-skin='sci-fi-hud'] :is(
+  .card, .home-hero, .boot-panel, .chat-card, .home-presence, .home-dossier, .home-feed,
+  .notes, .cal, .pcreate-panel, .dossier-panel, .dialog-panel, .info-modal,
+  .skin-theme-card, .start-guide-steps, .persona-card, .start-control-card
+) {
+  --bk: var(--sfh-ink);
+  --bl: 10px;
+  background-color: var(--sfh-glass);
+  background-image:
+    linear-gradient(var(--bk1, var(--bk)), var(--bk1, var(--bk))),
+    linear-gradient(var(--bk1, var(--bk)), var(--bk1, var(--bk))),
+    linear-gradient(var(--bk), var(--bk)),
+    linear-gradient(var(--bk), var(--bk)),
+    linear-gradient(var(--bk), var(--bk)),
+    linear-gradient(var(--bk), var(--bk)),
+    linear-gradient(var(--bk), var(--bk)),
+    linear-gradient(var(--bk), var(--bk));
+  background-size:
+    var(--bl) 2px, 2px var(--bl),
+    var(--bl) 2px, 2px var(--bl),
+    var(--bl) 2px, 2px var(--bl),
+    var(--bl) 2px, 2px var(--bl);
+  background-position:
+    0 0, 0 0,
+    100% 0, 100% 0,
+    0 100%, 0 100%,
+    100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-origin: border-box;
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  box-shadow: none;
+  clip-path: none;
+}
+
+/* Крупные панели — плечо засечки длиннее */
+html[data-skin='sci-fi-hud'] :is(.home-hero, .boot-panel, .pcreate-panel, .dossier-panel, .dialog-panel, .info-modal) {
+  --bl: 16px;
+}
+
+/* Непрозрачные панели поверх всего */
+html[data-skin='sci-fi-hud'] :is(.pcreate-panel, .dossier-panel, .dialog-panel, .info-modal, .boot-panel) {
+  background-color: var(--sfh-solid);
+}
+
+/* Наведение на кликабельные панели: засечки становятся акцентом, без подъёма */
+html[data-skin='sci-fi-hud'] :is(.chat-card, .home-presence, .home-dossier, .skin-theme-card):hover {
+  --bk: var(--sfh-hi);
+  background-color: var(--sfh-glass);
+  border-color: var(--sfh-line-2);
+  transform: none;
+}
+
+/* Метка-лидер перед заголовками карточек: короткая линия акцента */
+html[data-skin='sci-fi-hud'] .card-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .card-title::before {
+  content: '';
+  display: inline-block;
+  width: 14px;
+  height: 1px;
+  margin-right: 10px;
+  vertical-align: 0.3em;
+  background: var(--sfh-hi);
+}
+
+/* ===== Каркас: сайдбар ===== */
+html[data-skin='sci-fi-hud'] .sidebar {
+  background: var(--sfh-glass);
+  border-right: 1px solid var(--sfh-line);
+  box-shadow: none;
+}
+
+/* Правый край сайдбара — измерительная рейка: деления каждые 8 px, крупные каждые 64 px */
+html[data-skin='sci-fi-hud'] .sidebar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 9px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(180deg, var(--sfh-tick) 0 1px, transparent 1px 8px) right top / 4px 100% no-repeat,
+    repeating-linear-gradient(180deg, var(--sfh-line-2) 0 1px, transparent 1px 64px) right top / 9px 100% no-repeat;
+  opacity: 0.8;
+}
+
+html[data-skin='sci-fi-hud'] .sidebar-logo {
+  gap: 12px;
+  padding: 6px 8px 18px;
+  border-bottom: 1px solid var(--sfh-line);
+}
+
+/* Логотип — прицел: кольцо, точка в центре и четыре риски */
+html[data-skin='sci-fi-hud'] .sidebar-logo-icon {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  font-size: 0;
+  color: transparent;
+  border: 1px solid var(--sfh-ink);
+  border-radius: 50%;
+  background:
+    linear-gradient(var(--sfh-hi), var(--sfh-hi)) center / 4px 4px no-repeat,
+    linear-gradient(var(--sfh-ink), var(--sfh-ink)) center top / 1px 5px no-repeat,
+    linear-gradient(var(--sfh-ink), var(--sfh-ink)) center bottom / 1px 5px no-repeat,
+    linear-gradient(var(--sfh-ink), var(--sfh-ink)) left center / 5px 1px no-repeat,
+    linear-gradient(var(--sfh-ink), var(--sfh-ink)) right center / 5px 1px no-repeat;
+  animation: none;
+}
+
+html[data-skin='sci-fi-hud'] .sidebar-logo-title {
+  font-family: var(--font-disp);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .sidebar-logo-sub {
+  margin-top: 1px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--text-muted);
+}
+
+/* Пункты меню */
+html[data-skin='sci-fi-hud'] .nav-item {
+  font-family: var(--font-disp);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+html[data-skin='sci-fi-hud'] .nav-item--active,
+html[data-skin='sci-fi-hud'] .nav-item--active:hover {
+  background: transparent;
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+
+html[data-skin='sci-fi-hud'] .nav-item--active .nav-item-icon {
+  color: var(--sfh-hi);
+}
+
+/* Активный пункт — рамка-прицел: четыре скобки, без заливки,
+   и выноска-лидер до края сайдбара с узлом на рейке */
+html[data-skin='sci-fi-hud'] .nav-indicator {
+  --c: var(--sfh-hi);
+  background:
+    linear-gradient(var(--c), var(--c)) 0 0 / 8px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 0 / 2px 8px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 0 / 8px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 0 / 2px 8px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 100% / 8px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 100% / 2px 8px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 100% / 8px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 100% / 2px 8px no-repeat,
+    var(--accent-soft);
+  border-radius: 0;
+  box-shadow: none;
+  transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+html[data-skin='sci-fi-hud'] .nav-indicator::before,
+html[data-skin='sci-fi-hud'] .nav-indicator::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  pointer-events: none;
+}
+
+html[data-skin='sci-fi-hud'] .nav-indicator::before {
+  left: 100%;
+  width: 12px;
+  height: 1px;
+  background: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .nav-indicator::after {
+  left: calc(100% + 9px);
+  width: 5px;
+  height: 5px;
+  margin-top: -2px;
+  background: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .sidebar--collapsed .nav-indicator::before {
+  width: 8px;
+}
+
+html[data-skin='sci-fi-hud'] .sidebar--collapsed .nav-indicator::after {
+  left: calc(100% + 5px);
+}
+
+html[data-skin='sci-fi-hud'] .sidebar--collapsed .nav-item:hover::after {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: var(--sfh-solid);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .sidebar-footer {
+  border-top: 1px solid var(--sfh-line);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .sidebar-toggle {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .sidebar-toggle:hover {
+  border-color: var(--sfh-hi);
+  background: var(--accent-soft);
+  color: var(--sfh-hi);
+}
+
+/* ===== Индикаторы: чёткие точки-метки ===== */
+html[data-skin='sci-fi-hud'] .status-led,
+html[data-skin='sci-fi-hud'] .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: none;
+  box-shadow: none;
+}
+
+html[data-skin='sci-fi-hud'] .status-led,
+html[data-skin='sci-fi-hud'] .dot--green {
+  background: var(--sfh-hi);
+  animation: sfh-breathe 4.8s ease-in-out infinite;
+}
+
+html[data-skin='sci-fi-hud'] .dot {
+  background: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .sidebar-status-row--down .status-led,
+html[data-skin='sci-fi-hud'] .topbar-status--down .status-led {
+  background: var(--danger);
+  animation: none;
+}
+
+/* ===== Шапка ===== */
+html[data-skin='sci-fi-hud'] .topbar {
+  background: var(--topbar-bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: 1px solid var(--sfh-line);
+}
+
+/* Заголовок шапки — с меткой совмещения «+» */
+html[data-skin='sci-fi-hud'] .topbar-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-disp);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .topbar-title::before {
+  content: '';
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+  background:
+    linear-gradient(var(--sfh-hi), var(--sfh-hi)) center / 11px 1px no-repeat,
+    linear-gradient(var(--sfh-hi), var(--sfh-hi)) center / 1px 11px no-repeat;
+}
+
+html[data-skin='sci-fi-hud'] .topbar-status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .topbar-status--down {
+  color: var(--danger);
+}
+
+/* Сегмент LIGHT/DARK (и такие же переключатели в настройках) */
+html[data-skin='sci-fi-hud'] .theme-toggle {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+
+html[data-skin='sci-fi-hud'] .card .theme-toggle {
+  width: fit-content;
+}
+
+html[data-skin='sci-fi-hud'] .theme-toggle span {
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .theme-toggle span:hover:not(.active) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+html[data-skin='sci-fi-hud'] .theme-toggle span.active {
+  background: var(--text);
+  color: var(--bg);
+}
+
+html[data-skin='sci-fi-hud'] .topbar-menu {
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .topbar-menu-dot {
+  border-radius: 50%;
+  background: var(--sfh-hi);
+  box-shadow: none;
+}
+
+/* ===== Заголовки разделов: тонкий широкий шрифт и шкала-линейка ===== */
+html[data-skin='sci-fi-hud'] .section-header,
+html[data-skin='sci-fi-hud'] .home-block-head {
+  border-bottom: 0;
+  background:
+    linear-gradient(var(--sfh-line-2), var(--sfh-line-2)) left bottom / 100% 1px no-repeat,
+    repeating-linear-gradient(90deg, var(--sfh-tick) 0 1px, transparent 1px 8px) left bottom / 100% 5px no-repeat,
+    repeating-linear-gradient(90deg, var(--sfh-ink) 0 1px, transparent 1px 80px) left bottom / 100% 10px no-repeat;
+}
+
+html[data-skin='sci-fi-hud'] .section-header {
+  padding-bottom: 22px;
+  margin-bottom: 24px;
+}
+
+html[data-skin='sci-fi-hud'] .home-block-head {
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+}
+
+html[data-skin='sci-fi-hud'] .section-title {
+  font-family: var(--font-disp);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'][data-theme='dark'] .section-title {
+  font-weight: 300;
+}
+
+html[data-skin='sci-fi-hud'] .section-subtitle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .home-block-title {
+  font-family: var(--font-disp);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .home-block-num {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--sfh-hi);
+}
+
+/* ===== Кнопки ===== */
+html[data-skin='sci-fi-hud'] .btn {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  box-shadow: none;
+}
+
+html[data-skin='sci-fi-hud'] .btn:hover {
+  border-color: var(--sfh-hi);
+  background-color: var(--accent-soft);
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+html[data-skin='sci-fi-hud'] .btn:disabled,
+html[data-skin='sci-fi-hud'] .btn:disabled:hover {
+  opacity: 0.45;
+  background-color: transparent;
+  border-color: var(--sfh-line);
+  color: var(--text-dim);
+}
+
+/* Primary — плоская заливка акцентом (тёмная: арктика, светлая: кобальт) */
+html[data-skin='sci-fi-hud'] .btn--primary {
+  border-color: var(--sfh-primary);
+  background: var(--sfh-primary);
+  color: var(--sfh-on-accent);
+  font-weight: 600;
+}
+
+html[data-skin='sci-fi-hud'] .btn--primary:hover {
+  border-color: var(--sfh-primary-hover);
+  background: var(--sfh-primary-hover);
+  color: var(--sfh-on-accent);
+}
+
+html[data-skin='sci-fi-hud'] .btn--primary:disabled,
+html[data-skin='sci-fi-hud'] .btn--primary:disabled:hover {
+  border-color: var(--sfh-line-2);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+/* Ghost — без рамки, только квадратные скобки по бокам: [ КНОПКА ] */
+html[data-skin='sci-fi-hud'] .btn--ghost {
+  --c: var(--sfh-ink);
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--c), var(--c)) 0 0 / 1px 100% no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 0 / 6px 1px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 100% / 6px 1px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 0 / 1px 100% no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 0 / 6px 1px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 100% / 6px 1px no-repeat;
+  background-origin: border-box;
+  color: var(--text);
+}
+
+html[data-skin='sci-fi-hud'] .btn--ghost:hover {
+  --c: var(--sfh-hi);
+  border-color: transparent;
+  background-color: var(--accent-soft);
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .btn--ghost:disabled,
+html[data-skin='sci-fi-hud'] .btn--ghost:disabled:hover {
+  --c: var(--sfh-line-2);
+  background-color: transparent;
+  border-color: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .btn--chip {
+  border-color: var(--sfh-line-2);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+html[data-skin='sci-fi-hud'] .btn--chip:hover {
+  border-color: var(--sfh-hi);
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  transform: none;
+}
+
+html[data-skin='sci-fi-hud'] .btn--danger {
+  border-color: var(--danger);
+  background: transparent;
+  color: var(--danger);
+}
+
+html[data-skin='sci-fi-hud'] .btn--danger:hover {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--bg);
+}
+
+html[data-skin='sci-fi-hud'] .btn--icon {
+  border-color: var(--sfh-line);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .btn--icon:hover {
+  color: var(--sfh-hi);
+}
+
+/* ===== Бейджи — таблички моноширинным ===== */
+html[data-skin='sci-fi-hud'] .badge {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='sci-fi-hud'] :is(.badge--active, .badge--success, .badge--bot) {
+  border-color: var(--sfh-hi);
+  background: var(--accent-soft);
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .badge--user {
+  border-color: var(--sfh-user);
+  background: var(--sfh-user);
+  color: var(--sfh-user-fg);
+}
+
+html[data-skin='sci-fi-hud'] .badge--muted {
+  opacity: 0.75;
+}
+
+/* ===== Аватары: круг и тонкое внешнее кольцо-прицел ===== */
+html[data-skin='sci-fi-hud'] .avatar {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 50%;
+  background: var(--sfh-glass-2);
+  color: var(--accent-dark);
+  font-family: var(--font-disp);
+  font-weight: 600;
+  font-size: 15px;
+  outline: 1px solid var(--sfh-line);
+  outline-offset: 2px;
+}
+
+html[data-skin='sci-fi-hud'] .avatar--large {
+  font-size: 18px;
+}
+
+/* ===== Поля ввода ===== */
+html[data-skin='sci-fi-hud'] .input,
+html[data-skin='sci-fi-hud'] .chat-input {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: var(--sfh-well);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  letter-spacing: 0;
+  box-shadow: none;
+}
+
+html[data-skin='sci-fi-hud'] .input:focus,
+html[data-skin='sci-fi-hud'] .chat-input:focus,
+html[data-skin='sci-fi-hud'] .select-trigger--open {
+  border-color: var(--sfh-hi);
+  box-shadow: inset 0 -2px 0 0 var(--sfh-hi);
+  outline: none;
+}
+
+html[data-skin='sci-fi-hud'] .input::placeholder,
+html[data-skin='sci-fi-hud'] .chat-input::placeholder {
+  color: var(--text-muted);
+  letter-spacing: 0;
+}
+
+html[data-skin='sci-fi-hud'] .input:disabled:not(.select-trigger) {
+  background: transparent;
+  border-color: var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] :is(.art-prompt, .pcreate-yaml, .msg-code, .msg-pre, .mem-trim-input) {
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .field-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .field-hint {
+  font-family: var(--font);
+  font-size: 12.5px;
+  letter-spacing: 0;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* Select: триггер — поле, меню — непрозрачная панель с засечками */
+html[data-skin='sci-fi-hud'] .select-trigger:hover:not(:disabled) {
+  border-color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .select-chevron {
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .select-menu {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: var(--sfh-solid);
+  box-shadow: none;
+  font-family: var(--font);
+}
+
+html[data-skin='sci-fi-hud'] .select-highlight {
+  background: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .select-option--selected {
+  color: var(--accent-dark);
+  box-shadow: inset 2px 0 0 0 var(--sfh-hi);
+}
+
+/* Чекбоксы и радио — квадрат и круг с меткой внутри */
+html[data-skin='sci-fi-hud'] input[type='checkbox'],
+html[data-skin='sci-fi-hud'] input[type='radio'] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: var(--sfh-well);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+html[data-skin='sci-fi-hud'] input[type='radio'] {
+  border-radius: 50%;
+}
+
+html[data-skin='sci-fi-hud'] input[type='checkbox']:checked,
+html[data-skin='sci-fi-hud'] input[type='radio']:checked {
+  border-color: var(--sfh-hi);
+  background: var(--sfh-hi);
+  box-shadow: inset 0 0 0 3px var(--sfh-solid);
+}
+
+html[data-skin='sci-fi-hud'] input[type='checkbox']:disabled,
+html[data-skin='sci-fi-hud'] input[type='radio']:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+html[data-skin='sci-fi-hud'] .checkbox-row:hover {
+  color: var(--accent-dark);
+}
+
+/* Переключатель — прямоугольная дорожка, квадратный бегунок */
+html[data-skin='sci-fi-hud'] .switch-slider {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: var(--sfh-well);
+}
+
+html[data-skin='sci-fi-hud'] .switch-slider::before {
+  border-radius: 0;
+  background: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .switch input:checked + .switch-slider {
+  border-color: var(--sfh-hi);
+  background: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .switch input:checked + .switch-slider::before {
+  background: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .switch input:focus-visible + .switch-slider {
+  outline: 1px solid var(--sfh-hi);
+  outline-offset: 3px;
+}
+
+/* Ползунок — шкала с делениями и прямоугольный бегунок */
+html[data-skin='sci-fi-hud'] input[type='range'] {
+  height: 10px;
+  border-radius: 0;
+  background:
+    linear-gradient(var(--sfh-line-2), var(--sfh-line-2)) left center / 100% 1px no-repeat,
+    repeating-linear-gradient(90deg, var(--sfh-tick) 0 1px, transparent 1px 10%) left center / 100% 9px no-repeat;
+}
+
+html[data-skin='sci-fi-hud'] input[type='range']::-webkit-slider-thumb {
+  transform: none;
+  width: 10px;
+  height: 18px;
+  border: 0;
+  border-radius: 0;
+  background: var(--sfh-hi);
+  box-shadow: none;
+}
+
+html[data-skin='sci-fi-hud'] input[type='range']::-moz-range-thumb {
+  transform: none;
+  width: 10px;
+  height: 18px;
+  border: 0;
+  border-radius: 0;
+  background: var(--sfh-hi);
+  box-shadow: none;
+}
+
+/* ===== Вкладки: активная — черта с рисками на концах |——| ===== */
+html[data-skin='sci-fi-hud'] .tabs {
+  border-bottom: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .tab {
+  border-bottom: 0;
+  margin-bottom: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .tab:hover {
+  color: var(--text);
+}
+
+html[data-skin='sci-fi-hud'] .tab--active,
+html[data-skin='sci-fi-hud'] .tab--active:hover {
+  color: var(--accent-dark);
+  font-weight: 500;
+  background:
+    linear-gradient(var(--sfh-hi), var(--sfh-hi)) left bottom / 100% 2px no-repeat,
+    linear-gradient(var(--sfh-hi), var(--sfh-hi)) left bottom / 1px 7px no-repeat,
+    linear-gradient(var(--sfh-hi), var(--sfh-hi)) right bottom / 1px 7px no-repeat;
+}
+
+/* ===== Списки ===== */
+html[data-skin='sci-fi-hud'] .memory-item {
+  border-bottom: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .memory-item-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ===== Счётчики: тонкая крупная цифра и моноширинная подпись ===== */
+/* Ячейки счётчиков — без засечек: они внутри панели с засечками */
+html[data-skin='sci-fi-hud'] .stat-card {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background-color: var(--sfh-glass);
+  background-image: none;
+  box-shadow: none;
+}
+
+html[data-skin='sci-fi-hud'] .stat-value {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1.15;
+  color: var(--accent-dark);
+  animation: none;
+}
+
+html[data-skin='sci-fi-hud'][data-theme='dark'] .stat-value {
+  font-weight: 300;
+}
+
+html[data-skin='sci-fi-hud'] .stat-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+
+/* ===== InfoButton «?» и окно пояснения ===== */
+html[data-skin='sci-fi-hud'] .info-btn {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .info-btn:hover {
+  border-color: var(--sfh-hi);
+  background: var(--sfh-hi);
+  color: var(--sfh-on-accent);
+}
+
+html[data-skin='sci-fi-hud'] .info-overlay,
+html[data-skin='sci-fi-hud'] .dialog-overlay,
+html[data-skin='sci-fi-hud'] .image-lightbox {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-skin='sci-fi-hud'] .info-modal-title {
+  font-family: var(--font-disp);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='sci-fi-hud'] .info-modal-body {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+html[data-skin='sci-fi-hud'] .info-modal-close,
+html[data-skin='sci-fi-hud'] .pxe-close,
+html[data-skin='sci-fi-hud'] .image-lightbox-close {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+html[data-skin='sci-fi-hud'] .info-modal-close:hover,
+html[data-skin='sci-fi-hud'] .pxe-close:hover {
+  border-color: var(--sfh-hi);
+  background: var(--accent-soft);
+  color: var(--sfh-hi);
+}
+
+/* ===== Окна поверх: FormModal, досье, диалоги ===== */
+html[data-skin='sci-fi-hud'] .pcreate-head,
+html[data-skin='sci-fi-hud'] .dossier-head {
+  border-bottom: 1px solid var(--sfh-line);
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .pcreate-foot {
+  border-top: 1px solid var(--sfh-line);
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .pcreate-title,
+html[data-skin='sci-fi-hud'] .dossier-name {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .dossier-meta,
+html[data-skin='sci-fi-hud'] .pcreate-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .pcreate-sec,
+html[data-skin='sci-fi-hud'] .features-group-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--sfh-hi);
+  border-color: var(--sfh-line);
+}
+
+/* YAML и код — экран прибора */
+html[data-skin='sci-fi-hud'] .pcreate-yaml,
+html[data-skin='sci-fi-hud'] .input.pcreate-yaml {
+  border: 1px solid var(--term-line);
+  border-radius: 0;
+  background: var(--term-bg);
+  color: var(--term-bright);
+  font-size: 12.5px;
+}
+
+html[data-skin='sci-fi-hud'] .dialog-title {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+html[data-skin='sci-fi-hud'] .dialog-message {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+html[data-skin='sci-fi-hud'] .dialog-mark {
+  border: 1px solid var(--sfh-hi);
+  border-radius: 0;
+  background: transparent;
+  color: var(--sfh-hi);
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .dialog-panel--danger .dialog-mark {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+html[data-skin='sci-fi-hud'] .dialog-actions {
+  border-top: 1px solid var(--sfh-line);
+}
+
+/* ===== Чат: список персон и контекстная панель ===== */
+html[data-skin='sci-fi-hud'] .chat-persona-list,
+html[data-skin='sci-fi-hud'] .chat-context {
+  background: var(--sfh-glass);
+  border-color: var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .chat-persona-list-title,
+html[data-skin='sci-fi-hud'] .chat-context-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .chat-context-title {
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .chat-persona-back {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .chat-persona-back:hover {
+  border-color: var(--sfh-hi);
+  color: var(--sfh-hi);
+  background: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .chat-persona-item {
+  border: 1px solid transparent;
+  border-radius: 0;
+}
+
+html[data-skin='sci-fi-hud'] .chat-persona-item:hover {
+  background: var(--bg-hover);
+  transform: none;
+}
+
+/* Выбранный собеседник — та же рамка-прицел, что у пункта меню */
+html[data-skin='sci-fi-hud'] .chat-persona-item--active,
+html[data-skin='sci-fi-hud'] .chat-persona-item--active:hover {
+  --c: var(--sfh-hi);
+  border-color: transparent;
+  background:
+    linear-gradient(var(--c), var(--c)) 0 0 / 8px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 0 / 2px 8px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 0 / 8px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 0 / 2px 8px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 100% / 8px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 100% / 2px 8px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 100% / 8px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 100% / 2px 8px no-repeat,
+    var(--accent-soft);
+  background-origin: border-box;
+}
+
+html[data-skin='sci-fi-hud'] .chat-persona-list--flying .chat-persona-item:not(.chat-persona-item--active) {
+  background: var(--sfh-solid);
+  border-color: var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .chat-persona-name {
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 14.5px;
+  letter-spacing: 0.01em;
+}
+
+html[data-skin='sci-fi-hud'] .chat-persona-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .chat-context-toggle {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .chat-context-toggle:hover {
+  border-color: var(--sfh-hi);
+  color: var(--sfh-hi);
+  background: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .ctx-row {
+  font-size: 13.5px;
+}
+
+html[data-skin='sci-fi-hud'] .ctx-note,
+html[data-skin='sci-fi-hud'] .ctx-mono,
+html[data-skin='sci-fi-hud'] .ctx-list {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .ctx-trend {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .ctx-details,
+html[data-skin='sci-fi-hud'] .ctx-actions {
+  border-top: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .ctx-details summary {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .ctx-details summary:hover {
+  color: var(--sfh-hi);
+}
+
+/* ===== Чат: шапка, лента, пузыри ===== */
+html[data-skin='sci-fi-hud'] .chat-header {
+  background: var(--sfh-glass);
+  border-bottom: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .chat-header-name {
+  font-family: var(--font-disp);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .chat-header-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--sfh-hi);
+}
+
+/* Лента прозрачна: под репликами видна координатная сетка */
+html[data-skin='sci-fi-hud'] .chat-messages {
+  gap: 18px;
+  padding: 24px 40px;
+  background: transparent;
+}
+
+/* Реплика персоны — выноска: панель с засечками и линия-лидер с узлом слева */
+html[data-skin='sci-fi-hud'] .message-bubble {
+  --bk: var(--sfh-ink);
+  --bl: 8px;
+  position: relative;
+  padding: 11px 16px 9px;
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background-color: var(--sfh-glass);
+  background-image:
+    linear-gradient(var(--bk), var(--bk)),
+    linear-gradient(var(--bk), var(--bk)),
+    linear-gradient(var(--bk), var(--bk)),
+    linear-gradient(var(--bk), var(--bk));
+  background-size: var(--bl) 2px, 2px var(--bl), var(--bl) 2px, 2px var(--bl);
+  background-position: 0 0, 0 0, 100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-origin: border-box;
+  font-size: 15px;
+  line-height: 1.55;
+  box-shadow: none;
+}
+
+html[data-skin='sci-fi-hud'] .message--bot .message-bubble::before,
+html[data-skin='sci-fi-hud'] .message--user .message-bubble::before {
+  content: '';
+  position: absolute;
+  top: 15px;
+  width: 16px;
+  height: 1px;
+  background: var(--sfh-line-2);
+  pointer-events: none;
+}
+
+html[data-skin='sci-fi-hud'] .message--bot .message-bubble::after,
+html[data-skin='sci-fi-hud'] .message--user .message-bubble::after {
+  content: '';
+  position: absolute;
+  top: 13px;
+  width: 5px;
+  height: 5px;
+  background: var(--sfh-node);
+  pointer-events: none;
+}
+
+html[data-skin='sci-fi-hud'] .message--bot .message-bubble::before {
+  right: 100%;
+}
+
+html[data-skin='sci-fi-hud'] .message--bot .message-bubble::after {
+  right: calc(100% + 15px);
+}
+
+html[data-skin='sci-fi-hud'] .message--user .message-bubble::before {
+  left: 100%;
+}
+
+html[data-skin='sci-fi-hud'] .message--user .message-bubble::after {
+  left: calc(100% + 15px);
+}
+
+/* Своя реплика — плотный блок цвета (тил / кобальт), без рамки */
+html[data-skin='sci-fi-hud'] .message--user .message-bubble {
+  border-color: var(--sfh-user);
+  background: var(--sfh-user);
+  color: var(--sfh-user-fg);
+}
+
+html[data-skin='sci-fi-hud'] .message--user .message-bubble--queued {
+  border-style: dashed;
+  border-color: var(--sfh-line-2);
+  background: transparent;
+  color: var(--text);
+}
+
+html[data-skin='sci-fi-hud'] .message--bot .message-text {
+  color: var(--text);
+}
+
+html[data-skin='sci-fi-hud'] .message--user .message-text {
+  color: inherit;
+}
+
+html[data-skin='sci-fi-hud'] .message-time {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .message--user .message-time {
+  color: var(--sfh-user-dim);
+}
+
+html[data-skin='sci-fi-hud'] .message--user .message-bubble--queued .message-time {
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .message-reply-btn {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: var(--sfh-solid);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .message-reply-btn:hover {
+  border-color: var(--sfh-hi);
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .message-quote {
+  border-left: 2px solid var(--sfh-hi);
+  border-radius: 0;
+  background: var(--bg-hover);
+}
+
+html[data-skin='sci-fi-hud'] .message-image {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+}
+
+html[data-skin='sci-fi-hud'] .msg-code {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: var(--sfh-well);
+}
+
+html[data-skin='sci-fi-hud'] .msg-pre {
+  border: 1px solid var(--term-line);
+  border-radius: 0;
+  background: var(--term-bg);
+  color: var(--term-bright);
+}
+
+html[data-skin='sci-fi-hud'] .msg-quote {
+  border-left: 2px solid var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .msg-mark {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  box-shadow: inset 0 -1px 0 0 var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .message-text a {
+  color: var(--sfh-hi);
+  text-underline-offset: 3px;
+}
+
+html[data-skin='sci-fi-hud'] .message--user .message-text a {
+  color: inherit;
+}
+
+html[data-skin='sci-fi-hud'] .unread-dot {
+  border-radius: 0;
+  background: var(--sfh-hi);
+  color: var(--sfh-on-accent);
+  font-family: var(--font-mono);
+  box-shadow: none;
+}
+
+/* «Печатает» — три квадратика медленной волной */
+html[data-skin='sci-fi-hud'] .typing-dot,
+html[data-skin='sci-fi-hud'] .typing-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 0;
+  transform: none;
+  background: var(--sfh-hi);
+  animation: sfh-cell 1.8s ease-in-out infinite;
+}
+
+html[data-skin='sci-fi-hud'] .typing-dot:nth-child(2),
+html[data-skin='sci-fi-hud'] .typing-dots span:nth-child(2) {
+  animation-delay: 0.3s;
+}
+
+html[data-skin='sci-fi-hud'] .typing-dot:nth-child(3),
+html[data-skin='sci-fi-hud'] .typing-dots span:nth-child(3) {
+  animation-delay: 0.6s;
+}
+
+html[data-skin='sci-fi-hud'] .chat-status-bar {
+  border-top: 1px solid var(--sfh-line);
+  background: var(--sfh-glass);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .chat-input-bar {
+  border-top: 1px solid var(--sfh-line);
+  background: var(--sfh-glass);
+}
+
+html[data-skin='sci-fi-hud'] .chat-input {
+  font-size: 15px;
+}
+
+html[data-skin='sci-fi-hud'] .chat-loading-bubble {
+  border: 1px dashed var(--sfh-line-2);
+  border-radius: 0;
+  background: transparent;
+  animation: sfh-cell 3.2s ease-in-out infinite;
+}
+
+html[data-skin='sci-fi-hud'] .chat-loading-tag {
+  color: var(--sfh-hi);
+  animation: sfh-breathe 3.2s ease-in-out infinite;
+}
+
+html[data-skin='sci-fi-hud'] .chat-loading-cells i {
+  background: var(--sfh-hi);
+  animation: sfh-cell 2.4s ease-in-out infinite;
+}
+
+html[data-skin='sci-fi-hud'] .chat-offline-banner {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: var(--sfh-glass);
+  font-size: 13px;
+}
+
+/* ===== Страница всех чатов ===== */
+html[data-skin='sci-fi-hud'] .chat-overview-title {
+  font-family: var(--font-disp);
+  font-size: 34px;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'][data-theme='dark'] .chat-overview-title {
+  font-weight: 300;
+}
+
+html[data-skin='sci-fi-hud'] .chat-overview-lead {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .chat-overview-stats {
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .chat-overview-stats b {
+  color: var(--accent-dark);
+}
+
+/* Карточка чата: левый верхний угол — в цвете персоны */
+html[data-skin='sci-fi-hud'] .chat-card {
+  --bk1: var(--persona-color, var(--sfh-hi));
+  border-left-width: 1px;
+  border-left-color: var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .chat-card:hover {
+  border-left-color: var(--sfh-line-2);
+}
+
+html[data-skin='sci-fi-hud'] .chat-card--unread {
+  --bk: var(--sfh-hi);
+  border-color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .chat-card-name {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+html[data-skin='sci-fi-hud'] .chat-card-status,
+html[data-skin='sci-fi-hud'] .chat-card-time,
+html[data-skin='sci-fi-hud'] .chat-card-foot {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .chat-card-preview {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .chat-card-foot {
+  border-top: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .chat-card-badge {
+  border-radius: 0;
+  background: var(--sfh-hi);
+  color: var(--sfh-on-accent);
+  font-family: var(--font-mono);
+}
+
+/* ===== Главная ===== */
+html[data-skin='sci-fi-hud'] .home-hero {
+  padding: 38px 36px 32px;
+}
+
+/* Лимб прибора справа в hero (только на широком экране): кольцо делений
+   медленно поворачивается (оборот за 2 мин), внутри — кольцо с перекрестьем */
+@keyframes sfh-dial {
+  to { transform: rotate(360deg); }
+}
+
+@media (min-width: 1360px) {
+  html[data-skin='sci-fi-hud'] .home-hero::after,
+  html[data-skin='sci-fi-hud'] .home-hero::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+
+  html[data-skin='sci-fi-hud'] .home-hero::after {
+    right: 56px;
+    width: 188px;
+    height: 188px;
+    margin-top: -94px;
+    border: 1px solid var(--sfh-line-2);
+    background:
+      repeating-conic-gradient(var(--sfh-ink) 0 0.6deg, transparent 0.6deg 30deg),
+      repeating-conic-gradient(var(--sfh-tick) 0 0.5deg, transparent 0.5deg 5deg);
+    -webkit-mask: radial-gradient(circle closest-side, transparent 0 calc(100% - 11px), #000 calc(100% - 11px));
+    mask: radial-gradient(circle closest-side, transparent 0 calc(100% - 11px), #000 calc(100% - 11px));
+    animation: sfh-dial 120s linear infinite;
+  }
+
+  html[data-skin='sci-fi-hud'] .home-hero::before {
+    right: 98px;
+    width: 104px;
+    height: 104px;
+    margin-top: -52px;
+    border: 1px solid var(--sfh-line);
+    background:
+      linear-gradient(var(--sfh-hi), var(--sfh-hi)) center / 5px 5px no-repeat,
+      linear-gradient(var(--sfh-line-2), var(--sfh-line-2)) center / 100% 1px no-repeat,
+      linear-gradient(var(--sfh-line-2), var(--sfh-line-2)) center / 1px 100% no-repeat;
+  }
+}
+
+/* Подпись над заголовком — размерная линия |——| */
+html[data-skin='sci-fi-hud'] .home-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .home-eyebrow::before {
+  width: 30px;
+  height: 9px;
+  background:
+    linear-gradient(var(--sfh-hi), var(--sfh-hi)) left center / 100% 1px no-repeat,
+    linear-gradient(var(--sfh-hi), var(--sfh-hi)) left center / 1px 9px no-repeat,
+    linear-gradient(var(--sfh-hi), var(--sfh-hi)) right center / 1px 9px no-repeat;
+}
+
+html[data-skin='sci-fi-hud'] .home-greet {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .home-title {
+  font-family: var(--font-disp);
+  font-size: clamp(30px, 4vw, 50px);
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: 0.08em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'][data-theme='dark'] .home-title {
+  font-weight: 300;
+}
+
+html[data-skin='sci-fi-hud'] .home-lead {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .home-ticker {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .home-ticker-label {
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .home-cta-row {
+  gap: 14px;
+}
+
+html[data-skin='sci-fi-hud'] .home-readout {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .home-readout .val {
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .home-readout .live-tag {
+  color: var(--sfh-hi);
+}
+
+/* Телеметрия — одна приборная полоса, ячейки разделены волосяной линией */
+html[data-skin='sci-fi-hud'] .home-telemetry {
+  gap: 0;
+  background: var(--sfh-glass);
+  border: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .home-tele-cell {
+  background: transparent;
+  box-shadow: -1px 0 0 0 var(--sfh-line), 0 -1px 0 0 var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .home-tele-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .home-tele-value {
+  font-family: var(--font-disp);
+  font-size: 32px;
+  font-weight: 400;
+  line-height: 1.1;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'][data-theme='dark'] .home-tele-value {
+  font-weight: 300;
+}
+
+html[data-skin='sci-fi-hud'] .home-tele-value span {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .home-tele-note {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* Карточки присутствия и разделов консоли */
+html[data-skin='sci-fi-hud'] .home-presence-name,
+html[data-skin='sci-fi-hud'] .home-dossier h3 {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .home-presence-status,
+html[data-skin='sci-fi-hud'] .home-presence-reply,
+html[data-skin='sci-fi-hud'] .home-dossier-foot,
+html[data-skin='sci-fi-hud'] .home-dossier-index,
+html[data-skin='sci-fi-hud'] .home-feed-empty {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .home-presence-activity {
+  font-size: 13.5px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .home-presence-reply,
+html[data-skin='sci-fi-hud'] .home-dossier-foot {
+  border-top: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .home-dossier-foot .go {
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .home-feed-row {
+  border-bottom: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .home-feed-persona,
+html[data-skin='sci-fi-hud'] .home-feed-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* Журнал системы — экран прибора */
+html[data-skin='sci-fi-hud'] .home-term {
+  border: 1px solid var(--term-line);
+  border-radius: 0;
+  background: var(--term-bg);
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .home-term-titlebar {
+  border-bottom: 1px solid var(--term-line);
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+}
+
+html[data-skin='sci-fi-hud'] .home-term-titlebar .lights i,
+html[data-skin='sci-fi-hud'] .start-guide-dlg-titlebar .lights i {
+  border: 1px solid var(--term-dim);
+  border-radius: 0;
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .home-term-line .bright {
+  color: var(--term-bright);
+}
+
+html[data-skin='sci-fi-hud'] .home-term-cursor,
+html[data-skin='sci-fi-hud'] .start-guide-dlg-cursor {
+  background: var(--term-bright);
+  animation: sfh-breathe 2.6s ease-in-out infinite;
+}
+
+html[data-skin='sci-fi-hud'] .barcode i {
+  background: var(--sfh-ink);
+}
+
+/* Заметки и календарь */
+html[data-skin='sci-fi-hud'] .notes-persona {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+html[data-skin='sci-fi-hud'] .notes-persona:hover {
+  border-color: var(--sfh-line-2);
+  background: var(--bg-hover);
+}
+
+html[data-skin='sci-fi-hud'] .notes-persona--on {
+  border-color: var(--note-color, var(--sfh-hi));
+  background: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .notes-persona-avatar {
+  border-radius: 50%;
+  font-family: var(--font-disp);
+}
+
+html[data-skin='sci-fi-hud'] .cal-month {
+  font-family: var(--font-disp);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='sci-fi-hud'] .cal-weekdays span,
+html[data-skin='sci-fi-hud'] .cal-day-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+html[data-skin='sci-fi-hud'] .cal-day {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .cal-day:hover {
+  border-color: var(--sfh-hi);
+  background: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .cal-day--today {
+  border-color: var(--sfh-hi);
+  box-shadow: inset 0 0 0 1px var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .cal-chip {
+  border-radius: 0;
+  font-size: 11px;
+}
+
+/* ===== «Старт»: прогресс-шкала, маршруты, шаги ===== */
+html[data-skin='sci-fi-hud'] .start-guide-bar {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: var(--sfh-glass);
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-bar-label {
+  letter-spacing: 0.16em;
+  color: var(--text-muted);
+}
+
+/* Шкала прогресса — линейка с делениями, заливка — сплошная полоса */
+html[data-skin='sci-fi-hud'] .start-guide-meter {
+  height: 10px;
+  border-radius: 0;
+  background:
+    linear-gradient(var(--sfh-line-2), var(--sfh-line-2)) left bottom / 100% 1px no-repeat,
+    repeating-linear-gradient(90deg, var(--sfh-tick) 0 1px, transparent 1px 4%) left bottom / 100% 6px no-repeat;
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-meter::after {
+  display: none;
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-meter i {
+  border-radius: 0;
+  background: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-bar-pct {
+  font-family: var(--font-mono);
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-lead,
+html[data-skin='sci-fi-hud'] .start-guide-step-desc {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tabs {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: var(--sfh-glass);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tab {
+  border-radius: 0;
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tab + .start-guide-tab {
+  border-left: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tab:hover {
+  background: var(--bg-hover);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tab.is-active {
+  background: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tab-index,
+html[data-skin='sci-fi-hud'] .start-guide-tab-count {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tab-title {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tab-sub {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tab-ink {
+  height: 2px;
+  background: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-tab-ink::before {
+  display: none;
+}
+
+/* Шаги: метка — квадрат, пройденный — залит акцентом */
+html[data-skin='sci-fi-hud'] .start-guide-mark {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-mark:hover {
+  border-color: var(--sfh-hi);
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-step.is-done .start-guide-mark {
+  border-color: var(--sfh-hi);
+  background: var(--sfh-hi);
+  color: var(--sfh-on-accent);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-line {
+  width: 1px;
+  background: var(--sfh-line-2);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-line i {
+  background: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-step-idx,
+html[data-skin='sci-fi-hud'] .start-guide-check {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-step-title {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-warn {
+  border: 1px dashed var(--sfh-line-2);
+  border-radius: 0;
+  font-size: 13px;
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-warn-tag {
+  border-radius: 0;
+  background: var(--sfh-hi);
+  color: var(--sfh-on-accent);
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-code {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: var(--sfh-well);
+  font-family: var(--font-mono);
+}
+
+/* Демо-окно — экран прибора */
+html[data-skin='sci-fi-hud'] .start-guide-dlg {
+  border: 1px solid var(--term-line);
+  border-radius: 0;
+  background: var(--term-bg);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-dlg-titlebar {
+  border-bottom: 1px solid var(--term-line);
+  letter-spacing: 0.12em;
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-dlg-avatar {
+  border: 1px solid var(--term-dim);
+  border-radius: 50%;
+  font-family: var(--font-disp);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-dlg-msg {
+  border-radius: 0;
+  font-family: var(--font);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-dlg-msg--bot {
+  border: 1px solid var(--term-line);
+  border-left: 2px solid var(--term-bright);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-dlg-msg--op {
+  background: rgba(164, 219, 225, 0.14);
+}
+
+/* ===== «Старт»: режим управления ===== */
+/* Карточки без срезанных углов — та же панель, что везде */
+html[data-skin='sci-fi-hud'] .start-control-stage,
+html[data-skin='sci-fi-hud'] .start-control-ex {
+  clip-path: none;
+  border: 1px solid var(--sfh-line);
+  background: var(--sfh-glass);
+}
+
+html[data-skin='sci-fi-hud'] .start-guide-dlg-msg--op {
+  clip-path: none;
+}
+
+html[data-skin='sci-fi-hud'] .start-control-track i {
+  background: var(--sfh-hi);
+}
+
+/* Импульс по линии шагов — короткий плоский штрих, медленно */
+html[data-skin='sci-fi-hud'] .start-control-track::after {
+  width: 18px;
+  background: var(--sfh-hi);
+  animation-duration: 7s;
+}
+
+/* Узлы шагов — квадраты; активный залит акцентом, без свечения */
+html[data-skin='sci-fi-hud'] .start-control-node {
+  width: 11px;
+  height: 11px;
+  border: 1px solid var(--sfh-line-2);
+  background: var(--sfh-solid);
+  transform: none;
+}
+
+html[data-skin='sci-fi-hud'] .start-control-step.is-done .start-control-node {
+  border-color: var(--sfh-ink);
+  background: var(--sfh-ink);
+}
+
+html[data-skin='sci-fi-hud'] .start-control-step.is-active .start-control-node {
+  border-color: var(--sfh-hi);
+  background: var(--sfh-hi);
+  transform: none;
+  box-shadow: 0 0 0 3px var(--sfh-solid), 0 0 0 4px var(--sfh-hi);
+  animation: none;
+}
+
+html[data-skin='sci-fi-hud'] .start-control-step-title {
+  font-family: var(--font-disp);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+}
+
+/* ===== Комната: сцена и колонка состояния — один прибор ===== */
+html[data-skin='sci-fi-hud'] .room-layout {
+  position: relative;
+  overflow: visible;
+  gap: 0;
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: var(--sfh-glass);
+  box-shadow: none;
+}
+
+/* Засечки рамки поверх сцены (сцена закрывает фон рамки) */
+html[data-skin='sci-fi-hud'] .room-layout::after {
+  --c: var(--sfh-ink);
+  content: '';
+  position: absolute;
+  inset: -1px;
+  z-index: 6;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--c), var(--c)) 0 0 / 16px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 0 / 2px 16px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 0 / 16px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 0 / 2px 16px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 100% / 16px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 0 100% / 2px 16px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 100% / 16px 2px no-repeat,
+    linear-gradient(var(--c), var(--c)) 100% 100% / 2px 16px no-repeat;
+}
+
+html[data-skin='sci-fi-hud'] .room-scene-card {
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-skin='sci-fi-hud'] .room-layout .home-telemetry {
+  border: 0;
+  border-left: 1px solid var(--sfh-line);
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .room-tele-text {
+  font-family: var(--font-disp);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .room-tele-sub {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .room-tele-offline .room-tele-sub {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+html[data-skin='sci-fi-hud'] .room-tele-bar {
+  border-radius: 0;
+  background: var(--sfh-well);
+  box-shadow: inset 0 0 0 1px var(--sfh-line-2);
+}
+
+html[data-skin='sci-fi-hud'] .room-tele-bar-fill {
+  border-radius: 0;
+  background: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .room-status-plate {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: var(--sfh-solid);
+  box-shadow: none;
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .room-status-plate .val {
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .room-offline-plate {
+  border: 1px solid var(--term-line);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-skin='sci-fi-hud'] .room-focus-label {
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .art-drop {
+  border: 1px dashed var(--sfh-line-2);
+  border-radius: 0;
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .art-drop:hover {
+  border-color: var(--sfh-hi);
+  background: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .art-drop-title {
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .art-drop-spec,
+html[data-skin='sci-fi-hud'] .art-drop-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .art-prompt {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: var(--sfh-well);
+  font-size: 12px;
+}
+
+/* ===== Персоны ===== */
+html[data-skin='sci-fi-hud'] .persona-card {
+  --bk1: var(--persona, var(--sfh-ink));
+}
+
+html[data-skin='sci-fi-hud'] .persona-card:hover {
+  border-color: var(--sfh-line-2);
+}
+
+html[data-skin='sci-fi-hud'] .persona-avatar-btn {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 50%;
+  outline: 1px solid var(--sfh-line);
+  outline-offset: 3px;
+  font-family: var(--font-disp);
+  font-weight: 600;
+}
+
+html[data-skin='sci-fi-hud'] .persona-card-name {
+  font-family: var(--font-disp);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .persona-card-meta,
+html[data-skin='sci-fi-hud'] .persona-card-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .persona-card-desc {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .persona-status {
+  border: 1px solid var(--sfh-line-2);
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .persona-chip {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+html[data-skin='sci-fi-hud'] .persona-telemetry {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .persona-tele-cell + .persona-tele-cell {
+  border-left: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .persona-tele-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .persona-tele-value {
+  font-family: var(--font-disp);
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'] .persona-icon-btn {
+  border-radius: 0;
+}
+
+/* ===== Галерея тем ===== */
+html[data-skin='sci-fi-hud'] .skin-themes-lead {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .skin-theme-card--active,
+html[data-skin='sci-fi-hud'] .skin-theme-card--active:hover {
+  --bk: var(--sfh-hi);
+  border-color: var(--sfh-hi);
+  background-color: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .skin-theme-card-name {
+  font-family: var(--font-disp);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+html[data-skin='sci-fi-hud'] .skin-theme-card-tagline {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .skin-theme-card-meta,
+html[data-skin='sci-fi-hud'] .skin-theme-card-scheme {
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .skin-themes-assigned {
+  border-top: 1px solid var(--sfh-line);
+}
+
+/* ===== Настройки и сервисы ===== */
+html[data-skin='sci-fi-hud'] .apikey-row {
+  border-bottom: 1px solid var(--sfh-line);
+}
+
+html[data-skin='sci-fi-hud'] .provider-name {
+  font-weight: 600;
+}
+
+html[data-skin='sci-fi-hud'] .link-card {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: var(--sfh-glass);
+}
+
+html[data-skin='sci-fi-hud'] .link-card:hover {
+  border-color: var(--sfh-hi);
+  background: var(--accent-soft);
+}
+
+html[data-skin='sci-fi-hud'] .collapsible-head {
+  border: 1px solid var(--sfh-line);
+  border-radius: 0;
+  background: transparent;
+}
+
+html[data-skin='sci-fi-hud'] .collapsible-head:hover,
+html[data-skin='sci-fi-hud'] .collapsible.is-open .collapsible-head {
+  border-color: var(--sfh-line-2);
+  background: var(--bg-hover);
+}
+
+html[data-skin='sci-fi-hud'] .collapsible-chevron {
+  border-radius: 0;
+  color: var(--sfh-hi);
+}
+
+html[data-skin='sci-fi-hud'] .collapsible-title {
+  font-family: var(--font-disp);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+html[data-skin='sci-fi-hud'] .reminder-item {
+  border-bottom: 1px solid var(--sfh-line);
+}
+
+/* ===== Экран запуска ===== */
+html[data-skin='sci-fi-hud'] .boot-title {
+  font-family: var(--font-disp);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  color: var(--accent-dark);
+}
+
+html[data-skin='sci-fi-hud'][data-theme='dark'] .boot-title {
+  font-weight: 300;
+}
+
+html[data-skin='sci-fi-hud'] .boot-lead {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+html[data-skin='sci-fi-hud'] .boot-steps {
+  font-family: var(--font-mono);
+}
+
+html[data-skin='sci-fi-hud'] .boot-step-tag {
+  border-radius: 0;
+  font-family: var(--font-mono);
+}
+
+/* Прогресс запуска — сегменты шкалы */
+html[data-skin='sci-fi-hud'] .boot-cells {
+  gap: 3px;
+}
+
+html[data-skin='sci-fi-hud'] .boot-cells i {
+  border-radius: 0;
+  background: var(--sfh-hi);
+  opacity: 0.18;
+}
+
+html[data-skin='sci-fi-hud'] .boot-cells i.on {
+  opacity: 1;
+}
+
+html[data-skin='sci-fi-hud'] .boot-cells i:not(.on) {
+  animation: sfh-cell 3.6s ease-in-out infinite;
+}
+
+html[data-skin='sci-fi-hud'] .boot-meta {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+html[data-skin='sci-fi-hud'] .boot-cmd-row {
+  border: 1px solid var(--term-line);
+  border-radius: 0;
+  background: var(--term-bg);
+  color: var(--term-bright);
+}
+
+html[data-skin='sci-fi-hud'] .boot-cmd-copy {
+  border: 1px solid var(--term-dim);
+  border-radius: 0;
+}
+
+/* ===== Телефон (≤760px) ===== */
+@media (max-width: 760px) {
+  html[data-skin='sci-fi-hud'] .sidebar--open {
+    background: var(--sfh-solid);
+    box-shadow: none;
+  }
+
+  html[data-skin='sci-fi-hud'] .sidebar-backdrop {
+    background: var(--overlay-bg);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  html[data-skin='sci-fi-hud'] .chat-messages {
+    padding: 18px 26px 20px;
+    gap: 16px;
+  }
+
+  html[data-skin='sci-fi-hud'] .message-bubble {
+    font-size: 15px;
+    padding: 10px 13px 8px;
+  }
+
+  html[data-skin='sci-fi-hud'] .message--bot .message-bubble::before,
+  html[data-skin='sci-fi-hud'] .message--user .message-bubble::before {
+    width: 10px;
+  }
+
+  html[data-skin='sci-fi-hud'] .message--bot .message-bubble::after {
+    right: calc(100% + 9px);
+  }
+
+  html[data-skin='sci-fi-hud'] .message--user .message-bubble::after {
+    left: calc(100% + 9px);
+  }
+
+  html[data-skin='sci-fi-hud'] .chat-input {
+    font-size: 16px;
+  }
+
+  html[data-skin='sci-fi-hud'] .section-title {
+    font-size: 19px;
+  }
+
+  html[data-skin='sci-fi-hud'] .home-title {
+    font-size: clamp(24px, 7.4vw, 32px);
+  }
+
+  html[data-skin='sci-fi-hud'] .chat-overview-title {
+    font-size: 26px;
+  }
+
+  html[data-skin='sci-fi-hud'] .topbar-title {
+    font-size: 13px;
+    letter-spacing: 0.18em;
+  }
+
+  html[data-skin='sci-fi-hud'] .home-tele-value {
+    font-size: 26px;
+  }
+
+  html[data-skin='sci-fi-hud'] .home-hero {
+    padding: 28px 20px 24px;
+  }
+
+  /* Окна во весь экран — без боковых рамок и засечек (их срежет край экрана) */
+  html[data-skin='sci-fi-hud'] .dossier-panel,
+  html[data-skin='sci-fi-hud'] .pcreate-overlay .pcreate-panel {
+    border-left: 0;
+    border-right: 0;
+    background-image: none;
+  }
+
+  /* Край строки вкладок досье гаснет ступенями, а не плавно */
+  html[data-skin='sci-fi-hud'] .dossier-tabs--more-right {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), rgba(0, 0, 0, 0.6) calc(100% - 36px) calc(100% - 24px), rgba(0, 0, 0, 0.3) calc(100% - 24px) calc(100% - 12px), transparent calc(100% - 12px));
+    mask-image: linear-gradient(to right, #000 calc(100% - 36px), rgba(0, 0, 0, 0.6) calc(100% - 36px) calc(100% - 24px), rgba(0, 0, 0, 0.3) calc(100% - 24px) calc(100% - 12px), transparent calc(100% - 12px));
+  }
+
+  html[data-skin='sci-fi-hud'] .dossier-tabs--more-left {
+    -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 36px), rgba(0, 0, 0, 0.6) calc(100% - 36px) calc(100% - 24px), rgba(0, 0, 0, 0.3) calc(100% - 24px) calc(100% - 12px), transparent calc(100% - 12px));
+    mask-image: linear-gradient(to left, #000 calc(100% - 36px), rgba(0, 0, 0, 0.6) calc(100% - 36px) calc(100% - 24px), rgba(0, 0, 0, 0.3) calc(100% - 24px) calc(100% - 12px), transparent calc(100% - 12px));
+  }
+
+  html[data-skin='sci-fi-hud'] .dossier-tabs--more-left.dossier-tabs--more-right {
+    -webkit-mask-image: linear-gradient(to right, transparent 12px, rgba(0, 0, 0, 0.3) 12px 24px, rgba(0, 0, 0, 0.6) 24px 36px, #000 36px calc(100% - 36px), rgba(0, 0, 0, 0.6) calc(100% - 36px) calc(100% - 24px), rgba(0, 0, 0, 0.3) calc(100% - 24px) calc(100% - 12px), transparent calc(100% - 12px));
+    mask-image: linear-gradient(to right, transparent 12px, rgba(0, 0, 0, 0.3) 12px 24px, rgba(0, 0, 0, 0.6) 24px 36px, #000 36px calc(100% - 36px), rgba(0, 0, 0, 0.6) calc(100% - 36px) calc(100% - 24px), rgba(0, 0, 0, 0.3) calc(100% - 24px) calc(100% - 12px), transparent calc(100% - 12px));
+  }
+
+  /* Список персон на телефоне: карточки не слипаются засечками */
+  html[data-skin='sci-fi-hud'] .persona-grid--list .persona-card + .persona-card {
+    margin-top: 10px;
+  }
+
+  /* Комната: «нет связи» — во всю ширину, заголовок меньше */
+  html[data-skin='sci-fi-hud'] .room-telemetry .room-tele-offline {
+    grid-column: 1 / -1;
+  }
+
+  html[data-skin='sci-fi-hud'] .room-tele-text {
+    font-size: 16px;
+    letter-spacing: 0.06em;
+  }
+
+  /* Галерея тем в две колонки — название компактнее */
+  html[data-skin='sci-fi-hud'] .skin-theme-card-name {
+    font-size: 14px;
+    letter-spacing: 0.04em;
+  }
+}

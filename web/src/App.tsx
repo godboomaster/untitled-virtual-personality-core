@@ -17,19 +17,21 @@ import Room from './sections/Room';
 import Personas from './sections/Personas';
 import Skins from './sections/Skins';
 import ApiKeys from './sections/ApiKeys';
+import Services from './sections/Services';
 import ImageLightbox from './components/ImageLightbox';
 import DialogHost from './components/DialogHost';
 import RoomPipHost from './room/RoomPip';
 import { getInitialTheme } from './useAppTheme';
 import type { AppTheme } from './useAppTheme';
 import { BACK_MENU, useBackHandler } from './backStack';
-import { syncSystemBars } from './nativeBars';
+import { setThemePreference, useAppliedSkin, useEffectiveSkin } from './skinTheme';
+import { getSkin } from '../skins';
 import { listenBgNotificationTaps, syncBgInbox } from './bgInbox';
 import { usePhoneGemma } from './offline/phoneGemma';
 import { syncWakeWord } from './wakeWord';
 import { useOfflineSync } from './offline/state';
 
-export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'settings';
+export type Section = 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'services' | 'settings';
 
 type Theme = AppTheme;
 
@@ -39,7 +41,13 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   useBackHandler(menuOpen, BACK_MENU, () => setMenuOpen(false));
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
+  // Тема оформления: схема, которая действует (скин с одной схемой — его),
+  // и стоит ли скин уже на <html> — тогда стандартный фон не нужен
+  const { skinId, scheme } = useEffectiveSkin();
+  const skinApplied = useAppliedSkin() != null;
+  const skin = getSkin(skinId);
+  const schemeLocked = skin != null && skin.schemes.length === 1;
   const { personas } = useMockData();
   // false — бэкенд недоступен: интерфейс показывает моковые данные прототипа
   const apiOnline = useApiOnline();
@@ -100,16 +108,15 @@ export default function App() {
     return listenBgNotificationTaps();
   }, []);
 
-  // Применяем тему к <html> и запоминаем выбор
+  // Запоминаем выбор; на <html> его ставит SkinHost — с поправкой на скин
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('vpc-theme', theme);
-    syncSystemBars(theme);
+    setThemePreference(theme);
   }, [theme]);
 
   return (
     <div className="app">
-      <DetroitBackground />
+      {!skinApplied && <DetroitBackground />}
       <Sidebar
         current={section}
         open={menuOpen}
@@ -146,13 +153,24 @@ export default function App() {
                 LOGS
               </button>
             )}
-            <div className="theme-toggle" role="button" aria-label={t('topbar.themeToggle')}>
-              <span className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>
-                LIGHT
-              </span>
-              <span className={theme === 'dark' ? 'active' : ''} onClick={() => setTheme('dark')}>
-                DARK
-              </span>
+            <div
+              className={`theme-toggle${schemeLocked ? ' theme-toggle--locked' : ''}`}
+              role="button"
+              aria-label={t('topbar.themeToggle')}
+              title={schemeLocked && skin ? t(`skinTheme.lockedScheme.${scheme}`, { name: skin.name[lang] }) : undefined}
+            >
+              {(['light', 'dark'] as const).map((s) => (
+                <span
+                  key={s}
+                  className={`${scheme === s ? 'active' : ''}${schemeLocked && scheme !== s ? ' theme-toggle-off' : ''}`}
+                  aria-disabled={schemeLocked && scheme !== s ? true : undefined}
+                  onClick={() => {
+                    if (!schemeLocked) setTheme(s);
+                  }}
+                >
+                  {s === 'light' ? 'LIGHT' : 'DARK'}
+                </span>
+              ))}
             </div>
             <div className={`topbar-status${!apiOnline || coreDown ? ' topbar-status--down' : ''}`}>
               <span className="status-led" />
@@ -176,6 +194,7 @@ export default function App() {
             {section === 'room' && <Room />}
             {section === 'personas' && <Personas />}
             {section === 'skins' && <Skins />}
+            {section === 'services' && <Services />}
             {section === 'settings' && <ApiKeys />}
           </div>
         </div>

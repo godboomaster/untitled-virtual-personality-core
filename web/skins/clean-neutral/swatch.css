@@ -1,0 +1,128 @@
+@import './fonts.css';
+
+/* Clean Neutral: миниатюра в галерее — тёплая бумага, оливковая колонка
+   меню, кремовые карточки с мягкой тенью, антиква в заголовке */
+.skin-swatch[data-swatch='clean-neutral'] {
+  --sw-bg: #f3f0e8;
+  --sw-panel: #fbfaf6;
+  --sw-side: #4f5844;
+  --sw-text: #2d2e29;
+  --sw-dim: #a48d78;
+  --sw-in: #fbfaf6;
+  --sw-out: #56604a;
+  --sw-line: #e4ddd0;
+  --sw-accent: #5e7449;
+  border: 1px solid #e4ddd0;
+  border-radius: 14px;
+  background:
+    radial-gradient(120% 90% at 100% 0%, rgba(208, 225, 232, 0.55), transparent 60%),
+    radial-gradient(90% 80% at 0% 100%, rgba(232, 240, 213, 0.6), transparent 65%),
+    var(--sw-bg);
+  box-shadow: 0 1px 2px rgba(80, 66, 44, 0.06), 0 10px 22px -14px rgba(80, 66, 44, 0.3);
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar {
+  height: 15px;
+  gap: 4px;
+  padding: 0 8px;
+  background: transparent;
+  border-bottom: 1px solid rgba(164, 141, 120, 0.22);
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #cbb9a4;
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar i:first-child {
+  background: #dfb9b6;
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar i:nth-child(2) {
+  background: #e6dac8;
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-bar i:nth-child(3) {
+  background: #afcfa3;
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-side {
+  width: 27%;
+  gap: 6px;
+  margin: 5px 0 5px 5px;
+  padding: 9px 6px;
+  border: none;
+  border-radius: 9px;
+  background: linear-gradient(180deg, #56604a, #474f3d);
+  box-shadow: 0 6px 12px -8px rgba(47, 52, 38, 0.6);
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-side i {
+  height: 5px;
+  border-radius: 99px;
+  background: #f3eee2;
+  opacity: 0.35;
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-side i:first-child {
+  height: 8px;
+  background: #f6f2e8;
+  opacity: 1;
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-main {
+  gap: 5px;
+  padding: 7px 9px 7px 10px;
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-title {
+  font-family: 'CN Serif', 'Cormorant Garamond', Georgia, serif;
+  font-size: 19px;
+  font-weight: 500;
+  font-style: italic;
+  line-height: 0.95;
+  color: var(--sw-text);
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-msg {
+  position: relative;
+  height: 13px;
+  border: none;
+  border-radius: 7px 7px 7px 3px;
+  background: var(--sw-in);
+  box-shadow: 0 1px 1px rgba(80, 66, 44, 0.06), 0 4px 8px -5px rgba(80, 66, 44, 0.35);
+}
+
+/* Цитатная черта у пузыря персоны */
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-msg--in::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  bottom: 3px;
+  width: 1.5px;
+  border-radius: 1px;
+  background: #7a9c57;
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-msg--out {
+  border-radius: 7px 7px 3px 7px;
+  background: var(--sw-out);
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-input {
+  height: 15px;
+  padding: 0 2px;
+  border: 1px solid var(--sw-line);
+  border-radius: 99px;
+  background: #fdfcf9;
+}
+
+.skin-swatch[data-swatch='clean-neutral'] .skin-swatch-send {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #4f5844;
+}

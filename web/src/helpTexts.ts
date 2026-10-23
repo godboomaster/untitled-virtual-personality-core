@@ -357,6 +357,43 @@ export const helpTextsRu = {
     title: 'Сколько уже сделано',
     body: 'Счётчик выполненных дел из общего числа. Отмечайте задачи галочкой — прогресс обновится сам.',
   },
+  // ===== Сервисы =====
+  'services.about': {
+    title: 'Сервисы',
+    body: 'Персона следит за вашей почтой, Google Диском, GitHub, Telegram, лентами и любыми сервисами через вебхук — и пишет вам, только когда это стоит того. Каждое событие проходит разбор: ваши правила → признаки самого сервиса (рассылка, чат без звука, подписка) → модель на вашем компьютере. Срочное приходит сразу, обычное — сразу или после тихих часов, неважное — в сводку по расписанию, мусор остаётся только в ленте. В чате можно спросить «что нового в почте?», «кто мне писал?», «найди на диске отчёт», «не присылай уведомления от Ozon», «не беспокой до 9».',
+  },
+  'services.google': {
+    title: 'Google: почта и Диск',
+    body: 'Нужен свой ключ Google (так письма идут напрямую между Google и вашим компьютером). В Google Cloud Console создайте проект, включите Gmail API и Google Drive API, на экране согласия OAuth добавьте себя в тестовые пользователи (или опубликуйте приложение — иначе вход придётся повторять раз в неделю), затем в «Учётных данных» создайте идентификатор клиента OAuth типа «Приложение для компьютера» и вставьте сюда его ID и секрет (или весь скачанный JSON). Доступ — только чтение: персона ничего не отправляет и не меняет.',
+  },
+  'services.github': {
+    title: 'GitHub',
+    body: 'Персональный токен: в настройках GitHub → Developer settings → Personal access tokens. Классическому токену нужны права notifications (и repo — для приватных репозиториев). Персона читает уведомления: просьбы о ревью, упоминания, назначения, упавшие проверки, предупреждения безопасности. Прочитанными их не отмечает.',
+  },
+  'services.telegram': {
+    title: 'Telegram-аккаунт',
+    body: 'Это вход в ваш аккаунт как ещё одно устройство — так персона видит входящие сообщения. На my.telegram.org войдите своим номером, в «API development tools» создайте приложение и скопируйте api_id и api_hash. Код входа придёт в Telegram. Сеанс называется «Virtual Persona Core» — его видно и можно завершить в настройках Telegram. Боты (включая ботов персон), служебные сообщения и коды входа не учитываются; чат, который вы прочитали или где ответили, не уведомляется.',
+  },
+  'services.imap': {
+    title: 'Другая почта (IMAP)',
+    body: 'Яндекс, Mail.ru, Outlook, iCloud и любые ящики с IMAP. Нужен пароль приложения: в Яндексе — «Безопасность → Пароли приложений», в Mail.ru — «Безопасность → Пароли для внешних приложений»; в Яндексе ещё включите доступ по IMAP в настройках почты. Сервер подставляется по адресу сам. Письма читаются без отметки «прочитано».',
+  },
+  'services.rss': {
+    title: 'Ленты (RSS)',
+    body: 'Блоги, новости, релизы GitHub (адрес …/releases.atom), каналы YouTube (feeds/videos.xml?channel_id=…). Новые записи идут в сводку; если в «Что для меня важно» что-то написано, подходящие записи персона пришлёт сразу.',
+  },
+  'services.webhook': {
+    title: 'Вебхук',
+    body: 'Адрес, на который любой сервис или скрипт может прислать событие: Home Assistant, IFTTT, CI, мониторинг, cron. Тело — JSON с полями title, text, url, priority (urgent, high, normal, low). Адрес — это ключ: не публикуйте его; при утечке создайте новый. Снаружи компьютера адрес доступен, только если ядро открыто в сеть.',
+  },
+  'services.rules': {
+    title: 'Правила',
+    body: 'Правило решает за модель: «Срочно» — сразу, даже ночью; «Сообщать» — всегда сразу; «В сводку» — только сводкой; «Никогда» — только в ленте. Совпадение ищется в отправителе, чате, репозитории, заголовке и тексте (формы слов учитываются). Правила можно задавать и в чате: «не присылай уведомления от Ozon», «всегда сообщай о письмах от деканата». Две одинаковые оценки одного отправителя в ленте сами становятся правилом.',
+  },
+  'services.feed': {
+    title: 'Лента',
+    body: 'Все события и что с ними решили: уровень, кто решил (правило, признаки сервиса или модель) и почему. Нажмите на событие и оцените, как надо было: модель учтёт пример в похожих случаях. В чате то же самое — «это не важно», «такое не присылай», «это было срочно» сразу после уведомления.',
+  },
 } satisfies Record<string, HelpEntry>;
 
 export type HelpKey = keyof typeof helpTextsRu;
@@ -711,5 +748,42 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
   'tasks.todoProgress': {
     title: 'How much is done',
     body: 'Counter of completed tasks out of the total. Mark tasks with the checkbox — progress updates itself.',
+  },
+  // ===== Services =====
+  'services.about': {
+    title: 'Services',
+    body: 'The persona watches your mail, Google Drive, GitHub, Telegram, feeds and any service through a webhook — and writes to you only when it is worth it. Every event goes through triage: your rules → the service\'s own signals (newsletter, muted chat, subscription) → a model on your computer. Urgent things arrive at once, normal ones at once or after quiet hours, unimportant ones go to the scheduled digest, junk stays in the feed. In chat you can ask "any new emails?", "who messaged me?", "find report on my drive", "don\'t notify me about emails from LinkedIn", "do not disturb until 9".',
+  },
+  'services.google': {
+    title: 'Google: mail and Drive',
+    body: 'You need your own Google key (so mail goes directly between Google and your computer). In Google Cloud Console create a project, enable Gmail API and Google Drive API, add yourself as a test user on the OAuth consent screen (or publish the app — otherwise sign-in has to be repeated weekly), then in Credentials create an OAuth client ID of type "Desktop app" and paste its ID and secret here (or the whole downloaded JSON). Access is read-only: the persona sends and changes nothing.',
+  },
+  'services.github': {
+    title: 'GitHub',
+    body: 'A personal token: GitHub settings → Developer settings → Personal access tokens. A classic token needs the notifications scope (and repo for private repositories). The persona reads notifications: review requests, mentions, assignments, failed checks, security alerts. It does not mark them as read.',
+  },
+  'services.telegram': {
+    title: 'Telegram account',
+    body: 'This signs in to your account as one more device — that is how the persona sees incoming messages. At my.telegram.org sign in with your number, create an app in "API development tools" and copy api_id and api_hash. The login code arrives in Telegram. The session is called "Virtual Persona Core" — you can see and end it in Telegram settings. Bots (including persona bots), service messages and login codes are ignored; a chat you have read or replied in is not reported.',
+  },
+  'services.imap': {
+    title: 'Other mail (IMAP)',
+    body: 'Yandex, Mail.ru, Outlook, iCloud and any IMAP mailbox. You need an app password (in your mail provider\'s security settings); Yandex also needs IMAP access turned on in mail settings. The server is filled in from the address. Letters are read without marking them as read.',
+  },
+  'services.rss': {
+    title: 'Feeds (RSS)',
+    body: 'Blogs, news, GitHub releases (…/releases.atom), YouTube channels (feeds/videos.xml?channel_id=…). New entries go to the digest; if "What matters to me" has something in it, matching entries are sent right away.',
+  },
+  'services.webhook': {
+    title: 'Webhook',
+    body: 'An address any service or script can post an event to: Home Assistant, IFTTT, CI, monitoring, cron. The body is JSON with title, text, url, priority (urgent, high, normal, low). The address is a key: do not publish it; if it leaks, create a new one. It is reachable from outside only if the core is open to the network.',
+  },
+  'services.rules': {
+    title: 'Rules',
+    body: 'A rule decides instead of the model: "Urgent" — at once, even at night; "Notify" — always at once; "Digest" — only in the digest; "Never" — feed only. The match is searched in the sender, chat, repository, title and text. Rules can be set in chat too: "don\'t notify me about emails from LinkedIn". Two equal ratings of one sender in the feed become a rule by themselves.',
+  },
+  'services.feed': {
+    title: 'Feed',
+    body: 'All events and what was decided: the level, who decided (rule, service signals or the model) and why. Open an event and rate how it should have been handled: the model will take the example into account. In chat the same works right after a notification — "that\'s not important", "don\'t send stuff like that", "that was urgent".',
   },
 };

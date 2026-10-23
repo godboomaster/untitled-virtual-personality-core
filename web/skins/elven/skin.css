@@ -1,0 +1,2947 @@
+/* =====================================================================
+   Эльфийская сказка (elven) — печатная книжка-сказка / постер ар-нуво.
+   Плоско, как типографская печать: кремовый лист, тёмно-лесные плашки
+   с кремовым текстом, бронзовые линии. Фирменное:
+   • «рельс» — двойная линия с рядом бусин (край меню, рамки плашек,
+     разделитель), со ступенчатыми выступами и квадратными узлами в углах;
+   • форма «листа» — два противоположных угла скруглены, два острых
+     (карточки, кнопки, поля, реплики), индикаторы — линзы-листочки;
+   • типографика: вязь — только крупные заголовки, жирная антиква —
+     заголовки разделов, гуманистический гротеск — весь текст.
+   Ни теней с размытием, ни плавных градиентов: градиенты — только
+   с жёсткими стопами как способ нарисовать бусины и линии.
+   Тёмная схема — ночная чаща: «свет» — цветом (мята, крем), не ореолом.
+   Каждый селектор — под html[data-skin='elven'].
+   ===================================================================== */
+
+/* ---------- Токены: общее ---------- */
+html[data-skin='elven'] {
+  --font: 'EL Text', 'Alegreya Sans', 'Segoe UI', Roboto, Arial, sans-serif;
+  --font-disp: 'EL Head', 'Playfair Display', Georgia, serif;
+  /* HUD-подписи были моноширинными — здесь гротеск капителью */
+  --font-mono: 'EL Text', 'Alegreya Sans', 'Segoe UI', sans-serif;
+  --el-script: 'EL Script', 'Great Vibes', cursive;
+  --el-head-font: 'EL Head', 'Playfair Display', Georgia, serif;
+  /* Настоящий моноширинный — только код, YAML, журналы */
+  --el-code: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  --radius-sm: 3px;
+  --radius: 3px;
+  --shadow-card: none;
+  --shadow-card-hover: none;
+
+  /* Форма листа: TL/BR острые, TR/BL скруглены (и зеркально) */
+  --el-leaf: 3px 18px;
+  --el-leaf-r: 18px 3px;
+  --el-leaf-sm: 2px 12px;
+  --el-leaf-sm-r: 12px 2px;
+  --el-leaf-lg: 4px 28px;
+  /* Линза-листок для точек и маркеров */
+  --el-lens: 0 100%;
+  --el-ease: cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+
+/* ---------- Токены: светлая схема — кремовый лист ---------- */
+html[data-skin='elven'],
+html[data-skin='elven'][data-theme='light'] {
+  --el-page: #eee4c8;
+  --el-card: #f8f2df;
+  --el-card-2: #e6dab8;
+  --el-field: #fbf7ea;
+  --el-text: #1d2b22;
+  --el-dim: #4a5341;
+  --el-muted: #6a6750;
+  --el-line: #cdb886;
+  --el-line-strong: #8a7444;
+  --el-ink-line: #1d2b22;
+  --el-rule: #9a7b3c;
+  --el-head: #73581d;
+  --el-title: #1d2b22;
+  --el-label: #785e22;
+  --el-accent: #3a543b;
+  --el-on-accent: #f4ecd4;
+  --el-sage: #7d8956;
+  --el-bead: #9a7b3c;
+  /* Плашка — тёмно-лесная, кремовый текст, бронзовые линии */
+  --el-plate: #1d2b22;
+  --el-plate-2: #2a3d30;
+  --el-on-plate: #efe4c8;
+  --el-on-plate-dim: #c6c1a0;
+  --el-plate-line: #b8995a;
+  --el-plate-soft: #3c4d3d;
+  /* Активное — та же плашка */
+  --el-active: #1d2b22;
+  --el-on-active: #efe4c8;
+  --el-active-mark: #c9a65e;
+  /* Своя реплика — светлый лист с чернильной рамкой */
+  --el-user: #f8f2df;
+  --el-on-user: #1d2b22;
+  --el-user-line: #1d2b22;
+  --el-user-time: #6a6750;
+  /* Кнопки */
+  --el-pri: #1d2b22;
+  --el-pri-hover: #3a543b;
+  --el-on-pri: #f4ecd4;
+  --el-btn-line: #1d2b22;
+  --el-btn-fg: #1d2b22;
+  --el-btn-bg: #f8f2df;
+  --el-btn-hover: #e6dab8;
+  --el-warm: #e5a177;
+  --el-warm-ink: #a0532a;
+  --el-select: #f0c7a6;
+  --el-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.36 0 0 0 0 0.28 0 0 0 0 0.14 0 0 0 0.11 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  --bg: var(--el-page);
+  --bg-panel: var(--el-card);
+  --bg-panel-2: var(--el-card-2);
+  --text: var(--el-text);
+  --text-dim: var(--el-dim);
+  --text-muted: var(--el-muted);
+  --border: var(--el-line-strong);
+  --border-soft: var(--el-line);
+  --accent: var(--el-accent);
+  --accent-dim: var(--el-sage);
+  --accent-soft: rgba(58, 84, 59, 0.12);
+  --bg-hover: rgba(58, 84, 59, 0.08);
+  --border-accent: var(--el-accent);
+  --accent-dark: var(--el-text);
+  --danger: #a4442a;
+  --success: #4f6b3a;
+  --warning: #93641a;
+  --term-bg: #1d2b22;
+  --term-line: rgba(239, 228, 200, 0.2);
+  --term-dim: #a9ab8c;
+  --term-bright: #efe4c8;
+  --topbar-bg: var(--el-page);
+  --overlay-bg: rgba(29, 43, 34, 0.58);
+  color-scheme: light;
+}
+
+/* ---------- Токены: тёмная схема — ночная чаща ---------- */
+html[data-skin='elven'][data-theme='dark'] {
+  --el-page: #162821;
+  --el-card: #1c3129;
+  --el-card-2: #243c31;
+  --el-field: #11211b;
+  --el-text: #ece3c8;
+  --el-dim: #bfc3a4;
+  --el-muted: #959d80;
+  --el-line: #36503f;
+  --el-line-strong: #7f8d68;
+  --el-ink-line: #c9c09c;
+  --el-rule: #7d8956;
+  --el-head: #e9d3a2;
+  --el-title: #ece3c8;
+  --el-label: #a5b778;
+  --el-accent: #d1f2e0;
+  --el-on-accent: #162821;
+  --el-sage: #a5b778;
+  --el-bead: #a5b778;
+  --el-plate: #223b2f;
+  --el-plate-2: #2a4638;
+  --el-on-plate: #ece3c8;
+  --el-on-plate-dim: #bdc2a2;
+  --el-plate-line: #e9d3a2;
+  --el-plate-soft: #3f5c4a;
+  --el-active: #d1f2e0;
+  --el-on-active: #162821;
+  --el-active-mark: #e5a177;
+  --el-user: #e9d3a2;
+  --el-on-user: #1d2b22;
+  --el-user-line: #e9d3a2;
+  --el-user-time: #5d5a40;
+  --el-pri: #d1f2e0;
+  --el-pri-hover: #e9d3a2;
+  --el-on-pri: #162821;
+  --el-btn-line: #c9c09c;
+  --el-btn-fg: #ece3c8;
+  --el-btn-bg: transparent;
+  --el-btn-hover: #243c31;
+  --el-warm: #e5a177;
+  --el-warm-ink: #e5a177;
+  --el-select: #d1f2e0;
+  --el-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.85 0 0 0 0 0.92 0 0 0 0 0.82 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  --accent-soft: rgba(209, 242, 224, 0.12);
+  --bg-hover: rgba(209, 242, 224, 0.07);
+  --danger: #e98b6b;
+  --success: #a5b778;
+  --warning: #e5b877;
+  --term-bg: #0f1e18;
+  --term-line: rgba(233, 211, 162, 0.18);
+  --term-dim: #8f9a7e;
+  --term-bright: #ece3c8;
+  --overlay-bg: rgba(6, 14, 10, 0.72);
+  color-scheme: dark;
+}
+
+/* ---------- Узоры: бусины и линии (жёсткие стопы — это рисунок, не заливка) ---------- */
+html[data-skin='elven'] {
+  --el-bead-dot: radial-gradient(circle, var(--el-bead) 0 1.6px, transparent 2.1px);
+  --el-plate-dot: radial-gradient(circle, var(--el-plate-line) 0 1.6px, transparent 2.1px);
+}
+
+/* ---------- Плашки: внутри — свои токены (кремовый текст на лесе) ---------- */
+html[data-skin='elven'] :is(.home-hero, .boot-panel, .message--bot .message-bubble, .home-term, .pcreate-head,
+  .dossier-head, .chat-persona-item--active, .start-guide-tab.is-active, .start-guide-dlg) {
+  --text: var(--el-on-plate);
+  --text-dim: var(--el-on-plate-dim);
+  --text-muted: var(--el-on-plate-dim);
+  --accent: var(--el-plate-line);
+  --accent-dark: var(--el-on-plate);
+  --border: var(--el-plate-line);
+  --border-soft: var(--el-plate-soft);
+  --bg-panel: var(--el-plate);
+  --bg-panel-2: var(--el-plate-2);
+  --bg-hover: rgba(239, 228, 200, 0.08);
+  --accent-soft: rgba(239, 228, 200, 0.1);
+  --el-title: var(--el-on-plate);
+  --el-head: var(--el-plate-line);
+  --el-label: var(--el-plate-line);
+  --el-bead: var(--el-plate-line);
+  --el-line: var(--el-plate-soft);
+  --el-btn-line: var(--el-on-plate);
+  --el-btn-fg: var(--el-on-plate);
+  --el-btn-bg: transparent;
+  --el-btn-hover: var(--el-plate-2);
+  --el-pri: var(--el-on-plate);
+  --el-pri-hover: var(--el-plate-line);
+  --el-on-pri: var(--el-plate);
+  --el-field: var(--el-plate-2);
+  --el-line-strong: var(--el-plate-line);
+  --el-ink-line: var(--el-plate-line);
+  --el-rule: var(--el-plate-line);
+  color: var(--el-on-plate);
+}
+
+html[data-skin='elven'][data-theme='dark'] :is(.home-hero, .boot-panel, .message--bot .message-bubble, .home-term, .pcreate-head,
+  .dossier-head, .start-guide-tab.is-active, .start-guide-dlg) {
+  --el-pri: #d1f2e0;
+  --el-pri-hover: #e9d3a2;
+  --el-on-pri: #162821;
+  --accent: #d1f2e0;
+}
+
+/* Активный собеседник и трек «Старта» в тёмной — мятная плашка, как пункт меню */
+html[data-skin='elven'][data-theme='dark'] :is(.chat-persona-item--active, .start-guide-tab.is-active) {
+  --text: #162821;
+  --text-dim: #2e4a3c;
+  --text-muted: #2e4a3c;
+  --accent: #162821;
+  --accent-dark: #162821;
+  --border: #162821;
+  --el-title: #162821;
+  --el-head: #162821;
+  --el-label: #2e4a3c;
+  --el-ink-line: #162821;
+  --el-rule: #162821;
+  color: #162821;
+}
+
+/* Своя реплика — светлый лист в обеих схемах: внутри чернильные токены */
+html[data-skin='elven'] .message--user .message-bubble {
+  --text: #1d2b22;
+  --text-dim: #4a5341;
+  --text-muted: #5d5a40;
+  --accent: #3a543b;
+  --accent-soft: rgba(58, 84, 59, 0.12);
+  --bg-panel: #fbf7ea;
+  --bg-panel-2: #e6dab8;
+  --border-soft: #cdb886;
+  --el-accent: #3a543b;
+}
+
+/* ---------- Фон страницы: ровный лист и едва заметное зерно ---------- */
+html[data-skin='elven'] body {
+  background: var(--el-grain), var(--el-page);
+  background-color: var(--el-page);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  letter-spacing: 0.005em;
+}
+
+/* HUD-сетка основы не нужна */
+html[data-skin='elven'] .detroit-bg {
+  display: none;
+}
+
+html[data-skin='elven'] ::selection {
+  background: var(--el-select);
+  color: #1d2b22;
+}
+
+html[data-skin='elven'] :focus-visible {
+  outline: 2px solid var(--el-accent);
+  outline-offset: 2px;
+}
+
+/* Скроллбары — тонкий бронзовый стебель */
+html[data-skin='elven'] * {
+  scrollbar-color: var(--el-line-strong) transparent;
+}
+html[data-skin='elven'] ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+html[data-skin='elven'] ::-webkit-scrollbar-thumb {
+  background: var(--el-line-strong);
+  border-radius: 6px;
+}
+html[data-skin='elven'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--el-accent);
+}
+
+/* ---------- Движение: только медленное «дыхание» и сдвиги ---------- */
+@keyframes el-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+@keyframes el-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+/* Все бесконечные пульсы основы — медленнее и мягче (период от 4 с) */
+html[data-skin='elven'] :is(.status-led, .dot--green, .persona-status-dot, .boot-step--run .boot-step-tag,
+  .chat-loading-tag, .chat-loading-bubble, .start-guide-dlg-peer-status.is-typing,
+  .start-control-rec, .room-garland-bulb, .room-serverrack-live, .sidebar-logo-icon),
+html[data-skin='elven'] .start-guide-dlg-live::before,
+html[data-skin='elven'] .room-candle::after {
+  animation-name: el-breathe;
+  animation-duration: 4.8s;
+  animation-timing-function: ease-in-out;
+}
+
+/* Курсоры и LED-строки мигали ступенькой — теперь плавно дышат */
+html[data-skin='elven'] :is(.home-term-cursor, .start-guide-dlg-cursor, .boot-cells i:not(.on), .chat-loading-cells i) {
+  animation: el-breathe 4s ease-in-out infinite;
+}
+html[data-skin='elven'] .start-control-track::after,
+html[data-skin='elven'] .start-control-shot::after {
+  animation-duration: 6s;
+}
+html[data-skin='elven'] :is(.start-guide-dlg-dots i, .start-control-typing i, .typing-dots span) {
+  animation-duration: 2.4s;
+}
+html[data-skin='elven'] .voice-avatar--listening::after,
+html[data-skin='elven'] .voice-avatar--speaking::after,
+html[data-skin='elven'] .voice-mic-btn--active {
+  animation-duration: 2.8s;
+}
+
+/* HUD-декор основы: уголки-скобки, глитч-копии, штрихкод — не нужны
+   (свои узлы-уголки — только у плашек, ниже) */
+html[data-skin='elven'] .corner,
+html[data-skin='elven'] .home-title.glitch::before,
+html[data-skin='elven'] .home-title.glitch::after,
+html[data-skin='elven'] .barcode {
+  display: none;
+}
+
+/* Разделитель — горизонтальный рельс: две линии и ряд бусин */
+html[data-skin='elven'] .chrome-bar {
+  height: 11px;
+  border-top: 1px solid var(--el-rule);
+  border-bottom: 1px solid var(--el-rule);
+  background: var(--el-bead-dot) 0 50% / 12px 9px repeat-x;
+}
+
+/* =====================================================================
+   Каркас: меню слева — лист с бусинным рельсом по правому краю
+   ===================================================================== */
+html[data-skin='elven'] .sidebar {
+  background: var(--el-page);
+  border-right: 0;
+  padding: 18px 28px 14px 14px;
+}
+html[data-skin='elven'] .sidebar--collapsed {
+  padding: 16px 22px 14px 8px;
+}
+
+/* Рельс: две линии, бусины между ними */
+html[data-skin='elven'] .sidebar::after {
+  content: '';
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  right: 6px;
+  width: 11px;
+  border-left: 1px solid var(--el-rule);
+  border-right: 1px solid var(--el-rule);
+  background: var(--el-bead-dot) 50% 0 / 9px 12px repeat-y;
+  pointer-events: none;
+}
+/* Ступенчатые выступы на концах рельса */
+html[data-skin='elven'] .sidebar::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  right: 1px;
+  width: 21px;
+  background:
+    linear-gradient(var(--el-rule), var(--el-rule)) 50% 0 / 7px 2px no-repeat,
+    linear-gradient(var(--el-rule), var(--el-rule)) 50% 5px / 13px 2px no-repeat,
+    linear-gradient(var(--el-rule), var(--el-rule)) 50% 10px / 21px 2px no-repeat,
+    linear-gradient(var(--el-rule), var(--el-rule)) 50% 100% / 7px 2px no-repeat,
+    linear-gradient(var(--el-rule), var(--el-rule)) 50% calc(100% - 5px) / 13px 2px no-repeat,
+    linear-gradient(var(--el-rule), var(--el-rule)) 50% calc(100% - 10px) / 21px 2px no-repeat;
+  pointer-events: none;
+}
+
+html[data-skin='elven'] .sidebar-logo {
+  gap: 12px;
+  padding: 2px 4px 16px;
+  border-bottom: 1px solid var(--el-rule);
+  margin-bottom: 14px;
+}
+html[data-skin='elven'] .sidebar--collapsed .sidebar-logo {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Знак — линза-листок в бронзовом кольце (вместо глифа ◉) */
+html[data-skin='elven'] .sidebar-logo-icon {
+  position: relative;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  font-size: 0;
+  color: transparent;
+  border-radius: 50%;
+  border: 1px solid var(--el-rule);
+  box-shadow: inset 0 0 0 3px var(--el-page), inset 0 0 0 4px var(--el-rule);
+  animation: none;
+}
+html[data-skin='elven'] .sidebar-logo-icon::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  border-radius: var(--el-lens);
+  background: var(--el-accent);
+}
+html[data-skin='elven'] .sidebar-logo-title {
+  font-family: var(--el-script);
+  font-weight: 400;
+  font-size: 27px;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .sidebar-logo-sub {
+  margin-top: 1px;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0.24em;
+  color: var(--el-label);
+}
+
+/* Пункты меню */
+html[data-skin='elven'] .nav-item {
+  font-family: var(--font);
+  font-size: 15.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--text-dim);
+  border-radius: var(--el-leaf-sm);
+  transition: color 0.25s ease, background 0.25s ease;
+}
+html[data-skin='elven'] .nav-item:hover {
+  background: var(--el-card-2);
+  color: var(--text);
+}
+html[data-skin='elven'] .nav-item--active,
+html[data-skin='elven'] .nav-item--active:hover {
+  background: transparent;
+  color: var(--el-on-active);
+  font-weight: 700;
+}
+html[data-skin='elven'] .nav-item--active .nav-item-icon {
+  color: var(--el-active-mark);
+}
+
+/* Активный пункт — плашка-лист с бусиной на конце */
+html[data-skin='elven'] .nav-indicator {
+  border-radius: var(--el-leaf-sm);
+  background: var(--el-active);
+  transition: transform 0.45s var(--el-ease), background 0.3s ease;
+}
+html[data-skin='elven'] .nav-indicator::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--el-active-mark);
+}
+html[data-skin='elven'] .sidebar--collapsed .nav-indicator::after {
+  display: none;
+}
+
+/* Подсказка у свёрнутого меню — маленькая плашка */
+html[data-skin='elven'] .sidebar--collapsed .nav-item:hover::after {
+  border-radius: var(--el-leaf-sm);
+  background: var(--el-plate);
+  color: var(--el-on-plate);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  left: calc(100% + 24px);
+}
+
+/* Подвал меню */
+html[data-skin='elven'] .sidebar-footer {
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  border-top: 1px solid var(--el-rule);
+  padding-top: 12px;
+}
+html[data-skin='elven'] .sidebar-toggle {
+  border: 1px solid var(--el-line-strong);
+  border-radius: var(--el-leaf-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font);
+}
+html[data-skin='elven'] .sidebar-toggle:hover {
+  background: var(--el-card-2);
+  border-color: var(--el-ink-line);
+  color: var(--text);
+}
+
+/* Индикаторы — линзы-листочки */
+html[data-skin='elven'] .status-led,
+html[data-skin='elven'] .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--el-lens);
+  transform: none;
+}
+html[data-skin='elven'] .status-led,
+html[data-skin='elven'] .dot--green {
+  background: var(--el-sage);
+}
+html[data-skin='elven'] .sidebar-status-row--down .status-led,
+html[data-skin='elven'] .topbar-status--down .status-led {
+  background: var(--danger);
+}
+html[data-skin='elven'] .sidebar-status-row--ok {
+  color: var(--el-accent);
+}
+
+/* =====================================================================
+   Шапка: ровный лист, двойная печатная линейка снизу
+   ===================================================================== */
+html[data-skin='elven'] .topbar {
+  background: var(--el-page);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: 1px solid var(--el-rule);
+  box-shadow: 0 3px 0 0 var(--el-page), 0 4px 0 0 var(--el-rule);
+}
+html[data-skin='elven'] .topbar-title {
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 23px;
+  line-height: 1.15;
+  text-transform: none;
+  letter-spacing: 0.005em;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .topbar-status {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--el-accent);
+}
+html[data-skin='elven'] .topbar-status--down {
+  color: var(--danger);
+}
+html[data-skin='elven'] .topbar-status .badge {
+  font-size: 10.5px;
+}
+html[data-skin='elven'] .topbar-menu {
+  color: var(--text);
+}
+html[data-skin='elven'] .topbar-menu-dot {
+  border-radius: 50%;
+  background: var(--el-warm);
+  box-shadow: 0 0 0 2px var(--el-page);
+}
+
+/* Переключатели-сегменты (тема, язык): чернильная рамка, нажатый — плашка */
+html[data-skin='elven'] .theme-toggle {
+  border: 1px solid var(--el-ink-line);
+  border-radius: var(--el-leaf-sm);
+  padding: 2px;
+  gap: 2px;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  background: transparent;
+  overflow: hidden;
+}
+html[data-skin='elven'] .card .theme-toggle {
+  width: fit-content;
+}
+html[data-skin='elven'] .theme-toggle span {
+  border-radius: 1px 9px;
+  padding: 4px 11px;
+  color: var(--text-dim);
+}
+html[data-skin='elven'] .theme-toggle span:hover:not(.active) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+html[data-skin='elven'] .theme-toggle span.active {
+  background: var(--el-active);
+  color: var(--el-on-active);
+}
+
+/* =====================================================================
+   Разделы: жирная антиква бронзой и двойная линейка под ней
+   ===================================================================== */
+html[data-skin='elven'] .section-header,
+html[data-skin='elven'] .home-block-head {
+  border-bottom: 0;
+  background:
+    linear-gradient(var(--el-rule), var(--el-rule)) 0 100% / 100% 1px no-repeat,
+    linear-gradient(var(--el-rule), var(--el-rule)) 0 calc(100% - 4px) / 100% 1px no-repeat;
+}
+html[data-skin='elven'] .section-header {
+  padding-bottom: 18px;
+  margin-bottom: 24px;
+}
+html[data-skin='elven'] .section-title {
+  margin: 0 0 6px;
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 32px;
+  line-height: 1.12;
+  text-transform: none;
+  letter-spacing: 0.002em;
+  color: var(--el-head);
+}
+html[data-skin='elven'] .section-subtitle {
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--text-dim);
+}
+
+/* =====================================================================
+   Карточки — светлые листы с бронзовой линией
+   ===================================================================== */
+html[data-skin='elven'] .card {
+  background: var(--el-card);
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-leaf);
+  box-shadow: none;
+}
+html[data-skin='elven'] .card:hover,
+html[data-skin='elven'] .persona-card:hover,
+html[data-skin='elven'] .stat-card:hover {
+  transform: none;
+  border-color: var(--el-line-strong);
+}
+
+/* Заголовок карточки — антиква, впереди листок */
+html[data-skin='elven'] .card-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--el-head-font);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.005em;
+  text-transform: none;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .card-title::before {
+  content: '';
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--el-lens);
+  background: var(--el-rule);
+}
+html[data-skin='elven'] .card-title-row {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+html[data-skin='elven'] .card-title-row .card-title {
+  margin: 0;
+}
+
+/* =====================================================================
+   Кнопки: чернильная рамка и форма листа; главная — лесная плашка
+   ===================================================================== */
+html[data-skin='elven'] .btn {
+  border-radius: var(--el-leaf-sm);
+  border: 1px solid var(--el-btn-line);
+  background: var(--el-btn-bg);
+  color: var(--el-btn-fg);
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  box-shadow: none;
+  transition: background 0.25s ease, color 0.25s ease, border-color 0.25s ease, transform 0.15s ease;
+}
+html[data-skin='elven'] .btn:hover {
+  background: var(--el-btn-hover);
+  border-color: var(--el-btn-line);
+  color: var(--el-btn-fg);
+}
+html[data-skin='elven'] .btn:active {
+  transform: translateY(1px);
+}
+html[data-skin='elven'] .btn:disabled,
+html[data-skin='elven'] .btn:disabled:hover {
+  opacity: 0.45;
+  background: var(--el-btn-bg);
+  border-color: var(--el-btn-line);
+  color: var(--el-btn-fg);
+}
+
+html[data-skin='elven'] .btn--primary {
+  background: var(--el-pri);
+  border-color: var(--el-pri);
+  color: var(--el-on-pri);
+}
+html[data-skin='elven'] .btn--primary:hover {
+  background: var(--el-pri-hover);
+  border-color: var(--el-pri-hover);
+  color: var(--el-on-pri);
+}
+html[data-skin='elven'] .btn--primary:disabled,
+html[data-skin='elven'] .btn--primary:disabled:hover {
+  background: var(--el-pri);
+  border-color: var(--el-pri);
+  color: var(--el-on-pri);
+}
+
+/* Вторичная — бусинная рамка (точки — как на рельсах) */
+html[data-skin='elven'] .btn--ghost {
+  background: transparent;
+  border: 2px dotted var(--el-rule);
+  color: var(--el-btn-fg);
+}
+html[data-skin='elven'] .btn--ghost:hover {
+  background: var(--el-btn-hover);
+  border-color: var(--el-btn-line);
+  color: var(--el-btn-fg);
+}
+html[data-skin='elven'] .btn--ghost:disabled,
+html[data-skin='elven'] .btn--ghost:disabled:hover {
+  background: transparent;
+  border-color: var(--el-rule);
+}
+
+html[data-skin='elven'] .btn--chip {
+  border-radius: var(--el-leaf-sm);
+  background: var(--el-card-2);
+  border: 1px solid var(--el-line);
+  color: var(--text);
+}
+html[data-skin='elven'] .btn--chip:hover {
+  background: var(--el-active);
+  border-color: var(--el-active);
+  color: var(--el-on-active);
+  transform: none;
+}
+
+html[data-skin='elven'] .btn--danger {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+html[data-skin='elven'] .btn--danger:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--el-page);
+}
+
+html[data-skin='elven'] .btn--icon {
+  background: transparent;
+  border-color: var(--el-line-strong);
+  color: var(--text-dim);
+}
+html[data-skin='elven'] .btn--icon:hover {
+  color: var(--text);
+  border-color: var(--el-ink-line);
+  background: var(--el-btn-hover);
+}
+
+/* Закрыть / свернуть панели — маленький круглый «бутон» */
+html[data-skin='elven'] :is(.pxe-close, .chat-context-toggle, .info-modal-close) {
+  border-radius: 50%;
+  border: 1px solid var(--el-line-strong);
+  background: transparent;
+  color: var(--text-dim);
+}
+html[data-skin='elven'] :is(.pxe-close, .chat-context-toggle, .info-modal-close):hover {
+  color: var(--text);
+  border-color: var(--el-ink-line);
+  background: var(--bg-hover);
+}
+
+/* Мелкие кнопки-иконки в списках (правка, удаление) */
+html[data-skin='elven'] .persona-icon-btn {
+  border-radius: var(--el-leaf-sm);
+  border-color: var(--el-line);
+}
+html[data-skin='elven'] .persona-icon-btn:hover {
+  border-color: var(--el-ink-line);
+  color: var(--text);
+}
+html[data-skin='elven'] .persona-icon-btn--danger:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--el-page);
+}
+
+/* =====================================================================
+   Бейджи — маленькие ярлыки-листья
+   ===================================================================== */
+html[data-skin='elven'] .badge {
+  border-radius: var(--el-leaf-sm);
+  padding: 2px 9px;
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: transparent;
+  border: 1px solid var(--el-line-strong);
+  color: var(--text-dim);
+}
+html[data-skin='elven'] :is(.badge--active, .badge--success, .badge--bot) {
+  background: var(--el-active);
+  border-color: var(--el-active);
+  color: var(--el-on-active);
+}
+html[data-skin='elven'] .badge--user {
+  background: var(--el-warm);
+  border-color: var(--el-warm);
+  color: #1d2b22;
+}
+html[data-skin='elven'] .badge--muted {
+  opacity: 0.8;
+}
+
+/* =====================================================================
+   Аватары — медальон: кольцо, зазор, второе кольцо
+   ===================================================================== */
+html[data-skin='elven'] .avatar {
+  border-radius: 50%;
+  border: 1px solid var(--el-ink-line);
+  background: var(--el-card);
+  color: var(--el-head);
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 17px;
+  box-shadow: 0 0 0 2px var(--bg-panel), 0 0 0 3px var(--el-rule);
+}
+html[data-skin='elven'] .avatar--large {
+  font-size: 20px;
+}
+
+/* =====================================================================
+   Вкладки — капитель, у активной чернильная черта и бусина
+   ===================================================================== */
+html[data-skin='elven'] .tabs {
+  border-bottom: 1px solid var(--el-rule);
+  gap: 4px;
+}
+html[data-skin='elven'] .tab {
+  position: relative;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  transition: color 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+}
+html[data-skin='elven'] .tab:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+html[data-skin='elven'] .tab--active,
+html[data-skin='elven'] .tab--active:hover {
+  color: var(--text);
+  border-bottom-color: var(--el-ink-line);
+  background: transparent;
+  font-weight: 700;
+}
+html[data-skin='elven'] .tab--active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  border-radius: 50%;
+  background: var(--el-ink-line);
+  pointer-events: none;
+}
+
+/* =====================================================================
+   Поля, Select, флажки, переключатели, ползунок
+   ===================================================================== */
+html[data-skin='elven'] .input,
+html[data-skin='elven'] .chat-input {
+  border-radius: var(--el-leaf-sm);
+  border: 1px solid var(--el-line-strong);
+  background: var(--el-field);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  letter-spacing: 0.005em;
+  box-shadow: none;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
+}
+html[data-skin='elven'] .input::placeholder,
+html[data-skin='elven'] .chat-input::placeholder {
+  color: var(--text-muted);
+  font-size: 14.5px;
+  letter-spacing: 0.005em;
+}
+html[data-skin='elven'] .input:focus,
+html[data-skin='elven'] .chat-input:focus {
+  border-color: var(--el-accent);
+  box-shadow: 0 0 0 1px var(--el-accent);
+}
+html[data-skin='elven'] .input:disabled:not(.select-trigger) {
+  border-style: dotted;
+  background: transparent;
+}
+html[data-skin='elven'] textarea.input {
+  line-height: 1.55;
+}
+
+html[data-skin='elven'] .field-label {
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .field-hint {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0.005em;
+  color: var(--text-dim);
+}
+html[data-skin='elven'] .field-value {
+  font-family: var(--el-head-font);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--el-head);
+}
+
+/* Select */
+html[data-skin='elven'] .select-trigger:hover:not(:disabled) {
+  border-color: var(--el-ink-line);
+  background: var(--el-field);
+}
+html[data-skin='elven'] .select-trigger--open,
+html[data-skin='elven'] .select-trigger:focus-visible {
+  border-color: var(--el-accent);
+  box-shadow: 0 0 0 1px var(--el-accent);
+}
+html[data-skin='elven'] .select-chevron {
+  color: var(--el-rule);
+}
+html[data-skin='elven'] .select-menu {
+  border: 1px solid var(--el-ink-line);
+  border-radius: var(--el-leaf-sm);
+  background: var(--el-card);
+  font-family: var(--font);
+  font-size: 15px;
+  letter-spacing: 0;
+  box-shadow: 4px 4px 0 0 var(--el-card-2);
+  padding: 4px 0;
+}
+html[data-skin='elven'] .select-highlight {
+  background: var(--el-card-2);
+}
+html[data-skin='elven'] .select-option-hint {
+  font-family: var(--font);
+}
+html[data-skin='elven'] .select-option--selected {
+  box-shadow: inset 3px 0 0 var(--el-accent);
+  color: var(--el-accent);
+}
+
+/* Флажки и радио — свои, квадратик-лист */
+html[data-skin='elven'] input[type='checkbox'],
+html[data-skin='elven'] input[type='radio'] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  border: 1px solid var(--el-ink-line);
+  border-radius: 1px 7px;
+  background: var(--el-field);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+html[data-skin='elven'] input[type='radio'] {
+  border-radius: 50%;
+}
+html[data-skin='elven'] input[type='checkbox']:checked,
+html[data-skin='elven'] input[type='radio']:checked {
+  background: var(--el-accent);
+  border-color: var(--el-accent);
+  box-shadow: inset 0 0 0 3px var(--el-field);
+}
+html[data-skin='elven'] input[type='checkbox']:disabled,
+html[data-skin='elven'] input[type='radio']:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+html[data-skin='elven'] .checkbox-row {
+  font-size: 14.5px;
+}
+html[data-skin='elven'] .checkbox-row:hover {
+  color: var(--el-accent);
+}
+html[data-skin='elven'] .features-group-title {
+  font-family: var(--font);
+  font-weight: 700;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .feature-label--raw {
+  font-family: var(--el-code);
+}
+
+/* Переключатель — стебель с бутоном */
+html[data-skin='elven'] .switch-slider {
+  border-radius: 999px;
+  background: var(--el-card-2);
+  border: 1px solid var(--el-line-strong);
+}
+html[data-skin='elven'] .switch-slider::before {
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: none;
+}
+html[data-skin='elven'] .switch input:checked + .switch-slider {
+  background: var(--el-accent);
+  border-color: var(--el-accent);
+}
+html[data-skin='elven'] .switch input:checked + .switch-slider::before {
+  background: var(--el-on-accent);
+}
+html[data-skin='elven'] .switch input:focus-visible + .switch-slider {
+  outline: 2px solid var(--el-accent);
+  outline-offset: 2px;
+}
+
+/* Ползунок — тонкая линия и бутон-линза */
+html[data-skin='elven'] input[type='range'] {
+  height: 2px;
+  border-radius: 0;
+  background: var(--el-line-strong);
+}
+html[data-skin='elven'] input[type='range']::-webkit-slider-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: var(--el-lens);
+  background: var(--el-accent);
+  border: 0;
+  box-shadow: 0 0 0 2px var(--el-page);
+}
+html[data-skin='elven'] input[type='range']::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: var(--el-lens);
+  background: var(--el-accent);
+  border: 0;
+}
+
+/* =====================================================================
+   Подсказки «?» и их окна
+   ===================================================================== */
+html[data-skin='elven'] .info-btn {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--el-rule);
+  background: transparent;
+  color: var(--el-label);
+  font-family: var(--el-head-font);
+  font-size: 10px;
+  font-weight: 800;
+}
+html[data-skin='elven'] .info-btn:hover {
+  background: var(--el-active);
+  border-color: var(--el-active);
+  color: var(--el-on-active);
+}
+html[data-skin='elven'] :is(.info-overlay, .dialog-overlay, .pcreate-overlay) {
+  background: var(--overlay-bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-skin='elven'] .image-lightbox {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgba(10, 20, 15, 0.86);
+}
+
+/* =====================================================================
+   Плашки с рамкой-рельсом: hero главной и «Старта», экран запуска.
+   Внутри: линия — ряд бусин — линия, в углах квадратные узлы,
+   у двух углов — четырёхлучевая искра.
+   ===================================================================== */
+html[data-skin='elven'] :is(.home-hero, .boot-panel) {
+  position: relative;
+  background: var(--el-plate);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+html[data-skin='elven'] :is(.home-hero, .boot-panel)::after {
+  content: '';
+  position: absolute;
+  inset: 10px;
+  border: 1px solid var(--el-plate-line);
+  outline: 1px solid var(--el-plate-line);
+  outline-offset: -12px;
+  background:
+    var(--el-plate-dot) 0 0 / 12px 10px repeat-x,
+    var(--el-plate-dot) 0 100% / 12px 10px repeat-x,
+    var(--el-plate-dot) 0 0 / 10px 12px repeat-y,
+    var(--el-plate-dot) 100% 0 / 10px 12px repeat-y;
+  background-origin: padding-box;
+  pointer-events: none;
+}
+/* Узлы рельса в углах */
+html[data-skin='elven'] :is(.home-hero, .boot-panel) > .corner {
+  display: block;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 0;
+  background: var(--el-plate);
+  box-shadow: inset 0 0 0 1px var(--el-plate-line), inset 0 0 0 4px var(--el-plate), inset 0 0 0 8px var(--el-plate-line);
+  opacity: 1;
+}
+html[data-skin='elven'] :is(.home-hero, .boot-panel) > .corner.tl { top: 8px; left: 8px; border: 0; }
+html[data-skin='elven'] :is(.home-hero, .boot-panel) > .corner.tr { top: 8px; right: 8px; border: 0; }
+html[data-skin='elven'] :is(.home-hero, .boot-panel) > .corner.bl { bottom: 8px; left: 8px; border: 0; }
+html[data-skin='elven'] :is(.home-hero, .boot-panel) > .corner.br { bottom: 8px; right: 8px; border: 0; }
+/* Искры у двух углов — «свет» цветом, без ореола */
+html[data-skin='elven'] :is(.home-hero, .boot-panel) > .corner.plus::after {
+  content: '';
+  position: absolute;
+  top: auto;
+  left: auto;
+  width: 14px;
+  height: 14px;
+  background: var(--el-sparkle, var(--el-plate-line));
+  clip-path: polygon(50% 0, 60% 40%, 100% 50%, 60% 60%, 50% 100%, 40% 60%, 0 50%, 40% 40%);
+  font-size: 0;
+}
+html[data-skin='elven'] :is(.home-hero, .boot-panel) > .corner.tl.plus::after {
+  right: -22px;
+  bottom: -22px;
+}
+html[data-skin='elven'] :is(.home-hero, .boot-panel) > .corner.br.plus::after {
+  left: -22px;
+  top: -22px;
+}
+html[data-skin='elven'][data-theme='dark'] {
+  --el-sparkle: #d1f2e0;
+}
+
+/* =====================================================================
+   Экран запуска
+   ===================================================================== */
+html[data-skin='elven'] .boot {
+  background: var(--el-grain), var(--el-page);
+}
+html[data-skin='elven'] .boot-panel {
+  padding: 46px 42px 36px;
+}
+html[data-skin='elven'] .boot-panel .home-eyebrow {
+  margin-bottom: 10px;
+}
+html[data-skin='elven'] .boot-title {
+  font-family: var(--el-script);
+  font-weight: 400;
+  font-size: clamp(40px, 8vw, 54px);
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--el-on-plate);
+  margin-bottom: 12px;
+}
+html[data-skin='elven'] .boot-lead {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--el-on-plate-dim);
+}
+html[data-skin='elven'] .boot-steps {
+  font-family: var(--font);
+  font-size: 14px;
+  gap: 9px;
+}
+html[data-skin='elven'] .boot-step-tag {
+  font-family: var(--el-code);
+  font-size: 12px;
+  color: var(--el-plate-line);
+}
+html[data-skin='elven'] .boot-step--ok .boot-step-tag {
+  color: var(--el-on-plate);
+}
+html[data-skin='elven'] .boot-step--wait {
+  color: var(--el-on-plate-dim);
+}
+html[data-skin='elven'] .boot-step--fail .boot-step-tag {
+  background: var(--danger);
+  color: var(--el-plate);
+  border-radius: 2px;
+}
+/* Прогресс — ряд бусин */
+html[data-skin='elven'] .boot-cells {
+  gap: 0;
+}
+html[data-skin='elven'] .boot-cells i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--el-plate-line);
+  opacity: 0.25;
+}
+html[data-skin='elven'] .boot-cells i.on {
+  opacity: 1;
+}
+html[data-skin='elven'] .boot-meta {
+  font-family: var(--font);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--el-on-plate-dim);
+}
+html[data-skin='elven'] .boot-cmd-label,
+html[data-skin='elven'] .boot-hint {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--el-on-plate-dim);
+}
+html[data-skin='elven'] .boot-cmd-row {
+  border-radius: var(--el-leaf-sm);
+  border-color: var(--el-plate-soft);
+  font-family: var(--el-code);
+}
+html[data-skin='elven'] .boot-cmd-copy {
+  border-radius: var(--el-leaf-sm);
+  font-family: var(--font);
+}
+
+/* =====================================================================
+   Главная
+   ===================================================================== */
+html[data-skin='elven'] .home-hero {
+  padding: 50px 50px 44px;
+}
+html[data-skin='elven'] .home-eyebrow {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--el-plate-line);
+}
+html[data-skin='elven'] .home-eyebrow::before {
+  width: 26px;
+  height: 7px;
+  background:
+    linear-gradient(var(--el-plate-line), var(--el-plate-line)) 0 50% / 17px 1px no-repeat,
+    radial-gradient(circle, var(--el-plate-line) 0 2.4px, transparent 2.9px) 100% 50% / 7px 7px no-repeat;
+}
+html[data-skin='elven'] .home-greet {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--el-on-plate-dim);
+}
+
+/* Большой заголовок — вязь кремом */
+html[data-skin='elven'] .home-title {
+  font-family: var(--el-script);
+  font-weight: 400;
+  font-size: clamp(46px, 6vw, 74px);
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--el-on-plate);
+  margin-bottom: 16px;
+  padding-right: 0.15em;
+}
+html[data-skin='elven'] .home-lead {
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--el-on-plate-dim);
+}
+html[data-skin='elven'] .home-readout {
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--el-on-plate-dim);
+}
+html[data-skin='elven'] .home-readout.top-right {
+  top: 30px;
+  right: 34px;
+}
+html[data-skin='elven'] .home-readout.bottom-right {
+  bottom: 28px;
+  right: 62px;
+}
+html[data-skin='elven'] .home-readout .val {
+  color: var(--el-on-plate);
+  font-family: var(--el-head-font);
+  font-weight: 700;
+  font-size: 13px;
+}
+html[data-skin='elven'] .home-readout .live-tag {
+  color: var(--el-plate-line);
+}
+html[data-skin='elven'] .home-ticker,
+html[data-skin='elven'] .home-ticker-text {
+  font-family: var(--font);
+  font-size: 14px;
+}
+html[data-skin='elven'] .home-ticker-label {
+  font-family: var(--font);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--el-plate-line);
+}
+html[data-skin='elven'] .home-cta-row {
+  gap: 14px;
+}
+html[data-skin='elven'] .home-cta-row .btn {
+  padding: 12px 22px;
+  font-size: 13px;
+}
+
+/* Подзаголовок блока главной — антиква бронзой */
+html[data-skin='elven'] .home-block-head {
+  padding-bottom: 14px;
+}
+html[data-skin='elven'] .home-block-title {
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 26px;
+  line-height: 1.15;
+  text-transform: none;
+  letter-spacing: 0.002em;
+  color: var(--el-head);
+}
+html[data-skin='elven'] .home-block-num {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--el-label);
+}
+
+/* Карточки присутствия, телеметрия, досье-карточки, лента, заметки, календарь */
+html[data-skin='elven'] :is(.home-presence, .home-dossier, .home-feed, .notes, .cal, .home-tele-cell) {
+  background: var(--el-card);
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-leaf);
+  box-shadow: none;
+  clip-path: none;
+}
+html[data-skin='elven'] :is(.home-presence, .home-dossier):hover {
+  background: var(--el-card);
+  border-color: var(--el-line-strong);
+  transform: none;
+}
+html[data-skin='elven'] .home-presence-name,
+html[data-skin='elven'] .home-dossier h3 {
+  font-family: var(--el-head-font);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.003em;
+  text-transform: none;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .home-presence-status {
+  font-family: var(--font);
+  font-size: 12.5px;
+}
+html[data-skin='elven'] .home-presence-activity,
+html[data-skin='elven'] .home-presence-activity--none {
+  font-family: var(--font);
+  font-style: normal;
+  font-size: 14.5px;
+  color: var(--text-dim);
+}
+html[data-skin='elven'] :is(.home-presence-reply, .home-dossier-foot) {
+  font-family: var(--font);
+  font-size: 12.5px;
+  border-top: 1px solid var(--el-line);
+}
+html[data-skin='elven'] .home-dossier-index {
+  font-family: var(--font);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--el-label);
+}
+
+/* Телеметрия: отдельные листы с крупными цифрами */
+html[data-skin='elven'] .home-telemetry {
+  gap: 14px;
+  background: transparent;
+  border: 0;
+}
+html[data-skin='elven'] .home-tele-label {
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .home-tele-value {
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 34px;
+  color: var(--el-title);
+  text-shadow: none;
+}
+html[data-skin='elven'] .home-tele-value span,
+html[data-skin='elven'] .home-tele-note {
+  font-family: var(--font);
+}
+html[data-skin='elven'] .home-tele-note {
+  font-size: 13px;
+}
+
+/* Журнал системы — лесная плашка, моноширинный кремом */
+html[data-skin='elven'] .home-term {
+  background: var(--el-plate);
+  border: 0;
+  border-radius: var(--el-leaf);
+  box-shadow: inset 0 0 0 5px var(--el-plate), inset 0 0 0 6px var(--el-plate-soft);
+  font-family: var(--el-code);
+}
+html[data-skin='elven'] .home-term-titlebar {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  border-bottom-color: var(--el-plate-soft);
+}
+html[data-skin='elven'] .home-term-titlebar .lights i,
+html[data-skin='elven'] .start-guide-dlg-titlebar .lights i {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: var(--el-lens);
+  background: #e9d3a2;
+}
+html[data-skin='elven'] .home-term-titlebar .lights i:nth-child(2),
+html[data-skin='elven'] .start-guide-dlg-titlebar .lights i:nth-child(2) {
+  background: #e5a177;
+}
+html[data-skin='elven'] .home-term-titlebar .lights i:nth-child(3),
+html[data-skin='elven'] .start-guide-dlg-titlebar .lights i:nth-child(3) {
+  background: #a5b778;
+}
+html[data-skin='elven'] .home-term-line .bright {
+  color: #e9d3a2;
+}
+html[data-skin='elven'] .home-term-cursor,
+html[data-skin='elven'] .start-guide-dlg-cursor {
+  background: #e9d3a2;
+}
+
+/* Лента «Пока вас не было» */
+html[data-skin='elven'] .home-feed {
+  overflow: hidden;
+}
+html[data-skin='elven'] .home-feed-row {
+  border-bottom: 1px solid var(--el-line);
+  font-size: 14.5px;
+  transition: background 0.25s ease;
+}
+html[data-skin='elven'] .home-feed-row:hover {
+  background: var(--bg-hover);
+}
+html[data-skin='elven'] .home-feed-persona {
+  font-family: var(--el-head-font);
+  font-size: 15px;
+  font-weight: 700;
+}
+html[data-skin='elven'] :is(.home-feed-time, .home-feed-empty) {
+  font-family: var(--font);
+  font-size: 12.5px;
+}
+html[data-skin='elven'] .home-feed-badge--initiative {
+  color: var(--el-label);
+  border-color: var(--el-rule);
+}
+html[data-skin='elven'] .home-feed-badge--reminder {
+  color: var(--el-accent);
+  border-color: var(--el-accent);
+}
+
+/* Заметки */
+html[data-skin='elven'] .notes-persona {
+  border-radius: var(--el-leaf-sm);
+  border: 1px solid var(--el-line-strong);
+  background: transparent;
+  font-family: var(--font);
+  font-size: 13px;
+}
+html[data-skin='elven'] .notes-persona:hover {
+  background: var(--el-card-2);
+}
+html[data-skin='elven'] .notes-persona--on {
+  border-color: var(--el-ink-line);
+  background: var(--el-card-2);
+  box-shadow: inset 3px 0 0 var(--note-color, var(--el-accent));
+}
+html[data-skin='elven'] .notes-persona-avatar {
+  border-radius: 50%;
+  font-family: var(--el-head-font);
+  font-weight: 800;
+}
+html[data-skin='elven'] .note {
+  border-bottom: 1px solid var(--el-line);
+}
+html[data-skin='elven'] .note-text {
+  font-size: 15px;
+  line-height: 1.55;
+}
+html[data-skin='elven'] :is(.note-time, .note-author, .notes-empty, .notes-error, .note-more, .notes-hint) {
+  font-family: var(--font);
+  font-size: 12.5px;
+}
+
+/* Календарь */
+html[data-skin='elven'] .cal-month {
+  font-family: var(--el-head-font);
+  font-size: 22px;
+  font-weight: 800;
+  text-transform: none;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .cal-weekdays span {
+  font-family: var(--font);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .cal-day {
+  border-radius: var(--el-leaf-sm);
+  border-color: var(--el-line);
+  background: var(--el-field);
+}
+html[data-skin='elven'] .cal-day:hover {
+  border-color: var(--el-ink-line);
+  background: var(--el-field);
+}
+html[data-skin='elven'] .cal-day--today {
+  border-color: var(--el-ink-line);
+  box-shadow: inset 0 0 0 1px var(--el-ink-line);
+}
+html[data-skin='elven'] .cal-day-num {
+  font-family: var(--el-head-font);
+  font-size: 14px;
+  font-weight: 700;
+}
+html[data-skin='elven'] .cal-chip {
+  border-radius: 0 6px 6px 0;
+}
+html[data-skin='elven'] :is(.cal-chip b, .cal-more, .cal-empty, .cal-entry-time, .cal-tag, .cal-form-title) {
+  font-family: var(--font);
+}
+html[data-skin='elven'] .cal-dot {
+  border-radius: var(--el-lens);
+}
+html[data-skin='elven'] .cal-tag {
+  border-radius: var(--el-leaf-sm);
+}
+html[data-skin='elven'] .cal-entry {
+  border-bottom: 1px solid var(--el-line);
+}
+
+html[data-skin='elven'] :is(.home-foot, .home-foot-stencil, .home-foot-right) {
+  font-family: var(--font);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+
+/* =====================================================================
+   Чат: страница всех чатов
+   ===================================================================== */
+html[data-skin='elven'] .chat-overview-head .home-eyebrow {
+  color: var(--el-label);
+}
+html[data-skin='elven'] .chat-overview-head .home-eyebrow::before {
+  background:
+    linear-gradient(var(--el-rule), var(--el-rule)) 0 50% / 17px 1px no-repeat,
+    radial-gradient(circle, var(--el-rule) 0 2.4px, transparent 2.9px) 100% 50% / 7px 7px no-repeat;
+}
+html[data-skin='elven'] .chat-overview-title {
+  font-family: var(--el-script);
+  font-weight: 400;
+  font-size: 56px;
+  line-height: 1.1;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .chat-overview-lead {
+  font-size: 15.5px;
+  color: var(--text-dim);
+}
+html[data-skin='elven'] .chat-overview-stats {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .chat-overview-stats b {
+  font-family: var(--el-head-font);
+  font-size: 16px;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .chat-card {
+  background: var(--el-card);
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-leaf);
+  box-shadow: none;
+  overflow: hidden;
+}
+/* Цвет персоны — листок в углу */
+html[data-skin='elven'] .chat-card::before {
+  content: '';
+  position: absolute;
+  top: auto;
+  right: 14px;
+  left: auto;
+  bottom: 14px;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--el-lens);
+  background: var(--persona-color, var(--el-rule));
+  box-shadow: none;
+  opacity: 1;
+  pointer-events: none;
+}
+html[data-skin='elven'] .chat-card:hover {
+  background: var(--el-card);
+  border-color: var(--el-ink-line);
+  box-shadow: none;
+  transform: none;
+}
+html[data-skin='elven'] .chat-card--unread {
+  border-color: var(--el-ink-line);
+  box-shadow: inset 0 0 0 1px var(--el-ink-line);
+}
+html[data-skin='elven'] .chat-card-name {
+  font-family: var(--el-head-font);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.003em;
+  text-transform: none;
+  color: var(--el-title);
+}
+html[data-skin='elven'] :is(.chat-card-status, .chat-card-time, .chat-card-foot, .chat-card-preview--empty, .chat-card-you) {
+  font-family: var(--font);
+  font-size: 12.5px;
+}
+html[data-skin='elven'] .chat-card-preview {
+  font-size: 15px;
+  line-height: 1.5;
+}
+html[data-skin='elven'] .chat-card-foot {
+  border-top: 1px solid var(--el-line);
+}
+html[data-skin='elven'] .chat-card-badge {
+  border-radius: var(--el-leaf-sm);
+  border-color: var(--el-warm);
+  background: var(--el-warm);
+  color: #1d2b22;
+}
+
+/* =====================================================================
+   Чат: список персон, шапка, переписка, ввод
+   ===================================================================== */
+html[data-skin='elven'] .chat-persona-list,
+html[data-skin='elven'] .chat-context {
+  background: var(--el-page);
+  border-color: var(--el-rule);
+}
+html[data-skin='elven'] .chat-persona-list-title,
+html[data-skin='elven'] .chat-context-title {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .chat-persona-back {
+  border: 2px dotted var(--el-rule);
+  border-radius: var(--el-leaf-sm);
+  background: transparent;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+html[data-skin='elven'] .chat-persona-back:hover {
+  border-color: var(--el-ink-line);
+  color: var(--text);
+  background: var(--bg-hover);
+}
+html[data-skin='elven'] .chat-persona-item {
+  border-radius: var(--el-leaf-sm);
+  border: 1px solid transparent;
+  transition: background 0.25s ease;
+}
+html[data-skin='elven'] .chat-persona-item:hover {
+  background: var(--el-card-2);
+  transform: none;
+}
+html[data-skin='elven'] .chat-persona-item--active,
+html[data-skin='elven'] .chat-persona-item--active:hover {
+  background: var(--el-active);
+  border-color: var(--el-active);
+  box-shadow: none;
+}
+html[data-skin='elven'] .chat-persona-item--active .avatar {
+  background: transparent;
+  border-color: var(--el-ink-line);
+  color: var(--el-head);
+  box-shadow: none;
+}
+html[data-skin='elven'] .chat-persona-name {
+  font-family: var(--el-head-font);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.003em;
+  color: var(--text);
+}
+html[data-skin='elven'] .chat-persona-status {
+  font-family: var(--font);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+html[data-skin='elven'] .chat-persona-list--flying .chat-persona-item:not(.chat-persona-item--active) {
+  background: var(--el-card);
+  border-color: var(--el-line);
+}
+
+/* Шапка разговора */
+html[data-skin='elven'] .chat-header {
+  background: var(--el-page);
+  border-bottom: 1px solid var(--el-rule);
+}
+html[data-skin='elven'] .chat-header-name {
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: 0.003em;
+  text-transform: none;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .chat-header-status {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* Переписка: персона — лесная плашка, вы — светлый лист; листья зеркальны */
+html[data-skin='elven'] .chat-messages {
+  gap: 16px;
+}
+html[data-skin='elven'] .message-bubble {
+  position: relative;
+  padding: 13px 19px 10px;
+  background: var(--el-plate);
+  border: 0;
+  border-radius: var(--el-leaf);
+  box-shadow: inset 0 0 0 4px var(--el-plate), inset 0 0 0 5px var(--el-plate-soft);
+  font-size: 15.5px;
+  line-height: 1.55;
+}
+html[data-skin='elven'] .message--user .message-bubble {
+  background: var(--el-user);
+  border: 1px solid var(--el-user-line);
+  border-radius: var(--el-leaf-r);
+  color: var(--el-on-user);
+  box-shadow: none;
+}
+html[data-skin='elven'] .message--user .message-bubble--queued {
+  border-style: dashed;
+}
+html[data-skin='elven'] .message--user .message-text {
+  color: var(--el-on-user);
+}
+html[data-skin='elven'] .message-time {
+  font-family: var(--font);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+html[data-skin='elven'] .message--user .message-time,
+html[data-skin='elven'] .message--user .msg-status {
+  color: var(--el-user-time);
+}
+html[data-skin='elven'] .msg-status--read {
+  color: var(--el-accent);
+}
+html[data-skin='elven'] .message--user .msg-status--read {
+  color: #3a543b;
+}
+html[data-skin='elven'] .message-text a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+html[data-skin='elven'] .message--user .message-text a {
+  color: #3a543b;
+}
+html[data-skin='elven'] .msg-code {
+  font-family: var(--el-code);
+  border-radius: 3px;
+  background: var(--bg-panel-2);
+  border-color: var(--border-soft);
+}
+html[data-skin='elven'] .msg-pre {
+  font-family: var(--el-code);
+  border-radius: var(--el-leaf-sm);
+  background: var(--term-bg);
+  color: var(--term-bright);
+  border-color: var(--el-plate-soft);
+}
+html[data-skin='elven'] .msg-quote {
+  border-left: 2px solid var(--accent);
+}
+html[data-skin='elven'] .msg-mark {
+  background: var(--el-warm);
+  color: #1d2b22;
+}
+
+/* Цитата в ответе и кнопка «ответить» */
+html[data-skin='elven'] .message-quote {
+  border-left-color: var(--accent);
+}
+html[data-skin='elven'] .message-reply-btn {
+  border-radius: var(--el-leaf-sm);
+  border: 1px solid var(--el-ink-line);
+  background: var(--el-page);
+  color: var(--el-text);
+  font-family: var(--font);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+html[data-skin='elven'] .message-reply-btn:hover {
+  color: var(--el-accent);
+  border-color: var(--el-accent);
+}
+html[data-skin='elven'] .chat-reply-bar {
+  border-left-color: var(--el-accent);
+  background: var(--el-card-2);
+}
+
+/* «Печатает» — три бусины */
+html[data-skin='elven'] .typing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: none;
+  background: var(--el-plate-line);
+  animation: el-bob 2.4s ease-in-out infinite;
+}
+html[data-skin='elven'] .typing-dot:nth-child(2) {
+  animation-delay: 0.4s;
+}
+html[data-skin='elven'] .typing-dot:nth-child(3) {
+  animation-delay: 0.8s;
+}
+
+/* Скелет загрузки истории */
+html[data-skin='elven'] .chat-loading-bubble {
+  border: 2px dotted var(--el-rule);
+  border-radius: var(--el-leaf);
+  background: transparent;
+}
+html[data-skin='elven'] .chat-loading-bubble--user {
+  border-radius: var(--el-leaf-r);
+}
+html[data-skin='elven'] .chat-loading-cells i {
+  border-radius: 50%;
+  background: var(--el-rule);
+}
+html[data-skin='elven'] :is(.chat-loading-caption, .chat-loading-hint, .chat-loading-tag) {
+  font-family: var(--font);
+  font-size: 12.5px;
+}
+html[data-skin='elven'] .chat-offline-banner {
+  border-radius: var(--el-leaf-sm);
+  background: var(--el-card-2);
+  border-color: var(--el-line-strong);
+  font-size: 14px;
+}
+
+/* Нижняя строка состояния и поле ввода */
+html[data-skin='elven'] .chat-status-bar {
+  background: var(--el-page);
+  border-top: 1px solid var(--el-line);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+}
+html[data-skin='elven'] .chat-input-bar {
+  background: var(--el-page);
+  border-top: 1px solid var(--el-rule);
+  align-items: center;
+  gap: 10px;
+}
+html[data-skin='elven'] .chat-input {
+  padding: 11px 16px;
+  font-size: 15.5px;
+}
+html[data-skin='elven'] .chat-input-bar .btn--primary {
+  padding: 12px 20px;
+}
+html[data-skin='elven'] .chat-input-bar .btn:not(.btn--primary) {
+  border-radius: 50%;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+html[data-skin='elven'] :is(.chat-attach-bar, .sent-file) {
+  border-color: var(--el-line);
+  border-radius: var(--el-leaf-sm);
+}
+
+/* =====================================================================
+   Голосовой режим чата
+   ===================================================================== */
+html[data-skin='elven'] .voice-chat {
+  background: transparent;
+}
+html[data-skin='elven'] .voice-chat--fullscreen {
+  background: var(--el-grain), var(--el-page);
+}
+html[data-skin='elven'] .voice-chat-topbar {
+  background: var(--el-page);
+  border-bottom: 1px solid var(--el-rule);
+}
+html[data-skin='elven'] .voice-chat-title {
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 22px;
+  letter-spacing: 0.003em;
+  text-transform: none;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .voice-chat-status {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--el-accent);
+}
+html[data-skin='elven'] .voice-avatar-img {
+  border: 1px solid var(--el-ink-line);
+  box-shadow: 0 0 0 5px var(--el-page), 0 0 0 6px var(--el-rule);
+}
+html[data-skin='elven'] .voice-avatar::after {
+  border-width: 1px;
+  border-color: var(--el-rule);
+  box-shadow: none;
+}
+html[data-skin='elven'] .voice-avatar--listening::after,
+html[data-skin='elven'] .voice-avatar--speaking::after {
+  border-color: var(--el-accent);
+}
+html[data-skin='elven'] .voice-chat-line {
+  font-size: 17px;
+  line-height: 1.6;
+}
+html[data-skin='elven'] .voice-chat-controls {
+  background: var(--el-page);
+  border-top: 1px solid var(--el-rule);
+}
+html[data-skin='elven'] .voice-input-toggle {
+  border: 1px solid var(--el-ink-line);
+  border-radius: var(--el-leaf-sm);
+  padding: 2px;
+  gap: 2px;
+}
+html[data-skin='elven'] .voice-input-toggle button {
+  border-radius: 1px 9px;
+  font-family: var(--font);
+  font-weight: 700;
+}
+html[data-skin='elven'] .voice-input-toggle button.active {
+  background: var(--el-active);
+  color: var(--el-on-active);
+}
+html[data-skin='elven'] .voice-mic-btn {
+  border: 1px solid var(--el-ink-line);
+  background: var(--el-card);
+  color: var(--text);
+  box-shadow: 0 0 0 5px var(--el-page), 0 0 0 6px var(--el-rule);
+}
+html[data-skin='elven'] .voice-mic-btn--active {
+  background: var(--el-active);
+  color: var(--el-on-active);
+}
+html[data-skin='elven'] .voice-chat-note {
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+/* =====================================================================
+   Контекстная панель чата
+   ===================================================================== */
+html[data-skin='elven'] .chat-mood {
+  font-size: 15px;
+}
+html[data-skin='elven'] .ctx-row {
+  font-size: 14px;
+}
+html[data-skin='elven'] :is(.ctx-note, .ctx-mono, .ctx-list) {
+  font-family: var(--font);
+  font-size: 13.5px;
+  letter-spacing: 0.005em;
+}
+html[data-skin='elven'] .ctx-details,
+html[data-skin='elven'] .ctx-actions {
+  border-top: 1px solid var(--el-line);
+}
+html[data-skin='elven'] .ctx-details summary {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+}
+html[data-skin='elven'] .ctx-trend {
+  font-family: var(--font);
+  font-size: 12.5px;
+}
+
+/* =====================================================================
+   Досье: окно, лесная шапка-картуш, вкладки, счётчики, списки
+   ===================================================================== */
+html[data-skin='elven'] .dossier-panel {
+  background: var(--el-card);
+  border: 1px solid var(--el-ink-line);
+  border-radius: var(--el-leaf-lg);
+  box-shadow: 0 0 0 5px var(--el-page), 0 0 0 6px var(--el-rule);
+  overflow: hidden;
+}
+html[data-skin='elven'] :is(.dossier-head, .pcreate-head) {
+  background: var(--el-plate);
+  border-bottom: 0;
+  box-shadow: inset 0 -5px 0 0 var(--el-plate), inset 0 -6px 0 0 var(--el-plate-soft);
+}
+html[data-skin='elven'] .dossier-head {
+  padding: 18px 22px 16px;
+}
+html[data-skin='elven'] .dossier-head .avatar {
+  background: var(--el-plate-2);
+  color: var(--el-on-plate);
+  border-color: var(--el-plate-line);
+  box-shadow: 0 0 0 2px var(--el-plate), 0 0 0 3px var(--el-plate-line);
+}
+html[data-skin='elven'] .dossier-name {
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 26px;
+  line-height: 1.15;
+  text-transform: none;
+  letter-spacing: 0.003em;
+  color: var(--el-on-plate);
+}
+html[data-skin='elven'] .dossier-meta {
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--el-on-plate-dim);
+}
+html[data-skin='elven'] .dossier-tabs {
+  padding: 0 22px;
+}
+html[data-skin='elven'] .dossier-body {
+  padding-left: 22px;
+  padding-right: 22px;
+}
+
+/* Счётчики */
+html[data-skin='elven'] .stat-card {
+  background: var(--el-card);
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-leaf);
+}
+html[data-skin='elven'] .stat-value {
+  font-family: var(--el-head-font);
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--el-title);
+  text-shadow: none;
+  animation: none;
+}
+html[data-skin='elven'] .stat-label {
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--el-label);
+}
+
+/* Списки памяти/напоминаний */
+html[data-skin='elven'] .memory-item {
+  border-bottom: 1px solid var(--el-line);
+}
+html[data-skin='elven'] .memory-item-text {
+  font-size: 15px;
+}
+html[data-skin='elven'] .memory-item-time {
+  font-family: var(--font);
+  font-size: 12.5px;
+}
+html[data-skin='elven'] :is(.ltm-category-name, .diary-date) {
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .diary-item {
+  border-bottom: 1px solid var(--el-line);
+}
+html[data-skin='elven'] .reminder-item {
+  border-bottom: 1px solid var(--el-line);
+}
+
+/* =====================================================================
+   Модалки (FormModal), YAML, диалоги
+   ===================================================================== */
+html[data-skin='elven'] :is(.pcreate-panel, .dialog-panel, .info-modal) {
+  background: var(--el-card);
+  border: 1px solid var(--el-ink-line);
+  border-radius: var(--el-leaf-lg);
+  box-shadow: 0 0 0 5px var(--el-page), 0 0 0 6px var(--el-rule);
+  overflow: hidden;
+}
+html[data-skin='elven'] .pcreate-head {
+  padding: 16px 20px 15px;
+}
+html[data-skin='elven'] .pcreate-title {
+  font-family: var(--el-head-font);
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 0.003em;
+  text-transform: none;
+  color: var(--el-on-plate);
+}
+html[data-skin='elven'] .pcreate-head .pxe-close {
+  border-color: var(--el-plate-line);
+  color: var(--el-on-plate);
+}
+html[data-skin='elven'] .pcreate-head .pxe-close:hover,
+html[data-skin='elven'] .dossier-head .pxe-close:hover {
+  background: var(--el-plate-2);
+  color: var(--el-on-plate);
+}
+html[data-skin='elven'] .pcreate-body {
+  padding: 18px 22px;
+}
+html[data-skin='elven'] .pcreate-foot {
+  border-top: 1px solid var(--el-rule);
+  background: var(--el-card-2);
+  padding: 14px 20px 16px;
+}
+html[data-skin='elven'] .pcreate-sec {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .pcreate-sub {
+  border-left: 2px solid var(--el-rule);
+}
+/* YAML и прочий код — лесная плашка с моноширинным */
+html[data-skin='elven'] .pcreate-yaml {
+  font-family: var(--el-code);
+  font-size: 12px;
+  letter-spacing: 0;
+  line-height: 1.65;
+  background: var(--term-bg);
+  color: var(--term-bright);
+  border: 1px solid var(--term-line);
+  border-radius: var(--el-leaf-sm);
+  box-shadow: none;
+}
+html[data-skin='elven'] textarea.pcreate-yaml--edit:focus {
+  border-color: var(--el-accent);
+  box-shadow: 0 0 0 1px var(--el-accent);
+}
+html[data-skin='elven'] :is(.pcreate-yaml-head, .pcreate-yaml-actions .btn) {
+  font-family: var(--font);
+}
+
+html[data-skin='elven'] .dialog-title,
+html[data-skin='elven'] .info-modal-title {
+  font-family: var(--el-head-font);
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.003em;
+  text-transform: none;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .dialog-mark {
+  border-radius: 50%;
+  border-color: var(--el-ink-line);
+  color: var(--el-title);
+  font-family: var(--el-head-font);
+  font-weight: 800;
+}
+html[data-skin='elven'] .dialog-panel--danger .dialog-mark {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--el-page);
+}
+html[data-skin='elven'] .dialog-message,
+html[data-skin='elven'] .info-modal-body {
+  font-size: 15px;
+  line-height: 1.6;
+}
+html[data-skin='elven'] .dialog-actions {
+  border-top: 1px solid var(--el-line);
+}
+html[data-skin='elven'] .info-modal {
+  padding: 24px 26px;
+}
+
+/* =====================================================================
+   Персоны
+   ===================================================================== */
+html[data-skin='elven'] .persona-card {
+  border-radius: var(--el-leaf);
+}
+html[data-skin='elven'] .persona-avatar-btn {
+  border-radius: 50%;
+  border: 1px solid var(--el-ink-line);
+  background: var(--el-card);
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 26px;
+  color: var(--el-head);
+  box-shadow: 0 0 0 3px var(--el-card), 0 0 0 4px var(--persona, var(--el-rule));
+}
+html[data-skin='elven'] .persona-avatar-overlay {
+  color: #efe4c8;
+  background: rgba(29, 43, 34, 0.7);
+}
+html[data-skin='elven'] .persona-avatar-remove {
+  border-radius: 50%;
+}
+html[data-skin='elven'] .persona-card-name {
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  font-size: 23px;
+  line-height: 1.15;
+  letter-spacing: 0.003em;
+  text-transform: none;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .persona-card-meta {
+  font-family: var(--font);
+  font-size: 13px;
+}
+html[data-skin='elven'] .persona-status {
+  border-radius: var(--el-leaf-sm);
+  border-color: var(--el-line-strong);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+html[data-skin='elven'] .persona-status-dot {
+  border-radius: var(--el-lens);
+  background: var(--el-sage);
+}
+html[data-skin='elven'] .persona-status--frozen {
+  border-style: dotted;
+}
+html[data-skin='elven'] .persona-card-desc {
+  font-size: 15px;
+  line-height: 1.55;
+}
+html[data-skin='elven'] .persona-card-label {
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .persona-chip {
+  border-radius: var(--el-leaf-sm);
+  font-family: var(--font);
+  font-size: 12.5px;
+  border-color: var(--el-line-strong);
+  background: transparent;
+}
+html[data-skin='elven'] .persona-telemetry {
+  border-radius: var(--el-leaf-sm);
+  border-color: var(--el-line);
+  background: var(--el-line);
+  overflow: hidden;
+}
+html[data-skin='elven'] .persona-tele-cell {
+  background: var(--el-field);
+}
+html[data-skin='elven'] .persona-tele-cell + .persona-tele-cell {
+  border-left-color: var(--el-line);
+}
+html[data-skin='elven'] .persona-tele-label {
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .persona-tele-value {
+  font-family: var(--el-head-font);
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .persona-local-note {
+  border-style: dotted;
+  border-radius: var(--el-leaf-sm);
+}
+
+/* =====================================================================
+   Настройки, сервисы
+   ===================================================================== */
+html[data-skin='elven'] .apikey-row {
+  border-bottom: 1px solid var(--el-line);
+}
+html[data-skin='elven'] .provider-name {
+  font-family: var(--el-head-font);
+  font-size: 17px;
+  font-weight: 700;
+}
+html[data-skin='elven'] .link-card {
+  border-radius: var(--el-leaf);
+}
+html[data-skin='elven'] .svc-stat-num {
+  font-family: var(--el-head-font);
+  color: var(--el-title);
+  font-weight: 800;
+}
+html[data-skin='elven'] .svc-group-title {
+  font-family: var(--font);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] .svc-code {
+  font-family: var(--el-code);
+}
+
+/* =====================================================================
+   «Старт»: обучение
+   ===================================================================== */
+html[data-skin='elven'] .start-guide-bar {
+  background: var(--el-card);
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-leaf-sm);
+  font-family: var(--font);
+}
+html[data-skin='elven'] .start-guide-bar-label {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--el-label);
+}
+/* Шкала — ряд бусин: пустые — контуром, пройденные — залиты */
+html[data-skin='elven'] .start-guide-meter {
+  height: 10px;
+  border: 0;
+  border-radius: 0;
+  background: radial-gradient(circle, var(--el-line) 0 2.6px, transparent 3.1px) 0 50% / 12px 10px repeat-x;
+  overflow: hidden;
+}
+html[data-skin='elven'] .start-guide-meter::after {
+  display: none;
+}
+html[data-skin='elven'] .start-guide-meter i {
+  border-radius: 0;
+  background: radial-gradient(circle, var(--el-accent) 0 3px, transparent 3.5px) 0 50% / 12px 10px repeat-x;
+  box-shadow: none;
+}
+html[data-skin='elven'] .start-guide-bar-pct {
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .start-guide-lead,
+html[data-skin='elven'] .start-guide-step-desc {
+  font-size: 15px;
+  line-height: 1.6;
+}
+html[data-skin='elven'] .start-guide-tabs {
+  gap: 10px;
+  background: transparent;
+  border: 0;
+}
+html[data-skin='elven'] .start-guide-tab {
+  background: var(--el-card);
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-leaf);
+}
+html[data-skin='elven'] .start-guide-tab:hover {
+  background: var(--el-card-2);
+}
+html[data-skin='elven'] .start-guide-tab.is-active {
+  background: var(--el-active);
+  border-color: var(--el-active);
+}
+/* Бегущая черта активного трека — убрана: активный трек сам плашка */
+html[data-skin='elven'] .start-guide-tab-ink {
+  display: none;
+}
+html[data-skin='elven'] .start-guide-tab-title {
+  font-family: var(--el-head-font);
+  font-size: 20px;
+  font-weight: 800;
+  text-transform: none;
+  letter-spacing: 0.003em;
+  color: var(--el-title);
+}
+html[data-skin='elven'] :is(.start-guide-tab-index, .start-guide-tab-count, .start-guide-step-idx, .start-guide-check) {
+  font-family: var(--font);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--el-label);
+}
+html[data-skin='elven'] :is(.start-guide-tab-sub, .start-guide-link) {
+  font-family: var(--font);
+  font-size: 13.5px;
+}
+html[data-skin='elven'] .start-guide-steps {
+  clip-path: none;
+  background: var(--el-card);
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-leaf);
+}
+html[data-skin='elven'] .start-guide-mark {
+  border-radius: 50%;
+  border-color: var(--el-ink-line);
+  background: var(--el-card);
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .start-guide-mark:hover {
+  background: var(--el-card-2);
+}
+html[data-skin='elven'] .start-guide-step.is-done .start-guide-mark {
+  background: var(--el-accent);
+  border-color: var(--el-accent);
+  color: var(--el-on-accent);
+}
+html[data-skin='elven'] .start-guide-line {
+  background: var(--el-line);
+}
+html[data-skin='elven'] .start-guide-line i {
+  background: var(--el-accent);
+}
+html[data-skin='elven'] .start-guide-step-title {
+  font-family: var(--el-head-font);
+  font-size: 20px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0.003em;
+}
+html[data-skin='elven'] .start-guide-go {
+  border-radius: var(--el-leaf-sm);
+}
+html[data-skin='elven'] .start-guide-warn {
+  border: 2px dotted var(--el-rule);
+  border-radius: var(--el-leaf-sm);
+  background: transparent;
+  font-size: 14px;
+}
+html[data-skin='elven'] .start-guide-warn-tag {
+  border-radius: 2px;
+  background: var(--el-warm);
+  color: #1d2b22;
+  font-family: var(--font);
+  font-weight: 700;
+}
+/* Окно-демо переписки — лесная плашка */
+html[data-skin='elven'] .start-guide-dlg {
+  background: var(--el-plate);
+  border-radius: var(--el-leaf);
+  overflow: hidden;
+  border-color: var(--el-plate-soft);
+  box-shadow: none;
+}
+html[data-skin='elven'] :is(.start-guide-dlg-titlebar, .start-guide-dlg-peer-status, .start-guide-dlg-live, .start-guide-dlg-msg) {
+  font-family: var(--font);
+}
+html[data-skin='elven'] .start-guide-dlg-avatar {
+  border-radius: 50%;
+  font-family: var(--el-head-font);
+}
+html[data-skin='elven'] .start-guide-dlg-msg--op {
+  clip-path: none;
+  border-radius: var(--el-leaf-sm-r);
+}
+
+/* «Старт»: блоки-подсказки, модели, команды */
+html[data-skin='elven'] :is(.ollama-model, .start-guide-code, .start-control-cmd, .start-control-intro, .start-control-pipe,
+  .start-control-faq, .start-control-filters, .start-control-sc-facts, .start-control-sc-way, .start-control-yn-opt) {
+  border-radius: var(--el-leaf-sm);
+}
+html[data-skin='elven'] :is(.ollama-model, .start-control-intro, .start-control-faq, .start-control-pipe) {
+  background: var(--el-card);
+  border-color: var(--el-line);
+}
+html[data-skin='elven'] .start-guide-code {
+  border: 2px dotted var(--el-rule);
+  background: var(--el-field);
+}
+html[data-skin='elven'] :is(.start-guide-code code, .start-control-cmd code) {
+  font-family: var(--el-code);
+}
+html[data-skin='elven'] .start-control-path span {
+  border-radius: var(--el-leaf-sm);
+  border-color: var(--el-line-strong);
+}
+html[data-skin='elven'] .start-control-path span:last-child {
+  background: var(--el-active);
+  color: var(--el-on-active);
+  border-color: var(--el-active);
+}
+html[data-skin='elven'] .start-control-node {
+  border-radius: var(--el-lens);
+  border-color: var(--el-ink-line);
+}
+html[data-skin='elven'] .start-control-step.is-done .start-control-node {
+  background: var(--el-sage);
+  border-color: var(--el-sage);
+}
+html[data-skin='elven'] .start-control-step.is-active .start-control-node {
+  background: var(--el-accent);
+  border-color: var(--el-accent);
+  box-shadow: 0 0 0 3px var(--el-page), 0 0 0 4px var(--el-accent);
+  animation: none;
+}
+html[data-skin='elven'] .start-control-step-num {
+  font-family: var(--font);
+}
+/* Бегущий импульс по линии шагов — короткий плоский отрезок вместо размытого блика */
+html[data-skin='elven'] .start-control-track::after {
+  width: 26px;
+  background: var(--el-accent);
+}
+@media (max-width: 760px) {
+  html[data-skin='elven'] .start-control-track::after {
+    width: 100%;
+    height: 26px;
+    background: var(--el-accent);
+  }
+}
+html[data-skin='elven'] :is(.start-control-stage, .start-control-card, .start-control-ex) {
+  clip-path: none;
+  border-radius: var(--el-leaf);
+}
+html[data-skin='elven'] :is(.start-control-step-title, .start-control-stage h3, .start-control-card-title, .start-control-ex-head h4) {
+  font-family: var(--el-head-font);
+  text-transform: none;
+  letter-spacing: 0.003em;
+  font-weight: 700;
+  font-size: 19px;
+}
+
+/* =====================================================================
+   Комната
+   ===================================================================== */
+/* Сцена и колонка состояния — одна рама с чернильной линией */
+html[data-skin='elven'] .room-layout {
+  background: var(--el-line);
+  border: 1px solid var(--el-ink-line);
+  border-radius: var(--el-leaf);
+  box-shadow: none;
+}
+html[data-skin='elven'] .room-layout .room-scene-card {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+html[data-skin='elven'] .room-telemetry {
+  gap: 1px;
+  background: var(--el-line);
+}
+html[data-skin='elven'] .room-telemetry .home-tele-cell {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+html[data-skin='elven'] .room-tele-text {
+  font-family: var(--el-head-font);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.003em;
+  text-shadow: none;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .room-tele-offline .room-tele-text {
+  white-space: normal;
+  line-height: 1.25;
+}
+html[data-skin='elven'] .room-scene > .corner {
+  display: none;
+}
+html[data-skin='elven'] .room-tele-sub {
+  font-size: 11.5px;
+}
+html[data-skin='elven'] .room-tele-offline .room-tele-sub {
+  font-size: 13px;
+}
+html[data-skin='elven'] .room-tele-bar {
+  border-radius: 0;
+  background: var(--el-card-2);
+}
+html[data-skin='elven'] .room-tele-bar-fill {
+  background: var(--el-accent);
+  box-shadow: none;
+}
+html[data-skin='elven'] .room-scene-card--fullscreen .room-scene {
+  border: 1px solid var(--el-ink-line);
+  border-radius: var(--el-leaf);
+}
+html[data-skin='elven'] .room-status-plate {
+  border-radius: var(--el-leaf-sm);
+  font-family: var(--font);
+  border-color: var(--el-ink-line);
+  background: var(--el-card);
+  box-shadow: none;
+}
+html[data-skin='elven'] .room-offline-plate {
+  border-radius: var(--el-leaf);
+  font-family: var(--font);
+  border: 1px solid var(--el-ink-line);
+  box-shadow: none;
+}
+html[data-skin='elven'] :is(.room-focus-label, .room-tele-sub, .room-cat-label, .room-poster-label) {
+  font-family: var(--font);
+}
+html[data-skin='elven'] .room-focus-label {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--el-label);
+}
+
+/* Арт-мастерская */
+html[data-skin='elven'] .art-drop {
+  border: 2px dotted var(--el-rule);
+  border-radius: var(--el-leaf);
+  background: var(--el-field);
+}
+html[data-skin='elven'] .art-drop:hover {
+  border-color: var(--el-ink-line);
+}
+html[data-skin='elven'] :is(.art-drop-title, .art-drop-spec, .art-drop-status, .art-style-desc) {
+  font-family: var(--font);
+}
+html[data-skin='elven'] .art-prompt {
+  font-family: var(--el-code);
+  border-radius: var(--el-leaf-sm);
+}
+
+/* Раскрывающиеся блоки: лист с линией, стрелка в круглом «бутоне» */
+html[data-skin='elven'] .collapsible-head {
+  background: var(--el-card);
+  border: 1px solid var(--el-line-strong);
+  border-radius: var(--el-leaf-sm);
+  transition: border-color 0.25s ease, background 0.25s ease;
+}
+html[data-skin='elven'] .collapsible-head:hover,
+html[data-skin='elven'] .collapsible.is-open .collapsible-head {
+  border-color: var(--el-ink-line);
+  background: var(--el-card);
+}
+html[data-skin='elven'] .collapsible-chevron {
+  border-radius: 50%;
+  border-color: var(--el-ink-line);
+  color: var(--text);
+}
+html[data-skin='elven'] .collapsible-title {
+  font-family: var(--font);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+html[data-skin='elven'] .collapsible-summary {
+  font-size: 14px;
+}
+
+/* Выбор персоны в комнате (телефон) — лист с медальоном */
+html[data-skin='elven'] .room-pick {
+  border-color: var(--el-line-strong);
+  border-radius: var(--el-leaf-sm);
+  background: var(--el-card);
+}
+html[data-skin='elven'] .room-pick:hover {
+  border-color: var(--el-ink-line);
+}
+html[data-skin='elven'] .room-pick-face {
+  border-radius: 50%;
+  border-color: var(--el-ink-line);
+  font-family: var(--el-head-font);
+  font-weight: 800;
+  color: var(--el-head);
+}
+html[data-skin='elven'] .room-pick-name {
+  font-family: var(--el-head-font);
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0.003em;
+}
+
+/* =====================================================================
+   Галерея тем («Скины»)
+   ===================================================================== */
+html[data-skin='elven'] .skin-themes-lead {
+  font-size: 15px;
+}
+html[data-skin='elven'] .skin-theme-card {
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-leaf);
+  background: var(--el-card);
+  box-shadow: none;
+  transition: border-color 0.25s ease, background 0.25s ease;
+}
+html[data-skin='elven'] .skin-theme-card:hover {
+  border-color: var(--el-ink-line);
+  transform: none;
+}
+/* Выбранная — двойная рамка: чернила, зазор, бронза */
+html[data-skin='elven'] .skin-theme-card--active,
+html[data-skin='elven'] .skin-theme-card--active:hover {
+  border-color: var(--el-ink-line);
+  box-shadow: 0 0 0 3px var(--el-page), 0 0 0 4px var(--el-rule);
+}
+html[data-skin='elven'] .skin-theme-card-name {
+  font-family: var(--el-head-font);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--el-title);
+}
+html[data-skin='elven'] .skin-theme-card-tagline {
+  font-size: 13.5px;
+}
+html[data-skin='elven'] .skin-themes-assigned {
+  border-top: 1px solid var(--el-line);
+}
+html[data-skin='elven'] .skin-themes-assigned-title {
+  font-family: var(--font);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--el-label);
+}
+
+/* Числа — прописные цифры */
+html[data-skin='elven'] :is(.stat-value, .home-tele-value, .persona-tele-value, .home-readout .val, .svc-stat-num,
+  .field-value, .chat-overview-stats b, .start-guide-mark, .start-guide-bar-pct, .cal-month, .cal-day-num) {
+  font-variant-numeric: lining-nums;
+}
+
+/* =====================================================================
+   Код и журналы — настоящий моноширинный
+   ===================================================================== */
+html[data-skin='elven'] :is(code, pre, kbd, samp, .devlog, .devlog-line) {
+  font-family: var(--el-code);
+}
+
+/* =====================================================================
+   Телефон (≤760px)
+   ===================================================================== */
+@media (max-width: 760px) {
+  html[data-skin='elven'] .sidebar,
+  html[data-skin='elven'] .sidebar--collapsed {
+    background: var(--el-page);
+    padding-right: 28px;
+  }
+  html[data-skin='elven'] .sidebar--open {
+    box-shadow: none;
+  }
+  html[data-skin='elven'] .sidebar-backdrop {
+    background: var(--overlay-bg);
+  }
+  html[data-skin='elven'] .nav-item {
+    font-size: 16px;
+  }
+  html[data-skin='elven'] .topbar {
+    box-shadow: 0 3px 0 0 var(--el-page), 0 4px 0 0 var(--el-rule);
+  }
+  html[data-skin='elven'] .topbar-title {
+    font-size: 20px;
+  }
+  html[data-skin='elven'] .section {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  html[data-skin='elven'] .section-title {
+    font-size: 26px;
+  }
+  html[data-skin='elven'] .home-hero {
+    padding: 40px 30px 34px;
+  }
+  html[data-skin='elven'] .home-title {
+    font-size: 44px;
+  }
+  html[data-skin='elven'] .home-readout.top-right {
+    top: 26px;
+    right: 28px;
+  }
+  html[data-skin='elven'] .home-block-title {
+    font-size: 23px;
+  }
+  html[data-skin='elven'] .chat-overview-title {
+    font-size: 46px;
+  }
+  html[data-skin='elven'] .chat-header-name {
+    font-size: 20px;
+  }
+  html[data-skin='elven'] .chat-input {
+    font-size: 16px;
+    padding: 10px 14px;
+  }
+  html[data-skin='elven'] .chat-input-bar .btn--primary {
+    padding: 11px 14px;
+  }
+  html[data-skin='elven'] .message-bubble {
+    padding: 12px 16px 9px;
+  }
+  html[data-skin='elven'] .dossier-panel {
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+    box-shadow: none;
+  }
+  html[data-skin='elven'] :is(.pcreate-overlay .pcreate-panel) {
+    box-shadow: none;
+  }
+  html[data-skin='elven'] .dossier-name {
+    font-size: 23px;
+  }
+  html[data-skin='elven'] .boot-panel {
+    padding: 42px 30px 32px;
+  }
+  html[data-skin='elven'] .stat-card {
+    padding: 12px 6px;
+  }
+  html[data-skin='elven'] .stat-value {
+    font-size: 26px;
+  }
+  html[data-skin='elven'] .stat-label {
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    overflow-wrap: anywhere;
+  }
+  html[data-skin='elven'] .card-title {
+    font-size: 17px;
+  }
+  html[data-skin='elven'] .persona-grid {
+    gap: 12px;
+  }
+  html[data-skin='elven'] .skin-theme-card .badge {
+    padding: 1px 7px;
+    letter-spacing: 0.05em;
+  }
+  html[data-skin='elven'] .home-eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+  }
+  html[data-skin='elven'] .chat-input-bar {
+    gap: 8px;
+  }
+  html[data-skin='elven'] .chat-input-bar .btn--primary {
+    letter-spacing: 0.06em;
+    font-size: 12px;
+  }
+  html[data-skin='elven'] .mem-stats .stat-label,
+  html[data-skin='elven'] .stats-row .stat-label {
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    overflow-wrap: normal;
+  }
+  /* Окна во весь экран — без формы листа и рамки-паспарту */
+  html[data-skin='elven'] .pcreate-overlay .pcreate-panel {
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+  /* Прогресс запуска — бусины мельче, чтобы не слипались */
+  html[data-skin='elven'] .boot-cells i {
+    width: 6px;
+    height: 6px;
+  }
+  /* Вкладки досье прокручиваются: край обрезан ступенями, а не плавным затуханием */
+  html[data-skin='elven'] .dossier-tabs--more-right {
+    mask-image: linear-gradient(to right, #000 calc(100% - 36px), rgba(0, 0, 0, 0.5) calc(100% - 36px) calc(100% - 18px), transparent calc(100% - 18px));
+  }
+  html[data-skin='elven'] .dossier-tabs--more-left {
+    mask-image: linear-gradient(to left, #000 calc(100% - 36px), rgba(0, 0, 0, 0.5) calc(100% - 36px) calc(100% - 18px), transparent calc(100% - 18px));
+  }
+  html[data-skin='elven'] .dossier-tabs--more-left.dossier-tabs--more-right {
+    mask-image: linear-gradient(to right, transparent 18px, rgba(0, 0, 0, 0.5) 18px 36px, #000 36px calc(100% - 36px), rgba(0, 0, 0, 0.5) calc(100% - 36px) calc(100% - 18px), transparent calc(100% - 18px));
+  }
+  html[data-skin='elven'] .room-telemetry .room-tele-offline {
+    grid-column: 1 / -1;
+  }
+}

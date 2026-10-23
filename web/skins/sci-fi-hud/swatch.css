@@ -1,0 +1,156 @@
+@import './fonts.css';
+
+/* Чистый HUD: миниатюра в галерее — крошечный прибор: сетка, волосяные
+   линии, засечки, реплика-выноска и плотный блок своей реплики.
+   Только плоские заливки и линии (градиенты — с жёсткими стопами). */
+
+.skin-swatch[data-swatch='sci-fi-hud'] {
+  --sw-bg: #f5f5fa;
+  --sw-panel: rgba(255, 255, 255, 0.85);
+  --sw-side: rgba(255, 255, 255, 0.85);
+  --sw-text: #122f4c;
+  --sw-dim: #8da2b4;
+  --sw-in: rgba(255, 255, 255, 0.92);
+  --sw-out: #122f4c;
+  --sw-line: #c2ced9;
+  --sw-ink: #122f4c;
+  --sw-accent: #1a6d73;
+  --sw-grid: rgba(18, 47, 76, 0.06);
+  border: 1px solid var(--sw-line);
+  border-radius: 0;
+  background-color: var(--sw-bg);
+  background-image:
+    linear-gradient(var(--sw-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--sw-grid) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+.skin-swatch[data-swatch='sci-fi-hud'][data-scheme='dark'] {
+  --sw-bg: #08141b;
+  --sw-panel: rgba(19, 47, 55, 0.8);
+  --sw-side: rgba(19, 47, 55, 0.8);
+  --sw-text: #d7e6ea;
+  --sw-dim: #51727a;
+  --sw-in: rgba(19, 47, 55, 0.9);
+  --sw-out: #1a6d73;
+  --sw-line: #2a4f58;
+  --sw-ink: #7b99a0;
+  --sw-accent: #3ed7c1;
+  --sw-grid: rgba(164, 219, 225, 0.06);
+}
+
+/* Строка заголовка: три контурных индикатора */
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-bar {
+  gap: 4px;
+  background: var(--sw-panel);
+  border-bottom: 1px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-bar i {
+  width: 5px;
+  height: 5px;
+  border: 1px solid var(--sw-ink);
+  background: transparent;
+}
+
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-bar i:first-child {
+  border-color: var(--sw-accent);
+  background: var(--sw-accent);
+}
+
+/* Сайдбар: справа — рейка делений */
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-side {
+  gap: 6px;
+  padding: 8px 9px 8px 7px;
+  background:
+    repeating-linear-gradient(180deg, var(--sw-dim) 0 1px, transparent 1px 5px) right top / 3px 100% no-repeat,
+    var(--sw-side);
+  border-right: 1px solid var(--sw-line);
+}
+
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-side i {
+  height: 5px;
+  background: var(--sw-dim);
+  opacity: 0.7;
+}
+
+/* Активный пункт — рамка-прицел из четырёх скобок */
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-side i:first-child {
+  height: 9px;
+  opacity: 1;
+  background:
+    linear-gradient(var(--sw-accent), var(--sw-accent)) 0 0 / 4px 1px no-repeat,
+    linear-gradient(var(--sw-accent), var(--sw-accent)) 0 0 / 1px 4px no-repeat,
+    linear-gradient(var(--sw-accent), var(--sw-accent)) 100% 0 / 4px 1px no-repeat,
+    linear-gradient(var(--sw-accent), var(--sw-accent)) 100% 0 / 1px 4px no-repeat,
+    linear-gradient(var(--sw-accent), var(--sw-accent)) 0 100% / 4px 1px no-repeat,
+    linear-gradient(var(--sw-accent), var(--sw-accent)) 0 100% / 1px 4px no-repeat,
+    linear-gradient(var(--sw-accent), var(--sw-accent)) 100% 100% / 4px 1px no-repeat,
+    linear-gradient(var(--sw-accent), var(--sw-accent)) 100% 100% / 1px 4px no-repeat,
+    linear-gradient(var(--sw-dim), var(--sw-dim)) 4px 50% / calc(100% - 8px) 1px no-repeat;
+}
+
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-main {
+  gap: 6px;
+  padding: 7px 10px 8px 14px;
+}
+
+/* Заголовок — тонкий широкий шрифт над шкалой-линейкой */
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-title {
+  padding-bottom: 6px;
+  font-family: 'SFH Display', 'SFH Sans', sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  color: var(--sw-text);
+  background:
+    linear-gradient(var(--sw-dim), var(--sw-dim)) left bottom / 100% 1px no-repeat,
+    repeating-linear-gradient(90deg, var(--sw-dim) 0 1px, transparent 1px 4px) left bottom / 100% 3px no-repeat,
+    repeating-linear-gradient(90deg, var(--sw-ink) 0 1px, transparent 1px 24px) left bottom / 100% 5px no-repeat;
+}
+
+.skin-swatch[data-swatch='sci-fi-hud'][data-scheme='dark'] .skin-swatch-title {
+  font-weight: 400;
+}
+
+/* Реплика персоны — панель с засечкой и выноской-лидером */
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-msg {
+  position: relative;
+  height: 12px;
+  border: 1px solid var(--sw-line);
+  background:
+    linear-gradient(var(--sw-ink), var(--sw-ink)) 0 0 / 4px 1px no-repeat,
+    linear-gradient(var(--sw-ink), var(--sw-ink)) 0 0 / 1px 4px no-repeat,
+    var(--sw-in);
+  background-origin: border-box;
+}
+
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-msg--in::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 100%;
+  width: 7px;
+  height: 3px;
+  background:
+    linear-gradient(var(--sw-accent), var(--sw-accent)) 0 0 / 3px 3px no-repeat,
+    linear-gradient(var(--sw-dim), var(--sw-dim)) 0 1px / 100% 1px no-repeat;
+}
+
+/* Своя реплика — плотный блок цвета */
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-msg--out {
+  border-color: var(--sw-out);
+  background: var(--sw-out);
+}
+
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-input {
+  height: 14px;
+  border: 1px solid var(--sw-dim);
+  background: var(--sw-panel);
+}
+
+.skin-swatch[data-swatch='sci-fi-hud'] .skin-swatch-send {
+  width: 14px;
+  height: 7px;
+  background: var(--sw-accent);
+}

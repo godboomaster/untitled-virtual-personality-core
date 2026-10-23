@@ -1,0 +1,169 @@
+@import './fonts.css';
+
+/* Laboratory: миниатюра в галерее — лист миллиметровки, карточка образца
+   с растром, баллон манги и чёрная подпись-рамка */
+.skin-swatch[data-swatch='laboratory'] {
+  --sw-bg: #ebe9e4;
+  --sw-panel: #fcfbf8;
+  --sw-side: #fcfbf8;
+  --sw-text: #151515;
+  --sw-dim: #706e69;
+  --sw-in: #fcfbf8;
+  --sw-out: #151515;
+  --sw-line: #151515;
+  --sw-accent: #151515;
+  --sw-rule: rgba(21, 21, 21, 0.07);
+  --sw-tone: rgba(21, 21, 21, 0.34);
+  --sw-gloss: rgba(255, 255, 255, 0.95);
+  border: 1.5px solid var(--sw-line);
+  background:
+    linear-gradient(var(--sw-rule) 1px, transparent 1px) 0 0 / 9px 9px,
+    linear-gradient(90deg, var(--sw-rule) 1px, transparent 1px) 0 0 / 9px 9px,
+    var(--sw-bg);
+}
+
+.skin-swatch[data-swatch='laboratory'][data-scheme='dark'] {
+  --sw-bg: #0b0b0b;
+  --sw-panel: #141413;
+  --sw-side: #141413;
+  --sw-text: #f0ede6;
+  --sw-dim: #8f8c85;
+  --sw-in: #141413;
+  --sw-out: #f0ede6;
+  --sw-line: #f0ede6;
+  --sw-accent: #f0ede6;
+  --sw-rule: rgba(240, 237, 230, 0.06);
+  --sw-tone: rgba(240, 237, 230, 0.3);
+  --sw-gloss: rgba(255, 255, 255, 0.4);
+}
+
+/* Шапка: бумажная полоса с фестоном */
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-bar {
+  position: relative;
+  height: 15px;
+  border-bottom: none;
+  background: var(--sw-panel);
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-bar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 4px;
+  background: radial-gradient(circle at 50% 0, var(--sw-panel) 0 2.6px, var(--sw-line) 2.6px 3.6px, transparent 3.9px) 0 0 / 8px 4px repeat-x;
+  z-index: 2;
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-bar i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--sw-line);
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-bar i:first-child {
+  background: var(--sw-line);
+}
+
+/* Боковая карточка: растр густеет книзу, активный пункт — акриловый ярлык */
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-side {
+  position: relative;
+  gap: 5px;
+  padding: 9px 6px;
+  border-right: 1.5px solid var(--sw-line);
+  background:
+    radial-gradient(circle, var(--sw-tone) 0 0.75px, transparent 1.05px) 0 0 / 4px 4px,
+    var(--sw-side);
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-side::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--sw-side);
+  -webkit-mask-image: linear-gradient(to bottom, #000 35%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 35%, transparent 100%);
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-side i {
+  position: relative;
+  height: 3px;
+  margin: 1px 2px;
+  border-radius: 2px;
+  background: var(--sw-dim);
+  opacity: 0.6;
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-side i:first-child {
+  height: 9px;
+  margin: 0;
+  border: 1.2px solid var(--sw-line);
+  border-radius: 4px;
+  background:
+    radial-gradient(circle at calc(100% - 4px) 50%, var(--sw-panel) 0 1.2px, var(--sw-line) 1.2px 2px, transparent 2.3px),
+    linear-gradient(115deg, var(--sw-gloss) 0 10%, transparent 24%),
+    var(--sw-panel);
+  opacity: 1;
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-main {
+  gap: 5px;
+  padding: 8px 9px 7px;
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-title {
+  font-family: 'LAB Display', 'Arial Narrow', sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  color: var(--sw-text);
+}
+
+/* Реплика персоны — баллон с хвостиком; своя — чёрная рамка-подпись */
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-msg {
+  position: relative;
+  height: 13px;
+  margin-left: 4px;
+  border: 1.5px solid var(--sw-line);
+  border-radius: 8px 8px 8px 2px;
+  background: var(--sw-in);
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-msg--in::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  bottom: -1.5px;
+  width: 6px;
+  height: 6px;
+  background: var(--sw-line);
+  clip-path: polygon(100% 0, 100% 70%, 0 100%);
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-msg--out {
+  margin-left: 0;
+  border-radius: 1px;
+  background: var(--sw-out);
+  border-color: var(--sw-out);
+  box-shadow: 2px 2px 0 var(--sw-tone);
+}
+
+/* Поле ввода — овал, отправка — чернильная бусина */
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-input {
+  height: 13px;
+  padding: 0 2px;
+  border: 1.5px solid var(--sw-line);
+  border-radius: 999px;
+  background: var(--sw-panel);
+}
+
+.skin-swatch[data-swatch='laboratory'] .skin-swatch-send {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sw-accent);
+}

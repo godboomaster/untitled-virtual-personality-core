@@ -45,6 +45,14 @@ import java.util.concurrent.TimeUnit;
  * хватало, чтобы телефон навсегда считал на процессоре вдвое медленнее,
  * хотя видеоядро исправно. Простоя IDLE_UNLOAD_MS — модель выгружается.
  *
+ * Видеоядро занято — сразу процессор: просит тот, у кого на экране 3D
+ * (spareGpu — стол и замок Арродеса), или видеоядро уже загружено кем-то
+ * (gpuTaken: игра, пока считает фоновая служба). На занятом видеоядре модель
+ * идёт в разы медленнее и рвёт кадры тому, кто рисует; на процессоре ответ у
+ * Snapdragon 7 Gen 3 при столе на экране даже быстрее (13 с против 16), а стол
+ * не замирает. Загруженная на видеоядре модель тогда переезжает на процессор;
+ * обратно — только после выгрузки по простою: загрузка на видеоядро — 20 с.
+ *
  * Одна и на два приложения: у приложения ядра и Арродеса один нативный код,
  * и модель, скачанная в одном, нужна и другому. Кто считает — status():
  * приложение ядра, если у него есть модель, иначе Арродес, если есть у
@@ -60,6 +68,11 @@ final class PhoneGemma {
     private static final String KEY_GPU_BAD_LEGACY = "gpu_bad";
     private static final String KEY_GPU_BAD_UNTIL = "gpu_bad_until";
     private static final long GPU_RETRY_MS = 24 * 3600_000L;
+    // Занятость видеоядра за последнюю секунду (Qualcomm, kgsl: «занято всего»)
+    // и доля, с которой оно считается занятым: стол Арродеса — 77 %, без
+    // рисующих — 0
+    private static final File GPU_BUSY = new File("/sys/class/kgsl/kgsl-3d0/gpubusy");
+    private static final double GPU_TAKEN = 0.4;
 
     static final String MODEL_URL =
             "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm";
@@ -265,6 +278,19 @@ final class PhoneGemma {
                 .apply();
     }
 
+    /** Видеоядро уже загружено кем-то (не этой моделью: она считает в потоке
+     *  llm, а спрашивают перед загрузкой и ответом). Не прочесть — не Qualcomm
+     *  или закрыто — считается свободным. */
+    static boolean gpuTaken() {
+        try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(GPU_BUSY))) {
+            String[] p = r.readLine().trim().split("\\s+");
+            long busy = Long.parseLong(p[0]), total = Long.parseLong(p[1]);
+            return total > 0 && busy >= total * GPU_TAKEN;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     // ── Модель: загрузка, генерация, выгрузка (поток llm) ───────────────
 
     private void closeEngine() {
@@ -289,9 +315,15 @@ final class PhoneGemma {
         }
     }
 
-    /** Загрузить модель (в потоке llm): сначала видеоядро, не вышло — процессор. */
-    private Engine ensureEngine() throws Exception {
-        if (engine != null) return engine;
+    /** Загрузить модель (в потоке llm): сначала видеоядро, не вышло — процессор.
+     *  spareGpu — видеоядро занято: сразу процессор, а загруженная на видеоядре
+     *  модель переезжает туда. */
+    private Engine ensureEngine(boolean spareGpu) throws Exception {
+        if (engine != null && !(spareGpu && "gpu".equals(engineBackend))) return engine;
+        if (engine != null) {
+            Log.i(TAG, "видеоядро занято — модель переезжает на процессор");
+            closeEngine();
+        }
         File f = modelFile(app);
         if (!f.exists()) throw new IOException("model_missing");
         if (!hasModelMagic(f)) {
@@ -301,7 +333,7 @@ final class PhoneGemma {
             throw new IOException("model_broken");
         }
         String cache = app.getCacheDir().getAbsolutePath();
-        if (!gpuBad() && !isEmulator()) {
+        if (!spareGpu && !gpuBad() && !isEmulator()) {
             try {
                 Engine e = new Engine(new EngineConfig(f.getAbsolutePath(), new Backend.GPU(), null, null,
                         MAX_CONTEXT_TOKENS, null, cache));
@@ -469,7 +501,7 @@ final class PhoneGemma {
 
     private Reply chatLocked(String system, JSONArray history, String text, int maxTokens,
                              double temperature, double topP, Tokens tokens, String tag,
-                             long deadline) throws Exception {
+                             long deadline, boolean spareGpu) throws Exception {
         // Сосед прервал ответ, пока тот ждал очереди, — не начинать
         if (tag != null && cancelledTags.remove(tag)) return new Reply("", engineBackend);
         // Задача ядра простояла в очереди дольше, чем ядро ждёт ответ, — не считать впустую
@@ -480,7 +512,8 @@ final class PhoneGemma {
         try {
             String out;
             try {
-                out = generate(ensureEngine(), system, history, text, maxTokens, temperature, topP, tokens);
+                out = generate(ensureEngine(spareGpu || gpuTaken()), system, history, text, maxTokens,
+                        temperature, topP, tokens);
             } catch (Throwable first) {
                 String m = String.valueOf(first.getMessage());
                 if (!"gpu".equals(engineBackend) || cancelledAt > 0
@@ -495,7 +528,7 @@ final class PhoneGemma {
                 engine = null;
                 engineBackend = null;
                 if (stuck != null) inBackground(stuck::close);
-                out = generate(ensureEngine(), system, history, text, maxTokens, temperature, topP, tokens);
+                out = generate(ensureEngine(true), system, history, text, maxTokens, temperature, topP, tokens);
             }
             return new Reply(out, engineBackend);
         } finally {
@@ -534,20 +567,27 @@ final class PhoneGemma {
     /** deadline — System.currentTimeMillis(), после которого не начинать (задача ядра); 0 — без срока. */
     Reply chat(String system, JSONArray history, String text, int maxTokens,
                double temperature, double topP, Tokens tokens, long deadline) throws Exception {
+        return chat(system, history, text, maxTokens, temperature, topP, tokens, deadline, false);
+    }
+
+    /** spareGpu — видеоядро занято у просящего (3D на экране): считать на процессоре. */
+    Reply chat(String system, JSONArray history, String text, int maxTokens,
+               double temperature, double topP, Tokens tokens, long deadline, boolean spareGpu) throws Exception {
         inFlight.incrementAndGet();
         try {
-            return chatRouted(system, history, text, maxTokens, temperature, topP, tokens, deadline);
+            return chatRouted(system, history, text, maxTokens, temperature, topP, tokens, deadline, spareGpu);
         } finally {
             inFlight.decrementAndGet();
         }
     }
 
     private Reply chatRouted(String system, JSONArray history, String text, int maxTokens,
-                             double temperature, double topP, Tokens tokens, long deadline) throws Exception {
+                             double temperature, double topP, Tokens tokens, long deadline,
+                             boolean spareGpu) throws Exception {
         Status s = status();
         if ("peer".equals(s.via)) {
             try {
-                return peer.chat(system, history, text, maxTokens, temperature, topP, tokens, deadline);
+                return peer.chat(system, history, text, maxTokens, temperature, topP, tokens, deadline, spareGpu);
             } catch (PhoneGemmaPeer.Unavailable e) {
                 // Слова уже пошли — заново своей моделью не начать
                 peerFailed(e, !e.started);
@@ -557,16 +597,17 @@ final class PhoneGemma {
             // Своей нет, а сосед, у которого она может быть, не отозвался
             throw new IOException("peer_unavailable (" + peer.packageName() + ": " + s.peerReason + ")");
         }
-        return chatOwn(system, history, text, maxTokens, temperature, topP, tokens, null, deadline);
+        return chatOwn(system, history, text, maxTokens, temperature, topP, tokens, null, deadline, spareGpu);
     }
 
     /** Ответ своей моделью; tag — метка ответа соседа (PhoneGemmaService), null — этого приложения. */
     Reply chatOwn(String system, JSONArray history, String text, int maxTokens,
-                  double temperature, double topP, Tokens tokens, String tag, long deadline) throws Exception {
+                  double temperature, double topP, Tokens tokens, String tag, long deadline,
+                  boolean spareGpu) throws Exception {
         inFlight.incrementAndGet();
         try {
             return await(llm.submit(() -> chatLocked(system, history, text, maxTokens, temperature, topP,
-                    tokens, tag, deadline)));
+                    tokens, tag, deadline, spareGpu)));
         } finally {
             inFlight.decrementAndGet();
         }
@@ -589,7 +630,7 @@ final class PhoneGemma {
         await(llm.submit(() -> {
             if (idleUnload != null) idleUnload.cancel(false);
             try {
-                ensureEngine();
+                ensureEngine(gpuTaken());
             } finally {
                 scheduleIdleUnload();
             }

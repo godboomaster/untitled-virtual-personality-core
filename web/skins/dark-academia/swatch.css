@@ -1,0 +1,116 @@
+@import './fonts.css';
+
+/* Тёмная академия: миниатюра — крошечное окно ночной библиотеки:
+   почти чёрный камень, волосяные линии, закладка-ляссе в меню,
+   заголовок капителью с узлом-ромбом, реплика персоны — сланец
+   с костяной линией, своя — плоское вино. Без теней и градиентов. */
+
+.skin-swatch[data-swatch='dark-academia'],
+.skin-swatch[data-swatch='dark-academia'][data-scheme='dark'],
+.skin-swatch[data-swatch='dark-academia'][data-scheme='light'] {
+  --sw-bg: #0b0d11;
+  --sw-panel: #101418;
+  --sw-side: #101418;
+  --sw-text: #e8e2d5;
+  --sw-dim: #829ea2;
+  --sw-in: #161b20;
+  --sw-out: #3b1c26;
+  --sw-line: #445257;
+  --sw-accent: #a33a48;
+  border-color: #445257;
+  border-radius: 0;
+  background: #0b0d11;
+  font-family: 'DA Text', 'Tenor Sans', sans-serif;
+}
+
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-bar {
+  background: #0b0d11;
+  border-bottom: 1px solid #445257;
+}
+
+/* Огоньки окна — ромбы, первый — кровь */
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-bar i {
+  width: 4px;
+  height: 4px;
+  border: 1px solid #445257;
+  background: transparent;
+  transform: rotate(45deg);
+}
+
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-bar i:first-child {
+  border-color: #a33a48;
+  background: #a33a48;
+}
+
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-side {
+  gap: 6px;
+  background: #101418;
+  border-right: 1px solid #445257;
+  box-shadow: inset -2px 0 0 0 #101418, inset -3px 0 0 0 #2a3338;
+}
+
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-side i {
+  height: 4px;
+  width: 70%;
+  background: #445257;
+  opacity: 1;
+}
+
+/* Закладка-ляссе: вино, кровяной корешок, «ласточкин хвост» */
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-side i:first-child {
+  height: 8px;
+  width: auto;
+  margin-left: -6px;
+  background: #3b1c26;
+  box-shadow: inset 2px 0 0 0 #a33a48;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 50%, 100% 100%, 0 100%);
+}
+
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-title {
+  position: relative;
+  padding-bottom: 5px;
+  border-bottom: 1px solid #445257;
+  font-family: 'DA Display', 'Prata', Georgia, serif;
+  font-weight: 400;
+  font-size: 13px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: #e8e2d5;
+}
+
+/* Узел-ромб на линии заголовка */
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-title::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -3px;
+  width: 5px;
+  height: 5px;
+  background: #a33a48;
+  transform: rotate(45deg);
+}
+
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-msg {
+  height: 11px;
+  border: 1px solid #6b6d69;
+  border-radius: 0;
+  background: #161b20;
+}
+
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-msg--out {
+  border-color: #3b1c26;
+  background: #3b1c26;
+}
+
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-input {
+  height: 13px;
+  border: 1px solid #445257;
+  border-radius: 0;
+  background: #0b0d11;
+}
+
+.skin-swatch[data-swatch='dark-academia'] .skin-swatch-send {
+  width: 12px;
+  height: 7px;
+  background: #3b1c26;
+}
