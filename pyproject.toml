@@ -24,7 +24,7 @@ dependencies = [
     # 6.x не проверялась: смена эмбеддингов разошлась бы с уже сохранённой памятью
     "sentence-transformers>=5.3,<6",
     "httpx>=0.28,<1",
-    "python-telegram-bot>=22.5,<23",
+    "python-telegram-bot[socks]>=22.5,<23",
     "ddgs>=9.14,<10",
     "deep-translator>=1.11,<2",
     # Все загружаемые файлы читаются через markitdown; без extras

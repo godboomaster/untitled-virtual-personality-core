@@ -416,7 +416,8 @@ class Hub:
         if not token or not owner:
             return False
         try:
-            with http(20.0) as c:
+            proxy = os.getenv("TELEGRAM_PROXY", "").strip() or None
+            with http(20.0, proxy=proxy) as c:
                 resp = c.post(f"https://api.telegram.org/bot{token}/sendMessage",
                               json={"chat_id": owner, "text": text[:4000],
                                     "disable_web_page_preview": True})
