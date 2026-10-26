@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 
 export type IconName =
   | 'start' | 'home' | 'chat' | 'room' | 'personas' | 'skins' | 'services' | 'settings' | 'voice' | 'dossier'
-  | 'fullscreen' | 'fullscreenExit'
+  | 'fullscreen' | 'fullscreenExit' | 'popout'
   // Предметы инвентаря
   | 'book' | 'gem' | 'cup' | 'cards' | 'photo' | 'pencil' | 'frame' | 'disc' | 'cable'
   // Действия редактора инвентаря
@@ -109,6 +109,13 @@ const paths: Record<IconName, ReactNode> = {
       <polyline points="20 10 14 10 14 4" />
       <line x1="14" y1="10" x2="21" y2="3" />
       <line x1="3" y1="21" x2="10" y2="14" />
+    </>
+  ),
+  // Вынести в окно поверх остальных: окно и маленькое окошко в углу
+  popout: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="1.5" />
+      <rect x="12" y="11" width="6" height="5" />
     </>
   ),
   // ===== Предметы инвентаря =====

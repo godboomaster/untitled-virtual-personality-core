@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Кадр сценки виджета «Живой портрет»: клетка атласа портрета -->
+<ImageView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/portrait_frame"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:importantForAccessibility="no"
+    android:scaleType="fitCenter" />

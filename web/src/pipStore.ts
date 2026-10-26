@@ -1,9 +1,11 @@
-/* Окно Document Picture-in-Picture с комнатой («Вынести комнату»).
-   Состояние — на уровне модуля, а рендер — в RoomPipHost (смонтирован в
+/* Окно Document Picture-in-Picture поверх остальных окон: комната
+   («Вынести комнату») или живой портрет («Вынести портрет»).
+   Состояние — на уровне модуля, а рендер — в PipHost (смонтирован в
    App.tsx), поэтому окно живёт, пока пользователь ходит по другим разделам.
-   Окно одно на приложение и привязано к персоне, для которой открыто:
-   смена персоны во вкладках раздела его не трогает; кнопка «Вынести
-   комнату» у другой персоны переключает уже открытое окно на неё.
+   Окно одно на приложение (у браузера такое окно одно на вкладку) и
+   привязано к тому, что в нём показано, и к персоне: смена персоны во
+   вкладках раздела его не трогает; «Вынести» у другой персоны или другого
+   вида (портрет, пока вынесена комната) переключает уже открытое окно.
 
    В PiP-документ копируются стили приложения (link/style из <head>) и
    атрибуты <html> (data-theme, class, inline-переменные shell-темы скина);
@@ -29,21 +31,28 @@ function pipApi(): DocumentPictureInPictureApi | null {
   return (window as unknown as { documentPictureInPicture: DocumentPictureInPictureApi }).documentPictureInPicture;
 }
 
-export const roomPipSupported = (): boolean => pipApi() != null;
+export const pipSupported = (): boolean => pipApi() != null;
 
-export interface RoomPipState {
+export type PipKind = 'room' | 'portrait';
+
+export interface PipState {
   win: Window | null;
+  kind: PipKind | null;
   personaId: string | null;
 }
 
-const PIP_SIZE = { width: 420, height: 300 };
+// Размер содержимого окна: комната — широкая сцена, портрет — квадрат
+const PIP_SIZE: Record<PipKind, { width: number; height: number }> = {
+  room: { width: 420, height: 300 },
+  portrait: { width: 300, height: 300 },
+};
 
-let state: RoomPipState = { win: null, personaId: null };
+let state: PipState = { win: null, kind: null, personaId: null };
 let teardown: (() => void) | null = null;
 let opening = false;
 const listeners = new Set<() => void>();
 
-function set(next: RoomPipState) {
+function set(next: PipState) {
   state = next;
   listeners.forEach((l) => l());
 }
@@ -77,7 +86,7 @@ function mirrorDocument(src: Document, dst: Document): () => void {
     if (isStyleNode(n)) dst.head.appendChild(cloneStyleNode(n));
   });
   copyAttributes(src.documentElement, dst.documentElement);
-  dst.body.className = 'room-pip-body';
+  dst.body.className = 'pip-body';
 
   // Смена темы/скина в приложении → те же атрибуты у PiP-документа
   const rootObs = new MutationObserver(() => copyAttributes(src.documentElement, dst.documentElement));
@@ -106,10 +115,19 @@ function mirrorDocument(src: Document, dst: Document): () => void {
   };
 }
 
-// Открыть PiP для персоны; уже открыто — переключить на неё
-export async function openRoomPip(personaId: string): Promise<void> {
-  if (state.win && !state.win.closed) {
-    if (state.personaId !== personaId) set({ ...state, personaId });
+// Открыть PiP (комнату или портрет персоны); уже открыто — переключить.
+// Другой вид — окно и под его размер (resizeBy — по жесту, сейчас он есть)
+export async function openPip(kind: PipKind, personaId: string): Promise<void> {
+  const open = state.win;
+  if (open && !open.closed) {
+    if (state.kind !== kind) {
+      try {
+        open.resizeBy(PIP_SIZE[kind].width - open.innerWidth, PIP_SIZE[kind].height - open.innerHeight);
+      } catch {
+        // размер останется прежним — содержимое подстроится
+      }
+    }
+    if (state.kind !== kind || state.personaId !== personaId) set({ ...state, kind, personaId });
     return;
   }
   const dpip = pipApi();
@@ -117,28 +135,28 @@ export async function openRoomPip(personaId: string): Promise<void> {
   opening = true;
   let win: Window;
   try {
-    win = await dpip.requestWindow(PIP_SIZE);
+    win = await dpip.requestWindow(PIP_SIZE[kind]);
   } catch {
     return; // отказ браузера (нет жеста пользователя и т.п.)
   } finally {
     opening = false;
   }
   const unmirror = mirrorDocument(document, win.document);
-  const onPageHide = () => closeRoomPip();
+  const onPageHide = () => closePip();
   win.addEventListener('pagehide', onPageHide);
   teardown = () => {
     win.removeEventListener('pagehide', onPageHide);
     unmirror();
   };
-  set({ win, personaId });
+  set({ win, kind, personaId });
 }
 
 // Закрыть PiP (кнопкой или pagehide): снять слушатели, размонтировать портал
-export function closeRoomPip() {
+export function closePip() {
   const win = state.win;
   teardown?.();
   teardown = null;
-  if (win) set({ win: null, personaId: null });
+  if (win) set({ win: null, kind: null, personaId: null });
   if (win && !win.closed) win.close();
 }
 
@@ -149,6 +167,11 @@ function subscribe(cb: () => void) {
   };
 }
 
-export function useRoomPip(): RoomPipState {
+export function usePip(): PipState {
   return useSyncExternalStore(subscribe, () => state);
+}
+
+// Вынесено ли сейчас именно это (вид и персона)
+export function isPipOf(s: PipState, kind: PipKind, personaId: string): boolean {
+  return s.win != null && s.kind === kind && s.personaId === personaId;
 }

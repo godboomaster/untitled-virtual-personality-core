@@ -6,8 +6,8 @@ import { DetroitBackground } from './effects/DetroitBackground';
 import { useI18n, useMockData } from './i18n';
 import { useApiOnline, useCoreHealth } from './apiData';
 import { useInbox, useInboxPolling } from './inboxStore';
-import { ensureNotifyPermission, OPEN_CHAT_EVENT, setUnreadTitle } from './notifications';
-import { requestChatOverview, requestChatPersona } from './chatNavStore';
+import { ensureNotifyPermission, OPEN_CHAT_EVENT, OPEN_ROOM_EVENT, setUnreadTitle } from './notifications';
+import { requestChatOverview, requestChatPersona, requestRoomPersona } from './chatNavStore';
 import { setDevLogOpen, useDevLogOpen, useDevMode } from './devMode';
 import { useNarrowScreen } from './useNarrowScreen';
 import Start from './sections/Start';
@@ -20,7 +20,7 @@ import ApiKeys from './sections/ApiKeys';
 import Services from './sections/Services';
 import ImageLightbox from './components/ImageLightbox';
 import DialogHost from './components/DialogHost';
-import RoomPipHost from './room/RoomPip';
+import PipHost from './PipHost';
 import { getInitialTheme } from './useAppTheme';
 import type { AppTheme } from './useAppTheme';
 import { BACK_MENU, useBackHandler } from './backStack';
@@ -96,6 +96,18 @@ export default function App() {
     };
     window.addEventListener(OPEN_CHAT_EVENT, openChat);
     return () => window.removeEventListener(OPEN_CHAT_EVENT, openChat);
+  }, []);
+
+  // Тап по виджету комнаты на телефоне → комната этой персоны
+  useEffect(() => {
+    const openRoom = (e: Event) => {
+      const personaId = (e as CustomEvent<string>).detail;
+      if (!personaId) return;
+      requestRoomPersona(personaId);
+      setSection('room');
+    };
+    window.addEventListener(OPEN_ROOM_EVENT, openRoom);
+    return () => window.removeEventListener(OPEN_ROOM_EVENT, openRoom);
   }, []);
 
   // Приложение на телефоне: тап уведомления фоновой службы — чат персоны
@@ -204,8 +216,8 @@ export default function App() {
       <ImageLightbox />
       {/* Подтверждения и сообщения на странице (dialogStore) вместо window.confirm/alert */}
       <DialogHost />
-      {/* PiP-окно комнаты: живёт над разделами, переживает уход из «Комнаты» */}
-      <RoomPipHost />
+      {/* PiP-окно (комната или портрет): живёт над разделами, переживает уход из них */}
+      <PipHost />
     </div>
   );
 }

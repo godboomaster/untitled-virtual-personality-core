@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Превью виджета «Живой портрет» в списке виджетов (Android 12+) -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg"
+    android:gravity="center"
+    android:padding="12dp"
+    android:text="@string/portrait_w_preview"
+    android:textColor="@color/widget_text_dim"
+    android:textSize="12sp" />

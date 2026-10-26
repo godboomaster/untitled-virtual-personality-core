@@ -12,7 +12,10 @@
     толчком из другого потока, отвечает по таймауту и при остановке ядра;
     курсор клиента (since) возвращает потерянный ответ ещё раз, курсор
     чужого процесса (другой epoch) не применяется; без новых параметров
-    ответ прежний — список.
+    ответ прежний — список;
+  - kind "initiative": самоинициатива и ритм (утро/ночь/погода) кладут
+    сообщения с этой меткой (их показывает виджет «Инициатива» на
+    телефоне), напоминания и уроки — по-прежнему "message".
 
 LLM, Ollama и сеть не вызываются, data/ — временный каталог.
 Запуск: PYTHONPATH=. python3 -m scripts.test_inbox_all
@@ -351,11 +354,84 @@ def test_route_long_poll():
         server_mod._api_token = orig
 
 
+def test_initiative_kind():
+    section("kind \"initiative\": самоинициатива и ритм")
+    from app.api import inbox
+    _reset_inbox(inbox)
+    asyncio.run(inbox.WebInboxSender("connor").send_message("web_user", "напоминаю"))
+    asyncio.run(inbox.WebInboxSender("connor", kind=inbox.KIND_INITIATIVE)
+                .send_message("web_user", "давно не болтали"))
+    items, _ = inbox.inbox_take("web_user", "kind_client")
+    check("отправитель по умолчанию — kind message, с меткой — initiative",
+          [(m["text"], m["kind"]) for m in items]
+          == [("напоминаю", "message"), ("давно не болтали", inbox.KIND_INITIATIVE)])
+
+    # Проводка фоновых циклов: кому какой отправитель достался
+    class _Mgr:
+        def __init__(self):
+            self._sender = None
+
+        def set_sender(self, s):
+            self._sender = s
+
+        def set_memory(self, m):
+            pass
+
+        def set_router_persona(self, r, p):
+            pass
+
+        def set_muted_check(self, f):
+            pass
+
+        def start(self, loop=None):
+            pass
+
+    class _Bot:
+        _activity_tracker = object()
+        learning_manager = None
+        living = None
+        proactive = None
+        memory = router = persona = None
+        features = {}
+
+        def __init__(self):
+            self.reminder_manager = _Mgr()
+            self.rhythm = None
+            self.proactive_sender = None
+
+        def setup_proactive(self, s):
+            self.proactive_sender = s
+
+        def setup_rhythm(self, s):
+            self.rhythm = _Mgr()
+
+    bot = _Bot()
+    inbox.start_bot_features("connor", bot)
+    kind = lambda s: getattr(s, "_kind", None)
+    check("самоинициатива — отправитель с kind initiative",
+          kind(bot.proactive_sender) == inbox.KIND_INITIATIVE)
+    check("ритм (утро/ночь/погода) — kind initiative",
+          kind(bot.rhythm._sender) == inbox.KIND_INITIATIVE)
+    check("напоминания — kind message, общий отправитель бота",
+          kind(bot.reminder_manager._sender) == "message"
+          and bot.reminder_manager._sender is bot._api_inbox_sender)
+
+    # Ритм включили на живую раньше напоминаний: общий отправитель не должен
+    # стать «инициативным» и увести за собой напоминания
+    bot2 = _Bot()
+    inbox.wire_rhythm_for_api("connor", bot2)
+    inbox.wire_reminder_for_api("connor", bot2)
+    check("ритм на живую, потом напоминания — у напоминаний kind message",
+          kind(bot2.rhythm._sender) == inbox.KIND_INITIATIVE
+          and kind(bot2.reminder_manager._sender) == "message")
+
+
 def main():
     test_pop_all()
     test_route()
     test_long_poll()
     test_route_long_poll()
+    test_initiative_kind()
 
     print(f"\nИтого: {ok} проверок, {failures} провалов")
     return 1 if failures else 0

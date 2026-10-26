@@ -508,6 +508,16 @@ def main():
     nolife = room_api.room_snapshot(persona, {"system_prompt": "x", "features": {}})
     check("снимок: жизнь выключена → living null", nolife["living"] is None
           and nolife["config"]["is_default"])
+    bare = room_api.room_snapshot("room_bare", {"system_prompt": "x", "features": {}})
+    check("снимок: арта нет → art_updated null", bare["art_updated"] is None)
+    before = snap["art_updated"]
+    os.utime(room_api.room_dir(persona) / "art.json", (1_000_000, 1_000_000))
+    room_api.put_art(persona, {"sprite": {"dataUrl": "data:image/png;base64,iVBORw0KGgo=",
+                                          "anchor": {"x": 0.5, "y": 1}}})
+    art_snap = room_api.room_snapshot(persona, pdata)
+    check("снимок: арт есть — art_updated (время файла), после правки — новое",
+          isinstance(before, float) and isinstance(art_snap["art_updated"], float)
+          and art_snap["art_updated"] > 1_000_000)
 
     # Ротация сигналов: > 256 КБ → последние 200 строк
     big_ctx = "room_rot"

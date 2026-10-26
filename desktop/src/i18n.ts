@@ -98,6 +98,12 @@ const ru = {
   h: 'ч',
   m: 'мин',
   s: 'с',
+  // Портрет на рабочем столе (src/portrait/)
+  portraitWaitBot: 'Бот не запущен — портрет появится, когда он ответит',
+  portraitNone: 'Ни у одной персоны нет живого портрета. Загрузите листы в вебе: Комната → Живой портрет',
+  portraitGone: 'Этой персоны больше нет — выберите другую',
+  portraitEmpty: 'У персоны {name} пока нет живого портрета',
+  portraitMenu: 'Нажмите, чтобы выбрать персону или убрать портрет',
 };
 
 type Dict = typeof ru;
@@ -200,6 +206,11 @@ const en: Dict = {
   h: 'h',
   m: 'min',
   s: 's',
+  portraitWaitBot: 'The bot is not running — the portrait appears once it responds',
+  portraitNone: 'No persona has a live portrait yet. Upload the sheets in the web app: Room → Live portrait',
+  portraitGone: 'This persona no longer exists — pick another one',
+  portraitEmpty: '{name} has no live portrait yet',
+  portraitMenu: 'Click to pick a persona or remove the portrait',
 };
 
 export const lang: 'ru' | 'en' = navigator.language.toLowerCase().startsWith('ru') ? 'ru' : 'en';

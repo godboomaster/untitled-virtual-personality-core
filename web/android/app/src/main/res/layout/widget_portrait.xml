@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Виджет «Живой портрет» (PortraitWidget): голова персоны прямо на обоях,
+     без рамки. Кадры кладёт код в portrait_flipper — лаунчер листает их сам
+     раз в flipInterval (= кадр сценки) и только пока виджет на экране.
+     Портрета нет — подсказка в рамке (на обоях текст иначе не прочесть) -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/portrait_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ViewFlipper
+        android:id="@+id/portrait_flipper"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:autoStart="true"
+        android:flipInterval="150"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/portrait_hint"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/widget_bg"
+        android:gravity="center"
+        android:padding="12dp"
+        android:textColor="@color/widget_text_dim"
+        android:textSize="12sp" />
+</FrameLayout>

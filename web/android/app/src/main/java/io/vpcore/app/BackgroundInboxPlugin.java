@@ -23,7 +23,9 @@ import com.getcapacitor.annotation.PermissionCallback;
  * JS: start({baseUrl, token, clientId, personas?}), stop(), status() →
  * {running, lastOk, lastError}, requestNotificationPermission() →
  * {granted}, testNotification() → {shown, problem}, getLaunchPersona() →
- * {persona}; событие notificationTap {persona}.
+ * {persona, section}; событие notificationTap {persona, section}. section —
+ * "room" у тапа по виджету комнаты, "voice" — по виджету портрета (голосовой
+ * режим чата), иначе null (чат).
  */
 @CapacitorPlugin(
         name = "BackgroundInbox",
@@ -40,6 +42,7 @@ public class BackgroundInboxPlugin extends Plugin {
     // Тап, который ещё некому отдать: приложение запущено уведомлением, а
     // веб ещё грузится — заберёт его getLaunchPersona()
     private static String pendingPersona;
+    private static String pendingSection;
 
     @Override
     public void load() {
@@ -51,29 +54,36 @@ public class BackgroundInboxPlugin extends Plugin {
         if (instance == this) instance = null;
     }
 
-    /** Приложение открыто тапом уведомления персоны (из MainActivity). */
-    static synchronized void deliverTap(String persona) {
+    /** Приложение открыто тапом уведомления или виджета (из MainActivity). */
+    static synchronized void deliverTap(String persona, String section) {
         if (persona == null || persona.isEmpty()) return;
         BackgroundInboxPlugin p = instance;
         if (p != null && p.hasListeners(EVENT_TAP)) {
             pendingPersona = null;
+            pendingSection = null;
             JSObject data = new JSObject();
             data.put("persona", persona);
+            data.put("section", section);
             p.notifyListeners(EVENT_TAP, data);
         } else {
             pendingPersona = persona;
+            pendingSection = section;
         }
     }
 
     @PluginMethod
     public void getLaunchPersona(PluginCall call) {
         String persona;
+        String section;
         synchronized (BackgroundInboxPlugin.class) {
             persona = pendingPersona;
+            section = pendingSection;
             pendingPersona = null;
+            pendingSection = null;
         }
         JSObject ret = new JSObject();
         ret.put("persona", persona);
+        ret.put("section", section);
         call.resolve(ret);
     }
 
@@ -100,6 +110,11 @@ public class BackgroundInboxPlugin extends Plugin {
                 .putString(BackgroundInboxService.KEY_CLIENT_ID, clientId)
                 .putString(BackgroundInboxService.KEY_PERSONAS, personas.toString())
                 .apply();
+        // Виджеты: снять подсказку «включите уведомления»; комната — свежий
+        // снимок; портрет (тяжёлый, меняется редко) — если сохранённый не свежий
+        InitiativeWidget.refresh(getContext());
+        RoomWidget.refreshAll(getContext());
+        PortraitWidget.refreshIfStale(getContext());
         try {
             BackgroundInboxService.start(getContext());
         } catch (RuntimeException e) {
@@ -118,6 +133,10 @@ public class BackgroundInboxPlugin extends Plugin {
                 .remove(BackgroundInboxService.KEY_TOKEN)
                 .apply();
         BackgroundInboxService.stop(getContext());
+        // Виджеты: «выкл.» и подсказка
+        InitiativeWidget.refresh(getContext());
+        RoomWidget.renderAll(getContext());
+        PortraitWidget.renderAll(getContext());
         call.resolve();
     }
 

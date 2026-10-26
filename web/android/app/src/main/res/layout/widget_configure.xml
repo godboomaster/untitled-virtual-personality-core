@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Выбор персоны для виджета «Комната» или «Живой портрет»
+     (PersonaWidgetConfigure); заголовок ставит код -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingLeft="8dp"
+    android:paddingTop="16dp"
+    android:paddingRight="8dp"
+    android:paddingBottom="8dp">
+
+    <TextView
+        android:id="@+id/cfg_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans-serif-medium"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingBottom="8dp"
+        android:text="@string/room_cfg_title"
+        android:textColor="@color/widget_text"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/cfg_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingLeft="12dp"
+        android:paddingTop="4dp"
+        android:paddingRight="12dp"
+        android:paddingBottom="8dp"
+        android:textColor="@color/widget_text_dim"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
+    <ListView
+        android:id="@+id/cfg_list"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:divider="@color/widget_border"
+        android:dividerHeight="1dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="end"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/cfg_retry"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="?attr/selectableItemBackground"
+            android:padding="12dp"
+            android:text="@string/widget_cfg_retry"
+            android:textColor="@color/widget_text"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/cfg_cancel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="?attr/selectableItemBackground"
+            android:padding="12dp"
+            android:text="@string/widget_cfg_cancel"
+            android:textColor="@color/widget_text_dim"
+            android:textSize="14sp" />
+    </LinearLayout>
+</LinearLayout>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Виджет «Комната» (RoomWidget): комната персоны во всю ширину. Персону
+     выбирают при установке (PersonaWidgetConfigure), на Android 12+ — и потом,
+     долгим нажатием. updatePeriodMillis=0: по расписанию не будит телефон —
+     обновляет фоновая служба, пока экран включён -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="io.vpcore.app.PersonaWidgetConfigure"
+    android:description="@string/widget_room_desc"
+    android:initialLayout="@layout/widget_room"
+    android:minWidth="250dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="180dp"
+    android:minResizeHeight="90dp"
+    android:previewLayout="@layout/widget_room_preview"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="4"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable" />

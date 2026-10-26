@@ -1,7 +1,8 @@
 import { registerPlugin } from '@capacitor/core';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { getApiToken, getApiUrl, inboxClientId, isLinkMode, isNativeApp } from './api';
-import { OPEN_CHAT_EVENT } from './notifications';
+import { OPEN_CHAT_EVENT, OPEN_ROOM_EVENT } from './notifications';
+import { requestChatVoice } from './chatNavStore';
 
 /* Приложение на Android: уведомления о сообщениях персон, когда приложение
    свёрнуто или закрыто. WebView в фоне не работает, поэтому опрос ядра
@@ -31,8 +32,10 @@ interface BackgroundInboxPlugin {
   status(): Promise<BgInboxStatus>;
   requestNotificationPermission(): Promise<{ granted: boolean }>;
   testNotification(): Promise<{ shown: boolean; problem: 'denied' | 'channel' | null }>;
-  getLaunchPersona(): Promise<{ persona: string | null }>;
-  addListener(event: 'notificationTap', cb: (data: { persona: string }) => void): Promise<PluginListenerHandle>;
+  // section: 'room' — тап по виджету комнаты, 'voice' — по виджету портрета
+  // (голосовой режим чата), иначе — чат
+  getLaunchPersona(): Promise<{ persona: string | null; section?: string | null }>;
+  addListener(event: 'notificationTap', cb: (data: { persona: string; section?: string | null }) => void): Promise<PluginListenerHandle>;
 }
 
 const BackgroundInbox = registerPlugin<BackgroundInboxPlugin>('BackgroundInbox');
@@ -148,24 +151,29 @@ export async function testNativeNotification(): Promise<NativeNotifyTest> {
   }
 }
 
-/** Тап уведомления → чат персоны. Вызывать после того, как App подписался
- * на OPEN_CHAT_EVENT: тап, которым приложение запустили, ждёт в плагине. */
+/** Тап уведомления или виджета «Инициатива» → чат персоны, виджета комнаты →
+ * её комната, виджета портрета → голосовой режим её чата. Вызывать после
+ * того, как App подписался на OPEN_CHAT_EVENT и OPEN_ROOM_EVENT: тап,
+ * которым приложение запустили, ждёт в плагине. */
 export function listenBgNotificationTaps(): () => void {
   if (!isNativeApp()) return () => {};
-  const open = (persona: string | null | undefined) => {
-    if (persona) window.dispatchEvent(new CustomEvent(OPEN_CHAT_EVENT, { detail: persona }));
+  const open = (persona: string | null | undefined, section?: string | null) => {
+    if (!persona) return;
+    if (section === 'voice') requestChatVoice(persona);
+    const event = section === 'room' ? OPEN_ROOM_EVENT : OPEN_CHAT_EVENT;
+    window.dispatchEvent(new CustomEvent(event, { detail: persona }));
   };
   let handle: PluginListenerHandle | null = null;
   let closed = false;
   // Сначала подписка, потом отложенный тап: иначе тап между ними потеряется
-  void BackgroundInbox.addListener('notificationTap', (d) => open(d.persona))
+  void BackgroundInbox.addListener('notificationTap', (d) => open(d.persona, d.section))
     .then((h) => {
       if (closed) {
         void h.remove();
         return;
       }
       handle = h;
-      return BackgroundInbox.getLaunchPersona().then((r) => open(r.persona));
+      return BackgroundInbox.getLaunchPersona().then((r) => open(r.persona, r.section));
     })
     .catch(() => {});
   return () => {

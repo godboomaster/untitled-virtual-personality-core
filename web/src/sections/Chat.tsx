@@ -12,9 +12,11 @@ import { usePresenceReporting } from '../presence';
 import { notifyBotMessage } from '../notifications';
 import {
   consumeChatPersonaRequest,
+  consumeChatVoiceRequest,
   consumeDossierTabRequest,
   useChatOverviewRequest,
   useChatPersonaRequest,
+  useChatVoiceRequest,
   useDossierTabRequest,
 } from '../chatNavStore';
 import { captureRects, playFlip } from '../flip';
@@ -325,6 +327,13 @@ function ChatRoom({ initialPersonaId, flipFrom, onBack }: ChatRoomProps) {
   } | null>(null);
 
   const persona = personas.find((p) => p.id === selectedId) ?? personas[0];
+  // Запрос «сразу голосом» (тап по виджету портрета) — для этой персоны
+  const voiceRequest = useChatVoiceRequest();
+  useEffect(() => {
+    if (voiceRequest !== persona.id) return;
+    setChatMode('voice');
+    consumeChatVoiceRequest();
+  }, [voiceRequest, persona.id]);
   // Без ноутбука (приложение на телефоне, web/src/offline): отвечает облачная
   // модель по ключу или Gemma на телефоне; переписка хранится на телефоне до
   // возврата к ноутбуку. Черновик — ответ модели телефона по мере печати.

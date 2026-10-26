@@ -8481,6 +8481,178 @@ html[data-theme='dark'] .input::-webkit-calendar-picker-indicator {
   50% { transform: scale(1.06); opacity: 0.4; }
 }
 
+/* Живой портрет в голосовом режиме (web/src/portrait): вместо аватарки.
+   Слушает — тонкая полоса под портретом, как кольцо у аватарки */
+.voice-portrait {
+  position: relative;
+  width: min(340px, 72vw, 46vh);
+}
+
+.voice-chat--fullscreen .voice-portrait {
+  width: min(520px, 80vw, 62vh);
+}
+
+.voice-portrait--listening::after {
+  content: '';
+  position: absolute;
+  left: 30%;
+  right: 30%;
+  bottom: -8px;
+  height: 2px;
+  background: var(--accent);
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+/* Сам портрет: листы-атласы слоями, видна одна клетка; «дышит» */
+.live-portrait {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  user-select: none;
+}
+
+.live-portrait-body {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 90%;
+  animation: portrait-breathe 4.2s ease-in-out infinite;
+}
+
+.live-portrait--speaking .live-portrait-body {
+  animation-duration: 2.8s;
+}
+
+.live-portrait-sheet {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+}
+
+@keyframes portrait-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-1.2%) scale(1.012); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-portrait-body { animation: none; }
+}
+
+/* Карточка «Живой портрет» в арт-мастерской */
+/* Одна колонка: арт-мастерская в «Комнате» — узкая колонка */
+.portrait-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.portrait-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: min(100%, 280px);
+  align-self: center;
+}
+
+.portrait-preview .live-portrait {
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border-soft);
+}
+
+.portrait-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* PiP-окно с портретом: голова на всё окно (квадрат по меньшей стороне),
+   «Вернуть» — только при наведении */
+.portrait-pip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.portrait-pip .live-portrait,
+.portrait-pip .portrait-empty {
+  width: min(100vw, 100vh);
+}
+
+.portrait-pip-back {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.portrait-pip:hover .portrait-pip-back,
+.portrait-pip-back:focus-visible {
+  opacity: 1;
+}
+
+.portrait-pip--listening::after {
+  content: '';
+  position: absolute;
+  left: 35%;
+  right: 35%;
+  bottom: 6px;
+  height: 2px;
+  background: var(--accent);
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+.portrait-empty {
+  width: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+}
+
+.portrait-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.portrait-tabs {
+  flex-wrap: wrap;
+}
+
+/* Лист загружен — точка у названия вкладки */
+.portrait-tab--done::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+  background: var(--accent);
+}
+
+.portrait-grid {
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+
+.portrait-error {
+  color: var(--danger);
+}
+
+.portrait-prompt-label {
+  margin-top: 18px;
+}
+
 /* «Субтитр» под аватаркой: расшифровка или последняя реплика персоны */
 .voice-chat-line {
   max-width: 560px;
@@ -12149,10 +12321,12 @@ img.art-thumb {
   }
 }
 
-/* PiP-документ: комната на всё окно, внизу узкая панель кнопок */
-.room-pip-body {
+/* PiP-документ (комната или портрет, web/src/PipHost.tsx) */
+.pip-body {
   overflow: hidden;
 }
+
+/* PiP: комната на всё окно, внизу узкая панель кнопок */
 
 .room-pip {
   display: flex;

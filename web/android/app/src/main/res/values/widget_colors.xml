@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Виджет «Инициатива»: та же плоская серая палитра, что у веба
+     (web/src/index.css: bg-panel, text, text-dim, border-soft) -->
+<resources>
+    <color name="widget_bg">#F0F0F0</color>
+    <color name="widget_border">#C2C2C2</color>
+    <color name="widget_text">#121212</color>
+    <color name="widget_text_dim">#565656</color>
+    <color name="widget_text_muted">#8A8A8A</color>
+</resources>

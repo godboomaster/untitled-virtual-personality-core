@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import LivePortrait from '../portrait/LivePortrait';
+import { hasPortrait, setPortraitActivity, usePortrait } from '../portrait/portraitStore';
+import { closePip, isPipOf, openPip, pipSupported, usePip } from '../pipStore';
 import { createPortal } from 'react-dom';
 import { useI18n } from '../i18n';
 import type { ChatMessage, Persona } from '../mockData';
@@ -51,6 +54,9 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
   const [fullscreen, setFullscreen] = useState(false);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const portrait = usePortrait(persona.id);
+  const pip = usePip();
+  const portraitOut = isPipOf(pip, 'portrait', persona.id);
   // Живая расшифровка (промежуточные результаты распознавания)
   const [interim, setInterim] = useState('');
   const [draft, setDraft] = useState('');
@@ -175,6 +181,13 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
     };
   }, [persona.id, engine]);
 
+  // Вынесенный портрет (PiP-окно) говорит, слушает и думает вместе с режимом
+  const thinking = typing && !speaking;
+  useEffect(() => {
+    setPortraitActivity(persona.id, { speaking, listening, thinking });
+  }, [persona.id, speaking, listening, thinking]);
+  useEffect(() => () => setPortraitActivity(persona.id, null), [persona.id]);
+
   // Последняя реплика персоны — «субтитр» под аватаркой
   const lastBotLine = [...messages].reverse().find((m) => m.role === 'bot');
   const statusLine = listening
@@ -201,6 +214,20 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
           {persona.name} · <span className="voice-chat-status">{statusLine}</span>
         </div>
         <div className="voice-chat-actions">
+          {/* PiP: только Chromium (Document Picture-in-Picture); иначе кнопки нет.
+              Только значок — шапка и так тесная; вынесен — кнопка нажата */}
+          {pipSupported() && hasPortrait(portrait) && (
+            <button
+              type="button"
+              className={`btn ${portraitOut ? 'btn--primary' : 'btn--ghost'}`}
+              title={portraitOut ? t('portrait.pip.closeHint') : t('portrait.pip.openHint')}
+              aria-label={portraitOut ? t('portrait.pip.back') : t('portrait.pip.open')}
+              aria-pressed={portraitOut}
+              onClick={() => (portraitOut ? closePip() : void openPip('portrait', persona.id))}
+            >
+              <Icon name="popout" size={13} />
+            </button>
+          )}
           <button type="button" className="btn btn--ghost" title={t('chat.modeClassicTitle')} onClick={onSwitchToClassic}>
             <Icon name="chat" size={13} />
             <span className="chip-label">{t('chat.modeClassic')}</span>
@@ -218,11 +245,24 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
       </div>
 
       <div className="voice-chat-stage">
-        <div
-          className={`voice-avatar ${listening ? 'voice-avatar--listening' : ''} ${speaking ? 'voice-avatar--speaking' : ''}`}
-        >
-          <img className="voice-avatar-img" src={avatar || '/avatar-placeholder.png'} alt={persona.name} />
-        </div>
+        {/* Живой портрет (арт-мастерская) — смотрит, моргает, говорит; нет — аватарка */}
+        {hasPortrait(portrait) ? (
+          <div className={`voice-portrait ${listening ? 'voice-portrait--listening' : ''}`}>
+            <LivePortrait
+              data={portrait}
+              speaking={speaking}
+              listening={listening}
+              thinking={thinking}
+              label={persona.name}
+            />
+          </div>
+        ) : (
+          <div
+            className={`voice-avatar ${listening ? 'voice-avatar--listening' : ''} ${speaking ? 'voice-avatar--speaking' : ''}`}
+          >
+            <img className="voice-avatar-img" src={avatar || '/avatar-placeholder.png'} alt={persona.name} />
+          </div>
+        )}
 
         {/* Живая расшифровка во время прослушивания, иначе последняя реплика персоны */}
         <div className="voice-chat-line">
