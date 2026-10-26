@@ -275,6 +275,10 @@ def room_snapshot(persona: str, persona_data: dict, chat_id: str | None = "auto"
     layout = _read(persona, "layout.json", {})
     item_spots = room.item_spots(placements, layout, names)
     spots = room.allowed_spots(config, placements, layout, names)
+    try:
+        art_updated = (room_dir(persona) / "art.json").stat().st_mtime
+    except OSError:
+        art_updated = None
     return {
         "source": source,
         "config": {
@@ -288,6 +292,9 @@ def room_snapshot(persona: str, persona_data: dict, chat_id: str | None = "auto"
         "inventory": inventory,
         "placements": placements,
         "focus": _focus_view(persona),
+        # Когда правили арт (art.json): виджет комнаты на телефоне качает арт
+        # (до десятков МБ) заново, только если он поменялся
+        "art_updated": art_updated,
     }
 
 

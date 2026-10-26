@@ -16,6 +16,15 @@
     </style>
 
 
+    <!-- Выбор персоны для виджета комнаты: плоское окно в палитре виджетов -->
+    <style name="WidgetConfigTheme" parent="Theme.AppCompat.DayNight.Dialog">
+        <item name="windowNoTitle">true</item>
+        <item name="android:windowBackground">@drawable/widget_bg</item>
+        <item name="windowMinWidthMajor">60%</item>
+        <item name="windowMinWidthMinor">85%</item>
+        <item name="colorAccent">@color/widget_text</item>
+    </style>
+
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
     </style>

@@ -688,9 +688,9 @@ def _apply_proactive_live(persona: str, bot, proactive_cfg) -> None:
         if not enabled or not bot.web_single_user:
             return  # вне API-режима живую активацию не делаем (там sender Telegram)
         from app.features.proactive_messaging import ChatActivityTracker
-        from app.api.inbox import WebInboxSender, background_loop
+        from app.api.inbox import KIND_INITIATIVE, WebInboxSender, background_loop
         bot._activity_tracker = ChatActivityTracker(context=bot.context)
-        bot.setup_proactive(WebInboxSender(persona))
+        bot.setup_proactive(WebInboxSender(persona, kind=KIND_INITIATIVE))
         if bot.proactive is not None:
             loop = background_loop()
             loop.call_soon_threadsafe(bot.proactive.start, loop)

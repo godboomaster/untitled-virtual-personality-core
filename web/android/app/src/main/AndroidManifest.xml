@@ -61,6 +61,64 @@
                 android:value="Keeps a connection to a self-hosted server owned by the user on the local network and shows messages it sends (reminders, persona messages) while the app is closed; no push service is used" />
         </service>
 
+        <!-- Виджет «Инициатива»: сообщения, которые персоны пишут сами.
+             Обновляет его фоновая служба (BackgroundInboxService), список —
+             InitiativeWidgetService; события виджета шлёт только система -->
+        <receiver
+            android:name=".InitiativeWidget"
+            android:exported="false"
+            android:label="@string/widget_initiative_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_initiative_info" />
+        </receiver>
+        <service
+            android:name=".InitiativeWidgetService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+        <!-- Виджет «Комната»: чем персона занята, картинка комнаты у персоны с
+             артом. Персону выбирают в PersonaWidgetConfigure (общий с «Живым
+             портретом»): её открывает лаунчер (у некоторых — напрямую),
+             поэтому экспортирована; чужое приложение может разве что поменять
+             персону нашего виджета -->
+        <receiver
+            android:name=".RoomWidget"
+            android:exported="false"
+            android:label="@string/widget_room_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_room_info" />
+        </receiver>
+        <!-- Виджет «Живой портрет»: голова персоны из её живого портрета на
+             обоях — моргает, поглядывает, говорит, когда персона пишет -->
+        <receiver
+            android:name=".PortraitWidget"
+            android:exported="false"
+            android:label="@string/widget_portrait_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_portrait_info" />
+        </receiver>
+        <activity
+            android:name=".PersonaWidgetConfigure"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:taskAffinity=""
+            android:theme="@style/WidgetConfigTheme">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
         <!-- Голосовая активация по имени: микрофон, пока экран выключен.
              Запускает только приложение (Android 14+ не даёт из фона) -->
         <service

@@ -16,6 +16,46 @@
     <string name="bg_channel_messages_desc">Reminders and messages from personas while the app is closed</string>
     <string name="bg_test_title">Test</string>
     <string name="bg_test_text">Persona message notifications work</string>
+    <!-- Виджет «Инициатива» (InitiativeWidget) -->
+    <string name="widget_initiative_label">Persona initiative</string>
+    <string name="widget_initiative_desc">Messages personas write on their own</string>
+    <string name="widget_initiative_empty">Quiet so far</string>
+    <string name="widget_initiative_off">Turn on \"Notifications when the app is closed\" in the app</string>
+    <string name="widget_status_off">off</string>
+    <string name="widget_status_offline">no connection</string>
+    <!-- Виджет «Комната» (RoomWidget); widget_cfg_* — выбор персоны (PersonaWidgetConfigure) -->
+    <string name="widget_room_label">Persona room</string>
+    <string name="widget_room_desc">The persona\'s room with them in it, right now</string>
+    <string name="room_w_away">not in the room</string>
+    <string name="room_w_focus">working together</string>
+    <string name="room_w_life_off">persona life is off</string>
+    <string name="room_w_no_state">no state yet</string>
+    <string name="room_w_loading">Loading…</string>
+    <string name="room_w_no_art">%1$s has no room art yet. Add a background and a sprite in the app: Room → Art workshop</string>
+    <string name="room_w_off_hint">Turn on \"Notifications when the app is closed\" in the app under Connection: the widget learns about the room through it</string>
+    <string name="room_w_offline_at">no connection · %1$s</string>
+    <string name="room_w_gone">persona not found</string>
+    <string name="room_w_pick">Choose a persona</string>
+    <string name="room_w_preview_scene">The persona\'s room from their art</string>
+    <string name="room_w_preview_name">Persona</string>
+    <string name="room_w_preview_activity">writes in the diary · at the desk</string>
+    <string name="room_cfg_title">Whose room?</string>
+    <string name="widget_cfg_loading">Loading personas…</string>
+    <string name="widget_cfg_error">No connection to the core. Check that it is running and try again</string>
+    <string name="widget_cfg_empty">There are no personas on the core</string>
+    <string name="widget_cfg_retry">Retry</string>
+    <string name="widget_cfg_cancel">Cancel</string>
+    <!-- Виджет «Живой портрет» (PortraitWidget) -->
+    <string name="widget_portrait_label">Live portrait</string>
+    <string name="widget_portrait_desc">The persona\'s head on the home screen: blinks, glances around and talks when they write</string>
+    <string name="portrait_cfg_title">Whose portrait?</string>
+    <string name="portrait_w_pick">Choose a persona</string>
+    <string name="portrait_w_loading">Loading…</string>
+    <string name="portrait_w_none">%1$s has no live portrait yet. Upload the head-angle sheets in the app: Room → Art workshop → Live portrait</string>
+    <string name="portrait_w_off_hint">Turn on \"Notifications when the app is closed\" in the app under Connection: the widget gets the portrait from the core through it</string>
+    <string name="portrait_w_offline">No connection to the core: the portrait will appear once it answers</string>
+    <string name="portrait_w_gone">Persona not found</string>
+    <string name="portrait_w_preview">The persona\'s live portrait</string>
     <!-- Голосовая активация по имени (WakeWordService) -->
     <string name="wake_channel">Listen for name</string>
     <string name="wake_channel_desc">Silent notification while the app listens for a persona\'s name</string>

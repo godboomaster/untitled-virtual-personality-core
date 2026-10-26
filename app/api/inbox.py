@@ -62,6 +62,11 @@ _waiters: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
 _stop_check: Optional[Callable[[], bool]] = None
 _STOP_POLL_SEC = 1.0
 
+# kind сообщений, которые персона пишет сама: самоинициатива и ритм (утро,
+# ночь, погода). Виджет «Инициатива» на телефоне показывает только их —
+# напоминаний, уроков и уведомлений сервисов там нет
+KIND_INITIATIVE = "initiative"
+
 
 def inbox_push(persona: str, chat_id: str, text: str, kind: str = "message",
                ref: Optional[str] = None):
@@ -277,12 +282,15 @@ class WebInboxSender:
     supports_replies = False
     supports_refs = True  # send_message(ref=) — метка срабатывания напоминания
 
-    def __init__(self, persona: str):
+    def __init__(self, persona: str, kind: str = "message"):
+        # kind — метка сообщений этого отправителя (KIND_INITIATIVE у
+        # самоинициативы и ритма)
         self._persona = persona
+        self._kind = kind
 
     async def send_message(self, chat_id: str, text: str, *,
                            topic_id=None, parse_mode=None, ref=None) -> bool:
-        inbox_push(self._persona, chat_id, text, ref=ref)
+        inbox_push(self._persona, chat_id, text, kind=self._kind, ref=ref)
         return True
 
     async def send_document(self, chat_id: str, file_path: str, filename: str, *,
@@ -344,9 +352,9 @@ def wire_reminder_for_api(persona: str, bot, sender=None) -> None:
 def wire_rhythm_for_api(persona: str, bot, sender=None) -> None:
     # Подключает rhythm-менеджер (утро/ночь/погода) к веб-inbox и запускает
     # его фоновый цикл. Используется при старте бота и при живом включении
-    # features.rhythm через настройки (без рестарта сервера).
-    sender = sender or getattr(bot, "_api_inbox_sender", None) or WebInboxSender(persona)
-    bot._api_inbox_sender = sender
+    # features.rhythm через настройки (без рестарта сервера). Отправитель —
+    # свой, с меткой инициативы: общий (_api_inbox_sender) — у напоминаний
+    sender = sender or WebInboxSender(persona, kind=KIND_INITIATIVE)
     if getattr(bot, "rhythm", None) is None:
         bot.setup_rhythm(sender)  # no-op, если фича выключена в YAML
     rm = getattr(bot, "rhythm", None)
@@ -368,11 +376,11 @@ def start_bot_features(persona: str, bot):
     loop = background_loop()
 
     if bot._activity_tracker is not None:
-        bot.setup_proactive(sender)
+        bot.setup_proactive(WebInboxSender(persona, kind=KIND_INITIATIVE))
     wire_reminder_for_api(persona, bot, sender=sender)
     if bot.learning_manager is not None:
         bot.setup_learning(sender)
-    wire_rhythm_for_api(persona, bot, sender=sender)
+    wire_rhythm_for_api(persona, bot)
 
     def _start_all():
         if bot.proactive is not None:

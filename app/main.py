@@ -179,9 +179,16 @@ def run_bot(token: str, persona_name: str, context: str = "tg"):
     # concurrent_updates=True — slash-команды (/reminders, /todo, /stats...)
     # выполняются сразу, не дожидаясь окончания LLM-ответа на предыдущее сообщение.
     # Порядок внутри одного чата защищён per-chat блокировкой в telegram_bot.
-    request = HTTPXRequest(connect_timeout=30, read_timeout=60)
+    # TELEGRAM_PROXY — прокси для api.telegram.org (там, где он заблокирован),
+    # например socks5://127.0.0.1:1080. Нужен обоим запросам: getUpdates
+    # ходит своим клиентом.
+    proxy = os.getenv("TELEGRAM_PROXY", "").strip() or None
+    if proxy:
+        logger.info(f"[{persona_name}] Telegram через прокси {proxy}")
+    request = HTTPXRequest(connect_timeout=30, read_timeout=60, proxy=proxy)
     app = (
         Application.builder().token(token).request(request)
+        .get_updates_request(HTTPXRequest(connection_pool_size=1, proxy=proxy))
         .concurrent_updates(True)
         .post_init(post_init).build()
     )

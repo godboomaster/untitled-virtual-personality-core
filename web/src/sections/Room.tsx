@@ -22,10 +22,11 @@ import { claimPoke } from '../room/poke';
 import RoomTelemetry, { AwayStrip } from '../room/RoomTelemetry';
 import { patchRoomLayout } from '../room/roomLayoutStore';
 import { spotPoint } from '../room/roomModel';
-import { closeRoomPip, openRoomPip, roomPipSupported, useRoomPip } from '../room/roomPipStore';
+import { closePip, isPipOf, openPip, pipSupported, usePip } from '../pipStore';
 import { setSessionAvatar, useRoomScene, useTitleStatus } from '../room/useRoomScene';
 import { BACK_OVERLAY, useBackHandler } from '../backStack';
 import Collapsible from '../components/Collapsible';
+import { consumeRoomPersonaRequest, useRoomPersonaRequest } from '../chatNavStore';
 import { useNarrowScreen } from '../useNarrowScreen';
 
 /* Раздел «Комната» — личное пространство персоны. Сцена показывает живое
@@ -46,9 +47,17 @@ const SCENE_FIT_W = 720;
 export default function Room() {
   const { t } = useI18n();
   const { personas } = useMockData();
-  // Текущая выбранная персона
-  const [personaId, setPersonaId] = useState(() => personas[0].id);
+  // Текущая выбранная персона; тап по виджету комнаты на телефоне выбирает свою
+  const roomRequest = useRoomPersonaRequest();
+  const [personaId, setPersonaId] = useState(() =>
+    roomRequest && personas.some((p) => p.id === roomRequest) ? roomRequest : personas[0].id,
+  );
   const persona = personas.find((p) => p.id === personaId) ?? personas[0];
+  useEffect(() => {
+    if (!roomRequest || !personas.some((p) => p.id === roomRequest)) return;
+    setPersonaId(roomRequest);
+    consumeRoomPersonaRequest();
+  }, [roomRequest, personas]);
   const sectionRef = useRef<HTMLDivElement>(null);
   // Узкий экран: вместо заголовка и вкладок персон — кнопка выбора над
   // сценой, арт-мастерская свёрнута (на телефоне она длиной в несколько экранов)
@@ -92,9 +101,9 @@ export default function Room() {
   };
 
   // PiP-окно: одно на приложение, привязано к персоне, для которой открыто
-  const pip = useRoomPip();
-  const pipHere = pip.win != null && pip.personaId === persona.id;
-  const pipOk = roomPipSupported();
+  const pip = usePip();
+  const pipHere = isPipOf(pip, 'room', persona.id);
+  const pipOk = pipSupported();
 
   // Оверлей сцены: полоса прогресса фокуса и пузырь реплики
   const overlay = useMemo(
@@ -339,7 +348,7 @@ export default function Room() {
               type="button"
               className="btn btn--ghost"
               title={pipHere ? t('room.pip.closeHint') : t('room.pip.openHint')}
-              onClick={() => (pipHere ? closeRoomPip() : void openRoomPip(persona.id))}
+              onClick={() => (pipHere ? closePip() : void openPip('room', persona.id))}
             >
               {pipHere ? t('room.pip.back') : t('room.pip.open')}
             </button>

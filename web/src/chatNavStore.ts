@@ -51,6 +51,30 @@ export function useChatPersonaRequest(): string | null {
   );
 }
 
+// Открыть комнату персоны (тап по виджету комнаты на телефоне): Room
+// выбирает её и гасит запрос
+let roomPersona: string | null = null;
+
+export function requestRoomPersona(personaId: string) {
+  roomPersona = personaId;
+  emit();
+}
+
+export function consumeRoomPersonaRequest() {
+  roomPersona = null;
+  emit();
+}
+
+export function useRoomPersonaRequest(): string | null {
+  return useSyncExternalStore(
+    (cb) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    () => roomPersona,
+  );
+}
+
 // Открыть досье на вкладке (шаги «Старта»: «Инициатива», «Ритм дня»): Chat
 // открывает чат последней активной персоны и её досье на этой вкладке
 let dossierTab: string | null = null;
@@ -72,5 +96,29 @@ export function useDossierTabRequest(): string | null {
       return () => listeners.delete(cb);
     },
     () => dossierTab,
+  );
+}
+
+// Открыть чат персоны сразу в голосовом режиме (тап по виджету портрета на
+// телефоне): ChatRoom этой персоны включает режим и гасит запрос
+let voicePersona: string | null = null;
+
+export function requestChatVoice(personaId: string) {
+  voicePersona = personaId;
+  emit();
+}
+
+export function consumeChatVoiceRequest() {
+  voicePersona = null;
+  emit();
+}
+
+export function useChatVoiceRequest(): string | null {
+  return useSyncExternalStore(
+    (cb) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    () => voicePersona,
   );
 }

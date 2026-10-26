@@ -36,7 +36,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -105,6 +107,8 @@ public class BackgroundInboxService extends Service {
 
     // Экстра интента MainActivity: id персоны из тапнутого уведомления
     static final String EXTRA_PERSONA = "io.vpcore.app.PERSONA";
+    // …и куда её открыть: "room" — комната (виджет комнаты), иначе — чат
+    static final String EXTRA_SECTION = "io.vpcore.app.SECTION";
 
     private static final String CHANNEL_LINK = "vpc_link";
     static final String CHANNEL_MESSAGES = "vpc_messages";
@@ -301,6 +305,8 @@ public class BackgroundInboxService extends Service {
         };
         ContextCompat.registerReceiver(this, alarmReceiver, new IntentFilter(ACTION_ALARM),
                 ContextCompat.RECEIVER_NOT_EXPORTED);
+        // Виджет комнаты: обновлять, пока экран включён
+        RoomWidget.startAuto(this);
     }
 
     @Override
@@ -396,6 +402,7 @@ public class BackgroundInboxService extends Service {
             NotificationManagerCompat.from(this).cancel(ONGOING_ID);
         }
         running = false;
+        RoomWidget.stopAuto(this);
         if (alarms != null) alarms.cancel(alarmIntent);
         if (alarmReceiver != null) {
             try {
@@ -495,6 +502,7 @@ public class BackgroundInboxService extends Service {
                 lastOk = System.currentTimeMillis();
                 lastError = null;
                 backoffMs = POLL_MS;
+                List<JSONObject> initiative = new ArrayList<>();
                 for (int i = 0; i < reply.messages.length(); i++) {
                     JSONObject m = reply.messages.optJSONObject(i);
                     if (m == null) continue;
@@ -505,7 +513,15 @@ public class BackgroundInboxService extends Service {
                     boolean shownByPhone = ReminderAlarms.wasFired(this, ref);
                     ReminderAlarms.markDelivered(this, ref);
                     if (!appVisible && !shownByPhone && personaShown(m)) showMessage(m);
+                    // В виджет — и когда приложение на экране: там лента, а не уведомления
+                    if (InitiativeWidget.KIND.equals(m.optString("kind")) && personaShown(m)) {
+                        initiative.add(m);
+                    }
+                    // Персона что-то написала — её комната могла поменяться, а портрет — заговорить
+                    RoomWidget.personaActive(this, m.optString("persona", ""));
+                    PortraitWidget.personaSpoke(this, m.optString("persona", ""));
                 }
+                InitiativeWidget.add(this, initiative);
                 // Курсор — после показа: если процесс умрёт посередине, ответ
                 // придёт ещё раз (повтор уведомления лучше пропажи)
                 if (reply.longPoll) saveCursor(reply.cursor, reply.epoch);

@@ -11,6 +11,46 @@
     <string name="bg_channel_messages_desc">Напоминания и сообщения персон, когда приложение закрыто</string>
     <string name="bg_test_title">Проверка</string>
     <string name="bg_test_text">Уведомления о сообщениях персон работают</string>
+    <!-- Виджет «Инициатива» (InitiativeWidget) -->
+    <string name="widget_initiative_label">Инициатива персон</string>
+    <string name="widget_initiative_desc">Сообщения, которые персоны пишут сами</string>
+    <string name="widget_initiative_empty">Пока тихо</string>
+    <string name="widget_initiative_off">Включите в приложении «Уведомления, когда приложение закрыто»</string>
+    <string name="widget_status_off">выкл.</string>
+    <string name="widget_status_offline">нет связи</string>
+    <!-- Виджет «Комната» (RoomWidget); widget_cfg_* — выбор персоны (PersonaWidgetConfigure) -->
+    <string name="widget_room_label">Комната персоны</string>
+    <string name="widget_room_desc">Комната персоны и она в ней — прямо сейчас</string>
+    <string name="room_w_away">нет в комнате</string>
+    <string name="room_w_focus">работаем вместе</string>
+    <string name="room_w_life_off">жизнь персоны выключена</string>
+    <string name="room_w_no_state">состояния пока нет</string>
+    <string name="room_w_loading">Загрузка…</string>
+    <string name="room_w_no_art">У персоны %1$s пока нет арта комнаты. Фон и спрайт добавляются в приложении: «Комната» → «Арт-мастерская»</string>
+    <string name="room_w_off_hint">Включите в приложении «Уведомления, когда приложение закрыто» (раздел «Подключение») — через них виджет узнаёт, что в комнате</string>
+    <string name="room_w_offline_at">нет связи · %1$s</string>
+    <string name="room_w_gone">персоны больше нет</string>
+    <string name="room_w_pick">Выберите персону</string>
+    <string name="room_w_preview_scene">Комната персоны из её арта</string>
+    <string name="room_w_preview_name">Персона</string>
+    <string name="room_w_preview_activity">пишет в дневник · за столом</string>
+    <string name="room_cfg_title">Чья комната?</string>
+    <string name="widget_cfg_loading">Загружаю персон…</string>
+    <string name="widget_cfg_error">Нет связи с ядром. Проверьте, что оно запущено, и повторите</string>
+    <string name="widget_cfg_empty">На ядре нет персон</string>
+    <string name="widget_cfg_retry">Повторить</string>
+    <string name="widget_cfg_cancel">Отмена</string>
+    <!-- Виджет «Живой портрет» (PortraitWidget) -->
+    <string name="widget_portrait_label">Живой портрет</string>
+    <string name="widget_portrait_desc">Голова персоны на рабочем столе: моргает, поглядывает по сторонам и говорит, когда пишет</string>
+    <string name="portrait_cfg_title">Чей портрет?</string>
+    <string name="portrait_w_pick">Выберите персону</string>
+    <string name="portrait_w_loading">Загрузка…</string>
+    <string name="portrait_w_none">У персоны %1$s пока нет живого портрета. Листы ракурсов загружаются в приложении: «Комната» → «Арт-мастерская» → «Живой портрет»</string>
+    <string name="portrait_w_off_hint">Включите в приложении «Уведомления, когда приложение закрыто» (раздел «Подключение») — через них виджет получает портрет с ядра</string>
+    <string name="portrait_w_offline">Нет связи с ядром — портрет появится, когда оно ответит</string>
+    <string name="portrait_w_gone">Персоны больше нет</string>
+    <string name="portrait_w_preview">Живой портрет персоны</string>
     <!-- Голосовая активация по имени (WakeWordService) -->
     <string name="wake_channel">Слушать по имени</string>
     <string name="wake_channel_desc">Тихое уведомление, пока приложение слушает имя персоны</string>

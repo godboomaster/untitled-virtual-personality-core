@@ -11,6 +11,8 @@ const FRESH_WINDOW_SEC = 180; // старше — не уведомляем (х�
 
 // Имя события «открыть чат с персоной» (клик по системному уведомлению)
 export const OPEN_CHAT_EVENT = 'vpc:open-chat';
+// Тап по виджету комнаты на телефоне → раздел «Комната» этой персоны
+export const OPEN_ROOM_EVENT = 'vpc:open-room';
 
 const APP_ICON = '/favicon.png'; // PNG: часть браузеров не показывает SVG-иконки в уведомлениях
 

@@ -72,6 +72,7 @@ from app.api.schemas import (
     PersonaLocalTasksUpdate,
     ReminderAddRequest,
     ReminderUpdateRequest,
+    PortraitSheetUpdate,
     RoomArtUpdate,
     RoomFocusRequest,
     RoomLayoutUpdate,
@@ -2747,6 +2748,51 @@ async def room_art_put(persona: PersonaIdPath, req: RoomArtUpdate):
     from app.api import room_api
     await asyncio.to_thread(_room_persona, persona)
     return await _room_call(room_api.put_art, persona, req.model_dump(exclude_unset=True))
+
+
+# ── Живой портрет (голосовой режим): листы ракурсов головы ─────────────
+
+@app.get("/api/personas/{persona}/portrait", dependencies=[Depends(require_auth)])
+async def portrait_get(persona: PersonaIdPath):
+    # Атласы листов data-URL'ами (их рисует web/src/portrait/LivePortrait.tsx);
+    # портрета нет — sheets: {}
+    from app.api import portrait_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(portrait_api.get_portrait, persona)
+
+
+@app.get("/api/portraits", dependencies=[Depends(require_auth)])
+async def portraits_list():
+    # У каких персон есть живой портрет — без атласов: выбор персоны для
+    # портрета на рабочем столе (desktop/src-tauri/src/portrait.rs)
+    from app.api import portrait_api
+
+    def _ids():
+        return [p for p in list_personas() if portrait_api.has_portrait(p)]
+
+    return {"personas": await asyncio.to_thread(_ids)}
+
+
+@app.put("/api/personas/{persona}/portrait/{sheet}", dependencies=[Depends(require_auth)])
+async def portrait_sheet_put(persona: PersonaIdPath, sheet: str, req: PortraitSheetUpdate):
+    from app.api import portrait_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(portrait_api.put_sheet, persona, sheet, req.data_url, req.rows, req.cols,
+                            req.offset_x, req.offset_y, req.bg, req.tolerance)
+
+
+@app.delete("/api/personas/{persona}/portrait/{sheet}", dependencies=[Depends(require_auth)])
+async def portrait_sheet_delete(persona: PersonaIdPath, sheet: str):
+    from app.api import portrait_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(portrait_api.delete_sheet, persona, sheet)
+
+
+@app.delete("/api/personas/{persona}/portrait", dependencies=[Depends(require_auth)])
+async def portrait_delete(persona: PersonaIdPath):
+    from app.api import portrait_api
+    await asyncio.to_thread(_room_persona, persona)
+    return await _room_call(portrait_api.delete_all, persona)
 
 
 @app.post("/api/personas/{persona}/room/poke", dependencies=[Depends(require_auth)])

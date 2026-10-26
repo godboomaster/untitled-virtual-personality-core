@@ -7,6 +7,7 @@
    хранится в localStorage под ключом vpc-api-token. */
 
 import type { RoomArtData, RoomArtPatch, RoomFocus, RoomLayout, RoomLayoutPatch, RoomSource, RoomStyle, RoomView } from './room/roomTypes';
+import type { PortraitData, PortraitSheet, PortraitSheetUpdate } from './portrait/portraitTypes';
 import { getLinkConfig, linkFetch, refusalKey } from './link/client.ts';
 import type { PhoneActionReport } from './phone/notes';
 
@@ -849,6 +850,21 @@ export const api = {
     request<RoomArtData>(`/api/personas/${encodeURIComponent(persona)}/room/art`, {
       method: 'PUT',
       body: JSON.stringify(patch),
+    }),
+
+  // Живой портрет (голосовой режим): листы ракурсов головы
+  getPortrait: (persona: string) =>
+    request<PortraitData>(`/api/personas/${encodeURIComponent(persona)}/portrait`),
+
+  putPortraitSheet: (persona: string, sheet: PortraitSheet, body: PortraitSheetUpdate) =>
+    request<PortraitData>(`/api/personas/${encodeURIComponent(persona)}/portrait/${sheet}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  deletePortraitSheet: (persona: string, sheet: PortraitSheet) =>
+    request<PortraitData>(`/api/personas/${encodeURIComponent(persona)}/portrait/${sheet}`, {
+      method: 'DELETE',
     }),
 
   // «Заглянул в комнату»: до LLM доходит, только если разрешено фичей и лимитом

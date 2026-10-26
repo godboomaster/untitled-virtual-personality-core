@@ -1,7 +1,8 @@
 //! Панель Virtual Persona: значок в трее и окно-панель. Запускает бэкенд
 //! бота (python -m app.main api) и веб-интерфейс (vite из web/), следит за
 //! ними и показывает состояние браузеров бота, Ollama и памяти. Слушает
-//! имя персоны своим микрофоном (голосовая активация, voice.rs).
+//! имя персоны своим микрофоном (голосовая активация, voice.rs). Держит
+//! живой портрет персоны на рабочем столе (portrait.rs).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -10,6 +11,7 @@ mod config;
 mod logs;
 mod panel;
 mod platform;
+mod portrait;
 mod probe;
 mod state;
 mod supervisor;
@@ -43,9 +45,14 @@ fn main() {
             let start_now = cfg.start_on_launch;
             let sup = supervisor::Supervisor::new(cfg, config_path, fallback_logs, lang);
             let voice = voice::Voice::new(sup.clone(), lang);
+            let portrait = portrait::Portrait::new(
+                app.path().app_config_dir()?.join("portrait.json"),
+                app.path().app_cache_dir()?,
+            );
             app.manage(AppState {
                 sup: sup.clone(),
                 voice: voice.clone(),
+                portrait,
                 sys: Arc::new(Mutex::new(sysinfo::System::new())),
                 hidden_at: Arc::new(Mutex::new(None)),
                 lang,
@@ -69,6 +76,9 @@ fn main() {
                     }
                 });
             }
+            // Меню правой кнопки по портрету (пункты трея — в tray.rs)
+            app.on_menu_event(|app, ev| portrait::on_menu(app, ev.id().as_ref()));
+            portrait::restore(app.handle());
             if !std::env::args().any(|a| a == AUTOSTART_ARG) {
                 panel::show(app.handle(), None);
             }
@@ -89,6 +99,11 @@ fn main() {
             commands::set_wake,
             commands::hide_panel,
             commands::quit,
+            portrait::portrait_load,
+            portrait::portrait_hit,
+            portrait::portrait_drag,
+            portrait::portrait_resize,
+            portrait::portrait_menu,
         ])
         .build(tauri::generate_context!())
         .expect("не удалось запустить панель");

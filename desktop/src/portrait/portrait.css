@@ -1,0 +1,111 @@
+/* Портрет на рабочем столе: окно прозрачное, видна только фигура.
+   Правила .live-portrait — как в web/src/index.css (движок общий, стили
+   веба сюда не подключаются: там фон и вся тема приложения) */
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+.portrait-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.portrait-overlay .live-portrait {
+  width: min(100vw, 100vh);
+  transform-origin: 50% 100%;
+}
+
+.live-portrait {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  user-select: none;
+}
+
+.live-portrait-body {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 90%;
+  animation: portrait-breathe 4.2s ease-in-out infinite;
+}
+
+.live-portrait-sheet {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+}
+
+@keyframes portrait-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-1.2%) scale(1.012); }
+}
+
+/* Подсказка вместо портрета: плоская карточка внизу окна */
+.portrait-hint {
+  margin: 0 8px 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #121212;
+  background: #f0f0f0;
+  border: 1px solid #c2c2c2;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.portrait-hint-dim {
+  color: #565656;
+}
+
+@media (prefers-color-scheme: dark) {
+  .portrait-hint {
+    color: #e8e8e8;
+    background: #1c1c1c;
+    border-color: #303030;
+  }
+
+  .portrait-hint-dim {
+    color: #9a9a9a;
+  }
+}
+
+/* Сердечко над рукой, когда гладят */
+.portrait-heart {
+  position: absolute;
+  width: 18px;
+  height: 17px;
+  margin: -24px 0 0 -9px;
+  fill: #e5484d;
+  pointer-events: none;
+  animation: portrait-heart 0.9s ease-out forwards;
+}
+
+@keyframes portrait-heart {
+  0% { opacity: 0; transform: translateY(6px) scale(0.6); }
+  20% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-34px) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-portrait-body { animation: none; }
+  .portrait-heart { animation-duration: 0.01s; }
+}

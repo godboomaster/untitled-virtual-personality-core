@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Виджет «Инициатива» (InitiativeWidget): во всю ширину экрана, в один ряд.
+     minWidth 300dp — больше четырёх клеток сетки из пяти (Honor) и почти вся
+     ширина сетки из четырёх; сжать можно до minResizeWidth.
+     updatePeriodMillis=0: по расписанию не обновляется — новые сообщения
+     приносит фоновая служба -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_initiative_desc"
+    android:initialLayout="@layout/widget_initiative"
+    android:minWidth="300dp"
+    android:minHeight="50dp"
+    android:minResizeWidth="100dp"
+    android:minResizeHeight="40dp"
+    android:previewLayout="@layout/widget_initiative"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="5"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

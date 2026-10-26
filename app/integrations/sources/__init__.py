@@ -19,8 +19,10 @@ USER_AGENT = "virtual-persona-core"
 _transport: Optional[httpx.BaseTransport] = None
 
 
-def http(timeout: float = 20.0) -> httpx.Client:
+def http(timeout: float = 20.0, proxy: Optional[str] = None) -> httpx.Client:
+    # При подменённом транспорте прокси не ставим: он перехватил бы запросы мимо подмены
     return httpx.Client(timeout=timeout, transport=_transport, follow_redirects=True,
+                        proxy=None if _transport else proxy,
                         headers={"User-Agent": USER_AGENT})
 
 

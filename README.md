@@ -103,7 +103,9 @@ enter a model — a provider without a model is not used. The same can be set in
 
 **The tray panel** (macOS and Windows) starts, restarts and stops the backend and the web,
 shows their status and a live log, and listens for persona names with its own microphone
-([Voice activation](#voice-activation)). Build instructions — in
+([Voice activation](#voice-activation)). It also keeps the persona's live portrait on the
+desktop — a head above all windows, with no frame or background: it looks at the cursor, a
+click pats it, and clicks next to it go through to the windows below. Build instructions — in
 [desktop/README.md](desktop/README.md).
 
 **Docker** — `docker compose up -d --build`, details in the [Docker](#docker) section.
@@ -199,7 +201,11 @@ as messages: blocks, limits, moderation, muting.
 - **Chat** — all chats as a list, then the chat with a persona, voice mode, camera, skins; in
   control mode — answer buttons, a task card and the agent's live browser window.
 - **Room** — the persona's live scene: where it is, what it is doing, its things;
-  a picture-in-picture window.
+  a picture-in-picture window. The art workshop also holds the **live portrait** for voice
+  mode: a 5×5 sheet of head angles (drawn by an image generator from the bundled prompt) that
+  turns the persona into a 2D VTuber — it looks toward the cursor or your touch, blinks and
+  moves its lips while it speaks; like the room, it can be popped out into a small
+  always-on-top window (Chrome, Edge), and the tray panel puts it right on the desktop.
 - **Personas** — create (form with the YAML next to it), edit YAML, rename, copy, color.
 - **Skins** — looks for the chat, dossier and room: library, upload, generation.
 - **Settings** — language (ru/en), notifications, developer mode, location, time zone,
@@ -229,6 +235,16 @@ says honestly when something did not work (no such app, or the clock app cannot 
 date). The phone cannot delete or turn off alarms — it opens the alarm list instead. In
 control mode, commands are still meant for the computer; the phone also leaves alone anything
 said "on the computer". Works without a connection to the core too.
+
+**Home screen widgets.** "Persona initiative" shows the latest messages personas write on
+their own (initiative and the morning, night and weather messages; reminders and service
+notifications stay out); a tap opens the chat. "Persona room" is the chosen persona's room
+from their art, shown whole, with the persona in their current spot and pose, plus a caption
+with what they are doing; a tap opens the room. "Live portrait" puts the persona's head from
+their live portrait right on the wallpaper: it blinks, glances around and, when the persona
+writes, moves its lips for a few seconds; a tap opens voice mode. The widgets get their data
+through the background connection ("Notifications when the app is closed", address and token
+only); the room refreshes while the screen is on, the portrait when the app is opened.
 
 **Connecting — VPC Link.** The phone and the computer pair once by a QR code and from then
 on recognize each other by keys: no VPN on the phone, no accounts, no passwords. Everything

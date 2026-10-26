@@ -490,6 +490,18 @@ class RoomArtUpdate(BaseModel):
     room_bg: Optional[dict] = None                    # {dataUrl, floorPoints} | null
 
 
+class PortraitSheetUpdate(BaseModel):
+    # Лист живого портрета (app/api/portrait_api.py): data_url — новая
+    # картинка, без него — переразметить уже загруженный лист
+    data_url: Optional[str] = None
+    rows: int = 5
+    cols: int = 5
+    offset_x: int = 0
+    offset_y: int = 0
+    bg: str = "auto"      # auto — убрать сплошной фон, keep — как есть
+    tolerance: int = 0    # 0 — по шуму фона
+
+
 class RoomPokeRequest(BaseModel):
     chat_id: Optional[str] = "auto"
 

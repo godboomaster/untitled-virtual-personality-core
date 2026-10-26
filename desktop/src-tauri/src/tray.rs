@@ -1,7 +1,9 @@
-//! Значок в трее: цвет — состояние бота, меню — основные действия и
-//! «Слушать имя» (голосовая активация микрофоном панели, voice.rs).
+//! Значок в трее: цвет — состояние бота, меню — основные действия,
+//! «Слушать имя» (голосовая активация микрофоном панели, voice.rs) и
+//! «Портрет на рабочем столе» (portrait.rs).
 
 use crate::panel;
+use crate::portrait;
 use crate::state::AppState;
 use crate::supervisor::{Phase, Summary};
 use crate::texts::{t, Lang};
@@ -36,6 +38,8 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
     let toggle = item("toggle", "start")?;
     let restart = item("restart", "restart")?;
     let wake = CheckMenuItem::with_id(app, "wake", t(lang, "wake"), true, false, None::<&str>)?;
+    let face = CheckMenuItem::with_id(app, "portrait", t(lang, "portrait"), true, false, None::<&str>)?;
+    app.state::<AppState>().portrait.set_tray_item(face.clone());
     let quit = item("quit", "quit")?;
     let menu = Menu::with_items(
         app,
@@ -47,6 +51,7 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
             &restart,
             &PredefinedMenuItem::separator(app)?,
             &wake,
+            &face,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -73,6 +78,7 @@ pub fn build(app: &AppHandle, lang: Lang) -> tauri::Result<Tray> {
                 let st = app.state::<AppState>();
                 let _ = st.voice.set_enabled(!st.sup.wake_enabled());
             }
+            "portrait" => portrait::toggle(app),
             "quit" => crate::commands::quit_app(app.clone()),
             _ => {}
         })
