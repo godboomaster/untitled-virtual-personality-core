@@ -2,27 +2,89 @@
 <!-- Виджет «Живой портрет» (PortraitWidget): голова персоны прямо на обоях,
      без рамки. Кадры кладёт код в portrait_flipper — лаунчер листает их сам
      раз в flipInterval (= кадр сценки) и только пока виджет на экране.
+     Сверху — облачко с репликой персоны (тап — чат), над головой — сердечко,
+     когда гладят (portrait_fx), и «z», когда спит (portrait_z).
      Портрета нет — подсказка в рамке (на обоях текст иначе не прочесть) -->
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/portrait_root"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:orientation="vertical">
 
-    <ViewFlipper
-        android:id="@+id/portrait_flipper"
+    <LinearLayout
+        android:id="@+id/portrait_bubble_box"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:autoStart="true"
-        android:flipInterval="150"
-        android:visibility="gone" />
+        android:layout_height="wrap_content"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingStart="2dp"
+        android:paddingEnd="2dp"
+        android:visibility="gone">
 
-    <TextView
-        android:id="@+id/portrait_hint"
+        <TextView
+            android:id="@+id/portrait_bubble"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/widget_bubble_bg"
+            android:ellipsize="end"
+            android:maxLines="3"
+            android:paddingStart="8dp"
+            android:paddingTop="5dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="5dp"
+            android:textColor="@color/widget_text"
+            android:textSize="12sp" />
+
+        <ImageView
+            android:id="@+id/portrait_bubble_tail"
+            android:layout_width="10dp"
+            android:layout_height="6dp"
+            android:layout_marginTop="-1dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_bubble_tail" />
+    </LinearLayout>
+
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@drawable/widget_bg"
-        android:gravity="center"
-        android:padding="12dp"
-        android:textColor="@color/widget_text_dim"
-        android:textSize="12sp" />
-</FrameLayout>
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <ViewFlipper
+            android:id="@+id/portrait_flipper"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:autoStart="true"
+            android:flipInterval="150"
+            android:visibility="gone" />
+
+        <ViewFlipper
+            android:id="@+id/portrait_fx"
+            android:layout_width="40dp"
+            android:layout_height="64dp"
+            android:layout_gravity="top|center_horizontal"
+            android:autoStart="true"
+            android:flipInterval="150"
+            android:visibility="gone" />
+
+        <ViewFlipper
+            android:id="@+id/portrait_z"
+            android:layout_width="36dp"
+            android:layout_height="28dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="4dp"
+            android:layout_marginEnd="10dp"
+            android:autoStart="true"
+            android:flipInterval="1200"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/portrait_hint"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/widget_bg"
+            android:gravity="center"
+            android:padding="12dp"
+            android:textColor="@color/widget_text_dim"
+            android:textSize="12sp" />
+    </FrameLayout>
+</LinearLayout>

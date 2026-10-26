@@ -42,7 +42,8 @@
     <string name="widget_cfg_cancel">Отмена</string>
     <!-- Виджет «Живой портрет» (PortraitWidget) -->
     <string name="widget_portrait_label">Живой портрет</string>
-    <string name="widget_portrait_desc">Голова персоны на рабочем столе: моргает, поглядывает по сторонам и говорит, когда пишет</string>
+    <string name="widget_portrait_desc">Голова персоны на рабочем столе: моргает, поглядывает по сторонам, говорит облачком, когда пишет, спит ночью. Коснитесь головы — погладить</string>
+    <string name="portrait_w_pet">%1$s. Коснитесь, чтобы погладить</string>
     <string name="portrait_cfg_title">Чей портрет?</string>
     <string name="portrait_w_pick">Выберите персону</string>
     <string name="portrait_w_loading">Загрузка…</string>

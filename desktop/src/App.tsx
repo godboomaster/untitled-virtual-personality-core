@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { api, isUp, type LogEntry, type Phase, type Snapshot, type VoiceView } from './api';
+import { api, isUp, type LogEntry, type Phase, type PortraitInfo, type Snapshot, type VoiceView } from './api';
 import { duration, t, type TextKey } from './i18n';
 import SettingsView from './SettingsView';
 
@@ -350,6 +350,64 @@ function VoiceBlock({ snap, onAction }: { snap: Snapshot; onAction: (f: () => Pr
   );
 }
 
+/* Портрет на рабочем столе: показать или убрать, чей. Работает и без бота —
+   тогда панель берёт атласы и имена из папки данных ядра (portrait.rs) */
+function PortraitBlock({ snap, onAction }: { snap: Snapshot; onAction: (f: () => Promise<void>) => void }) {
+  const [info, setInfo] = useState<PortraitInfo | null>(null);
+  const up = snap.backend.responding;
+  const { shown, persona } = snap.portrait;
+  // Список персон — заново, когда бот поднялся или упал (с ядра или с диска)
+  useEffect(() => {
+    let alive = true;
+    api
+      .portraitInfo()
+      .then((i) => alive && setInfo(i))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [up]);
+  const personas = info?.personas ?? [];
+  const current = persona || info?.persona || personas[0]?.id || '';
+  const name = personas.find((p) => p.id === current)?.name ?? current;
+  const fromDisk = info?.fromDisk ?? !up;
+  return (
+    <section className="block">
+      <h2>{t('portraitBlock')}</h2>
+      <Row
+        label={name || t('portraitWho')}
+        tone={shown ? 'ok' : 'off'}
+        value={shown ? t('portraitOnDesk') : t('portraitOffDesk')}
+      />
+      {personas.length > 1 && (
+        <label className="field">
+          <span>{t('portraitWho')}</span>
+          <select value={current} onChange={(e) => onAction(() => api.setPortrait(shown, e.target.value))}>
+            {personas.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {info && personas.length === 0 ? (
+        <div className="hint">{t('portraitNone')}</div>
+      ) : (
+        <div className="btn-row">
+          <button
+            className={shown ? 'btn' : 'btn btn-primary'}
+            onClick={() => onAction(() => api.setPortrait(!shown, current || undefined))}
+          >
+            {shown ? t('portraitRemove') : t('portraitShow')}
+          </button>
+        </div>
+      )}
+      <div className="hint">{fromDisk ? t('portraitHintDisk') : t('portraitHintUp')}</div>
+    </section>
+  );
+}
+
 function levelClass(level: string): string {
   if (level === 'ERROR' || level === 'CRITICAL') return 'lv-error';
   if (level === 'WARNING') return 'lv-warn';
@@ -430,6 +488,7 @@ export default function App() {
         <div className="scroll">
           <Services snap={snap} />
           <VoiceBlock snap={snap} onAction={onAction} />
+          <PortraitBlock snap={snap} onAction={onAction} />
           <QuarantineBlock snap={snap} />
           <BrowserBlock snap={snap} />
           <LogBlock snap={snap} logs={logs} />

@@ -15,10 +15,17 @@ import type { PortraitData, PortraitSheet } from './portraitTypes';
    - говорит (speaking) — рот ходит слогами: открыт / приоткрыт / закрыт,
      с паузами между «словами». Синтез речи (браузерный и Android) звук
      наружу не отдаёт, поэтому рот — по ритму речи, а не по громкости;
-   - её гладят по голове (petted, портрет на рабочем столе) — глаза
-     закрыты, голова чуть опущена;
+   - её гладят по голове (petted, usePat) — глаза закрыты, голова чуть
+     опущена;
+   - спит (asleep, портрет на рабочем столе) — то же, но надолго: не
+     моргает, за курсором не следит, дышит медленнее;
    - в покое «дышит» (CSS, без анимации при prefers-reduced-motion).
    Листов рта или моргания нет — эта часть просто не двигается.
+
+   Энергия: цикл кадров крутится, только пока взгляд в пути. Дошёл до цели —
+   стоит до движения курсора, смены режима или таймера следующего взгляда в
+   сторону, поэтому неподвижный портрет (на рабочем столе он на экране
+   всегда) кадров не тратит.
 
    Курсор, кадры и таймеры — того окна, где портрет показан (viewOf): в
    PiP-окне («Вынести портрет») он смотрит на курсор над этим окном и не
@@ -30,6 +37,8 @@ type Mouth = 0 | 1 | 2; // закрыт, приоткрыт, открыт
 
 const FOLLOW_MS = 3000;
 const SMOOTH = 0.22; // доля пути к цели за кадр при 60 Гц
+// Ближе к цели — уже на месте: цикл кадров останавливается
+const SETTLED = 0.01;
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 // Окно, в документе которого лежит элемент (главное или PiP)
@@ -52,6 +61,7 @@ export default function LivePortrait({
   listening = false,
   thinking = false,
   petted = false,
+  asleep = false,
   label,
   className = '',
   onCell,
@@ -61,6 +71,7 @@ export default function LivePortrait({
   listening?: boolean;
   thinking?: boolean;
   petted?: boolean;
+  asleep?: boolean;
   label: string;
   className?: string;
   onCell?: (r: number, c: number) => void;
@@ -77,10 +88,12 @@ export default function LivePortrait({
   const [mouth, setMouth] = useState<Mouth>(0);
 
   // Режим взгляда — в ref: цикл кадров читает свежий, не перезапускаясь
-  const mode = useRef({ speaking, listening, thinking, petted });
-  mode.current = { speaking, listening, thinking, petted };
+  const mode = useRef({ speaking, listening, thinking, petted, asleep });
+  mode.current = { speaking, listening, thinking, petted, asleep };
   const cellCb = useRef(onCell);
   cellCb.current = onCell;
+  // Разбудить остановленный цикл кадров (режим сменился)
+  const kick = useRef<() => void>(() => {});
 
   // ── Взгляд ──
   useEffect(() => {
@@ -93,6 +106,18 @@ export default function LivePortrait({
     let last = { r: -1, c: -1 };
     let prev = view.performance.now();
     let raf = 0;
+    let wakeTimer = 0;
+    let running = false;
+
+    const start = () => {
+      view.clearTimeout(wakeTimer);
+      wakeTimer = 0;
+      if (running) return;
+      running = true;
+      prev = view.performance.now();
+      raf = view.requestAnimationFrame(tick);
+    };
+    kick.current = start;
 
     const onPointer = (e: PointerEvent) => {
       const el = elRef.current;
@@ -102,23 +127,29 @@ export default function LivePortrait({
       pointer.x = clamp((e.clientX - (rect.left + rect.width / 2)) / range, -1, 1);
       pointer.y = clamp((e.clientY - (rect.top + rect.height * 0.45)) / range, -1, 1);
       pointer.at = view.performance.now();
+      start();
     };
 
-    const tick = (now: number) => {
-      const { speaking: talk, listening: hear, thinking: think, petted: pet } = mode.current;
+    function tick(now: number) {
+      const { speaking: talk, listening: hear, thinking: think, petted: pet, asleep: sleep } = mode.current;
       let tx = 0;
       let ty = 0;
-      if (pet) {
-        // Гладят: голова чуть вниз, под руку
+      // Когда цель сменится сама (кончится слежение за курсором, взгляд в
+      // сторону): к этому времени остановленный цикл надо разбудить
+      let wakeAt = Infinity;
+      if (pet || sleep) {
+        // Гладят или спит: голова чуть вниз, под руку
         ty = 0.35;
       } else if (!hear && now - pointer.at < FOLLOW_MS) {
         tx = pointer.x;
         ty = pointer.y;
+        wakeAt = pointer.at + FOLLOW_MS;
       } else if (think) {
         // Думает: вверх и в сторону, иногда в другую
         if (now > glance.until) glance = { x: Math.random() < 0.5 ? -0.55 : 0.55, y: -0.5, until: now + rand(1400, 2800) };
         tx = glance.x;
         ty = glance.y;
+        wakeAt = glance.until;
       } else if (!hear) {
         // На собеседника; изредка — короткий взгляд в сторону
         if (now > nextGlance) {
@@ -129,6 +160,9 @@ export default function LivePortrait({
         if (now < glance.until) {
           tx = glance.x;
           ty = glance.y;
+          wakeAt = glance.until;
+        } else {
+          wakeAt = nextGlance;
         }
       }
       const dt = Math.min(100, now - prev);
@@ -136,6 +170,11 @@ export default function LivePortrait({
       const k = 1 - Math.pow(1 - SMOOTH, dt / 16.7);
       cur.x += (tx - cur.x) * k;
       cur.y += (ty - cur.y) * k;
+      const settled = Math.abs(tx - cur.x) < SETTLED && Math.abs(ty - cur.y) < SETTLED;
+      if (settled) {
+        cur.x = tx;
+        cur.y = ty;
+      }
       const c = clamp(Math.round(((cur.x + 1) / 2) * (cols - 1)), 0, cols - 1);
       const r = clamp(Math.round(((cur.y + 1) / 2) * (rows - 1)), 0, rows - 1);
       if (r !== last.r || c !== last.c) {
@@ -143,20 +182,34 @@ export default function LivePortrait({
         setCell(last);
         cellCb.current?.(r, c);
       }
-      raf = view.requestAnimationFrame(tick);
-    };
+      if (!settled) {
+        raf = view.requestAnimationFrame(tick);
+        return;
+      }
+      // На месте: кадры не нужны до события или до смены цели по времени
+      running = false;
+      if (wakeAt !== Infinity) wakeTimer = view.setTimeout(start, Math.max(16, wakeAt - now + 1));
+    }
     view.addEventListener('pointermove', onPointer);
     view.addEventListener('pointerdown', onPointer);
-    raf = view.requestAnimationFrame(tick);
+    start();
     return () => {
       view.removeEventListener('pointermove', onPointer);
       view.removeEventListener('pointerdown', onPointer);
       view.cancelAnimationFrame(raf);
+      view.clearTimeout(wakeTimer);
+      kick.current = () => {};
     };
   }, [rows, cols]);
 
-  // ── Моргание: обычно раз в 2–4,5 с, иногда чаще или реже, двойное, медленное ──
-  const canBlink = avail.has('D');
+  // Сменился режим — новая цель взгляда: цикл кадров, если стоял, — в путь
+  useEffect(() => {
+    kick.current();
+  }, [speaking, listening, thinking, petted, asleep]);
+
+  // ── Моргание: обычно раз в 2–4,5 с, иногда чаще или реже, двойное, медленное.
+  // Спит — глаза и так закрыты: таймеры моргания не нужны ──
+  const canBlink = avail.has('D') && !asleep;
   useEffect(() => {
     if (!canBlink) return;
     const view = viewOf(elRef.current);
@@ -222,13 +275,13 @@ export default function LivePortrait({
     };
   }, [speaking, canTalk]);
 
-  const shown = pickSheet(avail, blink || petted, mouth);
+  const shown = pickSheet(avail, blink || petted || asleep, mouth);
   const size = `${cols * 100}% ${rows * 100}%`;
   const pos = `${cols > 1 ? (cell.c / (cols - 1)) * 100 : 0}% ${rows > 1 ? (cell.r / (rows - 1)) * 100 : 0}%`;
   return (
     <div
       ref={elRef}
-      className={`live-portrait ${speaking ? 'live-portrait--speaking' : ''} ${className}`}
+      className={`live-portrait ${speaking ? 'live-portrait--speaking' : ''} ${asleep ? 'live-portrait--asleep' : ''} ${className}`}
       role="img"
       aria-label={label}
     >

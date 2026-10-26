@@ -867,11 +867,12 @@ export const api = {
       method: 'DELETE',
     }),
 
-  // «Заглянул в комнату»: до LLM доходит, только если разрешено фичей и лимитом
-  pokeRoom: (persona: string, chatId: string = 'auto') =>
+  // «Заглянул в комнату» (glance) или погладили живой портрет (pet): до LLM
+  // доходит, только если разрешено фичей и лимитом
+  pokeRoom: (persona: string, chatId: string = 'auto', kind: 'glance' | 'pet' = 'glance') =>
     request<{ ok: boolean; delivered: boolean }>(`/api/personas/${encodeURIComponent(persona)}/room/poke`, {
       method: 'POST',
-      body: JSON.stringify({ chat_id: chatId }),
+      body: JSON.stringify({ chat_id: chatId, kind }),
     }),
 
   // Совместная работа: start/end; на end — короткая реплика персоны (или null)

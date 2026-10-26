@@ -104,6 +104,10 @@ fn main() {
             portrait::portrait_drag,
             portrait::portrait_resize,
             portrait::portrait_menu,
+            portrait::portrait_pet,
+            portrait::portrait_open_chat,
+            portrait::portrait_info,
+            portrait::portrait_set,
         ])
         .build(tauri::generate_context!())
         .expect("не удалось запустить панель");

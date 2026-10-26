@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import LivePortrait from '../portrait/LivePortrait';
+import PettablePortrait from '../portrait/PettablePortrait';
 import { hasPortrait, setPortraitActivity, usePortrait } from '../portrait/portraitStore';
 import { closePip, isPipOf, openPip, pipSupported, usePip } from '../pipStore';
 import { createPortal } from 'react-dom';
@@ -245,10 +245,12 @@ export default function VoiceChat({ persona, messages, avatar, typing, onSend, o
       </div>
 
       <div className="voice-chat-stage">
-        {/* Живой портрет (арт-мастерская) — смотрит, моргает, говорит; нет — аватарка */}
+        {/* Живой портрет (арт-мастерская) — смотрит, моргает, говорит, его можно
+            погладить; нет — аватарка */}
         {hasPortrait(portrait) ? (
           <div className={`voice-portrait ${listening ? 'voice-portrait--listening' : ''}`}>
-            <LivePortrait
+            <PettablePortrait
+              personaId={persona.id}
               data={portrait}
               speaking={speaking}
               listening={listening}

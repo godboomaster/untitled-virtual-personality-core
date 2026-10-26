@@ -89,3 +89,15 @@ export function usePortraitActivity(personaId: string): PortraitActivity {
     () => activity.get(personaId) ?? IDLE,
   );
 }
+
+// Погладили портрет — сказать ядру (до персоны дойдёт, только если включены
+// «тычки» и не чаще раза в 15 мин). Подряд гладят часто: запрос — не чаще PET_POKE_MS
+const PET_POKE_MS = 60_000;
+const petPokedAt = new Map<string, number>();
+
+export function pokePet(personaId: string) {
+  const now = Date.now();
+  if (now - (petPokedAt.get(personaId) ?? 0) < PET_POKE_MS) return;
+  petPokedAt.set(personaId, now);
+  api.pokeRoom(personaId, 'auto', 'pet').catch(() => {});
+}

@@ -517,9 +517,11 @@ public class BackgroundInboxService extends Service {
                     if (InitiativeWidget.KIND.equals(m.optString("kind")) && personaShown(m)) {
                         initiative.add(m);
                     }
-                    // Персона что-то написала — её комната могла поменяться, а портрет — заговорить
+                    // Персона что-то написала — её комната могла поменяться, а портрет —
+                    // заговорить; облачко с репликой — если её не видно в открытом приложении
                     RoomWidget.personaActive(this, m.optString("persona", ""));
-                    PortraitWidget.personaSpoke(this, m.optString("persona", ""));
+                    PortraitWidget.personaSpoke(this, m.optString("persona", ""),
+                            appVisible ? null : m.optString("text", ""));
                 }
                 InitiativeWidget.add(this, initiative);
                 // Курсор — после показа: если процесс умрёт посередине, ответ

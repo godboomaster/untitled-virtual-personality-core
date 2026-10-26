@@ -526,15 +526,22 @@ def _signal_text(lang: str | None, ru: str, en: str) -> str:
     return ru if lang == "ru" else en
 
 
-def poke(persona: str, persona_data: dict, chat_id: str | None = "auto") -> dict:
-    """Клик по персоне: сигнал glance владельцу контекста — только при
-    features.room_pokes_to_llm и не чаще раза в 15 минут на чат. Иначе
-    delivered: false (реакция остаётся локальной в браузере)."""
+POKE_KINDS = ("glance", "pet")
+
+
+def poke(persona: str, persona_data: dict, chat_id: str | None = "auto",
+         kind: str = "glance") -> dict:
+    """Клик по персоне в комнате (glance) или поглаживание живого портрета
+    (pet: рабочий стол, виджет телефона, голосовой режим): сигнал владельцу
+    контекста — только при features.room_pokes_to_llm и не чаще раза в 15
+    минут на чат и вид. Иначе delivered: false (реакция остаётся локальной)."""
+    if kind not in POKE_KINDS:
+        raise RoomError(400, "kind — glance или pet")
     features = (persona_data or {}).get("features") or {}
     if not bool(features.get("room_pokes_to_llm", False)):
         return {"ok": True, "delivered": False}
     source = resolve_source(persona, chat_id)
-    key = f"{source['context']}:{source['chat_id']}"
+    key = f"{source['context']}:{source['chat_id']}:{kind}"
     now = time.time()
     with _poke_lock:
         if now - _poke_at.get(key, 0.0) < POKE_INTERVAL_SEC:
@@ -542,13 +549,35 @@ def poke(persona: str, persona_data: dict, chat_id: str | None = "auto") -> dict
         _poke_at[key] = now
     pastime = _pastime(source)
     lang = _source_lang(source)
-    text = (_signal_text(lang, f"Пользователь заглянул в комнату, пока ты: {pastime}",
-                         f"The user looked into your room while you were: {pastime}")
-            if pastime else
-            _signal_text(lang, "Пользователь заглянул к тебе в комнату",
-                         "The user looked into your room"))
-    room.append_signal(source["context"], "glance", source["chat_id"], text)
+    if kind == "pet":
+        text = (_signal_text(lang, f"Пользователь погладил тебя по голове, пока ты: {pastime}",
+                             f"The user patted you on the head while you were: {pastime}")
+                if pastime else
+                _signal_text(lang, "Пользователь погладил тебя по голове",
+                             "The user patted you on the head"))
+    else:
+        text = (_signal_text(lang, f"Пользователь заглянул в комнату, пока ты: {pastime}",
+                             f"The user looked into your room while you were: {pastime}")
+                if pastime else
+                _signal_text(lang, "Пользователь заглянул к тебе в комнату",
+                             "The user looked into your room"))
+    room.append_signal(source["context"], kind, source["chat_id"], text)
     return {"ok": True, "delivered": True}
+
+
+def asleep(persona: str, persona_data: dict) -> bool | None:
+    """Спит ли персона сейчас — для живого портрета (рабочий стол, виджет
+    телефона): поза sleep в живом состоянии её последнего активного чата.
+    Живое состояние выключено или его ещё нет — None: клиент решает сам
+    (ночь по своим часам)."""
+    from app.core.living_persona import LivingPersonaConfig
+    if not LivingPersonaConfig((persona_data or {}).get("features") or {}).state_enabled:
+        return None
+    source = resolve_source(persona, "auto")
+    st = _states(source["context"]).get(source["chat_id"])
+    if not isinstance(st, dict) or not st.get("pose"):
+        return None
+    return str(st.get("pose")) == "sleep"
 
 
 def focus(persona: str, action: str, minutes: int | None = None,

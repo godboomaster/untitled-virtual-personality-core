@@ -405,6 +405,17 @@ input:not([type='checkbox']) {
   -webkit-user-select: text;
 }
 
+select {
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  color: var(--text);
+  font: 12px var(--font);
+}
+
+select:focus,
 input:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;

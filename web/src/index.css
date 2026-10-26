@@ -8533,8 +8533,42 @@ html[data-theme='dark'] .input::-webkit-calendar-picker-indicator {
   50% { transform: translateY(-1.2%) scale(1.012); }
 }
 
+.live-portrait--asleep .live-portrait-body {
+  animation-duration: 6.5s;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .live-portrait-body { animation: none; }
+}
+
+/* Погладить портрет (PettablePortrait): над головой — рука, сердечко над ней */
+.portrait-pettable {
+  position: relative;
+  touch-action: none;
+}
+
+.portrait-pettable--over {
+  cursor: pointer;
+}
+
+.portrait-heart {
+  position: absolute;
+  width: 18px;
+  height: 17px;
+  margin: -24px 0 0 -9px;
+  fill: #e5484d;
+  pointer-events: none;
+  animation: portrait-heart 0.9s ease-out forwards;
+}
+
+@keyframes portrait-heart {
+  0% { opacity: 0; transform: translateY(6px) scale(0.6); }
+  20% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-34px) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portrait-heart { animation-duration: 0.01s; }
 }
 
 /* Карточка «Живой портрет» в арт-мастерской */

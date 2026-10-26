@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Кадр «z» спящего портрета (PortraitWidget) -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/portrait_z_text"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="bottom|start"
+    android:importantForAccessibility="no"
+    android:textColor="@color/widget_text_muted"
+    android:textSize="14sp"
+    android:textStyle="bold" />

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Виджет «Живой портрет», персона спит (PortraitWidget): один неподвижный
+     кадр и «z» у макушки. Отдельный макет, а не тот же с одним кадром:
+     лаунчер создаёт виды заново, перелистыватель кадров бодрствующего
+     портрета отцепляется и перестаёт будить лаунчер раз в 150 мс -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/portrait_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/portrait_still"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:scaleType="fitCenter" />
+
+    <ViewFlipper
+        android:id="@+id/portrait_z"
+        android:layout_width="36dp"
+        android:layout_height="28dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="10dp"
+        android:autoStart="true"
+        android:flipInterval="1200" />
+</FrameLayout>

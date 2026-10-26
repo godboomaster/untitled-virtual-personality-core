@@ -84,6 +84,10 @@ pub struct ApiEnv {
     pub ollama: String,
     /// WAKE_LISTEN=1 — слушать имя на этом компьютере (без панели — само ядро)
     pub wake_listen: bool,
+    /// Папка репозитория и данных ядра (app/core/paths.py: VPC_DATA_DIR, затем
+    /// DATA_DIR, иначе data) — портрет на рабочем столе без запущенного бота
+    pub repo: PathBuf,
+    pub data: PathBuf,
 }
 
 impl ApiEnv {
@@ -107,7 +111,12 @@ impl ApiEnv {
             .unwrap_or_else(|| "http://localhost:11434".into());
         let wake_listen =
             matches!(get("WAKE_LISTEN").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on");
-        ApiEnv { base: format!("http://{host}:{port}"), port, token, ollama, wake_listen }
+        let data = get("VPC_DATA_DIR")
+            .filter(|d| !d.trim().is_empty())
+            .or_else(|| get("DATA_DIR").filter(|d| !d.trim().is_empty()))
+            .map(|d| repo.join(d.trim()))
+            .unwrap_or_else(|| repo.join("data"));
+        ApiEnv { base: format!("http://{host}:{port}"), port, token, ollama, wake_listen, repo: repo.to_path_buf(), data }
     }
 }
 

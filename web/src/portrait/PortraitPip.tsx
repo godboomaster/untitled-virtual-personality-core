@@ -2,13 +2,14 @@ import { useEffect } from 'react';
 import { useI18n } from '../i18n';
 import type { Persona } from '../mockData';
 import { closePip } from '../pipStore';
-import LivePortrait from './LivePortrait';
+import PettablePortrait from './PettablePortrait';
 import { hasPortrait, usePortrait, usePortraitActivity } from './portraitStore';
 
 /* Живой портрет в PiP-окне («Вынести портрет»): голова на всё окно поверх
    остальных окон — смотрит на курсор над окном, моргает; пока открыт
    голосовой режим этой персоны — говорит, слушает и думает вместе с ним
-   (portraitStore → usePortraitActivity). Кнопка «Вернуть» — при наведении,
+   (portraitStore → usePortraitActivity); по голове можно погладить
+   (PettablePortrait). Кнопка «Вернуть» — при наведении,
    чтобы не заслонять портрет. Само окно — PipHost (web/src/PipHost.tsx). */
 
 export default function PortraitPipView({ persona, doc }: { persona: Persona; doc: Document }) {
@@ -23,7 +24,14 @@ export default function PortraitPipView({ persona, doc }: { persona: Persona; do
   return (
     <div className={`portrait-pip ${listening ? 'portrait-pip--listening' : ''}`}>
       {hasPortrait(data) ? (
-        <LivePortrait data={data} speaking={speaking} listening={listening} thinking={thinking} label={persona.name} />
+        <PettablePortrait
+          personaId={persona.id}
+          data={data}
+          speaking={speaking}
+          listening={listening}
+          thinking={thinking}
+          label={persona.name}
+        />
       ) : (
         <div className="portrait-empty">{t('portrait.empty')}</div>
       )}

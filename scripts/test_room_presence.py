@@ -415,6 +415,40 @@ def main():
     check("poke: сигнал glance в контекст источника с pastime",
           last_sig["type"] == "glance" and last_sig["chat_id"] == "456"
           and "читает книгу" in last_sig["text"])
+    # Погладили портрет: свой вид сигнала и свой лимит (glance выше его не съел)
+    r_pet = room_api.poke(persona, on, kind="pet")
+    r_pet2 = room_api.poke(persona, on, kind="pet")
+    after_pet = sig_file.read_text(encoding="utf-8").splitlines()
+    pet_sig = json.loads(after_pet[-1])
+    check("poke pet: доставлен один раз за 15 мин, лимит отдельный от glance",
+          r_pet["delivered"] is True and r_pet2["delivered"] is False
+          and len(after_pet) == len(after) + 1)
+    check("poke pet: сигнал pet с pastime",
+          pet_sig["type"] == "pet" and pet_sig["chat_id"] == "456"
+          and ("погладил" in pet_sig["text"] or "patted" in pet_sig["text"])
+          and "читает книгу" in pet_sig["text"])
+    try:
+        room_api.poke(persona, on, kind="slap")
+        check("poke: неизвестный вид → RoomError", False)
+    except room_api.RoomError as e:
+        check("poke: неизвестный вид → RoomError 400", e.status == 400)
+    check("poke pet: флаг выключен → delivered false",
+          room_api.poke(persona, {"features": {}}, kind="pet") == {"ok": True, "delivered": False})
+
+    # Спит ли персона (портрет на столе и виджет засыпают вместе с ней)
+    living_on = {"features": {"state_engine": True}}
+    check("asleep: живое состояние выключено → None", room_api.asleep(persona, {"features": {}}) is None)
+    check("asleep: у состояния ещё нет позы → None", room_api.asleep(persona, living_on) is None)
+    state_file = room.living_dir(persona) / "state.json"
+    saved_state = state_file.read_text(encoding="utf-8")
+    for pose, want in (("sleep", True), ("read", False)):
+        st = json.loads(saved_state)
+        st["chats"]["456"]["pose"] = pose
+        write_json(state_file, st)
+        os.utime(state_file, (now + (1 if want else 2),) * 2)  # кеш по mtime — точно другой
+        check(f"asleep: поза {pose} → {want}", room_api.asleep(persona, living_on) is want)
+    write_json(state_file, json.loads(saved_state))
+    os.utime(state_file, (now + 3,) * 2)
 
     # 10. data-URL: размер и MIME по сигнатуре
     good = "data:image/png;base64," + base64.b64encode(PNG_1PX).decode()

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Кадр сердечка (PortraitWidget): сердечко у низа рамки; выше — отступом
+     снизу, прозрачнее — альфой картинки -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/portrait_heart_box"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/portrait_heart"
+        android:layout_width="18dp"
+        android:layout_height="17dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:importantForAccessibility="no"
+        android:src="@drawable/widget_heart" />
+</FrameLayout>

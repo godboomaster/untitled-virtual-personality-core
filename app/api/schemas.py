@@ -504,6 +504,8 @@ class PortraitSheetUpdate(BaseModel):
 
 class RoomPokeRequest(BaseModel):
     chat_id: Optional[str] = "auto"
+    # glance — клик по персоне в комнате, pet — погладили живой портрет
+    kind: Optional[str] = "glance"
 
 
 class RoomFocusRequest(BaseModel):

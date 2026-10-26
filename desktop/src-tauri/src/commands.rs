@@ -86,6 +86,8 @@ pub struct Snapshot {
     memory: MemView,
     logs: LogBatch,
     voice: VoiceView,
+    /// Портрет на рабочем столе: на столе ли и чей
+    portrait: crate::portrait::Brief,
 }
 
 fn now_secs() -> f64 {
@@ -134,6 +136,7 @@ fn build_snapshot(st: &AppState, cursor: u64) -> Snapshot {
         memory,
         logs,
         voice: st.voice.view(),
+        portrait: st.portrait.brief(),
     }
 }
 
@@ -226,7 +229,7 @@ fn raw_logs(st: &AppState) -> LogBatch {
     LogBatch { source: if entries.is_empty() { "none" } else { "raw" }, reset: true, cursor: 0, entries }
 }
 
-fn web_url(cfg: &Config) -> String {
+pub(crate) fn web_url(cfg: &Config) -> String {
     format!("http://localhost:{}", cfg.web_port)
 }
 

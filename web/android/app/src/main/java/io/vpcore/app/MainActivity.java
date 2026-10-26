@@ -35,6 +35,8 @@ public class MainActivity extends BridgeActivity {
         // а уже показанные снимаем — их сообщения теперь видно в чате
         BackgroundInboxService.appVisible = true;
         BackgroundInboxService.clearMessageNotifications(this);
+        // И облачка с репликами на виджете портрета
+        PortraitWidget.clearBubbles(this);
         // Слушать по имени включено, а службы нет (убита системой, телефон
         // перезагружался): Android 14+ разрешает запустить её только отсюда
         WakeWordService.startIfEnabled(this);

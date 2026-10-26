@@ -116,7 +116,10 @@ public class RoomWidget extends AppWidgetProvider {
         Context app = svc.getApplicationContext();
         if (periodic == null) {
             periodic = IO.scheduleWithFixedDelay(() -> {
-                if (interactive(app)) refreshNow(app, null, REFRESH_EVERY_MS - 60_000L);
+                if (!interactive(app)) return;
+                refreshNow(app, null, REFRESH_EVERY_MS - 60_000L);
+                // Заодно портрет: спит ли персона, ночь, облачко
+                PortraitWidget.checkState(app);
             }, REFRESH_EVERY_MS, REFRESH_EVERY_MS, TimeUnit.MILLISECONDS);
         }
         if (screenReceiver == null) {
@@ -124,6 +127,7 @@ public class RoomWidget extends AppWidgetProvider {
                 @Override
                 public void onReceive(Context c, Intent i) {
                     refreshIfStale(app);
+                    PortraitWidget.checkState(app);
                 }
             };
             // Включение экрана — системная рассылка: приходит и неэкспортированному приёмнику

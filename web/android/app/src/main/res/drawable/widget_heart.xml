@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Сердечко над головой, когда портрет гладят (то же, что на рабочем столе) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="18dp"
+    android:height="17dp"
+    android:viewportWidth="24"
+    android:viewportHeight="22">
+    <path
+        android:fillColor="#E5484D"
+        android:pathData="M12,21 L2.6,11.6 A5.6,5.6 0,0 1,12 3.9 A5.6,5.6 0,0 1,21.4 11.6 Z" />
+</vector>

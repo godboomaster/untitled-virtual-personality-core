@@ -29,6 +29,7 @@ import java.util.Random;
  * Из кадров складывается «сценка» для ViewFlipper: ожидание (idle) — смотрит
  * на вас, моргает, изредка отводит взгляд; речь (talk) — рот ходит слогами,
  * с паузами между словами, как в вебе (web/src/portrait/LivePortrait.tsx).
+ * Гладят или спит — один кадр down: глаза закрыты, голова на ряд ниже.
  * Одинаковые кадры сценки — один и тот же Bitmap: RemoteViews передаёт его
  * лаунчеру один раз.
  */
@@ -53,6 +54,7 @@ final class PortraitWidgetFrames {
         final List<Bitmap> glances = new ArrayList<>(); // чуть в сторону
         Bitmap half;       // рот приоткрыт (нет листов рта — null)
         Bitmap open;       // рот открыт
+        Bitmap down;       // глаза закрыты, голова опущена: гладят, спит
 
         boolean canTalk() {
             return half != null || open != null;
@@ -177,6 +179,10 @@ final class PortraitWidgetFrames {
         f.blink = front(d, "D", rows, cols, r0, c0, px);
         f.half = front(d, "B", rows, cols, r0, c0, px);
         f.open = front(d, "C", rows, cols, r0, c0, px);
+        // Голова на ряд ниже (как petted в вебе); нет листа D — с открытыми глазами
+        int rDown = Math.min(rows - 1, r0 + 1);
+        f.down = front(d, "D", rows, cols, rDown, c0, px);
+        if (f.down == null) f.down = cell(atlasA, rows, cols, rDown, c0, px);
         synchronized (CACHE) {
             CACHE.put(key, f);
             CACHE_STAMP.put(key, a.lastModified());

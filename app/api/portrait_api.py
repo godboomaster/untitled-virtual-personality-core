@@ -107,6 +107,17 @@ def get_portrait(persona: str) -> dict:
             "sheets": sheets, "settings": settings, "updated_at": meta.get("updated_at")}
 
 
+def updated_at(persona: str) -> float | None:
+    """Когда портрет правили (без чтения атласов): клиенты с сохранённой
+    копией (портрет на рабочем столе, виджет телефона) качают атласы заново,
+    только если это время сменилось."""
+    try:
+        ts = _meta(persona).get("updated_at")
+    except PortraitError:
+        return None
+    return float(ts) if isinstance(ts, (int, float)) else None
+
+
 def has_portrait(persona: str) -> bool:
     """Есть ли у персоны живой портрет (лист A) — без чтения атласов."""
     try:

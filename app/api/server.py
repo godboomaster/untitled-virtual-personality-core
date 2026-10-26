@@ -2764,13 +2764,26 @@ async def portrait_get(persona: PersonaIdPath):
 @app.get("/api/portraits", dependencies=[Depends(require_auth)])
 async def portraits_list():
     # У каких персон есть живой портрет — без атласов: выбор персоны для
-    # портрета на рабочем столе (desktop/src-tauri/src/portrait.rs)
-    from app.api import portrait_api
+    # портрета на рабочем столе (desktop/src-tauri/src/portrait.rs). Заодно —
+    # когда портрет правили (updated: сохранённую копию качать заново, только
+    # если сменилось) и спит ли персона сейчас (asleep: true/false, null —
+    # живого состояния нет): портрет на столе и виджет телефона засыпают
+    # вместе с ней. Запрос лёгкий — его и зовут по таймеру
+    from app.api import portrait_api, room_api
+    from app.core import room
 
-    def _ids():
-        return [p for p in list_personas() if portrait_api.has_portrait(p)]
+    def _list():
+        ids = [p for p in list_personas() if portrait_api.has_portrait(p)]
+        sleep = {}
+        for p in ids:
+            try:
+                sleep[p] = room_api.asleep(p, room.load_persona_data(p) or {})
+            except Exception:
+                sleep[p] = None
+        return {"personas": ids, "asleep": sleep,
+                "updated": {p: portrait_api.updated_at(p) for p in ids}}
 
-    return {"personas": await asyncio.to_thread(_ids)}
+    return await asyncio.to_thread(_list)
 
 
 @app.put("/api/personas/{persona}/portrait/{sheet}", dependencies=[Depends(require_auth)])
@@ -2797,11 +2810,13 @@ async def portrait_delete(persona: PersonaIdPath):
 
 @app.post("/api/personas/{persona}/room/poke", dependencies=[Depends(require_auth)])
 async def room_poke(persona: PersonaIdPath, req: RoomPokeRequest):
-    # Клик по персоне: до LLM доходит только при features.room_pokes_to_llm
-    # и не чаще раза в 15 мин на чат; иначе delivered: false (всё равно 200)
+    # Клик по персоне в комнате или поглаживание портрета (kind pet): до LLM
+    # доходит только при features.room_pokes_to_llm и не чаще раза в 15 мин
+    # на чат и вид; иначе delivered: false (всё равно 200)
     from app.api import room_api
     data = await asyncio.to_thread(_room_persona, persona)
-    return await _room_call(room_api.poke, persona, data, req.chat_id or "auto")
+    return await _room_call(room_api.poke, persona, data, req.chat_id or "auto",
+                            req.kind or "glance")
 
 
 @app.post("/api/personas/{persona}/room/focus", dependencies=[Depends(require_auth)])

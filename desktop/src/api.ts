@@ -66,6 +66,18 @@ export interface VoiceView {
   logFile: string;
 }
 
+/** Портрет на рабочем столе: на столе ли и чей */
+export interface PortraitBrief {
+  shown: boolean;
+  persona: string;
+}
+
+export interface PortraitInfo extends PortraitBrief {
+  personas: { id: string; name: string }[];
+  /** Бот не отвечает: список и атласы — из папки данных ядра */
+  fromDisk: boolean;
+}
+
 export interface Snapshot {
   backend: ServiceView;
   web: ServiceView;
@@ -78,6 +90,7 @@ export interface Snapshot {
   memory: { freePercent: number; usedGb: number; totalGb: number; swapUsedGb: number };
   logs: LogBatch;
   voice: VoiceView;
+  portrait: PortraitBrief;
 }
 
 export interface Config {
@@ -113,6 +126,8 @@ export const api = {
   detectPython: (repoDir: string) => invoke<string>('detect_python', { repoDir }),
   setAutostart: (enabled: boolean) => invoke<boolean>('set_autostart', { enabled }),
   setWake: (enabled: boolean) => invoke<VoiceView>('set_wake', { enabled }),
+  portraitInfo: () => invoke<PortraitInfo>('portrait_info'),
+  setPortrait: (shown: boolean, persona?: string) => invoke<void>('portrait_set', { shown, persona }),
   hidePanel: () => invoke<void>('hide_panel'),
   quit: () => invoke<void>('quit'),
 };

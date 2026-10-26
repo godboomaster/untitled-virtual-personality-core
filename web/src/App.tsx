@@ -98,6 +98,17 @@ export default function App() {
     return () => window.removeEventListener(OPEN_CHAT_EVENT, openChat);
   }, []);
 
+  // Ссылка ?chat=<персона> — чат с ней (клик по облачку портрета на рабочем
+  // столе открывает веб так); из адреса параметр убираем, чтобы F5 не повторял
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const personaId = url.searchParams.get('chat');
+    if (!personaId) return;
+    url.searchParams.delete('chat');
+    window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
+    window.dispatchEvent(new CustomEvent(OPEN_CHAT_EVENT, { detail: personaId }));
+  }, []);
+
   // Тап по виджету комнаты на телефоне → комната этой персоны
   useEffect(() => {
     const openRoom = (e: Event) => {

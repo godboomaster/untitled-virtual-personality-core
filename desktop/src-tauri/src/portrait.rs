@@ -3,18 +3,35 @@
 //! окне без рамки поверх всех окон. Страница окна — src/portrait/.
 //!
 //! Клики проходят сквозь окно к тому, что под ним, кроме самой фигуры: окно
-//! «прозрачно для мыши», пока курсор не над ней. Панель раз в POLL сообщает
-//! странице, где курсор (заодно портрет смотрит на него по всему экрану),
-//! страница по прозрачности кадра отвечает, над фигурой ли он (portrait_hit).
-//! Над фигурой: клик — погладить, перетаскивание — переставить, колёсико —
-//! размер, правая кнопка — меню (чей портрет, убрать с рабочего стола).
+//! «прозрачно для мыши», пока курсор не над ней. Панель сообщает странице,
+//! где курсор (заодно портрет смотрит на него по всему экрану), страница по
+//! прозрачности кадра отвечает, над фигурой ли он (portrait_hit). Над
+//! фигурой: клик — погладить (ядру — сигнал pet: персона узнает, если
+//! включены «тычки»), перетаскивание — переставить, колёсико — размер,
+//! правая кнопка — меню (чей портрет, облачка, убрать с рабочего стола).
 //!
-//! Чей портрет, где окно и какого размера — portrait.json в папке настроек,
-//! отдельно от config.json: место меняется перетаскиванием, а настройки окно
-//! панели сохраняет целиком. Атласы последней загрузки — в кэше приложения:
-//! без бота портрет остаётся на столе.
+//! Реплики персоны — облачком над головой: окно выше головы на BUBBLE_H (это
+//! место тоже пропускает клики), новые сообщения — долгим опросом
+//! /api/inbox со своим client_id (watch_inbox). Клик по облачку — чат в вебе.
+//!
+//! Энергия: курсор сверяется часто, только пока он у окна (POLL_NEAR), вдали —
+//! реже (POLL_FAR), а когда вас нет (система давно без мыши и клавиатуры) —
+//! совсем редко (POLL_AWAY); тогда же портрет засыпает (portrait-away).
+//! Атласы качаются заново, только когда портрет правили (updated в
+//! /api/portraits) — проверка по таймеру лёгкая.
+//!
+//! Бот не запущен — портрет всё равно на столе: атласы и имена персон панель
+//! читает прямо из папки данных ядра (data/api_<p>/portrait, data/personas),
+//! а включают его и выбирают персону и в трее, и в окне панели (portrait_set).
+//!
+//! Чей портрет, где голова и какого она размера — portrait.json в папке
+//! настроек, отдельно от config.json: место меняется перетаскиванием, а
+//! настройки окно панели сохраняет целиком. Атласы последней загрузки — в
+//! кэше приложения: портрет остаётся на столе, даже если папка данных не та.
 
 use crate::config::ApiEnv;
+use base64::Engine;
+use crate::platform;
 use crate::probe;
 use crate::state::AppState;
 use crate::texts::t;
@@ -28,12 +45,31 @@ use std::time::{Duration, Instant};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl,
-    WebviewWindowBuilder, WindowEvent, Wry,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry,
 };
+use tauri_plugin_opener::OpenerExt;
 
 pub const LABEL: &str = "portrait";
-/// Как часто сверять курсор: и взгляд по экрану, и «над фигурой ли»
-const POLL: Duration = Duration::from_millis(33);
+/// Курсор у окна (ближе NEAR_PX): сверять часто — над фигурой ли он, ловить ли клик
+const POLL_NEAR: Duration = Duration::from_millis(33);
+/// Курсор далеко: нужен только взгляд, хватает и реже
+const POLL_FAR: Duration = Duration::from_millis(100);
+/// Вас нет: курсор стоит, ждём только, когда вернётесь
+const POLL_AWAY: Duration = Duration::from_millis(250);
+const NEAR_PX: f64 = 120.0;
+/// Столько секунд без мыши и клавиатуры — вас нет у компьютера: портрет засыпает
+const AWAY_AFTER: f64 = 5.0 * 60.0;
+const IDLE_EVERY: Duration = Duration::from_secs(1);
+/// Место над головой под облачко с репликой, логические px: окно выше головы
+/// на BUBBLE_H и не уже BUBBLE_W
+const BUBBLE_W: f64 = 280.0;
+const BUBBLE_H: f64 = 112.0;
+/// Свой курсор входящих: сообщения, забранные портретом, веб и телефон получат как обычно
+const INBOX_CLIENT: &str = "desktop-portrait";
+const INBOX_WAIT_SECS: u64 = 300;
+const INBOX_RETRY_SECS: [u64; 3] = [15, 30, 60];
+/// Гладят подряд часто — ядру не чаще (у него свой лимит, раз в 15 мин)
+const PET_POKE_EVERY: Duration = Duration::from_secs(60);
 const SIZE_DEFAULT: f64 = 240.0;
 const SIZE_MIN: f64 = 120.0;
 const SIZE_MAX: f64 = 640.0;
@@ -42,6 +78,7 @@ const MARGIN: f64 = 24.0;
 /// Место сохраняется, когда окно столько не двигалось
 const SAVE_AFTER: Duration = Duration::from_millis(700);
 const MENU_PERSONA: &str = "portrait_persona:";
+const MENU_BUBBLES: &str = "portrait_bubbles";
 const MENU_HIDE: &str = "portrait_hide";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -50,17 +87,35 @@ pub struct Placement {
     pub shown: bool,
     /// id персоны; пусто — первая с портретом
     pub persona: String,
-    /// Сторона окна, логические px
+    /// Сторона головы, логические px
     pub size: f64,
-    /// Левый верхний угол, логические px; нет — у правого нижнего угла экрана
+    /// Левый верхний угол головы, логические px; нет — у правого нижнего угла экрана
     pub x: Option<f64>,
     pub y: Option<f64>,
+    /// Реплики персоны облачком над головой
+    pub bubbles: bool,
 }
 
 impl Default for Placement {
     fn default() -> Self {
-        Placement { shown: false, persona: String::new(), size: SIZE_DEFAULT, x: None, y: None }
+        Placement { shown: false, persona: String::new(), size: SIZE_DEFAULT, x: None, y: None, bubbles: true }
     }
+}
+
+/// Окно вокруг головы стороной size: (ширина, высота, отступ головы слева,
+/// сверху). С облачками над головой — место под них
+fn frame(size: f64, bubbles: bool) -> (f64, f64, f64, f64) {
+    if !bubbles {
+        return (size, size, 0.0, 0.0);
+    }
+    let w = size.max(BUBBLE_W);
+    (w, size + BUBBLE_H, (w - size) / 2.0, BUBBLE_H)
+}
+
+#[derive(Clone, Serialize)]
+pub struct Brief {
+    shown: bool,
+    persona: String,
 }
 
 #[derive(Clone)]
@@ -68,8 +123,13 @@ pub struct Portrait {
     place: Arc<Mutex<Placement>>,
     path: PathBuf,
     cache_dir: PathBuf,
-    /// Номер окна: поток слежения за курсором закрытого окна видит, что устарел
+    /// Номер окна: потоки слежения закрытого окна видят, что устарели
     gen: Arc<AtomicU64>,
+    /// Левый верхний угол окна (физические px) и масштаб — для слежения за
+    /// курсором без вопросов окну: те идут через главный поток
+    origin: Arc<Mutex<Option<(f64, f64, f64)>>>,
+    /// Когда ядру последний раз сказали, что погладили
+    pet_at: Arc<Mutex<Option<Instant>>>,
     moved_at: Arc<Mutex<Option<Instant>>>,
     saving: Arc<AtomicBool>,
     /// Галочка «Портрет на рабочем столе» в меню трея
@@ -96,6 +156,8 @@ impl Portrait {
             path,
             cache_dir,
             gen: Arc::new(AtomicU64::new(0)),
+            origin: Arc::new(Mutex::new(None)),
+            pet_at: Arc::new(Mutex::new(None)),
             moved_at: Arc::new(Mutex::new(None)),
             saving: Arc::new(AtomicBool::new(false)),
             tray_item: Arc::new(Mutex::new(None)),
@@ -143,10 +205,12 @@ impl Portrait {
     }
 
     fn moved(&self, pos: PhysicalPosition<i32>, scale: f64) {
+        *lk(&self.origin) = Some((pos.x as f64, pos.y as f64, scale));
         {
             let mut pl = lk(&self.place);
-            pl.x = Some(pos.x as f64 / scale);
-            pl.y = Some(pos.y as f64 / scale);
+            let (_, _, dx, dy) = frame(pl.size, pl.bubbles);
+            pl.x = Some(pos.x as f64 / scale + dx);
+            pl.y = Some(pos.y as f64 / scale + dy);
         }
         self.save_soon();
     }
@@ -154,6 +218,12 @@ impl Portrait {
     pub fn set_tray_item(&self, item: CheckMenuItem<Wry>) {
         let _ = item.set_checked(self.placement().shown);
         *lk(&self.tray_item) = Some(item);
+    }
+
+    /// Для окна панели: на столе ли и чей
+    pub fn brief(&self) -> Brief {
+        let pl = self.placement();
+        Brief { shown: pl.shown, persona: pl.persona }
     }
 
     fn sync_tray(&self, shown: bool) {
@@ -218,10 +288,25 @@ pub fn hide(app: &AppHandle) {
     }
 }
 
-/// Пункт меню портрета (правая кнопка по голове): чей портрет, убрать
+/// Пункт меню портрета (правая кнопка по голове): чей портрет, облачка, убрать
 pub fn on_menu(app: &AppHandle, id: &str) {
     if id == MENU_HIDE {
         return hide(app);
+    }
+    if id == MENU_BUBBLES {
+        let p = app.state::<AppState>().portrait.clone();
+        let pl = p.placement();
+        // Голова остаётся на месте: меняется только место над ней
+        if let Some(w) = app.get_webview_window(LABEL) {
+            if let Some((hx, hy, s)) = head_pos(&w, &pl) {
+                p.update(|pl| pl.bubbles = !pl.bubbles);
+                apply_frame(&p, &w, pl.size, hx, hy, !pl.bubbles, s);
+            }
+        } else {
+            p.update(|pl| pl.bubbles = !pl.bubbles);
+        }
+        let _ = app.emit_to(LABEL, "portrait-reload", ());
+        return;
     }
     if let Some(persona) = id.strip_prefix(MENU_PERSONA) {
         let persona = persona.to_string();
@@ -242,11 +327,13 @@ fn open(app: &AppHandle) {
         (Some(x), Some(y)) if on_screen(app, x, y, size) => (x, y),
         _ => corner(app, size),
     };
+    let (w, h, dx, dy) = frame(size, pl.bubbles);
     let gen = p.gen.fetch_add(1, Ordering::SeqCst) + 1;
+    *lk(&p.origin) = None;
     let built = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("portrait.html".into()))
         .title("Virtual Persona")
-        .inner_size(size, size)
-        .position(x, y)
+        .inner_size(w, h)
+        .position(x - dx, y - dy)
         .decorations(false)
         .transparent(true)
         .shadow(false)
@@ -268,13 +355,40 @@ fn open(app: &AppHandle) {
     };
     // Сквозь окно, пока страница не скажет, что курсор над фигурой
     let _ = win.set_ignore_cursor_events(true);
+    if let (Ok(o), Ok(s)) = (win.inner_position(), win.scale_factor()) {
+        *lk(&p.origin) = Some((o.x as f64, o.y as f64, s));
+    }
     let w2 = win.clone();
+    let p2 = p.clone();
     win.on_window_event(move |e| {
         if let WindowEvent::Moved(pos) = e {
-            p.moved(*pos, w2.scale_factor().unwrap_or(1.0));
+            p2.moved(*pos, w2.scale_factor().unwrap_or(1.0));
         }
     });
     watch_cursor(app.clone(), gen);
+    watch_inbox(app.clone(), gen);
+}
+
+/// Где сейчас голова (логические px) и масштаб окна — по положению окна
+fn head_pos(w: &WebviewWindow, pl: &Placement) -> Option<(f64, f64, f64)> {
+    let (s, pos) = (w.scale_factor().ok()?, w.outer_position().ok()?);
+    let (_, _, dx, dy) = frame(pl.size, pl.bubbles);
+    Some((pos.x as f64 / s + dx, pos.y as f64 / s + dy, s))
+}
+
+/// Окно — вокруг головы size в (hx, hy); место головы и окна — в настройки
+fn apply_frame(p: &Portrait, w: &WebviewWindow, size: f64, hx: f64, hy: f64, bubbles: bool, scale: f64) {
+    let (fw, fh, dx, dy) = frame(size, bubbles);
+    {
+        let mut pl = lk(&p.place);
+        pl.size = size;
+        pl.x = Some(hx);
+        pl.y = Some(hy);
+    }
+    *lk(&p.origin) = Some(((hx - dx) * scale, (hy - dy) * scale, scale));
+    let _ = w.set_size(LogicalSize::new(fw, fh));
+    let _ = w.set_position(LogicalPosition::new(hx - dx, hy - dy));
+    p.save_soon();
 }
 
 #[derive(Clone, Serialize)]
@@ -283,25 +397,134 @@ struct Cursor {
     y: f64,
 }
 
+#[derive(Clone, Serialize)]
+struct Away {
+    away: bool,
+}
+
+/// Вас нет у компьютера: система давно без мыши и клавиатуры
+fn away_now() -> bool {
+    platform::idle_secs().map(|s| s >= AWAY_AFTER).unwrap_or(false)
+}
+
 /// Курсор в координатах страницы окна (логические px, может быть за окном) —
-/// при каждом сдвиге курсора или окна
+/// при каждом сдвиге курсора или окна; заодно — ушли вы или вернулись
+/// (portrait-away). Чем дальше курсор от окна, тем реже сверка
 fn watch_cursor(app: AppHandle, gen: u64) {
     std::thread::spawn(move || {
+        let p = app.state::<AppState>().portrait.clone();
         let mut last: Option<(i64, i64)> = None;
+        let mut moved_at = Instant::now();
+        let mut idle_at = Instant::now();
+        let mut away = false;
+        let mut wait = POLL_NEAR;
         loop {
-            std::thread::sleep(POLL);
-            if app.state::<AppState>().portrait.gen.load(Ordering::SeqCst) != gen {
+            std::thread::sleep(wait);
+            if p.gen.load(Ordering::SeqCst) != gen || app.get_webview_window(LABEL).is_none() {
                 return;
             }
-            let Some(win) = app.get_webview_window(LABEL) else { return };
-            let (Ok(c), Ok(o), Ok(s)) = (app.cursor_position(), win.inner_position(), win.scale_factor()) else {
+            let origin = *lk(&p.origin);
+            let (Ok(c), Some((ox, oy, s))) = (app.cursor_position(), origin) else {
                 continue;
             };
-            let (x, y) = ((c.x - o.x as f64) / s, (c.y - o.y as f64) / s);
+            let (x, y) = ((c.x - ox) / s, (c.y - oy) / s);
             let key = (x.round() as i64, y.round() as i64);
             if last != Some(key) {
                 last = Some(key);
+                moved_at = Instant::now();
                 let _ = app.emit_to(LABEL, "portrait-cursor", Cursor { x, y });
+            }
+            if idle_at.elapsed() >= IDLE_EVERY {
+                idle_at = Instant::now();
+                // Системе не узнать — по одной мыши
+                let idle = platform::idle_secs().unwrap_or_else(|| moved_at.elapsed().as_secs_f64());
+                if (idle >= AWAY_AFTER) != away {
+                    away = !away;
+                    let _ = app.emit_to(LABEL, "portrait-away", Away { away });
+                }
+            }
+            let pl = p.placement();
+            let (w, h, _, _) = frame(pl.size, pl.bubbles);
+            let near = x > -NEAR_PX && y > -NEAR_PX && x < w + NEAR_PX && y < h + NEAR_PX;
+            wait = if away {
+                POLL_AWAY
+            } else if near {
+                POLL_NEAR
+            } else {
+                POLL_FAR
+            };
+        }
+    });
+}
+
+#[derive(Clone, Serialize)]
+struct Said {
+    text: String,
+    kind: String,
+}
+
+/// Новые сообщения персоны портрета — облачком (portrait-say). Долгий опрос
+/// /api/inbox: запрос висит до INBOX_WAIT_SECS, пока не придёт сообщение, —
+/// без частого опроса. Первый ответ только даёт курсор: то, что пришло до
+/// портрета, уже не новость
+fn watch_inbox(app: AppHandle, gen: u64) {
+    std::thread::spawn(move || {
+        let p = app.state::<AppState>().portrait.clone();
+        let mut cursor: Option<(u64, String)> = None;
+        let mut fails = 0usize;
+        loop {
+            if p.gen.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            if !p.placement().bubbles {
+                cursor = None;
+                std::thread::sleep(Duration::from_secs(5));
+                continue;
+            }
+            let api = app.state::<AppState>().sup.api();
+            let path = match &cursor {
+                None => format!("/api/inbox?client_id={INBOX_CLIENT}&wait=0&epoch="),
+                Some((since, epoch)) => {
+                    format!("/api/inbox?client_id={INBOX_CLIENT}&wait={INBOX_WAIT_SECS}&since={since}&epoch={epoch}")
+                }
+            };
+            let v = match probe::api_get(&api, &path, (INBOX_WAIT_SECS + 20) * 1000) {
+                Ok(v) => v,
+                Err(_) => {
+                    // Бот не запущен или перезапускается
+                    fails += 1;
+                    let secs = INBOX_RETRY_SECS[(fails - 1).min(INBOX_RETRY_SECS.len() - 1)];
+                    std::thread::sleep(Duration::from_secs(secs));
+                    continue;
+                }
+            };
+            fails = 0;
+            let (Some(next), Some(epoch)) = (v["cursor"].as_u64(), v["epoch"].as_str()) else {
+                // Ядро старее долгого опроса — облачков не будет; спросить позже
+                std::thread::sleep(Duration::from_secs(INBOX_RETRY_SECS[2]));
+                continue;
+            };
+            let first = cursor.is_none();
+            cursor = Some((next, epoch.to_string()));
+            if first || p.gen.load(Ordering::SeqCst) != gen {
+                continue;
+            }
+            let persona = p.placement().persona;
+            let last = v["messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|m| m["persona"].as_str() == Some(persona.as_str()))
+                .filter_map(|m| {
+                    let text = m["text"].as_str()?.trim();
+                    (!text.is_empty()).then(|| Said {
+                        text: text.to_string(),
+                        kind: m["kind"].as_str().unwrap_or("message").to_string(),
+                    })
+                })
+                .last();
+            if let Some(said) = last {
+                let _ = app.emit_to(LABEL, "portrait-say", said);
             }
         }
     });
@@ -355,34 +578,75 @@ fn with_portrait(api: &ApiEnv) -> Option<Vec<String>> {
 }
 
 /// Ответ странице: {persona, name, data (GET /api/personas/{p}/portrait),
-/// offline — бот не ответил (data — из кэша, если был), gone — персоны нет}
+/// offline — бот не ответил (data — из кэша, если был), gone — персоны нет,
+/// asleep — спит ли персона (null — ядро не знает), away — вас нет у
+/// компьютера, bubbles и bubbleH — облачка и место над головой под них}
 fn load(st: &AppState) -> Value {
     let api = st.sup.api();
     let p = &st.portrait;
+    let list = probe::api_get(&api, "/api/portraits", 4000).ok();
+    let core_up = list.is_some() || probe::health(&api);
     let mut persona = p.placement().persona;
     if persona.is_empty() {
-        if let Some(first) = with_portrait(&api).and_then(|ids| ids.into_iter().next()) {
+        let first = if core_up {
+            list.as_ref().and_then(|v| v["personas"].as_array()?.first()?.as_str().map(str::to_string))
+        } else {
+            disk_ids(&api).into_iter().next()
+        };
+        if let Some(first) = first {
             persona = first.clone();
             p.update(|pl| pl.persona = first);
         }
     }
+    let pl = p.placement();
+    let asleep = list.as_ref().map(|v| v["asleep"][&persona].clone()).unwrap_or(Value::Null);
+    let with_state = |mut v: Value| {
+        v["asleep"] = asleep.clone();
+        v["away"] = json!(away_now());
+        v["bubbles"] = json!(pl.bubbles);
+        v["bubbleH"] = json!(frame(pl.size, pl.bubbles).3);
+        v
+    };
     if !safe_id(&persona) {
-        return json!({ "persona": null, "data": null, "offline": !probe::health(&api) });
+        return with_state(json!({ "persona": null, "data": null, "offline": !core_up }));
     }
-    match probe::api_get(&api, &format!("/api/personas/{persona}/portrait"), 20_000) {
+    if !core_up {
+        // Бот не запущен — атласы прямо из папки данных ядра
+        if let Some(data) = disk_portrait(&api, &persona) {
+            let name = disk_name(&api, &persona);
+            return with_state(json!({ "persona": persona, "name": name, "data": data, "offline": true }));
+        }
+    }
+    // Портрет не правили с прошлой загрузки — атласы из кэша, не качая
+    let updated = list.as_ref().map(|v| v["updated"][&persona].clone()).unwrap_or(Value::Null);
+    if !updated.is_null() {
+        if let Some(mut cached) = p.read_cache(&persona) {
+            if cached["data"]["updated_at"] == updated {
+                cached["offline"] = json!(false);
+                return with_state(cached);
+            }
+        }
+    }
+    with_state(fetch(st, &api, &persona))
+}
+
+/// Портрет с ядра целиком (атласы) → кэш; без связи — из кэша
+fn fetch(st: &AppState, api: &ApiEnv, persona: &str) -> Value {
+    let p = &st.portrait;
+    match probe::api_get(api, &format!("/api/personas/{persona}/portrait"), 20_000) {
         Ok(data) => {
-            let name = persona_names(&api)
-                .and_then(|list| list.into_iter().find(|(id, _)| *id == persona).map(|(_, n)| n))
-                .unwrap_or_else(|| persona.clone());
+            let name = persona_names(api)
+                .and_then(|list| list.into_iter().find(|(id, _)| id == persona).map(|(_, n)| n))
+                .unwrap_or_else(|| persona.to_string());
             let out = json!({ "persona": persona, "name": name, "data": data, "offline": false });
-            p.write_cache(&persona, &out);
+            p.write_cache(persona, &out);
             out
         }
         Err(e) if e.starts_with("HTTP 404") => {
-            p.drop_cache(&persona);
+            p.drop_cache(persona);
             json!({ "persona": persona, "name": persona, "data": null, "gone": true, "offline": false })
         }
-        Err(_) => match p.read_cache(&persona) {
+        Err(_) => match p.read_cache(persona) {
             Some(mut v) => {
                 v["offline"] = json!(true);
                 v
@@ -392,18 +656,148 @@ fn load(st: &AppState) -> Value {
     }
 }
 
-/// Кого предложить в меню: персоны с портретом; бот не отвечает — текущая
-fn menu_personas(st: &AppState) -> Vec<(String, String)> {
+/// Кого предложить: персоны с портретом и откуда список (true — бот не
+/// отвечает, из папки данных; там пусто — текущая из кэша)
+fn personas_with_portrait(st: &AppState) -> (Vec<(String, String)>, bool) {
     let api = st.sup.api();
     let current = st.portrait.placement().persona;
     match (persona_names(&api), with_portrait(&api)) {
-        (Some(list), Some(ids)) => list.into_iter().filter(|(id, _)| ids.contains(id)).collect(),
-        (Some(list), None) => list,
-        (None, _) => st
-            .portrait
-            .read_cache(&current)
-            .and_then(|v| v["name"].as_str().map(|n| vec![(current.clone(), n.to_string())]))
-            .unwrap_or_default(),
+        (Some(list), Some(ids)) => (list.into_iter().filter(|(id, _)| ids.contains(id)).collect(), false),
+        (Some(list), None) => (list, false),
+        (None, _) => {
+            let disk: Vec<(String, String)> =
+                disk_ids(&api).into_iter().map(|id| (id.clone(), disk_name(&api, &id))).collect();
+            if !disk.is_empty() {
+                return (disk, true);
+            }
+            let cached = st
+                .portrait
+                .read_cache(&current)
+                .and_then(|v| v["name"].as_str().map(|n| vec![(current.clone(), n.to_string())]))
+                .unwrap_or_default();
+            (cached, true)
+        }
+    }
+}
+
+fn menu_personas(st: &AppState) -> Vec<(String, String)> {
+    personas_with_portrait(st).0
+}
+
+// ── Портрет прямо из папки данных ядра: бот не запущен ──
+
+fn disk_dir(api: &ApiEnv, persona: &str) -> PathBuf {
+    api.data.join(format!("api_{persona}")).join("portrait")
+}
+
+/// portrait.json персоны (app/api/portrait_api.py), если в нём есть лист A
+fn disk_meta(api: &ApiEnv, persona: &str) -> Option<Value> {
+    let dir = disk_dir(api, persona);
+    let meta: Value = serde_json::from_str(&fs::read_to_string(dir.join("portrait.json")).ok()?).ok()?;
+    (meta["sheets"]["A"].is_object() && dir.join("A.webp").is_file()).then_some(meta)
+}
+
+/// Персоны с живым портретом в папке данных, по id
+fn disk_ids(api: &ApiEnv) -> Vec<String> {
+    let Ok(dirs) = fs::read_dir(&api.data) else { return Vec::new() };
+    let mut ids: Vec<String> = dirs
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().into_string().ok()?;
+            let id = name.strip_prefix("api_")?.to_string();
+            (safe_id(&id) && disk_meta(api, &id).is_some()).then_some(id)
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Имя персоны из её YAML (name: в начале строки): сначала персоны
+/// пользователя (data/personas), потом встроенные (app/personas); нет — id
+fn disk_name(api: &ApiEnv, persona: &str) -> String {
+    for dir in [api.data.join("personas"), api.repo.join("app").join("personas")] {
+        let Ok(text) = fs::read_to_string(dir.join(format!("{persona}.yaml"))) else { continue };
+        let name = text.lines().find_map(|l| l.strip_prefix("name:")).map(|n| n.trim().trim_matches(['"', '\'']).trim());
+        if let Some(n) = name.filter(|n| !n.is_empty()) {
+            return n.to_string();
+        }
+    }
+    persona.to_string()
+}
+
+/// Портрет в том же виде, что GET /api/personas/{p}/portrait, — с диска
+fn disk_portrait(api: &ApiEnv, persona: &str) -> Option<Value> {
+    let meta = disk_meta(api, persona)?;
+    let dir = disk_dir(api, persona);
+    let (mut sheets, mut settings) = (serde_json::Map::new(), serde_json::Map::new());
+    for key in ["A", "B", "C", "D", "E", "F"] {
+        let Some(s) = meta["sheets"][key].as_object() else { continue };
+        let Ok(bytes) = fs::read(dir.join(format!("{key}.webp"))) else { continue };
+        let url = format!("data:image/webp;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes));
+        sheets.insert(key.into(), json!(url));
+        settings.insert(key.into(), Value::Object(s.clone()));
+    }
+    sheets.contains_key("A").then(|| {
+        json!({
+            "rows": meta["rows"].as_u64().unwrap_or(5),
+            "cols": meta["cols"].as_u64().unwrap_or(5),
+            "cell": 256,
+            "sheets": sheets,
+            "settings": settings,
+            "updated_at": meta["updated_at"],
+        })
+    })
+}
+
+#[derive(Serialize)]
+struct PersonaItem {
+    id: String,
+    name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortraitInfo {
+    shown: bool,
+    persona: String,
+    personas: Vec<PersonaItem>,
+    /// Бот не отвечает: список и атласы — из папки данных ядра
+    from_disk: bool,
+}
+
+/// Для окна панели: на столе ли, чей и из кого выбрать
+#[tauri::command]
+pub async fn portrait_info(state: State<'_, AppState>) -> Result<PortraitInfo, String> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (list, from_disk) = personas_with_portrait(&st);
+        let pl = st.portrait.placement();
+        let persona = if pl.persona.is_empty() { list.first().map(|(id, _)| id.clone()).unwrap_or_default() } else { pl.persona };
+        PortraitInfo {
+            shown: pl.shown,
+            persona,
+            personas: list.into_iter().map(|(id, name)| PersonaItem { id, name }).collect(),
+            from_disk,
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Окно панели: показать или убрать портрет, сменить персону — и без бота
+#[tauri::command]
+pub fn portrait_set(app: AppHandle, shown: bool, persona: Option<String>) {
+    let st = app.state::<AppState>();
+    if let Some(id) = persona.filter(|id| safe_id(id)) {
+        if st.portrait.placement().persona != id {
+            st.portrait.update(|pl| pl.persona = id);
+            let _ = app.emit_to(LABEL, "portrait-reload", ());
+        }
+    }
+    let open = app.get_webview_window(LABEL).is_some();
+    if shown && !open {
+        show(&app);
+    } else if !shown {
+        hide(&app);
     }
 }
 
@@ -429,39 +823,63 @@ pub fn portrait_drag(app: AppHandle) {
     }
 }
 
-/// Колёсико над головой: размер в factor раз, низ и середина — на месте
+/// Колёсико над головой: размер в factor раз, низ и середина головы — на месте
 #[tauri::command]
 pub fn portrait_resize(app: AppHandle, state: State<'_, AppState>, factor: f64) {
     let Some(w) = app.get_webview_window(LABEL) else { return };
-    let (Ok(s), Ok(pos), Ok(size)) = (w.scale_factor(), w.outer_position(), w.inner_size()) else { return };
     if !factor.is_finite() || factor <= 0.0 {
         return;
     }
-    let old = size.width as f64 / s;
+    let p = &state.portrait;
+    let pl = p.placement();
+    let Some((hx, hy, s)) = head_pos(&w, &pl) else { return };
+    let old = pl.size;
     let new = (old * factor).clamp(SIZE_MIN, SIZE_MAX).round();
     if (new - old).abs() < 1.0 {
         return;
     }
-    let x = pos.x as f64 / s + (old - new) / 2.0;
-    let y = pos.y as f64 / s + (old - new);
-    let _ = w.set_size(LogicalSize::new(new, new));
-    let _ = w.set_position(LogicalPosition::new(x, y));
-    {
-        let mut pl = lk(&state.portrait.place);
-        pl.size = new;
-        pl.x = Some(x);
-        pl.y = Some(y);
-    }
-    state.portrait.save_soon();
+    apply_frame(p, &w, new, hx + (old - new) / 2.0, hy + (old - new), pl.bubbles, s);
 }
 
-/// Меню правой кнопки: чей портрет и «Убрать с рабочего стола»
+/// Погладили: ядру — сигнал pet (до персоны дойдёт, если включены «тычки»)
+#[tauri::command]
+pub fn portrait_pet(state: State<'_, AppState>) {
+    let p = &state.portrait;
+    {
+        let mut at = lk(&p.pet_at);
+        if at.map(|t| t.elapsed() < PET_POKE_EVERY).unwrap_or(false) {
+            return;
+        }
+        *at = Some(Instant::now());
+    }
+    let persona = p.placement().persona;
+    if !safe_id(&persona) {
+        return;
+    }
+    let api = state.sup.api();
+    std::thread::spawn(move || {
+        let body = json!({ "chat_id": "auto", "kind": "pet" });
+        let _ = probe::api_post_json(&api, &format!("/api/personas/{persona}/room/poke"), &body, 8000);
+    });
+}
+
+/// Клик по облачку: чат с персоной в вебе
+#[tauri::command]
+pub fn portrait_open_chat(app: AppHandle, state: State<'_, AppState>) {
+    let persona = state.portrait.placement().persona;
+    let base = crate::commands::web_url(&state.sup.config());
+    let url = if safe_id(&persona) { format!("{base}/?chat={persona}") } else { base };
+    let _ = app.opener().open_url(url, None::<&str>);
+}
+
+/// Меню правой кнопки: чей портрет, облачка и «Убрать с рабочего стола»
 #[tauri::command]
 pub async fn portrait_menu(app: AppHandle) -> Result<(), String> {
     let st = app.state::<AppState>().inner().clone();
     let st2 = st.clone();
     let list = tauri::async_runtime::spawn_blocking(move || menu_personas(&st2)).await.map_err(|e| e.to_string())?;
-    let current = st.portrait.placement().persona;
+    let pl = st.portrait.placement();
+    let current = pl.persona.clone();
     let err = |e: tauri::Error| e.to_string();
     let menu = Menu::new(&app).map_err(err)?;
     for (id, name) in &list {
@@ -472,6 +890,10 @@ pub async fn portrait_menu(app: AppHandle) -> Result<(), String> {
     if !list.is_empty() {
         menu.append(&PredefinedMenuItem::separator(&app).map_err(err)?).map_err(err)?;
     }
+    let bubbles =
+        CheckMenuItem::with_id(&app, MENU_BUBBLES, t(st.lang, "portrait_bubbles"), true, pl.bubbles, None::<&str>)
+            .map_err(err)?;
+    menu.append(&bubbles).map_err(err)?;
     let hide = MenuItem::with_id(&app, MENU_HIDE, t(st.lang, "portrait_hide"), true, None::<&str>).map_err(err)?;
     menu.append(&hide).map_err(err)?;
     let win = app.get_webview_window(LABEL).ok_or("нет окна портрета")?;
@@ -480,7 +902,9 @@ pub async fn portrait_menu(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{safe_id, Placement, SIZE_DEFAULT};
+    use super::{disk_ids, disk_name, disk_portrait, frame, safe_id, Placement, BUBBLE_H, BUBBLE_W, SIZE_DEFAULT};
+    use crate::config::ApiEnv;
+    use std::fs;
 
     #[test]
     fn persona_ids() {
@@ -495,6 +919,49 @@ mod tests {
     fn placement_defaults() {
         // Старый или неполный portrait.json — недостающее по умолчанию
         let p: Placement = serde_json::from_str(r#"{"shown":true,"persona":"don"}"#).unwrap();
-        assert_eq!((p.shown, p.persona.as_str(), p.size, p.x), (true, "don", SIZE_DEFAULT, None));
+        assert_eq!((p.shown, p.persona.as_str(), p.size, p.x, p.bubbles), (true, "don", SIZE_DEFAULT, None, true));
+    }
+
+    #[test]
+    fn window_frame() {
+        // Без облачков окно — сама голова
+        assert_eq!(frame(240.0, false), (240.0, 240.0, 0.0, 0.0));
+        // С облачками: место над головой, голова по середине низа
+        let (w, h, dx, dy) = frame(240.0, true);
+        assert_eq!((w, h, dy), (BUBBLE_W, 240.0 + BUBBLE_H, BUBBLE_H));
+        assert_eq!(dx * 2.0 + 240.0, w);
+        // Голова шире облачка — окно по голове
+        assert_eq!(frame(400.0, true).0, 400.0);
+    }
+
+    #[test]
+    fn portrait_from_disk() {
+        // Бот не запущен: портреты и имена — из папки данных
+        let root = std::env::temp_dir().join(format!("vpc-portrait-disk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("data");
+        let don = data.join("api_don").join("portrait");
+        fs::create_dir_all(&don).unwrap();
+        fs::write(don.join("portrait.json"), r#"{"rows":5,"cols":5,"sheets":{"A":{"bg":"auto"},"D":{"bg":"auto"}},"updated_at":12.5}"#).unwrap();
+        fs::write(don.join("A.webp"), b"RIFFa").unwrap();
+        fs::write(don.join("D.webp"), b"RIFFd").unwrap();
+        // Без листа A — не портрет; не api_ — не персона
+        let kara = data.join("api_kara").join("portrait");
+        fs::create_dir_all(&kara).unwrap();
+        fs::write(kara.join("portrait.json"), r#"{"sheets":{"D":{}}}"#).unwrap();
+        fs::create_dir_all(data.join("logs")).unwrap();
+        fs::create_dir_all(data.join("personas")).unwrap();
+        fs::write(data.join("personas").join("don.yaml"), "id: don\nname: \"Don Quixote\"\nfeatures:\n  name: nested\n").unwrap();
+        let api = ApiEnv::read(&root);
+        assert_eq!(api.data, data);
+        assert_eq!(disk_ids(&api), vec!["don".to_string()]);
+        assert_eq!(disk_name(&api, "don"), "Don Quixote");
+        assert_eq!(disk_name(&api, "kara"), "kara");
+        let p = disk_portrait(&api, "don").unwrap();
+        assert_eq!(p["sheets"]["A"], "data:image/webp;base64,UklGRmE=");
+        assert!(p["sheets"]["D"].is_string() && p["sheets"]["B"].is_null());
+        assert_eq!((p["rows"].as_u64(), p["updated_at"].as_f64()), (Some(5), Some(12.5)));
+        assert!(disk_portrait(&api, "kara").is_none());
+        let _ = fs::remove_dir_all(&root);
     }
 }

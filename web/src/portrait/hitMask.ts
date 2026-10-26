@@ -1,8 +1,10 @@
-import type { PortraitData } from '../../../web/src/portrait/portraitTypes';
+import { useEffect, useRef } from 'react';
+import type { PortraitData } from './portraitTypes';
 
 /* Где у портрета фигура, а где прозрачно — по альфе основного листа (A),
    уменьшенного до CELL px на клетку: этого хватает, чтобы клик мимо головы
-   ушёл окну под портретом. Остальные листы — те же ракурсы с другими глазами
+   ушёл окну под портретом (рабочий стол) и не считался поглаживанием
+   (голосовой режим, PiP). Остальные листы — те же ракурсы с другими глазами
    и ртом, силуэт у них тот же. */
 
 const CELL = 96;
@@ -40,4 +42,30 @@ export function maskHit(m: HitMask, r: number, c: number, u: number, v: number):
   const x = Math.floor((c + u) * CELL);
   const y = Math.floor((r + v) * CELL);
   return m.alpha[y * m.cols * CELL + x] >= SOLID;
+}
+
+/** Точка (x, y) экрана — на фигуре? body — .live-portrait-body, клетка — та, что сейчас на экране (onCell). */
+export function hitOnBody(m: HitMask | null, cell: { r: number; c: number }, body: Element | null | undefined, x: number, y: number): boolean {
+  if (!m || !body) return false;
+  const r = body.getBoundingClientRect();
+  return maskHit(m, cell.r, cell.c, (x - r.left) / r.width, (y - r.top) / r.height);
+}
+
+/** Маска портрета: строится заново, когда меняются атласы. */
+export function useHitMask(data: PortraitData | null) {
+  const mask = useRef<HitMask | null>(null);
+  useEffect(() => {
+    mask.current = null;
+    if (!data) return;
+    let alive = true;
+    buildMask(data)
+      .then((m) => {
+        if (alive) mask.current = m;
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [data]);
+  return mask;
 }

@@ -64,6 +64,14 @@ const ru = {
   voiceFailed: 'не работает',
   voiceOn: 'Слушать имя',
   voiceTurnOff: 'Не слушать',
+  portraitBlock: 'Портрет на рабочем столе',
+  portraitWho: 'Персона',
+  portraitOnDesk: 'на столе',
+  portraitOffDesk: 'убран',
+  portraitShow: 'Показать на рабочем столе',
+  portraitRemove: 'Убрать',
+  portraitHintUp: 'Голова поверх всех окон: смотрит на курсор, гладится кликом, реплики персоны — облачком. Колёсико над головой — размер, правая кнопка — меню.',
+  portraitHintDisk: 'Бот не запущен — портрет берётся прямо из папки данных. Реплики облачком и сон персоны появятся, когда бот заработает.',
   voiceHint: 'Назовите персону в начале фразы — «Коннор, какая погода?» — ответ прозвучит вслух. Микрофон слушает панель, даже когда бот выключен; отвечает бот.',
   voiceMicAccess: 'macOS не даёт панели микрофон: Системные настройки → Конфиденциальность и безопасность → Микрофон → включите «Virtual Persona». Панель проверит снова сама.',
   voiceModules: 'В Python бота нет модулей распознавания речи. Установите их: {cmd}',
@@ -104,6 +112,8 @@ const ru = {
   portraitGone: 'Этой персоны больше нет — выберите другую',
   portraitEmpty: 'У персоны {name} пока нет живого портрета',
   portraitMenu: 'Нажмите, чтобы выбрать персону или убрать портрет',
+  portraitBubbleOpen: 'Открыть чат',
+  portraitBubbleClose: 'Скрыть',
 };
 
 type Dict = typeof ru;
@@ -172,6 +182,14 @@ const en: Dict = {
   voiceFailed: 'not working',
   voiceOn: 'Listen for name',
   voiceTurnOff: 'Stop listening',
+  portraitBlock: 'Portrait on desktop',
+  portraitWho: 'Persona',
+  portraitOnDesk: 'on desktop',
+  portraitOffDesk: 'off',
+  portraitShow: 'Show on desktop',
+  portraitRemove: 'Remove',
+  portraitHintUp: 'A head above all windows: it looks at the cursor, a click pats it, the persona’s messages appear in a bubble. Scroll over the head to resize, right-click for the menu.',
+  portraitHintDisk: 'The bot is not running — the portrait is read straight from the data folder. Speech bubbles and the persona’s sleep return once the bot is up.',
   voiceHint: 'Say a persona’s name at the start of a phrase — “Connor, what’s the weather?” — and the reply is spoken aloud. The panel listens even while the bot is off; the bot answers.',
   voiceMicAccess: 'macOS does not give the panel the microphone: System Settings → Privacy & Security → Microphone → turn on “Virtual Persona”. The panel will check again on its own.',
   voiceModules: 'The bot’s Python has no speech recognition modules. Install them: {cmd}',
@@ -211,6 +229,8 @@ const en: Dict = {
   portraitGone: 'This persona no longer exists — pick another one',
   portraitEmpty: '{name} has no live portrait yet',
   portraitMenu: 'Click to pick a persona or remove the portrait',
+  portraitBubbleOpen: 'Open the chat',
+  portraitBubbleClose: 'Hide',
 };
 
 export const lang: 'ru' | 'en' = navigator.language.toLowerCase().startsWith('ru') ? 'ru' : 'en';

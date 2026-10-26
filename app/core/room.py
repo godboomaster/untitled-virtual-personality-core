@@ -107,7 +107,7 @@ AWAY_SPOT = {
 
 MAX_TEXT = 80          # label/place места
 MAX_SPOTS = 16         # мест из YAML
-SIGNAL_TYPES = ("glance", "focus_start", "focus_end")
+SIGNAL_TYPES = ("glance", "pet", "focus_start", "focus_end")
 SIGNALS_MAX_BYTES = 256 * 1024
 SIGNALS_KEEP_LINES = 200
 # Сигнал старше — уже не новость (владелец был выключен): не в лог

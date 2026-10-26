@@ -295,3 +295,61 @@ pub fn find_node(path: &str) -> Option<PathBuf> {
     }
     cands.into_iter().find(|c| c.is_file())
 }
+
+/// Сколько секунд не было ни мыши, ни клавиатуры (по всей системе): портрет
+/// на рабочем столе засыпает, когда вас нет. Узнать нельзя — None
+pub fn idle_secs() -> Option<f64> {
+    idle::secs()
+}
+
+#[cfg(target_os = "macos")]
+mod idle {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(state_id: i32, event_type: u32) -> f64;
+    }
+
+    // kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType
+    const COMBINED_SESSION: i32 = 0;
+    const ANY_INPUT: u32 = u32::MAX;
+
+    pub fn secs() -> Option<f64> {
+        let s = unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION, ANY_INPUT) };
+        (s.is_finite() && s >= 0.0).then_some(s)
+    }
+}
+
+#[cfg(windows)]
+mod idle {
+    #[repr(C)]
+    struct LastInputInfo {
+        cb_size: u32,
+        dw_time: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetLastInputInfo(plii: *mut LastInputInfo) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetTickCount() -> u32;
+    }
+
+    pub fn secs() -> Option<f64> {
+        let mut info = LastInputInfo { cb_size: std::mem::size_of::<LastInputInfo>() as u32, dw_time: 0 };
+        if unsafe { GetLastInputInfo(&mut info) } == 0 {
+            return None;
+        }
+        // Оба счётчика — миллисекунды с загрузки, по кругу раз в 49,7 дня
+        Some(unsafe { GetTickCount() }.wrapping_sub(info.dw_time) as f64 / 1000.0)
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+mod idle {
+    pub fn secs() -> Option<f64> {
+        None
+    }
+}

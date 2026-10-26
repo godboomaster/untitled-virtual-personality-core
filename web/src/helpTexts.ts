@@ -124,7 +124,7 @@ export const helpTextsRu = {
   },
   'settings.feature.room_pokes_to_llm': {
     title: 'Реакция на тычки в комнате',
-    body: 'Клик по персоне в комнате доходит до основной модели, и она отвечает в чате. Если выключить — реакция обходится без модели.',
+    body: 'Клик по персоне в комнате и поглаживание её живого портрета (на рабочем столе, в виджете телефона, в голосовом режиме) доходят до основной модели — не чаще раза в 15 минут, — и персона может откликнуться в чате. Если выключить — реакция обходится без модели.',
   },
 
   // ===== Режим управления (управление компьютером) =====
@@ -516,7 +516,7 @@ export const helpTextsEn: Record<HelpKey, HelpEntry> = {
   },
   'settings.feature.room_pokes_to_llm': {
     title: 'Reacting to room pokes',
-    body: 'Clicking the persona in the room reaches the main model, which replies in the chat. When off, the reaction happens without the model.',
+    body: 'Clicking the persona in the room and patting their live portrait (on the desktop, in the phone widget, in voice mode) reach the main model, at most once every 15 minutes, and the persona may respond in the chat. When off, the reaction happens without the model.',
   },
 
   // ===== Control mode (computer control) =====

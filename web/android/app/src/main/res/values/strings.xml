@@ -47,7 +47,8 @@
     <string name="widget_cfg_cancel">Cancel</string>
     <!-- Виджет «Живой портрет» (PortraitWidget) -->
     <string name="widget_portrait_label">Live portrait</string>
-    <string name="widget_portrait_desc">The persona\'s head on the home screen: blinks, glances around and talks when they write</string>
+    <string name="widget_portrait_desc">The persona\'s head on the home screen: blinks, glances around, speaks in a bubble when they write, sleeps at night. Tap the head to pat it</string>
+    <string name="portrait_w_pet">%1$s. Tap to pat</string>
     <string name="portrait_cfg_title">Whose portrait?</string>
     <string name="portrait_w_pick">Choose a persona</string>
     <string name="portrait_w_loading">Loading…</string>

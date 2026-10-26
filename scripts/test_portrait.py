@@ -238,6 +238,13 @@ def test_routes():
         check("GET — тот же лист", r.status_code == 200 and "A" in r.json()["sheets"])
         r = client.get("/api/portraits", headers=auth)
         check("список персон с портретом", r.status_code == 200 and "connor" in r.json()["personas"])
+        sleep = r.json().get("asleep") or {}
+        check("в списке — спит ли каждая (true/false/null)",
+              "connor" in sleep and sleep["connor"] in (None, True, False))
+        updated = (r.json().get("updated") or {}).get("connor")
+        got = client.get("/api/personas/connor/portrait", headers=auth).json()
+        check("в списке — когда портрет правили (то же, что updated_at портрета)",
+              isinstance(updated, float) and updated == got["updated_at"])
         r = client.put("/api/personas/connor/portrait/Q", headers=auth, json={"rows": 5, "cols": 5})
         check("PUT неизвестного листа — 400", r.status_code == 400)
         r = client.delete("/api/personas/connor/portrait/A", headers=auth)

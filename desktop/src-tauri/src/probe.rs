@@ -45,6 +45,14 @@ pub fn api_post(api: &ApiEnv, path: &str, timeout_ms: u64) -> Result<Value, Stri
     finish(req.send_string(""))
 }
 
+pub fn api_post_json(api: &ApiEnv, path: &str, body: &Value, timeout_ms: u64) -> Result<Value, String> {
+    let mut req = agent(timeout_ms).post(&format!("{}{path}", api.base));
+    if let Some(t) = &api.token {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    finish(req.send_json(body.clone()))
+}
+
 pub fn health(api: &ApiEnv) -> bool {
     api_get(api, "/api/health", 1500).map(|v| v["status"] == "ok").unwrap_or(false)
 }

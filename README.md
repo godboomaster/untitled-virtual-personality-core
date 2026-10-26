@@ -105,7 +105,10 @@ enter a model — a provider without a model is not used. The same can be set in
 shows their status and a live log, and listens for persona names with its own microphone
 ([Voice activation](#voice-activation)). It also keeps the persona's live portrait on the
 desktop — a head above all windows, with no frame or background: it looks at the cursor, a
-click pats it, and clicks next to it go through to the windows below. Build instructions — in
+click pats it, the persona's new messages pop up in a speech bubble above it (a click opens the
+chat), it dozes off when you are away or the persona is asleep (a pat wakes it for five
+minutes), and clicks next to it go
+through to the windows below. Build instructions — in
 [desktop/README.md](desktop/README.md).
 
 **Docker** — `docker compose up -d --build`, details in the [Docker](#docker) section.
@@ -204,7 +207,7 @@ as messages: blocks, limits, moderation, muting.
   a picture-in-picture window. The art workshop also holds the **live portrait** for voice
   mode: a 5×5 sheet of head angles (drawn by an image generator from the bundled prompt) that
   turns the persona into a 2D VTuber — it looks toward the cursor or your touch, blinks and
-  moves its lips while it speaks; like the room, it can be popped out into a small
+  moves its lips while it speaks, and you can pat it with a tap or a stroke; like the room, it can be popped out into a small
   always-on-top window (Chrome, Edge), and the tray panel puts it right on the desktop.
 - **Personas** — create (form with the YAML next to it), edit YAML, rename, copy, color.
 - **Skins** — looks for the chat, dossier and room: library, upload, generation.
@@ -242,9 +245,11 @@ notifications stay out); a tap opens the chat. "Persona room" is the chosen pers
 from their art, shown whole, with the persona in their current spot and pose, plus a caption
 with what they are doing; a tap opens the room. "Live portrait" puts the persona's head from
 their live portrait right on the wallpaper: it blinks, glances around and, when the persona
-writes, moves its lips for a few seconds; a tap opens voice mode. The widgets get their data
-through the background connection ("Notifications when the app is closed", address and token
-only); the room refreshes while the screen is on, the portrait when the app is opened.
+writes, moves its lips and shows the message in a bubble (a tap on the bubble opens the chat);
+a tap on the head pats it; while the persona sleeps (or at night, if the core does not know)
+it sleeps too, without animating — a pat wakes it for five minutes after the last touch. The widgets get their data through the background connection
+("Notifications when the app is closed", address and token only); the room refreshes while the
+screen is on, the portrait checks whether the persona is asleep when the screen turns on.
 
 **Connecting — VPC Link.** The phone and the computer pair once by a QR code and from then
 on recognize each other by keys: no VPN on the phone, no accounts, no passwords. Everything
